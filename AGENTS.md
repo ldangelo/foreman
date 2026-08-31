@@ -727,6 +727,15 @@ external items via the attach bridge and trigger poller). If you need to deliver
 something to an operator mid-run, no such channel exists — say so rather than
 designing against this one.
 
+`task.block` was in the same class: a handler existed in `task.ex` gated behind
+`require_blockable/1` which no operator path triggered; `CrashLoopDetector`
+was the sole caller via `dispatch_system`, and `TaskBlocked` had no
+`ProjectionStore` handler so the blocked state was invisible to the read model.
+`OperatorTimeout` also dispatched it on operator timeout expiry. All four
+(`require_blockable/1`, the `task.block` handler, `TaskBlocked` event, and the
+`OperatorTimeout` dispatch) have been deleted. `blocked_reason` aggregate field
+was written but never read; removed from the `State` struct. PR #432.
+
 ### 5.4 Typed parameters — one key convention, normalized once
 
 Pick one key convention per boundary (atoms internally), convert at the single

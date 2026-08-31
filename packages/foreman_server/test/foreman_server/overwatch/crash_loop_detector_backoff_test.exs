@@ -9,9 +9,8 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
     1. each crash schedules the correct backoff delay (1s, 2s, 4s, 8s, 16s)
     2. a crash during a backoff window cancels the pending timer
     3. a backoff_expired message is drained without phantom re-evaluation
-    4. the 6th crash exhausts the loop and emits run.block + task.block
+    4. the 6th crash exhausts the loop and emits run.block
     5. no duplicate WorkerCrashed / RunBlocked events are emitted
-
   Uses the real RestartBackoff module. The 5-restart sequence takes
   ~31 seconds (1+2+4+8+16 = 31 s) which is acceptable for a
   characterisation test but too slow for CI — mark @tag :slow in CI
@@ -127,17 +126,13 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
 
   describe "5-restart blocking (TRD-078 RTE-T004)" do
     @tag :slow
-    test "6th crash emits WorkerCrashed + run.block + task.block" do
+    test "6th crash emits WorkerCrashed + run.block" do
       %{tracker: tracker, detector: detector} = start_tracker_and_detector(threshold: 5)
       worker_id = uuid()
       run_id = uuid()
 
       _ = ForemanServer.Aggregator.start_aggregate(ForemanServer.Aggregates.Run, "run:#{run_id}")
       seed_run(run_id)
-
-      # Seed a task so task.block has something to emit.
-      task_id = "task-#{run_id}"
-
       # 5 real crashes — each should schedule backoff but NOT block yet.
       for attempt <- 1..5 do
         pid = spawn_worker()
