@@ -15,20 +15,28 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
-> ```
-> foreman init --force                      # --force is REQUIRED
-> foreman project create|get|update|delete|list
->     flags: --id --path --format --force --task-provider --include-archived
->            --idempotency-key
-> foreman task   create|approve|retry|get
->     flags: --id --project --title --description --task-type --workflow-type
->            --trd-path --approved-by --reason --command-id --status
-> foreman run    list|get|cancel|remove|reset|submit
->     flags: --id --status --project-id --limit --reason --workflow --prompt
->            --work-id --backend --base-branch
-> foreman workflow install|remove
->     flags: --all --source --target --remote --retries --retry-delay-ms
-> ```
+> foreman init              --force   # --force is REQUIRED
+>
+> foreman project create    --format --id --idempotency-key --path --task-provider
+> foreman project get       --format
+> foreman project update    --format --idempotency-key --task-provider
+> foreman project delete    --force --idempotency-key
+> foreman project list      --format --include-archived
+>
+> foreman task create       --description --id --project --status --task-type --title --trd-path --workflow-type
+> foreman task approve      --approved-by --command-id --id
+> foreman task retry        --id --reason
+> foreman task get          (no flags)
+>
+> foreman run list          --limit --project-id --status
+> foreman run get           (no flags)
+> foreman run cancel        --id --reason
+> foreman run remove        --id
+> foreman run reset         --id
+> foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
+>
+> foreman workflow install  --remote --retries --retry-delay-ms --source --target
+> foreman workflow remove   --all
 >
 > Every verb except `init` REQUIRES a subcommand: bare `foreman run`,
 > `foreman task`, `foreman project` or `foreman workflow` returns
@@ -1209,9 +1217,14 @@ foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
 > **PARTLY INCORRECT.** `foreman task create` is real, but eight flags shown
 > below do not exist: `--type` (the real flag is `--task-type`), `--priority`
 > (set it via a raw `task.create` envelope; see AGENTS.md), `--parent`,
-> `--model`, `--dry-run`, `--from-text`, `--no-llm`, `--project-path`. The real
-> set is `--id --project --title --description --task-type --workflow-type
-> --trd-path --command-id`. Passing any of the others is a flag parse error.
+> `--model`, `--dry-run`, `--from-text`, `--no-llm`, `--project-path`. Passing
+> any of them is a flag parse error.
+>
+> The real set is `--id --project --title --description --task-type
+> --workflow-type --trd-path --status`. Two corrections to note: `--command-id`
+> is a `task approve` flag, not a `task create` one, and `--status` — which the
+> options table below omits entirely — is real and defaults to **`open`**, not
+> the `backlog` status the sentence below claims.
 
 Create a new structured task in backlog status. Natural-language task generation (`--from-text`) was removed after the Elixir backend cutover.
 
@@ -1398,6 +1411,8 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 | `link` | Link a GitHub pull request to an issue (or unlink) |
 
 > **Removed commands:** `foreman mail send` has been removed — use `foreman inbox send`.
+
+
 
 
 
