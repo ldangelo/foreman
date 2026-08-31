@@ -316,6 +316,65 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
     end
   end
 
+  describe "write/1 float rejection" do
+    # Floats are reachable only through `foreman_workflow_put`'s manifest-object
+    # form, where JSON decoding produces them; the YAML parse path cannot yield
+    # one. Before this, `is_number/1` guards admitted a float that `scalar/1`
+    # had no clause for, so every case below raised FunctionClauseError from
+    # inside the serializer instead of returning an error.
+    @base %{"name" => "wf", "description" => "d", "phases" => [%{"name" => "p", "prompt" => "x.md"}]}
+
+    test "refuses a float at the top level, naming the key" do
+      assert {:error, {:unsupported_construct, {:float_value, "timeout"}}} =
+               ManifestWriter.write(Map.put(@base, "timeout", 1.5))
+    end
+
+    test "refuses a float on a phase property, naming the key" do
+      manifest = %{@base | "phases" => [%{"name" => "p", "prompt" => "x.md", "weight" => 0.25}]}
+
+      assert {:error, {:unsupported_construct, {:float_value, "weight"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    # The case guard-narrowing alone would have missed: `validate_nested_map/1`
+    # accepted every non-map value, so a float one level down reached `scalar/1`.
+    test "refuses a float nested inside a top-level mapping, naming both keys" do
+      manifest = Map.put(@base, "worktree", %{"enabled" => true, "ttl" => 2.5})
+
+      assert {:error, {:unsupported_construct, {:float_value, "worktree.ttl"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    test "refuses a float nested inside a phase mapping, naming both keys" do
+      manifest = %{
+        @base
+        | "phases" => [%{"name" => "p", "prompt" => "x.md", "commit" => %{"after" => 1.25}}]
+      }
+
+      assert {:error, {:unsupported_construct, {:float_value, "commit.after"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    test "still accepts integers and booleans at every depth" do
+      # `worktree` keys are restricted to enabled/base/branch/path/cleanup, so
+      # the integer under test rides a phase property instead.
+      manifest =
+        %{@base | "phases" => [%{"name" => "p", "prompt" => "x.md", "retries" => 3}]}
+        |> Map.put("worktree", %{"enabled" => true, "cleanup" => "never"})
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ "retries: 3"
+      assert yaml =~ "enabled: true"
+      assert yaml =~ "cleanup: never"
+
+      # and the round-trip the float rule exists to protect still holds:
+      # 3 must come back as the integer 3, not the string "3"
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(write_temp_yaml!(yaml))
+      assert hd(loaded["phases"])["retries"] == 3
+      assert loaded["worktree"]["enabled"] == true
+    end
+  end
+
   defp write_temp_yaml!(contents) do
     directory =
       Path.join(System.tmp_dir!(), "manifest-writer-#{System.unique_integer([:positive])}")

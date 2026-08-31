@@ -79,7 +79,17 @@ defmodule ForemanServer.Workflow.ManifestWriter do
       manifest
       |> Map.drop(@required_top_level_keys)
       |> Enum.find_value(:ok, fn
-        {_key, value} when is_binary(value) or is_number(value) or is_boolean(value) ->
+        # Floats are rejected, not serialized. `scalar/1` has no float clause,
+        # and adding one would be worse than this error: the read path cannot
+        # produce a float (`Interpreter.cast_scalar/1` yields only booleans,
+        # integers and binaries, because `Integer.parse("1.5")` leaves a
+        # non-empty remainder and falls through to the string), so a written
+        # `1.5` reads back as the STRING "1.5". Accepting one would silently
+        # change a value's type across a round-trip.
+        {key, value} when is_float(value) ->
+          {:error, {:unsupported_construct, {:float_value, key}}}
+
+        {_key, value} when is_binary(value) or is_integer(value) or is_boolean(value) ->
           false
 
         {key, value} when is_list(value) ->
@@ -89,6 +99,7 @@ defmodule ForemanServer.Workflow.ManifestWriter do
           case validate_nested_map(value) do
             :ok -> false
             :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
+            {:float_value, inner} -> {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
           end
       end)
 
@@ -135,7 +146,12 @@ defmodule ForemanServer.Workflow.ManifestWriter do
     phase
     |> Map.drop(["name"])
     |> Enum.find_value(:ok, fn
-      {_key, value} when is_binary(value) or is_number(value) or is_boolean(value) ->
+      # See the note in validate_top_level_structure/1: a float cannot survive
+      # the read path, so it is refused rather than written.
+      {key, value} when is_float(value) ->
+        {:error, {:unsupported_construct, {:float_value, key}}}
+
+      {_key, value} when is_binary(value) or is_integer(value) or is_boolean(value) ->
         false
 
       {key, %{} = v} ->
@@ -144,6 +160,7 @@ defmodule ForemanServer.Workflow.ManifestWriter do
           # Was `_key`, which Elixir binds but warns about when read: the
           # warning was live for the life of this clause.
           :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
+          {:float_value, inner} -> {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
         end
 
       {key, value} when is_list(value) ->
@@ -151,12 +168,17 @@ defmodule ForemanServer.Workflow.ManifestWriter do
     end)
   end
 
-  # Returns :ok if the map has no nested maps, :deep_nesting if any value is a map
+  # Returns :ok if the map has no nested maps, :deep_nesting if any value is a
+  # map, or {:float_value, key} if any value is a float. The float arm matters:
+  # this function used to accept every non-map value with a bare `_ -> false`,
+  # so a float nested one level down passed validation and then raised
+  # FunctionClauseError from inside `scalar/1` at write time — the one path
+  # where the guard narrowing above would not have helped.
   defp validate_nested_map(map) do
     map
-    |> Map.values()
     |> Enum.find_value(:ok, fn
-      %{} -> :deep_nesting
+      {_k, %{}} -> :deep_nesting
+      {k, v} when is_float(v) -> {:float_value, k}
       _ -> false
     end)
   end
@@ -195,9 +217,15 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
   # Top-level scalars at indent 0; a nested mapping's keys at indent 1 (2
   # spaces), which is the depth `Interpreter.parse_root_entries/3` reads back.
+  #
+  # `is_integer`, not `is_number`: floats are refused by the validators, so one
+  # arriving here means the validator was bypassed. That is a programming error
+  # and FunctionClauseError is the right answer (AGENTS.md 5.2) — the previous
+  # `is_number` admitted it and then crashed one call deeper in `scalar/1`,
+  # which reported the same defect from a less useful place.
   defp build_top_level(key, value, lines) do
     case value do
-      v when is_binary(v) or is_number(v) or is_boolean(v) ->
+      v when is_binary(v) or is_integer(v) or is_boolean(v) ->
         append(lines, 0, "#{key}: #{scalar(v)}")
 
       %{} = v ->
@@ -225,7 +253,8 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   # Properties at indent 2 (4 spaces); nested maps at indent 3 (6 spaces)
   defp build_property(key, value, lines) do
     case value do
-      v when is_binary(v) or is_number(v) or is_boolean(v) ->
+      # is_integer, not is_number — see build_top_level/3.
+      v when is_binary(v) or is_integer(v) or is_boolean(v) ->
         append(lines, 2, "#{key}: #{scalar(v)}")
 
       %{} = v ->
