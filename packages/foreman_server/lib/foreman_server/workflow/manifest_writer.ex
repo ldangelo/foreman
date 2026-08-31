@@ -29,7 +29,11 @@ defmodule ForemanServer.Workflow.ManifestWriter do
             | :phase_missing_name
             | :phase_empty_name
             | :list_at_phase_property
-            | :deep_nesting, term()}
+            | :deep_nesting
+            | :float_value
+            | :name_not_string
+            | :phases_not_list
+            | :phase_name_not_string, term()}
 
   @typep error_reason :: {:unsupported_construct, error_detail()}
 
@@ -54,12 +58,27 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
   # --- Validation ---
 
+  # Presence AND type. Checking only presence was not enough: the required keys
+  # are dropped before `validate_top_level_structure/1` runs, so the float
+  # clauses there never saw them, and `build_yaml/1` calls `scalar/1` on
+  # `manifest["name"]` directly — a float name reached the serializer and
+  # raised FunctionClauseError. `name` must be a string and `phases` a list;
+  # anything else is named here rather than crashing three calls later.
   defp validate_required_keys(manifest) do
-    case Enum.find(@required_top_level_keys, fn key ->
-           not Map.has_key?(manifest, key) or blank?(manifest[key])
-         end) do
-      nil -> {:ok, :ok}
-      missing -> {:error, {:unsupported_construct, {:missing_required, missing}}}
+    cond do
+      missing = Enum.find(@required_top_level_keys, fn key ->
+                  not Map.has_key?(manifest, key) or blank?(manifest[key])
+                end) ->
+        {:error, {:unsupported_construct, {:missing_required, missing}}}
+
+      is_float(manifest["name"]) ->
+        {:error, {:unsupported_construct, {:float_value, "name"}}}
+
+      not is_binary(manifest["name"]) ->
+        {:error, {:unsupported_construct, {:name_not_string, manifest["name"]}}}
+
+      true ->
+        {:ok, :ok}
     end
   end
 
@@ -79,7 +98,17 @@ defmodule ForemanServer.Workflow.ManifestWriter do
       manifest
       |> Map.drop(@required_top_level_keys)
       |> Enum.find_value(:ok, fn
-        {_key, value} when is_binary(value) or is_number(value) or is_boolean(value) ->
+        # Floats are rejected, not serialized. `scalar/1` has no float clause,
+        # and adding one would be worse than this error: the read path cannot
+        # produce a float (`Interpreter.cast_scalar/1` yields only booleans,
+        # integers and binaries, because `Integer.parse("1.5")` leaves a
+        # non-empty remainder and falls through to the string), so a written
+        # `1.5` reads back as the STRING "1.5". Accepting one would silently
+        # change a value's type across a round-trip.
+        {key, value} when is_float(value) ->
+          {:error, {:unsupported_construct, {:float_value, key}}}
+
+        {_key, value} when is_binary(value) or is_integer(value) or is_boolean(value) ->
           false
 
         {key, value} when is_list(value) ->
@@ -89,6 +118,7 @@ defmodule ForemanServer.Workflow.ManifestWriter do
           case validate_nested_map(value) do
             :ok -> false
             :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
+            {:float_value, inner} -> {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
           end
       end)
 
@@ -98,13 +128,25 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   defp validate_phases(nil),
     do: {:error, {:unsupported_construct, {:missing_required, "phases"}}}
 
+  # `Enum.find_value/3` stops at the first TRUTHY return, and `validate_phase/2`
+  # answers `:ok` for a valid phase — which is truthy. So this used to return
+  # `:ok` as soon as phase 1 passed and never looked at phases 2..n: for the
+  # whole life of this function only the FIRST phase was validated. Every later
+  # phase's defect fell through to the serializer as a raw CaseClauseError or
+  # FunctionClauseError, which made `:phase_not_map`, `:phase_missing_name`,
+  # `:phase_empty_name` and `:list_at_phase_property` unreachable for any phase
+  # but the first. Valid phases must therefore map to `false` (keep scanning),
+  # never `:ok`.
   defp validate_phases(phases) when is_list(phases) do
     result =
       phases
       |> Enum.with_index()
       |> Enum.find_value(:ok, fn
         {phase, index} when is_map(phase) ->
-          validate_phase(phase, index)
+          case validate_phase(phase, index) do
+            :ok -> false
+            error -> error
+          end
 
         {_not_map, index} ->
           {:error, {:unsupported_construct, {:phase_not_map, index}}}
@@ -112,6 +154,13 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
     {:ok, result}
   end
+
+  # `phases` reaching here as neither nil nor a list used to be an unnamed
+  # FunctionClauseError. It arrives from `foreman_workflow_put`'s JSON body, so
+  # it is operator input and gets a named error (AGENTS.md 5.3) rather than a
+  # crash.
+  defp validate_phases(other),
+    do: {:error, {:unsupported_construct, {:phases_not_list, other}}}
 
   defp validate_phase(phase, index) do
     name = phase["name"]
@@ -121,6 +170,15 @@ defmodule ForemanServer.Workflow.ManifestWriter do
         if name == "",
           do: {:error, {:unsupported_construct, {:phase_empty_name, index}}},
           else: {:error, {:unsupported_construct, {:phase_missing_name, index}}}
+
+      # `build_phase/2` calls `scalar/1` on the phase name directly, so a
+      # non-string name bypassed every property-level check and crashed the
+      # serializer.
+      is_float(name) ->
+        {:error, {:unsupported_construct, {:float_value, "phases[#{index}].name"}}}
+
+      not is_binary(name) ->
+        {:error, {:unsupported_construct, {:phase_name_not_string, index}}}
 
       true ->
         :ok
@@ -135,7 +193,12 @@ defmodule ForemanServer.Workflow.ManifestWriter do
     phase
     |> Map.drop(["name"])
     |> Enum.find_value(:ok, fn
-      {_key, value} when is_binary(value) or is_number(value) or is_boolean(value) ->
+      # See the note in validate_top_level_structure/1: a float cannot survive
+      # the read path, so it is refused rather than written.
+      {key, value} when is_float(value) ->
+        {:error, {:unsupported_construct, {:float_value, key}}}
+
+      {_key, value} when is_binary(value) or is_integer(value) or is_boolean(value) ->
         false
 
       {key, %{} = v} ->
@@ -144,6 +207,7 @@ defmodule ForemanServer.Workflow.ManifestWriter do
           # Was `_key`, which Elixir binds but warns about when read: the
           # warning was live for the life of this clause.
           :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
+          {:float_value, inner} -> {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
         end
 
       {key, value} when is_list(value) ->
@@ -151,12 +215,17 @@ defmodule ForemanServer.Workflow.ManifestWriter do
     end)
   end
 
-  # Returns :ok if the map has no nested maps, :deep_nesting if any value is a map
+  # Returns :ok if the map has no nested maps, :deep_nesting if any value is a
+  # map, or {:float_value, key} if any value is a float. The float arm matters:
+  # this function used to accept every non-map value with a bare `_ -> false`,
+  # so a float nested one level down passed validation and then raised
+  # FunctionClauseError from inside `scalar/1` at write time — the one path
+  # where the guard narrowing above would not have helped.
   defp validate_nested_map(map) do
     map
-    |> Map.values()
     |> Enum.find_value(:ok, fn
-      %{} -> :deep_nesting
+      {_k, %{}} -> :deep_nesting
+      {k, v} when is_float(v) -> {:float_value, k}
       _ -> false
     end)
   end
@@ -195,9 +264,15 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
   # Top-level scalars at indent 0; a nested mapping's keys at indent 1 (2
   # spaces), which is the depth `Interpreter.parse_root_entries/3` reads back.
+  #
+  # `is_integer`, not `is_number`: floats are refused by the validators, so one
+  # arriving here means the validator was bypassed. That is a programming error
+  # and FunctionClauseError is the right answer (AGENTS.md 5.2) — the previous
+  # `is_number` admitted it and then crashed one call deeper in `scalar/1`,
+  # which reported the same defect from a less useful place.
   defp build_top_level(key, value, lines) do
     case value do
-      v when is_binary(v) or is_number(v) or is_boolean(v) ->
+      v when is_binary(v) or is_integer(v) or is_boolean(v) ->
         append(lines, 0, "#{key}: #{scalar(v)}")
 
       %{} = v ->
@@ -225,7 +300,8 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   # Properties at indent 2 (4 spaces); nested maps at indent 3 (6 spaces)
   defp build_property(key, value, lines) do
     case value do
-      v when is_binary(v) or is_number(v) or is_boolean(v) ->
+      # is_integer, not is_number — see build_top_level/3.
+      v when is_binary(v) or is_integer(v) or is_boolean(v) ->
         append(lines, 2, "#{key}: #{scalar(v)}")
 
       %{} = v ->

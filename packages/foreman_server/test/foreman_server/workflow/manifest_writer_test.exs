@@ -316,6 +316,160 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
     end
   end
 
+  describe "write/1 float rejection" do
+    # Floats are reachable only through `foreman_workflow_put`'s manifest-object
+    # form, where JSON decoding produces them; the YAML parse path cannot yield
+    # one. Before this, `is_number/1` guards admitted a float that `scalar/1`
+    # had no clause for, so every case below raised FunctionClauseError from
+    # inside the serializer instead of returning an error.
+    @base %{"name" => "wf", "description" => "d", "phases" => [%{"name" => "p", "prompt" => "x.md"}]}
+
+    test "refuses a float at the top level, naming the key" do
+      assert {:error, {:unsupported_construct, {:float_value, "timeout"}}} =
+               ManifestWriter.write(Map.put(@base, "timeout", 1.5))
+    end
+
+    test "refuses a float on a phase property, naming the key" do
+      manifest = %{@base | "phases" => [%{"name" => "p", "prompt" => "x.md", "weight" => 0.25}]}
+
+      assert {:error, {:unsupported_construct, {:float_value, "weight"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    # The case guard-narrowing alone would have missed: `validate_nested_map/1`
+    # accepted every non-map value, so a float one level down reached `scalar/1`.
+    test "refuses a float nested inside a top-level mapping, naming both keys" do
+      manifest = Map.put(@base, "worktree", %{"enabled" => true, "ttl" => 2.5})
+
+      assert {:error, {:unsupported_construct, {:float_value, "worktree.ttl"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    test "refuses a float nested inside a phase mapping, naming both keys" do
+      manifest = %{
+        @base
+        | "phases" => [%{"name" => "p", "prompt" => "x.md", "commit" => %{"after" => 1.25}}]
+      }
+
+      assert {:error, {:unsupported_construct, {:float_value, "commit.after"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    test "still accepts integers and booleans at every depth" do
+      # `worktree` keys are restricted to enabled/base/branch/path/cleanup, so
+      # the integer under test rides a phase property instead.
+      manifest =
+        %{@base | "phases" => [%{"name" => "p", "prompt" => "x.md", "retries" => 3}]}
+        |> Map.put("worktree", %{"enabled" => true, "cleanup" => "never"})
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ "retries: 3"
+      assert yaml =~ "enabled: true"
+      assert yaml =~ "cleanup: never"
+
+      # and the round-trip the float rule exists to protect still holds:
+      # 3 must come back as the integer 3, not the string "3"
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(write_temp_yaml!(yaml))
+      assert hd(loaded["phases"])["retries"] == 3
+      assert loaded["worktree"]["enabled"] == true
+    end
+  end
+
+  describe "write/1 required-field types" do
+    # `validate_top_level_structure/1` drops the required keys before its float
+    # clauses run, and `build_yaml/1`/`build_phase/2` call `scalar/1` on
+    # "name" directly — so the required fields bypassed every type check the
+    # float fix added and still raised FunctionClauseError from the serializer.
+    @base %{
+      "name" => "wf",
+      "description" => "d",
+      "phases" => [%{"name" => "p", "prompt" => "x.md"}]
+    }
+
+    test "refuses a float top-level name" do
+      assert {:error, {:unsupported_construct, {:float_value, "name"}}} =
+               ManifestWriter.write(%{@base | "name" => 1.5})
+    end
+
+    test "refuses a non-string top-level name" do
+      assert {:error, {:unsupported_construct, {:name_not_string, 7}}} =
+               ManifestWriter.write(%{@base | "name" => 7})
+    end
+
+    test "refuses phases that is neither nil nor a list" do
+      assert {:error, {:unsupported_construct, {:phases_not_list, 1.5}}} =
+               ManifestWriter.write(%{@base | "phases" => 1.5})
+
+      assert {:error, {:unsupported_construct, {:phases_not_list, %{"a" => 1}}}} =
+               ManifestWriter.write(%{@base | "phases" => %{"a" => 1}})
+    end
+
+    test "refuses a float phase name, naming its index" do
+      manifest = %{@base | "phases" => [%{"name" => 2.5, "prompt" => "x.md"}]}
+
+      assert {:error, {:unsupported_construct, {:float_value, "phases[0].name"}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    test "refuses a non-string phase name, naming its index" do
+      manifest = %{
+        @base
+        | "phases" => [%{"name" => "ok", "prompt" => "x.md"}, %{"name" => 9, "prompt" => "y.md"}]
+      }
+
+      assert {:error, {:unsupported_construct, {:phase_name_not_string, 1}}} =
+               ManifestWriter.write(manifest)
+    end
+
+    test "still accepts a valid manifest" do
+      assert {:ok, yaml} = ManifestWriter.write(@base)
+      assert yaml =~ "name: wf"
+    end
+  end
+
+  describe "write/1 validates every phase, not just the first" do
+    # Found by a two-phase test that unexpectedly returned {:ok, _}.
+    # `Enum.find_value/3` stops at the first truthy value and a valid
+    # `validate_phase/2` answered `:ok`, which is truthy — so validation
+    # returned as soon as phase 1 passed. Every defect in phases 2..n fell
+    # through to the serializer as a raw CaseClauseError/FunctionClauseError,
+    # making four documented error codes unreachable past the first phase.
+    @ok_phase %{"name" => "ok", "prompt" => "x.md"}
+    defp two(second),
+      do: %{"name" => "wf", "description" => "d", "phases" => [@ok_phase, second]}
+
+    test "a float property on a later phase is refused, not serialized" do
+      assert {:error, {:unsupported_construct, {:float_value, "weight"}}} =
+               ManifestWriter.write(two(%{"name" => "p2", "weight" => 0.5}))
+    end
+
+    test "a later phase that is not a map is refused, naming its index" do
+      assert {:error, {:unsupported_construct, {:phase_not_map, 1}}} =
+               ManifestWriter.write(two("not-a-map"))
+    end
+
+    test "a later phase missing its name is refused, naming its index" do
+      assert {:error, {:unsupported_construct, {:phase_missing_name, 1}}} =
+               ManifestWriter.write(two(%{"prompt" => "y.md"}))
+    end
+
+    test "a list property on a later phase is refused" do
+      assert {:error, {:unsupported_construct, {:list_at_phase_property, "x"}}} =
+               ManifestWriter.write(two(%{"name" => "p2", "x" => [1, 2]}))
+    end
+
+    test "several valid phases still serialize" do
+      manifest = two(%{"name" => "p2", "prompt" => "y.md"})
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ "- name: ok"
+      assert yaml =~ "- name: p2"
+
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(write_temp_yaml!(yaml))
+      assert Enum.map(loaded["phases"], & &1["name"]) == ["ok", "p2"]
+    end
+  end
+
   defp write_temp_yaml!(contents) do
     directory =
       Path.join(System.tmp_dir!(), "manifest-writer-#{System.unique_integer([:positive])}")
