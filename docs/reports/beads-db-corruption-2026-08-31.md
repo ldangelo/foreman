@@ -98,12 +98,18 @@ empty, and reports all-clear **after** the data is gone. An earlier revision of
 this file printed the check below the rebuild for exactly that reason — the
 same plausible-looking success this repository's AGENTS.md exists to forbid.
 
+Run it as a script, never line by line — `set -e` is what makes the ordering
+binding rather than advisory:
+
 ```bash
-cp -R .beads /tmp/beads-backup-$(date +%s)      # ALWAYS first, before any read
+#!/usr/bin/env bash
+set -euo pipefail
+
+cp -R .beads "/tmp/beads-backup-$(date +%s)"    # ALWAYS first, before any read
 
 # GATE. Corruption leaves index-only reads working, so `select id` still
 # answers on the damaged DB — that is what makes this check possible at all.
-python3 - <<'EOF' || exit 1
+python3 - <<'EOF'
 import json,sqlite3,sys
 ids={json.loads(l)["id"] for l in open(".beads/issues.jsonl") if l.strip()}
 db={r[0] for r in sqlite3.connect("file:.beads/beads.db?mode=ro",uri=True).execute("select id from issues")}
@@ -116,8 +122,16 @@ EOF
 rm -f .beads/beads.db .beads/beads.db-shm .beads/beads.db-wal \
       .beads/beads.db-wal-cert .beads/beads.db-wal-cert-head
 br sync --import-only --rebuild
-sqlite3 .beads/beads.db "pragma integrity_check;"   # expect: ok
-br sync --status --json | jq -e '.coverage_drift == false'
+
+# `set -e` CANNOT carry this one: sqlite3 exits 0 while reporting corruption.
+# Measured on the preserved artifacts of the occurrences above —
+# occurrence #3's DB exits 11, but occurrence #4's exits 0 with
+# "*** in database main ***" on stdout. The OUTPUT is the signal, not $?.
+result=$(sqlite3 .beads/beads.db "pragma integrity_check;" 2>&1)
+[ "$result" = "ok" ] || { printf 'integrity_check FAILED:\n%s\n' "$result" >&2; exit 1; }
+
+br sync --status --json | jq -e '.coverage_drift == false' >/dev/null
+echo "recovered: $(sqlite3 .beads/beads.db 'select count(*) from issues;') issues, integrity ok"
 ```
 
 If `db-only` is non-empty the JSONL is NOT authoritative: recover those rows
@@ -135,9 +149,16 @@ three paths because it reads as routine maintenance.
 
 This is very likely an upstream `br` 0.5.3 / `fsqlite` write-path defect, not
 workspace drift: clean databases corrupt under single, ordinary, exit-0 writes,
-with no concurrent writer present. It is not fixable in this repository. What
-this repository can do — and PR #430 does — is ensure the JSONL export is
-always complete, so that recovery is never destructive.
+with no concurrent writer present. It is not fixable in this repository.
+
+What this repository can do — and what PR #430 actually does — is narrower than
+"ensure the export is always complete", which is what an earlier draft of this
+paragraph claimed. Nothing here can force `br` to export completely; the
+silent-partial-export defect is upstream too. #430 makes the shortfall
+DETECTABLE and makes acting on it fail closed: the session protocol gates on
+`coverage_drift`, and the recovery gate above blocks a JSONL-authoritative
+rebuild until the missing rows are reconciled. Detection plus refusal, not a
+guarantee of completeness.
 
 Preserved evidence (local, not committed): `/tmp/beads-corrupt-3-*` and
 `/tmp/beads-corrupt-4-*` hold the corrupt `.beads/` trees for occurrences 3
