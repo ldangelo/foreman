@@ -16,7 +16,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > subcommand switches and flag sets in that package, is:
 >
 > ```
-> foreman init [--force]
+> foreman init --force                      # --force is REQUIRED
 > foreman project create|get|update|delete|list
 >     flags: --id --path --format --force --task-provider --include-archived
 >            --idempotency-key
@@ -29,6 +29,11 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman workflow install|remove
 >     flags: --all --source --target --remote --retries --retry-delay-ms
 > ```
+>
+> Every verb except `init` REQUIRES a subcommand: bare `foreman run`,
+> `foreman task`, `foreman project` or `foreman workflow` returns
+> `missing subcommand`. Any section below showing flags directly on a bare verb
+> (notably `foreman run --prompt …`) is not a real invocation.
 >
 > Twenty-six documented top-level verbs are not dispatched at all: `abandon`,
 > `attach`, `board`, `clean-state`, `debug`, `doctor`, `import`, `inbox`,
@@ -112,9 +117,14 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-> **PARTLY INCORRECT.** `foreman init` is real, but `init.go` declares exactly
-> one flag, `--force`. `-n/--name` and `--wizard` shown below do not exist, and
-> `init` takes no positional name.
+> **PARTLY INCORRECT — including what the command does.** `foreman init` does
+> not initialize a project: it POSTs an empty body to
+> `/api/admin/workflows/install` and prints the response (`init.go:20-43`). It
+> does not create `.foreman/`, install Pi skills, or register the project. It
+> declares one flag, `--force`, which is **required** — bare `foreman init`
+> returns `--force is required to refresh the installed runtime copy`
+> (`init.go:27-32`). `-n`/`--name` and `--wizard` do not exist, and `init` takes
+> no positional name.
 
 Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, installs bundled Pi skills to `~/.pi/agent/skills/`, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
 
@@ -221,6 +231,16 @@ foreman project list --include-archived
 
 ### `foreman run`
 
+> **NOT IMPLEMENTED as described.** `foreman run` is not a dispatch verb; it
+> requires one of `list`, `get`, `cancel`, `remove`, `reset`, `submit`, and a
+> bare `foreman run` returns `missing subcommand`. None of the twenty flags this
+> section documents exist anywhere in `run.go` — `--model`, `--watch`,
+> `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
+> `--max-agents`, `--stagger`, `--skip-explore`, `--skip-review`, `--no-pipeline`,
+> `--no-auto-dispatch`, `--runtime-mode`, `--telemetry`, `--project`,
+> `--project-path`, `--default-branch`, `--task`, `--foreman`. To start work, use
+> `foreman task create` + `foreman task approve`, or `foreman run submit`.
+
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
 
 Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation; Elixir Overwatch rejects Graphify tools so worker discovery does not create slow generated worktree artifacts. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
@@ -299,6 +319,12 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
 | `--id <run-id>` | Run ID (required). |
 
 ### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`
+
+> **PARTLY INCORRECT.** The flag is `--base-branch`, not `--base`, and there is
+> no `--short`. Real set: `--workflow --prompt --project-id --work-id --backend
+> --base-branch`. Note that `--base-branch` is accepted by the CLI but, per
+> AGENTS.md, is still not consumed server-side — the PR base is the branch the
+> run's work was cut from.
 
 Posts a `task.create` envelope (`provider_tracked: false`, `auto_approve:
 true`) rather than a separate `work.submit` ingress — the `work.*` command
@@ -1180,6 +1206,13 @@ foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
 
 ### `foreman task create`
 
+> **PARTLY INCORRECT.** `foreman task create` is real, but eight flags shown
+> below do not exist: `--type` (the real flag is `--task-type`), `--priority`
+> (set it via a raw `task.create` envelope; see AGENTS.md), `--parent`,
+> `--model`, `--dry-run`, `--from-text`, `--no-llm`, `--project-path`. The real
+> set is `--id --project --title --description --task-type --workflow-type
+> --trd-path --command-id`. Passing any of the others is a flag parse error.
+
 Create a new structured task in backlog status. Natural-language task generation (`--from-text`) was removed after the Elixir backend cutover.
 
 ```bash
@@ -1365,6 +1398,9 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 | `link` | Link a GitHub pull request to an issue (or unlink) |
 
 > **Removed commands:** `foreman mail send` has been removed — use `foreman inbox send`.
+
+
+
 
 
 
