@@ -29,6 +29,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     "DEPENDENCY_EXISTS" => %{foreman_code: "DEPENDENCY_EXISTS", retryable?: false},
     "VALIDATION_FAILED" => %{foreman_code: "VALIDATION_FAILED", retryable?: false},
     "SCHEMA_VALIDATION_FAILED" => %{foreman_code: "SCHEMA_VALIDATION_FAILED", retryable?: false},
+    # br preflight / command workspace errors (nested %{"error" => %{...}} envelopes)
+    "NOT_IN_WORKSPACE" => %{foreman_code: "NOT_IN_WORKSPACE", retryable?: false},
+    "WORKSPACE_NOT_FOUND" => %{foreman_code: "WORKSPACE_NOT_FOUND", retryable?: false},
+    # Generic / internal sentinel
     "BR_ERROR_ENVELOPE" => %{foreman_code: "BR_ERROR_ENVELOPE", retryable?: false},
     "BR_TIMEOUT_QUEUE" => %{foreman_code: "BR_TIMEOUT_QUEUE", retryable?: true},
     "BR_TIMEOUT_SUBPROCESS" => %{foreman_code: "BR_TIMEOUT_SUBPROCESS", retryable?: true},
@@ -62,15 +66,43 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     ]
 
     def from_br_envelope(br_envelope) when is_map(br_envelope) do
+      # br 0.2.22 returns nested `%{"error" => %{...}}` envelopes for preflight
+      # and some command errors. The fix for pre-existing KeyError on missing
+      # keys (UA14) used fetch_value/2 which safely returns nil — but that
+      # silently discards the entire inner error when the data lives one level
+      # deeper. This unwrap recovers the actual error detail. Retain the
+      # existing flat-envelope path so documented flat shapes still work.
+      inner =
+        case br_envelope do
+          %{error: nested} when is_map(nested) -> nested
+          %{"error" => nested} when is_map(nested) -> nested
+          _ -> br_envelope
+        end
+
       %__MODULE__{
-        code: fetch_value(br_envelope, :code),
-        message: fetch_value(br_envelope, :message),
-        hint: fetch_value(br_envelope, :hint),
-        retryable?: fetch_value(br_envelope, :retryable?),
-        current_assignee_present?: current_assignee_present(br_envelope),
+        code: fetch_value(inner, :code),
+        message: fetch_value(inner, :message),
+        hint: fetch_value(inner, :hint),
+        # br uses "retryable" (no ?); the schema uses :retryable? (with ?).
+        # Normalize: pull "retryable"/:retryable first; default to nil rather
+        # than the :retryable? key which won't exist in either envelope shape.
+        retryable?: fetch_retryable(inner),
+        current_assignee_present?: current_assignee_present(inner),
         source: :br_envelope,
         missing_fields: []
       }
+    end
+
+    # Normalize "retryable"/:retryable → boolean, covering br's actual "retryable"
+    # (no ?), the schema's :retryable? (with ?), and the string forms of both.
+    defp fetch_retryable(inner) do
+      case inner do
+        %{retryable: value} when is_boolean(value) -> value
+        %{"retryable" => value} when is_boolean(value) -> value
+        %{retryable?: value} when is_boolean(value) -> value
+        %{"retryable?" => value} when is_boolean(value) -> value
+        _ -> nil
+      end
     end
 
     def from_local(code, message, hint, retryable?, missing_fields \\ []) do
@@ -243,10 +275,19 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     {"Beads updated issue payload failed schema validation.",
      "Refresh the cached schema or re-fetch the Beads payload."}
   end
-
   defp templates_for("SCHEMA_VALIDATION_FAILED") do
     {"Beads JSON payload failed schema validation.",
      "Refresh the cached schema or re-fetch the Beads payload."}
+  end
+
+  defp templates_for("NOT_IN_WORKSPACE") do
+    {"Current directory is not inside a Beads workspace.",
+     "Run br init or cd into an initialized workspace."}
+  end
+
+  defp templates_for("WORKSPACE_NOT_FOUND") do
+    {"No Beads workspace found at the configured path.",
+     "Run br init or br clone to initialize a workspace."}
   end
 
   defp templates_for("BR_ERROR_ENVELOPE") do

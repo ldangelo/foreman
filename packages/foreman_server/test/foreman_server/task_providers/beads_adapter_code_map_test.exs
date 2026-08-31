@@ -10,9 +10,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                  __DIR__
                )
 
-  test "24-row mapping is deterministic per Foreman.code" do
+  test "26-row mapping is deterministic per Foreman.code" do
     rows = mapping_rows()
-    assert length(rows) == 24
+    assert length(rows) == 26
 
     Enum.each(rows, fn %{br_code: br_code, foreman_code: foreman_code, retryable?: retryable?} ->
       input =
@@ -348,6 +348,97 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     end
   end
 
+  # Regression: br 0.2.22 returns `%{"error" => %{...}}` for preflight errors.
+  # `from_br_envelope/1` previously extracted from the top-level map and got nil
+  # for every field -- losing the entire error detail. The fix unwraps the nested
+  # "error" key before field extraction.
+  describe "from_br_envelope/1 unwraps nested error envelopes" do
+    test "nested string-keyed error envelope extracts all fields correctly" do
+      # Real br shape: %{"error" => %{"code" => ..., "message" => ..., ...}}
+      assert %ProviderErrorInput{
+               code: "NOT_IN_WORKSPACE",
+               message: "Not a Beads workspace.",
+               hint: "Run br init first.",
+               retryable?: false,
+               source: :br_envelope
+             } =
+               ProviderErrorInput.from_br_envelope(%{
+                 "error" => %{
+                   "code" => "NOT_IN_WORKSPACE",
+                   "level" => "error",
+                   "message" => "Not a Beads workspace.",
+                   "hint" => "Run br init first.",
+                   "retryable" => false
+                 }
+               })
+    end
+
+    test "nested atom-keyed error envelope extracts all fields correctly" do
+      assert %ProviderErrorInput{
+               code: "WORKSPACE_NOT_FOUND",
+               message: "No Beads workspace found at this path.",
+               hint: "Run br init or br clone.",
+               retryable?: true,
+               source: :br_envelope
+             } =
+               ProviderErrorInput.from_br_envelope(%{
+                 error: %{
+                   code: "WORKSPACE_NOT_FOUND",
+                   message: "No Beads workspace found at this path.",
+                   hint: "Run br init or br clone.",
+                   retryable: true
+                 }
+               })
+    end
+
+    test "nested envelope with hint and retryable defaults to those values" do
+      # No hint or retryable in the nested map -- expect nil defaults.
+      assert %ProviderErrorInput{
+               code: "SYNC_MERGE_PENDING",
+               message: "Sync required before merge.",
+               hint: nil,
+               retryable?: nil,
+               source: :br_envelope
+             } =
+               ProviderErrorInput.from_br_envelope(%{
+                 "error" => %{
+                   "code" => "SYNC_MERGE_PENDING",
+                   "message" => "Sync required before merge."
+                 }
+               })
+    end
+
+    test "build_provider_error/3 routes known nested-envelope code to br_code" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          "error" => %{
+            "code" => "NOT_IN_WORKSPACE",
+            "message" => "Not a Beads workspace.",
+            "hint" => "Run br init first.",
+            "retryable" => false
+          }
+        })
+
+      assert %ProviderError{code: "NOT_IN_WORKSPACE"} =
+               CodeMap.build_provider_error(input, "br ready", 0)
+    end
+
+    test "nested envelope with WORKSPACE_NOT_FOUND code maps to BR_WORKSPACE_NOT_FOUND" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          "error" => %{
+            "code" => "WORKSPACE_NOT_FOUND",
+            "message" => "No Beads workspace found at this path.",
+            "hint" => "Run br init or br clone.",
+            "retryable" => false
+          }
+        })
+
+      # WORKSPACE_NOT_FOUND is in the CodeMap and routes to WORKSPACE_NOT_FOUND.
+      assert %ProviderError{} = pe = CodeMap.build_provider_error(input, "br ready", 0)
+      assert pe.code == "WORKSPACE_NOT_FOUND"
+    end
+  end
   defp code_map_source, do: File.read!(@source_file)
 
   defp mapping_rows do
