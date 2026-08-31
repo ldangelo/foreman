@@ -4,6 +4,56 @@ Complete reference for all `foreman` commands, options, and usage examples.
 
 Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths are accepted directly for one-off targeting.
 
+> **INCORRECT.** Of the four verbs named, only `run` is dispatched, and it takes
+> `--project-id`, not `--project`. `status`, `reset` and `retry` are not
+> top-level commands (see the block below). `--project` is real on `task`.
+
+
+> ## Read this first: most of this file documents commands that do not exist
+>
+> The Go CLI dispatches exactly five top-level verbs (`packages/foreman_cli/cmd/foreman/main.go:85-98`); every other verb
+> returns `foreman: unknown command`. The complete real surface, taken from the
+> subcommand switches and flag sets in that package, is:
+>
+> ```
+> foreman init [--force]
+> foreman project create|get|update|delete|list
+>     flags: --id --path --format --force --task-provider --include-archived
+>            --idempotency-key
+> foreman task   create|approve|retry|get
+>     flags: --id --project --title --description --task-type --workflow-type
+>            --trd-path --approved-by --reason --command-id --status
+> foreman run    list|get|cancel|remove|reset|submit
+>     flags: --id --status --project-id --limit --reason --workflow --prompt
+>            --work-id --backend --base-branch
+> foreman workflow install|remove
+>     flags: --all --source --target --remote --retries --retry-delay-ms
+> ```
+>
+> Twenty-six documented top-level verbs are not dispatched at all: `abandon`,
+> `attach`, `board`, `clean-state`, `debug`, `doctor`, `import`, `inbox`,
+> `issue`, `logs`, `merge`, `metrics`, `monitor`, `plan`, `pr`, `purge`,
+> `recover`, `reset`, `retry`, `sentinel`, `server`, `sling`, `status`, `stop`,
+> `watch`, `worktree`. Each section below that describes one now carries a
+> **NOT IMPLEMENTED** note naming the nearest real command where one exists.
+>
+> The sections have been annotated rather than deleted: they read as a record of
+> intended design, and deleting them would discard that. But they are not a
+> reference, and this file is the one an operator or agent reaches for first —
+> which is not hypothetical. REQ-007 of
+> `docs/PRD/PRD-2026-d306444f-phase-commit-control.md` was specified against the
+> `foreman inbox` surface documented below as though it worked, and had to be
+> dropped once the aggregate behind it turned out to be unreachable. AGENTS.md's
+> Documentation Discipline warns against trusting a stale build artifact over
+> source; this is the same failure with the roles reversed, where the *document*
+> is the stale artifact.
+>
+> Note also that this file is *incomplete* about what is real: it has no section
+> for `foreman task approve`, `task get`, `task retry`, `run get`, `run cancel`,
+> `run reset`, `workflow install` or `workflow remove`, all of which exist. The
+> block above is authoritative; AGENTS.md's Operator Reference is accurate and
+> was verified against the Go source.
+
 ## Global Usage
 
 ```bash
@@ -14,9 +64,26 @@ foreman <command> --help    # Show command-specific help
 
 ### Local Development Services
 
+> **INCORRECT.** Neither `devbox run dev:up` nor `devbox run db:up` exists.
+> `devbox.json` defines 22 scripts; the stack is brought up with `devbox run up`
+> (see AGENTS.md, Devbox). Database scripts are `db:migrate`, `db:reset`,
+> `db:rollback`, `db:console`.
+
 This repository's Devbox/direnv setup starts Docker Compose services before you run Foreman locally. `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. `.envrc` sources `.env`, and Foreman CLI/server commands use `DATABASE_URL` from `.env` or the process environment. If `DATABASE_URL` is unset, the compose-managed Foreman database is exposed on `127.0.0.1:55432` by default; Hindsight uses a separate `hindsight` database in the same container.
 
 ### Domain Groups and Deprecated Aliases
+
+> **NOT IMPLEMENTED — this entire section.** `foreman --help` prints a flat
+> command list (the `usage` const in `main.go`), not domain groups. There is no
+> alias machinery at all: `main.go` contains no alias, deprecation or shorthand
+> handling, and its `default:` branch returns `unknown command`, so every
+> spelling in the table below — including the `Use instead` column — is
+> unroutable. Of the 23 distinct verbs listed in the groups, three exist —
+> `init`, `run`, `task`; `retry` and `reset` exist only as the subcommands
+> `task retry` and `run reset`.
+>
+> `foreman server start` in the closing line does not exist either; use
+> `mix phx.server`.
 
 `foreman --help` groups commands by domain:
 
@@ -44,6 +111,10 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 ## Project Setup
 
 ### `foreman init`
+
+> **PARTLY INCORRECT.** `foreman init` is real, but `init.go` declares exactly
+> one flag, `--force`. `-n/--name` and `--wizard` shown below do not exist, and
+> `init` takes no positional name.
 
 Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, installs bundled Pi skills to `~/.pi/agent/skills/`, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
 
@@ -286,6 +357,8 @@ foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
 
 ### `foreman status`
 
+> **NOT IMPLEMENTED.** `foreman status` is not dispatched. Nearest real: `foreman run list [--status <s>] [--project-id <id>] [--limit <n>]` and `foreman run get <id>`.
+
 Show project status: task counts, active agents, costs (total and per-turn), tokens, elapsed time (total and per-turn), and tool usage. `--live` opens the unified cockpit directly to the status/workflow view; `--watch` remains the compact refreshing status output; `--json` remains machine-readable.
 
 ```bash
@@ -309,6 +382,8 @@ The cockpit status view renders ordered phase nodes, retry arrows, current failu
 
 ### `foreman logs`
 
+> **NOT IMPLEMENTED.** `foreman logs` is not dispatched. Run logs are readable through the MCP tool `foreman_run_get_logs` (see MCP Server below), which is backed by the durable worker-event log described in AGENTS.md.
+
 Show run logs with structured rendering. When the Elixir backend is available, worker stdout/stderr is read from durable `WorkerStdout` / `WorkerStderr` event projections and rendered as timestamped, color-coded lines with stream, type, and phase labels. Known runs with no captured output render as empty; unknown runs report not found. Falls back to raw log file parsing when the backend is unavailable.
 
 ```bash
@@ -329,6 +404,8 @@ foreman logs bd-abc1 --raw         # Print raw JSON log only
 
 ### `foreman metrics`
 
+> **NOT IMPLEMENTED.** `foreman metrics` is not dispatched, and no CLI surface replaces it.
+
 Show detailed task metrics including cost and time statistics. This provides a focused view of accumulated metrics separate from the full status dashboard.
 
 ```bash
@@ -345,6 +422,8 @@ foreman metrics                  # Show all metrics
 Per-turn metrics show `—` when total turns is zero.
 
 ### `foreman watch`
+
+> **NOT IMPLEMENTED.** `foreman watch` is not dispatched. Poll `foreman run get <id>` instead.
 
 Canonical live operator cockpit. The TTY view fills the terminal viewport and combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
 
@@ -370,6 +449,8 @@ Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `n` creat
 
 ### `foreman monitor`
 
+> **NOT IMPLEMENTED.** `foreman monitor` is not dispatched. Poll `foreman run get <id>` instead.
+
 Alias for the canonical `foreman watch` command, with the same options and behavior.
 
 ```bash
@@ -379,6 +460,8 @@ foreman monitor --refresh 5000      # Refresh every 5 seconds
 ```
 
 ### `foreman sentinel`
+
+> **NOT IMPLEMENTED.** `foreman sentinel` is not dispatched, and no CLI surface replaces it.
 
 Continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks.
 
@@ -441,6 +524,8 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
+> **NOT IMPLEMENTED.** `foreman board` is not dispatched. `foreman run list` is the only run overview.
+
 On a TTY, open the unified cockpit in board view. The board pane groups rows by task-status lifecycle columns, keeps workflow phase and run/PR state as separate card metadata, and lets operators jump to inbox/status details without starting a second terminal loop. Terminal events update task status first, so a merged PR appears in `done` because the task is marked `merged`. Non-TTY output, `--all`, and `--filter` keep the legacy/scriptable board path.
 
 ```bash
@@ -461,6 +546,8 @@ foreman board --filter ready      # Legacy/scriptable filtered board path
 ## Debugging & Recovery
 
 ### `foreman debug`
+
+> **NOT IMPLEMENTED.** `foreman debug` is not dispatched, and no CLI surface replaces it.
 
 AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress, and debug timeline payload/file-change fields) for a task and sends them to an AI model for deep-dive diagnostics.
 
@@ -486,6 +573,8 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman recover`
 
+> **NOT IMPLEMENTED.** `foreman recover` is not dispatched, and no CLI surface replaces it.
+
 Autonomous recovery agent for pipeline failures.
 
 ```bash
@@ -510,6 +599,8 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 
 ### `foreman doctor`
 
+> **NOT IMPLEMENTED.** `foreman doctor` is not dispatched. A `foreman_doctor` MCP tool does exist and reports jido_harness provider readiness — a much narrower check than this section describes.
+
 Health checks for Foreman installation. Validates Pi SDK, DB integrity, required bundled Pi skills, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed prompt files and workflow YAML are compared to bundled runtime contracts; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
 
 ```bash
@@ -526,6 +617,8 @@ foreman doctor --json             # Machine-readable output
 | `--json` | Output as JSON |
 
 ### `foreman server`
+
+> **NOT IMPLEMENTED.** `foreman server` is not dispatched. The Phoenix server is started with `mix phx.server` from `packages/foreman_server/` (AGENTS.md, Operator Reference). See also the projection-table correction above.
 
 Manage the experimental Elixir orchestration server used by TRD-2026-014.
 
@@ -560,6 +653,8 @@ The Elixir server also includes a PR monitor. For runs with recorded GitHub PR U
 
 ### `foreman reset`
 
+> **NOT IMPLEMENTED.** `foreman reset` is not dispatched. The real command is `foreman run reset --id <run-id>`, which clears a failed or stuck run projection — it does not stop workers, close PRs, or delete branches as described here.
+
 Reset Elixir-backed task work. The command stops active worker processes when present, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged, preserves prior run artifacts for auditability, continues branch/worktree cleanup, marks any still-active run completed, marks the task closed, and skips scheduler dispatch to avoid redundant reruns. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
 
 ```bash
@@ -577,6 +672,8 @@ foreman reset foreman-abc12 --keep-worktree
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
 
 ### `foreman retry`
+
+> **NOT IMPLEMENTED.** `foreman retry` is not dispatched. The real command is `foreman task retry --id <task-id> [--reason <text>]`; there is no `--dispatch`, `--model`, or positional-id form.
 
 Reset a task and optionally re-dispatch it immediately.
 
@@ -597,6 +694,8 @@ foreman retry bd-abc1 --dry-run   # Preview
 
 ### `foreman abandon`
 
+> **NOT IMPLEMENTED.** `foreman abandon` is not dispatched. Nearest real: `foreman run remove --id <run-id>`, which removes a run and cleans its worktree/branch.
+
 Abandon obsolete Foreman work that should not land.
 
 ```bash
@@ -611,9 +710,13 @@ Abandon removes matching merge-queue entries, archives/removes the run worktree,
 
 ### `foreman clean-state`
 
+> **NOT IMPLEMENTED.** `foreman clean-state` is not dispatched. This stub is also duplicated below at the fuller section of the same name.
+
 Reset Foreman to a clean operator state by intentionally dropping stale/obsolete Foreman work.
 
 ### `foreman run kill-switch`
+
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `remove`, `reset`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>`.
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 
@@ -663,6 +766,8 @@ foreman run kill-switch <run-id> --discard-reports             # delete ~/.forem
 
 ### `foreman clean-state`
 
+> **NOT IMPLEMENTED.** `foreman clean-state` is not dispatched, and no CLI surface replaces it. Duplicate of the stub above.
+
 ```bash
 foreman clean-state --dry-run
 foreman clean-state --force
@@ -676,6 +781,8 @@ foreman clean-state --force --delete-branches --delete-origin-branches
 Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
+
+> **NOT IMPLEMENTED.** `foreman merge` is not dispatched. PR creation is automatic and server-side (`Workflow.AutoPR.maybe_create_pr/1`, called from `RunExecutor.finalize_run/1`); there is no operator merge verb.
 
 Merge completed agent work into the target branch via the refinery. Merge-capable workflows enqueue work from an explicit `merge` phase; workflows without that phase are not merge-queued by workflow execution. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. The Elixir server also reconciles recorded GitHub PRs after creation, so a PR merged outside `foreman merge` is observed and the associated Foreman task becomes `merged`.
 
@@ -706,6 +813,8 @@ foreman merge --stats weekly      # Weekly cost breakdown
 
 ### `foreman pr`
 
+> **NOT IMPLEMENTED.** `foreman pr` is not dispatched. See the AutoPR note under `foreman merge`.
+
 Create GitHub pull requests for completed work.
 
 ```bash
@@ -724,6 +833,8 @@ foreman pr --base-branch dev      # PR against dev instead of main
 ## GitHub Issues Integration
 
 ### `foreman issue`
+
+> **NOT IMPLEMENTED.** `foreman issue` is not dispatched, and no CLI surface replaces it.
 
 GitHub Issues integration commands for viewing, listing, importing, and syncing issues.
 
@@ -1013,6 +1124,8 @@ Use `agent-error` only for unrecoverable infrastructure/runtime failures. QA/pro
 
 ### `foreman plan`
 
+> **NOT IMPLEMENTED.** `foreman plan` is not dispatched. Planning runs are started as ordinary tasks: `foreman task create --workflow-type plan …`.
+
 Run the Ensemble PRD → TRD pipeline. Converts a product description into a Technical Requirements Document with decomposed tasks.
 
 ```bash
@@ -1039,6 +1152,8 @@ foreman plan trd docs/PRD.md                  # Server-backed TRD planning
 Server-backed `plan prd` / `plan trd` options: `--project <path>`, `--output-dir <dir>`, `--provider <provider>`, `--run-id <id>`, `--command-id <id>`, `--no-auto-start`.
 
 ### `foreman sling trd`
+
+> **NOT IMPLEMENTED.** `foreman sling trd` is not dispatched. Use `foreman task create --workflow-type implement-trd --trd-path <path>`.
 
 Convert a Technical Requirements Document into a native task hierarchy with dependencies.
 
@@ -1089,6 +1204,8 @@ foreman task create --title "Fix login timeout" --description "Session expires t
 
 ### `foreman import --to-elixir`
 
+> **NOT IMPLEMENTED.** `foreman import` is not dispatched, and no CLI surface replaces it.
+
 Import a TypeScript-era migration payload into the Elixir event store. The payload is JSON and may include `projects`, `tasks`, `runs`, `workflows`, `inbox_messages`, and `config`.
 
 ```bash
@@ -1112,6 +1229,8 @@ Elixir is the backend after cutover. Legacy TS delegation has been removed, and 
 ## Agent Sessions
 
 ### `foreman attach`
+
+> **NOT IMPLEMENTED.** `foreman attach` is not dispatched, and no CLI surface replaces it.
 
 Attach to a running or completed agent session to inspect its state.
 
@@ -1138,6 +1257,8 @@ foreman attach --kill             # Kill the agent process
 ## Worktree Management
 
 ### `foreman worktree`
+
+> **NOT IMPLEMENTED.** `foreman worktree` is not dispatched. Worktrees are provisioned and reclaimed server-side, one per run (see AGENTS.md); there is no operator worktree verb.
 
 Manage git worktrees used by Foreman agents.
 
@@ -1169,6 +1290,8 @@ foreman worktree clean --dry-run  # Preview removal
 ## Maintenance
 
 ### `foreman purge`
+
+> **NOT IMPLEMENTED.** `foreman purge` is not dispatched. Nearest real: `foreman run remove --id <run-id>`.
 
 Purge old agent logs and stale run records. The old `foreman purge-logs` and `foreman purge-zombie-runs` spellings remain as hidden deprecated aliases.
 
@@ -1208,6 +1331,8 @@ foreman purge runs --dry-run      # Preview
 
 ### `foreman issue`
 
+> **NOT IMPLEMENTED.** `foreman issue` is not dispatched. Near-duplicate of the section above, which this one predates or follows — it is not a strict copy: only this copy mentions `foreman issue webhook`.
+
 GitHub Issues integration commands.
 
 ```bash
@@ -1240,3 +1365,7 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 | `link` | Link a GitHub pull request to an issue (or unlink) |
 
 > **Removed commands:** `foreman mail send` has been removed — use `foreman inbox send`.
+
+
+
+
