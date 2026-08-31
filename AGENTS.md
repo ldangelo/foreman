@@ -1173,8 +1173,8 @@ br close <id> --reason="Completed"
 br close <id1> <id2>  # Close multiple issues at once
 
 # Sync with git
-br sync --flush-only  # Export DB to JSONL
-br sync --status      # Check sync status
+br sync --flush-only  # Export DB to JSONL (exits 0 even when it exports nothing)
+br sync --status      # Check sync status — the ONLY place COVERAGE DRIFT is reported
 ```
 
 ### Workflow Pattern
@@ -1183,7 +1183,10 @@ br sync --status      # Check sync status
 2. **Claim**: Use `br update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
+5. **Sync**: Run `br sync --flush-only` at session end, then gate on
+   `br sync --status --json | jq -e '.coverage_drift == false'` — the flush
+   alone reports success while exporting a fraction of the DB (see
+   **Session Protocol**)
 
 ### Key Concepts
 
@@ -1200,8 +1203,48 @@ br sync --status      # Check sync status
 git status              # Check what changed
 git add <files>         # Stage code changes
 br sync --flush-only    # Export beads changes to JSONL
+br sync --status --json | jq -e '.coverage_drift == false'   # REQUIRED gate, see below
 git commit -m "..."     # Commit everything
 git push                # Push to remote
+```
+
+**`br sync --flush-only` is not self-verifying, and the coverage gate is not
+optional.** The flush prints `Nothing to export (no dirty issues)` and exits
+**0** whenever the JSONL's certified hash matches the file on disk — even when
+that certified file holds a fraction of the database. `br` tracks the export in
+`metadata` (`needs_flush`, `jsonl_content_hash`, `jsonl_size`), so once a
+partial JSONL is certified, every later flush is a successful-looking no-op and
+the shortfall is invisible to the one command this protocol used to mandate.
+
+This is not hypothetical and it is not a small margin. In this workspace
+`issues.jsonl` — the git-tracked source of truth — carried **174 of 752 issues
+and 268 of 1122 dependencies**, and had done so across at least the last 8
+commits that touched it, while `br sync --flush-only` reported success every
+time. Reproduced deliberately in a sandbox: certify a 100-row JSONL against a
+754-issue DB and the flush answers "Nothing to export" at exit 0, leaving 654
+issues unexported indefinitely.
+
+The danger is that the JSONL is what a rebuild reads. `br sync --merge
+--force-jsonl` (and `--import-only --rebuild`) treat it as authoritative, so
+running the documented recovery against a silently-partial export DESTROYS
+every issue missing from it — here that would have been ~580 issues, ~39 of
+them open. Always compare row counts before any JSONL-authoritative recovery;
+see `skill://beads-corrupt-db-recovery-safe`.
+
+Detection exists, but in commands the protocol never told you to run:
+`br sync --status` prints `COVERAGE DRIFT — JSONL has N unique ids but the
+database holds M exportable issues` (exit **0** — do not gate on its status
+code), `br sync --status --json` exposes `coverage_drift` plus
+`coverage.db_exportable_issues` / `coverage.jsonl_unique_ids`, and `br doctor`
+reports `degraded` and exits **1**. The `--json` form is the gate to automate
+on because it is the only one that is both machine-readable and specific to
+this failure.
+
+On drift, reconcile — do NOT reflexively `--force`:
+
+```bash
+br sync --reconcile --dry-run   # lossless preview of what each side holds
+br sync --flush-only --force    # DB-authoritative: only after confirming the DB is complete
 ```
 
 ### Best Practices
@@ -1210,7 +1253,7 @@ git push                # Push to remote
 - Update status as you work (in_progress → closed)
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
-- Always sync before ending session
+- Always sync before ending session — and verify the export covered the DB, because a flush that exported nothing still exits 0
 
 ---
 
@@ -1719,6 +1762,7 @@ br update <id> --status=in_progress --json
 br close <id> --reason="Completed" --json
 br close <id1> <id2> --reason="Completed" --json
 br sync --flush-only                  # Export DB to JSONL after Beads mutations
+br sync --status --json               # VERIFY: `coverage_drift` must be false
 ```
 
 ### Workflow Pattern
@@ -1727,7 +1771,9 @@ br sync --flush-only                  # Export DB to JSONL after Beads mutations
 2. **Claim**: Use `br update <id> --status=in_progress --json`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id> --reason="Completed" --json`
-5. **Sync**: Run `br sync --flush-only` after Beads mutations so the JSONL export is current
+5. **Sync**: Run `br sync --flush-only` after Beads mutations, then confirm
+   `coverage_drift` is false in `br sync --status --json`, so a certified
+   partial JSONL cannot pass as a current export (see **Session Protocol**)
 
 ### Key Concepts
 
