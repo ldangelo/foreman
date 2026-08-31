@@ -187,7 +187,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
         }
 
       "VcsOperationStarted" ->
-        %State{state | status: "started", operation_id: Aggregate.get(payload, :operation_id)}
+        %State{state | exists?: true, status: "started", operation_id: Aggregate.get(payload, :operation_id)}
 
       "VcsOperationCompleted" ->
         %State{

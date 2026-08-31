@@ -220,13 +220,29 @@ defmodule ForemanServer.Workflow.Worktree do
   Best-effort cleanup for every projected worktree owned by a run, then delete
   each matching local branch. Used by `run.remove` after the run is terminated.
   """
+
   @spec clean_for_run(String.t()) :: :ok
   def clean_for_run(run_id) when is_binary(run_id) and run_id != "" do
+    cleanup_errors =
+      ProjectionStore.worktrees_for_run(run_id)
+      |> Enum.reduce([], fn worktree, acc ->
+        case clean(worktree) do
+          :ok -> acc
+          {:error, reason} -> [{worktree.worktree_path, reason} | acc]
+        end
+      end)
+
+    if cleanup_errors != [] do
+      :telemetry.execute(
+        [:foreman_server, :run, :worktree_cleanup_failed],
+        %{count: length(cleanup_errors)},
+        %{run_id: run_id, failures: cleanup_errors}
+      )
+    end
+
+    # Delete the run's branch from every worktree's repo.
     ProjectionStore.worktrees_for_run(run_id)
-    |> Enum.each(fn worktree ->
-      _ = clean(worktree)
-      _ = delete_branch(worktree)
-    end)
+    |> Enum.each(fn worktree -> _ = delete_branch(worktree) end)
 
     :ok
   end
