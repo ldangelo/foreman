@@ -1200,13 +1200,38 @@ br sync --status      # Check sync status — the ONLY place COVERAGE DRIFT is r
 **Before ending any session, run this checklist:**
 
 ```bash
+set -euo pipefail       # a failed flush MUST stop the session, not fall through to the gate
 git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
+br sync --flush-only    # Export beads changes to JSONL — WRITES .beads/issues.jsonl
 br sync --status --json | jq -e '.coverage_drift == false'   # REQUIRED gate, see below
+git add <files> .beads/issues.jsonl                         # Stage AFTER the flush, never before
 git commit -m "..."     # Commit everything
 git push                # Push to remote
 ```
+
+**Two ordering rules, both learned the hard way in this repo.**
+
+*Stage after flushing.* `br` writes `.beads/issues.jsonl` — not only on an
+explicit flush but on EVERY mutation, since auto-flush is on by default
+(`--no-auto-flush` opts out). Staging before the flush therefore commits code
+while leaving the export unstaged, which happened repeatedly across this
+session's commits and had to be corrected by hand each time.
+
+*Fail closed on the flush.* The two commands are independent, so without
+`set -euo pipefail` a FAILED flush falls straight through to a gate that can
+still pass — because `coverage_drift` compares COUNTS
+(`db_exportable_issues` vs `jsonl_unique_ids`), not content. An older export
+with all the right ids but stale bodies satisfies it. The gate catches MISSING
+ROWS, which is the 23%-export failure below; it cannot catch a stale row, so
+the flush actually has to succeed.
+
+One caveat on verifying that, because it bit the check itself: `set -e` is
+DISABLED inside a compound command that forms part of a `&&`/`||` list, so
+`( set -euo pipefail; br sync --flush-only; ... ) || echo failed` silently
+runs the gate anyway. Confirmed both ways — as a real script the failing flush
+aborts at exit 1 and the gate never runs; wrapped in `|| true` the following
+line executes regardless. Run the block as a script, not as a `||`-guarded
+subshell.
 
 **`br sync --flush-only` is not self-verifying, and the coverage gate is not
 optional.** The flush prints `Nothing to export (no dirty issues)` and exits
