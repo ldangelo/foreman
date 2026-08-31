@@ -1024,8 +1024,8 @@ foreman task approve --id <task-id> --approved-by operator
 
 - The task must exist (`command_gateway.ex`'s `task.approve` clause of
   `validate_aggregate_id/1` looks it up via
-  `ProjectionStore.task_projection/1`) and be `open` or `blocked`
-  (`Task.require_approvable/1`, `task.ex:451-454`) — anything else,
+  `ProjectionStore.task_projection/1`) and be `open`
+  (`Task.require_approvable/1`, `task.ex:427`) — anything else,
   e.g. already `ready`/`in_progress`, is rejected as
   `:task_not_approvable`.
 - The `trd_path` (if the task carries one) must be a committed git blob

@@ -424,7 +424,7 @@ defmodule ForemanServer.Aggregates.Task do
       else: {:error, {:invalid_task_status, status}}
   end
 
-  defp require_approvable(%State{status: status}) when status in ["open", "blocked"], do: :ok
+  defp require_approvable(%State{status: "open"}), do: :ok
 
   defp require_approvable(%State{status: status}),
     do: {:error, {:task_not_approvable, status}}
