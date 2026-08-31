@@ -22,8 +22,6 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
              (b) `run.pause` on the run stream (see "Dual-seal design").
              (c) `run.block` on the run stream, flipping the run to
                  `"blocked"` terminal state.
-             (d) `task.block` on every task bound to this run_id,
-                 so the operator is notified via the inbox pipeline.
     2. Otherwise (RestartBackoff says retry), consult the configurable
        sliding-window `threshold` (TRD-012, default 5 — chosen to line
        up with RestartBackoff's own 5-retry schedule so both paths
@@ -377,8 +375,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
   # try_crash_and_blocked/5 — emitted when RestartBackoff exhausts its
   # 5-retry schedule (6th consecutive attempt); the worker stream is
-  # sealed and the run is marked "blocked". Operator error is emitted via
-  # task.block for every task bound to this run.
+  # sealed and the run is marked "blocked".
   defp try_crash_and_blocked(state, key, worker_id, run_id, window_count) do
     # Emit WorkerCrashed first to seal the worker stream.
     case emit_worker_crashed(worker_id, run_id, window_count, state.window_ms) do
@@ -394,7 +391,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
         }
 
         Logger.error(
-          "Overwatch.CrashLoopDetector: max restart attempts exceeded for #{worker_id}/#{run_id} (#{window_count} restarts); emitting RunBlocked + operator error"
+          "Overwatch.CrashLoopDetector: max restart attempts exceeded for #{worker_id}/#{run_id} (#{window_count} restarts); emitting RunBlocked"
         )
 
         # Pause BEFORE block: run.pause is rejected once the run is
@@ -406,9 +403,6 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
         # Emit run.block — Run aggregate transitions to status "blocked".
         emit_run_blocked(worker_id, run_id)
-
-        # Emit task.block for every task bound to this run — notifies operator.
-        emit_task_blocked(run_id)
 
         state
 
@@ -549,53 +543,6 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
     exception ->
       Logger.error(
         "Overwatch.CrashLoopDetector: run.block dispatch raised: #{Exception.message(exception)}"
-      )
-  end
-
-  # task.block is emitted for every task bound to this run. This surfaces
-  # the operator error in the inbox pipeline so the operator is notified
-  # that the task is blocked due to repeated worker crashes.
-  defp emit_task_blocked(run_id) do
-    tasks = ProjectionStore.tasks_by_run_id(run_id)
-
-    Enum.each(tasks, fn task ->
-      task_id = Map.get(task, :task_id)
-
-      unless is_nil(task_id) do
-        command_id = "crash-loop-task-block:#{task_id}:#{run_id}"
-
-        command = %{
-          aggregate_id: "task:#{task_id}",
-          type: "task.block",
-          payload: %{
-            "task_id" => task_id,
-            "reason" => "max_attempts_exceeded"
-          },
-          command_id: command_id
-        }
-
-        case CommandGateway.dispatch_system(command) do
-          :ok ->
-            Logger.info(
-              "Overwatch.CrashLoopDetector: TaskBlocked emitted for task_id=#{task_id} (run_id=#{run_id})"
-            )
-
-          {:ok, _event_spec} ->
-            Logger.info(
-              "Overwatch.CrashLoopDetector: TaskBlocked emitted for task_id=#{task_id} (run_id=#{run_id})"
-            )
-
-          {:error, reason} ->
-            Logger.error(
-              "Overwatch.CrashLoopDetector: task.block dispatch failed for task_id=#{task_id}: #{inspect(reason)}"
-            )
-        end
-      end
-    end)
-  rescue
-    exception ->
-      Logger.error(
-        "Overwatch.CrashLoopDetector: task.block scan failed for run_id=#{run_id}: #{Exception.message(exception)}"
       )
   end
 

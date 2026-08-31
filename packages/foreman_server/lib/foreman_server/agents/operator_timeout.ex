@@ -3,14 +3,12 @@ defmodule ForemanServer.Agents.OperatorTimeout do
   Per-workflow operator timeout manager.
 
   Schedules a timer when an operator question is dispatched; on expiry,
-  marks the associated task as blocked and emits a domain event.
+  logs a warning. The previously-registered task.block handler is removed.
 
   TRD-2026-4212be7e / JSI-T009 / TRD-027.
   """
   use GenServer
   require Logger
-
-  alias ForemanServer.CommandGateway
 
   @table :operator_timeout_registry
   @default_timeout_ms 5 * 60 * 1000  # 5 minutes
@@ -51,14 +49,7 @@ defmodule ForemanServer.Agents.OperatorTimeout do
   @impl true
   def handle_info({:expire, workflow_id, task_id}, state) do
     :ets.delete(@table, {workflow_id, task_id})
-    Logger.warning("Operator timeout for workflow=#{workflow_id} task=#{task_id}; marking blocked")
-
-    _ = CommandGateway.dispatch_system(%{
-      command_id: "operator_timeout:#{workflow_id}:#{task_id}:#{System.unique_integer([:positive])}",
-      aggregate_id: "task:#{task_id}",
-      type: "task.block",
-      payload: %{task_id: task_id, reason: "operator timeout"}
-    })
+    Logger.warning("Operator timeout for workflow=#{workflow_id} task=#{task_id}; task.block handler removed, no-op")
 
     {:noreply, state}
   end

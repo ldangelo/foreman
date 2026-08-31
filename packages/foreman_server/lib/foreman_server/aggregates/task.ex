@@ -25,7 +25,6 @@ defmodule ForemanServer.Aggregates.Task do
       :workflow_type,
       :trd_path,
       :failure_reason,
-      :blocked_reason,
       :task_type,
       :title,
       :description,
@@ -57,7 +56,6 @@ defmodule ForemanServer.Aggregates.Task do
       workflow_type: nil,
       trd_path: nil,
       failure_reason: nil,
-      blocked_reason: nil,
       task_type: nil,
       title: nil,
       description: nil,
@@ -164,13 +162,6 @@ defmodule ForemanServer.Aggregates.Task do
       "TaskRunTerminated" ->
         apply_task_run_terminated(state, payload)
 
-      "TaskBlocked" ->
-        %State{
-          state
-          | exists?: true,
-            status: "blocked",
-            blocked_reason: Aggregate.get(payload, :reason)
-        }
 
       "TaskRetried" ->
         apply_task_retried(state, payload)
@@ -345,21 +336,6 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-  def handle_command(state, %{type: "task.block", payload: payload}) do
-    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
-         :ok <- require_exists(state, task_id),
-         :ok <- require_blockable(state) do
-      {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskBlocked",
-         payload: %{
-           task_id: task_id,
-           reason: Aggregate.get(payload, :reason)
-         }
-       }}
-    end
-  end
 
   def handle_command(%State{} = _state, cmd) do
     {:error, {:unsupported_command, cmd.__struct__}}
@@ -448,7 +424,7 @@ defmodule ForemanServer.Aggregates.Task do
       else: {:error, {:invalid_task_status, status}}
   end
 
-  defp require_approvable(%State{status: status}) when status in ["open", "blocked"], do: :ok
+  defp require_approvable(%State{status: "open"}), do: :ok
 
   defp require_approvable(%State{status: status}),
     do: {:error, {:task_not_approvable, status}}
@@ -471,12 +447,6 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp require_executing(%State{status: "in_progress"}), do: :ok
   defp require_executing(%State{status: status}), do: {:error, {:task_not_executing, status}}
-
-  defp require_blockable(%State{status: "open"}), do: :ok
-  defp require_blockable(%State{status: "ready"}), do: :ok
-  defp require_blockable(%State{status: "in_progress"}), do: :ok
-  defp require_blockable(%State{status: status}),
-    do: {:error, {:task_not_blockable, status}}
   defp require_in_progress(%State{status: "in_progress"}), do: :ok
   defp require_in_progress(%State{status: status}),
     do: {:error, {:task_not_in_progress, status}}
