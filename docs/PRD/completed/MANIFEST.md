@@ -41,4 +41,4 @@ editing the document to hide it.
 | `go-elixir-cqrs-parity-prd.md` | `IMPLEMENTED` | REQ-001..010 traced: command_controller ingress, projection_store, Overwatch, PR lifecycle, recovery, 66 typed events |
 | `PRD-2026-3d41f677-add-full-vcs-worktree-support-configured-via-wor.md` | `SUPERSEDED` | specifies PHASE-level worktree for v1; beb7dea6 shipped WORKFLOW-level, one worktree per run. Phase-level declarations are now REFUSED by Interpreter.validate_no_phase_worktree!/2 |
 | `PRD-2026-7b4a3944-go-elixir-cqrs-parity-gaps.md` | `SUPERSEDED` | a point-in-time gap audit (28 absent modules) whose gaps are closed; its TRD is the implementation record |
-| `PRD-2026-e8d3f5f2-create-a-foreman-mcp-server-covering-all-existin.md` | `SUPERSEDED` | PRD-2026-0eac69b3 explicitly supersedes its work-submission + workflow-management scope; shipped MCP follows 0eac69b3's named-tool design, not this Bucket A/B/C model |
+| `PRD-2026-019-jido-behaviortree-phase-sequencing.md` | `SUPERSEDED` | zero matches for BehaviorTree/jido_behaviortree in all source; phase sequencing done by workflow/step_sequencer.ex; never implemented |
