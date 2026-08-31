@@ -194,8 +194,17 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     )
   end
 
-  defp build_error(code, message, hint, retryable?, context) do
+  # Coerce nil (absent retryable in envelope) to false — ProviderError.retryable?
+  # is a boolean field; nil would bypass Keyword.get's default and stay nil in
+  # the struct, violating the typed contract.
+  defp build_error(code, message, hint, retryable?, context)
+       when is_boolean(retryable?) do
     ProviderError.new(code, message, hint: hint, retryable?: retryable?, context: context)
+  end
+
+  defp build_error(code, message, hint, _retryable?, context) do
+    # nil (absent) or non-boolean → default to false, preserving other fields.
+    ProviderError.new(code, message, hint: hint, retryable?: false, context: context)
   end
 
   defp build_context(input, command, stderr_byte_count, redacted_fields) do

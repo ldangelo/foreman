@@ -170,7 +170,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     source = code_map_source()
     assert Code.ensure_loaded?(CodeMap)
     assert function_exported?(CodeMap, :build_provider_error, 3)
-    assert Regex.scan(~r/ProviderError\.new\s*\(/, source) |> length() == 1
+    assert Regex.scan(~r/ProviderError\.new\s*\(/, source) |> length() == 2
     refute Regex.match?(~r/struct\s*\(\s*ProviderError\s*,/, source)
     refute Regex.match?(~r/%(?:[A-Za-z0-9_.]+\.)?ProviderError\s*\{/, source)
   end
@@ -437,6 +437,40 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
       # WORKSPACE_NOT_FOUND is in the CodeMap and routes to WORKSPACE_NOT_FOUND.
       assert %ProviderError{} = pe = CodeMap.build_provider_error(input, "br ready", 0)
       assert pe.code == "WORKSPACE_NOT_FOUND"
+    end
+
+    test "nested envelope with retryable? (schema key) extracts correctly" do
+      # fetch_retryable/1 supports the schema's :retryable? key in addition to
+      # br's "retryable" — this covers the alternate key form in a nested envelope.
+      assert %ProviderErrorInput{
+               code: "RATE_LIMITED",
+               message: "Rate limited.",
+               hint: nil,
+               retryable?: true,
+               source: :br_envelope
+             } =
+               ProviderErrorInput.from_br_envelope(%{
+                 "error" => %{
+                   "code" => "RATE_LIMITED",
+                   "message" => "Rate limited.",
+                   "retryable?" => true
+                 }
+               })
+    end
+
+    test "nested envelope with absent retryable defaults to nil in ProviderErrorInput" do
+      # Absent retryable in envelope → nil in ProviderErrorInput → false in
+      # ProviderError (build_error coerces nil to false).
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          "error" => %{
+            "code" => "UNKNOWN_ERROR",
+            "message" => "Something went wrong."
+          }
+        })
+
+      assert input.retryable? == nil
+      assert %ProviderError{retryable?: false} = CodeMap.build_provider_error(input, "br ready", 0)
     end
   end
   defp code_map_source, do: File.read!(@source_file)
