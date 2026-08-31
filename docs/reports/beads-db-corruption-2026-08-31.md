@@ -11,8 +11,10 @@ bead is about.
 
 A byte-clean `beads.db` (`pragma integrity_check` = `ok`, freshly built by
 `br sync --import-only --rebuild`) corrupts under ordinary `br` write traffic.
-Observed **six times on 2026-08-31**, four of them on databases that had just
-been verified clean.
+Observed **seven times on 2026-08-31**. Six of the seven (#2-#7) struck a
+database whose `pragma integrity_check` had been confirmed `ok` moments
+earlier; only #1, the initial discovery, hit a database of unverified prior
+state.
 
 Damage is always structural and always at the write frontier:
 
@@ -38,7 +40,7 @@ disagreed, and why the DB emitted the impossible
 **There is no size threshold and no deterministic repro.** A size bisect on a
 fresh clean DB per trial:
 
-```
+```text
 500 B    ok        1024 B   ok         2000 B   ok (4/4 trials)
 800 B    CORRUPT   1100 B   CORRUPT    3000 B   CORRUPT
 1500 B   CORRUPT                       4500 B   CORRUPT   6411 B   CORRUPT
@@ -88,9 +90,29 @@ The reliable path is `br`'s own rebuild, which produced a clean native DB where
 installing a `.recover` artifact did not (occurrence #4 corrupted immediately
 after importing into a `.recover`'d file):
 
+**The preflight comes FIRST, and the rebuild is conditional on it.** Ordering
+is the whole safety property here: `br sync --import-only --rebuild` replaces
+`beads.db` *from* `issues.jsonl`, so any superset check run afterwards reads a
+database that was just built from the JSONL, finds `db - jsonl` trivially
+empty, and reports all-clear **after** the data is gone. An earlier revision of
+this file printed the check below the rebuild for exactly that reason — the
+same plausible-looking success this repository's AGENTS.md exists to forbid.
+
 ```bash
-cp -R .beads /tmp/beads-backup-$(date +%s)      # ALWAYS first
-# confirm the JSONL is a superset before trusting it — see below
+cp -R .beads /tmp/beads-backup-$(date +%s)      # ALWAYS first, before any read
+
+# GATE. Corruption leaves index-only reads working, so `select id` still
+# answers on the damaged DB — that is what makes this check possible at all.
+python3 - <<'EOF' || exit 1
+import json,sqlite3,sys
+ids={json.loads(l)["id"] for l in open(".beads/issues.jsonl") if l.strip()}
+db={r[0] for r in sqlite3.connect("file:.beads/beads.db?mode=ro",uri=True).execute("select id from issues")}
+lost=sorted(db-ids)
+print("jsonl",len(ids),"db",len(db),"db-only",lost)
+sys.exit(1 if lost else 0)      # non-empty db-only => the JSONL would LOSE rows
+EOF
+
+# Only now, and only because the gate passed, is the rebuild non-destructive.
 rm -f .beads/beads.db .beads/beads.db-shm .beads/beads.db-wal \
       .beads/beads.db-wal-cert .beads/beads.db-wal-cert-head
 br sync --import-only --rebuild
@@ -98,20 +120,12 @@ sqlite3 .beads/beads.db "pragma integrity_check;"   # expect: ok
 br sync --status --json | jq -e '.coverage_drift == false'
 ```
 
-**That rebuild reads `issues.jsonl` and is destructive if the JSONL is
-incomplete** — which it silently was here (174 of 752 issues across 8 commits;
-see the Session Protocol section of `AGENTS.md` and
-`skill://beads-corrupt-db-recovery-safe`). Verify the JSONL is a strict
-superset first:
-
-```bash
-python3 - <<'EOF'
-import json,sqlite3
-ids={json.loads(l)["id"] for l in open(".beads/issues.jsonl") if l.strip()}
-db={r[0] for r in sqlite3.connect("file:.beads/beads.db?mode=ro",uri=True).execute("select id from issues")}
-print("jsonl",len(ids),"db",len(db),"db-only",sorted(db-ids))   # db-only MUST be []
-EOF
-```
+If `db-only` is non-empty the JSONL is NOT authoritative: recover those rows
+first (`sqlite3 .recover`, then restore bodies from
+`git show HEAD:.beads/issues.jsonl`) and re-run the gate. In this workspace the
+JSONL silently held 174 of 752 issues across 8 commits — see the Session
+Protocol section of `AGENTS.md` and
+`skill://beads-corrupt-db-recovery-safe`.
 
 `br doctor --repair/--fix` also "rebuilds DB from JSONL" per its own help, so it
 is destructive under the same condition — and it is the most dangerous of the
