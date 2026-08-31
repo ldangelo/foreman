@@ -1183,10 +1183,12 @@ br sync --status      # Check sync status — the ONLY place COVERAGE DRIFT is r
 2. **Claim**: Use `br update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id>`
-5. **Sync**: Run `br sync --flush-only` at session end, then gate on
-   `br sync --status --json | jq -e '.coverage_drift == false'` — the flush
-   alone reports success while exporting a fraction of the DB (see
-   **Session Protocol**)
+5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
+   (`set -euo pipefail`), not as separate steps — the flush alone reports
+   success while exporting a fraction of the DB, and a FAILED flush leaves an
+   older certified JSONL that still passes the gate, which compares row counts
+   rather than content. Stage `.beads/issues.jsonl` after the flush, never
+   before: `br` rewrites it on every mutation.
 
 ### Key Concepts
 
@@ -1796,9 +1798,12 @@ br sync --status --json               # VERIFY: `coverage_drift` must be false
 2. **Claim**: Use `br update <id> --status=in_progress --json`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id> --reason="Completed" --json`
-5. **Sync**: Run `br sync --flush-only` after Beads mutations, then confirm
-   `coverage_drift` is false in `br sync --status --json`, so a certified
-   partial JSONL cannot pass as a current export (see **Session Protocol**)
+5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
+   (`set -euo pipefail`), not as separate steps — the coverage gate must run
+   ONLY after a flush that actually succeeded, since a failed flush leaves an
+   older certified JSONL that still satisfies `coverage_drift == false` (it
+   compares row counts, not content). Stage `.beads/issues.jsonl` after the
+   flush, never before: `br` rewrites it on every mutation.
 
 ### Key Concepts
 
