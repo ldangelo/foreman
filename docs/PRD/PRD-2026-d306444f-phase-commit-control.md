@@ -144,29 +144,18 @@ additional delivery target for messages this feature already emits (REQ-007
 AC-007-3 keeps them structured so it can), requiring no change to any
 requirement below.
 
-> **Forward-pointer note (added after implementation; the body above is left as
-> written).** The claim that "REQ-007 targets the existing run-scoped operator
-> inbox" is FALSE, and REQ-007 was dropped rather than implemented because of
-> it. `ForemanServer.Aggregates.InboxThread` handles `inbox.send` and applies
-> `InboxMessageAppended`, but it is unreachable and unreadable:
-> `CommandRouter.aggregate_module_for/1` (`command_router.ex:571-588`) has no
-> `"inbox:"` clause and no catch-all, so the dispatch raises; there are zero
-> callers in `lib/` or `test/`; `ProjectionStore` has no
-> `InboxMessageAppended` handler; and no HTTP route or MCP tool exposes a
-> per-run inbox. The live `ForemanServer.Inbox.SharedInbox` is a different
-> mechanism — ingestion of external items — and is not this.
->
-> REQ-001 through REQ-006, REQ-008 and REQ-009 shipped (PRs 1 and 2 of
-> `TRD-2026-d306444f`). REQ-007 is `Should`/value-3 and, as this very section
-> says, no requirement waits on the delivery channel — so the feature is
-> functionally complete without it. The routing gap is tracked as its own bug,
-> `foreman-q5bm`, because the decision it needs (wire the aggregate or delete
-> it) is not this feature's to make.
->
-> The lesson is the one `AGENTS.md` §5.3 records about `foreman_queue_status`:
-> an aggregate that exists but cannot be routed reads as available
-> infrastructure to anyone grepping for it, which is precisely how it got cited
-> here as existing. Presence of a module is not evidence of a working mechanism.
+> **Forward-pointer note (added 2026-09-01; updated 2026-09-01).**
+> 
+> ~~The claim that "REQ-007 targets the existing run-scoped operator inbox" is FALSE,~~
+> REQ-007 was ~~dropped~~ **IMPLEMENTED** via `foreman-q5bm`. `ForemanServer.Aggregates.InboxThread`
+> is now **reachable and readable**:
+> - `CommandRouter.aggregate_module_for/1` has `"inbox:"` clause → routes to InboxThread
+> - Event structs `InboxMessageAppended` / `InboxDeliveryUpdated` created under `lib/foreman_server/events/`
+> - `ProjectionStore` handles both events, exposing `inbox_thread/1` and `list_inbox_threads/0`
+> - MCP tool `foreman_inbox_get` calls `ProjectionStore.inbox_thread/1` directly (no intermediate command routing)
+> 
+> ~~REQ-001 through REQ-006, REQ-008 and REQ-009 shipped~~ **ALL 9 REQUIREMENTS NOW SHIPPED.**
+> The routing gap tracked as `foreman-q5bm` is **CLOSED**.
 
 ## Assumptions
 

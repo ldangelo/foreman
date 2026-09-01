@@ -312,6 +312,18 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:queue_position, work_id})
   end
 
+  @doc "Return the inbox thread for a run_id, or nil if not found."
+  @spec inbox_thread(String.t()) :: map() | nil
+  def inbox_thread(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:inbox_thread, run_id})
+  end
+
+  @doc "Return every inbox thread."
+  @spec list_inbox_threads() :: [map()]
+  def list_inbox_threads do
+    GenServer.call(__MODULE__, :list_inbox_threads)
+  end
+
   @doc """
   Return the projected worktree for an `operation_id` (the deterministic
   correlation id `"wt-<run_id>-<phase_id>"`), or nil if not found.
@@ -591,6 +603,16 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:inbox_thread, run_id}, _from, state) do
+    {:reply, Map.get(state.inbox_threads, run_id), state}
+  end
+
+  @impl true
+  def handle_call(:list_inbox_threads, _from, state) do
+    {:reply, Map.values(state.inbox_threads), state}
+  end
+
+  @impl true
   def handle_call({:project_projection, project_id}, _from, state) do
     {:reply, Map.get(state.projects, project_id), state}
   end
@@ -788,7 +810,8 @@ defmodule ForemanServer.ProjectionStore do
       worktrees: %{},
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
-      works: %{}
+      works: %{},
+      inbox_threads: %{}
     }
   end
 
@@ -1488,6 +1511,61 @@ defmodule ForemanServer.ProjectionStore do
 
       _ ->
         touch_run_for_payload(state, payload)
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # InboxThread events — folded into state.inbox_threads
+  # -------------------------------------------------------------------------
+
+  defp apply_event_by_type(state, "InboxMessageAppended", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      thread =
+        state.inbox_threads
+        |> Map.get(run_id, %{run_id: run_id, messages: []})
+        |> Map.update!(:messages, fn msgs ->
+          msg = %{
+            message_id: get(payload, :message_id),
+            body: get(payload, :body),
+            delivery_status: nil,
+            metadata: Map.drop(payload, [:run_id, :message_id, :body, "run_id", "message_id", "body"]),
+            event_at_ms: payload_event_at_ms(payload)
+          }
+          msgs ++ [msg]
+        end)
+
+      %{state | inbox_threads: Map.put(state.inbox_threads, run_id, thread)}
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "InboxDeliveryUpdated", payload) do
+    run_id = get(payload, :run_id)
+    message_id = get(payload, :message_id)
+
+    if valid_id?(run_id) and valid_id?(message_id) do
+      case Map.get(state.inbox_threads, run_id) do
+        nil ->
+          state
+
+        thread ->
+          updated_messages =
+            Enum.map(thread.messages, fn msg ->
+              if msg.message_id == message_id do
+                Map.put(msg, :delivery_status, get(payload, :delivery_status))
+              else
+                msg
+              end
+            end)
+
+          updated_thread = %{thread | messages: updated_messages}
+          %{state | inbox_threads: Map.put(state.inbox_threads, run_id, updated_thread)}
+      end
+    else
+      state
     end
   end
 

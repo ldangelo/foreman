@@ -271,6 +271,19 @@ defmodule ForemanServer.MCP.Tools do
       }
     }
   }
+
+  @schema_foreman_inbox_get %{
+    name: "foreman_inbox_get",
+    description: "Get operator inbox messages for a run.",
+    inputSchema: %{
+      type: "object",
+      required: ["run_id"],
+      properties: %{
+        "run_id" => %{"type": "string", "description": "The run_id."}
+      }
+    }
+  }
+
   @tools [
     @schema_foreman_work_get,
     @schema_foreman_run_get,
@@ -290,6 +303,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_run_get_logs,
     @schema_foreman_run_get_events,
     @schema_foreman_run_get_activity,
+    @schema_foreman_inbox_get,
   ]
 
   def list_tools, do: @tools
@@ -395,6 +409,15 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_run_get_activity(%{run_id: run_id}) do
     run_detail("foreman_run_get_activity", fn -> ProjectionStore.run_activity(run_id) end)
+  end
+
+  defp tool_foreman_inbox_get(%{run_id: run_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ProjectionStore.inbox_thread(run_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    outcome = if result, do: :ok, else: :not_found
+    Telemetry.mcp_tool_call(duration_us, "foreman_inbox_get", outcome)
+    if result, do: {:ok, result}, else: {:ok, %{run_id: run_id, messages: []}}
   end
 
   # ProjectionStore run-detail reads return {:ok, data} | {:error, reason}.
