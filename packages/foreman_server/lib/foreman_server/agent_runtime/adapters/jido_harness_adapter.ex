@@ -16,7 +16,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @default_timeout_ms 60_000
   @default_await_timeout :infinity
-
+  @supported_providers [:pi, :claude]
   @telemetry_event [:foreman, :dispatch, :run, :stop]
 
   @impl true
@@ -48,8 +48,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @impl true
   def available? do
-    ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude) or
-      ReadinessCheck.installed?(:litellm)
+    ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude)
   end
 
   @impl true
@@ -62,7 +61,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
     {result, run_id} =
       cond do
-        provider not in JidoHarness.providers() ->
+        provider not in @supported_providers ->
           {{:error, :unsupported_provider}, ""}
 
         not ReadinessCheck.installed?(provider) ->
@@ -112,7 +111,6 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
     |> Keyword.put_new(:timeout, @default_timeout_ms)
     |> Keyword.put_new(:await_timeout, @default_await_timeout)
     |> maybe_put_cwd(context)
-    |> maybe_put_model(context)
     |> maybe_put_env(Keyword.get(opts, :env, %{}))
   end
 
@@ -188,12 +186,4 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   defp result_status({:ok, _, _}), do: :ok
   defp result_status({:error, _}), do: :error
-
-  defp maybe_put_model(opts, context) do
-    model = Map.get(context, "model") || Map.get(context, :model)
-
-    if is_binary(model) and model != "",
-      do: Keyword.put_new(opts, :model, model),
-      else: opts
-  end
 end
