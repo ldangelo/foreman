@@ -41,7 +41,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
   @spec install_hint(atom()) :: String.t()
   def install_hint(:pi), do: "npm install -g @earendil-works/pi-coding-agent"
   def install_hint(:claude), do: "npm install -g @anthropic-ai/claude-code"
-  def install_hint(:litellm), do: "add a ``litellm`` provider to ~/.pi/agent/models.json with a baseUrl pointing to your LiteLLM proxy"
+
+  def install_hint(:litellm),
+    do:
+      "add a ``litellm`` provider to ~/.pi/agent/models.json with a baseUrl pointing to your LiteLLM proxy"
+
   def install_hint(provider) when is_atom(provider), do: "unknown provider #{inspect(provider)}"
   def install_hint(_), do: "unknown provider"
 
@@ -60,6 +64,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
   end
 
   defp format_line({:provider, provider, :installed, _hint}), do: "✓ #{provider} available"
+
   defp format_line({:provider, provider, :not_installed, hint}),
     do: "✗ #{provider} not found — install with: #{hint}"
 end

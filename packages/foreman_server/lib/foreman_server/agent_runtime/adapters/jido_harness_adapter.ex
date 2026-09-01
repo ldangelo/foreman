@@ -48,7 +48,8 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @impl true
   def available? do
-    ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude) or ReadinessCheck.installed?(:litellm)
+    ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude) or
+      ReadinessCheck.installed?(:litellm)
   end
 
   @impl true
@@ -190,6 +191,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   defp maybe_put_model(opts, context) do
     model = Map.get(context, "model") || Map.get(context, :model)
+
     if is_binary(model) and model != "",
       do: Keyword.put_new(opts, :model, model),
       else: opts

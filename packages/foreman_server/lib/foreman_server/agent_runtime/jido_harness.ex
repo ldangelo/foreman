@@ -39,16 +39,26 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
   @spec request_provider(map()) :: atom()
   def request_provider(%{context: context}) when is_map(context) do
     case Map.get(context, :provider) || Map.get(context, "provider") do
-      nil -> :pi
-      "pi" -> :pi
-      "claude" -> :claude
-      "litellm" -> :litellm
-      p when is_binary(p) -> case String.downcase(p) do
-        "litellm" -> :litellm
-        _ -> p
-      end
+      nil ->
+        :pi
 
-      p when is_atom(p) -> p
+      "pi" ->
+        :pi
+
+      "claude" ->
+        :claude
+
+      "litellm" ->
+        :litellm
+
+      p when is_binary(p) ->
+        case String.downcase(p) do
+          "litellm" -> :litellm
+          _ -> p
+        end
+
+      p when is_atom(p) ->
+        p
     end
   end
 
