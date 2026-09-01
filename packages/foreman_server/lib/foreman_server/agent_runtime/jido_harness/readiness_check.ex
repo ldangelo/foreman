@@ -40,7 +40,6 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
     end
   end
 
-  def installed?(_provider), do: false
 
   @spec install_hint(atom()) :: String.t()
   def install_hint(:pi), do: "npm install -g @earendil-works/pi-coding-agent"
