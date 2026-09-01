@@ -98,6 +98,9 @@ defmodule ForemanServer.Workflow.WorktreeCleanForRunTest do
 
       # Expect no failure telemetry.
       refute_receive {@telemetry_event, ^ref, _, _}, 200
+
+      # Verify the worktree path no longer exists
+      refute File.exists?(worktree_path)
     end
   end
 

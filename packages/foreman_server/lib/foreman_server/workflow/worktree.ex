@@ -228,21 +228,28 @@ defmodule ForemanServer.Workflow.Worktree do
       |> Enum.reduce([], fn worktree, acc ->
         case clean(worktree) do
           :ok -> acc
+          {:ok, :already_cleaned} -> acc
           {:error, reason} -> [{worktree.worktree_path, reason} | acc]
         end
       end)
 
-    if cleanup_errors != [] do
+    branch_delete_errors =
+      ProjectionStore.worktrees_for_run(run_id)
+      |> Enum.reduce([], fn worktree, acc ->
+        case delete_branch(worktree) do
+          :ok -> acc
+          {:error, reason} -> [{worktree.branch, reason} | acc]
+        end
+      end)
+
+    all_errors = cleanup_errors ++ branch_delete_errors
+    if all_errors != [] do
       :telemetry.execute(
         [:foreman_server, :run, :worktree_cleanup_failed],
-        %{count: length(cleanup_errors)},
-        %{run_id: run_id, failures: cleanup_errors}
+        %{count: length(all_errors)},
+        %{run_id: run_id, failures: all_errors}
       )
     end
-
-    # Delete the run's branch from every worktree's repo.
-    ProjectionStore.worktrees_for_run(run_id)
-    |> Enum.each(fn worktree -> _ = delete_branch(worktree) end)
 
     :ok
   end
