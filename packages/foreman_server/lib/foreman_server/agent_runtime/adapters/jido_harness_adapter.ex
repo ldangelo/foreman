@@ -16,7 +16,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @default_timeout_ms 60_000
   @default_await_timeout :infinity
-  @supported_providers [:pi, :claude, :litellm]
+
   @telemetry_event [:foreman, :dispatch, :run, :stop]
 
   @impl true
@@ -62,7 +62,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
     {result, run_id} =
       cond do
-        provider not in @supported_providers ->
+        provider not in JidoHarness.providers() ->
           {{:error, :unsupported_provider}, ""}
 
         not ReadinessCheck.installed?(provider) ->

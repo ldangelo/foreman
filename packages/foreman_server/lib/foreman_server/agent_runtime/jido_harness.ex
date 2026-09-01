@@ -5,11 +5,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
 
   TRD-2026-8a1f3c2e / TRD-008 — `:claude` provider registration.
 
-  Both `:pi` and `:claude` are routed through the same
+  `:pi`, `:claude`, and `:litellm` are routed through the same
   `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter` facade; this
   module is the single source of truth for the supported provider list
-  and the `request_provider/1` helper that resolves the requested
-  provider from a request context.
 
   Pure, stateless, no I/O, no supervision.
   """

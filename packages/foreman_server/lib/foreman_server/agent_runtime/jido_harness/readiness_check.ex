@@ -17,23 +17,27 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
   Run `install_hint(:pi)` returns the
   `npm install -g @earendil-works/pi-coding-agent` command. `Run/0`
   returns a row per supported provider shaped as
-  `{:provider, :pi | :claude, :installed | :not_installed, hint}`.
+  `{:provider, :pi | :claude | :litellm, :installed | :not_installed, hint}`.
   """
 
+  alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.Telemetry
 
-  @supported_providers [:pi, :claude, :litellm]
 
   @spec installed?(atom()) :: boolean()
-  def installed?(provider) when provider in @supported_providers do
-    installed =
-      case Jido.Harness.status(provider) do
-        {:ok, %Jido.Harness.ProviderStatus{installed: true}} -> true
-        _ -> false
-      end
+  def installed?(provider) do
+    if is_atom(provider) and provider in JidoHarness.providers() do
+      installed =
+        case Jido.Harness.status(provider) do
+          {:ok, %Jido.Harness.ProviderStatus{installed: true}} -> true
+          _ -> false
+        end
 
-    Telemetry.dispatch_provider_check(provider, installed, install_hint(provider))
-    installed
+      Telemetry.dispatch_provider_check(provider, installed, install_hint(provider))
+      installed
+    else
+      false
+    end
   end
 
   def installed?(_provider), do: false
@@ -51,7 +55,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
 
   @spec run() :: [{:provider, atom(), :installed | :not_installed, String.t()}]
   def run do
-    Enum.map(@supported_providers, fn provider ->
+    Enum.map(JidoHarness.providers(), fn provider ->
       status = if installed?(provider), do: :installed, else: :not_installed
       {:provider, provider, status, install_hint(provider)}
     end)
