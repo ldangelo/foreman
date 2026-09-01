@@ -14,7 +14,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
   Pure, stateless, no I/O, no supervision.
   """
 
-  @supported_providers [:pi, :claude]
+  @supported_providers [:pi, :claude, :litellm]
 
   @doc """
   Returns the canonical list of supported providers.
@@ -23,7 +23,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
   def providers, do: @supported_providers
 
   @doc """
-  Returns `true` if `provider` is one of `:pi` or `:claude`.
+  Returns `true` if `provider` is one of `:pi`, `:claude`, or `:litellm`.
   """
   @spec provider(term()) :: boolean()
   def provider(p) when is_atom(p), do: p in @supported_providers
@@ -42,7 +42,8 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
       nil -> :pi
       "pi" -> :pi
       "claude" -> :claude
-      p when is_binary(p) -> p
+      "litellm" -> :litellm
+      p when is_binary(p) -> case String.downcase(p) do "litellm" -> :litellm; "jido" -> :litellm; _ -> p; end
       p when is_atom(p) -> p
     end
   end

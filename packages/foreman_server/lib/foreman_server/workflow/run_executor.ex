@@ -86,7 +86,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case Registry.lookup(ForemanServer.RunExecutorRegistry, run_id) do
       [{pid, _}] -> pid
       [] -> nil
-    end
+        end
   end
 
   @spec claim(String.t(), String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
@@ -630,7 +630,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
       prompt_path = materialize_prompt(state, phase_index, prompt)
       provider = JidoHarness.request_provider(request)
       cwd = working_directory_for(state, worktree_record)
-      env = foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index))
+      model =
+        case Map.get(phase_spec, :models) do
+          nil -> nil
+          %{"default" => m} when is_binary(m) -> m
+          %{default: m} when is_binary(m) -> m
+          %{} = models ->
+            v = Map.get(models, :default) || Map.get(models, "default")
+            if is_binary(v), do: v, else: nil
+          _ -> nil
+        end
+      env = foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
       remaining_ms = max(deadline_ms - System.system_time(:millisecond), 1_000)
 
       # Overwatch.build_launch_env assembles the env map from project_id +
@@ -1318,6 +1328,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     base
     |> Map.merge(state.plan_context || %{})
     |> Map.merge(Map.get(phase_spec, :context) || %{})
+    |> map_from_models(phase_spec)
     |> override_working_directory(worktree_record)
   end
 
@@ -1330,6 +1341,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp override_working_directory(context, %{worktree_path: path})
        when is_binary(path) and path != "" do
     Map.put(context, "working_directory", path)
+  end
+
+  # Inject workflow-declared model into context (Req-020).
+  # phase_spec.models is %{"default" => "MiniMax"} from YAML,
+  # normalized to atom-keyed map by PhaseSpec.normalize/1.
+  defp map_from_models(context, spec) do
+    case Map.get(spec, :models) do
+      nil -> context
+      %{"default" => model} when is_binary(model) ->
+        Map.put(context, :model, model)
+      %{default: model} when is_binary(model) ->
+        Map.put(context, :model, model)
+      %{} = models ->
+        # Could be string or atom keys; find the default
+        model = Map.get(models, "default") || Map.get(models, :default)
+        if is_binary(model), do: Map.put(context, :model, model), else: context
+      _ -> context
+    end
   end
 
   # The phase's working directory: the worktree when the phase provisioned
@@ -2153,13 +2182,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     __MODULE__.ArtifactTemplate.path(state, phase_spec, prompt_phase_index(phase_spec, index))
   end
 
-  defp foreman_env(state, nil, artifact_path) do
+  defp foreman_env(state, nil, artifact_path, nil) do
     %{"FOREMAN_ARTIFACT_PATH" => artifact_path}
     |> put_plan_env(state, nil)
     |> maybe_put_shell_session_env(state)
   end
 
-  defp foreman_env(state, worktree_record, artifact_path) do
+  defp foreman_env(state, nil, artifact_path, model) when is_binary(model) and model != "" do
+    %{"FOREMAN_ARTIFACT_PATH" => artifact_path, "FOREMAN_MODEL" => model}
+    |> put_plan_env(state, nil)
+    |> maybe_put_shell_session_env(state)
+  end
+
+  defp foreman_env(state, worktree_record, artifact_path, nil) do
     plan_context = state.plan_context || %{}
     implementation_key = worktree_record.implementation_key || ""
 
@@ -2175,35 +2210,72 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
-      |> put_plan_env(state, worktree_record)
+
       |> maybe_put_shell_session_env(state)
 
-    case beads_db_path(plan_context) do
-      nil ->
-        base_env
+      case Map.get(plan_context, "beads_db_path") do
+        nil ->
+          base_env
 
-      "" ->
-        base_env
+        "" ->
+          base_env
 
-      path ->
-        # Per TRD Decision 10, every Beads phase MUST export `TRD_SCOPE`
-        # alongside `BEADS_DB`. The scope is computed at provisioning by
-        # `create_phase_worktree/4` and stamped on the worktree record;
-        # if it is absent here, frozen-context validation must have
-        # been bypassed — refuse to launch the adapter.
-        case worktree_record.trd_scope do
-          scope when is_binary(scope) and scope != "" ->
-            base_env
-            |> Map.put("BEADS_DB", path)
-            |> Map.put("TRD_SCOPE", scope)
+        path ->
+          case worktree_record.trd_scope do
+            scope when is_binary(scope) and scope != " " ->
+              base_env
+              |> Map.put("BEADS_DB", path)
+              |> Map.put("TRD_SCOPE", scope)
 
-          other ->
-            raise ArgumentError,
-                  "missing TRD_SCOPE on worktree record " <>
-                    "(beads_db_path=#{inspect(path)}, trd_scope=#{inspect(other)})"
-        end
-    end
+            other ->
+              raise ArgumentError,
+                    "missing TRD_SCOPE on worktree record " <>
+                      "(beads_db_path=#{inspect(path)}, trd_scope=#{inspect(other)})"
+          end
+      end
   end
+
+  defp foreman_env(state, worktree_record, artifact_path, model) when is_binary(model) and model != "" do
+    plan_context = Map.put(state.plan_context || %{}, "FOREMAN_MODEL", model)
+    implementation_key = worktree_record.implementation_key || ""
+
+    _ = bind_vfs(state.run_id, worktree_record.worktree_path)
+
+    base_env =
+      %{
+        "FOREMAN_WORKTREE" => "1",
+        "FOREMAN_RUN_ID" => state.run_id,
+        "FOREMAN_WORKTREE_PATH" => worktree_record.worktree_path,
+        "FOREMAN_EXPECTED_BRANCH" => worktree_record.branch,
+        "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
+        "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
+        "FOREMAN_ARTIFACT_PATH" => artifact_path
+      }
+      |> maybe_put_foreman_model(model)
+      |> maybe_put_shell_session_env(state)
+
+      case Map.get(plan_context, "beads_db_path") do
+        nil ->
+          base_env
+
+        "" ->
+          base_env
+
+        path ->
+          case worktree_record.trd_scope do
+            scope when is_binary(scope) and scope != " " ->
+              base_env
+              |> Map.put("BEADS_DB", path)
+              |> Map.put("TRD_SCOPE", scope)
+
+            other ->
+              raise ArgumentError,
+                    "missing TRD_SCOPE on worktree record " <>
+                      "(beads_db_path=#{inspect(path)}, trd_scope=#{inspect(other)})"
+          end
+      end
+  end
+
 
   # The subject of the dispatched task, and the document a previous phase
   # produced. A `command:` phase gets no rendered prompt — the prompt is
@@ -2227,6 +2299,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   #
   # Every key is omitted when its value is missing or empty — absent, never
   # blank — so a non-plan run exports none of them.
+  defp maybe_put_foreman_model(env, _model) when is_map(env) and is_binary(_model) and _model != "" do
+    Map.put(env, "FOREMAN_MODEL", _model)
+  end
+  defp maybe_put_foreman_model(env, _model) when is_map(env) do
+    env
+  end
+
   defp put_plan_env(env, state, worktree_record) do
     env
     |> Map.merge(plan_subject_env(state))

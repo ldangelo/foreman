@@ -22,7 +22,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
 
   alias ForemanServer.Telemetry
 
-  @supported_providers [:pi, :claude]
+  @supported_providers [:pi, :claude, :litellm]
 
   @spec installed?(atom()) :: boolean()
   def installed?(provider) when provider in @supported_providers do
@@ -41,6 +41,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
   @spec install_hint(atom()) :: String.t()
   def install_hint(:pi), do: "npm install -g @earendil-works/pi-coding-agent"
   def install_hint(:claude), do: "npm install -g @anthropic-ai/claude-code"
+  def install_hint(:litellm), do: "add a ``litellm`` provider to ~/.pi/agent/models.json with a baseUrl pointing to your LiteLLM proxy"
   def install_hint(provider) when is_atom(provider), do: "unknown provider #{inspect(provider)}"
   def install_hint(_), do: "unknown provider"
 
