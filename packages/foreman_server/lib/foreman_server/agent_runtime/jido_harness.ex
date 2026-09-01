@@ -43,7 +43,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
       "pi" -> :pi
       "claude" -> :claude
       "litellm" -> :litellm
-      p when is_binary(p) -> case String.downcase(p) do "litellm" -> :litellm; "jido" -> :litellm; _ -> p; end
+      p when is_binary(p) -> case String.downcase(p) do
+        "litellm" -> :litellm
+        _ -> p
+      end
+
       p when is_atom(p) -> p
     end
   end
