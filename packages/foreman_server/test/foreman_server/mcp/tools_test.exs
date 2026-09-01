@@ -60,7 +60,8 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_doctor",
                "foreman_run_get_logs",
                "foreman_run_get_events",
-               "foreman_run_get_activity"
+               "foreman_run_get_activity",
+               "foreman_inbox_get"
              ]
 
       Enum.each(tools, fn tool ->

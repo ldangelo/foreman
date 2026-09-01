@@ -701,31 +701,14 @@ One catch-all serving both is a debugging tax. Give each cause its own code:
 implementation, and every call returned `METHOD_NOT_FOUND — Unknown tool`,
 indistinguishable from a client typo.
 
-**There is no per-run operator inbox, and there never was one that worked.**
-`ForemanServer.Aggregates.InboxThread` handled `inbox.send` and
-`inbox.delivery.update` and applied `InboxMessageAppended` /
-`InboxDeliveryUpdated`, and it was unreachable from every direction at once:
-`inbox.send` is not in `CommandGateway`'s command allowlist (an operator
-dispatch returns `{:error, {:command_not_allowed, "inbox.send"}}`),
-`CommandRouter.aggregate_module_for/1` has no `"inbox:"` clause, no module
-referenced it, no event struct existed for either event, `ProjectionStore` had
-no handler, and no HTTP route or MCP tool exposed a read path. Its only
-reference in any source file was its own `defmodule` line — prose in
-`docs/cli-reference.md` named it, which is exactly how it survived.
+**Update 2026-09-01: `InboxThread` is now implemented.** Per `foreman-q5bm`:
 
-It has been deleted rather than wired: wiring it is a feature — allowlist entry,
-router clause, event structs, projection handler, read surface, retention — and
-its one would-be consumer (REQ-007 of
-`PRD-2026-d306444f-phase-commit-control.md`) was dropped. Git history holds the
-design if it is ever wanted.
+- `CommandRouter.aggregate_module_for/1` has `"inbox:"` clause → routes to InboxThread
+- Event structs `InboxMessageAppended` / `InboxDeliveryUpdated` under `lib/foreman_server/events/`
+- `ProjectionStore` handles both events; exposes `inbox_thread/1` and `list_inbox_threads/0`
+- MCP tool `foreman_inbox_get` added (`foreman inbox get <run_id>`)
 
-This cost real work before it was found: REQ-007 was specified against "the
-existing run-scoped operator inbox" as though it functioned, and the whole
-requirement had to be dropped once it did not. Do NOT confuse it with
-`ForemanServer.Inbox.SharedInbox`, which is live and different (ingestion of
-external items via the attach bridge and trigger poller). If you need to deliver
-something to an operator mid-run, no such channel exists — say so rather than
-designing against this one.
+The per-run operator inbox is now functional. `dispatch_system` has no allowlist restriction (trusted OTP), so internal callers use that path for `inbox.send` / `inbox.delivery.update`.
 
 `task.block` was in the same class: a handler existed in `task.ex` gated behind
 `require_blockable/1` which no operator path triggered; `CrashLoopDetector`
