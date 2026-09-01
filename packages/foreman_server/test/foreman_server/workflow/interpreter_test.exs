@@ -537,6 +537,38 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
+    test "accepts stack_pr true and false without conflating commit" do
+      path =
+        commit_manifest([
+          {"a", "    commit: false\n    stack_pr: true\n"},
+          {"b", "    stack_pr: false\n"}
+        ])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      [first, second] = workflow["phases"]
+      assert first["commit"] == false
+      assert first["stack_pr"] == true
+      assert second["stack_pr"] == false
+    end
+
+    test "rejects malformed stack_pr values" do
+      for value <- ["maybe", "\"true\"", "123"] do
+        path = commit_manifest([{"a", "    stack_pr: #{value}\n"}])
+
+        assert_raise Workflow.MissingRequiredPhaseError,
+                     ~r/phase 0 \"stack_pr\" must be a boolean/,
+                     fn -> Workflow.Interpreter.load!(path) end
+      end
+    end
+
+    test "rejects mapped stack_pr values" do
+      path = commit_manifest([{"a", "    stack_pr:\n      nested: true\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"stack_pr\" must be a boolean/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
     test "a declared commit value reaches the executor's phase_commits?/1" do
       # Pins the declaration end-to-end: parsing a boolean is worthless if the
       # value the executor reads disagrees with it. MUST go through
@@ -546,7 +578,9 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path = commit_manifest([{"a", "    commit: false\n"}, {"b", "    commit: true\n"}])
 
       assert {:ok, workflow} = Workflow.Interpreter.load!(path)
-      [deferring, committing] = Enum.map(workflow["phases"], &ForemanServer.Workflow.PhaseSpec.normalize/1)
+
+      [deferring, committing] =
+        Enum.map(workflow["phases"], &ForemanServer.Workflow.PhaseSpec.normalize/1)
 
       refute ForemanServer.Workflow.RunExecutor.__phase_commits_for_test__(deferring)
       assert ForemanServer.Workflow.RunExecutor.__phase_commits_for_test__(committing)

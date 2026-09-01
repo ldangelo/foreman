@@ -45,6 +45,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_required_fields!(workflow, path)
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
+    validate_phase_prs!(workflow, path)
     validate_commits!(workflow, path)
     {:ok, workflow}
   end
@@ -402,6 +403,32 @@ defmodule ForemanServer.Workflow.Interpreter do
             "workflow template #{path} \"worktree.cleanup\" must be one of: always, never, on_success"
     end
   end
+
+  # `stack_pr:` is PHASE-level and boolean-only. Strings that look boolean are
+  # malformed operator input, not alternate spellings: downstream phase specs
+  # read the value as a boolean gate.
+  defp validate_phase_prs!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_stack_pr_value!(phase, index, path) end)
+
+    :ok
+  end
+
+  defp validate_stack_pr_value!(phase, index, path) when is_map(phase) do
+    case Map.get(phase, "stack_pr") do
+      value when value in [nil, true, false] ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"stack_pr\" must be a boolean (true or false)"
+    end
+  end
+
+  defp validate_stack_pr_value!(_phase, _index, _path), do: :ok
 
   # `commit:` is PHASE-level, and deliberately the opposite shape from
   # `worktree:`. A run has exactly one worktree, so a phase has nothing to

@@ -27,7 +27,8 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     :name,
     :prompt,
     :prompt_path,
-    :required_file
+    :required_file,
+    :stack_pr
   ]
 
   describe "both key conventions converge" do
@@ -92,7 +93,8 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         "maxTurns" => 9,
         "mail" => %{"to" => "x"},
         "context" => %{"k" => "v"},
-        "commit" => false
+        "commit" => false,
+        "stack_pr" => true
       }
 
       spec = PhaseSpec.normalize(declared)
@@ -109,6 +111,7 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
 
       assert Enum.sort(Map.keys(spec)) == [:action, :name]
       refute Map.has_key?(spec, :commit)
+      refute Map.has_key?(spec, :stack_pr)
       # Map.get/2 readers are unaffected: an omitted key still reads as nil.
       assert Map.get(spec, :commit) == nil
     end
@@ -117,6 +120,12 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
       spec = PhaseSpec.normalize(%{"name" => "x", "command" => "y", "unknown" => "z"})
 
       assert Enum.all?(Map.keys(spec), &is_atom/1)
+    end
+
+    test "stack_pr preserves true, false, and absent distinctly" do
+      assert PhaseSpec.normalize(%{"name" => "x", "stack_pr" => true})[:stack_pr] == true
+      assert PhaseSpec.normalize(%{"name" => "x", "stack_pr" => false})[:stack_pr] == false
+      refute Map.has_key?(PhaseSpec.normalize(%{"name" => "x"}), :stack_pr)
     end
 
     test "normalize_all preserves phase order" do

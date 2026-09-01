@@ -718,21 +718,22 @@ task. `POST /webhooks/github` accepts GitHub `pull_request` webhook
 events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`) as a real-time
 optimization; polling remains the fallback.
 
-**One run yields at most one PR.** `auto_pr/1` is called once, from
-`finalize_run/1`, after every phase has completed, and it opens the PR from the
-run's single branch — `foreman/<run-id>` unless the workflow's `worktree.branch`
-says otherwise. There is no per-phase PR and no stacked
-PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, or `checkpointPr`
-setting, and the PR title and body are derived by `AutoPR` rather than
-declared. A phase-level `commit:` boolean does exist (see below), but it
-controls only whether a phase commits — never how, and never how many PRs a
-run opens.
+By default one run yields at most one final PR. `auto_pr/1` is called from
+`finalize_run/1`, after every phase has completed, and opens from the run's
+single branch — `foreman/<run-id>` unless the workflow's `worktree.branch` says
+otherwise. Workflows may opt into phase boundary PR records with `stack_pr:
+true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
+`checkpointPr` settings remain unsupported.
 
-Stacked PRs belong to the ensemble skills, not to Foreman, and `--foreman`
-switches them off on purpose — under `--foreman` the Beads skill skips
-`git town append`, stacked-PR, and per-phase PR paths, because Foreman owns the
-branch and opens the PR. If you need one PR per shippable unit today, run the
-skill standalone rather than through a Foreman dispatch.
+A `stack_pr: true` phase runs after that phase's normal commit decision and
+before `PhaseCompleted`. It targets the recorded run base branch and uses the
+same Foreman run branch as the head. Because every tagged phase shares that
+head/base pair, GitHub usually exposes one open PR; later tagged phases reuse
+that PR URL and the diff is cumulative from the run base, not an isolated
+per-phase branch diff. If the head has no commits beyond the run base, Foreman
+records a phase PR no-op and continues. Push/create failures and closed matching
+PRs fail the responsible phase with typed details. A created or reused phase PR
+record suppresses the final AutoPR; no-op records do not.
 
 **Commits are Foreman's, not the agent's.** At each phase boundary Foreman
 stages and commits whatever the phase produced into the run's worktree, so an
@@ -741,19 +742,22 @@ message (`Foreman run <run-id> phase <n>`) and author are fixed, the commit skip
 repository pre-commit hooks, and a phase that produced nothing creates no commit
 — so AutoPR still proposes only real work.
 
-A phase controls **whether** it commits, with a phase-level `commit:` boolean —
-never how. Unlike `worktree:`, which is workflow-level because a run has only
-one worktree, each phase produces its own output, so this is genuinely a
-per-phase question:
+A phase controls **whether** it commits, with a phase-level `commit:` boolean.
+A phase can also request a phase PR record with `stack_pr: true`; that does not
+force a commit. Unlike `worktree:`, which is workflow-level because a run has
+only one worktree, each phase produces its own output, so these are genuinely
+per-phase questions:
 
 ```yaml
 phases:
   - name: create-prd
     command: "/skill:ensemble-full-create-prd --foreman"
     commit: true          # commit this phase's work when it completes (default)
+    stack_pr: true        # create/reuse a phase PR after the commit
   - name: refine-prd
     command: "/skill:ensemble-full-refine-prd --foreman"
     commit: false         # defer: a later phase's commit absorbs it
+    stack_pr: true        # records no-op unless prior committed diff is ahead
   - name: create-trd
     command: "/skill:ensemble-full-create-trd --foreman"
     commit: true          # commits refine-prd's work together with its own

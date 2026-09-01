@@ -40,7 +40,8 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     # whether that output becomes a commit is a per-phase question. Absent is
     # NOT the same as `false` — `fetch_any/2` below preserves a present `false`
     # — because absent means "default" (commit) and `false` means "defer".
-    {:commit, [:commit, "commit"]}
+    {:commit, [:commit, "commit"]},
+    {:stack_pr, [:stack_pr, "stack_pr"]}
   ]
 
   @doc """
@@ -79,7 +80,6 @@ defmodule ForemanServer.Workflow.PhaseSpec do
       value -> Map.put(acc, key, value)
     end
   end
-
 
   # `Enum.find_value/2` cannot express this: it treats a legitimately-present
   # `false` as "keep looking", which silently turned `worktree: {enabled: false}`
