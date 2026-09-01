@@ -223,18 +223,20 @@ defmodule ForemanServer.Workflow.Worktree do
 
   @spec clean_for_run(String.t()) :: :ok
   def clean_for_run(run_id) when is_binary(run_id) and run_id != "" do
-    cleanup_errors =
+    # Clean worktrees and collect errors
+    {cleanup_errors, successful_worktrees} =
       ProjectionStore.worktrees_for_run(run_id)
-      |> Enum.reduce([], fn worktree, acc ->
+      |> Enum.reduce({[], []}, fn worktree, {errors, successes} ->
         case clean(worktree) do
-          :ok -> acc
-          {:ok, :already_cleaned} -> acc
-          {:error, reason} -> [{worktree.worktree_path, reason} | acc]
+          :ok -> {errors, [worktree | successes]}
+          {:ok, :already_cleaned} -> {errors, [worktree | successes]}
+          {:error, reason} -> {[{worktree.worktree_path, reason} | errors], successes}
         end
       end)
 
+    # Only delete branches for successfully cleaned worktrees
     branch_delete_errors =
-      ProjectionStore.worktrees_for_run(run_id)
+      successful_worktrees
       |> Enum.reduce([], fn worktree, acc ->
         case delete_branch(worktree) do
           :ok -> acc
