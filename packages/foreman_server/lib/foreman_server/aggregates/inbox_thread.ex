@@ -67,7 +67,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
       "InboxMessageAppended" ->
         message_id = Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id")
         body = Aggregate.get(payload, :body) || Aggregate.get(payload, "body")
-        metadata = Map.drop(payload, [:message_id, :body, "message_id", "body"])
+        metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
 
         message = %Message{message_id: message_id, body: body, metadata: metadata}
         %State{state | messages: Map.put(state.messages, message_id, message)}
@@ -75,7 +75,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
       "InboxDeliveryUpdated" ->
         message_id = Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id")
         status = Aggregate.get(payload, :delivery_status) || Aggregate.get(payload, "delivery_status")
-        metadata = Map.drop(payload, [:message_id, :delivery_status, "message_id", "delivery_status"])
+        metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
 
         updated_message = %Message{
           message_id: message_id,
@@ -96,7 +96,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
          {:ok, message_id} <- Aggregate.required_binary(Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id"), :message_id),
          {:ok, body} <- Aggregate.required_binary(Aggregate.get(payload, :body) || Aggregate.get(payload, "body"), :body),
          :ok <- require_absent(state, message_id) do
-      metadata = Map.drop(payload, [:run_id, :message_id, :body, "run_id", "message_id", "body"])
+      metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
 
       {:ok,
        %InboxMessageAppended{
@@ -113,7 +113,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
          {:ok, message_id} <- Aggregate.required_binary(Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id"), :message_id),
          {:ok, status} <- Aggregate.required_binary(Aggregate.get(payload, :delivery_status) || Aggregate.get(payload, "delivery_status"), :delivery_status),
          :ok <- require_message(state, message_id) do
-      metadata = Map.drop(payload, [:run_id, :message_id, :delivery_status, "run_id", "message_id", "delivery_status"])
+      metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
 
       {:ok,
        %InboxDeliveryUpdated{

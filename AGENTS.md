@@ -706,7 +706,7 @@ indistinguishable from a client typo.
 - `CommandRouter.aggregate_module_for/1` has `"inbox:"` clause → routes to InboxThread
 - Event structs `InboxMessageAppended` / `InboxDeliveryUpdated` under `lib/foreman_server/events/`
 - `ProjectionStore` handles both events; exposes `inbox_thread/1` and `list_inbox_threads/0`
-- MCP tool `foreman_inbox_get` added (`foreman inbox get <run_id>`)
+- MCP tool `foreman_inbox_get` added (`foreman inbox get <run_id>`); `inbox.send` and `inbox.delivery.update` are internal command types dispatched via `dispatch_system`
 
 The per-run operator inbox is now functional. `dispatch_system` has no allowlist restriction (trusted OTP), so internal callers use that path for `inbox.send` / `inbox.delivery.update`.
 

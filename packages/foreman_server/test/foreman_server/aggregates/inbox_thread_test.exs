@@ -66,7 +66,8 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
       assert {:ok, %InboxMessageAppended{
         run_id: "run-123",
         message_id: "msg-1",
-        body: "Test message"
+        body: "Test message",
+        metadata: %{"source" => "test"}
       }} = result
     end
 

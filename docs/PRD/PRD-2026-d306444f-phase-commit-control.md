@@ -152,7 +152,7 @@ requirement below.
 > - `CommandRouter.aggregate_module_for/1` has `"inbox:"` clause → routes to InboxThread
 > - Event structs `InboxMessageAppended` / `InboxDeliveryUpdated` created under `lib/foreman_server/events/`
 > - `ProjectionStore` handles both events, exposing `inbox_thread/1` and `list_inbox_threads/0`
-> - MCP tool `foreman_inbox_get` added to expose inbox via `inbox.get` command
+> - MCP tool `foreman_inbox_get` calls `ProjectionStore.inbox_thread/1` directly (no intermediate command routing)
 > 
 > ~~REQ-001 through REQ-006, REQ-008 and REQ-009 shipped~~ **ALL 9 REQUIREMENTS NOW SHIPPED.**
 > The routing gap tracked as `foreman-q5bm` is **CLOSED**.
