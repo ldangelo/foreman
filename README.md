@@ -138,9 +138,10 @@ The current default adapter is
 `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter` (TRD-2026-4212be7e
 JHA-T002 / JCR-T001), which delegates to the vendored
 `Jido.Harness` package under `packages/jido_harness/`. Adapters for
-`:pi` and `:claude` ship with Jido Harness; readiness is checked at
-every `execute/3` call, not at registration time (see `CLAUDE.md`
-§1–§9).
+`:pi`, `:claude`, and `:litellm` ship through Jido Harness; readiness
+is checked at every `execute/3` call, and workflow phase `models.default`
+values are forwarded to the selected provider as the run model (see
+`CLAUDE.md` §1–§9).
 
 ```elixir
 defmodule MyApp.ClaudeAdapter do

@@ -98,6 +98,8 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
   end
 
   setup do
+    {:ok, _started} = Application.ensure_all_started(:jido_harness)
+
     original_foreman = Application.get_env(:foreman_server, :jido_harness)
     original_providers = Application.get_env(:jido_harness, :providers)
     original_path = System.get_env("PATH")
@@ -108,7 +110,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
     # even when the `Jido.Harness.Adapter` stub is in control. The
     # stub returned by `status/1` is the source of truth for the
     # `installed` flag observed by `ReadinessCheck.installed?/1`.
-    bin_dir = Path.join(System.tmp_dir!(), "jido-harness-trd008-#{System.unique_integer([:positive])}")
+    bin_dir =
+      Path.join(System.tmp_dir!(), "jido-harness-trd008-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(bin_dir)
     File.write!(Path.join(bin_dir, "pi"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(bin_dir, "pi"), 0o755)
@@ -116,7 +120,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
     File.chmod!(Path.join(bin_dir, "claude"), 0o755)
 
     Application.put_env(:foreman_server, :jido_harness, enabled: true)
-    Application.put_env(:jido_harness, :providers, %{pi: Stub, claude: Stub})
+    Application.put_env(:jido_harness, :providers, %{pi: Stub, claude: Stub, litellm: Stub})
     System.put_env("PATH", bin_dir <> ":" <> (original_path || ""))
 
     on_exit(fn ->
@@ -127,7 +131,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
 
       Process.delete(:jido_harness_current_provider)
 
-      for provider <- [:pi, :claude] do
+      for provider <- [:pi, :claude, :litellm] do
         try do
           :persistent_term.erase({Stub, provider})
         catch
@@ -141,17 +145,15 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
 
   describe "supported?/0" do
     test "returns the canonical list of supported providers" do
-      assert JidoHarness.providers() == [:pi, :claude]
+      assert JidoHarness.providers() == [:pi, :claude, :litellm]
     end
   end
 
   describe "provider?/1" do
-    test "returns true for :pi" do
+    test "returns true for supported providers" do
       assert JidoHarness.provider(:pi) == true
-    end
-
-    test "returns true for :claude" do
       assert JidoHarness.provider(:claude) == true
+      assert JidoHarness.provider(:litellm) == true
     end
 
     test "returns false for unknown atoms and non-atom arguments" do
@@ -159,6 +161,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
       assert JidoHarness.provider(:kimi) == false
       assert JidoHarness.provider("pi") == false
       assert JidoHarness.provider("claude") == false
+      assert JidoHarness.provider("litellm") == false
       assert JidoHarness.provider(nil) == false
       assert JidoHarness.provider(123) == false
     end
@@ -184,6 +187,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
     test "accepts string provider keys for parity with JSON-decoded contexts" do
       assert JidoHarness.request_provider(%{context: %{"provider" => "claude"}}) == :claude
       assert JidoHarness.request_provider(%{context: %{"provider" => "pi"}}) == :pi
+      assert JidoHarness.request_provider(%{context: %{"provider" => "litellm"}}) == :litellm
+    end
+
+    test "accepts mixed-case litellm strings from external YAML/JSON contexts" do
+      assert JidoHarness.request_provider(%{context: %{"provider" => "LiteLLM"}}) == :litellm
     end
 
     test "returns unknown atoms unchanged so the adapter can surface :unsupported_provider" do
@@ -213,6 +221,17 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
     end
   end
 
+  describe "JidoHarnessAdapter.execute/2 — :litellm installed" do
+    test "returns normalized success metadata with provider: :litellm" do
+      stub_provider(:litellm, :installed)
+
+      request = %{prompt: "ping", context: %{provider: :litellm}}
+
+      assert {:ok, "pong", %{provider: :litellm, adapter: :jido_harness}} =
+               JidoHarnessAdapter.execute(request, [])
+    end
+  end
+
   describe "JidoHarnessAdapter.execute/2 — :claude missing" do
     test "returns {:error, :backend_unavailable} when :claude is not installed (per-provider check)" do
       stub_provider(:claude, :not_installed)
@@ -231,6 +250,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
       # `ReadinessCheck.install_hint/1`. The TRD-008 AC requires this
       # command to be reachable for the missing-binary path.
       assert ReadinessCheck.install_hint(:claude) =~ "npm install -g @anthropic-ai/claude-code"
+    end
+
+    test "the litellm install hint points operators at pi models.json provider config" do
+      assert ReadinessCheck.install_hint(:litellm) =~ "~/.pi/agent/models.json"
+      assert ReadinessCheck.install_hint(:litellm) =~ "baseUrl"
     end
   end
 

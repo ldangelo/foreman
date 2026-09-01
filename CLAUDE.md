@@ -140,6 +140,18 @@ ForemanServer.AgentRuntime.execute(prompt, context,
   An unavailable result is skipped if the resolved failure policy
   has `fallback: true`.
 
+## 5.1 Jido Harness provider and model selection
+
+`ForemanServer.AgentRuntime.JidoHarness` is the supported-provider
+source of truth for the Jido Harness adapter. It currently accepts
+`:pi`, `:claude`, and `:litellm`; string provider keys from decoded
+workflow context are normalized at this boundary.
+
+Workflow phase `models.default` becomes `context.model`, and
+`JidoHarnessAdapter` forwards it as the harness `:model` option for the
+selected provider. Provider selection is explicit (`context.provider`);
+Foreman must not infer a provider from the model string.
+
 ## 6. `FailurePolicy.resolve/2` precedence
 
 Resolved keys: `:fail_fast`, `:fallback`, `:max_attempts`, `:timeout_ms`.

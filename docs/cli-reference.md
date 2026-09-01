@@ -352,7 +352,7 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   entry is currently ready), or the registered `name/0` of any
   adapter module registered with the catalog (for example `:pi` for
   the legacy `PiAdapter`). The only Jido.Harness providers the
-  runtime currently supports are `:pi` and `:claude` — `:codex`,
+  runtime currently supports are `:pi`, `:claude`, and `:litellm` — `:codex`,
   `:opencode`, and other unlisted atoms return
   `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
   the JidoHarnessAdapter is in the runtime's adapter list; falls back

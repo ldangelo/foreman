@@ -5,16 +5,14 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
 
   TRD-2026-8a1f3c2e / TRD-008 — `:claude` provider registration.
 
-  Both `:pi` and `:claude` are routed through the same
+  `:pi`, `:claude`, and `:litellm` are routed through the same
   `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter` facade; this
   module is the single source of truth for the supported provider list
-  and the `request_provider/1` helper that resolves the requested
-  provider from a request context.
 
   Pure, stateless, no I/O, no supervision.
   """
 
-  @supported_providers [:pi, :claude]
+  @supported_providers [:pi, :claude, :litellm]
 
   @doc """
   Returns the canonical list of supported providers.
@@ -23,7 +21,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
   def providers, do: @supported_providers
 
   @doc """
-  Returns `true` if `provider` is one of `:pi` or `:claude`.
+  Returns `true` if `provider` is one of `:pi`, `:claude`, or `:litellm`.
   """
   @spec provider(term()) :: boolean()
   def provider(p) when is_atom(p), do: p in @supported_providers
@@ -39,11 +37,26 @@ defmodule ForemanServer.AgentRuntime.JidoHarness do
   @spec request_provider(map()) :: atom()
   def request_provider(%{context: context}) when is_map(context) do
     case Map.get(context, :provider) || Map.get(context, "provider") do
-      nil -> :pi
-      "pi" -> :pi
-      "claude" -> :claude
-      p when is_binary(p) -> p
-      p when is_atom(p) -> p
+      nil ->
+        :pi
+
+      "pi" ->
+        :pi
+
+      "claude" ->
+        :claude
+
+      "litellm" ->
+        :litellm
+
+      p when is_binary(p) ->
+        case String.downcase(p) do
+          "litellm" -> :litellm
+          _ -> p
+        end
+
+      p when is_atom(p) ->
+        p
     end
   end
 

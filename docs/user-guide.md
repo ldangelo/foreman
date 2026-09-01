@@ -485,9 +485,16 @@ config :foreman_server, :agent_runtime,
 
 The adapter routes through `ForemanServer.AgentRuntime.JidoHarness` and
 the vendored `Jido.Harness` package. Supported upstream providers are
-`:pi` and `:claude`.
+`:pi`, `:claude`, and `:litellm`.
 
 Provider semantics:
+
+- Requests default to `:pi` unless runtime context sets
+  `provider: :claude` (or `:litellm`).
+- `:litellm` requires a provider entry with `baseUrl` configured in
+  `~/.pi/agent/models.json` (the pi coding agent reads this file for
+  custom provider definitions). Configure your LiteLLM proxy there,
+  e.g. providers.create then config then model_selection below.
 
 - Requests default to `:pi` unless runtime context sets
   `provider: :claude`.
@@ -497,10 +504,48 @@ Provider semantics:
 - `JidoHarnessAdapter.available?/0` checks whether either bundled
   provider is installed.
 
-When adding a provider, update code and docs together — see
-`docs/guides/adding-a-jido-harness-provider.md`. Do not document
-`codex`, `opencode`, or a shell-out adapter as runnable backends until
-the runtime actually supports them.
+## 7.2 Model and provider selection
+
+Each workflow YAML phase can declare a model at `phases[].models.default`,
+which flows through `RunExecutor → base_context → JidoHarness → pi CLI
+--model` flag. The phase model overrides the provider's built-in default
+model. Example:
+
+```yaml
+phases:
+  - name: assess
+    prompt: assess.md
+    models:
+      default: claude-3-5-sonnet
+```
+A phase may also declare `provider:` in its `context:` block to select
+`:litellm` (routes through `~/.pi/agent/models.json` configured
+`baseUrl`) or `:claude` instead of the default `:pi`.
+
+Foreman does NOT route model selection based on the model name itself —
+it passes the declared model string verbatim to the selected provider's
+command line. The operator decides which provider ships which model
+via `models.json` configuration.
+
+## 7.3 pi provider configuration
+
+The `:litellm` provider requires operator-side configuration in
+`~/.pi/agent/models.json` (or `$PI_CODING_AGENT_DIR/models.json`):
+
+```jsonc
+{
+  "providers": {
+    "litellm": {
+      "baseUrl": "http://localhost:4000",
+      "api": "openai-completions"
+    }
+  }
+}
+```
+
+Without this entry, `:litellm` is not in `models.json`, the `:litellm`
+provider will fail quickly. See the pi coding agent docs for the full
+models.json schema.
 
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 

@@ -328,6 +328,13 @@ When a variable "is exported but has no effect", read that function FIRST. An
 export in `foreman_env/3` proves only that Foreman computed the value; it is not
 evidence that any agent received it.
 
+**Jido Harness provider/model selection is explicit.**
+`ForemanServer.AgentRuntime.JidoHarness` is the source of truth for supported
+providers (`:pi`, `:claude`, `:litellm`) and normalizes string provider keys
+from workflow context. `RunExecutor` maps phase `models.default` to
+`context.model` / `FOREMAN_MODEL`, and `JidoHarnessAdapter` forwards that model
+to the selected provider. Never infer provider from model name.
+
 The corrected consequence: no dispatched run had ever recorded an artifact, and
 the cause was this dropped env map — not agents ignoring the contract. The
 previous version of this passage instead blamed an inferred agent convention

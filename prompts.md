@@ -13,7 +13,7 @@ If true the phase will stack a PR onto the open PR.  If this is the first phase 
 
 # Model names should be at the phase level, allowing different models for different phases of the execution
 
-Models should be specified as they are in littllm provider/model.  Provider and model configuration should be in the forman.yaml configuration file.  For example prd.yaml might use anthropic/opus to create a prd and trd but litellm/smart_router to implement the trd.
+Models should be specified as they are in litellm provider/model.  Provider and model configuration should be in the forman.yaml configuration file.  For example prd.yaml might use anthropic/opus to create a prd and trd but litellm/smart_router to implement the trd.
 
 # Integrate Telegram and Slack messaging
 
