@@ -2239,9 +2239,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
+      |> put_plan_env(state, worktree_record)
       |> maybe_put_shell_session_env(state)
 
-    case Map.get(plan_context, "beads_db_path") do
+    case Map.get(plan_context, "beads_database_path") do
       nil ->
         base_env
 
@@ -2250,7 +2251,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       path ->
         case worktree_record.trd_scope do
-          scope when is_binary(scope) and scope != " " ->
+          scope when is_binary(scope) and scope != "" ->
             base_env
             |> Map.put("BEADS_DB", path)
             |> Map.put("TRD_SCOPE", scope)
@@ -2280,10 +2281,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
+      |> put_plan_env(state, worktree_record)
       |> maybe_put_foreman_model(model)
       |> maybe_put_shell_session_env(state)
 
-    case Map.get(plan_context, "beads_db_path") do
+    case Map.get(plan_context, "beads_database_path") do
       nil ->
         base_env
 
@@ -2292,7 +2294,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       path ->
         case worktree_record.trd_scope do
-          scope when is_binary(scope) and scope != " " ->
+          scope when is_binary(scope) and scope != "" ->
             base_env
             |> Map.put("BEADS_DB", path)
             |> Map.put("TRD_SCOPE", scope)
