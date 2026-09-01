@@ -42,17 +42,17 @@ worktree:
 # legitimate stage-for-review outcome rather than an error).
 phases:
   - name: create-prd
-    command: "/skill:ensemble-full-create-prd --foreman"
+    command: "/skill:ensemble-create-prd --foreman"
     commit: true
   - name: refine-prd
-    command: "/skill:ensemble-full-refine-prd --foreman"
+    command: "/skill:ensemble-refine-prd --foreman"
     commit: true
   - name: create-trd
-    command: "/skill:ensemble-full-create-trd --foreman"
+    command: "/skill:ensemble-create-trd --foreman"
     commit: true
   - name: refine-trd
-    command: "/skill:ensemble-full-refine-trd-foreman --foreman"
+    command: "/skill:ensemble-refine-trd-foreman --foreman"
     commit: true
   - name: implement-trd
-    command: "/skill:ensemble-full-implement-trd --foreman"
+    command: "/skill:ensemble-implement-trd --foreman"
     commit: true
