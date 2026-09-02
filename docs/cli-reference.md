@@ -27,6 +27,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman task approve      --approved-by --command-id --id
 > foreman task retry        --id --reason
 > foreman task get          (no flags)
+> foreman task list        --project --status
+> foreman task update      --description --id --priority --status --title
 >
 > foreman run list          --limit --project-id --status
 > foreman run get           (no flags)
@@ -242,7 +244,7 @@ foreman project list --include-archived
 
 ### `foreman commands`
 
-Generate, validate, or install agent command assets for Foreman operators. The generated assets are thin wrappers over real Go CLI commands: workflow-backed `foreman task create`, ad-hoc `foreman run submit`, `foreman run list`, `foreman run get <run-id>`, and `foreman task get <task-id>`. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
+Generate, validate, or install agent command assets for Foreman operators. The generated assets are thin wrappers over real Go CLI commands: workflow-backed `foreman task create`, `foreman task list`, `foreman task update`, `foreman task get <task-id>`, ad-hoc `foreman run submit`, `foreman run list`, and `foreman run get <run-id>`. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
 
 **Subcommands:**
 | Command | Description |
@@ -271,7 +273,7 @@ foreman commands generate --agent all --output ./foreman-agent-commands
 
 ### `foreman commands install --agent <agent>`
 
-Install native command files only when Foreman has a verified native path/format. Claude Code project-local Markdown slash commands are verified and install to `.claude/commands/foreman` by default. Existing files are refused unless `--force` is supplied. `--scope global` requires an explicit `--target` directory that the operator has verified.
+Install native command files only when Foreman has a verified native path/format. Claude Code project-local Markdown slash commands are verified and install to `.claude/commands/foreman` by default. Existing files are refused unless `--force` is supplied. For Pi and OMP agents, `--scope global` uses the recommended global skill directory when no `--target` is specified. For other agents (Codex, OpenCode), `--scope global` requires an explicit `--target` directory that the operator has verified.
 
 ```bash
 foreman commands install --agent claude --scope project
@@ -1300,10 +1302,38 @@ foreman task create --title "Fix login timeout" --description "Session expires t
 | `--priority <level>` | `medium` | Priority: `0`–`4` or `critical`/`high`/`medium`/`low`/`backlog` |
 | `--from-text <description>` | — | Removed after Elixir cutover; use `--title` and `--description` |
 | `--parent <id>` / `--dry-run` / `--no-llm` / `--model` | — | Removed natural-language generator options |
-| `--project <name>` | current directory | Registered project name |
-| `--project-path <absolute-path>` | — | Absolute project path (advanced/script usage) |
+| `--trd-path <path>` | — | Project-relative TRD path; required for `--workflow-type implement-trd*` |
+| `--workflow-type <name>` | — | Workflow manifest name (e.g. `fix`, `implement-trd`) |
 
----
+### `foreman task list`
+
+List tasks, optionally filtered by project and status.
+
+```bash
+foreman task list --project foreman --status open
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project <id>` | Filter by project ID |
+| `--status <status>` | Filter by status: `open`, `ready`, `in_progress`, `blocked`, `closed`, `failed` |
+
+### `foreman task update`
+
+Update task fields (title, description, priority, status). At least one field must be provided.
+
+```bash
+foreman task update --id foreman-iv00 --priority 1 --status closed
+```
+
+| Option | Description |
+|--------|-------------|
+| `--id <id>` | Task ID (required) |
+| `--title <text>` | New task title |
+| `--description <text>` | New task description |
+| `--priority <0-4>` | Priority: `0`=critical, `1`=high, `2`=medium, `3`=low, `4`=backlog |
+| `--status <status>` | New status: `open`, `ready`, `in_progress`, `closed`, `failed` |
+
 
 ## Migration and Coexistence
 

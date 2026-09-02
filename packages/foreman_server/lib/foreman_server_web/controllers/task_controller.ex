@@ -9,6 +9,23 @@ defmodule ForemanServerWeb.TaskController do
 
   alias ForemanServer.ProjectionStore
 
+  def index(conn, params) do
+    all_tasks = ProjectionStore.list_tasks()
+
+    filtered =
+      Enum.filter(all_tasks, fn task ->
+        project_match = params["project_id"] == nil ||
+                         Map.get(task, :project_id) == params["project_id"]
+        status_match = params["status"] == nil ||
+                         Map.get(task, :status) == params["status"]
+        project_match && status_match
+      end)
+
+    conn
+    |> put_status(:ok)
+    |> json(%{tasks: stringify_keys(filtered), total: length(filtered)})
+  end
+
   def show(conn, %{"id" => task_id}) do
     case ProjectionStore.task_projection(task_id) do
       nil ->

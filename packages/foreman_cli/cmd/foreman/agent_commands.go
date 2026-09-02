@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -172,10 +171,9 @@ func commandsInstall(args []string) error {
 	dir := *target
 	if dir == "" {
 		if *scope == "global" {
-			dir = result.RecommendedGlobalDir
-		} else {
-			dir = result.RecommendedProjectDir
+			return fmt.Errorf("foreman commands install: --scope global requires --target with a verified global command directory")
 		}
+		dir = result.RecommendedProjectDir
 	}
 	if dir == "" {
 		return fmt.Errorf("foreman commands install: no verified install directory for %s", result.Agent)
@@ -277,6 +275,8 @@ func buildAgentCommandInventory(workflows []string) []agentCommandSpec {
 		agentCommandSpec{ID: "foreman-run-list", DisplayName: "Foreman run list", Description: "List Foreman runs, optionally filtered by status, project ID, or limit.", Kind: "run", Args: []agentCommandArg{{Name: "status", Flag: "--status", Description: "Optional run status"}, {Name: "project-id", Flag: "--project-id", Description: "Optional project ID"}, {Name: "limit", Flag: "--limit", Description: "Optional max result count"}}, CLI: []string{"foreman", "run", "list"}, Tags: []string{"foreman", "run"}},
 		agentCommandSpec{ID: "foreman-run-get", DisplayName: "Foreman run detail", Description: "Fetch one Foreman run projection by run ID.", Kind: "run", Args: []agentCommandArg{{Name: "run-id", Required: true, Description: "Run ID positional argument"}}, CLI: []string{"foreman", "run", "get", "$RUN_ID"}, Tags: []string{"foreman", "run"}},
 		agentCommandSpec{ID: "foreman-task-get", DisplayName: "Foreman task detail", Description: "Fetch one Foreman task projection by task ID.", Kind: "task", Args: []agentCommandArg{{Name: "task-id", Required: true, Description: "Task ID positional argument"}}, CLI: []string{"foreman", "task", "get", "$TASK_ID"}, Tags: []string{"foreman", "task"}},
+		agentCommandSpec{ID: "foreman-task-list", DisplayName: "Foreman task list", Description: "List Foreman tasks, optionally filtered by project and status.", Kind: "task", Args: []agentCommandArg{{Name: "project", Flag: "--project", Description: "Filter by project ID"}, {Name: "status", Flag: "--status", Description: "Filter by status"}}, CLI: []string{"foreman", "task", "list"}, Tags: []string{"foreman", "task"}},
+		agentCommandSpec{ID: "foreman-task-update", DisplayName: "Foreman task update", Description: "Update task fields: title, description, priority, status.", Kind: "task", Args: []agentCommandArg{{Name: "id", Flag: "--id", Required: true, Description: "Task ID"}, {Name: "title", Flag: "--title", Description: "New task title"}, {Name: "description", Flag: "--description", Description: "New task description"}, {Name: "priority", Flag: "--priority", Description: "Priority 0-4"}, {Name: "status", Flag: "--status", Description: "New status"}}, CLI: []string{"foreman", "task", "update"}, Tags: []string{"foreman", "task"}},
 	)
 	return specs
 }
@@ -334,6 +334,8 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	allowed := map[string]map[string]bool{
 		"task create": {},
 		"task get":    {},
+		"task list":   {},
+		"task update": {},
 		"run submit":  {},
 		"run list":    {},
 		"run get":     {},
@@ -346,10 +348,14 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 
 	taskPath := filepath.Join(cliRoot, "cmd", "foreman", "task.go")
 	runPath := filepath.Join(cliRoot, "cmd", "foreman", "run.go")
-
-	// task create flags
 	if err := extractFlagsFromAST(taskPath, "taskCreate", allowed["task create"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromAST task.go: %w", err)
+		return nil, fmt.Errorf("extractFlagsFromAST task.go (taskCreate): %w", err)
+	}
+	if err := extractFlagsFromAST(taskPath, "taskList", allowed["task list"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST task.go (taskList): %w", err)
+	}
+	if err := extractFlagsFromAST(taskPath, "taskUpdate", allowed["task update"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST task.go (taskUpdate): %w", err)
 	}
 
 	// run submit and run list flags
@@ -474,10 +480,7 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.NativeInstallSupported = true
 		result.RecommendedProjectDir = ".claude/commands/foreman"
 	case "pi", "omp":
-		result.NativeInstallSupported = true
-		result.RecommendedProjectDir = ".pi/agent/skills"
-		home, _ := user.Current()
-		result.RecommendedGlobalDir = filepath.Join(home.HomeDir, ".pi", "agent", "skills")
+		result.UnsupportedNativeReason = "Pi/OMP native command-file path and format are not verified by Foreman; generated Markdown is copyable only."
 	case "codex":
 		result.UnsupportedNativeReason = "Codex native command-file contract is unverified; generated Markdown is copyable only."
 	case "opencode":
@@ -487,18 +490,14 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.SkippedNativeInstallNotes = []string{result.UnsupportedNativeReason}
 	}
 	for _, spec := range specs {
-		result.Files[spec.ID+"/SKILL.md"] = renderCommandMarkdown(agent, spec)
+		result.Files[spec.ID+".md"] = renderCommandMarkdown(agent, spec)
 	}
 	return result
 }
 
 func renderCommandMarkdown(agent string, spec agentCommandSpec) string {
 	var b bytes.Buffer
-	if agent == "claude" {
-		fmt.Fprintf(&b, "---\nname: %s\ndescription: %s\nagent: %s\ntags: %s\n---\n\n", spec.ID, spec.Description, agent, strings.Join(spec.Tags, ","))
-	} else {
-		fmt.Fprintf(&b, "---\nname: %s\ndescription: \"%s\"\n---\n\n", spec.ID, spec.Description)
-	}
+	fmt.Fprintf(&b, "---\nname: %s\ndescription: %s\nagent: %s\ntags: %s\n---\n\n", spec.ID, spec.Description, agent, strings.Join(spec.Tags, ","))
 	fmt.Fprintf(&b, "# %s\n\n%s\n\n", spec.DisplayName, spec.Description)
 	fmt.Fprintf(&b, "Thin wrapper over `%s`. Inherits FOREMAN_API_URL and FOREMAN_API_TOKEN; no secrets are embedded.\n\n", strings.Join(spec.CLI, " "))
 	fmt.Fprintln(&b, "## Arguments")
