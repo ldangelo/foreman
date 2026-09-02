@@ -56,6 +56,33 @@ func TestAgentCommandSpecValidationRejectsUnknownFlag(t *testing.T) {
 	}
 }
 
+func TestAgentCommandValidationRejectsLeakedFlags(t *testing.T) {
+	// Test that --status (valid only in runList) is rejected on runSubmit.
+	// This proves the function-scoping fix works: if the whole file were scanned,
+	// --status would be accepted (it appears in runList).
+	specs := []agentCommandSpec{{
+		ID:   "bad-run-submit",
+		CLI:  []string{"foreman", "run", "submit", "--status", "completed"},
+		Tags: []string{"foreman", "run"},
+	}}
+	if err := validateAgentCommandSpecs(specs); err == nil {
+		t.Fatalf("expected rejection of --status on run submit, got nil error")
+	} else if !strings.Contains(err.Error(), "--status") {
+		t.Fatalf("expected error to mention --status, got: %v", err)
+	}
+	// Test that --workflow (valid only in runSubmit) is rejected on runList.
+	specs = []agentCommandSpec{{
+		ID:   "bad-run-list",
+		CLI:  []string{"foreman", "run", "list", "--workflow", "implement"},
+		Tags: []string{"foreman", "run"},
+	}}
+	if err := validateAgentCommandSpecs(specs); err == nil {
+		t.Fatalf("expected rejection of --workflow on run list, got nil error")
+	} else if !strings.Contains(err.Error(), "--workflow") {
+		t.Fatalf("expected error to mention --workflow, got: %v", err)
+	}
+}
+
 func TestRenderCommandMarkdownValidatesInputsAndPreservesExec(t *testing.T) {
 	specs := buildAgentCommandInventory([]string{"implement-trd"})
 	var spec agentCommandSpec
@@ -149,4 +176,48 @@ func argRequired(spec agentCommandSpec, name string) bool {
 		}
 	}
 	return false
+}
+
+func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
+	// Verify that extractCLIFlagsFromSource correctly derives flags from the actual
+	// task.go and run.go source files. This test acts as a regression detector:
+	// if task.go or run.go adds/removes/renames flags, this test will catch it
+	// and prevent validateAgentCommandSpecs from using stale flag maps.
+
+	flags, err := extractCLIFlagsFromSource()
+	if err != nil {
+		t.Fatalf("extractCLIFlagsFromSource failed: %v", err)
+	}
+
+	// Verify the expected commands are present
+	expectedCommands := []string{"task create", "run submit", "run list", "run get", "task get"}
+	for _, cmd := range expectedCommands {
+		if _, ok := flags[cmd]; !ok {
+			t.Errorf("expected command %q not found in extracted flags", cmd)
+		}
+	}
+
+	// Spot-check known flags for each command
+	tests := map[string][]string{
+		"task create": {"--project", "--title", "--workflow-type", "--trd-path"},
+		"run submit":  {"--project-id", "--workflow", "--prompt"},
+		"run list":    {"--status", "--project-id", "--limit"},
+	}
+
+	for cmd, expectedFlags := range tests {
+		cmdFlags := flags[cmd]
+		for _, flag := range expectedFlags {
+			if !cmdFlags[flag] {
+				t.Errorf("command %q missing expected flag %q", cmd, flag)
+			}
+		}
+	}
+
+	// Assert task get and run get have no flags (they take positional IDs only)
+	if len(flags["task get"]) != 0 {
+		t.Errorf("task get should have no flags, got: %v", flags["task get"])
+	}
+	if len(flags["run get"]) != 0 {
+		t.Errorf("run get should have no flags, got: %v", flags["run get"])
+	}
 }

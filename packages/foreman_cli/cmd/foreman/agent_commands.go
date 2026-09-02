@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -276,13 +280,16 @@ func buildAgentCommandInventory(workflows []string) []agentCommandSpec {
 }
 
 func validateAgentCommandSpecs(specs []agentCommandSpec) error {
-	allowed := map[string]map[string]bool{
-		"task create": {"--project": true, "--title": true, "--workflow-type": true, "--description": true, "--id": true, "--trd-path": true},
-		"task get":    {},
-		"run submit":  {"--workflow": true, "--prompt": true, "--project-id": true, "--work-id": true, "--backend": true, "--base-branch": true},
-		"run list":    {"--status": true, "--project-id": true, "--limit": true},
-		"run get":     {},
+	// Extract allowed flags from Go source at runtime so the validator
+	// stays in sync with the actual CLI rather than drifting from a stale
+	// hardcoded map. AC-014-2 (TRD-014) requires validation against
+	// source or fresh build output; we parse source directly since it is
+	// authoritative and does not require a separate build step.
+	allowed, err := extractAllowedCLIFlags()
+	if err != nil {
+		return fmt.Errorf("validateAgentCommandSpecs: could not extract CLI flags from source: %w", err)
 	}
+
 	seen := map[string]bool{}
 	for _, spec := range specs {
 		if spec.ID == "" || seen[spec.ID] {
@@ -309,6 +316,138 @@ func validateAgentCommandSpecs(specs []agentCommandSpec) error {
 	return nil
 }
 
+// extractAllowedCLIFlags returns the canonical flag set for each subcommand by
+// parsing packages/foreman_cli/cmd/foreman/task.go and run.go at runtime.
+// This validation is a development/CI-time tool; it requires source access.
+// Returns error if source cannot be found.
+func extractAllowedCLIFlags() (map[string]map[string]bool, error) {
+	return extractCLIFlagsFromSource()
+}
+
+// extractCLIFlagsFromSource parses packages/foreman_cli/cmd/foreman/task.go and run.go
+// using go/parser and go/ast, extracting flag names from FlagSet method calls.
+// This ensures validateAgentCommandSpecs validates against the real CLI contract.
+// Returns error if source cannot be found.
+func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
+	allowed := map[string]map[string]bool{
+		"task create": {},
+		"task get":    {},
+		"run submit":  {},
+		"run list":    {},
+		"run get":     {},
+	}
+
+	cliRoot, err := findCLIRoot()
+	if err != nil {
+		return nil, fmt.Errorf("findCLIRoot: %w", err)
+	}
+
+	taskPath := filepath.Join(cliRoot, "cmd", "foreman", "task.go")
+	runPath := filepath.Join(cliRoot, "cmd", "foreman", "run.go")
+
+	// task create flags
+	if err := extractFlagsFromAST(taskPath, "taskCreate", allowed["task create"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST task.go: %w", err)
+	}
+
+	// run submit and run list flags
+	if err := extractFlagsFromAST(runPath, "runSubmit", allowed["run submit"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST run.go (runSubmit): %w", err)
+	}
+	if err := extractFlagsFromAST(runPath, "runList", allowed["run list"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST run.go (runList): %w", err)
+	}
+
+	return allowed, nil
+}
+
+// findCLIRoot locates the packages/foreman_cli root by walking upward from the
+// running binary's own module path, then from the current working directory.
+// This is stable at runtime and does not depend solely on cwd.
+func findCLIRoot() (string, error) {
+	// Try exe-based lookup first
+	exe, err := os.Executable()
+	if err == nil {
+		for dir := filepath.Dir(exe); dir != "." && dir != "/"; dir = filepath.Dir(dir) {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				if _, err := os.Stat(filepath.Join(dir, "cmd", "foreman")); err == nil {
+					return dir, nil
+				}
+			}
+		}
+	}
+
+	// Try cwd-based lookup
+	cwd, err := os.Getwd()
+	if err == nil {
+		for dir := cwd; dir != "." && dir != "/"; dir = filepath.Dir(dir) {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				if _, err := os.Stat(filepath.Join(dir, "cmd", "foreman")); err == nil {
+					return dir, nil
+				}
+			}
+		}
+	}
+	// Last resort: FOREMAN_CLI_ROOT env var
+	fallback := os.Getenv("FOREMAN_CLI_ROOT")
+	if fallback != "" {
+		if _, err := os.Stat(filepath.Join(fallback, "cmd", "foreman", "task.go")); err == nil {
+			return fallback, nil
+		}
+	}
+
+	return "", fmt.Errorf("findCLIRoot: could not locate packages/foreman_cli root (set FOREMAN_CLI_ROOT for development)")
+}
+
+// extractFlagsFromAST parses a Go source file using go/parser/go/ast and extracts
+// flag names from FlagSet method calls within the named function body.
+// Properly handles flags inside strings and comments (unlike regex+brace-counting).
+func extractFlagsFromAST(path, functionName string, flags map[string]bool) error {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	// Find the target function declaration
+	var targetFunc *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == functionName {
+			targetFunc = fn
+			break
+		}
+	}
+
+	if targetFunc == nil {
+		return fmt.Errorf("function %s not found in %s", functionName, path)
+	}
+
+	// Walk the function body AST to find FlagSet method calls.
+	// Look for patterns like: fs.String("flag-name", ...) or fs.Bool("flag-name", ...)
+	ast.Inspect(targetFunc.Body, func(node ast.Node) bool {
+		// Look for method calls: fs.String, fs.Bool, fs.Int, etc.
+		if call, ok := node.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				// Receiver is "fs" and method is one of String, Bool, Int, etc.
+				if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "fs" {
+					// First argument should be a string literal containing the flag name
+					if len(call.Args) > 0 {
+						if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							// Unquote the string literal
+							flagName, err := strconv.Unquote(lit.Value)
+							if err == nil && flagName != "" {
+								flags["--"+flagName] = true
+							}
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+
+	return nil
+}
 func renderForAgents(agent string) ([]agentRenderResult, error) {
 	agents := []string{agent}
 	if agent == "all" {
