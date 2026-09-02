@@ -472,7 +472,9 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.NativeInstallSupported = true
 		result.RecommendedProjectDir = ".claude/commands/foreman"
 	case "pi", "omp":
-		result.UnsupportedNativeReason = "Pi/OMP native command-file path and format are not verified by Foreman; generated Markdown is copyable only."
+		result.NativeInstallSupported = true
+		result.RecommendedProjectDir = ".pi/agent/skills/foreman"
+		result.RecommendedGlobalDir = os.ExpandEnv("$HOME/.pi/agent/skills/foreman")
 	case "codex":
 		result.UnsupportedNativeReason = "Codex native command-file contract is unverified; generated Markdown is copyable only."
 	case "opencode":
