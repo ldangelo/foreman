@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -172,10 +171,9 @@ func commandsInstall(args []string) error {
 	dir := *target
 	if dir == "" {
 		if *scope == "global" {
-			dir = result.RecommendedGlobalDir
-		} else {
-			dir = result.RecommendedProjectDir
+			return fmt.Errorf("foreman commands install: --scope global requires --target with a verified global command directory")
 		}
+		dir = result.RecommendedProjectDir
 	}
 	if dir == "" {
 		return fmt.Errorf("foreman commands install: no verified install directory for %s", result.Agent)
@@ -482,10 +480,7 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.NativeInstallSupported = true
 		result.RecommendedProjectDir = ".claude/commands/foreman"
 	case "pi", "omp":
-		result.NativeInstallSupported = true
-		result.RecommendedProjectDir = ".pi/agent/skills"
-		home, _ := user.Current()
-		result.RecommendedGlobalDir = filepath.Join(home.HomeDir, ".pi", "agent", "skills")
+		result.UnsupportedNativeReason = "Pi/OMP native command-file path and format are not verified by Foreman; generated Markdown is copyable only."
 	case "codex":
 		result.UnsupportedNativeReason = "Codex native command-file contract is unverified; generated Markdown is copyable only."
 	case "opencode":
@@ -495,18 +490,14 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.SkippedNativeInstallNotes = []string{result.UnsupportedNativeReason}
 	}
 	for _, spec := range specs {
-		result.Files[spec.ID+"/SKILL.md"] = renderCommandMarkdown(agent, spec)
+		result.Files[spec.ID+".md"] = renderCommandMarkdown(agent, spec)
 	}
 	return result
 }
 
 func renderCommandMarkdown(agent string, spec agentCommandSpec) string {
 	var b bytes.Buffer
-	if agent == "claude" {
-		fmt.Fprintf(&b, "---\nname: %s\ndescription: %s\nagent: %s\ntags: %s\n---\n\n", spec.ID, spec.Description, agent, strings.Join(spec.Tags, ","))
-	} else {
-		fmt.Fprintf(&b, "---\nname: %s\ndescription: \"%s\"\n---\n\n", spec.ID, spec.Description)
-	}
+	fmt.Fprintf(&b, "---\nname: %s\ndescription: %s\nagent: %s\ntags: %s\n---\n\n", spec.ID, spec.Description, agent, strings.Join(spec.Tags, ","))
 	fmt.Fprintf(&b, "# %s\n\n%s\n\n", spec.DisplayName, spec.Description)
 	fmt.Fprintf(&b, "Thin wrapper over `%s`. Inherits FOREMAN_API_URL and FOREMAN_API_TOKEN; no secrets are embedded.\n\n", strings.Join(spec.CLI, " "))
 	fmt.Fprintln(&b, "## Arguments")
