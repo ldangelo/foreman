@@ -56,8 +56,9 @@ Each run executes in **one** git worktree, isolating one agent's edits from your
 main checkout and from every other concurrent run. Unless the workflow says
 otherwise, the worktree is provisioned by the run's first phase at
 `~/.foreman/worktrees/<project-id>/<run-id>/workspace` on branch
-`foreman/<run-id>` — both are defaults, and a `worktree:` block may change the
-path and branch or switch provisioning off entirely (see below). Every
+`foreman/<task-id>` — the path still uses the run id, while the branch uses the
+provider-facing task id when available; a `worktree:` block may change the path
+and branch or switch provisioning off entirely (see below). Every
 subsequent phase of the same run executes in that same checkout — so a later
 phase reads an earlier phase's documents as ordinary files. Foreman commits
 whatever each phase produced at the phase boundary, so the run branch
@@ -71,7 +72,7 @@ exactly one worktree, so a phase has nothing to decide about it:
 name: prd
 worktree:
   enabled: true            # false opts the whole workflow out
-  branch: foreman/{run_id} # {run_id} is the only placeholder
+  branch: foreman/{task_id} # {task_id} and {run_id} are placeholders
   path: workspace          # leaf dir under ~/.foreman/worktrees/<project>/<run>/
   cleanup: never           # never | always | on_success
 phases:
@@ -720,7 +721,7 @@ optimization; polling remains the fallback.
 
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's
-single branch — `foreman/<run-id>` unless the workflow's `worktree.branch` says
+single branch — `foreman/<task-id>` unless the workflow's `worktree.branch` says
 otherwise. Workflows may opt into phase boundary PR records with `stack_pr:
 true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 `checkpointPr` settings remain unsupported.

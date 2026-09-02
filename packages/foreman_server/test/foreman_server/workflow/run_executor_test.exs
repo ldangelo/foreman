@@ -1224,6 +1224,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     test_pid = self()
     project_id = unique_id("project-single-wt")
     task_id = unique_id("task")
+    external_id = unique_id("foreman")
     run_id = unique_id("run")
     key1 = unique_id("wt-single-1")
     key2 = unique_id("wt-single-2")
@@ -1236,7 +1237,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     on_exit_worktree_cleanup(repo_path, project_id, run_id)
 
     workspace = default_worktree_path(project_id, run_id)
-    run_branch = "foreman/#{run_id}"
+    run_branch = "foreman/#{external_id}"
     prd = "docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md"
 
     # Phase 1 behaves like a real create-prd agent that writes its document
@@ -1279,12 +1280,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       run_id,
       workflow_snapshot,
       project_task_provider(database_path),
-      nil,
+      external_id,
       repo_path
     )
 
     register_project!(project_id, database_path)
-    claim_and_complete_expectations!(task_id)
+    claim_and_complete_expectations!(external_id)
 
     start_run_executor!(run_id, task_id)
 
@@ -1293,6 +1294,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert {:adapter_env, env1} = receive_message(@poll_timeout_ms)
     assert env1["FOREMAN_SOURCE_REVISION"] == run_base
     assert env1["FOREMAN_WORKTREE_PATH"] == workspace
+    assert env1["FOREMAN_EXPECTED_BRANCH"] == run_branch
 
     # Phase 2 reuses it. `FOREMAN_SOURCE_REVISION` is `worktree_record.base_ref`,
     # the same value `capture_planning_document/4` diffs against, so asserting

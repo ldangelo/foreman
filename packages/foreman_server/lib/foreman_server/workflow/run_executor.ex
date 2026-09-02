@@ -1670,7 +1670,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          operation_id = "wt-" <> state.run_id,
          worktree_path = run_worktree_path(project_id, state.run_id, spec),
          :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
-         branch = render_worktree_template(branch_template(spec), state.run_id),
+         branch = render_worktree_template(branch_template(spec), state),
          :ok <- ensure_worktree_parent_dir(worktree_path) do
       Worktree.create(%{
         operation_id: operation_id,
@@ -1945,16 +1945,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # The run's branch. The workflow may name it with `worktree: branch:`; the
-  # default is `foreman/{run_id}`.
+  # default is `foreman/{task_id}`.
   #
-  # The default used to be `foreman/{run_id}/{phase}` and `{phase}` used to be
-  # substituted, because each phase had its own branch. A run-scoped branch
-  # named after one phase of several is a misnomer, so `{phase}` is no longer a
-  # placeholder — `phase_slug/1` and `worktree_path_for/4` went with it.
+  # The default used to be `foreman/{run_id}/{phase}` and then
+  # `foreman/{run_id}`. The former named a per-phase branch that no longer
+  # exists; the latter was stable but operator-hostile because run ids are long
+  # hashes. `{task_id}` renders the provider-facing task id when available, then
+  # falls back to Foreman's task/work ids and finally the run id for ad-hoc
+  # legacy projections.
   defp branch_template(spec) do
     case Map.get(spec, :branch) do
       branch when is_binary(branch) and branch != "" -> branch
-      _ -> "foreman/{run_id}"
+      _ -> "foreman/{task_id}"
     end
   end
 
@@ -2007,9 +2009,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # `{run_id}` is the only placeholder. `{phase}` was dropped with the move to
-  # a workflow-level, run-scoped worktree: it named a per-phase branch and
-  # directory that no longer exist.
+  # `{run_id}` and `{task_id}` are placeholders. `{phase}` was dropped with the
+  # move to a workflow-level, run-scoped worktree: it named a per-phase branch
+  # and directory that no longer exist.
+  defp render_worktree_template(template, state) when is_map(state) do
+    template
+    |> String.replace("{run_id}", state.run_id)
+    |> String.replace("{task_id}", worktree_task_id(state))
+  end
+
   defp render_worktree_template(template, run_id) when is_binary(run_id) do
     String.replace(template, "{run_id}", run_id)
   end
@@ -2565,6 +2573,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp task_id(state) do
     Map.get(state.task, :task_id) || Map.get(state.task, "task_id") ||
       Map.get(state.task, :id) || Map.get(state.task, "id") || ""
+  end
+
+  defp worktree_task_id(state) do
+    case Map.get(state.task, :external_id) || Map.get(state.task, "external_id") ||
+           Map.get(state.task, :task_id) || Map.get(state.task, "task_id") ||
+           Map.get(state.task, :work_id) || Map.get(state.task, "work_id") ||
+           Map.get(state.task, :id) || Map.get(state.task, "id") do
+      id when is_binary(id) and id != "" -> id
+      _ -> state.run_id
+    end
   end
 
   defp ensure_shell_session_id(%{run_id: run_id}) do

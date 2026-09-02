@@ -9,7 +9,7 @@ operator_timeout_ms: 300000
 # base is the project checkout's HEAD at the moment the run's first phase starts.
 worktree:
   enabled: true
-  branch: foreman/{run_id}
+  branch: foreman/{task_id}
   path: workspace
   cleanup: never
 # `commit:` is PHASE-level, unlike `worktree:` above: a run has one worktree so a

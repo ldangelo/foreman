@@ -12,7 +12,7 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
       worktree:
         enabled: true
         base: "{{implementation.source_revision}}"
-        branch: foreman/{run_id}
+        branch: foreman/{task_id}
         cleanup: never
       phases:
         - name: implement-trd
@@ -35,8 +35,8 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
       ImplementationContext this MUST resolve to the frozen `source_revision`
       (asserted by `RunExecutor`); otherwise the project checkout's `HEAD` is
       used and a declared `base` is resolved against the project root.
-    * `branch` — branch template. `{run_id}` is substituted. Default
-      `foreman/{run_id}`.
+    * `branch` — branch template. `{task_id}` and `{run_id}` are substituted.
+      Default `foreman/{task_id}`.
     * `path` — leaf directory name under
       `~/.foreman/worktrees/<project_id>/<run_id>/`. `{run_id}` is substituted.
       Default `workspace`.
