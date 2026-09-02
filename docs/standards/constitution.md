@@ -68,7 +68,7 @@ No feature is considered started until a failing test exists. No feature is cons
 - [ ] Go tests pass (`go test ./...`)
 - [ ] No critical/high security vulnerabilities
 - [ ] Code review approved
-- [ ] Documentation updated (AGENTS.md, README.md, user-guide.md, cli-reference.md)
+- [ ] Documentation updated (CLAUDE.md, AGENTS.md, README.md, docs/user-guide.md, docs/cli-reference.md)
 - [ ] No compiler warnings
 - [ ] Type Dialyzer clean (if applicable)
 
