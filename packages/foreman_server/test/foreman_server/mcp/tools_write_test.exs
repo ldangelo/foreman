@@ -60,7 +60,6 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                  task_type: "task",
                  workflow_type: "default",
                  prompt: "Do the thing",
-                 description: "Do the thing",
                  title: "task-123",
                  provider_tracked: false,
                  auto_approve: true
@@ -84,7 +83,6 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
         assert String.starts_with?(envelope.payload.task_id, "adhoc-")
-        assert envelope.payload.description == "Do the thing"
         assert envelope.aggregate_id == "task:#{envelope.payload.task_id}"
         {:ok, %{task_id: envelope.payload.task_id, status: "ready"}}
       end)
@@ -93,6 +91,25 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       assert {:ok, %{task_id: task_id, status: "ready"}} = result
       assert String.starts_with?(task_id, "adhoc-")
+    end
+
+    test "passes caller-supplied task_type through to the task.create envelope" do
+      params = %{
+        task_id: "task-123",
+        project_id: "proj-456",
+        workflow: "plan",
+        task_type: "feature",
+        prompt: "Plan the thing"
+      }
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.payload.task_type == "feature"
+        assert envelope.payload.workflow_type == "plan"
+        {:ok, %{task_id: "task-123", status: "ready"}}
+      end)
+
+      assert Tools.call_tool("foreman_task_create", params) ==
+               {:ok, %{task_id: "task-123", status: "ready"}}
     end
 
     test "maps error tuples to MCP tool errors" do

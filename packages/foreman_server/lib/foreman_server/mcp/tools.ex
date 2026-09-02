@@ -113,6 +113,11 @@ defmodule ForemanServer.MCP.Tools do
         project_id: %{type: "string", description: "The project ID"},
         prompt: %{type: "string", description: "The input prompt"},
         workflow: %{type: "string", description: "The workflow name"},
+        task_type: %{
+          type: "string",
+          default: "task",
+          description: "The task type/classification. Defaults to task."
+        },
         task_id: %{type: "string", description: "The task ID. Minted automatically when omitted."},
         title: %{type: "string", description: "The task title. Defaults to the task ID."},
         backend: %{
@@ -670,7 +675,7 @@ defmodule ForemanServer.MCP.Tools do
       payload = %{
         task_id: task_id,
         project_id: project_id,
-        task_type: "task",
+        task_type: Map.get(args, :task_type) || "task",
         workflow_type: workflow,
         prompt: prompt,
         description: prompt,
