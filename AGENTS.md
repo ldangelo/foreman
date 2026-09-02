@@ -950,7 +950,7 @@ mix phx.server
 ```
 
 The server listens on `http://127.0.0.1:4766` (configured in `config/dev.exs`).
-The Go CLI (`foreman`) defaults to `http://127.0.0.1:4000` — set `FOREMAN_API_URL` to override:
+The Go CLI (`foreman`) defaults to `http://127.0.0.1:4766` — set `FOREMAN_API_URL` to override:
 
 ```bash
 FOREMAN_API_URL=http://127.0.0.1:4766 foreman task list
