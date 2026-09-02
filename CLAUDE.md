@@ -325,8 +325,9 @@ are deployed by `foreman init --force`. The CLI selects them via
 
 Strict approval rendering materializes the `command` field and the
 `worktree.base` field so the human review surfaces the exact slash
-command and base ref Foreman will execute. Branch and path
-placeholders (`{run_id}`, `{phase}`) remain runtime-resolved.
+command and base ref Foreman will execute. Branch placeholders
+(`{task_id}`, `{run_id}`) and the path placeholder (`{run_id}`) remain
+runtime-resolved; `{phase}` is retained only as literal text, not substituted.
 
 The phase runner (`ForemanServer.Workflow.RunExecutor`) auto-injects
 the following env vars when the worktree is enabled:

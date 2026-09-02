@@ -129,7 +129,9 @@ documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
 Workflow phases support `commit:` to defer phase commits and `stack_pr:` to
 request a phase PR record from the single Foreman run branch to the recorded run
-base branch. `stack_pr:` reuses the existing head/base PR when present, records
+base branch. The default run branch is `foreman/<task-id>/<run-id>` — `<task-id>` is
+the provider-facing identifier when available (falls back to `<run-id>` for ad-hoc),
+so each retry of the same task gets a unique branch. `stack_pr:` reuses the existing head/base PR when present, records
 no-op when there are no committed diffs, and suppresses final AutoPR only for
 created/reused phase PR records. Full operator semantics live in
 [`docs/user-guide.md`](./docs/user-guide.md#pr-creation-and-merge-reconciliation).
