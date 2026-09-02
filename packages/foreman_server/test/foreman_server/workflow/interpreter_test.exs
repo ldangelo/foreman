@@ -260,7 +260,7 @@ defmodule ForemanServer.Workflow.InterpreterTest do
         worktree:
           enabled: true
           base: "{{implementation.source_revision}}"
-          branch: foreman/{task_id}
+          branch: foreman/{task_id}/{run_id}
           path: workspace
           cleanup: never
         phases:
@@ -273,7 +273,7 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       assert workflow["worktree"] == %{
                "enabled" => true,
                "base" => "{{implementation.source_revision}}",
-               "branch" => "foreman/{task_id}",
+               "branch" => "foreman/{task_id}/{run_id}",
                "path" => "workspace",
                "cleanup" => "never"
              }

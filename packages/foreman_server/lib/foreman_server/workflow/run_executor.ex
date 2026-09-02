@@ -1945,7 +1945,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # The run's branch. The workflow may name it with `worktree: branch:`; the
-  # default is `foreman/{task_id}`.
+  # default is `foreman/{task_id}/{run_id}`.
   #
   # The default used to be `foreman/{run_id}/{phase}` and then
   # `foreman/{run_id}`. The former named a per-phase branch that no longer
@@ -1953,10 +1953,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # hashes. `{task_id}` renders the provider-facing task id when available, then
   # falls back to Foreman's task/work ids and finally the run id for ad-hoc
   # legacy projections.
+  #
+  # `{run_id}` is always included so retrying the same task (same task_id,
+  # different run_id) produces a unique branch and does not collide with the
+  # retained worktree of a failed run using `cleanup: never`.
   defp branch_template(spec) do
     case Map.get(spec, :branch) do
       branch when is_binary(branch) and branch != "" -> branch
-      _ -> "foreman/{task_id}"
+      _ -> "foreman/{task_id}/{run_id}"
     end
   end
 

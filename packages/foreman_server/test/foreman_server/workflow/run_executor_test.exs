@@ -1235,9 +1235,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     repo_path = make_bare_minimum_git_repo!(test_pid)
     run_base = current_head_sha!(repo_path)
     on_exit_worktree_cleanup(repo_path, project_id, run_id)
-
     workspace = default_worktree_path(project_id, run_id)
-    run_branch = "foreman/#{external_id}"
+    run_branch = "foreman/#{external_id}/#{run_id}"
     prd = "docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md"
 
     # Phase 1 behaves like a real create-prd agent that writes its document
@@ -2575,10 +2574,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
           "worktree" => %{
             "enabled" => true,
             "base" => "abc123",
-            "branch" => "foreman/{run_id}",
+            "branch" => "foreman/{task_id}/{run_id}",
             "path" => "workspace",
             "cleanup" => "always"
           },
+
           "phases" => [
             %{
               "name" => "implement",
@@ -2605,12 +2605,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert state.worktree_spec == %{
                enabled: true,
                base: "abc123",
-               branch: "foreman/{run_id}",
+               branch: "foreman/{task_id}/{run_id}",
                path: "workspace",
                cleanup: "always"
              }
     end
-
     test "falls back to phase_specs == [] when workflow_snapshot is missing or malformed" do
       # Snapshot absent: zero phases is the safe default.
       assert {:ok, state} =

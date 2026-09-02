@@ -114,7 +114,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         worktree:
           enabled: true
           base: "{{implementation.source_revision}}"
-          branch: foreman/{task_id}
+          branch: foreman/{task_id}/{run_id}
           cleanup: always
         phases:
           - name: implement-trd
@@ -349,8 +349,8 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       refute worktree["base"] =~ "{",
              "worktree.base should not contain placeholders"
 
-      # `{task_id}` is resolved at provisioning time, not at approval time.
-      assert worktree["branch"] == "foreman/{task_id}",
+      # `{task_id}` and `{run_id}` are resolved at provisioning time, not at approval time.
+      assert worktree["branch"] == "foreman/{task_id}/{run_id}",
              "worktree.branch should retain runtime placeholders"
     end
   end
@@ -385,7 +385,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         "worktree" => %{
           "enabled" => true,
           "base" => "abc123",
-          "branch" => "foreman/{task_id}",
+          "branch" => "foreman/{task_id}/{run_id}",
           "path" => "workspace",
           "cleanup" => "always"
         },
@@ -428,7 +428,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       assert state.worktree_spec[:base] == "abc123",
              "worktree.base should be the concrete source revision"
-      assert state.worktree_spec[:branch] == "foreman/{task_id}",
+      assert state.worktree_spec[:branch] == "foreman/{task_id}/{run_id}",
              "worktree.branch should retain runtime placeholders"
 
       # Verify initial state: no phases completed yet

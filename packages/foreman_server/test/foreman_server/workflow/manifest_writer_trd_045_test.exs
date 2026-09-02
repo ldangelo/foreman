@@ -274,11 +274,11 @@ defmodule ForemanServer.Workflow.ManifestWriterTRD045Test do
         "description" => "A workflow exercising every field the Interpreter parses",
         # One worktree block for the whole workflow, carrying the fields the
         # CommandGateway and RunExecutor read: `base` is rendered at approval
-        # time, `branch` keeps `{task_id}` and `path` keeps `{run_id}` for runtime.
+        # time, `branch` keeps `{task_id}/{run_id}` and `path` keeps `{run_id}` for runtime.
         "worktree" => %{
           "enabled" => true,
           "base" => "{{implementation.source_revision}}",
-          "branch" => "foreman/{task_id}",
+          "branch" => "foreman/{task_id}/{run_id}",
           "path" => "workspace",
           "cleanup" => "on_success"
         },
@@ -316,7 +316,7 @@ defmodule ForemanServer.Workflow.ManifestWriterTRD045Test do
       # Top-level worktree
       assert loaded["worktree"]["enabled"] == true
       assert loaded["worktree"]["base"] == "{{implementation.source_revision}}"
-      assert loaded["worktree"]["branch"] == "foreman/{task_id}"
+      assert loaded["worktree"]["branch"] == "foreman/{task_id}/{run_id}"
       assert loaded["worktree"]["path"] == "workspace"
       assert loaded["worktree"]["cleanup"] == "on_success"
 

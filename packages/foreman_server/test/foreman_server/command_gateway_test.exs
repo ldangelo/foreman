@@ -920,7 +920,7 @@ defmodule ForemanServer.CommandGatewayTest do
       worktree:
         enabled: true
         base: "{{implementation.source_revision}}"
-        branch: foreman/{task_id}
+        branch: foreman/{task_id}/{run_id}
         cleanup: always
       phases:
         - name: implement-trd
@@ -1115,7 +1115,7 @@ defmodule ForemanServer.CommandGatewayTest do
       worktree = snapshot["worktree"]
       refute Map.has_key?(hd(snapshot["phases"]), "worktree")
 
-      assert worktree["branch"] == "foreman/{task_id}"
+      assert worktree["branch"] == "foreman/{task_id}/{run_id}"
       # worktree.path is not declared in this manifest; RunExecutor
       # defaults the leaf to "workspace" at runtime, so it must not
       # appear in the approval-time snapshot. (Nor may Catalog or
@@ -1180,7 +1180,7 @@ defmodule ForemanServer.CommandGatewayTest do
       # Branch placeholders survive the round-trip so the execution-time
       # renderer can substitute them. `worktree.path` is not declared in
       # this manifest; RunExecutor defaults the leaf to "workspace".
-      assert decoded_worktree["branch"] == "foreman/{task_id}"
+      assert decoded_worktree["branch"] == "foreman/{task_id}/{run_id}"
       refute Map.has_key?(decoded_worktree, "path")
     end
 
@@ -1250,7 +1250,7 @@ defmodule ForemanServer.CommandGatewayTest do
       assert persisted_worktree["base"] == source_revision
 
       # Branch keeps the runtime placeholder; path stays absent.
-      assert persisted_worktree["branch"] == "foreman/{task_id}"
+      assert persisted_worktree["branch"] == "foreman/{task_id}/{run_id}"
       refute Map.has_key?(persisted_worktree, "path")
     end
 
