@@ -1,14 +1,14 @@
 ---
 document_id: PRD-2026-29fd762f
 label: prd-agent-foreman-commands
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-02
 scale_depth: STANDARD
 author: Foreman ensemble-create-prd
 foreman_task_title: Add OMP/Claude Code/Codex/OpenCode foreman commands
 total_requirements: 16
-readiness_score: 4.00
+readiness_score: 4.75
 readiness_gate: PASS
 ---
 
@@ -26,9 +26,9 @@ readiness_gate: PASS
 | Metric | Value |
 |---|---:|
 | Requirement coverage | 16/16 (100%) |
-| Risk flags | 7 |
+| Risk flags | 6 |
 | Dependencies | 19 |
-| Open ambiguity markers | 7 |
+| Open ambiguity markers | 0 |
 | External dependencies | 4 |
 
 ## Acceptance Criteria Summary
@@ -62,7 +62,7 @@ Primary users are Foreman operators using AI coding agents. Success means an ope
 
 ## Foreman Mode Notes
 
-This PRD was generated under `--foreman`. Clarifying interviews were skipped by contract. Defaults were applied where safe; unresolved items are marked inline with `[NEEDS CLARIFICATION: ...]`.
+This PRD was generated and refined under `--foreman`. Clarifying interviews were skipped by contract. Safe defaults were applied to all previously open format, scope, and overwrite-policy questions; no ambiguity markers remain.
 
 ## Goals
 
@@ -116,10 +116,10 @@ Cross-cutting requirements from existing docs:
 | Dependency | Status | Impact |
 |---|---|---|
 | `foreman` Go CLI | Existing | All command assets should call real CLI verbs or display copyable CLI invocations. |
-| OMP command format | Assumed external | Target format and install location are unresolved. [NEEDS CLARIFICATION: What does OMP mean here, and what exact command-file format/location should Foreman generate for it?] |
-| Claude Code command format | External | Commands likely live as slash-command markdown files, but exact repo/user scope is unresolved. [NEEDS CLARIFICATION: Should Claude Code commands be installed project-local, user-global, or both?] |
-| Codex command format | External | Target command mechanism and installation path are unresolved. [NEEDS CLARIFICATION: Which Codex CLI/app command format should these assets target?] |
-| OpenCode command format | External | Target command mechanism and installation path are unresolved. [NEEDS CLARIFICATION: Which OpenCode command/plugin file format should these assets target?] |
+| OMP/Pi command format | Existing local agent ecosystem | Treat OMP as the local OpenMultiPlayer/Pi agent environment used by this repository. Generate/install project-local Foreman command assets only through the documented Pi/OMP skill or command asset path discovered from the installed package; if the path cannot be verified, print copyable assets and setup instructions instead of writing guessed files. |
+| Claude Code command format | External | Support Claude Code slash-command Markdown assets with project-local install as the default. User-global install is optional and must require an explicit scope flag plus verified upstream path before writing outside the repository. |
+| Codex command format | External | Treat Codex support as generate-only until the implementation verifies a current upstream command/prompt asset format. If no stable command-file contract exists, Foreman must emit documented copyable prompts/CLI snippets and mark native install unsupported. |
+| OpenCode command format | External | Treat OpenCode support as generate-only until the implementation verifies a current upstream command/plugin asset format. If no stable command-file contract exists, Foreman must emit documented copyable prompts/CLI snippets and mark native install unsupported. |
 
 ### Technical constraints
 
@@ -134,7 +134,7 @@ Cross-cutting requirements from existing docs:
 - A2 — The initial command inventory should cover bundled workflow selectors visible in `docs/user-guide.md`: `assess`, `discover`, `fix`, `implement`, `implement-trd`, `implement-trd-beads`, `plan`, `prd`, `release`, `trd`, and `verify`.
 - A3 — For workflow-backed tasks, the safest default is `foreman task create --workflow-type <workflow>` followed by explicit `foreman task approve`, except `run submit` remains the one-step ad-hoc path.
 - A4 — Command assets should generate/call CLI invocations instead of bypassing the CLI with raw `POST /api/commands` unless an unsupported flag forces a documented fallback.
-- A5 — Project-local command assets are preferred for repository-specific Foreman workflows. [NEEDS CLARIFICATION: Should generated commands also support user-global install for reuse across repos?]
+- A5 — Project-local command assets are the default for repository-specific Foreman workflows. User-global install is allowed only when the operator explicitly selects a global scope and the target agent's documented global path has been verified; otherwise Foreman emits copyable files instead of writing outside the project.
 - A6 — Command output can be JSON by default for status/detail commands to preserve full run/task state.
 
 ## Requirements
@@ -233,7 +233,7 @@ Commands that expose backend selection explain and preserve the current backend 
 Foreman provides a deterministic way to install, generate, or document command assets for each target agent.
 
 - AC-010-1: Given an operator asks for command installation, when a target agent is selected, then Foreman writes only to documented paths for that agent or prints copyable files if install location is unresolved.
-- AC-010-2: Given existing user command files would be overwritten, when installation runs, then Foreman requires an explicit overwrite path or emits a refusal with the existing file path. [NEEDS CLARIFICATION: Should overwrite prompts be interactive, flag-driven, or never supported in Foreman automation?]
+- AC-010-2: Given existing user command files would be overwritten, when installation runs, then Foreman requires an explicit non-interactive overwrite flag/path (for example `--force` or `--overwrite <path>`) or emits a refusal with the existing file path; Foreman automation must not block on interactive overwrite prompts.
 
 ### REQ-011: Provide consistent prompt wording across agents
 
@@ -349,25 +349,31 @@ Implementation clusters:
    Resolution: Added validation requirement against Go CLI source/fresh build.
 
 6. **Operational safety issue — command installation could overwrite user assets.**  
-   Resolution: Added overwrite refusal/explicit-policy requirement and left interaction policy as clarification.
+   Resolution: Added overwrite refusal/explicit-policy requirement and selected non-interactive, flag-driven overwrites only; automation must refuse rather than prompt.
 
 7. **Documentation gap — operator-visible command names must be discoverable.**  
    Resolution: Added living-doc requirement covering README, user guide, and CLI reference.
 
-All resolutions were auto-applied under Foreman mode.
+All resolutions were auto-applied under Foreman mode; the refinement pass also resolved target-agent scope defaults and overwrite policy.
 
 ## Implementation Readiness Gate
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4 | Covers command families, validation, install, docs, and tests; exact target formats remain open. |
-| Testability | 4 | Every Must/Should req has ACs; target-agent parser availability may limit full automated validation. |
-| Clarity | 4 | Clear distinction between task create, run submit, run list/get, task get; inline markers isolate unresolved details. |
-| Feasibility | 4 | Thin CLI wrappers are feasible; per-agent install formats need confirmation. |
+| Completeness | 5 | Covers command families, validation, install/generate fallback behavior, docs, tests, target-agent scope defaults, and overwrite policy. |
+| Testability | 5 | Every Must/Should requirement has ACs; unsupported target-agent formats have explicit generate-only/refusal behavior that can be tested. |
+| Clarity | 5 | Clear distinction between task create, run submit, run list/get, task get, target-agent install scope, and unsupported-format fallback. |
+| Feasibility | 4 | Thin CLI wrappers are feasible; native Codex/OpenCode/OMP installs still require implementation-time verification against upstream package contracts. |
 
-Overall readiness score: **4.00** — PASS.
+Overall readiness score: **4.75** — PASS.
 
-Ambiguity scan complete: 7 items marked for clarification.
+Ambiguity scan complete: 0 items marked for clarification.
+
+## Changelog
+
+| Date | Version | Changes | Author |
+|---|---|---|---|
+| 2026-09-02 | 1.0.1 | Refined under `--foreman`: resolved all 7 ambiguity markers; set project-local default with explicit user-global scope; defined generate-only/refusal fallback for unverified OMP/Codex/OpenCode formats; selected non-interactive flag-driven overwrite policy; updated PRD Health and readiness score 4.00→4.75. | Pi Agent |
 
 ## Suggested Next Step
 
