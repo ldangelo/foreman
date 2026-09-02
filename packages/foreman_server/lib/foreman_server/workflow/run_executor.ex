@@ -511,6 +511,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         state
         | current_phase: index,
           status: :in_progress,
+          completed: Enum.uniq((state.completed || []) ++ [index]),
           phase_statuses: new_phase_statuses
       }
 
@@ -2351,14 +2352,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp plan_subject_env(state) do
-    task = Map.get(state.plan_context || %{}, "task") || %{}
+    # Check plan_context["task"] first (for plan workflows), then fall back to state.task
+    # (for all workflows including prd, implement, etc.)
+    # Note: state.task uses atom keys from the projection
+    plan_task = Map.get(state.plan_context || %{}, "task") || %{}
+    fallback_task = state.task || %{}
 
     Enum.reduce(
-      [{"FOREMAN_TASK_TITLE", "title"}, {"FOREMAN_TASK_DESCRIPTION", "description"}],
+      [{"FOREMAN_TASK_TITLE", :title}, {"FOREMAN_TASK_DESCRIPTION", :description}],
       %{},
       fn {var, key}, acc ->
-        case Map.get(task, key) do
-          value when is_binary(value) and value != "" -> Map.put(acc, var, value)
+        value = Map.get(plan_task, key) || Map.get(plan_task, to_string(key)) ||
+                Map.get(fallback_task, key) || Map.get(fallback_task, to_string(key))
+        case value do
+          v when is_binary(v) and v != "" -> Map.put(acc, var, v)
           _ -> acc
         end
       end
@@ -2367,13 +2374,44 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp put_source_prd_path(env, state, worktree_record) do
     planning = Map.get(state.plan_context || %{}, "planning") || %{}
+    
+    path = case Map.get(planning, "prd_path") do
+      p when is_binary(p) and p != "" -> p
+      _ -> discover_prd_path(state, worktree_record)
+    end
 
-    case Map.get(planning, "prd_path") do
-      path when is_binary(path) and path != "" ->
-        Map.put(env, "FOREMAN_SOURCE_PRD_PATH", resolve_phase_path(path, state, worktree_record))
-
+    case path do
+      p when is_binary(p) and p != "" ->
+        Map.put(env, "FOREMAN_SOURCE_PRD_PATH", resolve_phase_path(p, state, worktree_record))
       _ ->
         env
+    end
+  end
+
+  # For prd workflows, discover PRD from worktree if a prior phase completed
+  defp discover_prd_path(state, worktree_record) do
+    if state.completed != [] do
+      working_directory = working_directory_for(state, worktree_record)
+      
+      # Use git to find the most recently added PRD file
+      case System.cmd("git", ["-C", working_directory, "log", "--diff-filter=A", "--name-only", "-1", "--pretty=format:", "HEAD", "--", "docs/PRD/*.md"], stderr_to_stdout: true) do
+        {output, 0} when output != "" ->
+          # output is the file path, e.g. "docs/PRD/PRD-2026-xxx.md"
+          # Extract just the relative path
+          case String.split(String.trim(output), "\n") do
+            [path | _] when is_binary(path) and path != "" -> 
+              Logger.debug("discover_prd_path: found PRD at #{path}")
+              path
+            _ -> 
+              Logger.debug("discover_prd_path: no PRD found in git log output: #{inspect(output)}")
+              nil
+          end
+        _ ->
+          Logger.debug("discover_prd_path: git log failed or no PRD found")
+          nil
+      end
+    else
+      nil
     end
   end
 

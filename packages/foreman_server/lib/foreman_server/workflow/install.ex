@@ -2,7 +2,7 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @moduledoc """
   Installs workflow templates into a Foreman workflows directory.
   """
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release)
+  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release prd trd)
   @template_files Enum.map(@template_names, &"#{&1}.yaml")
 
   # Legacy workflows removed by remove_all/1 — discover, assess, implement, verify,
