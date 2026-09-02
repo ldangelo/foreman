@@ -4,7 +4,7 @@
 // command shaper over the Phoenix JSON API; no caching, no retries, no
 // streaming. Every call is one request, one response, one error.
 //
-// The transport respects FOREMAN_API_URL (default http://127.0.0.1:4000)
+// The transport respects FOREMAN_API_URL (default http://127.0.0.1:4766)
 // and FOREMAN_API_TOKEN (optional Bearer credential). A missing token
 // is not an error — the server's BearerAuth plug bypasses in dev mode
 // when no token is configured server-side either.
@@ -30,12 +30,12 @@ type Client struct {
 }
 
 // New returns a client configured from environment variables:
-//   - FOREMAN_API_URL  (default http://127.0.0.1:4000)
+//   - FOREMAN_API_URL  (default http://127.0.0.1:4766)
 //   - FOREMAN_API_TOKEN (optional Bearer credential)
 func New() *Client {
 	base := os.Getenv("FOREMAN_API_URL")
 	if base == "" {
-		base = "http://127.0.0.1:4000"
+		base = "http://127.0.0.1:4766"
 	}
 
 	return &Client{

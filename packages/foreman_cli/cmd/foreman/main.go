@@ -29,7 +29,7 @@
 // need to know the installed path.
 // Environment:
 //
-//	FOREMAN_API_URL    Base URL (default http://127.0.0.1:4000)
+//	FOREMAN_API_URL    Base URL (default http://127.0.0.1:4766)
 //	FOREMAN_API_TOKEN  Optional Bearer credential
 package main
 
@@ -55,7 +55,10 @@ Commands:
   commands           Generate/install agent command assets
   task create         Register a new task
   task approve        Approve a task and bind it to a workflow
-  task get <id>       Fetch a task projection
+  task get <id>      Fetch a task projection
+  task list          List task projections [--project <id>] [--status <status>]
+  task update        Update a task [--id <id>] [--title <title>] [--priority <0-4>] [--status <status>]
+  task retry         Retry a failed task [--id <id>] [--reason <text>]
   run list            List run projections
   run get <id>        Fetch a run projection
   run remove          Remove a run and clean worktree/branch
@@ -63,7 +66,7 @@ Commands:
   workflow install    Install workflow assets
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
 Env:
-  FOREMAN_API_URL    Base URL (default http://127.0.0.1:4000)
+  FOREMAN_API_URL    Base URL (default http://127.0.0.1:4766)
   FOREMAN_API_TOKEN  Bearer token (optional; bypassed in dev when unset)
 
 Run 'foreman <command> -h' for command-specific help.
