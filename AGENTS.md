@@ -442,7 +442,7 @@ is the only normalizer; `RunExecutor.extract_worktree_spec/1` reads the block of
 the frozen `workflow_snapshot` into `state.worktree_spec`.
 
 Fields, all optional: `enabled` (default true; `false` opts the whole workflow
-out), `base`, `branch` (default `foreman/{task_id}`), `path` (leaf directory,
+out), `base`, `branch` (default `foreman/{task_id}/{run_id}`), `path` (leaf directory,
 default `workspace`), `cleanup` (default `never`). `{task_id}` and `{run_id}`
 are template placeholders. `{phase}` was dropped with the move: it named a
 per-phase branch and directory that no longer exist.
@@ -450,7 +450,7 @@ per-phase branch and directory that no longer exist.
 `create_run_worktree/2` is the single provisioning path. Absent a `worktree:`
 block it provisions one directory
 (`~/.foreman/worktrees/<project_id>/<run_id>/workspace`) on one branch
-(`foreman/<task-id>`) — both DEFAULTS, overridable by the workflow's `path:` and
+(`foreman/<task-id>/<run-id>`) — both DEFAULTS, overridable by the workflow's `path:` and
 `branch:` — and every later phase reuses that record via
 `ensure_run_worktree/2` -> `reuse_run_worktree/2`, reading its predecessors'
 output as ordinary files. `remember_run_worktree/2` latches the record on key
