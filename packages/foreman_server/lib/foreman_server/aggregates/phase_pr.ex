@@ -77,9 +77,9 @@ defmodule ForemanServer.Aggregates.PhasePr do
   defp valid_phase_index(index) when is_integer(index) and index >= 0, do: {:ok, index}
   defp valid_phase_index(index), do: {:error, {:missing_or_invalid, :phase_index, index}}
 
-  defp valid_status(status) when status in ["created", "reused", "noop"], do: {:ok, status}
+  defp valid_status(status) when status in ["created", "existing", "noop"], do: {:ok, status}
 
-  defp valid_status(status) when status in [:created, :reused, :noop],
+  defp valid_status(status) when status in [:created, :existing, :noop],
     do: {:ok, Atom.to_string(status)}
 
   defp valid_status(status), do: {:error, {:missing_or_invalid, :status, status}}

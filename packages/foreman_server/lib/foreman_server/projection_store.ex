@@ -1846,14 +1846,14 @@ defmodule ForemanServer.ProjectionStore do
 
   defp validate_phase_pr_record!(%{status: status, pr_url: url} = record) do
     cond do
-      status in ["created", "reused"] and not (is_binary(url) and url != "") ->
+      status in ["created", "existing"] and not (is_binary(url) and url != "") ->
         raise ArgumentError,
               "ProjectionStore: PhasePrRecorded #{status} missing usable pr_url: #{inspect(record)}"
 
       status == "noop" ->
         :ok
 
-      status in ["created", "reused"] ->
+      status in ["created", "existing"] ->
         :ok
 
       true ->
