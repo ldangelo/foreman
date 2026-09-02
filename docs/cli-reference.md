@@ -11,7 +11,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 
 > ## Read this first: most of this file documents commands that do not exist
 >
-> The Go CLI dispatches exactly five top-level verbs (`packages/foreman_cli/cmd/foreman/main.go:85-98`); every other verb
+> The Go CLI dispatches exactly six top-level verbs (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
@@ -232,6 +232,60 @@ foreman project list --include-archived
 |--------|-------------|
 | `--include-archived` | Include archived projects |
 | `--format json\|ndjson` | Output format |
+
+---
+
+## Agent Command Assets
+
+### `foreman commands`
+
+Generate, validate, or install agent command assets for Foreman operators. The generated assets are thin wrappers over real Go CLI commands: workflow-backed `foreman task create`, ad-hoc `foreman run submit`, `foreman run list`, `foreman run get <run-id>`, and `foreman task get <task-id>`. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
+
+**Subcommands:**
+| Command | Description |
+|---------|-------------|
+| `inventory` | Print the canonical command inventory. |
+| `generate` | Render copyable assets for one target agent or all agents. |
+| `install` | Install verified native assets for one target agent. |
+| `validate` | Render all targets and check CLI verbs/flags, unresolved placeholders, and unsupported-target reasons. |
+
+### `foreman commands inventory`
+
+Print generated command IDs, CLI mappings, and descriptions. Pass `--json` for the full structured inventory.
+
+```bash
+foreman commands inventory
+foreman commands inventory --json
+```
+
+### `foreman commands generate --agent <agent>`
+
+Render command assets for `claude`, `pi`, `omp`, `codex`, `opencode`, or `all`. Without `--output`, the command prints JSON containing each rendered file. With `--output`, it writes generated files below `<output>/<agent>/`.
+
+```bash
+foreman commands generate --agent all --output ./foreman-agent-commands
+```
+
+### `foreman commands install --agent <agent>`
+
+Install native command files only when Foreman has a verified native path/format. Claude Code project-local Markdown slash commands are verified and install to `.claude/commands/foreman` by default. Existing files are refused unless `--force` is supplied. `--scope global` requires an explicit `--target` directory that the operator has verified.
+
+```bash
+foreman commands install --agent claude --scope project
+foreman commands install --agent claude --target .claude/commands/foreman --force
+```
+
+Pi/OMP, Codex, and OpenCode are generate-only in this slice. `install` for those agents refuses with an unsupported-native-install reason and points operators to `generate`.
+
+### `foreman commands validate`
+
+Validate the generated inventory and rendered assets against the Go CLI contract.
+
+```bash
+foreman commands validate
+```
+
+The workflow task shortcuts create tasks that require later approval. The `foreman-run-submit` asset is the one-step ad-hoc execution path and documents that `--backend codex|opencode` being accepted by the CLI does not prove runtime provider readiness.
 
 ---
 

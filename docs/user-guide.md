@@ -150,14 +150,40 @@ foreman project list
 A project is a repository registered with Foreman. Commands operate on
 one project at a time via `--project-id`/`--project`.
 
-```bash
-foreman project create --id project-123 --path /srv/foreman/project-123 --task-provider beads
-foreman project get project-123
-foreman project update --task-provider beads project-123
-foreman project delete project-123
-foreman project list
-foreman project list --include-archived --format json
+### Create a project
+
 ```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider beads
+```
+
+### Get one project
+
+```
+foreman project get project-123
+```
+
+### Update a project
+
+```
+foreman project update --task-provider beads project-123
+```
+
+### Delete a project
+
+```
+foreman project delete project-123
+```
+
+### List projects
+
+```
+foreman project list
+```
+
+Use `foreman project list --include-archived --format json` when you need archived projects or raw JSON.
 
 `project delete` soft-deletes (archives) a project and is **rejected**
 while the project has active runs; pass `--force` to print the blocking
@@ -202,6 +228,30 @@ foreman run reset --id <run-id>
 - `run reset` clears a **failed or stuck** run's projection state so it
   can be resubmitted fresh; cancelled or completed runs are rejected
   with `{:run_not_resettable, "<status>"}`.
+
+### Agent command assets
+
+`foreman commands` generates agent-native Foreman shortcuts for Claude Code plus copyable generate-only assets for Pi/OMP, Codex, and OpenCode. The assets are thin shell wrappers over `foreman task create`, `foreman run submit`, `foreman run list`, `foreman run get`, and `foreman task get`; they inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN` instead of embedding secrets.
+
+Common commands:
+
+```bash
+foreman commands inventory
+foreman commands generate --agent all --output ./foreman-agent-commands
+foreman commands install --agent claude --scope project
+foreman commands validate
+```
+
+Workflow task shortcuts create tasks that still require later approval. Use `foreman run submit` or the generated `foreman-run-submit` asset for one-step ad-hoc execution. `implement-trd` and `implement-trd-beads` task shortcuts require `--trd-path`.
+
+Support states:
+
+| Agent | Native install | Behavior |
+|---|---|---|
+| Claude Code | Project-local verified | Writes Markdown slash-command files under `.claude/commands/foreman` by default; existing files require `--force`. |
+| Pi/OMP | Generate-only by default | Prints/writes copyable Markdown and an unsupported-native-install reason because the native command path/format is not verified here. |
+| Codex | Generate-only | Prints/writes copyable Markdown and marks native install unsupported until a stable native contract is verified. |
+| OpenCode | Generate-only | Prints/writes copyable Markdown and marks native install unsupported until a stable native contract is verified. |
 
 ## 2. Operator API surface
 

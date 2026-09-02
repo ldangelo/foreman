@@ -190,6 +190,20 @@ for the operator-facing provider extension flow, and
 [`docs/user-guide.md`](./docs/user-guide.md) §7 for the agent runtime
 and adapter overview.
 
+## Agent command assets
+
+The Go CLI includes `foreman commands` for generating Foreman shortcuts for AI-agent tools. It emits Claude Code project-local slash-command Markdown and generate-only copyable assets for Pi/OMP, Codex, and OpenCode until those native command-file contracts are verified.
+
+```bash
+cd packages/foreman_cli
+go run ./cmd/foreman commands inventory
+go run ./cmd/foreman commands generate --agent all --output ./foreman-agent-commands
+go run ./cmd/foreman commands install --agent claude --scope project
+go run ./cmd/foreman commands validate
+```
+
+Generated assets call the real `foreman` CLI and inherit `FOREMAN_API_URL` / `FOREMAN_API_TOKEN`; they do not embed credentials. See [`docs/user-guide.md`](./docs/user-guide.md) and [`docs/cli-reference.md`](./docs/cli-reference.md) for support states and exact flags.
+
 ## API authentication
 
 The Foreman JSON API (`/api/*`) is **unauthenticated by default** in development and test environments.

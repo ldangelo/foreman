@@ -452,8 +452,8 @@ these invariants. Drift without a tracked TRD is a regression.
   Foreman commands in this slice.
 - **Doctor surface is honest about current scope** — about its *fields*, not
   its existence. `foreman doctor` is not a command: the Go CLI dispatches only
-  `project`, `task`, `run`, `workflow`, `init`
-  (`packages/foreman_cli/cmd/foreman/main.go:85-98`), which `README.md:70` and
+  `project`, `commands`, `task`, `run`, `workflow`, `init`
+  (`packages/foreman_cli/cmd/foreman/main.go`), which `README.md:70` and
   `docs/user-guide.md:595` already state. The field list below describes what
   the surface would report, and matches the server-side shape; treat it as a
   spec, not as an operator command.
