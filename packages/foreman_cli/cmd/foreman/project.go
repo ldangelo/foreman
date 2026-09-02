@@ -348,14 +348,56 @@ func printProject(out map[string]any) error {
 	projectID := projectStringField(project, "project_id")
 	path := projectStringField(project, "path")
 	status := projectStringField(project, "status")
+	version := intField(project, "version")
+	defaultBranch := projectStringField(project, "default_branch")
+	registered := projectStringField(project, "registered_at")
 
-	if status != "" {
-		_, err := fmt.Fprintf(os.Stdout, "project %s (%s)\npath: %s\n", projectID, status, path)
-		return err
+	// Task provider info
+	taskProvider := ""
+	databasePath := ""
+	if tp, ok := project["task_provider"].(map[string]any); ok {
+		taskProvider = projectStringField(tp, "provider")
+		if cfg, ok := tp["config"].(map[string]any); ok {
+			databasePath = projectStringField(cfg, "database_path")
+		}
 	}
 
-	_, err := fmt.Fprintf(os.Stdout, "project %s\npath: %s\n", projectID, path)
-	return err
+	// Health
+	healthOK := ""
+	if health, ok := project["health"].(map[string]any); ok {
+		if ok, _ := health["ok"].(bool); ok {
+			healthOK = "ok"
+		} else {
+			healthOK = "degraded"
+		}
+	}
+
+	fmt.Printf("project: %s\n", projectID)
+	if status != "" {
+		fmt.Printf("status: %s\n", status)
+	}
+	fmt.Printf("path: %s\n", path)
+	if defaultBranch != "" {
+		fmt.Printf("default_branch: %s\n", defaultBranch)
+	}
+	fmt.Printf("version: %d\n", version)
+	fmt.Printf("health: %s\n", healthOK)
+	fmt.Printf("registered: %s\n", registered)
+	if taskProvider != "" {
+		fmt.Printf("task_provider: %s\n", taskProvider)
+	}
+	if databasePath != "" {
+		fmt.Printf("database_path: %s\n", databasePath)
+	}
+
+	return nil
+}
+
+func intField(m map[string]any, key string) int {
+	if v, ok := m[key].(float64); ok {
+		return int(v)
+	}
+	return 0
 }
 
 func projectStringField(project map[string]any, key string) string {
