@@ -55,7 +55,10 @@ Commands:
   commands           Generate/install agent command assets
   task create         Register a new task
   task approve        Approve a task and bind it to a workflow
-  task get <id>       Fetch a task projection
+  task get <id>      Fetch a task projection
+  task list          List task projections [--project <id>] [--status <status>]
+  task update        Update a task [--id <id>] [--title <title>] [--priority <0-4>] [--status <status>]
+  task retry         Retry a failed task [--id <id>] [--reason <text>]
   run list            List run projections
   run get <id>        Fetch a run projection
   run remove          Remove a run and clean worktree/branch
