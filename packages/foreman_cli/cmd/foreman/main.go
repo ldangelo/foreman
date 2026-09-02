@@ -11,6 +11,7 @@
 //	project update <id> POST /api/commands with type=project.update
 //	project delete <id> POST /api/commands with type=project.archive
 //	project list        GET /api/projects
+//	commands           Generate/install agent command assets
 //	task create         POST /api/commands with type=task.create
 //	task approve        POST /api/commands with type=task.approve
 //	task get <id>       Fetch a task projection
@@ -51,6 +52,7 @@ Commands:
   project update <id> Update a project's task provider
   project delete <id> Soft-delete (archive) a project
   project list        List project projections
+  commands           Generate/install agent command assets
   task create         Register a new task
   task approve        Approve a task and bind it to a workflow
   task get <id>       Fetch a task projection
@@ -85,6 +87,8 @@ func main() {
 	switch os.Args[1] {
 	case "project":
 		err = runProject(c, args)
+	case "commands":
+		err = runCommands(args)
 	case "task":
 		err = runTask(c, args)
 	case "run":

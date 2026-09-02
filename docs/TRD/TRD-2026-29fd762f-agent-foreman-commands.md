@@ -151,106 +151,106 @@ graph TD
 ### PR 1: Source-grounded command inventory
 **Shippable State:** Operators and reviewers can inspect a generated Foreman command inventory that names every planned task/run shortcut, proves each shortcut maps to real Foreman CLI verbs/flags, and marks unsupported native targets as generate-only instead of silently guessing.
 
-- [ ] **TRD-001**: Define the canonical Foreman agent-command inventory model and initial command set: workflow task-create shortcuts, ad-hoc run submit, run list, run detail, and task detail [satisfies REQ-001] [satisfies REQ-011] [satisfies REQ-016] (3h)
+- [x] **TRD-001**: Define the canonical Foreman agent-command inventory model and initial command set: workflow task-create shortcuts, ad-hoc run submit, run list, run detail, and task detail [satisfies REQ-001] [satisfies REQ-011] [satisfies REQ-016] (3h)
   - Validates PRD ACs: AC-001-1, AC-011-1, AC-016-1
   - Implementation AC:
-    - [ ] Given the inventory is rendered for any adapter, when command names/descriptions are inspected, then equivalent commands share the same required inputs and Foreman CLI behavior.
-    - [ ] Given a command supports metadata tags, when its spec is inspected, then tags include `foreman` and either `task`, `run`, or the workflow selector.
-- [ ] **TRD-001-TEST**: Unit tests for the inventory model covering command IDs, descriptions, metadata, and required/optional argument declarations [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-011] [satisfies REQ-016] [depends: TRD-001] (2h)
-- [ ] **TRD-002**: Implement a CLI contract verifier that grounds inventory verbs and flags in `packages/foreman_cli/cmd/foreman` or a `go build ./cmd/foreman` help surface from `packages/foreman_cli` [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-001] (4h)
+    - [x] Given the inventory is rendered for any adapter, when command names/descriptions are inspected, then equivalent commands share the same required inputs and Foreman CLI behavior.
+    - [x] Given a command supports metadata tags, when its spec is inspected, then tags include `foreman` and either `task`, `run`, or the workflow selector.
+- [x] **TRD-001-TEST**: Unit tests for the inventory model covering command IDs, descriptions, metadata, and required/optional argument declarations [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-011] [satisfies REQ-016] [depends: TRD-001] (2h)
+- [x] **TRD-002**: Implement a CLI contract verifier that grounds inventory verbs and flags in `packages/foreman_cli/cmd/foreman` or a `go build ./cmd/foreman` help surface from `packages/foreman_cli` [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-001] (4h)
   - Validates PRD ACs: AC-007-1, AC-015-1, AC-015-2
   - Implementation AC:
-    - [ ] Given a spec references `foreman run list --status --project-id --limit`, when validation runs, then it passes against the Go CLI contract.
-    - [ ] Given a spec references a nonexistent command or flag, when validation runs, then it fails and names the offending spec.
-- [ ] **TRD-002-TEST**: Tests for the verifier with valid command specs and intentionally invalid verb/flag fixtures [verifies TRD-002] [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-002] (3h)
-- [ ] **TRD-003**: Add a workflow selector provider that derives or validates task shortcut selectors against bundled/default workflow manifests and marks drift as a validation failure [satisfies REQ-002] [satisfies REQ-013] [satisfies REQ-015] [depends: TRD-001] (3h)
+    - [x] Given a spec references `foreman run list --status --project-id --limit`, when validation runs, then it passes against the Go CLI contract.
+    - [x] Given a spec references a nonexistent command or flag, when validation runs, then it fails and names the offending spec.
+- [x] **TRD-002-TEST**: Tests for the verifier with valid command specs and intentionally invalid verb/flag fixtures [verifies TRD-002] [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-002] (3h)
+- [x] **TRD-003**: Add a workflow selector provider that derives or validates task shortcut selectors against bundled/default workflow manifests and marks drift as a validation failure [satisfies REQ-002] [satisfies REQ-013] [satisfies REQ-015] [depends: TRD-001] (3h)
   - Validates PRD ACs: AC-002-3, AC-013-2, AC-015-1
   - Implementation AC:
-    - [ ] Given bundled workflow YAML files are present, when selector discovery runs, then the supported selector set matches the installed/default catalog source used by Foreman.
-    - [ ] Given a selector has no backing manifest/catalog entry, when validation runs, then it is omitted or reported rather than emitted as usable.
-- [ ] **TRD-003-TEST**: Tests for workflow selector discovery, TRD workflow identification, and drift handling [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-013] [satisfies REQ-015] [depends: TRD-003] (2h)
+    - [x] Given bundled workflow YAML files are present, when selector discovery runs, then the supported selector set matches the installed/default catalog source used by Foreman.
+    - [x] Given a selector has no backing manifest/catalog entry, when validation runs, then it is omitted or reported rather than emitted as usable.
+- [x] **TRD-003-TEST**: Tests for workflow selector discovery, TRD workflow identification, and drift handling [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-013] [satisfies REQ-015] [depends: TRD-003] (2h)
 
 ### PR 2: Shared command body rendering and local validation
 **Shippable State:** Generated command bodies can create Foreman tasks, submit ad-hoc runs, list runs, inspect one run, and inspect one task through the real `foreman` CLI while refusing missing required inputs before dispatch.
 
-- [ ] **TRD-004**: Build the shared command body renderer that validates required args, constructs `foreman` invocations, preserves exit codes, and does not rewrite CLI failures into success [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-002] (4h)
+- [x] **TRD-004**: Build the shared command body renderer that validates required args, constructs `foreman` invocations, preserves exit codes, and does not rewrite CLI failures into success [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-002] (4h)
   - Validates PRD ACs: AC-007-2, AC-008-1, AC-008-2, AC-012-2
   - Implementation AC:
-    - [ ] Given a required input is missing, when the rendered command runs, then it exits before calling `foreman` and names the missing input.
-    - [ ] Given `foreman` exits non-zero, when invoked through the rendered command, then the non-zero exit status and stderr are preserved.
-- [ ] **TRD-004-TEST**: Tests for renderer validation, shell argument escaping/quoting, inherited environment, and non-zero exit propagation [verifies TRD-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-004] (4h)
-- [ ] **TRD-005**: Render workflow task-create commands using `foreman task create --project <id> --title <title> --workflow-type <workflow>` plus optional description/id/TRD path fields [satisfies REQ-002] [satisfies REQ-008] [depends: TRD-003] [depends: TRD-004] (3h)
+    - [x] Given a required input is missing, when the rendered command runs, then it exits before calling `foreman` and names the missing input.
+    - [x] Given `foreman` exits non-zero, when invoked through the rendered command, then the non-zero exit status and stderr are preserved.
+- [x] **TRD-004-TEST**: Tests for renderer validation, shell argument escaping/quoting, inherited environment, and non-zero exit propagation [verifies TRD-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-004] (4h)
+- [x] **TRD-005**: Render workflow task-create commands using `foreman task create --project <id> --title <title> --workflow-type <workflow>` plus optional description/id/TRD path fields [satisfies REQ-002] [satisfies REQ-008] [depends: TRD-003] [depends: TRD-004] (3h)
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-008-1, AC-008-3
   - Implementation AC:
-    - [ ] Given project and title are supplied, when a workflow task command runs, then it calls `foreman task create` with the selected workflow type.
-    - [ ] Given workflow type is `implement-trd` or `implement-trd-beads` and no `--trd-path` is supplied, when the command runs, then it refuses locally naming `--trd-path`.
-    - [ ] Given a workflow selector is stale, when the command reaches the CLI/server, then the underlying error is visible to the operator.
-- [ ] **TRD-005-TEST**: Tests for rendered workflow task-create commands across normal workflows and TRD-backed workflow refusal cases [verifies TRD-005] [satisfies REQ-002] [satisfies REQ-008] [depends: TRD-005] (3h)
-- [ ] **TRD-006**: Render the ad-hoc run-submit command over `foreman run submit --workflow --prompt --project-id` with optional `--work-id`, `--backend`, and `--base-branch` pass-through where supported [satisfies REQ-003] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-004] (3h)
+    - [x] Given project and title are supplied, when a workflow task command runs, then it calls `foreman task create` with the selected workflow type.
+    - [x] Given workflow type is `implement-trd` or `implement-trd-beads` and no `--trd-path` is supplied, when the command runs, then it refuses locally naming `--trd-path`.
+    - [x] Given a workflow selector is stale, when the command reaches the CLI/server, then the underlying error is visible to the operator.
+- [x] **TRD-005-TEST**: Tests for rendered workflow task-create commands across normal workflows and TRD-backed workflow refusal cases [verifies TRD-005] [satisfies REQ-002] [satisfies REQ-008] [depends: TRD-005] (3h)
+- [x] **TRD-006**: Render the ad-hoc run-submit command over `foreman run submit --workflow --prompt --project-id` with optional `--work-id`, `--backend`, and `--base-branch` pass-through where supported [satisfies REQ-003] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-004] (3h)
   - Validates PRD ACs: AC-003-1, AC-003-2, AC-008-2, AC-009-1, AC-009-2
   - Implementation AC:
-    - [ ] Given project ID, workflow, and prompt are supplied, when the command runs, then it calls `foreman run submit` with those flags.
-    - [ ] Given `--work-id` is supplied, when the command runs, then it forwards that exact ID and does not synthesize another task ID.
-    - [ ] Given `--backend` help is rendered, when the operator reads it, then it includes the client-side/provider-readiness caveat and accepted values.
-- [ ] **TRD-006-TEST**: Tests for run-submit rendering, required-input refusal, backend accepted-set validation, and `--work-id` preservation [verifies TRD-006] [satisfies REQ-003] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-006] (3h)
-- [ ] **TRD-007**: Render run-list, run-detail, and task-detail commands over `foreman run list`, `foreman run get <run-id>`, and `foreman task get <task-id>` [satisfies REQ-004] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-004] (3h)
+    - [x] Given project ID, workflow, and prompt are supplied, when the command runs, then it calls `foreman run submit` with those flags.
+    - [x] Given `--work-id` is supplied, when the command runs, then it forwards that exact ID and does not synthesize another task ID.
+    - [x] Given `--backend` help is rendered, when the operator reads it, then it includes the client-side/provider-readiness caveat and accepted values.
+- [x] **TRD-006-TEST**: Tests for run-submit rendering, required-input refusal, backend accepted-set validation, and `--work-id` preservation [verifies TRD-006] [satisfies REQ-003] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-006] (3h)
+- [x] **TRD-007**: Render run-list, run-detail, and task-detail commands over `foreman run list`, `foreman run get <run-id>`, and `foreman task get <task-id>` [satisfies REQ-004] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-004] (3h)
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-005-1, AC-005-2, AC-006-1, AC-006-2
   - Implementation AC:
-    - [ ] Given no filters are supplied, when run-list executes, then it calls `foreman run list` with no invented flags.
-    - [ ] Given status/project/limit filters are supplied, when run-list executes, then it forwards only `--status`, `--project-id`, and `--limit`.
-    - [ ] Given run/task ID is absent for detail commands, when invoked, then the command refuses before calling Foreman.
-- [ ] **TRD-007-TEST**: Tests for run-list filters, run-detail required ID handling, and task-detail required ID handling [verifies TRD-007] [satisfies REQ-004] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-007] (3h)
+    - [x] Given no filters are supplied, when run-list executes, then it calls `foreman run list` with no invented flags.
+    - [x] Given status/project/limit filters are supplied, when run-list executes, then it forwards only `--status`, `--project-id`, and `--limit`.
+    - [x] Given run/task ID is absent for detail commands, when invoked, then the command refuses before calling Foreman.
+- [x] **TRD-007-TEST**: Tests for run-list filters, run-detail required ID handling, and task-detail required ID handling [verifies TRD-007] [satisfies REQ-004] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-007] (3h)
 
 ### PR 3: Target-agent adapters and safe installation
 **Shippable State:** Operators can generate Foreman command assets for Claude Code, OMP/Pi, Codex, and OpenCode; verified formats can install project-locally, and unverified formats return copyable assets with explicit unsupported-native-install reasons.
 
-- [ ] **TRD-008**: Implement the Claude Code adapter for project-local slash-command Markdown assets with consistent names, descriptions, arguments, examples, and command bodies [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] [depends: TRD-005] [depends: TRD-006] [depends: TRD-007] (4h)
+- [x] **TRD-008**: Implement the Claude Code adapter for project-local slash-command Markdown assets with consistent names, descriptions, arguments, examples, and command bodies [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] [depends: TRD-005] [depends: TRD-006] [depends: TRD-007] (4h)
   - Validates PRD ACs: AC-001-1, AC-010-1, AC-011-1
   - Implementation AC:
-    - [ ] Given project-local Claude command path support is verified, when generation runs, then Markdown command files are written only under the documented project-local path.
-    - [ ] Given the generated files are inspected, when descriptions/examples are compared to other adapters, then semantics match the canonical inventory.
-- [ ] **TRD-008-TEST**: Golden-file tests for Claude Code rendered assets and install-path policy [verifies TRD-008] [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-008] (3h)
-- [ ] **TRD-009**: Implement the OMP/Pi adapter with verified-path native output when the installed format is proven and generate-only fallback otherwise [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] (4h)
+    - [x] Given project-local Claude command path support is verified, when generation runs, then Markdown command files are written only under the documented project-local path.
+    - [x] Given the generated files are inspected, when descriptions/examples are compared to other adapters, then semantics match the canonical inventory.
+- [x] **TRD-008-TEST**: Golden-file tests for Claude Code rendered assets and install-path policy [verifies TRD-008] [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-008] (3h)
+- [x] **TRD-009**: Implement the OMP/Pi adapter with verified-path native output when the installed format is proven and generate-only fallback otherwise [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] (4h)
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-010-1, AC-011-2
   - Implementation AC:
-    - [ ] Given OMP/Pi command format/path cannot be verified, when install is requested, then Foreman prints copyable assets and an unsupported-format explanation without writing guessed files.
-    - [ ] Given the path is verified, when project-local install runs, then files are written only to the documented project-local location.
-- [ ] **TRD-009-TEST**: Tests for OMP/Pi verified-path install and unverified generate-only fallback [verifies TRD-009] [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-009] (3h)
-- [ ] **TRD-010**: Implement Codex and OpenCode adapters as generate-only unless implementation verifies current upstream native command contracts [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] (3h)
+    - [x] Given OMP/Pi command format/path cannot be verified, when install is requested, then Foreman prints copyable assets and an unsupported-format explanation without writing guessed files.
+    - [x] Given the path is verified, when project-local install runs, then files are written only to the documented project-local location.
+- [x] **TRD-009-TEST**: Tests for OMP/Pi verified-path install and unverified generate-only fallback [verifies TRD-009] [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-009] (3h)
+- [x] **TRD-010**: Implement Codex and OpenCode adapters as generate-only unless implementation verifies current upstream native command contracts [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] (3h)
   - Validates PRD ACs: AC-001-2, AC-010-1, AC-011-2
   - Implementation AC:
-    - [ ] Given Codex native format is unverified, when generation runs, then Foreman emits copyable prompts/CLI snippets and marks native install unsupported.
-    - [ ] Given OpenCode native format is unverified, when generation runs, then Foreman emits copyable prompts/CLI snippets and marks native install unsupported.
-- [ ] **TRD-010-TEST**: Tests for Codex/OpenCode generate-only output and explicit unsupported-native-install reason strings [verifies TRD-010] [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-010] (2h)
-- [ ] **TRD-011**: Implement installer scope and overwrite policy: project-local default, explicit verified user-global scope, dry-run/generate-only output, and non-interactive overwrite refusal unless force/overwrite path is supplied [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] (4h)
+    - [x] Given Codex native format is unverified, when generation runs, then Foreman emits copyable prompts/CLI snippets and marks native install unsupported.
+    - [x] Given OpenCode native format is unverified, when generation runs, then Foreman emits copyable prompts/CLI snippets and marks native install unsupported.
+- [x] **TRD-010-TEST**: Tests for Codex/OpenCode generate-only output and explicit unsupported-native-install reason strings [verifies TRD-010] [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-010] (2h)
+- [x] **TRD-011**: Implement installer scope and overwrite policy: project-local default, explicit verified user-global scope, dry-run/generate-only output, and non-interactive overwrite refusal unless force/overwrite path is supplied [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] (4h)
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-012-1, AC-012-2
   - Implementation AC:
-    - [ ] Given a target file exists and no overwrite flag/path is supplied, when install runs, then it refuses and prints the existing path.
-    - [ ] Given user-global scope is requested for an unverified agent path, when install runs, then it refuses rather than guessing.
-    - [ ] Given command files are written, when scanned, then no `FOREMAN_API_TOKEN` values or other secret literals are embedded.
-- [ ] **TRD-011-TEST**: Tests for scope resolution, existing-file refusal, explicit overwrite behavior, and secret scanning [verifies TRD-011] [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-011] (4h)
+    - [x] Given a target file exists and no overwrite flag/path is supplied, when install runs, then it refuses and prints the existing path.
+    - [x] Given user-global scope is requested for an unverified agent path, when install runs, then it refuses rather than guessing.
+    - [x] Given command files are written, when scanned, then no `FOREMAN_API_TOKEN` values or other secret literals are embedded.
+- [x] **TRD-011-TEST**: Tests for scope resolution, existing-file refusal, explicit overwrite behavior, and secret scanning [verifies TRD-011] [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-011] (4h)
 
 ### PR 4: Documentation, validation, and operator-facing polish
 **Shippable State:** Operators can find the Foreman command inventory and install/generate workflow in README, user guide, and CLI reference, and CI/test validation proves rendered assets and documented examples stay aligned with the real CLI.
 
-- [ ] **TRD-012**: Add living documentation for command inventory, target-agent support states, install/update/generate-only steps, task-create approval semantics, and run-submit ad-hoc semantics [satisfies REQ-013] [satisfies REQ-009] [satisfies REQ-010] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] [depends: TRD-011] (4h)
+- [x] **TRD-012**: Add living documentation for command inventory, target-agent support states, install/update/generate-only steps, task-create approval semantics, and run-submit ad-hoc semantics [satisfies REQ-013] [satisfies REQ-009] [satisfies REQ-010] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] [depends: TRD-011] (4h)
   - Validates PRD ACs: AC-009-1, AC-013-1, AC-013-2
   - Implementation AC:
-    - [ ] Given README, user guide, and CLI reference are searched, when the feature ships, then command names and install/update/generate-only steps are documented or explicitly marked not applicable.
-    - [ ] Given docs list workflow task commands, when read, then they state that task-create commands require later approval while run-submit is the ad-hoc one-step path.
-- [ ] **TRD-012-TEST**: Documentation checks or tests proving required command inventory terms and task-vs-run-submit caveats are present in living docs [verifies TRD-012] [satisfies REQ-013] [satisfies REQ-009] [depends: TRD-012] (2h)
-- [ ] **TRD-013**: Add template/asset validation that renders all command assets, checks required placeholders, detects unresolved template variables, and includes unsupported-target skip reasons [satisfies REQ-014] [satisfies REQ-011] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] (4h)
+    - [x] Given README, user guide, and CLI reference are searched, when the feature ships, then command names and install/update/generate-only steps are documented or explicitly marked not applicable.
+    - [x] Given docs list workflow task commands, when read, then they state that task-create commands require later approval while run-submit is the ad-hoc one-step path.
+- [x] **TRD-012-TEST**: Documentation checks or tests proving required command inventory terms and task-vs-run-submit caveats are present in living docs [verifies TRD-012] [satisfies REQ-013] [satisfies REQ-009] [depends: TRD-012] (2h)
+- [x] **TRD-013**: Add template/asset validation that renders all command assets, checks required placeholders, detects unresolved template variables, and includes unsupported-target skip reasons [satisfies REQ-014] [satisfies REQ-011] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] (4h)
   - Validates PRD ACs: AC-014-1, AC-014-3, AC-011-1
   - Implementation AC:
-    - [ ] Given all templates are rendered with fixture args, when validation runs, then no unresolved template variables remain.
-    - [ ] Given a target is unsupported, when validation reports results, then it lists that target as skipped with an explicit reason.
-- [ ] **TRD-013-TEST**: Tests for rendered-template validation across all target adapters and unsupported-target reporting [verifies TRD-013] [satisfies REQ-014] [satisfies REQ-011] [depends: TRD-013] (3h)
-- [ ] **TRD-014**: Add example-command validation against Go CLI source or a freshly built CLI, and wire it into the appropriate test/check target [satisfies REQ-014] [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-002] [depends: TRD-012] (4h)
+    - [x] Given all templates are rendered with fixture args, when validation runs, then no unresolved template variables remain.
+    - [x] Given a target is unsupported, when validation reports results, then it lists that target as skipped with an explicit reason.
+- [x] **TRD-013-TEST**: Tests for rendered-template validation across all target adapters and unsupported-target reporting [verifies TRD-013] [satisfies REQ-014] [satisfies REQ-011] [depends: TRD-013] (3h)
+- [x] **TRD-014**: Add example-command validation against Go CLI source or a freshly built CLI, and wire it into the appropriate test/check target [satisfies REQ-014] [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-002] [depends: TRD-012] (4h)
   - Validates PRD ACs: AC-014-2, AC-007-1, AC-015-2
   - Implementation AC:
-    - [ ] Given docs/examples include `foreman` invocations, when validation runs, then every verb and flag is checked against source or fresh build output.
-    - [ ] Given a stale docs-only command appears, when validation runs, then it fails or reports the stale example before shipping.
-- [ ] **TRD-014-TEST**: Tests or fixture checks for valid documented examples and a negative stale-command fixture [verifies TRD-014] [satisfies REQ-014] [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-014] (3h)
+    - [x] Given docs/examples include `foreman` invocations, when validation runs, then every verb and flag is checked against source or fresh build output.
+    - [x] Given a stale docs-only command appears, when validation runs, then it fails or reports the stale example before shipping.
+- [x] **TRD-014-TEST**: Tests or fixture checks for valid documented examples and a negative stale-command fixture [verifies TRD-014] [satisfies REQ-014] [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-014] (3h)
 
 ## Dependency Graph and Critical Path
 
@@ -297,7 +297,7 @@ MCP enhancement: skipped (no MCP tools detected in this session).
 | Issue | Resolution |
 |---|---|
 | Every REQ must have implementation and test coverage | Acceptance Criteria Traceability below maps all REQ-001 … REQ-016 to tasks and tests |
-| Task parser can miss malformed lines | All task lines begin with `- [ ] **TRD-NNN**` or `- [ ] **TRD-NNN-TEST**`; `trd-cli parse` self-check required before final report |
+| Task parser can miss malformed lines | All task lines begin with `- [x] **TRD-NNN**` or `- [x] **TRD-NNN-TEST**`; `trd-cli parse` self-check required before final report |
 | PR shippability can become infrastructure-only | Each PR has a user/operator-observable shippable state and all needed tests in the same or earlier PR |
 
 ### Dependency and Estimate Review
