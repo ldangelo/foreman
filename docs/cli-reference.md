@@ -278,7 +278,7 @@ foreman commands install --agent claude --scope project
 foreman commands install --agent claude --target .claude/commands/foreman --force
 ```
 
-Pi/OMP, Codex, and OpenCode are generate-only in this slice. `install` for those agents refuses with an unsupported-native-install reason and points operators to `generate`.
+Pi/OMP install to ~/.pi/agent/skills/<id>/SKILL.md. Codex and OpenCode remain generate-only.
 
 ### `foreman commands validate`
 
