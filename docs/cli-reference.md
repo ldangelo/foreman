@@ -244,7 +244,7 @@ foreman project list --include-archived
 
 ### `foreman commands`
 
-Generate, validate, or install agent command assets for Foreman operators. The generated assets are thin wrappers over real Go CLI commands: workflow-backed `foreman task create`, ad-hoc `foreman run submit`, `foreman run list`, `foreman run get <run-id>`, and `foreman task get <task-id>`. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
+Generate, validate, or install agent command assets for Foreman operators. The generated assets are thin wrappers over real Go CLI commands: workflow-backed `foreman task create`, `foreman task list`, `foreman task update`, `foreman task get <task-id>`, ad-hoc `foreman run submit`, `foreman run list`, and `foreman run get <run-id>`. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
 
 **Subcommands:**
 | Command | Description |
