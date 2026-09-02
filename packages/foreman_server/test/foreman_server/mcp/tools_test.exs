@@ -75,6 +75,18 @@ defmodule ForemanServer.MCP.ToolsTest do
         end
       end)
     end
+
+    test "foreman_task_create advertises optional task_type" do
+      tool = Tools.list_tools() |> Enum.find(&(&1.name == "foreman_task_create"))
+
+      assert tool.inputSchema.properties.task_type == %{
+               type: "string",
+               default: "task",
+               description: "The task type/classification. Defaults to task."
+             }
+
+      refute "task_type" in tool.inputSchema.required
+    end
   end
 
   describe "foreman_work_get" do

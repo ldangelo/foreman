@@ -58,6 +58,12 @@ defmodule ForemanServer.MCP.TransportTest do
       assert {:ok, %{run_id: "r-1"}} = tool.validate_input.(%{"run_id" => "r-1"})
     end
 
+    test "foreman_task_create validate_input atomizes task_type" do
+      tool = Enum.find(MCP.__components__(:tool), &(&1.name == "foreman_task_create"))
+
+      assert {:ok, %{task_type: "feature"}} = tool.validate_input.(%{"task_type" => "feature"})
+    end
+
     test "tool replies are Anubis.Server.Response structs" do
       # Anubis.Server.Handlers.Tools pattern-matches Anubis.Server.Response.
       # Replying with Anubis.MCP.Response raises CaseClauseError in forward_to/4.
