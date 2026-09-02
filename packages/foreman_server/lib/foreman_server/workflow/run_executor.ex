@@ -40,6 +40,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.AutoPR
+  alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
   # Without this alias `StepSequencer.propagate_terminal/2` resolves to a
@@ -505,6 +506,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          {:ok, state} <-
            enforce_required_file(state, phase_spec, phase_index, worktree_record),
          {:ok, _} <- commit_phase_worktree(state, phase_spec, phase_index, worktree_record),
+         :ok <-
+           maybe_record_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
       next_state = %{
@@ -1034,7 +1037,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       :ok ->
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        case auto_pr(state) do
+        case maybe_auto_pr(state) do
           :noop ->
             Logger.info(
               "RunExecutor #{state.run_id} finalize_run: no auto-pr (branch has no new commits)"
@@ -1105,6 +1108,106 @@ defmodule ForemanServer.Workflow.RunExecutor do
           "RunExecutor #{run_id} finalize_run: PR #{pr_url} created but NOT recorded " <>
             "on the run read model: #{inspect(reason)}"
         )
+    end
+  end
+
+  defp maybe_auto_pr(state) do
+    if phase_pr_created_or_reused?(state.run_id) do
+      Logger.info(
+        "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr because phase PR records exist"
+      )
+
+      :noop
+    else
+      auto_pr(state)
+    end
+  end
+
+  defp maybe_record_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path) do
+    if Map.get(phase_spec, :stack_pr) == true do
+      request_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path)
+    else
+      :ok
+    end
+  end
+
+  defp request_phase_pr(state, phase_spec, phase_index, %{worktree_path: cwd}, artifact_path)
+       when is_binary(cwd) and cwd != "" do
+    phase_id = Identity.phase_id(state.run_id, phase_index)
+
+    if phase_pr_recorded_for_phase?(state.run_id, phase_id) do
+      :ok
+    else
+      with {:ok, base_branch} <- run_base_branch(state),
+           {:ok, head_branch} <- run_head_branch(state),
+           {:ok, record} <-
+             PhasePR.maybe_create(%PhasePR.Request{
+               run_id: state.run_id,
+               phase_id: phase_id,
+               phase_index: phase_index,
+               phase_name: phase_spec_name(phase_spec),
+               base_branch: base_branch,
+               head_branch: head_branch,
+               cwd: cwd,
+               artifact_path: artifact_path,
+               existing_records: phase_pr_records(state.run_id)
+             }) do
+        record_phase_pr(record)
+      else
+        {:error, %PhasePR.Error{} = error} ->
+          {:error, {:phase_pr_failed, error.reason, error.details}}
+
+        {:error, reason} ->
+          {:error, {:phase_pr_failed, reason}}
+      end
+    end
+  end
+
+  defp request_phase_pr(_state, _phase_spec, phase_index, worktree_record, _artifact_path) do
+    {:error, {:phase_pr_worktree_unresolved, phase_index, worktree_record}}
+  end
+
+  defp run_head_branch(state) do
+    case get_in(state, [:last_worktree, :branch]) do
+      branch when is_binary(branch) and branch != "" -> {:ok, branch}
+      _ -> {:error, :phase_pr_head_branch_unresolved}
+    end
+  end
+
+  defp record_phase_pr(%PhasePR.Record{} = record) do
+    payload = Map.from_struct(record)
+
+    case dispatch_system(
+           "phase_pr.record",
+           payload,
+           record.run_id,
+           record.phase_id,
+           "phase_pr:#{record.run_id}:#{record.phase_id}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:phase_pr_record_failed, reason}}
+    end
+  end
+
+  defp phase_pr_created_or_reused?(run_id) do
+    run_id
+    |> phase_pr_records()
+    |> Enum.any?(&(Map.get(&1, :status) in ["created", "reused", :created, :reused]))
+  end
+
+  defp phase_pr_recorded_for_phase?(run_id, phase_id) do
+    run_id
+    |> phase_pr_records()
+    |> Enum.any?(fn record ->
+      Map.get(record, :phase_id) == phase_id and
+        Map.get(record, :status) in ["created", "reused", :created, :reused]
+    end)
+  end
+
+  defp phase_pr_records(run_id) do
+    case ProjectionStore.run(run_id) do
+      %{phase_prs: phase_prs} when is_list(phase_prs) -> phase_prs
+      _ -> []
     end
   end
 
@@ -2362,8 +2465,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
       [{"FOREMAN_TASK_TITLE", :title}, {"FOREMAN_TASK_DESCRIPTION", :description}],
       %{},
       fn {var, key}, acc ->
-        value = Map.get(plan_task, key) || Map.get(plan_task, to_string(key)) ||
-                Map.get(fallback_task, key) || Map.get(fallback_task, to_string(key))
+        value =
+          Map.get(plan_task, key) || Map.get(plan_task, to_string(key)) ||
+            Map.get(fallback_task, key) || Map.get(fallback_task, to_string(key))
+
         case value do
           v when is_binary(v) and v != "" -> Map.put(acc, var, v)
           _ -> acc
@@ -2374,15 +2479,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp put_source_prd_path(env, state, worktree_record) do
     planning = Map.get(state.plan_context || %{}, "planning") || %{}
-    
-    path = case Map.get(planning, "prd_path") do
-      p when is_binary(p) and p != "" -> p
-      _ -> discover_prd_path(state, worktree_record)
-    end
+
+    path =
+      case Map.get(planning, "prd_path") do
+        p when is_binary(p) and p != "" -> p
+        _ -> discover_prd_path(state, worktree_record)
+      end
 
     case path do
       p when is_binary(p) and p != "" ->
         Map.put(env, "FOREMAN_SOURCE_PRD_PATH", resolve_phase_path(p, state, worktree_record))
+
       _ ->
         env
     end
@@ -2392,20 +2499,40 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp discover_prd_path(state, worktree_record) do
     if state.completed != [] do
       working_directory = working_directory_for(state, worktree_record)
-      
+
       # Use git to find the most recently added PRD file
-      case System.cmd("git", ["-C", working_directory, "log", "--diff-filter=A", "--name-only", "-1", "--pretty=format:", "HEAD", "--", "docs/PRD/*.md"], stderr_to_stdout: true) do
+      case System.cmd(
+             "git",
+             [
+               "-C",
+               working_directory,
+               "log",
+               "--diff-filter=A",
+               "--name-only",
+               "-1",
+               "--pretty=format:",
+               "HEAD",
+               "--",
+               "docs/PRD/*.md"
+             ],
+             stderr_to_stdout: true
+           ) do
         {output, 0} when output != "" ->
           # output is the file path, e.g. "docs/PRD/PRD-2026-xxx.md"
           # Extract just the relative path
           case String.split(String.trim(output), "\n") do
-            [path | _] when is_binary(path) and path != "" -> 
+            [path | _] when is_binary(path) and path != "" ->
               Logger.debug("discover_prd_path: found PRD at #{path}")
               path
-            _ -> 
-              Logger.debug("discover_prd_path: no PRD found in git log output: #{inspect(output)}")
+
+            _ ->
+              Logger.debug(
+                "discover_prd_path: no PRD found in git log output: #{inspect(output)}"
+              )
+
               nil
           end
+
         _ ->
           Logger.debug("discover_prd_path: git log failed or no PRD found")
           nil

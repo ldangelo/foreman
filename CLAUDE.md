@@ -268,7 +268,10 @@ without a TRD is out of scope.
 `ForemanServer.Workflow.Catalog` is the supervised GenServer that owns
 every parsed workflow manifest and prompt body in memory and keeps
 them in sync with the on-disk root (`~/.foreman/workflows`,
-hardcoded by `AssetCatalog.default/0`).
+hardcoded by `AssetCatalog.default/0`). Phase specs normalize `commit:` and
+`stack_pr:` as boolean phase fields; `stack_pr: true` records a phase PR from
+the single run branch to the recorded run base branch and keeps it separate
+from the final run `pr_url`.
 
 - **Single owner of manifests.** `Approval.resolve_workflow_snapshot/2`
   (the public `Approval.prepare/2` path) and the private

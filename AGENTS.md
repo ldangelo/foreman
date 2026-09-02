@@ -147,17 +147,17 @@ that directory is not evidence a mechanism works — the supported set is
 `checkpointPr`, `create-pr`, `pr-wait`, or `merge` phases, and do not dispatch
 those stale workflows.
 
-**`commit:` is a phase-level boolean; there are still no manifest settings for
-stacked or per-phase PRs.** Read the second half as the standing design
-decision and the first half as a correction: this passage previously said "there
-are no manifest settings for commits", which was true when written and is not
-now. `commit: true` (the default when the key is absent) commits the phase's
-work when the phase completes; `commit: false` DEFERS it, leaving the changes in
-the worktree for a later phase's commit to absorb, which is how several phases
-are batched into one commit. `PhaseSpec.@fields` plus `commit`, plus the
+**`commit:` and `stack_pr:` are phase-level booleans; top-level PR/merge tags
+remain unsupported.** `commit: true` (the default when the key is absent)
+commits the phase's work when the phase completes; `commit: false` DEFERS it,
+leaving the changes in the worktree for a later phase's commit to absorb, which
+is how several phases are batched into one commit. `stack_pr: true` requests a
+phase PR record after that phase's commit decision, targeting the recorded run
+base branch from the same Foreman run branch. Absent or false preserves default
+final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
 is the complete declarable vocabulary; `Interpreter` and `PhaseSpec` still
-contain zero `pr`, `merge`, or `checkpoint` keys.
+contain zero top-level `pr`, `merge`, or `checkpoint` keys.
 
 **Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
 alone makes unsatisfiable — and warned about at run terminal in the case whose
@@ -217,27 +217,22 @@ testing truthiness, so a value that somehow bypassed
 `validate_commit_value!/3` raises instead of being coerced — the string
 `"false"` is truthy and would otherwise commit while the manifest said not to.
 
-Stacked PRs remain an **ensemble-skill** concern, not a Foreman one, and
-`--foreman` deliberately turns them off:
-`PRD-2026-3d41f677` AC-013-1 states that given `--foreman`, the Beads skill
-"skips `git switch`, `git town append`, stacked-PR, and per-phase PR paths",
-and `TRD-2026-48f7b420` describes the Master Task List `### PR N:` headings as
-what the skill uses to stack PRs when it runs standalone.
-`TRD-2026-3d41f677` is explicit: "Do not add top-level workflow `merge:` or
-`pr:` fields."
+Ensemble-skill stacked branches remain separate from Foreman's one-run-branch
+model. `stack_pr: true` does **not** create per-phase head branches or a true PR
+stack: every tagged phase uses the same run head/base pair, so GitHub usually
+has one open PR that later tagged phases reuse and whose diff is cumulative from
+the run base. Closed matching PRs are typed failures. No-op phase PR records
+(`head` not ahead of `base`) do not suppress final AutoPR; created/reused phase
+PR records do. `TRD-2026-3d41f677` is still explicit: "Do not add top-level
+workflow `merge:` or `pr:` fields."
 
-`auto_pr/1` is still called from exactly ONE place — `finalize_run/1`, once,
-after every phase completes — so a run yields at most one PR, opened from the
-single run branch. `AutoPR.maybe_create_pr/1` takes a fixed context (`run_id`,
-`base_branch`, `head_branch`, `artifact_path`, `cwd`) and derives title and body
-itself; there is no declarable title, body, draft, reviewer, or label. Foreman
-commits with a fixed message, its own author identity, and `--no-verify`; only
-WHETHER a phase commits is declarable, never how. Adding `pr:`/`stacked:` keys
-would create manifest surface that no module reads — the `clean_worktree`
-failure in this document, repeated. If per-phase or stacked PRs are wanted from
-Foreman, the work is a real change to `AutoPR` (which shells `gh pr create`
-unconditionally and only logs the failure when a PR for the branch already
-exists) — not a YAML edit.
+`auto_pr/1` is still final-run behavior from `finalize_run/1`; it is skipped
+when durable phase PR records already represent the run. `AutoPR.maybe_create_pr/1`
+takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
+`cwd`) and derives title and body itself; there is no declarable title, body,
+draft, reviewer, or label. Foreman commits with a fixed message, its own author
+identity, and `--no-verify`; only WHETHER a phase commits and whether it asks
+for a phase PR record are declarable.
 
 The real mechanism is `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called
 from `RunExecutor.finalize_run/1` after the task provider confirms completion.

@@ -575,6 +575,7 @@ defmodule ForemanServer.CommandRouter do
   def aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
   def aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
   def aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
+  def aggregate_module_for("phase_pr:" <> _), do: ForemanServer.Aggregates.PhasePr
   def aggregate_module_for("beads_db_lease:" <> _), do: ForemanServer.Aggregates.BeadsDbLease
   def aggregate_module_for("run_slots:" <> _), do: ForemanServer.Aggregates.RunSlots
   def aggregate_module_for("vcs_operation:" <> _), do: ForemanServer.Aggregates.VcsOperation

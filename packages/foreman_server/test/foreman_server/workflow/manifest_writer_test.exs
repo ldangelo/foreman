@@ -135,6 +135,28 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
       assert get_in(loaded, ["phases", Access.at(0), "mail", "onComplete"]) == true
     end
 
+    test "round-trips explicit stack_pr values without inventing absent values" do
+      manifest = %{
+        "name" => "x",
+        "phases" => [
+          %{"name" => "a", "prompt" => "a.md", "stack_pr" => true},
+          %{"name" => "b", "prompt" => "b.md", "stack_pr" => false},
+          %{"name" => "c", "prompt" => "c.md"}
+        ]
+      }
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ ~r/stack_pr:\s*true/
+      assert yaml =~ ~r/stack_pr:\s*false/
+
+      path = write_temp_yaml!(yaml)
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(path)
+      [first, second, third] = loaded["phases"]
+      assert first["stack_pr"] == true
+      assert second["stack_pr"] == false
+      refute Map.has_key?(third, "stack_pr")
+    end
+
     test "integer values are emitted without quotes" do
       manifest = %{
         "name" => "x",
@@ -322,7 +344,11 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
     # one. Before this, `is_number/1` guards admitted a float that `scalar/1`
     # had no clause for, so every case below raised FunctionClauseError from
     # inside the serializer instead of returning an error.
-    @base %{"name" => "wf", "description" => "d", "phases" => [%{"name" => "p", "prompt" => "x.md"}]}
+    @base %{
+      "name" => "wf",
+      "description" => "d",
+      "phases" => [%{"name" => "p", "prompt" => "x.md"}]
+    }
 
     test "refuses a float at the top level, naming the key" do
       assert {:error, {:unsupported_construct, {:float_value, "timeout"}}} =

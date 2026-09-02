@@ -981,7 +981,8 @@ defmodule ForemanServer.ProjectionStore do
             started_at_ms: event_at_ms,
             last_event_at_ms: event_at_ms,
             failure_reason: nil,
-            pr_url: nil
+            pr_url: nil,
+            phase_prs: []
           }
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
@@ -1384,6 +1385,43 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp apply_event_by_type(state, "PhasePrRecorded", payload) do
+    case decode_for_projection("PhasePrRecorded", payload) do
+      %ForemanServer.Events.PhasePrRecorded{} = event ->
+        record = %{
+          run_id: event.run_id,
+          phase_id: event.phase_id,
+          phase_index: event.phase_index,
+          phase_name: event.phase_name,
+          status: event.status,
+          pr_url: event.pr_url,
+          pr_number: event.pr_number,
+          base_branch: event.base_branch,
+          head_branch: event.head_branch,
+          provider: event.provider,
+          reason: event.reason,
+          recorded_at: event.recorded_at
+        }
+
+        validate_phase_pr_record!(record)
+
+        state
+        |> update_run_projection(event.run_id, payload_event_at_ms(payload), fn run ->
+          phase_prs =
+            run
+            |> Map.get(:phase_prs, [])
+            |> upsert_phase_pr(record)
+
+          Map.put(run, :phase_prs, phase_prs)
+        end)
+        |> Map.update!(:phases, fn phases ->
+          Map.update(phases, event.phase_id, %{phase_prs: [record]}, fn phase ->
+            Map.put(phase, :phase_prs, upsert_phase_pr(Map.get(phase, :phase_prs, []), record))
+          end)
+        end)
+    end
+  end
+
   defp apply_event_by_type(state, "ScheduledFireRecorded", payload) do
     intent_id = get(payload, :intent_id)
 
@@ -1530,9 +1568,11 @@ defmodule ForemanServer.ProjectionStore do
             message_id: get(payload, :message_id),
             body: get(payload, :body),
             delivery_status: nil,
-            metadata: Map.drop(payload, [:run_id, :message_id, :body, "run_id", "message_id", "body"]),
+            metadata:
+              Map.drop(payload, [:run_id, :message_id, :body, "run_id", "message_id", "body"]),
             event_at_ms: payload_event_at_ms(payload)
           }
+
           msgs ++ [msg]
         end)
 
@@ -1797,6 +1837,31 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp upsert_phase_pr(records, record) when is_list(records) and is_map(record) do
+    records
+    |> Enum.reject(&(Map.get(&1, :phase_id) == Map.get(record, :phase_id)))
+    |> Kernel.++([record])
+    |> Enum.sort_by(fn pr -> {Map.get(pr, :phase_index, 0), Map.get(pr, :recorded_at, "")} end)
+  end
+
+  defp validate_phase_pr_record!(%{status: status, pr_url: url} = record) do
+    cond do
+      status in ["created", "reused"] and not (is_binary(url) and url != "") ->
+        raise ArgumentError,
+              "ProjectionStore: PhasePrRecorded #{status} missing usable pr_url: #{inspect(record)}"
+
+      status == "noop" ->
+        :ok
+
+      status in ["created", "reused"] ->
+        :ok
+
+      true ->
+        raise ArgumentError,
+              "ProjectionStore: PhasePrRecorded with unknown status: #{inspect(record)}"
+    end
+  end
+
   defp apply_terminal_run_event(state, payload, status) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       run
@@ -1844,7 +1909,8 @@ defmodule ForemanServer.ProjectionStore do
       last_event_at_ms: now_ms,
       terminal?: false,
       failure_reason: nil,
-      pr_url: nil
+      pr_url: nil,
+      phase_prs: []
     }
   end
 
