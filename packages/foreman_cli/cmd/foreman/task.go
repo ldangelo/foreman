@@ -8,7 +8,6 @@ import (
 	"os"
 	"path"
 	"strings"
-	"text/tabwriter"
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
 
@@ -244,8 +243,8 @@ func taskList(c *client.Client, args []string) error {
 	}
 
 	// Print table: task_id, project, status, title
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "TASK ID\tPROJECT\tSTATUS\tTITLE")
+	fmt.Printf("%-24s %-10s %-12s %s\n", "TASK ID", "PROJECT", "STATUS", "TITLE")
+	fmt.Println(strings.Repeat("-", 24) + " " + strings.Repeat("-", 10) + " " + strings.Repeat("-", 12) + " " + strings.Repeat("-", 50))
 	for _, t := range out.Tasks {
 		tid := getStr(t, "task_id")
 		proj := getStr(t, "project_id")
@@ -254,9 +253,13 @@ func taskList(c *client.Client, args []string) error {
 		if title == "" {
 			title = "(no title)"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tid, proj, stat, title)
+		// Truncate title to fit
+		if len(title) > 50 {
+			title = title[:47] + "..."
+		}
+		fmt.Printf("%-24s %-10s %-12s %s\n", tid, proj, stat, title)
 	}
-	w.Flush()
+	fmt.Printf("\n%d tasks\n", len(out.Tasks))
 	return nil
 }
 
