@@ -33,9 +33,9 @@ with the watcher enabled, inbound Beads appear as Foreman tasks.
 - **Atomic `task.create` (provider-backed projects).** For projects
   with a configured `:create` provider, `POST /api/commands` with
   `task.create` runs the four-stage actor pipeline; the MCP
-  `foreman_task_create` helper copies its required `prompt` into the
-  task `description` so command phases receive
-  `FOREMAN_TASK_DESCRIPTION`. The aggregate
+`foreman_task_create` helper requires `description` for `FOREMAN_TASK_DESCRIPTION`,
+passes `prompt` separately for `:prompt`-action phases, and defaults
+`auto_approve: true`. The aggregate
   emits a stage-1 `TaskCreated` event spec, the actor calls
   `provider.create/2` to mint a Bead, the actor re-decides with the
   Bead ID as `payload.external_id`, and `CommandRouter` appends the

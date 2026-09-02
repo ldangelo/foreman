@@ -350,7 +350,8 @@ defmodule ForemanServer.Aggregates.Task do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
          :ok <- require_exists(state, task_id),
          {:ok, _priority} <- validate_priority_update(Aggregate.get(payload, :priority)),
-         {:ok, _status} <- validate_status_update(Aggregate.get(payload, :status)) do
+         {:ok, _status} <- validate_status_update(Aggregate.get(payload, :status)),
+         :ok <- allow_transition(state, Aggregate.get(payload, :status)) do
       updates =
         [:title, :description, :priority, :status]
         |> Enum.filter(fn field -> Aggregate.get(payload, field) != nil end)

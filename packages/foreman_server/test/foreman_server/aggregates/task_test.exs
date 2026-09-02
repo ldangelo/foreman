@@ -574,6 +574,17 @@ defmodule ForemanServer.Aggregates.TaskTest do
                  payload: %{}
                })
     end
+
+    test "rejects status change on merged task", %{state: state} do
+      merged_state = %{state | status: "merged"}
+
+      assert {:error, {:invalid_task_transition, "merged", "open"}} ==
+               Task.handle_command(merged_state, %{
+                 type: "task.update",
+                 payload: %{task_id: "foreman-iv00", status: "open"}
+               })
+    end
+
   end
 
   describe "handle_command/2 — unknown" do

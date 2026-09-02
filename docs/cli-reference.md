@@ -1112,8 +1112,8 @@ so for a known run the read always succeeds.
 Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.
-`foreman_task_create` copies its required `prompt` into task `description`, so
-command phases receive the same text through `FOREMAN_TASK_DESCRIPTION`.
+`foreman_task_create` requires `description` for `FOREMAN_TASK_DESCRIPTION`, passes
+`prompt` separately for `:prompt`-action phases, and defaults `auto_approve: true`.
 
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and
 behavior cannot diverge.
