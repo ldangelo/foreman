@@ -356,12 +356,16 @@ defmodule ForemanServer.Aggregates.Task do
         |> Enum.filter(fn field -> Aggregate.get(payload, field) != nil end)
         |> Map.new(fn field -> {field, Aggregate.get(payload, field)} end)
 
-      {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskUpdated",
-         payload: Map.put(updates, :task_id, task_id)
-       }}
+      if map_size(updates) == 0 do
+        {:error, {:invalid_command, "task.update requires at least one of title, description, priority, or status"}}
+      else
+        {:ok,
+         %{
+           stream_id: "task:#{task_id}",
+           event_type: "TaskUpdated",
+           payload: Map.put(updates, :task_id, task_id)
+         }}
+      end
     end
   end
 
