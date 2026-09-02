@@ -3,10 +3,10 @@ document_id: TRD-2026-29fd762f
 label: trd-agent-foreman-commands
 kind: trd
 prd_reference: docs/PRD/PRD-2026-29fd762f-agent-foreman-commands.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-02
-design_readiness_score: 4.5
+design_readiness_score: 4.7
 ---
 
 # TRD: OMP, Claude Code, Codex, and OpenCode Foreman Commands
@@ -18,10 +18,10 @@ design_readiness_score: 4.5
 | Document ID | TRD-2026-29fd762f |
 | Label | trd-agent-foreman-commands |
 | PRD Reference | docs/PRD/PRD-2026-29fd762f-agent-foreman-commands.md |
-| Version | 1.0.0 |
+| Version | 1.0.1 |
 | Status | Draft |
 | Correlation ID | 29fd762f (shared with source PRD) |
-| Design Readiness Score | 4.5 (PASS) |
+| Design Readiness Score | 4.7 (PASS) |
 
 ## Foreman Dispatch Contract
 
@@ -50,7 +50,7 @@ This TRD only plans the work. It does not implement command assets, build binari
 
 | Domain | Requirements | Existing / Target Surface |
 |---|---|---|
-| Real CLI command contract | REQ-007, REQ-015 | `packages/foreman_cli/cmd/foreman/{main.go,task.go,run.go}`; validation through fresh `go build ./cmd/foreman` or source-derived command table |
+| Real CLI command contract | REQ-007, REQ-015 | `packages/foreman_cli/cmd/foreman/{main.go,task.go,run.go}`; validation through `go build ./cmd/foreman` from `packages/foreman_cli` or a source-derived command table |
 | Workflow inventory | REQ-002, REQ-011, REQ-013 | `packages/foreman_server/priv/defaults/workflows/*.yaml`; avoid hand-maintained drift where possible |
 | Agent command templates | REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-009, REQ-011, REQ-016 | New template/rendering surface under Foreman CLI or server assets; exact path chosen during implementation to match existing package ownership |
 | Install/generate policy | REQ-001, REQ-010, REQ-012 | Project-local default; explicit user-global scope only after verified upstream path; generate-only fallback for unverified targets |
@@ -149,7 +149,6 @@ graph TD
 ## Master Task List
 
 ### PR 1: Source-grounded command inventory
-
 **Shippable State:** Operators and reviewers can inspect a generated Foreman command inventory that names every planned task/run shortcut, proves each shortcut maps to real Foreman CLI verbs/flags, and marks unsupported native targets as generate-only instead of silently guessing.
 
 - [ ] **TRD-001**: Define the canonical Foreman agent-command inventory model and initial command set: workflow task-create shortcuts, ad-hoc run submit, run list, run detail, and task detail [satisfies REQ-001] [satisfies REQ-011] [satisfies REQ-016] (3h)
@@ -158,7 +157,7 @@ graph TD
     - [ ] Given the inventory is rendered for any adapter, when command names/descriptions are inspected, then equivalent commands share the same required inputs and Foreman CLI behavior.
     - [ ] Given a command supports metadata tags, when its spec is inspected, then tags include `foreman` and either `task`, `run`, or the workflow selector.
 - [ ] **TRD-001-TEST**: Unit tests for the inventory model covering command IDs, descriptions, metadata, and required/optional argument declarations [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-011] [satisfies REQ-016] [depends: TRD-001] (2h)
-- [ ] **TRD-002**: Implement a CLI contract verifier that grounds inventory verbs and flags in `packages/foreman_cli/cmd/foreman` or a fresh `go build ./cmd/foreman` help surface [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-001] (4h)
+- [ ] **TRD-002**: Implement a CLI contract verifier that grounds inventory verbs and flags in `packages/foreman_cli/cmd/foreman` or a `go build ./cmd/foreman` help surface from `packages/foreman_cli` [satisfies REQ-007] [satisfies REQ-015] [depends: TRD-001] (4h)
   - Validates PRD ACs: AC-007-1, AC-015-1, AC-015-2
   - Implementation AC:
     - [ ] Given a spec references `foreman run list --status --project-id --limit`, when validation runs, then it passes against the Go CLI contract.
@@ -172,7 +171,6 @@ graph TD
 - [ ] **TRD-003-TEST**: Tests for workflow selector discovery, TRD workflow identification, and drift handling [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-013] [satisfies REQ-015] [depends: TRD-003] (2h)
 
 ### PR 2: Shared command body rendering and local validation
-
 **Shippable State:** Generated command bodies can create Foreman tasks, submit ad-hoc runs, list runs, inspect one run, and inspect one task through the real `foreman` CLI while refusing missing required inputs before dispatch.
 
 - [ ] **TRD-004**: Build the shared command body renderer that validates required args, constructs `foreman` invocations, preserves exit codes, and does not rewrite CLI failures into success [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-002] (4h)
@@ -204,7 +202,6 @@ graph TD
 - [ ] **TRD-007-TEST**: Tests for run-list filters, run-detail required ID handling, and task-detail required ID handling [verifies TRD-007] [satisfies REQ-004] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-007] (3h)
 
 ### PR 3: Target-agent adapters and safe installation
-
 **Shippable State:** Operators can generate Foreman command assets for Claude Code, OMP/Pi, Codex, and OpenCode; verified formats can install project-locally, and unverified formats return copyable assets with explicit unsupported-native-install reasons.
 
 - [ ] **TRD-008**: Implement the Claude Code adapter for project-local slash-command Markdown assets with consistent names, descriptions, arguments, examples, and command bodies [satisfies REQ-001] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-004] [depends: TRD-005] [depends: TRD-006] [depends: TRD-007] (4h)
@@ -234,7 +231,6 @@ graph TD
 - [ ] **TRD-011-TEST**: Tests for scope resolution, existing-file refusal, explicit overwrite behavior, and secret scanning [verifies TRD-011] [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-011] (4h)
 
 ### PR 4: Documentation, validation, and operator-facing polish
-
 **Shippable State:** Operators can find the Foreman command inventory and install/generate workflow in README, user guide, and CLI reference, and CI/test validation proves rendered assets and documented examples stay aligned with the real CLI.
 
 - [ ] **TRD-012**: Add living documentation for command inventory, target-agent support states, install/update/generate-only steps, task-create approval semantics, and run-submit ad-hoc semantics [satisfies REQ-013] [satisfies REQ-009] [satisfies REQ-010] [depends: TRD-008] [depends: TRD-009] [depends: TRD-010] [depends: TRD-011] (4h)
@@ -325,12 +321,12 @@ MCP enhancement: skipped (no MCP tools detected in this session).
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Architecture completeness | 4.5 | Components, adapters, data flow, install policy, and validation boundaries are defined; exact code paths are left to implementation ownership discovery. |
-| Task coverage | 4.5 | Every PRD requirement has implementation and paired test coverage. |
-| Dependency clarity | 4.5 | Dependencies are explicit and acyclic; PR boundaries are independently reviewable. |
+| Architecture completeness | 4.75 | Components, adapters, data flow, install policy, and validation boundaries are defined; CLI validation now names the package-local build context. |
+| Task coverage | 4.75 | Every PRD requirement has implementation and paired test coverage, with validated AC references. |
+| Dependency clarity | 4.75 | Dependencies are explicit and acyclic; PR shippable-state markers are immediately under each PR heading. |
 | Estimate confidence | 4.5 | Tasks are granular (2–4h); external format uncertainty is contained by generate-only fallbacks. |
 
-Overall design readiness score: **4.5 — PASS**.
+Overall design readiness score: **4.7 — PASS**.
 
 ## Acceptance Criteria Traceability
 
@@ -357,9 +353,15 @@ Traceability check: 16 requirements covered, 0 uncovered, 0 orphaned annotations
 
 ## Validation Plan
 
-- Run `node <TRD_CLI> parse docs/TRD/TRD-2026-29fd762f-agent-foreman-commands.md` and confirm all intended tasks are parsed.
+- Resolve the TRD CLI path before use, then run `node "$TRD_CLI" parse docs/TRD/TRD-2026-29fd762f-agent-foreman-commands.md` and confirm all intended tasks are parsed.
 - Run `git diff --check` after writing the TRD.
-- Implementation follow-up must verify CLI commands against Go source or `go build ./cmd/foreman`, never the stale root binary.
+- Implementation follow-up must verify CLI commands against Go source or `go build ./cmd/foreman` from `packages/foreman_cli`, never the stale root binary.
+
+## Changelog
+
+| Version | Date | Changes |
+|---|---|---|
+| 1.0.1 | 2026-09-02 | Foreman refinement: fixed PR-stack shippable-state placement, clarified package-local Go CLI verification commands, replaced unresolved TRD_CLI placeholder guidance, and refreshed readiness score. |
 
 ## Next Steps
 
