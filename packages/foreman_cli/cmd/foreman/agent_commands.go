@@ -339,7 +339,7 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 
 	cliRoot, err := findCLIRoot()
 	if err != nil {
-		return nil, fmt.Errorf("findCLIRoot: %w (continuing with embedded contract)", err)
+		return nil, fmt.Errorf("findCLIRoot: %w", err)
 	}
 
 	taskPath := filepath.Join(cliRoot, "cmd", "foreman", "task.go")

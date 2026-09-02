@@ -212,4 +212,12 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 			}
 		}
 	}
+
+	// Assert task get and run get have no flags (they take positional IDs only)
+	if len(flags["task get"]) != 0 {
+		t.Errorf("task get should have no flags, got: %v", flags["task get"])
+	}
+	if len(flags["run get"]) != 0 {
+		t.Errorf("run get should have no flags, got: %v", flags["run get"])
+	}
 }
