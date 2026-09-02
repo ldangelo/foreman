@@ -725,8 +725,7 @@ defmodule ForemanServer.MCP.Tools do
     {:ok, %{tasks: filtered, total: length(filtered)}}
   end
 
-  defp tool_foreman_task_get(args) do
-    task_id = Map.get(args, :task_id)
+  defp tool_foreman_task_get(%{task_id: task_id}) do
     start_us = System.monotonic_time(:microsecond)
     result = ProjectionStore.task_projection(task_id)
     duration_us = System.monotonic_time(:microsecond) - start_us
