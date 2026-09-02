@@ -1107,6 +1107,9 @@ so for a known run the read always succeeds.
 Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.
+`foreman_task_create` accepts required `project_id`, `prompt`, `workflow` and
+optional `task_id`, `task_type`, `title`, `backend`, `provider_tracked`,
+`auto_approve`; omitted `task_type` defaults to `"task"`.
 
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and
 behavior cannot diverge.
