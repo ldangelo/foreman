@@ -41,6 +41,9 @@ with the watcher enabled, inbound Beads appear as Foreman tasks.
   without a `:create` provider take the no-op path: no Bead is
   minted, no `external_id` is surfaced, and the `task.create`
   response carries only the Foreman `task_id`.
+- **Beads provider config.** Register Beads-backed projects with an
+  absolute `task_provider.config.database_path`; the Go CLI requires
+  `--task-provider-database-path` when `--task-provider=beads`.
 - **Beads → Foreman (inbound).** Opt in with
   `config :foreman_server, :start_beads_watcher?, true`. The
   `BeadsWatcherSupervisor` spawns one `BeadsWatcher` per registered

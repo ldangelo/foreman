@@ -45,6 +45,7 @@ func TestProjectCreateEnvelope(t *testing.T) {
 			"--id", "project-123",
 			"--path", "/tmp/demo-project",
 			"--task-provider", "beads",
+			"--task-provider-database-path", "/tmp/demo-project/.beads",
 		}); err != nil {
 			t.Fatalf("projectCreate: %v", err)
 		}
@@ -71,7 +72,7 @@ func TestProjectCreateEnvelope(t *testing.T) {
 		t.Fatalf("type = %q, want project.register", env.Type)
 	}
 
-	wantCommandID := sha256HexTest("project.create./tmp/demo-project.beads")
+	wantCommandID := sha256HexTest("project.create./tmp/demo-project.beads./tmp/demo-project/.beads")
 	if env.CommandID != wantCommandID {
 		t.Fatalf("command_id = %q, want %q", env.CommandID, wantCommandID)
 	}
@@ -91,6 +92,14 @@ func TestProjectCreateEnvelope(t *testing.T) {
 
 	if got := taskProvider["provider"]; got != "beads" {
 		t.Fatalf("payload.task_provider.provider = %#v, want beads", got)
+	}
+
+	config, ok := taskProvider["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload.task_provider.config type = %T, want map[string]any", taskProvider["config"])
+	}
+	if got := config["database_path"]; got != "/tmp/demo-project/.beads" {
+		t.Fatalf("payload.task_provider.config.database_path = %#v, want /tmp/demo-project/.beads", got)
 	}
 
 	if !strings.Contains(stdout, "project-123") || !strings.Contains(stdout, "/tmp/demo-project") || !strings.Contains(stdout, "beads") {
@@ -121,6 +130,7 @@ func TestProjectCreateIdempotencyKeyDerivation(t *testing.T) {
 			"--id", "project-456",
 			"--path", "/tmp/ignored-for-idempotency",
 			"--task-provider", "beads",
+			"--task-provider-database-path", "/tmp/ignored.db",
 			"--idempotency-key", "operator-key",
 		}); err != nil {
 			t.Fatalf("projectCreate: %v", err)
@@ -170,6 +180,7 @@ func TestProjectUpdateEnvelope(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		if err := projectUpdate(c, []string{
 			"--task-provider", "beads",
+			"--task-provider-database-path", "/tmp/project-123.beads",
 			"project-123",
 		}); err != nil {
 			t.Fatalf("projectUpdate: %v", err)
@@ -197,7 +208,7 @@ func TestProjectUpdateEnvelope(t *testing.T) {
 		t.Fatalf("type = %q, want project.update", env.Type)
 	}
 
-	wantCommandID := sha256HexTest("project.update.project-123.beads")
+	wantCommandID := sha256HexTest("project.update.project-123.beads./tmp/project-123.beads")
 	if env.CommandID != wantCommandID {
 		t.Fatalf("command_id = %q, want %q", env.CommandID, wantCommandID)
 	}
@@ -213,6 +224,14 @@ func TestProjectUpdateEnvelope(t *testing.T) {
 
 	if got := taskProvider["provider"]; got != "beads" {
 		t.Fatalf("payload.task_provider.provider = %#v, want beads", got)
+	}
+
+	config, ok := taskProvider["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload.task_provider.config type = %T, want map[string]any", taskProvider["config"])
+	}
+	if got := config["database_path"]; got != "/tmp/project-123.beads" {
+		t.Fatalf("payload.task_provider.config.database_path = %#v, want /tmp/project-123.beads", got)
 	}
 
 	if !strings.Contains(stdout, "project-123") || !strings.Contains(stdout, "beads") {
@@ -238,7 +257,7 @@ func TestProjectUpdatePayloadFixture(t *testing.T) {
 
 	c := &client.Client{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
 
-	if err := projectUpdate(c, []string{"--task-provider", "beads", "project-123"}); err != nil {
+	if err := projectUpdate(c, []string{"--task-provider", "beads", "--task-provider-database-path", "/tmp/project-123.beads", "project-123"}); err != nil {
 		t.Fatalf("projectUpdate: %v", err)
 	}
 
@@ -276,6 +295,7 @@ func TestProjectUpdateJSONOutput(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		if err := projectUpdate(c, []string{
 			"--task-provider", "beads",
+			"--task-provider-database-path", "/tmp/project-123.beads",
 			"--format=json",
 			"project-123",
 		}); err != nil {
@@ -322,6 +342,7 @@ func TestProjectUpdateIdempotencyKeyDerivation(t *testing.T) {
 
 	if err := projectUpdate(c, []string{
 		"--task-provider", "beads",
+		"--task-provider-database-path", "/tmp/ignored.db",
 		"--idempotency-key", "operator-key",
 		"project-456",
 	}); err != nil {
@@ -336,6 +357,65 @@ func TestProjectUpdateIdempotencyKeyDerivation(t *testing.T) {
 	wantCommandID := sha256HexTest("project.update.operator-key")
 	if env.CommandID != wantCommandID {
 		t.Fatalf("command_id = %q, want %q", env.CommandID, wantCommandID)
+	}
+}
+
+func TestProjectCreateRequiresDatabasePathForBeadsBeforePost(t *testing.T) {
+	var seenMethod string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMethod = r.Method
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := projectCreate(c, []string{
+		"--id", "project-missing-db",
+		"--path", "/tmp/project-missing-db",
+		"--task-provider", "beads",
+	})
+	if err == nil {
+		t.Fatal("projectCreate error = nil, want usage error")
+	}
+	if client.ExitCode(err) != 1 {
+		t.Fatalf("exit code = %d, want 1", client.ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "--task-provider-database-path is required when --task-provider=beads") {
+		t.Fatalf("error = %q, want missing database path message", err.Error())
+	}
+	if seenMethod != "" {
+		t.Fatalf("request method = %q, want no HTTP mutation call", seenMethod)
+	}
+}
+
+func TestProjectUpdateRequiresDatabasePathForBeadsBeforePost(t *testing.T) {
+	var seenMethod string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMethod = r.Method
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := projectUpdate(c, []string{
+		"--task-provider", "beads",
+		"project-missing-db",
+	})
+	if err == nil {
+		t.Fatal("projectUpdate error = nil, want usage error")
+	}
+	if client.ExitCode(err) != 1 {
+		t.Fatalf("exit code = %d, want 1", client.ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "--task-provider-database-path is required when --task-provider=beads") {
+		t.Fatalf("error = %q, want missing database path message", err.Error())
+	}
+	if seenMethod != "" {
+		t.Fatalf("request method = %q, want no HTTP mutation call", seenMethod)
 	}
 }
 
@@ -431,6 +511,7 @@ func TestMainProjectCreateUsesEnvClientAndJSONOutput(t *testing.T) {
 		"--id", "project-789",
 		"--path", "/tmp/from-env",
 		"--task-provider", "beads",
+		"--task-provider-database-path", "/tmp/from-env/.beads",
 		"--format=json",
 	}
 	defer func() { os.Args = oldArgs }()

@@ -17,9 +17,9 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman init              --force   # --force is REQUIRED
 >
-> foreman project create    --format --id --idempotency-key --path --task-provider
+> foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path
 > foreman project delete    --force --idempotency-key
 > foreman project list      --format --include-archived
 >
@@ -164,13 +164,14 @@ Manage Elixir-registered projects.
 
 ### `foreman project create`
 
-Register a new project. `--id`, `--path`, and `--task-provider` are required.
+Register a new project. `--id`, `--path`, and `--task-provider` are required. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path.
 
 ```
 foreman project create \
   --id project-123 \
   --path /srv/foreman/project-123 \
-  --task-provider beads
+  --task-provider beads \
+  --task-provider-database-path /srv/foreman/project-123/.beads
 ```
 
 | Option | Description |
@@ -178,6 +179,7 @@ foreman project create \
 | `--id <id>` | Project ID (required) |
 | `--path <path>` | Project path (required) |
 | `--task-provider <provider>` | Task provider (required) |
+| `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
 | `--idempotency-key <key>` | Idempotency key |
 | `--format json` | Print the raw command response as JSON |
 
@@ -195,15 +197,16 @@ foreman project get project-123
 
 ### `foreman project update <id>`
 
-Update a project's task provider. `--task-provider` is required.
+Update a project's task provider. `--task-provider` is required. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path.
 
 ```
-foreman project update --task-provider beads project-123
+foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--task-provider <provider>` | Task provider (required) |
+| `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
 | `--idempotency-key <key>` | Idempotency key |
 | `--format json` | Print the raw command response as JSON |
 
