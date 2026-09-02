@@ -1846,3 +1846,18 @@ the next typed handler cannot rediscover it.
 The lesson is the one section 5.5 already states: this was not a subtle bug, it
 was an unexecuted one. The implementation was written, committed, and reviewed
 as complete without the application ever being started against it.
+
+## Known Issues
+
+### Elixir Test Suite Non-Determinism (2026-09-02)
+
+`mix test` produces 38-43 failures on identical `--seed 1234` runs. **Hypothesis:**
+shared singleton GenServer state (ProjectionStore, TaskProvider.Registry, RunSlots) mutated via
+`:sys.replace_state`/`persistent_term` across async/sync test boundaries. **Ruled out:** cross-run EventStore pollution (EventStore reset in `test_helper.exs` had no effect on flakiness).
+
+Investigation and remediation options:
+1. Per-file `setup :reset_singletons` calls for ~20-30 problematic files
+2. Disable `async: true` on leaking test files
+3. Investigate async/sync interleaving of shared singletons, then implement the required isolation fix
+Do NOT run `br sync --force-jsonl` against a drifted workspace — has destroyed issues here before.
+See ``skill://beads-corrupt-db-recovery-safe`` for safe recovery procedure.

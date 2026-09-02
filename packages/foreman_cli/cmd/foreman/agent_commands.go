@@ -480,7 +480,9 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.NativeInstallSupported = true
 		result.RecommendedProjectDir = ".claude/commands/foreman"
 	case "pi", "omp":
-		result.UnsupportedNativeReason = "Pi/OMP native command-file path and format are not verified by Foreman; generated Markdown is copyable only."
+		result.NativeInstallSupported = true
+		result.RecommendedProjectDir = ".pi/agent/skills"
+		result.RecommendedGlobalDir = os.ExpandEnv("$HOME/.pi/agent/skills")
 	case "codex":
 		result.UnsupportedNativeReason = "Codex native command-file contract is unverified; generated Markdown is copyable only."
 	case "opencode":
@@ -490,14 +492,14 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 		result.SkippedNativeInstallNotes = []string{result.UnsupportedNativeReason}
 	}
 	for _, spec := range specs {
-		result.Files[spec.ID+".md"] = renderCommandMarkdown(agent, spec)
+		result.Files[spec.ID+"/SKILL.md"] = renderCommandMarkdown(agent, spec)
 	}
 	return result
 }
 
 func renderCommandMarkdown(agent string, spec agentCommandSpec) string {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "---\nname: %s\ndescription: %s\nagent: %s\ntags: %s\n---\n\n", spec.ID, spec.Description, agent, strings.Join(spec.Tags, ","))
+	fmt.Fprintf(&b, "---\nname: %s\ndescription: \"%s\"\n---\n\n", spec.ID, spec.Description)
 	fmt.Fprintf(&b, "# %s\n\n%s\n\n", spec.DisplayName, spec.Description)
 	fmt.Fprintf(&b, "Thin wrapper over `%s`. Inherits FOREMAN_API_URL and FOREMAN_API_TOKEN; no secrets are embedded.\n\n", strings.Join(spec.CLI, " "))
 	fmt.Fprintln(&b, "## Arguments")
