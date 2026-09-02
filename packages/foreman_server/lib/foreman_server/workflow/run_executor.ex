@@ -1192,7 +1192,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp phase_pr_created_or_reused?(run_id) do
     run_id
     |> phase_pr_records()
-    |> Enum.any?(&(Map.get(&1, :status) in ["created", "reused", :created, :reused]))
+    |> Enum.any?(&(Map.get(&1, :status) in ["created", "existing", :created, :existing]))
   end
 
   defp phase_pr_recorded_for_phase?(run_id, phase_id) do
@@ -1200,7 +1200,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> phase_pr_records()
     |> Enum.any?(fn record ->
       Map.get(record, :phase_id) == phase_id and
-        Map.get(record, :status) in ["created", "reused", :created, :reused]
+        Map.get(record, :status) in ["created", "existing", :created, :existing]
     end)
   end
 

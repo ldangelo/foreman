@@ -1,0 +1,4 @@
+advisors:
+  - name: default
+  - name: Advisor 2
+    model: minimax/MiniMax-M2.7:high
