@@ -48,7 +48,7 @@ defmodule ForemanServer.Workflow.PhasePRTest do
     end
 
     assert {:ok, record} = PhasePR.maybe_create(request(%{command_runner: runner}))
-    assert record.status == "reused"
+    assert record.status == "existing"
     assert record.pr_url == "https://github.com/acme/repo/pull/7"
   end
 

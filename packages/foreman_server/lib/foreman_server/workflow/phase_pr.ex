@@ -121,7 +121,7 @@ defmodule ForemanServer.Workflow.PhasePR do
     request.existing_records
     |> Enum.find(fn record ->
       Map.get(record, :phase_id) == request.phase_id and
-        Map.get(record, :status) in ["created", "reused", :created, :reused]
+        Map.get(record, :status) in ["created", "existing", :created, :existing]
     end)
     |> case do
       nil -> :not_recorded
@@ -156,7 +156,7 @@ defmodule ForemanServer.Workflow.PhasePR do
       open_pr(request)
     else
       {:ok, %{state: "open"} = pr} ->
-        {:ok, record(request, :reused, pr_url: pr.url, pr_number: pr.number)}
+        {:ok, record(request, :existing, pr_url: pr.url, pr_number: pr.number)}
 
       {:ok, %{state: "closed"} = pr} ->
         typed_error(request, :matching_pr_closed, pr)

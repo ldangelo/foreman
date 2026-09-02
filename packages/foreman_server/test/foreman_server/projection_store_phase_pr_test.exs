@@ -48,7 +48,7 @@ defmodule ForemanServer.ProjectionStorePhasePrTest do
     assert [%{phase_id: ^phase_id, status: "created", pr_url: @phase_pr_url}] = run.phase_prs
   end
 
-  test "created/reused phase PR payloads must carry usable URLs" do
+  test "created/existing phase PR payloads must carry usable URLs" do
     run_id = unique_run_id()
     phase_id = "#{run_id}-phase-1"
 
@@ -72,7 +72,7 @@ defmodule ForemanServer.ProjectionStorePhasePrTest do
                    workflow_snapshot: %{}
                  }
                },
-               phase_pr_event(run_id, phase_id, "reused", @phase_pr_url)
+               phase_pr_event(run_id, phase_id, "existing", @phase_pr_url)
              ])
 
     run_json =
@@ -81,7 +81,7 @@ defmodule ForemanServer.ProjectionStorePhasePrTest do
       |> json_response(200)
       |> Map.fetch!("run")
 
-    assert [%{"phase_id" => ^phase_id, "status" => "reused", "pr_url" => @phase_pr_url}] =
+    assert [%{"phase_id" => ^phase_id, "status" => "existing", "pr_url" => @phase_pr_url}] =
              run_json["phase_prs"]
   end
 

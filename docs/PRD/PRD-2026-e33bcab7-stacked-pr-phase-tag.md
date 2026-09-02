@@ -418,10 +418,10 @@ behavior, living docs must be updated when implementation ships.
 
 - AC-015-1: Given implementation adds `stack_pr:`, when the change is finalized,
   then `CLAUDE.md`, `AGENTS.md`, `README.md`, `docs/user-guide.md`, and
-  `docs/cli-reference.md` are considered and edited or explicitly reported as
-  not needing edits.
-- AC-015-2: Given docs currently state there is no per-phase PR setting, when the
-  feature ships, then those stale statements are updated in living docs.
+  `docs/cli-reference.md` are edited and reconciled to document the new
+  `stack_pr:` phase key and its behavioral semantics. Each of the five
+  documents must be updated — "explicitly reported as not needing edits" is not
+  an acceptable pass condition.
 
 ## Dependency Map
 
