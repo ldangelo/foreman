@@ -27,6 +27,7 @@ defmodule ForemanServerWeb.Router do
     post("/commands", CommandController, :create)
     get("/projects", ProjectController, :index)
     get("/projects/:id", ProjectController, :show)
+    get("/tasks", TaskController, :index)
     get("/tasks/:id", TaskController, :show)
     get("/runs", RunController, :index)
     get("/runs/:id", RunController, :show)

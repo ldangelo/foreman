@@ -529,6 +529,53 @@ defmodule ForemanServer.Aggregates.TaskTest do
     end
   end
 
+  describe "handle_command/2 — task.update" do
+    setup do
+      state = Task.initial_state()
+      %{task_id: "foreman-iv00", state: %{state | exists?: true, task_id: "foreman-iv00", status: "open"}}
+    end
+
+    test "accepts valid status update", %{state: state} do
+      assert {:ok, %{event_type: "TaskUpdated", payload: %{task_id: "foreman-iv00", status: "closed"}}} =
+               Task.handle_command(state, %{
+                 type: "task.update",
+                 payload: %{task_id: "foreman-iv00", status: "closed"}
+               })
+    end
+
+    test "accepts valid priority update", %{state: state} do
+      assert {:ok, %{event_type: "TaskUpdated", payload: %{task_id: "foreman-iv00", priority: 2}}} =
+               Task.handle_command(state, %{
+                 type: "task.update",
+                 payload: %{task_id: "foreman-iv00", priority: 2}
+               })
+    end
+
+    test "rejects invalid status", %{state: state} do
+      assert {:error, {:invalid_task_status, "completed"}} ==
+               Task.handle_command(state, %{
+                 type: "task.update",
+                 payload: %{task_id: "foreman-iv00", status: "completed"}
+               })
+    end
+
+    test "rejects invalid priority", %{state: state} do
+      assert {:error, {:invalid_task_priority, 99}} ==
+               Task.handle_command(state, %{
+                 type: "task.update",
+                 payload: %{task_id: "foreman-iv00", priority: 99}
+               })
+    end
+
+    test "rejects missing task_id" do
+      assert {:error, {:missing_or_invalid, :task_id}} ==
+               Task.handle_command(Task.initial_state(), %{
+                 type: "task.update",
+                 payload: %{}
+               })
+    end
+  end
+
   describe "handle_command/2 — unknown" do
     defmodule UnknownCommand do
       defstruct [:type, :payload]

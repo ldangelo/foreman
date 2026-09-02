@@ -135,6 +135,45 @@ defmodule ForemanServer.MCP.Tools do
       required: ["project_id", "prompt", "workflow"]
     }
   }
+  @schema_foreman_task_list %{
+    name: "foreman_task_list",
+    description: "List tasks for a project, optionally filtered by status",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        status: %{type: "string", description: "Filter by status (open, ready, in_progress, blocked, closed, failed)"}
+      }
+    }
+  }
+
+  @schema_foreman_task_get %{
+    name: "foreman_task_get",
+    description: "Get task details by task_id",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        task_id: %{type: "string", description: "The task ID"}
+      },
+      required: ["task_id"]
+    }
+  }
+
+  @schema_foreman_task_update %{
+    name: "foreman_task_update",
+    description: "Update task fields (title, description, priority, status)",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        task_id: %{type: "string", description: "The task ID"},
+        title: %{type: "string", description: "New task title"},
+        description: %{type: "string", description: "New task description"},
+        priority: %{type: "integer", description: "Priority 0-4 (0=critical, 4=backlog)"},
+        status: %{type: "string", description: "New status (open, ready, in_progress, closed, failed)"}
+      },
+      required: ["task_id"]
+    }
+  }
 
   @schema_foreman_run_cancel %{
     name: "foreman_run_cancel",
@@ -294,6 +333,9 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_workflow_get,
     @schema_foreman_workflow_validate,
     @schema_foreman_task_create,
+    @schema_foreman_task_list,
+    @schema_foreman_task_get,
+    @schema_foreman_task_update,
     @schema_foreman_run_cancel,
     @schema_foreman_workflow_put,
     @schema_foreman_workflow_delete,
@@ -658,6 +700,64 @@ defmodule ForemanServer.MCP.Tools do
     else
       {:error, reason} ->
         {:error, %ToolError{code: "INVALID_BACKEND", message: reason}}
+    end
+  end
+  defp tool_foreman_task_list(%{} = args) do
+    start_us = System.monotonic_time(:microsecond)
+    all_tasks = ProjectionStore.list_tasks()
+
+    filtered =
+      Enum.filter(all_tasks, fn task ->
+        project_match = Map.get(args, :project_id) == nil ||
+                         Map.get(task, :project_id) == Map.get(args, :project_id)
+        status_match = Map.get(args, :status) == nil ||
+                         Map.get(task, :status) == Map.get(args, :status)
+        project_match && status_match
+      end)
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_task_list", :ok)
+    {:ok, %{tasks: filtered, total: length(filtered)}}
+  end
+
+  defp tool_foreman_task_get(%{task_id: task_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ProjectionStore.task_projection(task_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    outcome = if result, do: :ok, else: :not_found
+    Telemetry.mcp_tool_call(duration_us, "foreman_task_get", outcome)
+    if result, do: {:ok, result}, else: {:error, %ToolError{code: "NOT_FOUND", message: "Task not found"}}
+  end
+
+  defp tool_foreman_task_update(%{task_id: task_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+    command_id = "mcp:#{task_id}:#{System.unique_integer([:positive])}"
+
+    payload = Map.new(for {k, v} <- args, k != :task_id, v != nil, do: {k, v})
+
+    if map_size(payload) == 0 do
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_task_update", :error)
+      {:error, %ToolError{code: "INVALID_PARAMS", message: "No update fields provided"}}
+    else
+      envelope = %{
+        type: "task.update",
+        command_id: command_id,
+        aggregate_id: "task:#{task_id}",
+        payload: Map.put(payload, :task_id, task_id)
+      }
+
+      case CommandGateway.dispatch_operator(envelope) do
+        {:ok, result} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_task_update", :ok)
+          {:ok, result}
+
+        {:error, reason} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_task_update", :error)
+          {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
+      end
     end
   end
 

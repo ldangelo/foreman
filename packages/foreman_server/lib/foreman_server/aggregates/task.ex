@@ -162,9 +162,19 @@ defmodule ForemanServer.Aggregates.Task do
       "TaskRunTerminated" ->
         apply_task_run_terminated(state, payload)
 
-
       "TaskRetried" ->
         apply_task_retried(state, payload)
+
+      "TaskUpdated" ->
+        %State{
+          state
+          | task_id: Aggregate.get(payload, :task_id) || state.task_id,
+            title: Aggregate.get(payload, :title) || state.title,
+            description: Aggregate.get(payload, :description) || state.description,
+            priority: Aggregate.get(payload, :priority) || state.priority,
+            status: Aggregate.get(payload, :status) || state.status
+        }
+
       _ ->
         state
     end
@@ -336,6 +346,25 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
+  def handle_command(state, %{type: "task.update", payload: payload}) do
+    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         :ok <- require_exists(state, task_id),
+         {:ok, _priority} <- validate_priority_update(Aggregate.get(payload, :priority)),
+         {:ok, _status} <- validate_status_update(Aggregate.get(payload, :status)) do
+      updates =
+        [:title, :description, :priority, :status]
+        |> Enum.filter(fn field -> Aggregate.get(payload, field) != nil end)
+        |> Map.new(fn field -> {field, Aggregate.get(payload, field)} end)
+
+      {:ok,
+       %{
+         stream_id: "task:#{task_id}",
+         event_type: "TaskUpdated",
+         payload: Map.put(updates, :task_id, task_id)
+       }}
+    end
+  end
+
 
   def handle_command(%State{} = _state, cmd) do
     {:error, {:unsupported_command, cmd.__struct__}}
@@ -499,4 +528,15 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp require_workflow_snapshot(snapshot),
     do: {:error, {:missing_or_invalid, :workflow_snapshot, snapshot}}
+  defp validate_status_update(nil), do: {:ok, nil}
+  defp validate_status_update(status) do
+    case validate_status(status) do
+      :ok -> {:ok, status}
+      err -> err
+    end
+  end
+
+  defp validate_priority_update(nil), do: {:ok, nil}
+  defp validate_priority_update(p) when is_integer(p) and p >= 0 and p <= 4, do: {:ok, p}
+  defp validate_priority_update(p), do: {:error, {:invalid_task_priority, p}}
 end
