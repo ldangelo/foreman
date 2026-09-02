@@ -8,7 +8,7 @@ import (
 	"os"
 	"path"
 	"strings"
-
+	"text/tabwriter"
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
 
@@ -238,7 +238,33 @@ func taskList(c *client.Client, args []string) error {
 		return err
 	}
 
-	return printJSON(out)
+	if len(out.Tasks) == 0 {
+		fmt.Println("No tasks found.")
+		return nil
+	}
+
+	// Print table: task_id, project, status, title
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "TASK ID\tPROJECT\tSTATUS\tTITLE")
+	for _, t := range out.Tasks {
+		tid := getStr(t, "task_id")
+		proj := getStr(t, "project_id")
+		stat := getStr(t, "status")
+		title := getStr(t, "title")
+		if title == "" {
+			title = "(no title)"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tid, proj, stat, title)
+	}
+	w.Flush()
+	return nil
+}
+
+func getStr(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 func taskUpdate(c *client.Client, args []string) error {
