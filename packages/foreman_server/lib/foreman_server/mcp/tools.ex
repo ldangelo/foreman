@@ -631,6 +631,7 @@ defmodule ForemanServer.MCP.Tools do
         task_type: "task",
         workflow_type: workflow,
         prompt: prompt,
+        description: prompt,
         title: Map.get(args, :title) || task_id,
         provider_tracked: Map.get(args, :provider_tracked, false),
         auto_approve: Map.get(args, :auto_approve, true)

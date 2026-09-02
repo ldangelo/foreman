@@ -994,7 +994,9 @@ tracked git blob, required by the CLI when `--workflow-type` is
 approval. The CLI has no `--priority` flag; set it via a raw
 `POST /api/commands` `task.create` payload (`priority`, integer 0-4) if
 needed — Beads validates it as a Beads priority for
-`implement-trd-beads` tasks.
+`implement-trd-beads` tasks. The MCP `foreman_task_create` helper maps
+its required `prompt` to task `description`, so command-phase agents see
+that text in `FOREMAN_TASK_DESCRIPTION`.
 
 #### 2. Approve a task
 

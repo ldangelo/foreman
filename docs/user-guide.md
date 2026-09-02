@@ -650,9 +650,11 @@ set in `:foreman_server, :mcp` config.
 
 - `foreman_task_create` creates and dispatches a task in one call:
   required `project_id`, `prompt`, `workflow`; optional `task_id`,
-  `title`, `backend`. It defaults `provider_tracked: false` and
-  `auto_approve: true`, matching the retired `foreman_work_submit`
-  tool's ergonomics.
+  `title`, `backend`. It copies `prompt` into the task `description`,
+  so command phases receive it through `FOREMAN_TASK_DESCRIPTION` as
+  well as `workflow_snapshot["input"]["prompt"]`. It defaults
+  `provider_tracked: false` and `auto_approve: true`, matching the
+  retired `foreman_work_submit` tool's ergonomics.
 - `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
   `reason`.
 

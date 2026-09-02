@@ -60,6 +60,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                  task_type: "task",
                  workflow_type: "default",
                  prompt: "Do the thing",
+                 description: "Do the thing",
                  title: "task-123",
                  provider_tracked: false,
                  auto_approve: true
@@ -83,6 +84,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
         assert String.starts_with?(envelope.payload.task_id, "adhoc-")
+        assert envelope.payload.description == "Do the thing"
         assert envelope.aggregate_id == "task:#{envelope.payload.task_id}"
         {:ok, %{task_id: envelope.payload.task_id, status: "ready"}}
       end)
