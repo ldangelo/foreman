@@ -52,6 +52,9 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_workflow_get",
                "foreman_workflow_validate",
                "foreman_task_create",
+               "foreman_task_list",
+               "foreman_task_get",
+               "foreman_task_update",
                "foreman_run_cancel",
                "foreman_workflow_put",
                "foreman_workflow_delete",
@@ -86,6 +89,10 @@ defmodule ForemanServer.MCP.ToolsTest do
              }
 
       refute "task_type" in tool.inputSchema.required
+
+      # REQ: description required, prompt optional
+      assert "description" in tool.inputSchema.required
+      refute "prompt" in tool.inputSchema.required
     end
   end
 

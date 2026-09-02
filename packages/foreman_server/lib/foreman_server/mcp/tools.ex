@@ -135,9 +135,13 @@ defmodule ForemanServer.MCP.Tools do
           type: "boolean",
           default: true,
           description: "Immediately approve and dispatch the task after creation. Defaults to true for one-call dispatch."
+        },
+        description: %{
+          type: "string",
+          description: "Task description, shown to command-phase agents as FOREMAN_TASK_DESCRIPTION"
         }
       },
-      required: ["project_id", "prompt", "workflow"]
+      required: ["project_id", "description", "workflow"]
     }
   }
   @schema_foreman_task_list %{
@@ -653,11 +657,10 @@ defmodule ForemanServer.MCP.Tools do
          }}
       end
   end
-
   defp tool_foreman_task_create(%{
         project_id: project_id,
-        prompt: prompt,
-        workflow: workflow
+        workflow: workflow,
+        description: description
       } = args) do
     backend = Map.get(args, :backend) || "jido_harness"
 
@@ -677,13 +680,12 @@ defmodule ForemanServer.MCP.Tools do
         project_id: project_id,
         task_type: Map.get(args, :task_type) || "task",
         workflow_type: workflow,
-        prompt: prompt,
-        description: prompt,
+        prompt: Map.get(args, :prompt),
+        description: description,
         title: Map.get(args, :title) || task_id,
         provider_tracked: Map.get(args, :provider_tracked, false),
         auto_approve: Map.get(args, :auto_approve, true)
       }
-
       envelope = %{
         type: "task.create",
         command_id: command_id,

@@ -433,9 +433,9 @@ these invariants. Drift without a tracked TRD is a regression.
   operator on a project with a configured `:create` provider still
   gets an `external_id`. The presence/absence of `external_id` means
   "Bead linked" vs "Bead not linked", **not** "operator-issued" vs
-  "system-issued". The MCP `foreman_task_create` helper copies its
-  required `prompt` into task `description` so `RunExecutor` exports
-  the same subject via `FOREMAN_TASK_DESCRIPTION` for `command:` phases.
+  "system-issued". The MCP `foreman_task_create` helper requires
+`description` for `FOREMAN_TASK_DESCRIPTION`, passes `prompt` separately for
+`:prompt`-action phases, and defaults `auto_approve: true`.
 - **Beads → Foreman (inbound) is opt-in.** The
   `BeadsWatcherSupervisor` is added to `ForemanServer.Application`
   only when `config :foreman_server, :start_beads_watcher?, true`.
