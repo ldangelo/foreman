@@ -1855,10 +1855,9 @@ as complete without the application ever being started against it.
 shared singleton GenServer state (ProjectionStore, TaskProvider.Registry, RunSlots) mutated via
 `:sys.replace_state`/`persistent_term` across async/sync test boundaries. **Ruled out:** cross-run EventStore pollution (EventStore reset in `test_helper.exs` had no effect on flakiness).
 
-Remediation required — investigation alone is not a fix:
+Investigation and remediation options:
 1. Per-file `setup :reset_singletons` calls for ~20-30 problematic files
 2. Disable `async: true` on leaking test files
-3. Investigate async/sync interleaving of shared singletons
-
+3. Investigate async/sync interleaving of shared singletons, then implement the required isolation fix
 Do NOT run `br sync --force-jsonl` against a drifted workspace — has destroyed issues here before.
 See ``skill://beads-corrupt-db-recovery-safe`` for safe recovery procedure.
