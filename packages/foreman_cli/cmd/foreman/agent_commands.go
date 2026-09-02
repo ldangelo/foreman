@@ -316,59 +316,18 @@ func validateAgentCommandSpecs(specs []agentCommandSpec) error {
 	return nil
 }
 
-// embeddedCLIFlagContract is the canonical allowed-flags map for each CLI command.
-// This is derived from packages/foreman_cli/cmd/foreman/{task,run}.go at development time
-// and embedded here so deployed binaries do not depend on having the source tree available.
-// It is used by validateAgentCommandSpecs to ensure generated commands match the real CLI.
-var embeddedCLIFlagContract = map[string]map[string]bool{
-	"task create": {
-		"--project":     true,
-		"--title":       true,
-		"--description": true,
-		"--id":          true,
-		"--workflow-type": true,
-		"--trd-path":    true,
-	},
-	"task get": {
-		// task get takes only a positional ID, no flags currently defined in task.go
-	},
-	"run submit": {
-		"--project-id":   true,
-		"--workflow":     true,
-		"--prompt":       true,
-		"--work-id":      true,
-		"--backend":      true,
-		"--base-branch":  true,
-	},
-	"run list": {
-		"--status":     true,
-		"--project-id": true,
-		"--limit":      true,
-	},
-	"run get": {
-		// run get takes only a positional ID, no flags currently defined in run.go
-	},
-}
-
-// extractAllowedCLIFlags returns the canonical flag set for each subcommand.
-// In development mode, it can re-derive flags from source to detect drift.
-// In production (deployed binary), it returns the embedded contract.
+// extractAllowedCLIFlags returns the canonical flag set for each subcommand by
+// parsing packages/foreman_cli/cmd/foreman/task.go and run.go at runtime.
+// This validation is a development/CI-time tool; it requires source access.
+// Returns error if source cannot be found.
 func extractAllowedCLIFlags() (map[string]map[string]bool, error) {
-	// Try to re-derive from source if available (development/CI mode).
-	// If source is unavailable, fall back to embedded contract.
-	derived, err := extractCLIFlagsFromSource()
-	if err == nil {
-		return derived, nil
-	}
-	// Fall back to embedded contract for deployed binaries
-	return embeddedCLIFlagContract, nil
+	return extractCLIFlagsFromSource()
 }
 
 // extractCLIFlagsFromSource parses packages/foreman_cli/cmd/foreman/task.go and run.go
 // using go/parser and go/ast, extracting flag names from FlagSet method calls.
-// This ensures validateAgentCommandSpecs validates against the real CLI contract
-// when source is available. Returns error if source cannot be found (expected in
-// production deployments; see fallback in extractAllowedCLIFlags).
+// This ensures validateAgentCommandSpecs validates against the real CLI contract.
+// Returns error if source cannot be found.
 func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	allowed := map[string]map[string]bool{
 		"task create": {},

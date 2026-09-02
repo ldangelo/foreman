@@ -177,3 +177,39 @@ func argRequired(spec agentCommandSpec, name string) bool {
 	}
 	return false
 }
+
+func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
+	// Verify that extractCLIFlagsFromSource correctly derives flags from the actual
+	// task.go and run.go source files. This test acts as a regression detector:
+	// if task.go or run.go adds/removes/renames flags, this test will catch it
+	// and prevent validateAgentCommandSpecs from using stale flag maps.
+
+	flags, err := extractCLIFlagsFromSource()
+	if err != nil {
+		t.Fatalf("extractCLIFlagsFromSource failed: %v", err)
+	}
+
+	// Verify the expected commands are present
+	expectedCommands := []string{"task create", "run submit", "run list", "run get", "task get"}
+	for _, cmd := range expectedCommands {
+		if _, ok := flags[cmd]; !ok {
+			t.Errorf("expected command %q not found in extracted flags", cmd)
+		}
+	}
+
+	// Spot-check known flags for each command
+	tests := map[string][]string{
+		"task create": {"--project", "--title", "--workflow-type", "--trd-path"},
+		"run submit":  {"--project-id", "--workflow", "--prompt"},
+		"run list":    {"--status", "--project-id", "--limit"},
+	}
+
+	for cmd, expectedFlags := range tests {
+		cmdFlags := flags[cmd]
+		for _, flag := range expectedFlags {
+			if !cmdFlags[flag] {
+				t.Errorf("command %q missing expected flag %q", cmd, flag)
+			}
+		}
+	}
+}
