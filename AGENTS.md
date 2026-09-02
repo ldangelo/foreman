@@ -1855,7 +1855,7 @@ as complete without the application ever being started against it.
 shared singleton GenServer state (ProjectionStore, TaskProvider.Registry, RunSlots) mutated via
 `:sys.replace_state`/`persistent_term` across async/sync test boundaries. **Ruled out:** cross-run EventStore pollution (EventStore reset in `test_helper.exs` had no effect on flakiness).
 
-Fix requires either:
+Remediation required — investigation alone is not a fix:
 1. Per-file `setup :reset_singletons` calls for ~20-30 problematic files
 2. Disable `async: true` on leaking test files
 3. Investigate async/sync interleaving of shared singletons
