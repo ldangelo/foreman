@@ -655,6 +655,9 @@ structured reason, never transport-level JSON-RPC errors.
 - `foreman_task_list` lists all tasks, optionally filtered by
   `project_id` and `status`. Returns `{tasks: [...], total: N}`.
 - `foreman_task_get` returns the full projection for one task.
+- `foreman_task_create` accepts optional `task_type` with the same
+  closed enum as Beads (`task`, `bug`, `feature`, `epic`, `chore`,
+  `docs`, `question`); omitted calls still create `task` issues.
 - `foreman_task_update` updates mutable task fields (`title`,
   `description`, `priority`, `status`). Requires `task_id` and at
   least one field to update.

@@ -435,7 +435,9 @@ these invariants. Drift without a tracked TRD is a regression.
   "Bead linked" vs "Bead not linked", **not** "operator-issued" vs
   "system-issued". The MCP `foreman_task_create` helper copies its
   required `prompt` into task `description` so `RunExecutor` exports
-  the same subject via `FOREMAN_TASK_DESCRIPTION` for `command:` phases.
+  the same subject via `FOREMAN_TASK_DESCRIPTION` for `command:` phases,
+  and accepts optional Beads-compatible `task_type` values (`task`,
+  `bug`, `feature`, `epic`, `chore`, `docs`, `question`).
 - **Beads → Foreman (inbound) is opt-in.** The
   `BeadsWatcherSupervisor` is added to `ForemanServer.Application`
   only when `config :foreman_server, :start_beads_watcher?, true`.

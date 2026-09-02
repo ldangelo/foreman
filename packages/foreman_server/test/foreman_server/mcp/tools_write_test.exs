@@ -75,6 +75,43 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       assert :meck.called(CommandGateway, :dispatch_operator, :_)
     end
 
+    test "uses caller task_type when supplied" do
+      params = %{
+        task_id: "task-123",
+        project_id: "proj-456",
+        workflow: "default",
+        task_type: "bug",
+        prompt: "Fix the thing"
+      }
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.payload.task_type == "bug"
+        {:ok, %{task_id: "task-123", task_type: "bug", status: "ready"}}
+      end)
+
+      result = Tools.call_tool("foreman_task_create", params)
+
+      assert result == {:ok, %{task_id: "task-123", task_type: "bug", status: "ready"}}
+      assert :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
+    test "rejects invalid task_type before dispatch" do
+      params = %{
+        task_id: "task-123",
+        project_id: "proj-456",
+        workflow: "default",
+        task_type: "story",
+        prompt: "Do the thing"
+      }
+
+      result = Tools.call_tool("foreman_task_create", params)
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS", message: message}} = result
+      assert message =~ "task_type must be one of"
+      assert message =~ "story"
+      refute :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
     test "mints a task_id when none is supplied" do
       params = %{
         project_id: "proj-456",

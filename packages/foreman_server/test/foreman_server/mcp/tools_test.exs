@@ -74,6 +74,10 @@ defmodule ForemanServer.MCP.ToolsTest do
           assert is_list(tool.inputSchema.required)
         end
       end)
+
+      task_create = Enum.find(tools, &(&1.name == "foreman_task_create"))
+      assert task_create.inputSchema.properties.task_type.enum ==
+               ~w(task bug feature epic chore docs question)
     end
   end
 

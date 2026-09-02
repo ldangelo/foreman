@@ -1113,7 +1113,9 @@ Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.
 `foreman_task_create` copies its required `prompt` into task `description`, so
-command phases receive the same text through `FOREMAN_TASK_DESCRIPTION`.
+command phases receive the same text through `FOREMAN_TASK_DESCRIPTION`. It also
+accepts optional `task_type` with Beads-compatible values (`task`, `bug`,
+`feature`, `epic`, `chore`, `docs`, `question`), defaulting to `task`.
 
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and
 behavior cannot diverge.

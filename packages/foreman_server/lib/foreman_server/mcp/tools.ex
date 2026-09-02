@@ -30,6 +30,8 @@ defmodule ForemanServer.MCP.Tools do
     "claude" => :claude
   }
 
+  @valid_task_types ~w(task bug feature epic chore docs question)
+
   @schema_foreman_work_get %{
     name: "foreman_work_get",
     description: "Get work details by work_id",
@@ -113,6 +115,12 @@ defmodule ForemanServer.MCP.Tools do
         project_id: %{type: "string", description: "The project ID"},
         prompt: %{type: "string", description: "The input prompt"},
         workflow: %{type: "string", description: "The workflow name"},
+        task_type: %{
+          type: "string",
+          enum: @valid_task_types,
+          default: "task",
+          description: "The Beads-compatible issue type to store on the Foreman task. Defaults to task."
+        },
         task_id: %{type: "string", description: "The task ID. Minted automatically when omitted."},
         title: %{type: "string", description: "The task title. Defaults to the task ID."},
         backend: %{
@@ -655,8 +663,10 @@ defmodule ForemanServer.MCP.Tools do
         workflow: workflow
       } = args) do
     backend = Map.get(args, :backend) || "jido_harness"
+    task_type = Map.get(args, :task_type, "task")
 
-    with :ok <- check_backend(backend) do
+    with :ok <- check_task_type(task_type),
+         :ok <- check_backend(backend) do
       start_us = System.monotonic_time(:microsecond)
 
       task_id =
@@ -670,7 +680,7 @@ defmodule ForemanServer.MCP.Tools do
       payload = %{
         task_id: task_id,
         project_id: project_id,
-        task_type: "task",
+        task_type: task_type,
         workflow_type: workflow,
         prompt: prompt,
         description: prompt,
@@ -698,6 +708,13 @@ defmodule ForemanServer.MCP.Tools do
           {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
       end
     else
+      {:error, {:invalid_task_type, invalid}} ->
+        {:error,
+         %ToolError{
+           code: "INVALID_PARAMS",
+           message: "task_type must be one of: #{Enum.join(@valid_task_types, ", ")} (got: #{inspect(invalid)})"
+         }}
+
       {:error, reason} ->
         {:error, %ToolError{code: "INVALID_BACKEND", message: reason}}
     end
@@ -760,6 +777,9 @@ defmodule ForemanServer.MCP.Tools do
       end
     end
   end
+
+  defp check_task_type(task_type) when task_type in @valid_task_types, do: :ok
+  defp check_task_type(task_type), do: {:error, {:invalid_task_type, task_type}}
 
   # Returns :ok, or {:error, message_string} describing why the backend is rejected.
   defp check_backend(backend) when is_binary(backend) do

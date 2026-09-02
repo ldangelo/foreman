@@ -1003,7 +1003,9 @@ approval. The CLI has no `--priority` flag; set it via a raw
 needed — Beads validates it as a Beads priority for
 `implement-trd-beads` tasks. The MCP `foreman_task_create` helper maps
 its required `prompt` to task `description`, so command-phase agents see
-that text in `FOREMAN_TASK_DESCRIPTION`.
+that text in `FOREMAN_TASK_DESCRIPTION`; it also accepts optional
+Beads-compatible `task_type` values (`task`, `bug`, `feature`, `epic`,
+`chore`, `docs`, `question`) and defaults to `task`.
 
 #### 2. Approve a task
 
