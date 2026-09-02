@@ -956,6 +956,13 @@ The Go CLI (`foreman`) defaults to `http://127.0.0.1:4000` — set `FOREMAN_API_
 FOREMAN_API_URL=http://127.0.0.1:4766 foreman task list
 ```
 
+### Registering Beads-backed Projects
+
+`foreman project create` / `foreman project update` require
+`--task-provider-database-path <absolute-path>` when
+`--task-provider=beads`; the CLI writes this as
+`task_provider.config.database_path`.
+
 ### Stopping the Server
 
 ```bash

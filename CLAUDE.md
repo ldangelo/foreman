@@ -373,7 +373,9 @@ JSON round-trip is lossless.
   cannot be overridden by operator payload or phase YAML context.
 - **Beads scope.** For `implement-trd-beads`, freeze
   `task_provider.config.database_path` (from the TaskProvider
-  Registry, not cwd discovery) and `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
+  Registry, not cwd discovery; Go CLI project create/update requires
+  `--task-provider-database-path` when `--task-provider=beads`) and
+  `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
   at approval. Every `br`/`bv` invocation passes `BEADS_DB` and
   `TRD_SCOPE` explicitly. Scaffolds are prefixed `[trd:<TRD_SCOPE>]`.
 - **Clean-vs-dirty cleanup.** Clean worktrees are removed on

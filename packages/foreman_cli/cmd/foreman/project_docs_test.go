@@ -17,7 +17,7 @@ import (
 func TestUserGuideProjectExamplesExecuteAgainstCLI(t *testing.T) {
 	doc := readRepoDoc(t, "docs/user-guide.md")
 
-	assertDocCommand(t, doc, "### Create a project", "foreman project create \\\n  --id project-123 \\\n  --path /srv/foreman/project-123 \\\n  --task-provider beads", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
+	assertDocCommand(t, doc, "### Create a project", "foreman project create \\\n  --id project-123 \\\n  --path /srv/foreman/project-123 \\\n  --task-provider beads \\\n  --task-provider-database-path /srv/foreman/project-123/.beads", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %q, want POST", r.Method)
 		}
@@ -46,7 +46,7 @@ func TestUserGuideProjectExamplesExecuteAgainstCLI(t *testing.T) {
 		}
 	}, `{"project":{"project_id":"project-123","path":"/srv/foreman/project-123","status":"active"}}`)
 
-	assertDocCommand(t, doc, "### Update a project", "foreman project update --task-provider beads project-123", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
+	assertDocCommand(t, doc, "### Update a project", "foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %q, want POST", r.Method)
 		}
@@ -100,7 +100,7 @@ func TestUserGuideProjectExamplesExecuteAgainstCLI(t *testing.T) {
 func TestCLIReferenceProjectExamplesExecuteAgainstCLI(t *testing.T) {
 	doc := readRepoDoc(t, "docs/cli-reference.md")
 
-	assertDocCommand(t, doc, "### `foreman project create`", "foreman project create \\\n  --id project-123 \\\n  --path /srv/foreman/project-123 \\\n  --task-provider beads", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
+	assertDocCommand(t, doc, "### `foreman project create`", "foreman project create \\\n  --id project-123 \\\n  --path /srv/foreman/project-123 \\\n  --task-provider beads \\\n  --task-provider-database-path /srv/foreman/project-123/.beads", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/commands" {
 			t.Fatalf("request = %s %s, want POST /api/commands", r.Method, r.URL.Path)
 		}
@@ -123,7 +123,7 @@ func TestCLIReferenceProjectExamplesExecuteAgainstCLI(t *testing.T) {
 		}
 	}, `{"project":{"project_id":"project-123","path":"/srv/foreman/project-123","status":"active"}}`)
 
-	assertDocCommand(t, doc, "### `foreman project update <id>`", "foreman project update --task-provider beads project-123", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
+	assertDocCommand(t, doc, "### `foreman project update <id>`", "foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/commands" {
 			t.Fatalf("request = %s %s, want POST /api/commands", r.Method, r.URL.Path)
 		}

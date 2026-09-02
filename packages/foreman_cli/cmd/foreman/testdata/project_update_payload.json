@@ -1,10 +1,13 @@
 {
   "type": "project.update",
-  "command_id": "23ce8e539eb875ade437b7304b8e8feebc1dd80525fa4b7fe538ce0fdb94b1c2",
+  "command_id": "ea2cfbddb73ae7898c72ba286ea92bb7c37cfede5d70e5abe6a2d23fa421df48",
   "payload": {
     "project_id": "project-123",
     "task_provider": {
-      "provider": "beads"
+      "provider": "beads",
+      "config": {
+        "database_path": "/tmp/project-123.beads"
+      }
     }
   }
 }

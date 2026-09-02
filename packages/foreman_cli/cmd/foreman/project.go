@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -19,7 +20,7 @@ func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
 			"foreman project: missing subcommand (create|get|update|delete|list)",
-			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
+			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
 		)
 	}
 
@@ -37,7 +38,7 @@ func runProject(c *client.Client, args []string) error {
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman project: unknown subcommand %q", args[0]),
-			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
+			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
 		)
 	}
 }
@@ -47,6 +48,7 @@ func projectCreate(c *client.Client, args []string) error {
 	projectID := fs.String("id", "", "Project ID (required)")
 	path := fs.String("path", "", "Project path (required)")
 	taskProvider := fs.String("task-provider", "", "Task provider (required)")
+	taskProviderDatabasePath := fs.String("task-provider-database-path", "", "Task provider database path (required for beads)")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
 	format := fs.String("format", "", "Output format (json)")
 	if err := fs.parse(args); err != nil {
@@ -61,17 +63,17 @@ func projectCreate(c *client.Client, args []string) error {
 	default:
 		return usageError(fs, "foreman project create: unsupported format %q", *format)
 	}
-
+	if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project create"); err != nil {
+		return err
+	}
 
 	body := commandEnvelope{
 		Type:      "project.register",
-		CommandID: projectCreateCommandID(*path, *taskProvider, *idempotencyKey),
+		CommandID: projectCreateCommandID(*path, *taskProvider, *taskProviderDatabasePath, *idempotencyKey),
 		Payload: map[string]any{
-			"project_id": *projectID,
-			"path":       *path,
-			"task_provider": map[string]any{
-				"provider": *taskProvider,
-			},
+			"project_id":    *projectID,
+			"path":          *path,
+			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath),
 		},
 	}
 
@@ -123,6 +125,7 @@ func projectGet(c *client.Client, args []string) error {
 func projectUpdate(c *client.Client, args []string) error {
 	fs := newFlagSet("project update")
 	taskProvider := fs.String("task-provider", "", "Task provider (required)")
+	taskProviderDatabasePath := fs.String("task-provider-database-path", "", "Task provider database path (required for beads)")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
 	format := fs.String("format", "", "Output format (json)")
 	if err := fs.parse(args); err != nil {
@@ -132,22 +135,22 @@ func projectUpdate(c *client.Client, args []string) error {
 	if fs.NArg() != 1 || *taskProvider == "" {
 		return usageError(fs, "foreman project update: --task-provider and <project-id> are required")
 	}
-
 	switch *format {
 	case "", "json":
 	default:
 		return usageError(fs, "foreman project update: unsupported format %q", *format)
 	}
+	if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project update"); err != nil {
+		return err
+	}
 
 	projectID := fs.Arg(0)
 	body := commandEnvelope{
 		Type:      "project.update",
-		CommandID: projectUpdateCommandID(projectID, *taskProvider, *idempotencyKey),
+		CommandID: projectUpdateCommandID(projectID, *taskProvider, *taskProviderDatabasePath, *idempotencyKey),
 		Payload: map[string]any{
-			"project_id": projectID,
-			"task_provider": map[string]any{
-				"provider": *taskProvider,
-			},
+			"project_id":    projectID,
+			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath),
 		},
 	}
 
@@ -360,20 +363,46 @@ func projectStringField(project map[string]any, key string) string {
 	return value
 }
 
-func projectCreateCommandID(path, taskProvider, idempotencyKey string) string {
+func taskProviderPayload(provider, databasePath string) map[string]any {
+	payload := map[string]any{"provider": provider}
+	if databasePath != "" {
+		payload["config"] = map[string]any{"database_path": databasePath}
+	}
+	return payload
+}
+
+func validateTaskProviderConfig(fs *flagSet, provider, databasePath, command string) error {
+	if provider == "beads" && databasePath == "" {
+		return usageError(fs, "%s", command+": --task-provider-database-path is required when --task-provider=beads")
+	}
+	if databasePath != "" && !filepath.IsAbs(databasePath) {
+		return usageError(fs, "%s", command+": --task-provider-database-path must be absolute")
+	}
+	return nil
+}
+
+func projectCreateCommandID(path, taskProvider, taskProviderDatabasePath, idempotencyKey string) string {
 	if idempotencyKey != "" {
 		return sha256Hex("project.create." + idempotencyKey)
 	}
 
-	return sha256Hex("project.create." + path + "." + taskProvider)
+	seed := "project.create." + path + "." + taskProvider
+	if taskProviderDatabasePath != "" {
+		seed += "." + taskProviderDatabasePath
+	}
+	return sha256Hex(seed)
 }
 
-func projectUpdateCommandID(projectID, taskProvider, idempotencyKey string) string {
+func projectUpdateCommandID(projectID, taskProvider, taskProviderDatabasePath, idempotencyKey string) string {
 	if idempotencyKey != "" {
 		return sha256Hex("project.update." + idempotencyKey)
 	}
 
-	return sha256Hex("project.update." + projectID + "." + taskProvider)
+	seed := "project.update." + projectID + "." + taskProvider
+	if taskProviderDatabasePath != "" {
+		seed += "." + taskProviderDatabasePath
+	}
+	return sha256Hex(seed)
 }
 
 func projectDeleteCommandID(projectID, idempotencyKey string) string {

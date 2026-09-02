@@ -156,7 +156,8 @@ one project at a time via `--project-id`/`--project`.
 foreman project create \
   --id project-123 \
   --path /srv/foreman/project-123 \
-  --task-provider beads
+  --task-provider beads \
+  --task-provider-database-path /srv/foreman/project-123/.beads
 ```
 
 ### Get one project
@@ -168,7 +169,7 @@ foreman project get project-123
 ### Update a project
 
 ```
-foreman project update --task-provider beads project-123
+foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
 ```
 
 ### Delete a project
@@ -711,7 +712,7 @@ points at the running server (`http://127.0.0.1:4766` in dev) and that
 ### 2. Register the project (once)
 
 ```bash
-foreman project create --id my-project --path /path/to/repo --task-provider beads
+foreman project create --id my-project --path /path/to/repo --task-provider beads --task-provider-database-path /path/to/repo/.beads
 ```
 
 ### 3. Create and approve a task
