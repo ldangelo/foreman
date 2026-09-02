@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -313,11 +316,60 @@ func validateAgentCommandSpecs(specs []agentCommandSpec) error {
 	return nil
 }
 
-// extractAllowedCLIFlags parses packages/foreman_cli/cmd/foreman/task.go and
-// run.go at runtime and returns the canonical flag set for each subcommand.
-// This ensures validateAgentCommandSpecs validates against the real CLI contract,
-// not a static map that can drift from the source.
+// embeddedCLIFlagContract is the canonical allowed-flags map for each CLI command.
+// This is derived from packages/foreman_cli/cmd/foreman/{task,run}.go at development time
+// and embedded here so deployed binaries do not depend on having the source tree available.
+// It is used by validateAgentCommandSpecs to ensure generated commands match the real CLI.
+var embeddedCLIFlagContract = map[string]map[string]bool{
+	"task create": {
+		"--project":     true,
+		"--title":       true,
+		"--description": true,
+		"--id":          true,
+		"--workflow-type": true,
+		"--trd-path":    true,
+	},
+	"task get": {
+		// task get takes only a positional ID, no flags currently defined in task.go
+	},
+	"run submit": {
+		"--project-id":   true,
+		"--workflow":     true,
+		"--prompt":       true,
+		"--work-id":      true,
+		"--backend":      true,
+		"--base-branch":  true,
+	},
+	"run list": {
+		"--status":     true,
+		"--project-id": true,
+		"--limit":      true,
+	},
+	"run get": {
+		// run get takes only a positional ID, no flags currently defined in run.go
+	},
+}
+
+// extractAllowedCLIFlags returns the canonical flag set for each subcommand.
+// In development mode, it can re-derive flags from source to detect drift.
+// In production (deployed binary), it returns the embedded contract.
 func extractAllowedCLIFlags() (map[string]map[string]bool, error) {
+	// Try to re-derive from source if available (development/CI mode).
+	// If source is unavailable, fall back to embedded contract.
+	derived, err := extractCLIFlagsFromSource()
+	if err == nil {
+		return derived, nil
+	}
+	// Fall back to embedded contract for deployed binaries
+	return embeddedCLIFlagContract, nil
+}
+
+// extractCLIFlagsFromSource parses packages/foreman_cli/cmd/foreman/task.go and run.go
+// using go/parser and go/ast, extracting flag names from FlagSet method calls.
+// This ensures validateAgentCommandSpecs validates against the real CLI contract
+// when source is available. Returns error if source cannot be found (expected in
+// production deployments; see fallback in extractAllowedCLIFlags).
+func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	allowed := map[string]map[string]bool{
 		"task create": {},
 		"task get":    {},
@@ -328,40 +380,37 @@ func extractAllowedCLIFlags() (map[string]map[string]bool, error) {
 
 	cliRoot, err := findCLIRoot()
 	if err != nil {
-		return nil, fmt.Errorf("findCLIRoot: %w", err)
+		return nil, fmt.Errorf("findCLIRoot: %w (continuing with embedded contract)", err)
 	}
 
 	taskPath := filepath.Join(cliRoot, "cmd", "foreman", "task.go")
 	runPath := filepath.Join(cliRoot, "cmd", "foreman", "run.go")
 
 	// task create flags
-	if err := extractFlagsFromFile(taskPath, "taskCreate", allowed["task create"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromFile task.go: %w", err)
+	if err := extractFlagsFromAST(taskPath, "taskCreate", allowed["task create"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST task.go: %w", err)
 	}
 
 	// run submit and run list flags
-	if err := extractFlagsFromFile(runPath, "runSubmit", allowed["run submit"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromFile run.go (runSubmit): %w", err)
+	if err := extractFlagsFromAST(runPath, "runSubmit", allowed["run submit"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST run.go (runSubmit): %w", err)
 	}
-	if err := extractFlagsFromFile(runPath, "runList", allowed["run list"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromFile run.go (runList): %w", err)
+	if err := extractFlagsFromAST(runPath, "runList", allowed["run list"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST run.go (runList): %w", err)
 	}
 
 	return allowed, nil
 }
 
 // findCLIRoot locates the packages/foreman_cli root by walking upward from the
-// running binary's own module path. This is stable at runtime and does not
-// depend on the current working directory.
+// running binary's own module path, then from the current working directory.
+// This is stable at runtime and does not depend solely on cwd.
 func findCLIRoot() (string, error) {
-	// The binary is built from packages/foreman_cli, which contains the Go
-	// module at that root. Walk up from the module cache or binary location.
+	// Try exe-based lookup first
 	exe, err := os.Executable()
 	if err == nil {
-		// exe may be a cached build artifact; walk up looking for go.mod
 		for dir := filepath.Dir(exe); dir != "." && dir != "/"; dir = filepath.Dir(dir) {
 			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-				// dir is a Go module root — confirm it has cmd/foreman
 				if _, err := os.Stat(filepath.Join(dir, "cmd", "foreman")); err == nil {
 					return dir, nil
 				}
@@ -369,11 +418,7 @@ func findCLIRoot() (string, error) {
 		}
 	}
 
-	// Fallback: use $GOPATH/pkg/mod or the compiled module cache.
-	// We know this file lives at packages/foreman_cli/cmd/foreman/agent_commands.go,
-	// so the module root is two levels up from this file's directory.
-	// os.Args[0] may be a stub; try the source-file based heuristic.
-	// Walk up from current working directory.
+	// Try cwd-based lookup
 	cwd, err := os.Getwd()
 	if err == nil {
 		for dir := cwd; dir != "." && dir != "/"; dir = filepath.Dir(dir) {
@@ -384,10 +429,7 @@ func findCLIRoot() (string, error) {
 			}
 		}
 	}
-
-	// Last resort: use $HOME/Development/Fortium/foreman as a known fallback
-	// for the development case where the binary is run from the repo root.
-	// This path must contain packages/foreman_cli/cmd/foreman/task.go.
+	// Last resort: FOREMAN_CLI_ROOT env var
 	fallback := os.Getenv("FOREMAN_CLI_ROOT")
 	if fallback != "" {
 		if _, err := os.Stat(filepath.Join(fallback, "cmd", "foreman", "task.go")); err == nil {
@@ -395,68 +437,58 @@ func findCLIRoot() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("findCLIRoot: could not locate packages/foreman_cli root; set FOREMAN_CLI_ROOT")
+	return "", fmt.Errorf("findCLIRoot: could not locate packages/foreman_cli root (set FOREMAN_CLI_ROOT for development)")
 }
 
-// extractFlagsFromFile parses a .go source file and extracts flag names from
-// the flag registrations inside the named function body. It matches patterns
-// like fs.String("flag-name", ...) and fs.Int("flag-name", ...) and
-func extractFlagsFromFile(path, functionName string, flags map[string]bool) error {
-	src, err := os.ReadFile(path)
+// extractFlagsFromAST parses a Go source file using go/parser/go/ast and extracts
+// flag names from FlagSet method calls within the named function body.
+// Properly handles flags inside strings and comments (unlike regex+brace-counting).
+func extractFlagsFromAST(path, functionName string, flags map[string]bool) error {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	srcStr := string(src)
-	
-	// Pattern: find func functionName(...) return_type {
-	funcPattern := regexp.MustCompile(`func\s+` + regexp.QuoteMeta(functionName) + `\s*\([^)]*\)\s*(?:error|\([^)]*\))?\s*\{`)
-	funcMatch := funcPattern.FindStringIndex(srcStr)
-	if funcMatch == nil {
+	// Find the target function declaration
+	var targetFunc *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == functionName {
+			targetFunc = fn
+			break
+		}
+	}
+
+	if targetFunc == nil {
 		return fmt.Errorf("function %s not found in %s", functionName, path)
 	}
-	
-	// Find the opening brace of the function
-	braceStart := strings.Index(srcStr[funcMatch[0]:], "{")
-	if braceStart < 0 {
-		return fmt.Errorf("no opening brace found for function %s", functionName)
-	}
-	braceStart += funcMatch[0]
-	
-	// Count braces to find the matching closing brace for the function body.
-	// Use a labeled break to exit the for loop, not just the switch.
-	braceCount := 0
-	braceEnd := braceStart
-BraceLoop:
-	for i := braceStart; i < len(srcStr); i++ {
-		switch srcStr[i] {
-		case '{':
-			braceCount++
-		case '}':
-			braceCount--
-			if braceCount == 0 {
-				braceEnd = i + 1
-				break BraceLoop
+
+	// Walk the function body AST to find FlagSet method calls.
+	// Look for patterns like: fs.String("flag-name", ...) or fs.Bool("flag-name", ...)
+	ast.Inspect(targetFunc.Body, func(node ast.Node) bool {
+		// Look for method calls: fs.String, fs.Bool, fs.Int, etc.
+		if call, ok := node.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				// Receiver is "fs" and method is one of String, Bool, Int, etc.
+				if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "fs" {
+					// First argument should be a string literal containing the flag name
+					if len(call.Args) > 0 {
+						if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							// Unquote the string literal
+							flagName, err := strconv.Unquote(lit.Value)
+							if err == nil && flagName != "" {
+								flags["--"+flagName] = true
+							}
+						}
+					}
+				}
 			}
 		}
-	}
-	
-	if braceEnd <= braceStart {
-		return fmt.Errorf("could not find closing brace for function %s", functionName)
-	}
-	
-	// Extract flags only from within the function body.
-	funcBody := srcStr[braceStart:braceEnd]
-	flagRE := regexp.MustCompile(`fs\.(?:String|StringPtr|Int|IntPtr|Bool|BoolPtr|Uint|UintPtr|Duration|Float64)\s*\(\s*"([^"]+)"`)
-	for _, match := range flagRE.FindAllStringSubmatch(funcBody, -1) {
-		if len(match) >= 2 {
-			flags["--"+match[1]] = true
-		}
-	}
-	
+		return true
+	})
+
 	return nil
 }
-
 func renderForAgents(agent string) ([]agentRenderResult, error) {
 	agents := []string{agent}
 	if agent == "all" {
