@@ -56,6 +56,33 @@ func TestAgentCommandSpecValidationRejectsUnknownFlag(t *testing.T) {
 	}
 }
 
+func TestAgentCommandValidationRejectsLeakedFlags(t *testing.T) {
+	// Test that --status (valid only in runList) is rejected on runSubmit.
+	// This proves the function-scoping fix works: if the whole file were scanned,
+	// --status would be accepted (it appears in runList).
+	specs := []agentCommandSpec{{
+		ID:   "bad-run-submit",
+		CLI:  []string{"foreman", "run", "submit", "--status", "completed"},
+		Tags: []string{"foreman", "run"},
+	}}
+	if err := validateAgentCommandSpecs(specs); err == nil {
+		t.Fatalf("expected rejection of --status on run submit, got nil error")
+	} else if !strings.Contains(err.Error(), "--status") {
+		t.Fatalf("expected error to mention --status, got: %v", err)
+	}
+	// Test that --workflow (valid only in runSubmit) is rejected on runList.
+	specs = []agentCommandSpec{{
+		ID:   "bad-run-list",
+		CLI:  []string{"foreman", "run", "list", "--workflow", "implement"},
+		Tags: []string{"foreman", "run"},
+	}}
+	if err := validateAgentCommandSpecs(specs); err == nil {
+		t.Fatalf("expected rejection of --workflow on run list, got nil error")
+	} else if !strings.Contains(err.Error(), "--workflow") {
+		t.Fatalf("expected error to mention --workflow, got: %v", err)
+	}
+}
+
 func TestRenderCommandMarkdownValidatesInputsAndPreservesExec(t *testing.T) {
 	specs := buildAgentCommandInventory([]string{"implement-trd"})
 	var spec agentCommandSpec
