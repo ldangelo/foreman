@@ -636,7 +636,7 @@ and behavior cannot diverge.
 `foreman_workflow_list`, `foreman_workflow_get`,
 `foreman_workflow_validate`, `foreman_prompt_get`, `foreman_work_get`,
 `foreman_run_get`, `foreman_run_get_logs`, `foreman_run_get_events`,
-`foreman_run_get_activity`.
+`foreman_run_get_activity`, `foreman_task_list`, `foreman_task_get`.
 
 - `foreman_run_get_logs` returns `UNAVAILABLE`: Foreman persists no run
   output. Use `foreman_run_get_events` (the `run:<run_id>` stream) and
@@ -644,32 +644,31 @@ and behavior cannot diverge.
   sequence, last-heartbeat timestamps, read from
   `worker:<run_id>:<worker_id>` streams) instead.
 
-**Write tools** (`foreman_task_create`, `foreman_run_cancel`,
-`foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`)
-are unadvertised and refused unless `allow_workflow_writes: true` is
-set in `:foreman_server, :mcp` config.
-
-- `foreman_task_create` creates and dispatches a task in one call:
-  required `project_id`, `prompt`, `workflow`; optional `task_id`,
-  `title`, `backend`. It copies `prompt` into the task `description`,
-  so command phases receive it through `FOREMAN_TASK_DESCRIPTION` as
-  well as `workflow_snapshot["input"]["prompt"]`. It defaults
-  `provider_tracked: false` and `auto_approve: true`, matching the
-  retired `foreman_work_submit` tool's ergonomics.
-- `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
-  `reason`.
+**Write tools** (`foreman_task_create`, `foreman_task_update`,
+`foreman_run_cancel`, `foreman_workflow_put`, `foreman_workflow_delete`,
+`foreman_prompt_put`) are unadvertised and refused unless
+`allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
 Tool call failures are MCP tool errors carrying the gateway's
 structured reason, never transport-level JSON-RPC errors.
 
+- `foreman_task_list` lists all tasks, optionally filtered by
+  `project_id` and `status`. Returns `{tasks: [...], total: N}`.
+- `foreman_task_get` returns the full projection for one task.
+- `foreman_task_update` updates mutable task fields (`title`,
+  `description`, `priority`, `status`). Requires `task_id` and at
+  least one field to update.
+- `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
+  `reason`.
+
+
 ## 10. Task-provider (Beads) enablement
 
 A project links to a task tracker by setting a `task_provider` block in
-its project config (`provider:` + `config:`, including
-`database_path` for the Beads JSONL/db). `bv`/`br` remain the only
-writers of that store from outside Foreman; see AGENTS.md's
-"Per-DB Beads lease" section for the write-serialization guarantee
-Foreman itself provides once a run is admitted.
+its project config (`provider:` + `config:`, including `database_path` for
+the Beads JSONL/db). `bv`/`br` remain the only writers of that store from
+outside Foreman; see AGENTS.md's "Per-DB Beads lease" section for the
+write-serialization guarantee Foreman itself provides once a run is admitted.
 
 - **Atomic `task.create`.** For a project with a configured `:create`
   provider, `task.create` mints the Bead and emits `TaskCreated`

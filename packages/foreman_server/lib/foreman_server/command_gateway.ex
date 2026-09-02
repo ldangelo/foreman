@@ -45,7 +45,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
-  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry run.cancel run.remove run.reset)
+  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.remove run.reset)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -394,6 +394,24 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp validate_aggregate_id(%{type: "task.retry", aggregate_id: aggregate_id, payload: payload}) do
+    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
+
+    cond do
+      not is_binary(task_id) or task_id == "" ->
+        {:error, {:invalid_envelope, :missing_task_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("task", task_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{type: "task.update", aggregate_id: aggregate_id, payload: payload}) do
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
 
     cond do

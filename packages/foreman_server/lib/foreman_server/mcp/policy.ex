@@ -3,6 +3,7 @@ defmodule ForemanServer.MCP.Policy do
 
   @write_tools [
     "foreman_task_create",
+    "foreman_task_update",
     "foreman_run_cancel",
     "foreman_workflow_put",
     "foreman_workflow_delete",
