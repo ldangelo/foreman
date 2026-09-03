@@ -31,46 +31,65 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   def cmd(request, project_config, opts \\ []) when is_list(opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, configured_timeout_ms())
     stdin_payload = fetch_stdin_payload!(opts)
+    database_path = Map.get(project_config, :database_path) || Map.get(project_config, "database_path")
     temp_files = create_temp_files(stdin_payload)
 
     try do
       argv = build_argv(request, project_config)
-      port = open_port(build_shell_command(argv, temp_files))
 
-      try do
-        os_pid = get_os_pid!(port)
-        monitor_ref = :erlang.monitor(:port, port)
+      # Universal backstop: serialize all br calls per database_path to prevent
+      # concurrent writes from corrupting SQLite. This complements BeadsDbLease.with_lease
+      # which covers claim/complete/fail. Other paths (create, list_ready, update, etc.)
+      # that don't yet use with_lease are protected here.
+      with_database_lock(database_path, fn ->
+        port = open_port(build_shell_command(argv, temp_files))
 
         try do
-          case await_port_completion(port, monitor_ref, timeout_ms) do
-            {:ok, stdout, exit_code} ->
-              finalize_result(stdout, temp_files, exit_code)
+          os_pid = get_os_pid!(port)
+          monitor_ref = :erlang.monitor(:port, port)
 
-            {:timeout, stdout} ->
-              exit_code = terminate_os_process(os_pid)
-              stdout = await_port_exit_after_timeout(port, monitor_ref, stdout)
-              finalize_timeout(stdout, temp_files, exit_code)
+          try do
+            case await_port_completion(port, monitor_ref, timeout_ms) do
+              {:ok, stdout, exit_code} ->
+                finalize_result(stdout, temp_files, exit_code)
 
-            {:down, reason, stdout} ->
-              stderr = read_temp_file(temp_files.stderr)
-              cleanup_temp_files(temp_files)
+              {:timeout, stdout} ->
+                exit_code = terminate_os_process(os_pid)
+                stdout = await_port_exit_after_timeout(port, monitor_ref, stdout)
+                finalize_timeout(stdout, temp_files, exit_code)
 
-              {:error,
-               %{
-                 stdout: stdout,
-                 stderr: stderr,
-                 exit_code: nil,
-                 reason: normalize_down_reason(reason)
-               }}
+              {:down, reason, stdout} ->
+                stderr = read_temp_file(temp_files.stderr)
+                cleanup_temp_files(temp_files)
+
+                {:error,
+                 %{
+                   stdout: stdout,
+                   stderr: stderr,
+                   exit_code: nil,
+                   reason: normalize_down_reason(reason)
+                 }}
+            end
+          after
+            :erlang.demonitor(monitor_ref, [:flush])
           end
         after
-          :erlang.demonitor(monitor_ref, [:flush])
+          safe_close_port(port)
         end
-      after
-        safe_close_port(port)
-      end
+      end)
     after
       cleanup_leaked_temp_files(temp_files)
+    end
+  end
+  # Serialize br commands per database_path using :global.trans/2.
+  # Blocks until lock acquired. Complements BeadsDbLease.with_lease which
+  # covers claim/complete/fail; this backstop protects all other br paths.
+  defp with_database_lock(database_path, fun) when is_function(fun, 0) do
+    if is_binary(database_path) and database_path != "" do
+      lock_id = {:br_db_lock, database_path}
+      :global.trans(lock_id, fun)
+    else
+      fun.()
     end
   end
 
