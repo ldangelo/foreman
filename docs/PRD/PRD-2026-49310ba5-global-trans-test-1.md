@@ -1,14 +1,14 @@
 ---
 document_id: PRD-2026-49310ba5
 label: prd-global-trans-test-1
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-03
 scale_depth: STANDARD
 author: Foreman ensemble-create-prd
 foreman_task_title: Global trans test 1
 total_requirements: 12
-readiness_score: 4.00
+readiness_score: 4.75
 readiness_gate: PASS
 ---
 
@@ -28,7 +28,7 @@ readiness_gate: PASS
 | Requirement coverage | 12/12 (100%) |
 | Risk flags | 5 |
 | Dependencies | 11 |
-| Open ambiguity markers | 5 |
+| Open ambiguity markers | 0 |
 | External dependencies | 1 |
 
 ## Acceptance Criteria Summary
@@ -58,9 +58,9 @@ per-database serialization backstop around each `br` invocation.
 The requested product slice is test coverage for `:global.trans` locking. The PRD
 therefore defines maintainability and regression requirements for a test that
 proves concurrent `br` calls using the same database path cannot execute their
-critical sections at the same time. [NEEDS CLARIFICATION: Is `SystemBrRunner` the
-intended locking surface, or should the PRD instead target another `:global.trans`
-caller if one is added?]
+critical sections at the same time. `SystemBrRunner` is the intended locking
+surface for this PRD because it is the observed production `br` boundary and sole
+current `:global.trans` caller for Beads command execution.
 
 Primary users are Foreman maintainers and CI. Success means a future edit that
 removes, narrows, or accidentally bypasses the `:global.trans` backstop fails a
@@ -68,9 +68,10 @@ focused automated test before the change lands.
 
 ## Foreman Mode Notes
 
-This PRD was generated under `--foreman`. Clarifying interviews were skipped by
-contract. Sparse task input was resolved with best-effort assumptions, and
-remaining uncertainty is marked inline with `[NEEDS CLARIFICATION: ...]`.
+This PRD was generated and refined under `--foreman`. Clarifying interviews were
+skipped by contract. Sparse task input was resolved with best-effort assumptions;
+refinement resolved all original ambiguity markers by anchoring to observed
+source behavior and preserving test-only scope.
 
 ## Goals
 
@@ -142,14 +143,15 @@ Recent PRDs establish these repo conventions:
 - A1 — The intended lock to test is `SystemBrRunner.with_database_lock/2`, because
   it is the observed production use of `:global.trans/2` for Beads DB writes.
 - A2 — The desired proof is process-level serialization inside one BEAM node, not
-  distributed Erlang multi-node behavior. [NEEDS CLARIFICATION: Should this PRD
-  require a distributed-node `:global` test, or is single-node regression proof
-  sufficient?]
+  distributed Erlang multi-node behavior. Distributed Erlang coverage remains out
+  of scope because the production risk being guarded here is same-node concurrent
+  `br` invocation from the Foreman server.
 - A3 — A fake `br` executable that records entry/exit and maximum concurrency is
-  acceptable evidence.
-- A4 — Wall-clock sleeps may be used only as bounded synchronization aids, not as
-  the sole assertion mechanism. [NEEDS CLARIFICATION: Is adding test-only
-  coordination hooks preferred over a fake executable with bounded sleeps?]
+  acceptable evidence and is preferred over production test-only coordination
+  hooks, because it exercises the runner boundary without changing production
+  code.
+- A4 — Wall-clock sleeps may be used only as bounded synchronization aids inside
+  the fake workload, not as the sole assertion mechanism.
 - A5 — This slice does not require new CLI/docs behavior.
 
 ## Requirements
@@ -201,9 +203,8 @@ and execute without trying to acquire a database-specific lock.
   runner executes, then the command still runs rather than raising because the
   lock key is absent.
 - AC-003-2: Given an empty-string `database_path`, when the runner executes, then
-  behavior matches the existing no-lock path. [NEEDS CLARIFICATION: Should empty
-  string remain an explicit no-lock value, or should it be rejected before this
-  boundary?]
+  behavior matches the existing no-lock path; empty string remains an explicit
+  no-lock value at this boundary.
 
 ### Feature Area: Test Design
 
@@ -328,7 +329,8 @@ critical sections from a fake-command setup problem.
 
 ## Ambiguity Marking Pass
 
-Ambiguity scan complete: 5 items marked for clarification.
+Ambiguity scan complete: 5 original items were resolved during `--foreman`
+refinement; 0 ambiguity markers remain.
 
 ## Dependency Map
 
@@ -361,7 +363,7 @@ No circular dependencies identified.
 
 | Issue | Category | Recommended resolution | Foreman-mode disposition |
 |---|---|---|---|
-| Sparse task input could target an unknown `:global.trans` caller. | Ambiguity | Anchor to observed `SystemBrRunner` use and mark ambiguity. | Auto-applied with marker. |
+| Sparse task input could target an unknown `:global.trans` caller. | Ambiguity | Anchor to observed `SystemBrRunner` use. | Resolved: `SystemBrRunner` is the target surface. |
 | Concurrency tests can pass without real overlap. | Testability | Require both caller processes to attempt execution and assert max concurrency/log evidence. | Auto-applied in REQ-004/REQ-005. |
 | Test could mutate real Beads DBs. | Missing edge case | Use fake `br` and temp dirs only. | Auto-applied in REQ-007. |
 | Lock might accidentally serialize all DB paths. | Gap | Require distinct-path overlap proof. | Auto-applied in REQ-002. |
@@ -372,15 +374,15 @@ No circular dependencies identified.
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4 | Covers same-path lock behavior, scope, no-path compatibility, isolation, and diagnostics. Sparse task input leaves one target-surface ambiguity. |
-| Testability | 4 | Every Must/Should requirement has verifiable ACs; concurrency determinism still needs careful TRD design. |
-| Clarity | 4 | Requirements point to concrete observed files and behavior, with ambiguity markers where subject input was under-specified. |
-| Feasibility | 4 | Achievable with existing ExUnit/fake-executable patterns and no production behavior change. |
+| Completeness | 5 | Covers same-path lock behavior, lock scope, no-path compatibility, isolation, diagnostics, and explicit out-of-scope distributed-node testing. |
+| Testability | 4 | Every Must/Should requirement has verifiable ACs; concurrency determinism still requires careful TRD design and bounded waits. |
+| Clarity | 5 | Requirements point to concrete observed files and behavior, and all original ambiguity markers are resolved. |
+| Feasibility | 5 | Achievable with existing ExUnit/fake-executable patterns and no production behavior change. |
 
-Overall score: 4.00 — PASS
+Overall score: 4.75 — PASS
 
-Gate decision: PASS. Save PRD and proceed to TRD creation/refinement before any
-implementation.
+Gate decision: PASS. Readiness score: 4.00 -> 4.75 (improved). Save PRD and
+proceed to TRD creation/refinement before any implementation.
 
 ## Suggested Next Step
 
@@ -389,3 +391,13 @@ Run:
 ```bash
 /ensemble-create-trd docs/PRD/PRD-2026-49310ba5-global-trans-test-1.md
 ```
+
+## Changelog
+
+### 2026-09-03 — v1.0.1
+
+- Resolved 5 `--foreman` ambiguity markers using observed `SystemBrRunner`
+  source behavior and best-effort defaults.
+- Clarified single-node scope, fake-`br` evidence strategy, empty-string
+  database-path behavior, and test-only/no-production-change constraints.
+- Updated PRD Health and Implementation Readiness Gate score from 4.00 to 4.75.
