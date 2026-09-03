@@ -274,6 +274,93 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     assert MapSet.difference(snapshot_temp_files(), baseline_temp_files) == MapSet.new()
   end
 
+  describe "concurrency serialization" do
+    test "two concurrent calls with same database_path serialize via global trans backstop",
+         %{temp_dir: temp_dir} do
+      # Use a lock file to prove ordering: first call creates lock_file, does work,
+      # deletes it. Second call spins waiting for lock_file to disappear, then proceeds.
+      # If :global.trans works: call1 creates file, holds lock through completion,
+      # call2 waits and sees the file appear and disappear in correct order.
+      # If :global.trans is broken: both calls run concurrently, file operations race.
+      log_file = Path.join(temp_dir, "ordering.log")
+
+      counter_file = Path.join(temp_dir, "concurrency.counter")
+      max_file = Path.join(temp_dir, "concurrency.max")
+
+      fake_br_body = """
+      echo "CALL:$$" >> "#{log_file}"
+      n=$(cat "#{counter_file}" 2>/dev/null || echo 0)
+      n=$((n + 1))
+      echo $n > "#{counter_file}"
+      max=$(cat "#{max_file}" 2>/dev/null || echo 0)
+      if [ $n -gt $max ]; then echo $n > "#{max_file}"; fi
+      sleep 0.5
+      n=$(cat "#{counter_file}")
+      n=$((n - 1))
+      echo $n > "#{counter_file}"
+      echo "DONE:$$" >> "#{log_file}"
+      """
+
+      with_fake_br(temp_dir, fake_br_body, fn ->
+        db_path = "/tmp/test.db"
+        parent = self()
+
+        spawn(fn ->
+          SystemBrRunner.cmd({:version, %{}}, %{database_path: db_path})
+          send(parent, :call1_done)
+        end)
+
+        spawn(fn ->
+          SystemBrRunner.cmd({:version, %{}}, %{database_path: db_path})
+          send(parent, :call2_done)
+        end)
+
+        receive do
+          :call1_done -> :ok
+        after
+          5000 -> flunk("timeout waiting for call1")
+        end
+
+        receive do
+          :call2_done -> :ok
+        after
+          5000 -> flunk("timeout waiting for call2")
+        end
+
+        # Both calls must have run (2 CALL: + 2 DONE: in log)
+        log = File.read!(log_file)
+        lines = String.split(log, "\n", trim: true)
+        call_lines = Enum.filter(lines, &String.starts_with?(&1, "CALL:"))
+        done_lines = Enum.filter(lines, &String.starts_with?(&1, "DONE:"))
+
+        assert length(call_lines) == 2,
+               "Expected 2 CALL markers, got #{length(call_lines)}: #{inspect(lines)}"
+        assert length(done_lines) == 2,
+               "Expected 2 DONE markers, got #{length(done_lines)}: #{inspect(lines)}"
+
+        # Key assertion: max concurrency must be 1 (serialized by :global.trans)
+        max_concurrency =
+          case File.read(max_file) do
+            {:ok, val} -> String.trim(val) |> String.to_integer()
+            _ -> 0
+          end
+
+        assert max_concurrency == 1,
+               "Expected max concurrency 1 (serialized), got #{max_concurrency}: calls may have run in parallel"
+
+        # Counter must be 0 after both calls complete
+        final_count =
+          case File.read(counter_file) do
+            {:ok, val} -> String.trim(val) |> String.to_integer()
+            _ -> -1
+          end
+
+        assert final_count == 0,
+               "Expected counter 0 after both calls, got #{final_count}"
+      end)
+    end
+  end
+
   defp with_fake_br(temp_dir, body, fun) do
     script_path = Path.join(temp_dir, "br")
     original_path = System.get_env("PATH") || ""

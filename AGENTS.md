@@ -1631,7 +1631,14 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   exists to prevent two Foreman-dispatched runs from racing on the same DB,
   not to mediate file-system access against unrelated processes.
 
----
+- **Universal backstop**: all `br` invocations through `SystemBrRunner.cmd/3` are
+  additionally serialized per `database_path` via `:global.trans/2` as a universal
+  backstop. This catches every call site (create, list_ready, update, get, reopen,
+  set_priority, ready, coordination_status, and any future callers) without requiring
+  `with_lease` wrapping at each one. Covered by `system_br_runner_test.exs`
+  concurrency serialization regression test.
+
+- ---
 
 ## Go CLI Boundaries
 
