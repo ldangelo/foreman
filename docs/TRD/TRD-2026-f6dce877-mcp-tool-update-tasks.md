@@ -149,19 +149,19 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
 
 **Shippable State:** MCP clients can discover read-only task tools and `foreman_run_status`, list/get tasks with stable pagination, and query bounded run status without using logs or the CLI.
 
-- [ ] **TRD-001** — Audit current MCP task/run implementation and record add/correct/complete decisions (2h) [satisfies REQ-014]
+- [x] **TRD-001** — Audit current MCP task/run implementation and record add/correct/complete decisions (2h) [satisfies REQ-014]
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given current MCP source is inspected, when implementation begins, then existing task tools are classified as keep/correct/extend rather than duplicated.
     - Given existing run tools are inspected, when run status is added, then `foreman_run_get*` compatibility risks are documented in code-review notes.
 
-- [ ] **TRD-001-TEST** — Pin audit findings with regression tests for existing run/work tools (3h) [verifies TRD-001] [satisfies REQ-014] [depends: TRD-001]
+- [x] **TRD-001-TEST** — Pin audit findings with regression tests for existing run/work tools (3h) [verifies TRD-001] [satisfies REQ-014] [depends: TRD-001]
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given existing run/work MCP tests run, when new status code is present, then `foreman_work_get`, `foreman_run_get`, events, activity, and logs keep their documented shapes.
     - Given compatibility tests fail, when failures are reviewed, then implementation does not rewrite expected behavior unless source contract intentionally changed.
 
-- [ ] **TRD-002** — Add/tighten MCP schemas for task list/get/update and new `foreman_run_status` (4h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-006] [satisfies REQ-013]
+- [x] **TRD-002** — Add/tighten MCP schemas for task list/get/update and new `foreman_run_status` (4h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-006] [satisfies REQ-013]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-002-3, AC-006-1, AC-013-2
   - Implementation AC checklist:
     - Given writes are enabled, when `Tools.list_tools/0` is filtered by policy, then task list/get/update and run status appear as required.
@@ -169,35 +169,35 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
     - Given schemas are inspected, then task status enum and pagination fields match handler behavior.
     - Given task update schema is inspected, then `blocked` is included with the aggregate-supported status enum.
 
-- [ ] **TRD-002-TEST** — Test tool advertisement and JSON Schema contract (4h) [verifies TRD-002] [satisfies REQ-001] [satisfies REQ-013] [depends: TRD-002]
+- [x] **TRD-002-TEST** — Test tool advertisement and JSON Schema contract (4h) [verifies TRD-002] [satisfies REQ-001] [satisfies REQ-013] [depends: TRD-002]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-013-2
   - Implementation AC checklist:
     - Given default policy, when tests list tools, then read tools include `foreman_task_list`, `foreman_task_get`, and `foreman_run_status`.
     - Given write policy enabled, when tests list tools, then `foreman_task_update` is also present.
     - Given schema fixtures are validated, when enum/bounds drift, then tests fail loudly.
 
-- [ ] **TRD-003** — Complete task list/get handlers with filtering, pagination, and typed read errors (5h) [satisfies REQ-002] [satisfies REQ-003] [satisfies REQ-009] [satisfies REQ-013] [depends: TRD-002]
+- [x] **TRD-003** — Complete task list/get handlers with filtering, pagination, and typed read errors (5h) [satisfies REQ-002] [satisfies REQ-003] [satisfies REQ-009] [satisfies REQ-013] [depends: TRD-002]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-003-1, AC-003-2, AC-009-1, AC-009-3, AC-013-1, AC-013-2, AC-013-3
   - Implementation AC checklist:
     - Given tasks exist, when listed with no filters, then response is task-id ascending and includes `total`, `limit`, `offset`, and page data.
     - Given `project_id` or `status` is supplied, when listed, then only matching tasks are returned.
     - Given an unknown task id, when fetched, then `NOT_FOUND` is returned with no placeholder map.
 
-- [ ] **TRD-003-TEST** — Test task list/get success, filters, pagination, missing params, and not-found (5h) [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-003] [satisfies REQ-009] [satisfies REQ-012] [satisfies REQ-013] [depends: TRD-003]
+- [x] **TRD-003-TEST** — Test task list/get success, filters, pagination, missing params, and not-found (5h) [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-003] [satisfies REQ-009] [satisfies REQ-012] [satisfies REQ-013] [depends: TRD-003]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-003-1, AC-003-2, AC-009-1, AC-009-3, AC-012-1, AC-013-1, AC-013-2, AC-013-3
   - Implementation AC checklist:
     - Given more than one page of tasks, when fetching page 1 and page 2 against a stable projection, then no task is skipped or duplicated.
     - Given required args are absent for get, when tool is called, then `INVALID_PARAMS` names `task_id`.
     - Given invalid status/limit/offset is supplied, when list runs, then an `INVALID_PARAMS` error is returned.
 
-- [ ] **TRD-004** — Implement `foreman_run_status` from run and phase projections (5h) [satisfies REQ-006] [satisfies REQ-009] [depends: TRD-002]
+- [x] **TRD-004** — Implement `foreman_run_status` from run and phase projections (5h) [satisfies REQ-006] [satisfies REQ-009] [depends: TRD-002]
   - Validates PRD ACs: AC-006-1, AC-006-2, AC-006-3, AC-009-1, AC-009-3
   - Implementation AC checklist:
     - Given a known active run, when status is queried, then bounded DTO fields are present and `terminal` is false.
     - Given a terminal run, when status is queried, then status distinguishes `completed`, `failed`, and `cancelled` and `terminal` is true.
     - Given phases exist, when status is queried, then `current_phase` is derived deterministically from projections.
 
-- [ ] **TRD-004-TEST** — Test run status active, terminal, unknown, and missing-param cases (4h) [verifies TRD-004] [satisfies REQ-006] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-004]
+- [x] **TRD-004-TEST** — Test run status active, terminal, unknown, and missing-param cases (4h) [verifies TRD-004] [satisfies REQ-006] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-004]
   - Validates PRD ACs: AC-006-1, AC-006-2, AC-006-3, AC-009-1, AC-009-3, AC-012-2
   - Implementation AC checklist:
     - Given active and terminal projection fixtures, when status tests run, then DTO shape and terminal semantics are exact.
@@ -208,40 +208,40 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
 
 **Shippable State:** Authorized MCP clients can update only supported task fields through Foreman's existing command/lifecycle policy; unauthorized clients get refusal before dispatch.
 
-- [ ] **TRD-005** — Whitelist task update args and reject no-op/invalid mutation payloads (4h) [satisfies REQ-004] [satisfies REQ-009] [depends: TRD-002]
+- [x] **TRD-005** — Whitelist task update args and reject no-op/invalid mutation payloads (4h) [satisfies REQ-004] [satisfies REQ-009] [depends: TRD-002]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-009-1
   - Implementation AC checklist:
     - Given only undeclared fields are supplied through a transport, when args reach the handler, then no atom is created and `INVALID_PARAMS` is returned if no mutable field remains.
     - Given no mutable fields are supplied, when update is called, then no command dispatch occurs.
     - Given supported fields are supplied, when payload is built, then only `title`, `description`, `priority`, and `status` are present with `task_id`.
 
-- [ ] **TRD-005-TEST** — Test update arg normalization, no-op rejection, and unsupported-field handling (4h) [verifies TRD-005] [satisfies REQ-004] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-005]
+- [x] **TRD-005-TEST** — Test update arg normalization, no-op rejection, and unsupported-field handling (4h) [verifies TRD-005] [satisfies REQ-004] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-005]
   - Validates PRD ACs: AC-004-2, AC-004-3, AC-009-1, AC-012-1
   - Implementation AC checklist:
     - Given undeclared JSON keys, when routed through `Dispatch` validation, then keys remain non-atoms and handler ignores them safely.
     - Given no supported update fields remain, when update runs, then test asserts `INVALID_PARAMS` and no gateway call.
 
-- [ ] **TRD-006** — Preserve policy-gated command dispatch for task updates (4h) [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [depends: TRD-005]
+- [x] **TRD-006** — Preserve policy-gated command dispatch for task updates (4h) [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [depends: TRD-005]
   - Validates PRD ACs: AC-004-1, AC-004-4, AC-007-1, AC-007-2, AC-007-3, AC-008-1
   - Implementation AC checklist:
     - Given default config, when `foreman_task_update` is called through dispatch, then `POLICY_REFUSED` returns before `CommandGateway`.
     - Given writes are enabled, when update succeeds, then `CommandGateway.dispatch_operator/2` handles a `task.update` command.
     - Given update succeeds, then response is the gateway result and not a synthesized fresh task projection.
 
-- [ ] **TRD-006-TEST** — Test default-deny write policy and successful dispatch path (4h) [verifies TRD-006] [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-006]
+- [x] **TRD-006-TEST** — Test default-deny write policy and successful dispatch path (4h) [verifies TRD-006] [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-012] [depends: TRD-006]
   - Validates PRD ACs: AC-004-1, AC-004-4, AC-007-1, AC-007-2, AC-007-3, AC-008-1, AC-012-1
   - Implementation AC checklist:
     - Given write policy false, when direct dispatch calls update, then policy refuses before command dispatch.
     - Given write policy true and valid payload, when update runs, then test observes a `TaskUpdated` command result.
 
-- [ ] **TRD-007** — Audit and pin aggregate task status/lifecycle behavior for MCP updates (5h) [satisfies REQ-005] [satisfies REQ-009] [depends: TRD-006]
+- [x] **TRD-007** — Audit and pin aggregate task status/lifecycle behavior for MCP updates (5h) [satisfies REQ-005] [satisfies REQ-009] [depends: TRD-006]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-005-4, AC-009-2
   - Implementation AC checklist:
     - Given each canonical task status, when aggregate update validation runs, then accepted/rejected outcomes match `Aggregates.Task` contract.
     - Given running/bound tasks are manually closed/failed through update, when aggregate accepts or rejects, then no run completion is fabricated.
     - Given domain rejects a transition, when MCP handles it, then structured domain reason is preserved safely.
 
-- [ ] **TRD-007-TEST** — Test accepted/rejected task status updates and domain error mapping (5h) [verifies TRD-007] [satisfies REQ-005] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-007]
+- [x] **TRD-007-TEST** — Test accepted/rejected task status updates and domain error mapping (5h) [verifies TRD-007] [satisfies REQ-005] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-007]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-005-4, AC-009-2, AC-012-3
   - Implementation AC checklist:
     - Given invalid task status, when MCP update dispatches, then `DOMAIN_ERROR` contains the aggregate reason.
@@ -252,37 +252,37 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
 
 **Shippable State:** HTTP and stdio MCP clients receive equivalent tool schemas, payloads, errors, and safe telemetry without regressions to existing work/run tools.
 
-- [ ] **TRD-008** — Verify HTTP/stdio use the shared dispatch/tool registry for new tools (3h) [satisfies REQ-001] [satisfies REQ-008] [depends: TRD-003] [depends: TRD-004] [depends: TRD-006]
+- [x] **TRD-008** — Verify HTTP/stdio use the shared dispatch/tool registry for new tools (3h) [satisfies REQ-001] [satisfies REQ-008] [depends: TRD-003] [depends: TRD-004] [depends: TRD-006]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-008-1, AC-008-2
   - Implementation AC checklist:
     - Given both transports initialize with same config, when components are listed, then tool names and schemas are equivalent.
     - Given a new tool is added, when architecture tests scan transport modules, then no duplicated tool list appears.
 
-- [ ] **TRD-008-TEST** — Test transport parity for schemas, success payloads, and typed errors (4h) [verifies TRD-008] [satisfies REQ-001] [satisfies REQ-008] [depends: TRD-008]
+- [x] **TRD-008-TEST** — Test transport parity for schemas, success payloads, and typed errors (4h) [verifies TRD-008] [satisfies REQ-001] [satisfies REQ-008] [depends: TRD-008]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-008-1, AC-008-2
   - Implementation AC checklist:
     - Given HTTP and stdio dispatch paths call the same registry, when test fixtures call read/update/status tools, then results are equivalent.
     - Given a transport-local tool list is introduced, when architecture test runs, then it fails.
 
-- [ ] **TRD-009** — Ensure MCP task/run telemetry is safe and complete (3h) [satisfies REQ-010] [depends: TRD-003] [depends: TRD-004] [depends: TRD-006]
+- [x] **TRD-009** — Ensure MCP task/run telemetry is safe and complete (3h) [satisfies REQ-010] [depends: TRD-003] [depends: TRD-004] [depends: TRD-006]
   - Validates PRD ACs: AC-010-1, AC-010-2
   - Implementation AC checklist:
     - Given task/read/update/status tools complete, when telemetry fires, then metadata contains tool, outcome, and duration only.
     - Given task title/description changes, when telemetry/log assertions inspect events, then content is absent.
 
-- [ ] **TRD-009-TEST** — Test telemetry metadata excludes task content (3h) [verifies TRD-009] [satisfies REQ-010] [depends: TRD-009]
+- [x] **TRD-009-TEST** — Test telemetry metadata excludes task content (3h) [verifies TRD-009] [satisfies REQ-010] [depends: TRD-009]
   - Validates PRD ACs: AC-010-1, AC-010-2
   - Implementation AC checklist:
     - Given sensitive title/description fixture data, when update and reads complete, then telemetry assertions do not contain that content.
     - Given success/not-found/domain-error outcomes, when telemetry fires, then outcome labels are present.
 
-- [ ] **TRD-010** — Preserve existing MCP work/run tools while adding run status (3h) [satisfies REQ-014] [depends: TRD-004]
+- [x] **TRD-010** — Preserve existing MCP work/run tools while adding run status (3h) [satisfies REQ-014] [depends: TRD-004]
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given `foreman_run_status` is implemented, when existing run tools are called, then their handlers and payloads are unchanged unless tests explicitly prove compatible additions.
     - Given existing docs mention run detail tools, when docs are updated, then `foreman_run_status` is documented as additive.
 
-- [ ] **TRD-010-TEST** — Run compatibility regression tests for existing MCP work/run tools (3h) [verifies TRD-010] [satisfies REQ-014] [depends: TRD-010]
+- [x] **TRD-010-TEST** — Run compatibility regression tests for existing MCP work/run tools (3h) [verifies TRD-010] [satisfies REQ-014] [depends: TRD-010]
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given existing tool fixtures, when tests run, then old run/work tools still pass.
@@ -292,25 +292,25 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
 
 **Shippable State:** Operators can read the repo docs to know exactly which MCP task/run-status tools exist, which are write-gated, what payloads/errors look like, and how to validate them.
 
-- [ ] **TRD-011** — Reconcile MCP documentation with implemented task/run-status behavior (4h) [satisfies REQ-011] [depends: TRD-010]
+- [x] **TRD-011** — Reconcile MCP documentation with implemented task/run-status behavior (4h) [satisfies REQ-011] [depends: TRD-010]
   - Validates PRD ACs: AC-011-1, AC-011-2
   - Implementation AC checklist:
     - Given implementation is complete, when docs are updated, then README, user guide, and CLI reference describe actual tool inventory, gating, task update semantics, pagination, and run-status payload.
     - Given default config hides a write tool, when docs list it, then docs state hidden/refused semantics.
 
-- [ ] **TRD-011-TEST** — Review docs against source and run doc hygiene checks (3h) [verifies TRD-011] [satisfies REQ-011] [depends: TRD-011]
+- [x] **TRD-011-TEST** — Review docs against source and run doc hygiene checks (3h) [verifies TRD-011] [satisfies REQ-011] [depends: TRD-011]
   - Validates PRD ACs: AC-011-1, AC-011-2
   - Implementation AC checklist:
     - Given docs mention MCP tools, when source schemas are compared, then no documented tool/payload is absent from code.
     - Given docs are edited, when `git diff --check` runs, then no whitespace errors are present.
 
-- [ ] **TRD-012** — Run final focused validation for MCP task/run-status slice (4h) [satisfies REQ-012] [satisfies REQ-014] [depends: TRD-011]
+- [x] **TRD-012** — Run final focused validation for MCP task/run-status slice (4h) [satisfies REQ-012] [satisfies REQ-014] [depends: TRD-011]
   - Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3, AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given all MCP tests are complete, when focused ExUnit files run, then task list/get/update, run status, policy, dispatch, telemetry, and compatibility pass.
     - Given full repo constraints are available, when final validation runs, then formatting and relevant test suites pass or blockers are recorded truthfully.
 
-- [ ] **TRD-012-TEST** — Capture final validation evidence and failure diagnostics (2h) [verifies TRD-012] [satisfies REQ-012] [satisfies REQ-014] [depends: TRD-012]
+- [x] **TRD-012-TEST** — Capture final validation evidence and failure diagnostics (2h) [verifies TRD-012] [satisfies REQ-012] [satisfies REQ-014] [depends: TRD-012]
   - Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3, AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given validation succeeds, when completion report is written, then commands and results are recorded.
