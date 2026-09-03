@@ -48,7 +48,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
         task_id: "task-123",
         project_id: "proj-456",
         workflow: "default",
-        prompt: "Do the thing"
+        prompt: "Do the thing",
+        description: "Task description"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
@@ -61,6 +62,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                  task_type: "task",
                  workflow_type: "default",
                  prompt: "Do the thing",
+                 description: "Task description",
                  title: "task-123",
                  provider_tracked: false,
                  auto_approve: true
@@ -79,7 +81,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       params = %{
         project_id: "proj-456",
         workflow: "default",
-        prompt: "Do the thing"
+        prompt: "Do the thing",
+        description: "Task description"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
@@ -100,7 +103,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
         project_id: "proj-456",
         workflow: "plan",
         task_type: "feature",
-        prompt: "Plan the thing"
+        prompt: "Plan the thing",
+        description: "Task description"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
@@ -118,7 +122,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
         task_id: "task-123",
         project_id: "proj-456",
         workflow: "default",
-        prompt: "Do the thing"
+        prompt: "Do the thing",
+        description: "Task description"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
@@ -137,7 +142,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
         task_id: "task-123",
         project_id: "proj-456",
         workflow: "default",
-        prompt: "Do the thing"
+        prompt: "Do the thing",
+        description: "Task description"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
