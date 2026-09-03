@@ -46,11 +46,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
     with_fake_br(
       temp_dir,
-      """
-      for arg in "$@"; do
-        printf '%s\\n' "$arg"
-      done
-      """,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd({:where, %{flags: flags}}, %{database_path: "/tmp/db"})
@@ -62,8 +58,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   end
 
   test "absolute path with spaces passes through unchanged", %{temp_dir: temp_dir} do
-    # br refuses to operate on databases whose parent path contains a symlink,
-    # which macOS temp dirs do. Canonicalize so the test exercises a real path.
     {temp_dir, 0} = System.cmd("pwd", ["-P"], cd: temp_dir)
     temp_dir = String.trim(temp_dir)
     db_dir = Path.join(temp_dir, "abs space")
@@ -73,11 +67,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
     with_fake_br(
       temp_dir,
-      """
-      for arg in "$@"; do
-        printf '%s\\n' "$arg"
-      done
-      """,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
@@ -89,16 +79,10 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   end
 
   test "set_priority request translates to br update --priority using cached payload database_path",
-       %{
-         temp_dir: temp_dir
-       } do
+       %{temp_dir: temp_dir} do
     with_fake_br(
       temp_dir,
-      """
-      for arg in "$@"; do
-        printf '%s\\n' "$arg"
-      done
-      """,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd(
@@ -114,16 +98,10 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   end
 
   test "coordination_status request translates to br coordination status with cached database_path",
-       %{
-         temp_dir: temp_dir
-       } do
+       %{temp_dir: temp_dir} do
     with_fake_br(
       temp_dir,
-      """
-      for arg in "$@"; do
-        printf '%s\\n' "$arg"
-      done
-      """,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd(
@@ -140,11 +118,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   test "version request translates to br --version", %{temp_dir: temp_dir} do
     with_fake_br(
       temp_dir,
-      """
-      for arg in "$@"; do
-        printf '%s\\n' "$arg"
-      done
-      """,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd({:version, %{}}, %{})
@@ -157,11 +131,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   test "capabilities request translates to br capabilities --json", %{temp_dir: temp_dir} do
     with_fake_br(
       temp_dir,
-      """
-      for arg in "$@"; do
-        printf '%s\\n' "$arg"
-      done
-      """,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd({:capabilities, %{}}, %{})
@@ -174,20 +144,10 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   test "Port.info captures OS PID and timeout escalation runs SIGTERM then SIGKILL", %{
     temp_dir: temp_dir
   } do
-    # The fake `br` sleeps 30s — far longer than the 200 ms cmd timeout — so the impl
-    # must observe the timeout, send SIGTERM, wait, then SIGKILL. exit_code 143 means
-    # SIGTERM landed; 137 means SIGKILL was needed after the grace window.
     with_fake_br(
       temp_dir,
-      """
-      echo starting
-      sleep 30
-      echo done
-      """,
+      "echo starting\nsleep 30\necho done\n",
       fn ->
-        # The cmd timeout (200 ms) is well under the SIGTERM grace window (5000 ms),
-        # so SIGTERM must land and the fake `br` exits with 143 — proving Port.info
-        # captured a real OS PID and terminate_os_process/1 actually invoked kill -TERM.
         assert {:error, %{stdout: stdout, reason: :timeout, exit_code: exit_code}} =
                  SystemBrRunner.cmd(
                    {:ready, %{}},
@@ -196,10 +156,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
                  )
 
         assert exit_code in [143, 137],
-               "expected SIGTERM (143) or SIGKILL (137) exit_code, got: #{inspect(exit_code)}"
+               "expected SIGTERM (143) or SIGKILL (137), got: #{inspect(exit_code)}"
 
-        # stdout may or may not contain "starting" depending on timing, but the
-        # timeout path MUST have flushed whatever it captured before the kill.
         assert is_binary(stdout)
       end
     )
@@ -277,29 +235,25 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   describe "concurrency serialization" do
     test "two concurrent calls with same database_path serialize via global trans backstop",
          %{temp_dir: temp_dir} do
-      # Use a lock file to prove ordering: first call creates lock_file, does work,
-      # deletes it. Second call spins waiting for lock_file to disappear, then proceeds.
-      # If :global.trans works: call1 creates file, holds lock through completion,
-      # call2 waits and sees the file appear and disappear in correct order.
-      # If :global.trans is broken: both calls run concurrently, file operations race.
       log_file = Path.join(temp_dir, "ordering.log")
-
       counter_file = Path.join(temp_dir, "concurrency.counter")
       max_file = Path.join(temp_dir, "concurrency.max")
 
-      fake_br_body = """
-      echo "CALL:$$" >> "#{log_file}"
-      n=$(cat "#{counter_file}" 2>/dev/null || echo 0)
-      n=$((n + 1))
-      echo $n > "#{counter_file}"
-      max=$(cat "#{max_file}" 2>/dev/null || echo 0)
-      if [ $n -gt $max ]; then echo $n > "#{max_file}"; fi
-      sleep 0.5
-      n=$(cat "#{counter_file}")
-      n=$((n - 1))
-      echo $n > "#{counter_file}"
-      echo "DONE:$$" >> "#{log_file}"
-      """
+      fake_br_body = [
+        "echo \"CALL:$$\" >> \"#{log_file}\"",
+        "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
+        "n=$((n + 1))",
+        "echo $n > \"#{counter_file}\"",
+        "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
+        "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
+        "sleep 0.5",
+        "n=$(cat \"#{counter_file}\")",
+        "n=$((n - 1))",
+        "echo $n > \"#{counter_file}\"",
+        "echo \"DONE:$$\" >> \"#{log_file}\""
+      ]
+      |> Enum.join("\n")
+
     with_fake_br(temp_dir, fake_br_body, fn ->
         db_path = "/tmp/test.db"
         parent = self()
@@ -326,7 +280,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
           5000 -> flunk("timeout waiting for call2")
         end
 
-        # Both calls must have run (2 CALL: + 2 DONE: in log)
         log = File.read!(log_file)
         lines = String.split(log, "\n", trim: true)
         call_lines = Enum.filter(lines, &String.starts_with?(&1, "CALL:"))
@@ -337,7 +290,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         assert length(done_lines) == 2,
                "Expected 2 DONE markers, got #{length(done_lines)}: #{inspect(lines)}"
 
-        # Key assertion: max concurrency must be 1 (serialized by :global.trans)
         max_concurrency =
           case File.read(max_file) do
             {:ok, val} -> String.trim(val) |> String.to_integer()
@@ -345,16 +297,269 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
           end
 
         assert max_concurrency == 1,
-               "Expected max concurrency 1 (serialized), got #{max_concurrency}: calls may have run in parallel"
+               "Expected max concurrency 1, got #{max_concurrency}"
       end)
     end
   end
 
-  defp with_fake_br(temp_dir, body, fun) do
+  describe "lock identity per action — all operations share the same database_path lock" do
+    test ":create uses project_config database_path and enters global trans",
+         %{temp_dir: temp_dir} do
+      # Parse --db flag to confirm the correct database path was received.
+      fake_br_body = [
+        "while [ $# -gt 0 ]; do",
+        "  case \"$1\" in",
+        "    --db) echo \"DB_PATH=$2\" && shift 2 ;;",
+        "    *) shift ;;",
+        "  esac",
+        "done",
+        "echo ACTION=create"
+      ]
+      |> Enum.join("\n")
+
+      db_path = "/tmp/serialized.db"
+
+      with_fake_br(temp_dir, fake_br_body, fn ->
+        # :create requires :title, :type, :description, :agent_context, and :priority
+        assert {:ok, %{stdout: stdout, exit_code: 0}} =
+                 SystemBrRunner.cmd(
+                   {:create,
+                    %{
+                      id: "issue-1",
+                      title: "test issue",
+                      type: "task",
+                      description: "Test description",
+                      agent_context: "Test context",
+                      priority: 2
+                    }},
+                   %{database_path: db_path}
+                 )
+
+        assert stdout =~ "DB_PATH=#{db_path}"
+        assert stdout =~ "ACTION=create"
+      end)
+    end
+
+    test ":update uses project_config database_path and enters global trans",
+         %{temp_dir: temp_dir} do
+      # :update appends --json, so Port stdout is available and fake_br succeeds.
+      fake_br_body = [
+        "while [ $# -gt 0 ]; do",
+        "  case \"$1\" in",
+        "    --db) echo \"DB_PATH=$2\" && shift 2 ;;",
+        "    --json) echo HAS_JSON=1 && shift ;;",
+        "    *) shift ;;",
+        "  esac",
+        "done"
+      ]
+      |> Enum.join("\n")
+
+      db_path = "/tmp/serialized.db"
+
+      with_fake_br(temp_dir, fake_br_body, fn ->
+        assert {:ok, %{stdout: stdout, exit_code: 0}} =
+                 SystemBrRunner.cmd(
+                   {:update, %{flags: ["issue-99", "--status", "in_progress"]}},
+                   %{database_path: db_path}
+                 )
+
+        assert stdout =~ "DB_PATH=#{db_path}"
+        assert stdout =~ "HAS_JSON=1"
+      end)
+    end
+
+    test "three concurrent calls to different operations on same DB path are fully serialized",
+         %{temp_dir: temp_dir} do
+      # All three use database_path from project_config and are serialized by the
+      # same :global.trans lock key.
+      counter_file = Path.join(temp_dir, "all_ops.counter")
+      max_file = Path.join(temp_dir, "all_ops.max")
+
+      fake_br_body = [
+        "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
+        "n=$((n + 1))",
+        "echo $n > \"#{counter_file}\"",
+        "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
+        "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
+        "sleep 0.3",
+        "n=$(cat \"#{counter_file}\")",
+        "n=$((n - 1))",
+        "echo $n > \"#{counter_file}\""
+      ]
+      |> Enum.join("\n")
+
+      with_fake_br(temp_dir, fake_br_body, fn ->
+        db_path = "/tmp/mixed_ops.db"
+        parent = self()
+
+        spawn(fn ->
+          SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
+          send(parent, :op1_done)
+        end)
+
+        spawn(fn ->
+          SystemBrRunner.cmd(
+            {:update, %{flags: ["issue-2", "--status", "in_progress"]}},
+            %{database_path: db_path}
+          )
+          send(parent, :op2_done)
+        end)
+
+        spawn(fn ->
+          SystemBrRunner.cmd(
+            {:create,
+             %{
+               id: "issue-3",
+               title: "test",
+               type: "task",
+               description: "desc",
+               agent_context: "ctx",
+               priority: 2
+             }},
+            %{database_path: db_path}
+          )
+          send(parent, :op3_done)
+        end)
+
+        for op <- [:op1_done, :op2_done, :op3_done] do
+          receive do
+            ^op -> :ok
+          after
+            30_000 -> flunk("timeout waiting for #{op}")
+          end
+        end
+
+        max_concurrency =
+          case File.read(max_file) do
+            {:ok, val} -> String.trim(val) |> String.to_integer()
+            _ -> 0
+          end
+
+        assert max_concurrency == 1,
+               "Expected max concurrency 1, got #{max_concurrency}"
+      end)
+    end
+  end
+
+  describe "lock release after error — global trans releases lock when function returns" do
+    test "lock is released after br returns error tuple; second call succeeds",
+         %{temp_dir: temp_dir} do
+      # Strategy: call 1 exits 1 and writes a marker. Call 2 sees the marker and exits 0.
+      # If the lock is held by call 1, call 2 blocks indefinitely on :global.trans.
+      marker = Path.join(temp_dir, "call1.flag")
+      success_log = Path.join(temp_dir, "success.log")
+
+      # No "set -eu": explicit exit must not crash the shell.
+      fake_br_body = [
+        "if [ -f \"#{marker}\" ]; then",
+        "  echo CALLER2 >> \"#{success_log}\"",
+        "  exit 0",
+        "else",
+        "  echo CALLER1 > \"#{marker}\"",
+        "  exit 1",
+        "fi"
+      ]
+      |> Enum.join("\n")
+
+      with_fake_br(temp_dir, fake_br_body, fn ->
+        db_path = "/tmp/error_unlock.db"
+
+        # First call fails
+        assert {:error, %{exit_code: 1}} =
+                 SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
+
+        # Second call succeeds — proves lock was released after call 1 returned.
+        # Without lock release, call 2 would block on the held lock indefinitely.
+        assert {:ok, %{exit_code: 0}} =
+                 SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
+
+        assert File.read!(success_log) =~ "CALLER2"
+      end)
+    end
+  end
+
+  describe "lock release after timeout — global trans releases lock after SIGTERM" do
+    test "lock is released after command times out; second call succeeds",
+         %{temp_dir: temp_dir} do
+      # Strategy: call 1 sleeps and times out (SIGTERM kill). Call 2 succeeds immediately.
+      # If the lock is held by call 1, call 2 blocks indefinitely on :global.trans.
+      marker = Path.join(temp_dir, "timeout.flag")
+      success_log = Path.join(temp_dir, "success.log")
+
+      fake_br_body = [
+        "echo START >> \"#{marker}\"",
+        "sleep 30",
+        "echo DONE >> \"#{marker}\""
+      ]
+      marker = Path.join(temp_dir, "timeout.flag")
+      success_log = Path.join(temp_dir, "success.log")
+
+      # Both calls write to success_log so we can verify both ran.
+      fake_br_body = [
+        "echo START >> \"#{success_log}\"",
+        "sleep 30",
+        "echo DONE >> \"#{success_log}\""
+      ]
+      |> Enum.join("\n")
+
+      with_fake_br(temp_dir, fake_br_body, fn ->
+        db_path = "/tmp/timeout_unlock.db"
+
+        assert {:error, %{exit_code: exit_code, reason: :timeout}} =
+                 SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path}, timeout_ms: 200)
+
+        assert exit_code in [143, 137]
+
+        # Wait for first spawned process to fully exit before attempting second call.
+        :timer.sleep(500)
+
+        assert {:ok, %{exit_code: 0, stdout: _stdout}} =
+                 SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path})
+
+        # success_log contains START from both calls (first call ran, second ran)
+        assert File.read!(success_log) =~ "START"
+      end)
+    end
+  end
+  describe "invalid and missing database paths" do
+    test "non-binary database_path raises ArgumentError", %{temp_dir: temp_dir} do
+      with_fake_br(temp_dir, "echo done", fn ->
+        # nil is not a binary — raises immediately in fetch_database_path!
+        assert_raise ArgumentError, fn ->
+          SystemBrRunner.cmd({:where, %{}}, %{database_path: nil})
+        end
+      end)
+    end
+
+    test "missing database_path key raises ArgumentError", %{temp_dir: temp_dir} do
+      with_fake_br(temp_dir, "echo done", fn ->
+        # Map without :database_path: fetch_database_path! raises with the project_config in the message.
+        assert_raise ArgumentError,
+                    ~r"expected project_config with binary :database_path",
+                    fn ->
+                      SystemBrRunner.cmd({:where, %{}}, %{other_key: "value"})
+                    end
+      end)
+    end
+
+    test "nil database_path bypasses global trans — :version has no DB to lock",
+         %{temp_dir: temp_dir} do
+      # :version (and :capabilities/:schema) pass nil database_path to with_database_lock,
+      # which calls fun.() directly without acquiring a :global.trans lock.
+      with_fake_br(temp_dir, "echo BR_WAS_CALLED=1\n", fn ->
+        assert {:ok, %{stdout: stdout, exit_code: 0}} =
+                 SystemBrRunner.cmd({:version, %{}}, %{})
+
+        assert stdout =~ "BR_WAS_CALLED=1"
+      end)
+    end
+  end
+
+  defp with_fake_br(temp_dir, body, fun) when is_binary(body) do
     script_path = Path.join(temp_dir, "br")
     original_path = System.get_env("PATH") || ""
 
-    File.write!(script_path, "#!/bin/sh\nset -eu\n#{body}\n")
+    File.write!(script_path, "#!/bin/sh\nset -eu\n" <> body <> "\n")
     File.chmod!(script_path, 0o755)
     System.put_env("PATH", temp_dir <> ":" <> original_path)
 
