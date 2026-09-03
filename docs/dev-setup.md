@@ -37,6 +37,16 @@ cp -R .beads /tmp/beads-backup-$(date +%s)
 cd .beads
 sqlite3 beads.db ".recover" > /tmp/rec.sql
 sqlite3 /tmp/rec.db < /tmp/rec.sql
+
+# CRITICAL: compare IDs before swapping
+# If rows are in corrupt DB but NOT recovered, they are LOST — check JSONL
+sqlite3 /tmp/rec.db "select id from issues;" 2>/dev/null | tr '|' '\n' | sort > /tmp/rec_ids
+sqlite3 beads.db "select id from issues;" 2>/dev/null | tr '|' '\n' | sort > /tmp/corrupt_ids
+echo "Lost from DB: $(comm -23 /tmp/corrupt_ids /tmp/rec_ids | wc -l)"
+# Check if lost IDs are in JSONL:
+comm -23 /tmp/corrupt_ids /tmp/rec_ids | while read id; do grep -q "\"$id\"" issues.jsonl && echo "$id in JSONL" || echo "$id MISSING"; done
+
+# Swap in recovered DB only after checking above
 rm beads.db beads.db-shm beads.db-wal beads.db-wal-cert beads.db-wal-cert-head
 cp /tmp/rec.db beads.db && chmod 600 beads.db
 
