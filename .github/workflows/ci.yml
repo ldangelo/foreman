@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  foreman-server:
+    name: foreman_server
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: foreman_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MIX_ENV: test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: foreman_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18.4'
+          otp-version: '27.3'
+      - name: Install hex/rebar
+        run: mix local.hex --force && mix local.rebar --force
+      - name: Verify Jido fork pins
+        run: echo "JRM-T003 reading pins from JIDO_FORKS.md"
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/foreman_server/deps
+            packages/foreman_server/_build
+          key: ${{ runner.os }}-foreman-server-${{ hashFiles('packages/foreman_server/mix.lock') }}
+      - name: Install dependencies
+        run: cd packages/foreman_server && mix deps.get
+      - name: Compile with warnings as errors
+        run: cd packages/foreman_server && mix compile --warnings-as-errors
+      - name: Format check
+        run: cd packages/foreman_server && mix format --check-formatted
+      - name: Credo
+        run: cd packages/foreman_server && mix credo --min-priority higher
+      - name: Doctor
+        run: cd packages/foreman_server && mix doctor --raise
+      - name: Run tests with coverage
+        run: cd packages/foreman_server && mix test --cover
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foreman-server-coverage
+          path: packages/foreman_server/_build/test/cover/
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foreman-server-test-results
+          path: packages/foreman_server/_build/test/test-results/
+
+  jido-harness:
+    name: jido_harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18.4'
+          otp-version: '27.3'
+      - name: Install hex/rebar
+        run: mix local.hex --force && mix local.rebar --force
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/jido_harness/deps
+            packages/jido_harness/_build
+          key: ${{ runner.os }}-jido-harness-${{ hashFiles('packages/jido_harness/mix.lock') }}
+      - name: Install dependencies
+        run: cd packages/jido_harness && mix deps.get
+      - name: Quality
+        run: cd packages/jido_harness && mix quality
+      - name: Run tests
+        run: cd packages/jido_harness && mix test

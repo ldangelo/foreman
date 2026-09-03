@@ -1840,15 +1840,17 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @impl true
   def complete(task_id, completion_token, project_config) when is_map(project_config) do
-    run_id = Map.get(project_config, :run_id) || Map.get(project_config, "run_id")
+    run_id = Map.get(project_config, :run_id)
 
     # Generate synthetic run_id when absent — callers without a bound run (e.g. direct
     # API calls, janitor) still need lease serialization to prevent concurrent writes.
+    # Nanosecond + unique integer suffix guarantees uniqueness under concurrent calls
+    # to the same project.
     resolved_run_id =
       if is_binary(run_id) and run_id != "" do
         run_id
       else
-        "synthetic:#{task_id}:#{System.system_time(:millisecond)}"
+        "synthetic:#{task_id}:#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       end
 
     complete(task_id, completion_token, resolved_run_id, project_config)
