@@ -485,15 +485,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       # If the lock is held by call 1, call 2 blocks indefinitely on :global.trans.
       marker = Path.join(temp_dir, "timeout.flag")
       success_log = Path.join(temp_dir, "success.log")
-
-      fake_br_body = [
-        "echo START >> \"#{marker}\"",
-        "sleep 30",
-        "echo DONE >> \"#{marker}\""
-      ]
-      marker = Path.join(temp_dir, "timeout.flag")
-      success_log = Path.join(temp_dir, "success.log")
-
       # Both calls write to success_log so we can verify both ran.
       fake_br_body = [
         "echo START >> \"#{success_log}\"",
