@@ -277,14 +277,14 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   describe "concurrency serialization" do
     test "fake br evidence parser derives intervals and max concurrency", %{temp_dir: temp_dir} do
       log_file = Path.join(temp_dir, "events.log")
-      File.write!(log_file, "ENTER|a\nDONE|a\nENTER|b\nDONE|b\n")
+      File.write!(log_file, "ENTER|a|argv\nDONE|a|argv\nENTER|b|argv\nDONE|b|argv\n")
 
       assert %{events: events, max_concurrency: 1, overlap?: false} =
                parse_fake_br_events!(log_file)
 
       assert Enum.map(events, & &1.phase) == [:enter, :done, :enter, :done]
 
-      File.write!(log_file, "ENTER|a\nENTER|b\nDONE|a\nDONE|b\n")
+      File.write!(log_file, "ENTER|a|argv\nENTER|b|argv\nDONE|a|argv\nDONE|b|argv\n")
 
       assert %{max_concurrency: 2, overlap?: true} = parse_fake_br_events!(log_file)
     end
@@ -336,7 +336,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
          %{temp_dir: temp_dir} do
       log_file = Path.join(temp_dir, "different-db-events.log")
 
-      with_fake_br(temp_dir, fake_br_event_body(log_file), fn ->
+      with_fake_br(temp_dir, fake_br_event_body(log_file, wait_for_two_enters: true), fn ->
         tasks =
           run_concurrent_br_calls([
             {:db_a, %{database_path: Path.join(temp_dir, "a.beads.db")}},
@@ -411,9 +411,27 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     end)
   end
 
-  defp fake_br_event_body(log_file) do
+  defp fake_br_event_body(log_file, opts \\ []) do
+    wait_for_two_enters = Keyword.get(opts, :wait_for_two_enters, false)
+
+    barrier =
+      if wait_for_two_enters do
+        """
+        i=0
+        while [ "$i" -lt 50 ]; do
+          enters=$(grep -c '^ENTER|' "#{log_file}" 2>/dev/null || true)
+          if [ "$enters" -ge 2 ]; then break; fi
+          i=$((i + 1))
+          sleep 0.02
+        done
+        """
+      else
+        ""
+      end
+
     """
     printf 'ENTER|%s|%s\n' "$$" "$*" >> "#{log_file}"
+    #{barrier}
     sleep 0.4
     printf 'DONE|%s|%s\n' "$$" "$*" >> "#{log_file}"
     printf 'ok\n'

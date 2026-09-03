@@ -162,7 +162,7 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
     - Given project config has `database_path: ""`, when a no-DB action runs, then fake `br` executes on the same no-lock path.
     - Given the new tests finish or fail, when cleanup runs, then `PATH` and temp files are isolated.
 
-- [x] **TRD-004-TEST** Run existing `SystemBrRunner` test cases with the new harness to prove command-shape, timeout, and cleanup behavior still passes (2h) [verifies TRD-004] [satisfies REQ-011] [satisfies REQ-008] [depends: TRD-004]
+- [ ] **TRD-004-TEST** Run existing `SystemBrRunner` test cases with the new harness to prove command-shape, timeout, and cleanup behavior still passes (2h) [verifies TRD-004] [satisfies REQ-011] [satisfies REQ-008] [depends: TRD-004]
   - **Validates PRD ACs:** AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given existing success, timeout, temp-file, shell-quote, and argv tests run, when the new locking tests are present, then they still pass unchanged.
@@ -184,13 +184,13 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
     - Given assertion helpers compare expected and observed concurrency, when they fail, then the message includes observed max concurrency derived from event order and the recorded log.
     - Given fake setup fails before any event is recorded, when the helper fails, then the message names setup/evidence absence rather than reporting a false overlap.
 
-- [x] **TRD-006** Validate the final focused test command and avoid living documentation changes unless implementation changes maintainer/operator behavior (1h) [satisfies REQ-008] [satisfies REQ-011] [satisfies ARCH] [depends: TRD-003, TRD-004, TRD-005]
+- [ ] **TRD-006** Validate the final focused test command and avoid living documentation changes unless implementation changes maintainer/operator behavior (1h) [satisfies REQ-008] [satisfies REQ-011] [satisfies ARCH] [depends: TRD-003, TRD-004, TRD-005]
   - **Validates PRD ACs:** AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given implementation is complete, when `mix test test/foreman_server/task_providers/system_br_runner_test.exs` is run from `packages/foreman_server`, then all tests pass locally without network or real Beads.
     - Given living docs are reviewed, when no operator-visible behavior changed, then no README/user-guide/CLI reference change is made.
 
-- [x] **TRD-006-TEST** Record validation evidence for the SystemBrRunner focused suite and documentation decision (1h) [verifies TRD-006] [satisfies REQ-008] [satisfies REQ-011] [depends: TRD-006]
+- [ ] **TRD-006-TEST** Record validation evidence for the SystemBrRunner focused suite and documentation decision (1h) [verifies TRD-006] [satisfies REQ-008] [satisfies REQ-011] [depends: TRD-006]
   - **Validates PRD ACs:** AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given the focused suite passes, when implementation report is written, then it includes the exact command and outcome.
