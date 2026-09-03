@@ -9,6 +9,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
+  alias ForemanServer.CommandGateway
+  alias ForemanServer.Aggregates.BeadsDbLease
   require Logger
 
   @runner Application.compile_env(
@@ -1641,10 +1643,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     |> Enum.join(" ")
   end
 
-  @impl true
   def claim(task_id, actor, project_config) do
     if is_binary(task_id) and String.trim(task_id) != "" do
-      _database_path =
+      database_path =
         case project_config do
           %{database_path: cached_path} when is_binary(cached_path) ->
             cached_path
@@ -1657,87 +1658,95 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
 
+      run_id = Map.get(project_config, :run_id) || Map.get(project_config, "run_id") || ""
+
+      if run_id == "" do
+        raise ArgumentError, "expected project_config with :run_id for lease serialization"
+      end
+
       request = {:update, %{flags: ["--claim", task_id]}}
 
-      case @runner.cmd(request, project_config, timeout_ms: 30_000) do
-        {:ok, %{stdout: stdout}} ->
-          case String.trim(stdout) do
-            "" ->
-              {:error,
-               CodeMap.build_provider_error(
-                 ProviderErrorInput.from_local(
-                   "BR_PARSE_ERROR",
-                   "Beads claim payload could not be parsed.",
-                   "Check the Beads output format or refresh the CLI contract cache.",
-                   false
-                 ),
-                 "br update",
-                 0
-               )}
+      BeadsDbLease.with_lease(database_path, run_id, task_id, fn ->
+        case @runner.cmd(request, project_config, timeout_ms: 30_000) do
+          {:ok, %{stdout: stdout}} ->
+            case String.trim(stdout) do
+              "" ->
+                {:error,
+                 CodeMap.build_provider_error(
+                   ProviderErrorInput.from_local(
+                     "BR_PARSE_ERROR",
+                     "Beads claim payload could not be parsed.",
+                     "Check the Beads output format or refresh the CLI contract cache.",
+                     false
+                   ),
+                   "br update",
+                   0
+                 )}
 
-            json ->
-              case Jason.decode(json) do
-                {:ok, [%{} = payload | _rest]} ->
-                  parse_claimed_payload(payload, actor)
+              json ->
+                case Jason.decode(json) do
+                  {:ok, [%{} = payload | _rest]} ->
+                    parse_claimed_payload(payload, actor)
 
-                {:ok, %{} = payload} ->
-                  parse_claimed_payload(payload, actor)
+                  {:ok, %{} = payload} ->
+                    parse_claimed_payload(payload, actor)
 
-                {:ok, _other} ->
-                  {:error,
-                   CodeMap.build_provider_error(
-                     ProviderErrorInput.from_local(
-                       "BR_CONTRACT_MISMATCH",
-                       "Beads claim payload must decode to a JSON object or array.",
-                       "Update the adapter or install a supported Beads CLI version.",
-                       false
-                     ),
-                     "br update",
-                     0
-                   )}
+                  {:ok, _other} ->
+                    {:error,
+                     CodeMap.build_provider_error(
+                       ProviderErrorInput.from_local(
+                         "BR_CONTRACT_MISMATCH",
+                         "Beads claim payload must decode to a JSON object or array.",
+                         "Update the adapter or install a supported Beads CLI version.",
+                         false
+                       ),
+                       "br update",
+                       0
+                     )}
 
-                {:error, _reason} ->
-                  {:error,
-                   CodeMap.build_provider_error(
-                     ProviderErrorInput.from_local(
-                       "BR_PARSE_ERROR",
-                       "Beads claim payload could not be parsed.",
-                       "Check the Beads output format or refresh the CLI contract cache.",
-                       false
-                     ),
-                     "br update",
-                     0
-                   )}
-              end
-          end
-
-        {:error, %{stdout: stdout, stderr: stderr} = result} ->
-          stderr_byte_count = byte_size(stderr)
-          command = "br update"
-
-          provider_error =
-            case parse_br_error_envelope(stderr, stdout) do
-              {:ok, envelope} ->
-                envelope
-                |> ProviderErrorInput.from_br_envelope()
-                |> CodeMap.build_provider_error(command, stderr_byte_count)
-
-              :error ->
-                CodeMap.build_provider_error(
-                  ProviderErrorInput.from_local(
-                    "BR_PARSE_ERROR",
-                    "Beads CLI returned an unreadable error envelope.",
-                    "Verify the installed br version and retry.",
-                    false
-                  ),
-                  command,
-                  stderr_byte_count
-                )
+                  {:error, _reason} ->
+                    {:error,
+                     CodeMap.build_provider_error(
+                       ProviderErrorInput.from_local(
+                         "BR_PARSE_ERROR",
+                         "Beads claim payload could not be parsed.",
+                         "Check the Beads output format or refresh the CLI contract cache.",
+                         false
+                       ),
+                       "br update",
+                       0
+                     )}
+                end
             end
-            |> maybe_put_exit_code(result)
 
-          {:error, provider_error}
-      end
+          {:error, %{stdout: stdout, stderr: stderr} = result} ->
+            stderr_byte_count = byte_size(stderr)
+            command = "br update"
+
+            provider_error =
+              case parse_br_error_envelope(stderr, stdout) do
+                {:ok, envelope} ->
+                  envelope
+                  |> ProviderErrorInput.from_br_envelope()
+                  |> CodeMap.build_provider_error(command, stderr_byte_count)
+
+                :error ->
+                  CodeMap.build_provider_error(
+                    ProviderErrorInput.from_local(
+                      "BR_PARSE_ERROR",
+                      "Beads CLI returned an unreadable error envelope.",
+                      "Verify the installed br version and retry.",
+                      false
+                    ),
+                    command,
+                    stderr_byte_count
+                  )
+              end
+              |> maybe_put_exit_code(result)
+
+            {:error, provider_error}
+        end
+      end)
     else
       {:error,
        CodeMap.build_provider_error(
@@ -1829,17 +1838,25 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
 
+      run_id = Map.get(project_config, :run_id) || Map.get(project_config, "run_id") || ""
+
+      if run_id == "" do
+        raise ArgumentError, "expected project_config with :run_id for lease serialization"
+      end
+
       close_payload = build_close_payload(task_id, completion_token)
 
-      case @runner.cmd({:close, close_payload}, %{database_path: database_path},
-             timeout_ms: 30_000
-           ) do
-        {:ok, %{stdout: stdout}} ->
-          parse_closed_issue_response(stdout, task_id)
+      BeadsDbLease.with_lease(database_path, run_id, task_id, fn ->
+        case @runner.cmd({:close, close_payload}, %{database_path: database_path},
+               timeout_ms: 30_000
+             ) do
+          {:ok, %{stdout: stdout}} ->
+            parse_closed_issue_response(stdout, task_id)
 
-        {:error, %{stdout: stdout, stderr: stderr} = result} ->
-          build_complete_error(stdout, stderr, result, task_id)
-      end
+          {:error, %{stdout: stdout, stderr: stderr} = result} ->
+            build_complete_error(stdout, stderr, result, task_id)
+        end
+      end)
     else
       {:error,
        CodeMap.build_provider_error(
@@ -1886,6 +1903,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
 
+      run_id = Map.get(project_config, :run_id) || Map.get(project_config, "run_id") || ""
+
+      if run_id == "" do
+        raise ArgumentError, "expected project_config with :run_id for lease serialization"
+      end
+
       with {:ok, transition_comment} <- resolve_transition_comment(failure_token) do
         request =
           {:update,
@@ -1906,13 +1929,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
           "--json"
         ]
 
-        case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
-          {:ok, %{stdout: stdout}} ->
-            parse_failed_issue_response(stdout, task_id, argv)
+        BeadsDbLease.with_lease(database_path, run_id, task_id, fn ->
+          case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
+            {:ok, %{stdout: stdout}} ->
+              parse_failed_issue_response(stdout, task_id, argv)
 
-          {:error, %{stdout: stdout, stderr: stderr} = result} ->
-            build_fail_error(stdout, stderr, result, task_id, argv)
-        end
+            {:error, %{stdout: stdout, stderr: stderr} = result} ->
+              build_fail_error(stdout, stderr, result, task_id, argv)
+          end
+        end)
       end
     else
       {:error,

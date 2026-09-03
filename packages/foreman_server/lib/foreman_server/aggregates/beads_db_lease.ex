@@ -301,6 +301,99 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   end
 
   @doc """
+  Block until this run holds the Beads DB lease, then execute the callback.
+
+  Dispatches `lease.acquire`, polls aggregate state via Registry until
+  `holder?(state, run_id)` is true, runs `callback.()`, then releases.
+
+  Returns `{:ok, result}` on success, `{:error, reason}` on failure
+  or timeout. Use this around every `br` call in BeadsAdapter to
+  serialize concurrent writes against the same DB file.
+  """
+  @spec with_lease(String.t(), String.t(), String.t(), (() -> {:ok, term()} | {:error, term()})) ::
+          {:ok, term()} | {:error, term()}
+  def with_lease(db_path, run_id, task_id, callback)
+      when is_binary(db_path) and db_path != "" and is_binary(run_id) and
+             run_id != "" and is_binary(task_id) and is_function(callback, 0) do
+    stream_id = stream_id(db_path)
+    ms = System.system_time(:millisecond)
+
+    with :ok <- lease_acquire(stream_id, db_path, run_id, task_id, ms),
+         :ok <- poll_until_holder(stream_id, run_id, 50, 100) do
+      result = callback.()
+
+      release_ms = System.system_time(:millisecond)
+      _ = lease_release(stream_id, db_path, run_id, release_ms)
+
+      result
+    else
+      {:error, _reason} = err ->
+        err
+    end
+  end
+
+  defp lease_acquire(stream_id, db_path, run_id, task_id, ms) do
+    case CommandGateway.dispatch_system(%{
+           type: "lease.acquire",
+           command_id: "beads-adapter:lease-acquire:#{db_path}:#{run_id}:#{ms}",
+           aggregate_id: stream_id,
+           payload: %{
+             db_path: db_path,
+             run_id: run_id,
+             task_id: task_id,
+             acquired_at_ms: ms
+           }
+         }) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  defp lease_release(stream_id, db_path, run_id, release_ms) do
+    case CommandGateway.dispatch_system(%{
+           type: "lease.release",
+           command_id: "beads-adapter:lease-release:#{db_path}:#{run_id}:#{release_ms}",
+           aggregate_id: stream_id,
+           payload: %{
+             db_path: db_path,
+             run_id: run_id,
+             released_at_ms: release_ms,
+             reason: "br_call_complete"
+           }
+         }) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, _} -> :ok
+    end
+  end
+  defp poll_until_holder(_stream_id, _run_id, 0, _interval_ms) do
+    {:error, :lease_timeout}
+  end
+
+  defp poll_until_holder(stream_id, run_id, remaining, interval_ms) do
+    case Registry.lookup(ForemanServer.AggregateRegistry, stream_id) do
+      [{pid, _}] ->
+        state = ForemanServer.Aggregate.Actor.get_state(pid)
+
+        if holder?(state, run_id) do
+          :ok
+        else
+          :timer.sleep(interval_ms)
+          poll_until_holder(stream_id, run_id, remaining - 1, interval_ms)
+        end
+
+      [] ->
+        :timer.sleep(interval_ms)
+        poll_until_holder(stream_id, run_id, remaining - 1, interval_ms)
+    end
+  end
+
+  defp holder?(%State{holder: %Holder{run_id: r}}, run_id), do: r == run_id
+  defp holder?(_state, _run_id), do: false
+
+
+  @doc """
   Build the lease stream id for a Beads database path.
 
   The key is the configured absolute DB path verbatim. Two callers
