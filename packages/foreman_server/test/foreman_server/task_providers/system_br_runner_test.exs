@@ -305,12 +305,12 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         parent = self()
 
         spawn(fn ->
-          SystemBrRunner.cmd({:version, %{}}, %{database_path: db_path})
+          SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
           send(parent, :call1_done)
         end)
 
         spawn(fn ->
-          SystemBrRunner.cmd({:version, %{}}, %{database_path: db_path})
+          SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
           send(parent, :call2_done)
         end)
 
