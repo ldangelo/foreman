@@ -328,6 +328,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       result
     else
       {:error, _reason} = err ->
+        # Remove timed-out waiter so they don't block future writers.
+        _ = lease_remove_waiter(stream_id, db_path, run_id)
         err
     end
   end
@@ -367,6 +369,22 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       {:error, _} -> :ok
     end
   end
+
+  defp lease_remove_waiter(stream_id, db_path, run_id) do
+    ms = System.system_time(:millisecond)
+
+    CommandGateway.dispatch_system(%{
+      type: "lease.remove_waiter",
+      command_id: "beads-adapter:lease-remove-waiter:#{db_path}:#{run_id}:#{ms}",
+      payload: %{
+        db_path: db_path,
+        run_id: run_id,
+        removed_at_ms: ms,
+        reason: :run_cancelled
+      }
+    })
+  end
+
   defp poll_until_holder(_stream_id, _run_id, 0, _interval_ms) do
     {:error, :lease_timeout}
   end

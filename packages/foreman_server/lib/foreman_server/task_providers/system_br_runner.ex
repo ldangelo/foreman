@@ -31,12 +31,20 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   def cmd(request, project_config, opts \\ []) when is_list(opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, configured_timeout_ms())
     stdin_payload = fetch_stdin_payload!(opts)
-    database_path = Map.get(project_config, :database_path) || Map.get(project_config, "database_path")
+    argv = build_argv(request, project_config)
+
+    # Resolve database_path using same logic as build_argv so lock key matches
+    # what the actual br command will use. set_priority puts it in the request payload;
+    # all other actions use project_config.
+    database_path =
+      case request do
+        {:set_priority, payload} -> fetch_database_path!(payload)
+        _ -> fetch_database_path!(project_config)
+      end
+
     temp_files = create_temp_files(stdin_payload)
 
     try do
-      argv = build_argv(request, project_config)
-
       # Universal backstop: serialize all br calls per database_path to prevent
       # concurrent writes from corrupting SQLite. This complements BeadsDbLease.with_lease
       # which covers claim/complete/fail. Other paths (create, list_ready, update, etc.)
