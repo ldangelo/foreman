@@ -26,25 +26,26 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   @temp_file_leaked_event [:foreman_server, :task_provider, :beads, :temp_file, :leaked]
 
   @type response :: %{stdout: String.t(), stderr: String.t(), exit_code: integer() | nil}
-
   @impl true
   def cmd(request, project_config, opts \\ []) when is_list(opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, configured_timeout_ms())
     stdin_payload = fetch_stdin_payload!(opts)
-    argv = build_argv(request, project_config)
-
-    # Resolve database_path using same logic as build_argv so lock key matches
-    # what the actual br command will use. set_priority puts it in the request payload;
-    # all other actions use project_config.
-    database_path =
-      case request do
-        {:set_priority, payload} -> fetch_database_path!(payload)
-        _ -> fetch_database_path!(project_config)
-      end
-
     temp_files = create_temp_files(stdin_payload)
 
     try do
+      argv = build_argv(request, project_config)
+
+      # Compute database_path AFTER build_argv so we use the same resolution logic
+      # (set_priority uses payload, others use project_config).
+      database_path =
+        case request do
+          {:version, _payload} -> nil
+          {:capabilities, _payload} -> nil
+          {:schema, _payload} -> nil
+          {:set_priority, payload} -> fetch_database_path!(payload)
+          _ -> fetch_database_path!(project_config)
+        end
+
       # Universal backstop: serialize all br calls per database_path to prevent
       # concurrent writes from corrupting SQLite. This complements BeadsDbLease.with_lease
       # which covers claim/complete/fail. Other paths (create, list_ready, update, etc.)
@@ -89,9 +90,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       cleanup_leaked_temp_files(temp_files)
     end
   end
-  # Serialize br commands per database_path using :global.trans/2.
-  # Blocks until lock acquired. Complements BeadsDbLease.with_lease which
-  # covers claim/complete/fail; this backstop protects all other br paths.
   defp with_database_lock(database_path, fun) when is_function(fun, 0) do
     if is_binary(database_path) and database_path != "" do
       lock_id = {:br_db_lock, database_path}
