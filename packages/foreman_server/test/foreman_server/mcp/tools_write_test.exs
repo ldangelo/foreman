@@ -155,6 +155,57 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
     end
   end
 
+  describe "foreman_task_update" do
+    test "dispatches only supported mutable fields via task.update" do
+      params = %{
+        task_id: "task-123",
+        title: "New title",
+        description: "New description",
+        priority: 2,
+        status: "blocked",
+        ignored_atom: "drop me"
+      }
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.type == "task.update"
+        assert envelope.aggregate_id == "task:task-123"
+
+        assert envelope.payload == %{
+                 task_id: "task-123",
+                 title: "New title",
+                 description: "New description",
+                 priority: 2,
+                 status: "blocked"
+               }
+
+        {:ok, %{task_id: "task-123", status: "blocked"}}
+      end)
+
+      assert Tools.call_tool("foreman_task_update", params) ==
+               {:ok, %{task_id: "task-123", status: "blocked"}}
+    end
+
+    test "rejects no-op and unsupported-field payloads without dispatch" do
+      assert Tools.call_tool("foreman_task_update", %{
+               task_id: "task-123",
+               ignored_atom: "drop me"
+             }) ==
+               {:error, %ToolError{code: "INVALID_PARAMS", message: "No update fields provided"}}
+
+      refute :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
+    test "maps task.update domain failures to DOMAIN_ERROR" do
+      :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
+        {:error, {:invalid_task_status, "merged"}}
+      end)
+
+      assert Tools.call_tool("foreman_task_update", %{task_id: "task-123", status: "merged"}) ==
+               {:error,
+                %ToolError{code: "DOMAIN_ERROR", message: "{:invalid_task_status, \"merged\"}"}}
+    end
+  end
+
   describe "foreman_run_cancel" do
     test "dispatches via CommandGateway with correct envelope" do
       params = %{run_id: "run-789", reason: "operator requested"}

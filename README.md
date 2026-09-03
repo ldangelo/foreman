@@ -224,7 +224,11 @@ When set, all `/api/*` requests require an `Authorization: Bearer <token>` heade
 
 To run in production without authentication (not recommended), set `allow_insecure_local: true` in the MCP policy config.
 
+The MCP task tools expose `foreman_task_list`, `foreman_task_get`, and write-gated `foreman_task_update`. Task list supports `project_id`/canonical `status` filters plus `limit`/`offset` pagination and returns `{tasks, total, limit, offset, next_offset}`.
+
 The MCP `foreman_task_create` write tool accepts optional `task_type` and defaults it to `"task"` when omitted.
+
+`foreman_run_status` returns a bounded run-status DTO from run and phase projections: `run_id`, `status`, `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`, timestamps, and `failure_reason`.
 
 `foreman_run_get_logs` reads the Elixir projection of durable worker stdout/stderr events. Known runs with no captured output return an empty result and unknown runs return `NOT_FOUND`, so "wrote nothing" is never confused with "no such run". The read is bounded (latest 500 of at most 5,000 entries / 1 MiB retained per run) and reports eviction as `truncated: true` with non-zero `omitted_entries`.
 

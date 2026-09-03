@@ -523,7 +523,11 @@ register separate lease streams.
   verifies the admission contract; cross-process discipline against
   external writers is a separate, operator-owned concern.
 
-## 19. Durable worker run logs
+## 19. Durable worker run logs and MCP run status
+
+`foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and
+`ProjectionStore.phases_for_run/1`; do not rebuild it from logs or raw event
+streams, and keep `foreman_run_get`'s full projection shape distinct.
 
 `foreman_run_get_logs` is backed by `ProjectionStore`, not console `Logger`
 output or ad hoc files. Production worker output must enter the system only as

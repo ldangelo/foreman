@@ -45,6 +45,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert Enum.map(tools, & &1.name) == [
                "foreman_work_get",
                "foreman_run_get",
+               "foreman_run_status",
                "foreman_queue_status",
                "foreman_project_list",
                "foreman_project_get",
@@ -94,6 +95,20 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert "description" in tool.inputSchema.required
       refute "prompt" in tool.inputSchema.required
     end
+
+    test "task schemas advertise canonical status enum and pagination bounds" do
+      task_list = Tools.list_tools() |> Enum.find(&(&1.name == "foreman_task_list"))
+      task_update = Tools.list_tools() |> Enum.find(&(&1.name == "foreman_task_update"))
+      run_status = Tools.list_tools() |> Enum.find(&(&1.name == "foreman_run_status"))
+
+      statuses = ["open", "ready", "in_progress", "blocked", "closed", "failed"]
+      assert task_list.inputSchema.properties.status.enum == statuses
+      assert task_update.inputSchema.properties.status.enum == statuses
+      assert task_list.inputSchema.properties.limit.minimum == 1
+      assert task_list.inputSchema.properties.limit.maximum == 500
+      assert task_list.inputSchema.properties.offset.minimum == 0
+      assert run_status.inputSchema.required == ["run_id"]
+    end
   end
 
   describe "foreman_work_get" do
@@ -124,6 +139,103 @@ defmodule ForemanServer.MCP.ToolsTest do
       replace_state(%{runs: %{}})
 
       assert Tools.call_tool("foreman_run_get", %{run_id: "nonexistent"}) ==
+               {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+    end
+  end
+
+  describe "foreman_run_status" do
+    test "returns bounded DTO for an active run with current in-progress phase" do
+      run = %{
+        run_id: "run-1",
+        status: "in_progress",
+        terminal?: false,
+        project_id: "proj-1",
+        task_id: "task-1",
+        workflow_name: "implement",
+        started_at_ms: 10,
+        last_event_at_ms: 30,
+        failure_reason: nil,
+        secret: "not-in-status"
+      }
+
+      phases = %{
+        "phase-1" => %{
+          phase_id: "phase-1",
+          run_id: "run-1",
+          index: 1,
+          name: "plan",
+          status: "completed",
+          last_event_at_ms: 20
+        },
+        "phase-2" => %{
+          phase_id: "phase-2",
+          run_id: "run-1",
+          index: 2,
+          name: "build",
+          status: "in_progress",
+          attempt: 1,
+          started_at_ms: 25,
+          last_event_at_ms: 30
+        }
+      }
+
+      replace_state(%{runs: %{"run-1" => run}, phases: phases})
+
+      assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: "run-1"})
+      assert dto.run_id == "run-1"
+      assert dto.status == "in_progress"
+      assert dto.terminal == false
+      assert dto.project_id == "proj-1"
+      assert dto.task_id == "task-1"
+      assert dto.workflow_name == "implement"
+      assert dto.current_phase.phase_id == "phase-2"
+      refute Map.has_key?(dto, :secret)
+    end
+
+    test "returns terminal true for terminal statuses and falls back to latest phase" do
+      run = %{
+        run_id: "run-2",
+        status: "failed",
+        project_id: "proj-1",
+        task_id: "task-2",
+        workflow_name: "verify",
+        started_at_ms: 10,
+        last_event_at_ms: 40,
+        failure_reason: "boom"
+      }
+
+      phases = %{
+        "phase-1" => %{
+          phase_id: "phase-1",
+          run_id: "run-2",
+          index: 1,
+          name: "plan",
+          status: "completed",
+          last_event_at_ms: 20
+        },
+        "phase-2" => %{
+          phase_id: "phase-2",
+          run_id: "run-2",
+          index: 2,
+          name: "test",
+          status: "failed",
+          failure_reason: "boom",
+          last_event_at_ms: 40
+        }
+      }
+
+      replace_state(%{runs: %{"run-2" => run}, phases: phases})
+
+      assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: "run-2"})
+      assert dto.terminal == true
+      assert dto.failure_reason == "boom"
+      assert dto.current_phase.phase_id == "phase-2"
+    end
+
+    test "returns NOT_FOUND when run is unknown" do
+      replace_state(%{runs: %{}})
+
+      assert Tools.call_tool("foreman_run_status", %{run_id: "missing"}) ==
                {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
     end
   end
@@ -159,6 +271,55 @@ defmodule ForemanServer.MCP.ToolsTest do
 
       assert Tools.call_tool("foreman_project_get", %{project_id: "nonexistent"}) ==
                {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+    end
+  end
+
+  describe "foreman_task_list/get" do
+    test "lists tasks sorted by task_id with filters and pagination envelope" do
+      tasks = %{
+        "task-b" => %{task_id: "task-b", project_id: "proj-1", status: "open"},
+        "task-a" => %{task_id: "task-a", project_id: "proj-1", status: "ready"},
+        "task-c" => %{task_id: "task-c", project_id: "proj-2", status: "ready"}
+      }
+
+      replace_state(%{tasks: tasks})
+
+      assert {:ok, page_1} =
+               Tools.call_tool("foreman_task_list", %{project_id: "proj-1", limit: 1})
+
+      assert Enum.map(page_1.tasks, & &1.task_id) == ["task-a"]
+      assert page_1.total == 2
+      assert page_1.limit == 1
+      assert page_1.offset == 0
+      assert page_1.next_offset == 1
+
+      assert {:ok, page_2} =
+               Tools.call_tool("foreman_task_list", %{project_id: "proj-1", limit: 1, offset: 1})
+
+      assert Enum.map(page_2.tasks, & &1.task_id) == ["task-b"]
+      assert page_2.next_offset == nil
+
+      assert {:ok, filtered} = Tools.call_tool("foreman_task_list", %{status: "ready"})
+      assert Enum.map(filtered.tasks, & &1.task_id) == ["task-a", "task-c"]
+    end
+
+    test "rejects invalid task list filters and bounds" do
+      replace_state(%{tasks: %{}})
+
+      for args <- [%{status: "merged"}, %{limit: 0}, %{limit: 501}, %{offset: -1}] do
+        assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+                 Tools.call_tool("foreman_task_list", args)
+      end
+    end
+
+    test "gets task by id and returns NOT_FOUND for unknown task" do
+      task = %{task_id: "task-1", project_id: "proj-1", status: "open"}
+      replace_state(%{tasks: %{"task-1" => task}})
+
+      assert Tools.call_tool("foreman_task_get", %{task_id: "task-1"}) == {:ok, task}
+
+      assert Tools.call_tool("foreman_task_get", %{task_id: "missing"}) ==
+               {:error, %ToolError{code: "NOT_FOUND", message: "Task not found"}}
     end
   end
 

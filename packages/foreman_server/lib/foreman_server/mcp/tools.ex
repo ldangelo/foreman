@@ -149,16 +149,33 @@ defmodule ForemanServer.MCP.Tools do
       required: ["project_id", "description", "workflow"]
     }
   }
+  @task_statuses ["open", "ready", "in_progress", "blocked", "closed", "failed"]
+
   @schema_foreman_task_list %{
     name: "foreman_task_list",
-    description: "List tasks for a project, optionally filtered by status",
+    description: "List tasks with optional project/status filters and offset pagination",
     inputSchema: %{
       type: "object",
       properties: %{
-        project_id: %{type: "string", description: "The project ID"},
+        project_id: %{type: "string", description: "Filter by project ID"},
         status: %{
           type: "string",
-          description: "Filter by status (open, ready, in_progress, blocked, closed, failed)"
+          enum: @task_statuses,
+          description: "Filter by canonical task status"
+        },
+        limit: %{
+          type: "integer",
+          minimum: 1,
+          maximum: 500,
+          default: 100,
+          description: "Maximum tasks to return (1-500; default 100)"
+        },
+        offset: %{
+          type: "integer",
+          minimum: 0,
+          default: 0,
+          description: "Zero-based task offset for pagination"
+        }
         }
       }
     }
@@ -188,10 +205,23 @@ defmodule ForemanServer.MCP.Tools do
         priority: %{type: "integer", description: "Priority 0-4 (0=critical, 4=backlog)"},
         status: %{
           type: "string",
-          description: "New status (open, ready, in_progress, closed, failed)"
+          enum: @task_statuses,
+          description: "New status (open, ready, in_progress, blocked, closed, failed)"
         }
       },
       required: ["task_id"]
+    }
+  }
+
+  @schema_foreman_run_status %{
+    name: "foreman_run_status",
+    description: "Get a bounded run status DTO from run and phase projections",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        run_id: %{type: "string", description: "The run ID"}
+      },
+      required: ["run_id"]
     }
   }
 
@@ -344,6 +374,7 @@ defmodule ForemanServer.MCP.Tools do
   @tools [
     @schema_foreman_work_get,
     @schema_foreman_run_get,
+    @schema_foreman_run_status,
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
@@ -396,8 +427,14 @@ defmodule ForemanServer.MCP.Tools do
       |> Map.get(:required, [])
       |> Enum.map(&String.to_atom/1)
 
+    declared =
+      schema.inputSchema
+      |> Map.get(:properties, %{})
+      |> Map.keys()
+      |> Enum.map(&to_string/1)
+
     def call_tool(unquote(tool_name), args) when is_map(args) do
-      case check_args(unquote(tool_name), args, unquote(required)) do
+      case check_args(unquote(tool_name), args, unquote(required), unquote(declared)) do
         :ok -> unquote(impl)(args)
         {:error, %ToolError{}} = error -> error
       end
@@ -415,9 +452,19 @@ defmodule ForemanServer.MCP.Tools do
   # bypassed that boundary, which is a programming error and raises — rather
   # than silently matching no clause and being reported to the client as an
   # unknown tool.
-  defp check_args(tool_name, args, required) do
-    case Enum.filter(Map.keys(args), &is_binary/1) do
-      [] ->
+  defp check_args(tool_name, args, required, declared) do
+    string_keys = Enum.filter(Map.keys(args), &is_binary/1)
+    declared_string_keys = Enum.filter(string_keys, &(&1 in declared))
+
+    cond do
+      declared_string_keys != [] ->
+        raise ArgumentError,
+              "#{tool_name} received string-keyed arguments " <>
+                "#{inspect(declared_string_keys)}. Tool arguments use atom keys; " <>
+                "call through ForemanServer.MCP.Dispatch, which normalizes " <>
+                "schema-declared keys, or pass atoms directly."
+
+      true ->
         case Enum.reject(required, &Map.has_key?(args, &1)) do
           [] ->
             :ok
@@ -431,13 +478,6 @@ defmodule ForemanServer.MCP.Tools do
                    Enum.map_join(missing, ", ", &inspect/1)
              }}
         end
-
-      string_keys ->
-        raise ArgumentError,
-              "#{tool_name} received string-keyed arguments " <>
-                "#{inspect(string_keys)}. Tool arguments use atom keys; " <>
-                "call through ForemanServer.MCP.Dispatch, which normalizes " <>
-                "schema-declared keys, or pass atoms directly."
     end
   end
 
@@ -459,6 +499,24 @@ defmodule ForemanServer.MCP.Tools do
     duration_us = System.monotonic_time(:microsecond) - start_us
     outcome = if result, do: :ok, else: :not_found
     Telemetry.mcp_tool_call(duration_us, "foreman_run_get", outcome)
+
+    if result,
+      do: {:ok, result},
+      else: {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+  end
+
+  defp tool_foreman_run_status(%{run_id: run_id}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      case ProjectionStore.run(run_id) do
+        nil -> nil
+        run -> run_status_dto(run, ProjectionStore.phases_for_run(run_id))
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    outcome = if result, do: :ok, else: :not_found
+    Telemetry.mcp_tool_call(duration_us, "foreman_run_status", outcome)
 
     if result,
       do: {:ok, result},
@@ -640,6 +698,16 @@ defmodule ForemanServer.MCP.Tools do
                message: message
              }}
 
+          {:error, {:unsupported_construct, _} = detail} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
+            {:error,
+             %ToolError{
+               code: "INVALID_MANIFEST",
+               message: "Manifest validation failed: #{inspect(detail)}"
+             }}
+
           {:error, reason} ->
             duration_us = System.monotonic_time(:microsecond) - start_us
             Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
@@ -650,16 +718,6 @@ defmodule ForemanServer.MCP.Tools do
                message: inspect(reason)
              }}
         end
-
-      {:error, {:unsupported_construct, _} = detail} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
-
-        {:error,
-         %ToolError{
-           code: "INVALID_MANIFEST",
-           message: "Manifest validation failed: #{inspect(detail)}"
-         }}
 
       {:error, :invalid_params} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
@@ -731,24 +789,41 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_task_list(%{} = args) do
     start_us = System.monotonic_time(:microsecond)
-    all_tasks = ProjectionStore.list_tasks()
 
-    filtered =
-      Enum.filter(all_tasks, fn task ->
-        project_match =
-          Map.get(args, :project_id) == nil ||
-            Map.get(task, :project_id) == Map.get(args, :project_id)
+    with {:ok, status} <- validate_task_status(Map.get(args, :status)),
+         {:ok, limit} <- validate_limit(Map.get(args, :limit)),
+         {:ok, offset} <- validate_offset(Map.get(args, :offset)) do
+      filtered =
+        ProjectionStore.list_tasks()
+        |> Enum.filter(fn task ->
+          project_match =
+            Map.get(args, :project_id) == nil or
+              Map.get(task, :project_id) == Map.get(args, :project_id)
 
-        status_match =
-          Map.get(args, :status) == nil ||
-            Map.get(task, :status) == Map.get(args, :status)
+          status_match = status == nil or Map.get(task, :status) == status
 
-        project_match && status_match
-      end)
+          project_match and status_match
+        end)
 
-    duration_us = System.monotonic_time(:microsecond) - start_us
-    Telemetry.mcp_tool_call(duration_us, "foreman_task_list", :ok)
-    {:ok, %{tasks: filtered, total: length(filtered)}}
+      page = Enum.slice(filtered, offset, limit)
+      next_offset = if offset + limit < length(filtered), do: offset + limit, else: nil
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_task_list", :ok)
+
+      {:ok,
+       %{
+         tasks: page,
+         total: length(filtered),
+         limit: limit,
+         offset: offset,
+         next_offset: next_offset
+       }}
+    else
+      {:error, %ToolError{}} = error ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_task_list", :error)
+        error
+    end
   end
 
   defp tool_foreman_task_get(%{task_id: task_id}) do
@@ -767,7 +842,11 @@ defmodule ForemanServer.MCP.Tools do
     start_us = System.monotonic_time(:microsecond)
     command_id = "mcp:#{task_id}:#{System.unique_integer([:positive])}"
 
-    payload = Map.new(for {k, v} <- args, k != :task_id, v != nil, do: {k, v})
+    payload =
+      args
+      |> Map.take([:title, :description, :priority, :status])
+      |> Map.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
 
     if map_size(payload) == 0 do
       duration_us = System.monotonic_time(:microsecond) - start_us
@@ -793,6 +872,103 @@ defmodule ForemanServer.MCP.Tools do
           {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
       end
     end
+  end
+
+  defp validate_task_status(nil), do: {:ok, nil}
+  defp validate_task_status(status) when status in @task_statuses, do: {:ok, status}
+
+  defp validate_task_status(status) do
+    {:error,
+     %ToolError{
+       code: "INVALID_PARAMS",
+       message:
+         "Invalid task status #{inspect(status)}; expected one of #{Enum.join(@task_statuses, ", ")}"
+     }}
+  end
+
+  defp validate_limit(nil), do: {:ok, 100}
+
+  defp validate_limit(limit) when is_integer(limit) and limit >= 1 and limit <= 500,
+    do: {:ok, limit}
+
+  defp validate_limit(limit) do
+    {:error,
+     %ToolError{
+       code: "INVALID_PARAMS",
+       message: "Invalid limit #{inspect(limit)}; expected integer 1..500"
+     }}
+  end
+
+  defp validate_offset(nil), do: {:ok, 0}
+  defp validate_offset(offset) when is_integer(offset) and offset >= 0, do: {:ok, offset}
+
+  defp validate_offset(offset) do
+    {:error,
+     %ToolError{
+       code: "INVALID_PARAMS",
+       message: "Invalid offset #{inspect(offset)}; expected integer >= 0"
+     }}
+  end
+
+  defp run_status_dto(run, phases) when is_map(run) and is_list(phases) do
+    status = Map.get(run, :status)
+
+    %{
+      run_id: Map.get(run, :run_id),
+      status: status,
+      terminal: run_terminal?(run, status),
+      project_id: Map.get(run, :project_id),
+      task_id: Map.get(run, :task_id),
+      workflow_name: Map.get(run, :workflow_name),
+      current_phase: current_phase(phases),
+      started_at_ms: Map.get(run, :started_at_ms),
+      last_event_at_ms: Map.get(run, :last_event_at_ms),
+      failure_reason: Map.get(run, :failure_reason)
+    }
+  end
+
+  defp run_terminal?(run, status) do
+    Map.get(
+      run,
+      :terminal,
+      Map.get(run, :terminal?, status not in ProjectionStore.active_run_statuses())
+    )
+  end
+
+  defp current_phase([]), do: nil
+
+  defp current_phase(phases) do
+    phases
+    |> Enum.filter(&(Map.get(&1, :status) == "in_progress"))
+    |> latest_phase()
+    |> case do
+      nil -> latest_phase(phases)
+      phase -> phase
+    end
+    |> phase_status_dto()
+  end
+
+  defp latest_phase([]), do: nil
+
+  defp latest_phase(phases) do
+    Enum.max_by(phases, fn phase ->
+      {Map.get(phase, :index, 0), Map.get(phase, :last_event_at_ms, 0)}
+    end)
+  end
+
+  defp phase_status_dto(nil), do: nil
+
+  defp phase_status_dto(phase) do
+    %{
+      phase_id: Map.get(phase, :phase_id),
+      index: Map.get(phase, :index),
+      name: Map.get(phase, :name),
+      status: Map.get(phase, :status),
+      attempt: Map.get(phase, :attempt),
+      started_at_ms: Map.get(phase, :started_at_ms),
+      last_event_at_ms: Map.get(phase, :last_event_at_ms),
+      failure_reason: Map.get(phase, :failure_reason)
+    }
   end
 
   # Returns :ok, or {:error, message_string} describing why the backend is rejected.
