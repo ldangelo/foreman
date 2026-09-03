@@ -94,7 +94,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          {:ok, database_path} <- fetch_database_path(project_config),
          payload = build_create_payload(attrs),
          :ok <- emit_create_start(project_id, attrs),
-         synthetic_run_id = "create:#{project_id}:#{System.system_time(:millisecond)}",
+         synthetic_run_id = "create:#{project_id}:#{System.system_time(:nanosecond)}",
          {:ok, issue} <- BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
            run_create(project_id, project_config, payload)
          end) do
