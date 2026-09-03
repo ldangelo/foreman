@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-f6dce877
 label: trd-mcp-tool-update-tasks
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-03
 prd_reference: docs/PRD/PRD-2026-f6dce877-mcp-tool-update-tasks.md
@@ -9,8 +9,8 @@ prd_label: prd-mcp-tool-update-tasks
 scale_depth: STANDARD
 total_requirements: 14
 total_acceptance_criteria: 39
-design_readiness_score: 4.5
-readiness_score: 4.5
+design_readiness_score: 4.7
+readiness_score: 4.7
 total_tasks: 24
 kind: trd
 ---
@@ -27,10 +27,12 @@ Current source verification found:
 
 - `ForemanServer.MCP.Tools` already advertises and handles `foreman_task_list`, `foreman_task_get`, and `foreman_task_update`.
 - `foreman_run_status` does not exist yet.
-- `ForemanServer.MCP.Policy` already hides/refuses `foreman_task_update` behind `allow_workflow_writes`.
-- HTTP (`ForemanServer.MCP`) and stdio (`ForemanServer.MCP.Stdio`) both delegate tool wiring/calls through `ForemanServer.MCP.Dispatch`.
+- `ForemanServer.MCP.Policy` already hides/refuses `foreman_task_create`, `foreman_task_update`, and other write tools behind `allow_workflow_writes`.
+- HTTP (`ForemanServer.MCP`) and stdio (`ForemanServer.MCP.Stdio`) both delegate tool wiring/calls through `ForemanServer.MCP.Dispatch`; `Dispatch.input_validator/1` atomizes only declared schema keys.
 - `ProjectionStore.list_tasks/0` already sorts by `task_id`, but MCP task list currently lacks `limit`, `offset`, `next_offset`, and status enum schema.
+- `ProjectionStore.run/1` and `ProjectionStore.phases_for_run/1` provide the read-model source for a bounded run-status DTO.
 - `Aggregates.Task` accepts statuses `open`, `ready`, `in_progress`, `blocked`, `closed`, `failed`; `task.update` validates status/priority and dispatches `TaskUpdated`.
+- Current update schema text omits `blocked` in one description, so schema/docs must be corrected to the aggregate enum rather than copied forward.
 - Docs already mention task tools and write gating, but not `foreman_run_status` or task-list pagination.
 
 ## 2. Architecture Decision
@@ -73,6 +75,7 @@ Foreman mode: auto-selected Option C (complete the existing shared MCP tools bou
 | `ProjectionStore` | Source of truth for task/run read models | Use `list_tasks/0`, `task_projection/1`, `run/1`, and `phases_for_run/1`; add no alternate read store. |
 | `CommandGateway` | Operator mutation boundary | `foreman_task_update` dispatches only `task.update`; no direct aggregate/provider writes. |
 | `Aggregates.Task` | Task lifecycle/status validation | Audit and pin accepted/rejected status transitions; do not create new lifecycle states. |
+| `ForemanServer.MCP.ToolError` | MCP error contract | Return `INVALID_PARAMS`, `NOT_FOUND`, `DOMAIN_ERROR`, or existing dispatch policy errors; never wrap errors as success data. |
 | Telemetry | Debug metadata | Emit tool name, outcome, duration; avoid task title/description content. |
 | Docs | Operator contract | Reconcile README, user guide, and CLI reference with shipped MCP behavior after code changes. |
 
@@ -125,6 +128,7 @@ No Beads/provider sync is added. Clients that need fresh state call `foreman_tas
 - **Task status enum:** `open`, `ready`, `in_progress`, `blocked`, `closed`, `failed`.
 - **Pagination:** default `limit` 100, max 500, default `offset` 0; `next_offset` omitted or `nil` when no next page exists.
 - **Typed errors:** missing/invalid params use `INVALID_PARAMS`; unknown task/run uses `NOT_FOUND`; domain command failures use `DOMAIN_ERROR` with inspectable sanitized reason; policy denial uses existing `POLICY_REFUSED` in dispatch.
+- **Key normalization:** `Dispatch.input_validator/1` remains the only transport string-key-to-atom boundary; handlers whitelist mutable fields again so direct atom-keyed calls cannot smuggle unsupported update fields.
 - **Telemetry:** `Telemetry.mcp_tool_call(duration_us, tool_name, outcome)` only; no title/description logging.
 
 ## 3. Reused Capabilities
@@ -157,12 +161,13 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
     - Given existing run/work MCP tests run, when new status code is present, then `foreman_work_get`, `foreman_run_get`, events, activity, and logs keep their documented shapes.
     - Given compatibility tests fail, when failures are reviewed, then implementation does not rewrite expected behavior unless source contract intentionally changed.
 
-- [ ] **TRD-002** — Add/tighten MCP schemas for task list/get and new `foreman_run_status` (4h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-006] [satisfies REQ-013]
+- [ ] **TRD-002** — Add/tighten MCP schemas for task list/get/update and new `foreman_run_status` (4h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-006] [satisfies REQ-013]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-002-3, AC-006-1, AC-013-2
   - Implementation AC checklist:
     - Given writes are enabled, when `Tools.list_tools/0` is filtered by policy, then task list/get/update and run status appear as required.
     - Given writes are disabled, when tools are listed, then read tools and run status remain and task update is omitted.
     - Given schemas are inspected, then task status enum and pagination fields match handler behavior.
+    - Given task update schema is inspected, then `blocked` is included with the aggregate-supported status enum.
 
 - [ ] **TRD-002-TEST** — Test tool advertisement and JSON Schema contract (4h) [verifies TRD-002] [satisfies REQ-001] [satisfies REQ-013] [depends: TRD-002]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-013-2
@@ -247,7 +252,7 @@ Capability registry CLI `trd-graph-cli.js` was not present in this workspace/plu
 
 **Shippable State:** HTTP and stdio MCP clients receive equivalent tool schemas, payloads, errors, and safe telemetry without regressions to existing work/run tools.
 
-- [ ] **TRD-008** — Verify HTTP/stdio use the shared dispatch/tool registry for new tools (3h) [satisfies REQ-001] [satisfies REQ-008] [depends: TRD-004] [depends: TRD-006]
+- [ ] **TRD-008** — Verify HTTP/stdio use the shared dispatch/tool registry for new tools (3h) [satisfies REQ-001] [satisfies REQ-008] [depends: TRD-003] [depends: TRD-004] [depends: TRD-006]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-008-1, AC-008-2
   - Implementation AC checklist:
     - Given both transports initialize with same config, when components are listed, then tool names and schemas are equivalent.
@@ -321,7 +326,7 @@ TRD-001
     -> TRD-003 -> TRD-003-TEST
     -> TRD-004 -> TRD-004-TEST
     -> TRD-005 -> TRD-006 -> TRD-007 -> TRD-007-TEST
-      -> TRD-008 -> TRD-008-TEST
+      -> TRD-008 (also depends on TRD-003/TRD-004) -> TRD-008-TEST
       -> TRD-009 -> TRD-009-TEST
       -> TRD-010 -> TRD-010-TEST
         -> TRD-011 -> TRD-011-TEST
@@ -412,9 +417,9 @@ Traceability check: 14 requirements covered, 0 uncovered, 0 orphaned annotations
 |---|---:|---|
 | Architecture completeness | 4.5 | Components, data flows, policy, DTO, and transport boundaries are defined. |
 | Task coverage | 4.7 | Every PRD requirement has implementation and test tasks; task lines use parser-visible checkboxes. |
-| Dependency clarity | 4.4 | Dependencies are explicit and acyclic; PRs are independently shippable. |
-| Estimate confidence | 4.3 | Tasks are granular (2h-5h) and match current source complexity; no 8h+ task remains. |
-| Overall | 4.5 | PASS |
+| Dependency clarity | 4.6 | Dependencies are explicit and acyclic; transport parity now waits for list/get and run-status completion. |
+| Estimate confidence | 4.4 | Tasks are granular (2h-5h) and match current source complexity; no 8h+ task remains. |
+| Overall | 4.7 | PASS |
 
 Gate decision: **PASS**.
 
@@ -425,6 +430,7 @@ Gate decision: **PASS**.
 - Subject match: PRD title and Foreman task title both target MCP tool update tasks.
 - MCP enhancement: skipped (no MCP tools detected in this Pi tool surface).
 - Capability CLI: unavailable; manual reuse review performed.
+- Refinement source spot-checks: `packages/foreman_server/lib/foreman_server/mcp/tools.ex`, `dispatch.ex`, `policy.ex`, `projection_store.ex`, and `aggregates/task.ex`.
 - Task parser self-check: 24 parser-visible checkbox task lines intended.
 
 ## 11. Suggested Next Steps
@@ -434,6 +440,12 @@ Gate decision: **PASS**.
 3. Before implementation, restore/use the real `trd-cli.js` if available and rerun parser validation.
 
 ## 12. Changelog
+
+### 2026-09-03 — v1.0.1
+
+- Refined source verification against current MCP, projection, policy, and task aggregate code.
+- Added explicit `blocked` update-schema correction and handler whitelist guidance.
+- Tightened transport-parity dependency on completed task list/get and run status behavior.
 
 ### 2026-09-03 — v1.0.0
 
