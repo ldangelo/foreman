@@ -1730,7 +1730,10 @@ BootReconciliation drives orphan-reopen.
 ## Beads Workflow Integration
 
 This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported JSONL files, so agents should use `br`/`bv` commands instead of hard-coding a single filename.
-
+**Foreman owns this repo's task queue.** All task lifecycle — create, approve,
+retry, get, cancel — goes through `foreman task *` commands. Beads (`br`/`bv`)
+is triage/discovery only. **Never fall back to `br create` when `foreman task create`
+fails** — treat Beads corruption as a blocker to resolve, not a bypass signal.
 ### Using bv as an AI sidecar
 
 bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
@@ -1781,26 +1784,46 @@ bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blo
 bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
 ```
 
-### br Commands for Issue Management
+### Task Lifecycle (Foreman)
 
 ```bash
-br ready --json                       # Show issues ready to work (no blockers)
-br list --status=open --json          # All open issues
-br show <id> --json                   # Full issue details with dependencies
-br create --title="..." --type=task --priority=2 --json
-br update <id> --status=in_progress --json
-br close <id> --reason="Completed" --json
-br close <id1> <id2> --reason="Completed" --json
-br sync --flush-only                  # Export DB to JSONL after Beads mutations
-br sync --status --json               # VERIFY: `coverage_drift` must be false
+foreman task create --project <id> --title <title> [--workflow-type ...] [--trd-path ...]
+foreman task approve --id <task-id> [--approved-by <name>]
+foreman task retry --id <task-id> [--reason <text>]
+foreman task get <id>        # Fetch task projection
+foreman run list             # List run projections
+foreman run get <id>         # Fetch run projection
+foreman run cancel --id <id> --reason <text>
+foreman run remove --id <id> # Remove run and clean worktree/branch
+foreman run reset --id <id>  # Clear failed/stuck run projection
+```
+
+### Triage & Discovery (br/bv)
+
+`br`/`bv` do NOT manage this repo's work queue. Use them only for triage and discovery.
+
+```bash
+bv --robot-triage              # Triage: ranked recommendations, blockers, quick wins
+bv --robot-next                # Minimal: top pick + claim command
+bv --robot-plan                # Parallel execution tracks with unblocks
+bv --robot-insights            # Full metrics: PageRank, betweenness, cycles
+bv --robot-alerts              # Stale issues, blocking cascades
+bv --robot-suggest            # Hygiene: duplicates, missing deps, cycles
+bv --robot-diff --diff-since <ref>  # Changes since ref
+
+br ready --json                # Show issues ready to work (no blockers)
+br list --status=open --json  # All open issues
+br show <id> --json           # Full issue details with dependencies
+br sync --flush-only          # Export DB to JSONL after Beads mutations
+br sync --status --json       # VERIFY: `coverage_drift` must be false
 ```
 
 ### Workflow Pattern
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Use `br update <id> --status=in_progress --json`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id> --reason="Completed" --json`
+2. **Claim**: Create via `foreman task create --project <id> --title <title> --workflow-type <type>`
+3. **Dispatch**: Use `foreman task approve --id <task-id> --approved-by <name>`
+4. **Complete**: Task auto-closes when run completes; retry via `foreman task retry --id <id> --reason "..."` if run was cancelled
 5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
    (`set -euo pipefail`), not as separate steps — the coverage gate must run
    ONLY after a flush that actually succeeded, since a failed flush leaves an

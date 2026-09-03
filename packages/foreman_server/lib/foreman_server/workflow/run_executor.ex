@@ -90,23 +90,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  @spec claim(String.t(), String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
-  def claim(project_id, task_id, actor)
+  def claim(project_id, task_id, actor),
+    do: claim(project_id, task_id, actor, nil)
+
+  @spec claim(String.t(), String.t(), String.t() | nil, String.t() | nil) ::
+          {:ok, term()} | {:error, term()}
+  def claim(project_id, task_id, actor, run_id)
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" do
-    with {:ok, provider_module, project_config} <- resolve_provider(project_id, :claim),
+    with {:ok, provider_module, project_config} <- resolve_provider(project_id, :claim, run_id),
          result <- provider_module.claim(task_id, actor, project_config) do
       maybe_retry_lost_claim(result, provider_module, project_config, task_id)
     end
   end
 
-  def claim(_project_id, _task_id, _actor), do: {:error, :invalid_claim}
-
+  def claim(_project_id, _task_id, _actor, _run_id), do: {:error, :invalid_claim}
   @spec complete(String.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok, term()} | {:error, term()}
   def complete(project_id, task_id, run_id, artifact_path)
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
              is_binary(run_id) and run_id != "" do
-    with {:ok, provider_module, project_config} <- resolve_provider(project_id, :close) do
+    with {:ok, provider_module, project_config} <- resolve_provider(project_id, :close, run_id) do
       provider_module.complete(
         task_id,
         %{run_id: run_id, artifact_path: artifact_path},
@@ -122,7 +125,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def fail(project_id, task_id, run_id, reason)
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
              is_binary(run_id) and run_id != "" do
-    with {:ok, provider_module, project_config} <- resolve_provider(project_id, :reopen) do
+    with {:ok, provider_module, project_config} <- resolve_provider(project_id, :reopen, run_id) do
       provider_module.fail(task_id, build_failure_token(run_id, reason), project_config)
     end
   end
@@ -2771,7 +2774,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     else
       case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
-          claim(project_id(state), provider_task_id(state), task_provider_actor())
+          claim(project_id(state), provider_task_id(state), task_provider_actor(), state.run_id)
           |> to_lifecycle_result()
 
         false ->
@@ -3047,12 +3050,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp resolve_provider(project_id, transition) do
+    resolve_provider(project_id, transition, nil)
+  end
+
+  defp resolve_provider(project_id, transition, run_id) do
     with {:ok, project} <- fetch_project_projection(project_id),
          {:ok, task_provider} <- fetch_task_provider(project),
          {:ok, project_config} <- fetch_project_config(task_provider),
          {:ok, database_path} <- fetch_database_path(project_config),
          {:ok, provider_module} <-
            TaskProviderRegistry.route(transition, {project_id, database_path}) do
+      project_config =
+        if run_id && run_id != "",
+          do: Map.put(project_config, :run_id, run_id),
+          else: project_config
+
       {:ok, provider_module, project_config}
     end
   end
