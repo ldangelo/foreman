@@ -1638,7 +1638,7 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   `with_lease` wrapping at each one. Covered by `system_br_runner_test.exs`
   concurrency serialization regression test.
 
-- ---
+---
 
 ## Go CLI Boundaries
 

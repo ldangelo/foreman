@@ -1840,7 +1840,18 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @impl true
   def complete(task_id, completion_token, project_config) when is_map(project_config) do
-    complete(task_id, completion_token, Map.get(project_config, :run_id) || Map.get(project_config, "run_id"), project_config)
+    run_id = Map.get(project_config, :run_id) || Map.get(project_config, "run_id")
+
+    # Generate synthetic run_id when absent — callers without a bound run (e.g. direct
+    # API calls, janitor) still need lease serialization to prevent concurrent writes.
+    resolved_run_id =
+      if is_binary(run_id) and run_id != "" do
+        run_id
+      else
+        "synthetic:#{task_id}:#{System.system_time(:millisecond)}"
+      end
+
+    complete(task_id, completion_token, resolved_run_id, project_config)
   end
 
   # 4-arity: explicit run_id for callers (janitor) that need to serialize
@@ -1860,12 +1871,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
             raise ArgumentError,
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
-
-      resolved_run_id = if is_binary(run_id) and run_id != "", do: run_id, else: ""
-
-      if resolved_run_id == "" do
-        raise ArgumentError, "expected non-empty run_id for lease serialization"
-      end
+      # Always non-empty: either the caller's explicit run_id, or a synthetic fallback.
+      resolved_run_id =
+        if is_binary(run_id) and run_id != "" do
+          run_id
+        else
+          "synthetic:#{task_id}:#{System.system_time(:millisecond)}"
+        end
 
       close_payload = build_close_payload(task_id, completion_token)
 
