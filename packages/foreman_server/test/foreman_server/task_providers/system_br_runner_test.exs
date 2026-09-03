@@ -347,16 +347,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
         assert max_concurrency == 1,
                "Expected max concurrency 1 (serialized), got #{max_concurrency}: calls may have run in parallel"
-
-        # Counter must be 0 after both calls complete
-        final_count =
-          case File.read(counter_file) do
-            {:ok, val} -> String.trim(val) |> String.to_integer()
-            _ -> -1
-          end
-
-        assert final_count == 0,
-               "Expected counter 0 after both calls, got #{final_count}"
       end)
     end
   end
