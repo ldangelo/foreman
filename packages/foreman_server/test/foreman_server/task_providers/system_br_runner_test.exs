@@ -300,8 +300,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       echo $n > "#{counter_file}"
       echo "DONE:$$" >> "#{log_file}"
       """
-
-      with_fake_br(temp_dir, fake_br_body, fn ->
+    with_fake_br(temp_dir, fake_br_body, fn ->
         db_path = "/tmp/test.db"
         parent = self()
 
