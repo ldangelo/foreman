@@ -512,10 +512,14 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
     linked_at = Map.get(tag, "linked_at")
     elapsed_ms = compute_elapsed_ms(linked_at, now_ms)
     project_config = %{database_path: state.database_path}
+    # Synthetic run_id ensures janitor's close calls serialize through the
+    # BeadsDbLease even without a real task-bound run_id.
+    janitor_run_id = "janitor:#{state.project_id}:#{now_ms}"
 
     case beads_adapter().complete(
            bead_id,
            %{transition_comment: transition_comment},
+           janitor_run_id,
            project_config
          ) do
       {:ok, _issue} ->

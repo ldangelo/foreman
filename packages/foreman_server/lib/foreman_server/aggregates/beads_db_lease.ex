@@ -55,8 +55,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   structs (`%BeadsDbLeaseAcquired{}`, etc.). Both shapes are
   normalised to a plain map via `event_data_to_map/1`.
   """
-
   alias ForemanServer.Aggregate
+  alias ForemanServer.CommandGateway
 
   alias ForemanServer.Events.{
     BeadsDbLeaseAcquired,
@@ -328,6 +328,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       result
     else
       {:error, _reason} = err ->
+        # Remove timed-out waiter so they don't block future writers.
+        _ = lease_remove_waiter(stream_id, db_path, run_id)
         err
     end
   end
@@ -367,6 +369,26 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       {:error, _} -> :ok
     end
   end
+
+  defp lease_remove_waiter(stream_id, db_path, run_id) do
+    ms = System.system_time(:millisecond)
+
+    case CommandGateway.dispatch_system(%{
+           aggregate_id: stream_id,
+           type: "lease.remove_waiter",
+           command_id: "beads-adapter:lease-remove-waiter:#{db_path}:#{run_id}:#{ms}",
+           payload: %{
+             db_path: db_path,
+             run_id: run_id,
+             removed_at_ms: ms,
+             reason: :run_cancelled
+           }
+         }) do
+      {:ok, _} -> :ok
+      {:error, _} -> :ok
+    end
+  end
+
   defp poll_until_holder(_stream_id, _run_id, 0, _interval_ms) do
     {:error, :lease_timeout}
   end

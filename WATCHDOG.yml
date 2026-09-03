@@ -1,4 +1,5 @@
 advisors:
   - name: default
   - name: Advisor 2
-    model: minimax/MiniMax-M2.7:high
+    model: minimax/MiniMax-M3:medium
+    instructions: Do a contrarian analysis of the approach being taken.  Offer alternative approaches.
