@@ -1871,13 +1871,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
             raise ArgumentError,
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
-      # Always non-empty: either the caller's explicit run_id, or a synthetic fallback.
-      resolved_run_id =
-        if is_binary(run_id) and run_id != "" do
-          run_id
-        else
-          "synthetic:#{task_id}:#{System.system_time(:millisecond)}"
-        end
+      # 4-arity callers (janitor) must supply an explicit run_id.
+      # Synthesizing silently here would mask a genuine caller defect.
+      if is_binary(run_id) and run_id != "" do
+        run_id
+      else
+        raise ArgumentError, "expected non-empty run_id for lease serialization"
+      end
+
+      resolved_run_id = run_id
 
       close_payload = build_close_payload(task_id, completion_token)
 
