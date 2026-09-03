@@ -113,27 +113,27 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
 
 **Shippable State:** Maintainers running `mix test` get a focused failure if two same-database `SystemBrRunner.cmd/3` calls overlap inside fake `br`.
 
-- [ ] **TRD-001** Build a deterministic fake-`br` append-only evidence harness in `system_br_runner_test.exs` (4h) [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009]
+- [x] **TRD-001** Build a deterministic fake-`br` append-only evidence harness in `system_br_runner_test.exs` (4h) [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009]
   - **Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-3, AC-007-1, AC-007-2, AC-008-1, AC-008-2, AC-009-1, AC-009-2
   - **Implementation AC checklist:**
     - Given two callers are launched, when each reaches the runner call site, then the parent process receives an attempted-execution marker before final assertions.
     - Given a caller or fake `br` hangs, when the bounded wait expires, then the failure names the missing marker/evidence file.
     - Given the fake `br` runs, when evidence is written, then all files live under the ExUnit temp dir, events are append-only `ENTER`/`DONE` rows, and `PATH` is restored in `on_exit`/`after` cleanup.
 
-- [ ] **TRD-001-TEST** Add harness self-check coverage for bounded waits and fake-`br` evidence shape (2h) [verifies TRD-001] [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-001]
+- [x] **TRD-001-TEST** Add harness self-check coverage for bounded waits and fake-`br` evidence shape (2h) [verifies TRD-001] [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-001]
   - **Validates PRD ACs:** AC-004-1, AC-004-2, AC-007-1, AC-008-2, AC-009-2
   - **Implementation AC checklist:**
     - Given the fake `br` emits events, when helper parsing runs, then two successful invocations produce parseable `ENTER`/`DONE` intervals and derived max-concurrency evidence.
     - Given required evidence is absent, when helper waits expire, then ExUnit reports the missing caller or evidence name.
 
-- [ ] **TRD-002** Replace or harden the existing same-path concurrency test so it derives max concurrency `1` from append-only intervals and rejects any overlap across the full fake-`br` body (4h) [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-001]
+- [x] **TRD-002** Replace or harden the existing same-path concurrency test so it derives max concurrency `1` from append-only intervals and rejects any overlap across the full fake-`br` body (4h) [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-001]
   - **Validates PRD ACs:** AC-001-1, AC-001-2, AC-001-3, AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-009-1, AC-009-2, AC-012-1
   - **Implementation AC checklist:**
     - Given two `SystemBrRunner.cmd/3` calls share a non-empty `database_path`, when both finish, then max fake-`br` concurrency derived from ordered `ENTER`/`DONE` evidence is exactly `1`.
     - Given the first fake `br` is inside its body, when the second same-path caller starts, then no second `ENTER` marker appears before the first `DONE` marker.
     - Given the assertion fails, when ExUnit prints the failure, then it includes max concurrency and ordered call log.
 
-- [ ] **TRD-002-TEST** Add mutation-sensitive regression assertions for same-path lock bypass behavior (2h) [verifies TRD-002] [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-012] [depends: TRD-002]
+- [x] **TRD-002-TEST** Add mutation-sensitive regression assertions for same-path lock bypass behavior (2h) [verifies TRD-002] [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-012] [depends: TRD-002]
   - **Validates PRD ACs:** AC-001-1, AC-001-2, AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-012-1
   - **Implementation AC checklist:**
     - Given the same-path test evidence is inspected, when ordered intervals imply max concurrency exceeds `1`, then the test fails without relying on task completion order or mutable shell counters.
@@ -143,26 +143,26 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
 
 **Shippable State:** Maintainers can see CI distinguish same-database serialization from different-database parallelism and no-database-path compatibility.
 
-- [ ] **TRD-003** Add different-database-path concurrency coverage proving independent DB paths may overlap (3h) [satisfies REQ-002] [satisfies REQ-004] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-001]
+- [x] **TRD-003** Add different-database-path concurrency coverage proving independent DB paths may overlap (3h) [satisfies REQ-002] [satisfies REQ-004] [satisfies REQ-006] [satisfies REQ-008] [depends: TRD-001]
   - **Validates PRD ACs:** AC-002-1, AC-002-2, AC-004-1, AC-004-3, AC-006-1, AC-008-1
   - **Implementation AC checklist:**
     - Given two concurrent calls use distinct non-empty `database_path` values, when fake `br` blocks inside each body, then evidence shows overlap is allowed.
     - Given two calls use the same path in the companion test, when compared to distinct-path evidence, then only same-path calls serialize.
 
-- [ ] **TRD-003-TEST** Add assertions that different-path evidence proves lock key scope, not scheduler accident (2h) [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-004] [depends: TRD-003]
+- [x] **TRD-003-TEST** Add assertions that different-path evidence proves lock key scope, not scheduler accident (2h) [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-004] [depends: TRD-003]
   - **Validates PRD ACs:** AC-002-1, AC-002-2, AC-004-1, AC-004-3
   - **Implementation AC checklist:**
     - Given both distinct-path callers have attempted execution, when fake `br` events are parsed, then there is an interval where both bodies are active.
     - Given events arrive in either order, when overlap is computed, then the assertion remains order-independent.
 
-- [ ] **TRD-004** Add no-database-path and empty-string database-path tests preserving the existing no-lock branch (2h) [satisfies REQ-003] [satisfies REQ-008] [satisfies REQ-011] [depends: TRD-001]
+- [x] **TRD-004** Add no-database-path and empty-string database-path tests preserving the existing no-lock branch (2h) [satisfies REQ-003] [satisfies REQ-008] [satisfies REQ-011] [depends: TRD-001]
   - **Validates PRD ACs:** AC-003-1, AC-003-2, AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given `SystemBrRunner.cmd/3` runs an action that does not require a DB path, when project config omits `database_path`, then fake `br` executes successfully.
     - Given project config has `database_path: ""`, when a no-DB action runs, then fake `br` executes on the same no-lock path.
     - Given the new tests finish or fail, when cleanup runs, then `PATH` and temp files are isolated.
 
-- [ ] **TRD-004-TEST** Run existing `SystemBrRunner` test cases with the new harness to prove command-shape, timeout, and cleanup behavior still passes (2h) [verifies TRD-004] [satisfies REQ-011] [satisfies REQ-008] [depends: TRD-004]
+- [x] **TRD-004-TEST** Run existing `SystemBrRunner` test cases with the new harness to prove command-shape, timeout, and cleanup behavior still passes (2h) [verifies TRD-004] [satisfies REQ-011] [satisfies REQ-008] [depends: TRD-004]
   - **Validates PRD ACs:** AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given existing success, timeout, temp-file, shell-quote, and argv tests run, when the new locking tests are present, then they still pass unchanged.
@@ -172,25 +172,25 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
 
 **Shippable State:** Maintainers get clear test comments and failure messages explaining the same-database max-concurrency invariant.
 
-- [ ] **TRD-005** Add comments and helper names that document the concurrency contract and why fake-`br` evidence is used (1h) [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-002]
+- [x] **TRD-005** Add comments and helper names that document the concurrency contract and why fake-`br` evidence is used (1h) [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-002]
   - **Validates PRD ACs:** AC-010-1, AC-012-1
   - **Implementation AC checklist:**
     - Given a maintainer reads the test, when they inspect comments near the same-path assertion, then they see that same `database_path` must keep max concurrency at `1` for the whole fake-`br` body.
     - Given a failure occurs, when assertion text prints, then it distinguishes overlap from missing fake-command setup evidence.
 
-- [ ] **TRD-005-TEST** Add/verify assertion-message coverage by structuring failure helpers with explicit diagnostic strings (1h) [verifies TRD-005] [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-005]
+- [x] **TRD-005-TEST** Add/verify assertion-message coverage by structuring failure helpers with explicit diagnostic strings (1h) [verifies TRD-005] [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-005]
   - **Validates PRD ACs:** AC-010-1, AC-012-1
   - **Implementation AC checklist:**
     - Given assertion helpers compare expected and observed concurrency, when they fail, then the message includes observed max concurrency derived from event order and the recorded log.
     - Given fake setup fails before any event is recorded, when the helper fails, then the message names setup/evidence absence rather than reporting a false overlap.
 
-- [ ] **TRD-006** Validate the final focused test command and avoid living documentation changes unless implementation changes maintainer/operator behavior (1h) [satisfies REQ-008] [satisfies REQ-011] [satisfies ARCH] [depends: TRD-003, TRD-004, TRD-005]
+- [x] **TRD-006** Validate the final focused test command and avoid living documentation changes unless implementation changes maintainer/operator behavior (1h) [satisfies REQ-008] [satisfies REQ-011] [satisfies ARCH] [depends: TRD-003, TRD-004, TRD-005]
   - **Validates PRD ACs:** AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given implementation is complete, when `mix test test/foreman_server/task_providers/system_br_runner_test.exs` is run from `packages/foreman_server`, then all tests pass locally without network or real Beads.
     - Given living docs are reviewed, when no operator-visible behavior changed, then no README/user-guide/CLI reference change is made.
 
-- [ ] **TRD-006-TEST** Record validation evidence for the SystemBrRunner focused suite and documentation decision (1h) [verifies TRD-006] [satisfies REQ-008] [satisfies REQ-011] [depends: TRD-006]
+- [x] **TRD-006-TEST** Record validation evidence for the SystemBrRunner focused suite and documentation decision (1h) [verifies TRD-006] [satisfies REQ-008] [satisfies REQ-011] [depends: TRD-006]
   - **Validates PRD ACs:** AC-008-1, AC-008-2, AC-011-1, AC-011-2
   - **Implementation AC checklist:**
     - Given the focused suite passes, when implementation report is written, then it includes the exact command and outcome.
@@ -285,7 +285,7 @@ Traceability check: 12 requirements covered, 0 uncovered, 0 orphaned annotations
 |---|---|---|---|
 | Existing same-path test alone does not cover REQ-002 or REQ-003. | Lock could become over-broad or no-path behavior could regress unnoticed. | Add distinct-path overlap and no/empty path tests in PR 2. | Applied to TRD-003/TRD-004. |
 | Concurrency proof can pass accidentally if both caller processes do not actually contend. | False green if scheduler serializes setup before lock is tested. | Require caller-attempt markers and bounded waits before final evidence assertions. | Applied to TRD-001/TRD-002. |
-| Task parser can miss tasks if checkbox prefix is absent. | Implement-trd-beads could create zero beads. | Every task line begins with `- [ ] **TRD-...**`; draft parser check performed before final output. | Applied. |
+| Task parser can miss tasks if checkbox prefix is absent. | Implement-trd-beads could create zero beads. | Every task line begins with `- [x] **TRD-...**`; draft parser check performed before final output. | Applied. |
 
 ### 7.3 Dependency and estimate review
 
