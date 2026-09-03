@@ -74,6 +74,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     end
   end
 
+
   defp build_argv({:version, _payload} = request, _project_config) do
     {action, payload} = validate_request!(request)
     action_argv = build_action_argv(action, payload)
@@ -434,7 +435,9 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
         %{path: path} -> " 2> " <> shell_quote(path)
       end
 
-    "exec " <> Enum.map_join(argv, " ", &shell_quote/1) <> stdin_redirect <> stderr_redirect
+    base_command = "exec " <> Enum.map_join(argv, " ", &shell_quote/1) <> stdin_redirect <> stderr_redirect
+
+    base_command
   end
 
   defp open_port(shell_command) do

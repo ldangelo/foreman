@@ -91,12 +91,28 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       when is_binary(project_id) and project_id != "" and is_map(attrs) do
     with :ok <- validate_create_attrs(attrs),
          {:ok, project_config} <- resolve_project_config(project_id),
+         {:ok, database_path} <- fetch_database_path(project_config),
          payload = build_create_payload(attrs),
          :ok <- emit_create_start(project_id, attrs),
-         {:ok, issue} <- run_create(project_id, project_config, payload) do
+         synthetic_run_id = "create:#{project_id}:#{System.system_time(:millisecond)}",
+         {:ok, issue} <- BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
+           run_create(project_id, project_config, payload)
+         end) do
       emit_create_ok(project_id, attrs, issue)
       {:ok, issue}
     else
+      :error ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "CREATE_FAILED",
+             "Could not resolve database_path for project #{project_id}.",
+             "Ensure the project is registered with a beads database_path.",
+             false
+           ),
+           nil,
+           0
+         )}
       {:error, provider_error} = error ->
         emit_create_error(project_id, attrs, provider_error)
         error
@@ -1824,6 +1840,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @impl true
   def complete(task_id, completion_token, project_config) when is_map(project_config) do
+    complete(task_id, completion_token, Map.get(project_config, :run_id) || Map.get(project_config, "run_id"), project_config)
+  end
+
+  # 4-arity: explicit run_id for callers (janitor) that need to serialize
+  # their own writes independently of a task-bound run.
+  def complete(task_id, completion_token, run_id, project_config)
+      when is_map(project_config) and (is_binary(run_id) or is_nil(run_id)) do
     if is_binary(task_id) and String.trim(task_id) != "" do
       database_path =
         case project_config do
@@ -1838,15 +1861,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
 
-      run_id = Map.get(project_config, :run_id) || Map.get(project_config, "run_id") || ""
+      resolved_run_id = if is_binary(run_id) and run_id != "", do: run_id, else: ""
 
-      if run_id == "" do
-        raise ArgumentError, "expected project_config with :run_id for lease serialization"
+      if resolved_run_id == "" do
+        raise ArgumentError, "expected non-empty run_id for lease serialization"
       end
 
       close_payload = build_close_payload(task_id, completion_token)
 
-      BeadsDbLease.with_lease(database_path, run_id, task_id, fn ->
+      BeadsDbLease.with_lease(database_path, resolved_run_id, task_id, fn ->
         case @runner.cmd({:close, close_payload}, %{database_path: database_path},
                timeout_ms: 30_000
              ) do
@@ -1871,6 +1894,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
        )}
     end
   end
+
 
   # TRD-008 contract reconciliation: `complete/3` honors a map-shaped
   # `completion_token` with a `:transition_comment` key (consumed by the

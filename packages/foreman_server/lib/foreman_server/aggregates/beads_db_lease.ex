@@ -55,8 +55,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   structs (`%BeadsDbLeaseAcquired{}`, etc.). Both shapes are
   normalised to a plain map via `event_data_to_map/1`.
   """
-
   alias ForemanServer.Aggregate
+  alias ForemanServer.CommandGateway
 
   alias ForemanServer.Events.{
     BeadsDbLeaseAcquired,
