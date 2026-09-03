@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-49310ba5
 label: trd-global-trans-test-1
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-03
 prd_reference: PRD-2026-49310ba5
@@ -9,8 +9,8 @@ prd_label: prd-global-trans-test-1
 scale_depth: STANDARD
 total_requirements: 12
 total_acceptance_criteria: 24
-design_readiness_score: 4.5
-readiness_score: 4.5
+design_readiness_score: 4.75
+readiness_score: 4.75
 kind: trd
 ---
 
@@ -22,7 +22,7 @@ This TRD turns PRD `PRD-2026-49310ba5` into a test-only implementation plan for 
 
 Scope is brownfield and localized to `packages/foreman_server/test/foreman_server/task_providers/system_br_runner_test.exs` plus, if needed, small test-support helpers in that same test file. The production surface under test is `packages/foreman_server/lib/foreman_server/task_providers/system_br_runner.ex`, specifically `SystemBrRunner.cmd/3` entering `with_database_lock/2` before opening the `br` port.
 
-The current codebase already contains an initial same-path concurrency test. This TRD plans to harden it into the PRD contract: deterministic contender readiness, fake `br` evidence, same-path non-overlap, different-path allowed overlap, no/empty database-path compatibility, actionable assertion output, and code comments explaining the lock invariant.
+The current codebase already contains an initial same-path concurrency test. This TRD plans to harden it into the PRD contract: deterministic contender readiness, fake `br` append-only interval evidence, same-path non-overlap, different-path allowed overlap, no/empty database-path compatibility, actionable assertion output, and code comments explaining the lock invariant.
 
 ## Reused Capabilities
 
@@ -50,7 +50,7 @@ Add a reusable helper module under `test/support/` that owns fake executable cre
 
 #### Option C — In-file deterministic ExUnit harness (chosen)
 
-Strengthen `SystemBrRunnerTest` with local helpers: temp-dir fake `br`, file-backed event log/counter, explicit parent messages before runner entry, bounded `assert_receive` waits, and assertion helpers that print max concurrency plus ordered event log.
+Strengthen `SystemBrRunnerTest` with local helpers: temp-dir fake `br`, append-only event logs, explicit parent messages before runner entry, bounded `assert_receive` waits, and assertion helpers that compute max concurrency from ordered `ENTER`/`DONE` intervals and print the ordered event log.
 
 - **Pros:** best fit for existing codebase; surgical; exercises production `cmd/3`; avoids production test hooks; local and CI-safe.
 - **Cons:** shell/file coordination needs careful cleanup and bounded waits.
@@ -66,9 +66,9 @@ Foreman mode: auto-selected Option C (in-file deterministic ExUnit harness for e
 |---|---|---|
 | `SystemBrRunner.cmd/3` | `packages/foreman_server/lib/foreman_server/task_providers/system_br_runner.ex` | Production entry point under test; builds argv, enters `with_database_lock/2`, opens the fake `br` port, waits for completion, returns existing result envelope. |
 | `with_database_lock/2` | same file | Existing private backstop using lock key `{:br_db_lock, database_path}` for non-empty binaries; bypasses when database path is absent or empty. |
-| Fake `br` executable | test temp dir | Test-controlled executable placed first on `PATH`; records `CALL`, `ENTER`, `DONE`, and counter state without touching real Beads data. |
+| Fake `br` executable | test temp dir | Test-controlled executable placed first on `PATH`; records append-only `ENTER` and `DONE` events without touching real Beads data. |
 | ExUnit concurrency harness | `system_br_runner_test.exs` | Starts contender tasks/processes, records caller-attempt messages, enforces bounded waits, and checks ordering/max-concurrency evidence. |
-| Assertion helpers | `system_br_runner_test.exs` | Parse event logs, compute max concurrency, assert same-path non-overlap and different-path overlap, and emit diagnostic failure text. |
+| Assertion helpers | `system_br_runner_test.exs` | Parse append-only event logs, derive active intervals/max concurrency from event order, assert same-path non-overlap and different-path overlap, and emit diagnostic failure text. |
 
 #### Data flow
 
@@ -89,7 +89,7 @@ ExUnit test
 #### Integration points
 
 - `PATH`: test-only mutation scoped by `setup`/`on_exit`; fake executable shadows real `br`.
-- File system: temp-dir-only evidence files (`events.log`, `counter`, `max`, optional gate files). No `.beads/` DB file required.
+- File system: temp-dir-only evidence files (`events.log`, optional gate files). No mutable shell counter is required; helper code derives max concurrency from append-only event order. No `.beads/` DB file required.
 - BEAM concurrency: ExUnit tasks/processes and `:global.trans/2` in one BEAM node. Distributed Erlang is out of scope.
 - Shell/port: existing `SystemBrRunner` port lifecycle remains unchanged; test observes external-command behavior.
 
@@ -105,7 +105,7 @@ ExUnit test
 
 #### Architecture diagram description
 
-A single ExUnit module owns the temp environment. It creates a fake `br` executable and evidence files, then spawns concurrent callers into `SystemBrRunner.cmd/3`. Each caller goes through production argv construction and `with_database_lock/2` before the port starts fake `br`. The fake executable records critical-section entry/exit. Assertions flow back from evidence files to ExUnit, proving whether same database paths serialize and different paths remain independent.
+A single ExUnit module owns the temp environment. It creates a fake `br` executable and append-only evidence files, then spawns concurrent callers into `SystemBrRunner.cmd/3`. Each caller sends an attempted-execution marker before invoking production `cmd/3`; production argv construction and `with_database_lock/2` run before the port starts fake `br`. The fake executable records critical-section entry/exit. Assertions derive intervals from the ordered evidence, proving whether same database paths serialize and different paths remain independent.
 
 ## Master Task List
 
@@ -113,30 +113,30 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
 
 **Shippable State:** Maintainers running `mix test` get a focused failure if two same-database `SystemBrRunner.cmd/3` calls overlap inside fake `br`.
 
-- [ ] **TRD-001** Build a deterministic fake-`br` evidence harness in `system_br_runner_test.exs` (4h) [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009]
+- [ ] **TRD-001** Build a deterministic fake-`br` append-only evidence harness in `system_br_runner_test.exs` (4h) [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009]
   - **Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-3, AC-007-1, AC-007-2, AC-008-1, AC-008-2, AC-009-1, AC-009-2
   - **Implementation AC checklist:**
     - Given two callers are launched, when each reaches the runner call site, then the parent process receives an attempted-execution marker before final assertions.
     - Given a caller or fake `br` hangs, when the bounded wait expires, then the failure names the missing marker/evidence file.
-    - Given the fake `br` runs, when evidence is written, then all files live under the ExUnit temp dir and `PATH` is restored in `on_exit`/`after` cleanup.
+    - Given the fake `br` runs, when evidence is written, then all files live under the ExUnit temp dir, events are append-only `ENTER`/`DONE` rows, and `PATH` is restored in `on_exit`/`after` cleanup.
 
 - [ ] **TRD-001-TEST** Add harness self-check coverage for bounded waits and fake-`br` evidence shape (2h) [verifies TRD-001] [satisfies REQ-004] [satisfies REQ-007] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-001]
   - **Validates PRD ACs:** AC-004-1, AC-004-2, AC-007-1, AC-008-2, AC-009-2
   - **Implementation AC checklist:**
-    - Given the fake `br` emits events, when helper parsing runs, then two successful invocations produce parseable start/finish evidence.
+    - Given the fake `br` emits events, when helper parsing runs, then two successful invocations produce parseable `ENTER`/`DONE` intervals and derived max-concurrency evidence.
     - Given required evidence is absent, when helper waits expire, then ExUnit reports the missing caller or evidence name.
 
-- [ ] **TRD-002** Replace or harden the existing same-path concurrency test so it asserts max concurrency `1` and no overlapping intervals across the full fake-`br` body (4h) [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-001]
+- [ ] **TRD-002** Replace or harden the existing same-path concurrency test so it derives max concurrency `1` from append-only intervals and rejects any overlap across the full fake-`br` body (4h) [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-009] [satisfies REQ-012] [depends: TRD-001]
   - **Validates PRD ACs:** AC-001-1, AC-001-2, AC-001-3, AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-009-1, AC-009-2, AC-012-1
   - **Implementation AC checklist:**
-    - Given two `SystemBrRunner.cmd/3` calls share a non-empty `database_path`, when both finish, then observed max fake-`br` concurrency is exactly `1`.
-    - Given the first fake `br` is inside its body, when the second same-path caller starts, then no second `CALL`/body marker appears before the first `DONE` marker.
+    - Given two `SystemBrRunner.cmd/3` calls share a non-empty `database_path`, when both finish, then max fake-`br` concurrency derived from ordered `ENTER`/`DONE` evidence is exactly `1`.
+    - Given the first fake `br` is inside its body, when the second same-path caller starts, then no second `ENTER` marker appears before the first `DONE` marker.
     - Given the assertion fails, when ExUnit prints the failure, then it includes max concurrency and ordered call log.
 
 - [ ] **TRD-002-TEST** Add mutation-sensitive regression assertions for same-path lock bypass behavior (2h) [verifies TRD-002] [satisfies REQ-001] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-012] [depends: TRD-002]
   - **Validates PRD ACs:** AC-001-1, AC-001-2, AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-012-1
   - **Implementation AC checklist:**
-    - Given the same-path test evidence is inspected, when max concurrency exceeds `1`, then the test fails without relying on task completion order.
+    - Given the same-path test evidence is inspected, when ordered intervals imply max concurrency exceeds `1`, then the test fails without relying on task completion order or mutable shell counters.
     - Given ordered events show overlap, when assertion output is generated, then the log is included for diagnosis.
 
 ### PR 2: Lock-key scope and no-lock compatibility
@@ -181,7 +181,7 @@ A single ExUnit module owns the temp environment. It creates a fake `br` executa
 - [ ] **TRD-005-TEST** Add/verify assertion-message coverage by structuring failure helpers with explicit diagnostic strings (1h) [verifies TRD-005] [satisfies REQ-010] [satisfies REQ-012] [depends: TRD-005]
   - **Validates PRD ACs:** AC-010-1, AC-012-1
   - **Implementation AC checklist:**
-    - Given assertion helpers compare expected and observed concurrency, when they fail, then the message includes observed max concurrency and recorded log.
+    - Given assertion helpers compare expected and observed concurrency, when they fail, then the message includes observed max concurrency derived from event order and the recorded log.
     - Given fake setup fails before any event is recorded, when the helper fails, then the message names setup/evidence absence rather than reporting a false overlap.
 
 - [ ] **TRD-006** Validate the final focused test command and avoid living documentation changes unless implementation changes maintainer/operator behavior (1h) [satisfies REQ-008] [satisfies REQ-011] [satisfies ARCH] [depends: TRD-003, TRD-004, TRD-005]
@@ -258,10 +258,10 @@ MCP enhancement: skipped (no MCP tools detected in the available tool set).
 | REQ-003 | Preserve no-database-path command behavior | TRD-004 | TRD-004-TEST |
 | REQ-004 | Use a deterministic concurrency harness | TRD-001, TRD-003 | TRD-001-TEST, TRD-003-TEST |
 | REQ-005 | Assert lock lifetime covers the whole `br` invocation | TRD-002 | TRD-002-TEST |
-| REQ-006 | Fail if the backstop is bypassed or removed | TRD-002, TRD-003 | TRD-002-TEST |
+| REQ-006 | Fail if the backstop is bypassed or removed | TRD-002, TRD-003 | TRD-002-TEST, TRD-003-TEST |
 | REQ-007 | Avoid real Beads database mutation in the test | TRD-001 | TRD-001-TEST |
 | REQ-008 | Keep the test local and CI-safe | TRD-001, TRD-003, TRD-004, TRD-006 | TRD-001-TEST, TRD-004-TEST, TRD-006-TEST |
-| REQ-009 | Locate coverage at the correct boundary | TRD-001, TRD-002 | TRD-001-TEST |
+| REQ-009 | Locate coverage at the correct boundary | TRD-001, TRD-002 | TRD-001-TEST, TRD-002-TEST |
 | REQ-010 | Document the test's concurrency contract in code comments | TRD-005 | TRD-005-TEST |
 | REQ-011 | Preserve existing task-provider behavior while adding coverage | TRD-004, TRD-006 | TRD-004-TEST, TRD-006-TEST |
 | REQ-012 | Expose actionable failure output | TRD-002, TRD-005 | TRD-002-TEST, TRD-005-TEST |
@@ -277,6 +277,7 @@ Traceability check: 12 requirements covered, 0 uncovered, 0 orphaned annotations
 | File-backed shell counters can race if distinct-path tests write the same counter without atomic updates. | Could make overlap evidence flaky or false. | Use append-only event logs plus interval parsing as primary proof; use max counter only as supplemental same-path diagnostic. | Applied to TRD-001/TRD-003. |
 | Fake `br` can prove port-body overlap but not private function entry unless the test uses `SystemBrRunner.cmd/3`. | A copied helper could create false confidence. | All tests call `SystemBrRunner.cmd/3`; helpers observe external fake command only. | Applied to TRD-001/TRD-002. |
 | `PATH` mutation is process-global in the BEAM. | Async tests could call wrong binary or leak env. | Keep module `async: false`, restore original `PATH` in `after`/`on_exit`, and use temp dirs per test. | Applied to TRD-001/TRD-004. |
+| Mutable shell counters can false-green under a lock-bypass mutation because concurrent scripts may read/write stale values. | Same-path max-concurrency proof could miss the regression it is meant to catch. | Treat append-only `ENTER`/`DONE` event order as the source of truth and derive max concurrency from parsed intervals; counters, if present, are diagnostic only. | Applied to TRD-001/TRD-002/TRD-005. |
 
 ### 7.2 Task coverage analysis
 
@@ -307,10 +308,10 @@ Traceability check: 12 requirements covered, 0 uncovered, 0 orphaned annotations
 |---|---:|---|
 | Architecture completeness | 5 | Components, data flow, integration points, temp env, and production boundary are defined. |
 | Task coverage | 5 | All 12 PRD requirements have implementation and test-task coverage. |
-| Dependency clarity | 4 | Dependencies are explicit and acyclic; critical path depth is acceptable for test-only work. |
+| Dependency clarity | 5 | Dependencies are explicit and acyclic; critical path depth is acceptable for test-only work. |
 | Estimate confidence | 4 | All tasks are 1-4h; concurrency debugging remains the main uncertainty. |
 
-Overall score: 4.5 — PASS
+Overall score: 4.75 — PASS
 
 Gate decision: PASS. Proceed to implementation only after user/Foreman approval.
 
@@ -318,7 +319,7 @@ Gate decision: PASS. Proceed to implementation only after user/Foreman approval.
 
 - Do not change `SystemBrRunner` production locking behavior for this PRD unless implementation discovers the current production code cannot satisfy the tests; if that happens, stop and report scope change.
 - Keep fake `br` test-only and earlier on `PATH` than any real Beads executable.
-- Prefer append-only event logs and interval parsing over sleep-only assertions.
+- Prefer append-only event logs and interval parsing over sleep-only assertions or mutable shell counters.
 - Preserve existing `SystemBrRunner` result envelopes and timeout behavior.
 - Review living docs at finalization. Expected decision: no README/user-guide/CLI reference update because this is test-only and operator-visible behavior is unchanged.
 
@@ -328,3 +329,12 @@ Gate decision: PASS. Proceed to implementation only after user/Foreman approval.
 /ensemble-configure-team docs/TRD/TRD-2026-49310ba5-global-trans-test-1.md
 /ensemble-implement-trd-beads docs/TRD/TRD-2026-49310ba5-global-trans-test-1.md
 ```
+
+## Changelog
+
+### 2026-09-03 — v1.0.1
+
+- Refined fake-`br` proof to use append-only `ENTER`/`DONE` event order as the authoritative max-concurrency source.
+- Removed mutable shell counters as required proof, keeping them only as optional diagnostics if implementation wants them.
+- Tightened traceability for `REQ-006` and `REQ-009` test coverage.
+- Updated readiness score from 4.5 to 4.75.
