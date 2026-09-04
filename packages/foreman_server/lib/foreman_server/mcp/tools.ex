@@ -16,6 +16,7 @@ defmodule ForemanServer.MCP.Tools do
 
   # Typed DTOs — per AGENTS.md §5.1.
   defmodule RunStatus do
+    @enforce_keys [:run_id, :status, :terminal]
     @type t :: %__MODULE__{
             run_id: String.t() | nil,
             status: String.t() | nil,
@@ -28,6 +29,7 @@ defmodule ForemanServer.MCP.Tools do
             last_event_at_ms: integer() | nil,
             failure_reason: String.t() | nil
           }
+    @derive Jason.Encoder
     defstruct [
       :run_id,
       :status,
@@ -43,6 +45,7 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defmodule PhaseStatus do
+    @enforce_keys [:phase_id, :status]
     @type t :: %__MODULE__{
             phase_id: String.t() | nil,
             index: integer() | nil,
@@ -53,6 +56,7 @@ defmodule ForemanServer.MCP.Tools do
             last_event_at_ms: integer() | nil,
             failure_reason: String.t() | nil
           }
+    @derive Jason.Encoder
     defstruct [
       :phase_id,
       :index,
@@ -1008,7 +1012,7 @@ defmodule ForemanServer.MCP.Tools do
   defp phase_status_dto(nil), do: nil
 
   defp phase_status_dto(phase) do
-    %{
+    %PhaseStatus{
       phase_id: Map.get(phase, :phase_id),
       index: Map.get(phase, :index),
       name: Map.get(phase, :name),
