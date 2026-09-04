@@ -136,7 +136,8 @@ defmodule ForemanServer.Aggregates.InboxThread do
            ),
          {:ok, status} <-
            Aggregate.required_binary(
-             Aggregate.get(payload, :delivery_status) || Aggregate.get(payload, "delivery_status"),
+             Aggregate.get(payload, :delivery_status) ||
+               Aggregate.get(payload, "delivery_status"),
              :delivery_status
            ),
          :ok <- require_message(state, message_id) do
