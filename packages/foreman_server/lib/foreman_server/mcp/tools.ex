@@ -47,10 +47,10 @@ defmodule ForemanServer.MCP.Tools do
   defmodule PhaseStatus do
     @enforce_keys [:phase_id, :status]
     @type t :: %__MODULE__{
-            phase_id: String.t() | nil,
+            phase_id: String.t(),
             index: integer() | nil,
             name: String.t() | nil,
-            status: String.t() | nil,
+            status: String.t(),
             attempt: integer() | nil,
             started_at_ms: integer() | nil,
             last_event_at_ms: integer() | nil,
@@ -68,6 +68,7 @@ defmodule ForemanServer.MCP.Tools do
       :failure_reason
     ]
   end
+
   # String → atom map for backend names accepted by Router.manual/1.
   # TRD-2026-4212be7e JHA-T002: the production default is
   # :jido_harness (the JidoHarnessAdapter routes through the vendored
@@ -509,6 +510,7 @@ defmodule ForemanServer.MCP.Tools do
   defp check_args(tool_name, args, required, declared) do
     string_keys = Enum.filter(Map.keys(args), &is_binary/1)
     declared_string_keys = Enum.filter(string_keys, &(&1 in declared))
+    undeclared_string_keys = string_keys -- declared
 
     cond do
       declared_string_keys != [] ->
@@ -517,6 +519,13 @@ defmodule ForemanServer.MCP.Tools do
                 "#{inspect(declared_string_keys)}. Tool arguments use atom keys; " <>
                 "call through ForemanServer.MCP.Dispatch, which normalizes " <>
                 "schema-declared keys, or pass atoms directly."
+
+      undeclared_string_keys != [] ->
+        {:error,
+         %ToolError{
+           code: "INVALID_PARAMS",
+           message: "Unknown arguments: #{Enum.join(undeclared_string_keys, ", ")}"
+         }}
 
       true ->
         case Enum.reject(required, &Map.has_key?(args, &1)) do
@@ -1009,14 +1018,21 @@ defmodule ForemanServer.MCP.Tools do
     end)
   end
 
-  defp phase_status_dto(nil), do: nil
+  defp phase_status_dto(phase) when is_map(phase) do
+    phase_id = Map.get(phase, :phase_id)
+    status = Map.get(phase, :status)
 
-  defp phase_status_dto(phase) do
+    unless is_binary(phase_id) and is_binary(status) do
+      raise ArgumentError,
+            "phase_status_dto: phase projection missing required identity fields " <>
+              "(phase_id: #{inspect(phase_id)}, status: #{inspect(status)})"
+    end
+
     %PhaseStatus{
-      phase_id: Map.get(phase, :phase_id),
+      phase_id: phase_id,
       index: Map.get(phase, :index),
       name: Map.get(phase, :name),
-      status: Map.get(phase, :status),
+      status: status,
       attempt: Map.get(phase, :attempt),
       started_at_ms: Map.get(phase, :started_at_ms),
       last_event_at_ms: Map.get(phase, :last_event_at_ms),
