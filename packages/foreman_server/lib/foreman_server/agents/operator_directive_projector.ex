@@ -43,6 +43,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   use GenServer
 
   alias ForemanServer.Agents.JidoSignalTopics
+  alias ForemanServer.Aggregate
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Agents.SignalDirectivePublisher
   alias ForemanServer.Inbox.{InboxItemStarted, Poller}
@@ -87,7 +88,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   """
   @spec build_directive(InboxItemStarted.t()) :: struct() | nil
   def build_directive(%InboxItemStarted{payload: payload} = event) do
-    agent_id = Map.get(payload, "agent_id") || Map.get(payload, :agent_id)
+    agent_id = Aggregate.get(payload, :agent_id)
 
     if is_binary(agent_id) and agent_id != "" do
       {:ok, signal} =
@@ -95,8 +96,8 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
           JidoSignalTopics.agent_directive(agent_id),
           %{
             "query_id" => event.correlation_id,
-            "question" => Map.get(payload, "question") || Map.get(payload, :question),
-            "options" => Map.get(payload, "options") || Map.get(payload, :options) || %{}
+            "question" => Aggregate.get(payload, :question),
+            "options" => Aggregate.get(payload, :options) || %{}
           },
           source: "foreman.operator_directive_projector"
         )

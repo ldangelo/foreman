@@ -178,12 +178,13 @@ defmodule ForemanServer.Agents.JidoShellRunner do
     command = Enum.join([cmd | args], " ")
 
     with {:ok, session_id} <- Jido.Shell.Agent.new(vfs_root) do
-      result = Jido.Shell.Agent.run(session_id, command)
-      _ = Jido.Shell.Agent.stop(session_id)
-
-      case result do
-        {:ok, output} -> {:ok, output, 0}
-        {:error, _} = error -> error
+      try do
+        case Jido.Shell.Agent.run(session_id, command) do
+          {:ok, output} -> {:ok, output, 0}
+          {:error, _} = error -> error
+        end
+      after
+        _ = Jido.Shell.Agent.stop(session_id)
       end
     end
   end

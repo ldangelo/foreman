@@ -294,7 +294,7 @@ defmodule ForemanServer.Aggregates.Project do
       else: state
   end
 
-  defp put_task_provider(state, nil), do: state
+  defp put_task_provider(%State{} = state, nil), do: state
 
   defp put_task_provider(%State{} = state, task_provider),
     do: %State{state | task_provider: task_provider}

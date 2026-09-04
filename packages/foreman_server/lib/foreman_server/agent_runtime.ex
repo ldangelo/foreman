@@ -551,7 +551,7 @@ defmodule ForemanServer.AgentRuntime do
          catalog,
          inv_supervisor,
          policy,
-         _fail_on_unavailable,
+         fail_on_unavailable,
          env
        ) do
     start_time = System.system_time()
@@ -582,6 +582,7 @@ defmodule ForemanServer.AgentRuntime do
           env
         )
 
+      {:error, :no_available_backend} when fail_on_unavailable ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
           %{system_time: start_time, status: :started},
