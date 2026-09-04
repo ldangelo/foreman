@@ -33,7 +33,7 @@ Both on `localhost:55432`, user `postgres`, password `postgres`.
 If `br` commands fail with `database disk image malformed`, run this as one
 script (`set -euo pipefail`) — the integrity check and ID-loss check below
 MUST both abort the procedure before the corrupt database is replaced. See
-`'/Users/ldangelo/.omp/agent/managed-skills/beads-corrupt-db-recovery-safe'` for the full recipe and traps
+`skill://beads-corrupt-db-recovery-safe` for the full recipe and traps
 (notably: never `br sync --import-only --rebuild` / `--force-jsonl` here —
 that treats the JSONL as authoritative and can silently drop DB-only issues
 that `.recover` still holds).
