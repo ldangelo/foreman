@@ -1851,7 +1851,11 @@ br sync --status --json       # VERIFY: `coverage_drift` must be false
 
 <!-- end-bv-agent-instructions -->
 
-## Durable Run Logs
+## Durable Run Logs and MCP Run Status
+
+`foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and
+`ProjectionStore.phases_for_run/1`; do not rebuild it from logs or raw event
+streams, and keep `foreman_run_get`'s full projection shape distinct.
 
 `foreman_run_get_logs` is backed by worker events and `ProjectionStore`.
 Only `WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...)` may produce

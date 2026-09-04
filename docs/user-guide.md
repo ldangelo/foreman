@@ -635,14 +635,16 @@ and behavior cannot diverge.
 `foreman_queue_status`, `foreman_project_list`, `foreman_project_get`,
 `foreman_workflow_list`, `foreman_workflow_get`,
 `foreman_workflow_validate`, `foreman_prompt_get`, `foreman_work_get`,
-`foreman_run_get`, `foreman_run_get_logs`, `foreman_run_get_events`,
-`foreman_run_get_activity`, `foreman_task_list`, `foreman_task_get`.
+`foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
+`foreman_run_get_events`, `foreman_run_get_activity`, `foreman_task_list`,
+`foreman_task_get`.
 
-- `foreman_run_get_logs` returns `UNAVAILABLE`: Foreman persists no run
-  output. Use `foreman_run_get_events` (the `run:<run_id>` stream) and
-  `foreman_run_get_activity` (per-worker heartbeat counts, last
-  sequence, last-heartbeat timestamps, read from
-  `worker:<run_id>:<worker_id>` streams) instead.
+- `foreman_run_status` returns a bounded status DTO from run and phase
+  projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,
+  `workflow_name`, `current_phase`, timestamps, and `failure_reason`).
+- `foreman_run_get_logs` reads durable worker stdout/stderr events from
+  `worker:<run_id>:<worker_id>` streams. Known runs with no output return
+  an empty result; unknown runs return `NOT_FOUND`.
 
 **Write tools** (`foreman_task_create`, `foreman_task_update`,
 `foreman_run_cancel`, `foreman_workflow_put`, `foreman_workflow_delete`,
@@ -653,7 +655,10 @@ Tool call failures are MCP tool errors carrying the gateway's
 structured reason, never transport-level JSON-RPC errors.
 
 - `foreman_task_list` lists all tasks, optionally filtered by
-  `project_id` and `status`. Returns `{tasks: [...], total: N}`.
+  `project_id` and canonical `status` (`open`, `ready`, `in_progress`,
+  `blocked`, `closed`, `failed`). It supports `limit` (default 100, max
+  500) and `offset` (default 0), and returns `{tasks, total, limit,
+  offset, next_offset}`.
 - `foreman_task_get` returns the full projection for one task.
 - `foreman_task_update` updates mutable task fields (`title`,
   `description`, `priority`, `status`). Requires `task_id` and at

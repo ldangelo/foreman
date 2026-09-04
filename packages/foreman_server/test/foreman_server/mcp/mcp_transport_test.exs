@@ -64,6 +64,16 @@ defmodule ForemanServer.MCP.TransportTest do
       assert {:ok, %{task_type: "feature"}} = tool.validate_input.(%{"task_type" => "feature"})
     end
 
+    test "validate_input leaves undeclared keys as strings without creating atoms" do
+      tool = Enum.find(MCP.__components__(:tool), &(&1.name == "foreman_task_update"))
+
+      assert {:ok, validated} =
+               tool.validate_input.(%{"task_id" => "task-1", "unsupported" => "ignored"})
+
+      assert validated.task_id == "task-1"
+      assert validated["unsupported"] == "ignored"
+    end
+
     test "tool replies are Anubis.Server.Response structs" do
       # Anubis.Server.Handlers.Tools pattern-matches Anubis.Server.Response.
       # Replying with Anubis.MCP.Response raises CaseClauseError in forward_to/4.
@@ -171,6 +181,7 @@ defmodule ForemanServer.MCP.TransportTest do
       required = [
         "foreman_work_get",
         "foreman_run_get",
+        "foreman_run_status",
         "foreman_queue_status",
         "foreman_project_list",
         "foreman_project_get",

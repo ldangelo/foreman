@@ -1093,8 +1093,9 @@ when a Foreman server is already running.
 Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_project_list`, `foreman_project_get`, `foreman_workflow_list`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
-`foreman_work_get`, `foreman_run_get`, `foreman_run_get_logs`,
-`foreman_run_get_events`, `foreman_run_get_activity`.
+`foreman_work_get`, `foreman_run_get`, `foreman_run_status`,
+`foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
+`foreman_task_list`, `foreman_task_get`.
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams
@@ -1109,11 +1110,25 @@ non-zero `omitted_entries` / `omitted_bytes` — a truncated read can never look
 complete. There is no store-unavailable error: the projection is server state,
 so for a known run the read always succeeds.
 
-Write tools (`foreman_task_create`, `foreman_run_cancel`,
+`foreman_run_status` returns a bounded projection DTO with `run_id`, `status`,
+`terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`,
+`started_at_ms`, `last_event_at_ms`, and `failure_reason`; it does not scrape
+logs or raw events.
+
+`foreman_task_list` accepts optional `project_id`, canonical `status` (`open`,
+`ready`, `in_progress`, `blocked`, `closed`, `failed`), `limit` (default 100,
+max 500), and `offset` (default 0), and returns `{tasks, total, limit, offset,
+next_offset}` in task-id ascending order. `foreman_task_get` returns one full task
+projection or `NOT_FOUND`.
+
+Write tools (`foreman_task_create`, `foreman_task_update`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.
 `foreman_task_create` requires `description` for `FOREMAN_TASK_DESCRIPTION`, passes
 `prompt` separately for `:prompt`-action phases, and defaults `auto_approve: true`.
+`foreman_task_update` requires `task_id` and at least one of `title`,
+`description`, `priority`, or `status`; unsupported fields are dropped at the
+handler boundary and no-op updates return `INVALID_PARAMS` before dispatch.
 
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and
 behavior cannot diverge.
