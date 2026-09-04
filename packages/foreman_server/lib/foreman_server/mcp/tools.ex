@@ -14,6 +14,56 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.MCP.ToolError
   alias ForemanServerWeb.MCP.Tools.Doctor, as: MCPDoctor
 
+  # Typed DTOs — per AGENTS.md §5.1.
+  defmodule RunStatus do
+    @type t :: %__MODULE__{
+            run_id: String.t() | nil,
+            status: String.t() | nil,
+            terminal: boolean(),
+            project_id: String.t() | nil,
+            task_id: String.t() | nil,
+            workflow_name: String.t() | nil,
+            current_phase: PhaseStatus.t() | nil,
+            started_at_ms: integer() | nil,
+            last_event_at_ms: integer() | nil,
+            failure_reason: String.t() | nil
+          }
+    defstruct [
+      :run_id,
+      :status,
+      :terminal,
+      :project_id,
+      :task_id,
+      :workflow_name,
+      :current_phase,
+      :started_at_ms,
+      :last_event_at_ms,
+      :failure_reason
+    ]
+  end
+
+  defmodule PhaseStatus do
+    @type t :: %__MODULE__{
+            phase_id: String.t() | nil,
+            index: integer() | nil,
+            name: String.t() | nil,
+            status: String.t() | nil,
+            attempt: integer() | nil,
+            started_at_ms: integer() | nil,
+            last_event_at_ms: integer() | nil,
+            failure_reason: String.t() | nil
+          }
+    defstruct [
+      :phase_id,
+      :index,
+      :name,
+      :status,
+      :attempt,
+      :started_at_ms,
+      :last_event_at_ms,
+      :failure_reason
+    ]
+  end
   # String → atom map for backend names accepted by Router.manual/1.
   # TRD-2026-4212be7e JHA-T002: the production default is
   # :jido_harness (the JidoHarnessAdapter routes through the vendored
@@ -911,12 +961,10 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp run_status_dto(run, phases) when is_map(run) and is_list(phases) do
-    status = Map.get(run, :status)
-
-    %{
+    %RunStatus{
       run_id: Map.get(run, :run_id),
-      status: status,
-      terminal: run_terminal?(run, status),
+      status: Map.get(run, :status),
+      terminal: run_terminal?(run),
       project_id: Map.get(run, :project_id),
       task_id: Map.get(run, :task_id),
       workflow_name: Map.get(run, :workflow_name),
@@ -927,13 +975,14 @@ defmodule ForemanServer.MCP.Tools do
     }
   end
 
-  defp run_terminal?(run, status) do
-    Map.get(
-      run,
-      :terminal,
-      Map.get(run, :terminal?, status not in ProjectionStore.active_run_statuses())
-    )
+  defp run_terminal?(run) do
+    case Map.get(run, :terminal?) do
+      b when is_boolean(b) -> b
+      nil -> raise ArgumentError, "expected :terminal? boolean, got: nil"
+      other -> raise ArgumentError, "expected :terminal? boolean, got: #{inspect(other)}"
+    end
   end
+
 
   defp current_phase([]), do: nil
 
