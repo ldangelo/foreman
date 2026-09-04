@@ -43,7 +43,6 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   use GenServer
 
   alias ForemanServer.Agents.JidoSignalTopics
-  alias ForemanServer.Aggregate
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Agents.SignalDirectivePublisher
   alias ForemanServer.Inbox.{InboxItemStarted, Poller}
@@ -88,27 +87,48 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   """
   @spec build_directive(InboxItemStarted.t()) :: struct() | nil
   def build_directive(%InboxItemStarted{payload: payload} = event) do
-    agent_id = Aggregate.get(payload, :agent_id)
-
-    if is_binary(agent_id) and agent_id != "" do
+    with {:ok, agent_id} <- canonical_field(payload, :agent_id),
+         true <- is_binary(agent_id) and agent_id != "",
+         {:ok, question} <- canonical_field(payload, :question),
+         {:ok, options} <- canonical_field(payload, :options) do
       {:ok, signal} =
         Jido.Signal.new(
           JidoSignalTopics.agent_directive(agent_id),
           %{
             "query_id" => event.correlation_id,
-            "question" => Aggregate.get(payload, :question),
-            "options" => Aggregate.get(payload, :options) || %{}
+            "question" => question,
+            "options" => options || %{}
           },
           source: "foreman.operator_directive_projector"
         )
 
       signal
     else
-      Logger.warning(
-        "OperatorDirectiveProjector.build_directive: no agent_id in payload, skipping: #{inspect(payload)}"
-      )
+      _ ->
+        Logger.warning(
+          "OperatorDirectiveProjector.build_directive: no agent_id, or conflicting " <>
+            "atom/string payload keys, skipping: #{inspect(payload)}"
+        )
 
-      nil
+        nil
+    end
+  end
+
+  # Read a field that may arrive as either an atom or a string key
+  # (Jido's data round-trip is not key-convention-stable). Returns the
+  # shared value when only one representation is present or both agree;
+  # returns `:error` when both are present with conflicting non-nil
+  # values, so a conflicting payload is dropped rather than silently
+  # resolved by picking one representation.
+  defp canonical_field(payload, atom_key) do
+    atom_value = Map.get(payload, atom_key)
+    string_value = Map.get(payload, Atom.to_string(atom_key))
+
+    cond do
+      is_nil(atom_value) -> {:ok, string_value}
+      is_nil(string_value) -> {:ok, atom_value}
+      atom_value == string_value -> {:ok, atom_value}
+      true -> :error
     end
   end
 

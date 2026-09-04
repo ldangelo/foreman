@@ -82,15 +82,23 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   end
 
   @doc """
-  Ad-hoc single-shot command execution, independent of the session
-  registry. Tries the real `Jido.Shell` API when loaded, falling back
-  to `System.cmd/3`.
+  Ad-hoc single-shot command execution against the real host `cwd`,
+  independent of the session registry.
+
+  This always executes via `System.cmd/3`, never `Jido.Shell.Agent`.
+  `Jido.Shell.Agent.new/1` mounts an in-memory VFS rooted at `/` — it
+  does not mount the host directory named by `workspace_id` — and
+  `Jido.Shell.Agent.run/2` only understands jido_shell's own builtin
+  command DSL (`cd`, `ls`, `cat`, `echo`, `bash`, ...), not arbitrary
+  host binaries. Routing host-`cwd` execution through it would silently
+  run against the wrong filesystem (or fail and mask the failure behind
+  a fallback). Use `start_session/2` + `run_command/3` for genuine
+  VFS-sandboxed execution against a tracked `Jido.Shell.Agent` session.
   """
   def execute(cmd, args, opts \\ []) do
     cwd = Keyword.get(opts, :cwd, File.cwd!())
-    vfs_root = Keyword.get(opts, :vfs_root, cwd)
-    Logger.info("Executing shell: cmd=#{cmd} args=#{inspect(args)} cwd=#{cwd} vfs=#{vfs_root}")
-    run_shell(cmd, args, cwd, vfs_root)
+    Logger.info("Executing shell: cmd=#{cmd} args=#{inspect(args)} cwd=#{cwd}")
+    system_cmd(cmd, args, cwd)
   end
 
   ## === Server callbacks ===
@@ -155,37 +163,6 @@ defmodule ForemanServer.Agents.JidoShellRunner do
 
       nil ->
         state
-    end
-  end
-
-  defp run_shell(cmd, args, cwd, vfs_root) do
-    # Try the actual jido_shell session-based API first; fall back to
-    # System.cmd. `Jido.Shell` (bare) only exports `version/0` — the real
-    # single-command entrypoint is the session-based `Jido.Shell.Agent`
-    # API already used elsewhere in this module (start_session/stop_session).
-    if Code.ensure_loaded?(Jido.Shell.Agent) do
-      try do
-        run_via_agent(cmd, args, vfs_root)
-      rescue
-        _ -> system_cmd(cmd, args, cwd)
-      end
-    else
-      system_cmd(cmd, args, cwd)
-    end
-  end
-
-  defp run_via_agent(cmd, args, vfs_root) do
-    command = Enum.join([cmd | args], " ")
-
-    with {:ok, session_id} <- Jido.Shell.Agent.new(vfs_root) do
-      try do
-        case Jido.Shell.Agent.run(session_id, command) do
-          {:ok, output} -> {:ok, output, 0}
-          {:error, _} = error -> error
-        end
-      after
-        _ = Jido.Shell.Agent.stop(session_id)
-      end
     end
   end
 
