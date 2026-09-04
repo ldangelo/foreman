@@ -63,6 +63,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
 
     cached_database_path = "/abs/path"
     project_config = register_project!("proj-claim-success", cached_database_path)
+    project_config = Map.put(project_config, "run_id", "run-claim-success")
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:update, %{flags: ["--claim", "bead-101"]}}
@@ -108,6 +109,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
 
     cached_database_path = "/abs/path"
     project_config = register_project!("proj-claim-array", cached_database_path)
+    project_config = Map.put(project_config, "run_id", "run-claim-array")
 
     expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
       assert request == {:update, %{flags: ["--claim", "bead-101"]}}
@@ -133,6 +135,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
 
     cached_database_path = "/abs/path"
     project_config = register_project!("proj-claim-not-claimable", cached_database_path)
+    project_config = Map.put(project_config, "run_id", "run-claim-not-claimable")
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:update, %{flags: ["--claim", "bead-102"]}}
@@ -175,6 +178,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
 
     cached_database_path = "/abs/path"
     project_config = register_project!("proj-claim-claimed-by-other", cached_database_path)
+    project_config = Map.put(project_config, "run_id", "run-claim-claimed-by-other")
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:update, %{flags: ["--claim", "bead-102b"]}}
@@ -220,6 +224,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
 
     cached_database_path = "/abs/path"
     project_config = register_project!("proj-claim-schema-validation", cached_database_path)
+    project_config = Map.put(project_config, "run_id", "run-claim-schema-validation")
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:update, %{flags: ["--claim", "bead-103"]}}
