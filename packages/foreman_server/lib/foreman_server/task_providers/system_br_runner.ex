@@ -90,6 +90,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       cleanup_leaked_temp_files(temp_files)
     end
   end
+
   defp with_database_lock(database_path, fun) when is_function(fun, 0) do
     if is_binary(database_path) and database_path != "" do
       lock_id = {:br_db_lock, database_path}
@@ -98,7 +99,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       fun.()
     end
   end
-
 
   defp build_argv({:version, _payload} = request, _project_config) do
     {action, payload} = validate_request!(request)
@@ -460,7 +460,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
         %{path: path} -> " 2> " <> shell_quote(path)
       end
 
-    base_command = "exec " <> Enum.map_join(argv, " ", &shell_quote/1) <> stdin_redirect <> stderr_redirect
+    base_command =
+      "exec " <> Enum.map_join(argv, " ", &shell_quote/1) <> stdin_redirect <> stderr_redirect
 
     base_command
   end

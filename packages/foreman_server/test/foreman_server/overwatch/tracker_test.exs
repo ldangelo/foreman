@@ -324,6 +324,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       assert count(events, "WorkerStarted") == 1
     end
   end
+
   describe "Tracker.terminal?/3 (TRD-2026-80ba0665 PR 0)" do
     test "returns :fresh for a stream with no events" do
       start_tracker()
@@ -366,25 +367,25 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
       # Seed: WorkerStarted, then WorkerCrashed (seals the aggregate).
       for {event_type, seq, extra} <- [
-             {"WorkerStarted", 0,
-              %{"session_id" => "s", "adapter" => "fake", "prompt_path" => "/p"}},
-             {"WorkerCrashed", 1,
-              %{"reason" => "crash_loop", "restarts_in_window" => 6,
-                "window_ms" => 60_000}}
-           ] do
+            {"WorkerStarted", 0,
+             %{"session_id" => "s", "adapter" => "fake", "prompt_path" => "/p"}},
+            {"WorkerCrashed", 1,
+             %{"reason" => "crash_loop", "restarts_in_window" => 6, "window_ms" => 60_000}}
+          ] do
         {:ok, _} =
           CommandRouter.dispatch(%{
             aggregate_id: sid,
             type: "worker.record",
-            payload: Map.merge(
-              %{
-                "event_type" => event_type,
-                "worker_id" => worker_id,
-                "run_id" => run_id,
-                "sequence" => seq
-              },
-              extra
-            ),
+            payload:
+              Map.merge(
+                %{
+                  "event_type" => event_type,
+                  "worker_id" => worker_id,
+                  "run_id" => run_id,
+                  "sequence" => seq
+                },
+                extra
+              ),
             command_id: "#{run_id}:#{worker_id}:#{event_type}:#{seq}"
           })
       end
@@ -392,5 +393,4 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       assert Tracker.terminal?(worker_id, run_id) == {:ok, true}
     end
   end
-
 end

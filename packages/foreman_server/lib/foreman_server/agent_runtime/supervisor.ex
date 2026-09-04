@@ -14,7 +14,12 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
 
   use Supervisor
 
-  alias ForemanServer.AgentRuntime.{AdapterCatalog, InvocationSupervisor, JidoSupervisor, Adapters.JidoHarnessAdapter}
+  alias ForemanServer.AgentRuntime.{
+    AdapterCatalog,
+    InvocationSupervisor,
+    JidoSupervisor,
+    Adapters.JidoHarnessAdapter
+  }
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do

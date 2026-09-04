@@ -110,6 +110,4 @@ defmodule ForemanServer.WorkerEnvironment do
   end
 
   def extract_secrets(_), do: []
-
 end
-

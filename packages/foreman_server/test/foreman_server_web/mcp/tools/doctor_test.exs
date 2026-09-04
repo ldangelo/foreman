@@ -121,7 +121,8 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
 
     assert Tools.call_tool("foreman_doctor", %{strict: true}) ==
              {:error,
-                %ToolError{                code: "PROVIDER_MISSING",
+              %ToolError{
+                code: "PROVIDER_MISSING",
                 message: "One or more required providers are unavailable"
               }}
   end

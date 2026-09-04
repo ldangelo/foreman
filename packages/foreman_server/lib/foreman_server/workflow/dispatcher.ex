@@ -75,7 +75,6 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
-
   @task_dispatch_event_types ~w(TaskApproved TaskDispatched)
   @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked RunDeleted)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
@@ -124,8 +123,6 @@ defmodule ForemanServer.Workflow.Dispatcher do
       handle_slot_promoted(envelope, state)
     end
   end
-
-
 
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
@@ -319,6 +316,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
     case ProjectionStore.task_projection(task_id) do
       nil ->
         {:noreply, state}
+
       task_proj ->
         run_payload = RunPayload.from_task_projection(task_proj)
 
@@ -467,14 +465,15 @@ defmodule ForemanServer.Workflow.Dispatcher do
         workflow_snapshot =
           Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
 
-        result = safe_run_admission_start(project_id, %{
-          run_id: run_id,
-          task_id: task_id,
-          project_id: project_id,
-          approval_id: approval_id,
-          workflow_snapshot: workflow_snapshot,
-          phase_specs: phase_specs
-        })
+        result =
+          safe_run_admission_start(project_id, %{
+            run_id: run_id,
+            task_id: task_id,
+            project_id: project_id,
+            approval_id: approval_id,
+            workflow_snapshot: workflow_snapshot,
+            phase_specs: phase_specs
+          })
 
         case result do
           {:ok, :queued} ->
@@ -500,5 +499,4 @@ defmodule ForemanServer.Workflow.Dispatcher do
         end
     end
   end
-
 end

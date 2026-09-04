@@ -352,5 +352,4 @@ defmodule ForemanServer.RunAdmission do
         {:error, :stream_not_found}
     end
   end
-
 end

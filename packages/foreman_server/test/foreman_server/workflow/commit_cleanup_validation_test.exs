@@ -127,7 +127,9 @@ defmodule ForemanServer.Workflow.CommitCleanupValidationTest do
       # inert, so the contradiction does not exist. Refusing here would reject a
       # manifest whose declaration has no consequence — the mirror of the bug
       # this check was written to fix.
-      dir = Path.join(System.tmp_dir!(), "commit-cleanup-off-#{System.unique_integer([:positive])}")
+      dir =
+        Path.join(System.tmp_dir!(), "commit-cleanup-off-#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(dir)
       path = Path.join(dir, "workflow.yaml")
 

@@ -59,6 +59,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
   end
 
   defp format_line({:provider, provider, :installed, _hint}), do: "✓ #{provider} available"
+
   defp format_line({:provider, provider, :not_installed, hint}),
     do: "✗ #{provider} not found — install with: #{hint}"
 end

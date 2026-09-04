@@ -37,7 +37,9 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
     # (see "owner process exit tears down tracked session" below): when this
     # test process exits, JidoShellRunner's `handle_info({:DOWN, ...})` tears
     # the session down automatically before the manager itself is stopped.
-    {:ok, session_id} = JidoShellRunner.start_session("test-workspace", manager: manager, owner: owner)
+    {:ok, session_id} =
+      JidoShellRunner.start_session("test-workspace", manager: manager, owner: owner)
+
     session_id
   end
 
@@ -46,6 +48,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       nil -> {:ok, _pid} = start_supervised!(VfsIsolation)
       _pid -> :ok
     end
+
     :ets.delete_all_objects(:foreman_vfs_isolation)
     :ok = VfsIsolation.bind(agent_id, worktree)
   end
@@ -84,7 +87,9 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
     end
 
     test "output captures stdout, not stderr by default" do
-      assert {:ok, out, 0} = JidoShellRunner.execute("sh", ["-c", "echo stdout && echo stderr >&2"])
+      assert {:ok, out, 0} =
+               JidoShellRunner.execute("sh", ["-c", "echo stdout && echo stderr >&2"])
+
       assert out =~ "stdout"
       refute out =~ "stderr"
     end
@@ -109,6 +114,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
 
     test "session is tracked after start", %{manager: manager} do
       {:ok, session_id} = JidoShellRunner.start_session("test-workspace", manager: manager)
+
       try do
         assert JidoShellRunner.tracked?(session_id, manager: manager)
       after
@@ -135,18 +141,26 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       assert out =~ "hello"
     end
 
-    test "run_command/3 returns an error for a command not in the shell registry", %{manager: manager} do
+    test "run_command/3 returns an error for a command not in the shell registry", %{
+      manager: manager
+    } do
       session_id = with_session(manager)
       assert {:error, _reason} = JidoShellRunner.run_command(session_id, "false")
     end
 
     test "owner process exit tears down tracked session", %{manager: manager} do
       owner = spawn(fn -> Process.sleep(:infinity) end)
-      {:ok, session_id} = JidoShellRunner.start_session("test-workspace", manager: manager, owner: owner)
+
+      {:ok, session_id} =
+        JidoShellRunner.start_session("test-workspace", manager: manager, owner: owner)
+
       assert JidoShellRunner.tracked?(session_id, manager: manager)
       Process.exit(owner, :kill)
       # Session should be unregistered after owner dies
-      assert_eventually(fn -> JidoShellRunner.tracked?(session_id, manager: manager) == false end, 30)
+      assert_eventually(
+        fn -> JidoShellRunner.tracked?(session_id, manager: manager) == false end,
+        30
+      )
     end
   end
 
@@ -159,6 +173,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
     test "two sessions get distinct session_ids", %{manager: manager} do
       {:ok, s1} = JidoShellRunner.start_session("ws-a", manager: manager, owner: self())
       {:ok, s2} = JidoShellRunner.start_session("ws-b", manager: manager, owner: self())
+
       try do
         assert s1 != s2
       after
@@ -188,9 +203,9 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       assert length(results) == 2
 
       assert Enum.all?(results, fn
-        {:ok, {session_id, {:ok, out}}} -> out =~ session_id
-        _ -> false
-      end)
+               {:ok, {session_id, {:ok, out}}} -> out =~ session_id
+               _ -> false
+             end)
     end
 
     test "tracked sessions are unique per manager", %{manager: manager} do
@@ -205,6 +220,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
         Enum.each(session_ids, fn id ->
           assert JidoShellRunner.tracked?(id, manager: manager)
         end)
+
         assert Enum.uniq(session_ids) == session_ids
       after
         Enum.each(session_ids, &JidoShellRunner.stop_session(&1, manager: manager))
@@ -223,6 +239,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
         nil -> {:ok, _pid} = start_supervised!(VfsIsolation)
         _pid -> :ok
       end
+
       :ets.delete_all_objects(:foreman_vfs_isolation)
       :ok
     end

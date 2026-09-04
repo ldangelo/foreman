@@ -110,8 +110,11 @@ defmodule ForemanServer.Actions.Registry do
   # check is the cheapest reliable test (no `apply/3` required).
   defp jido_action?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and
-      Jido.Action in (module.module_info(:attributes) |> Keyword.get_values(:behaviour) |> List.flatten())
+      Jido.Action in (module.module_info(:attributes)
+                      |> Keyword.get_values(:behaviour)
+                      |> List.flatten())
   end
+
   defp jido_action?(_), do: false
 
   # `Jido.Action` modules raise if `name/0` is called on a module

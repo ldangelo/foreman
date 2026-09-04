@@ -68,7 +68,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DetachedRunTest do
            Stream.repeatedly(fn ->
              Event.new!(provider: :pi, type: :thinking_delta, payload: %{"text" => "."})
            end)}
-            |> tap_starting(context)
+          |> tap_starting(context)
 
         _ ->
           {:ok,
@@ -76,7 +76,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DetachedRunTest do
              Event.new!(provider: :pi, type: :output_text_final, payload: %{"text" => "stub-ok"}),
              Event.new!(provider: :pi, type: :run_completed, payload: %{})
            ]}
-        end
+      end
     end
 
     @impl true
@@ -98,12 +98,19 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DetachedRunTest do
     original_default = Application.get_env(:jido_harness, :default_provider)
 
     journal_dir =
-      Path.join(System.tmp_dir!(), "foreman-detached-run-test-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "foreman-detached-run-test-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(journal_dir)
 
     Application.put_env(:jido_harness, :providers, %{pi: Stub})
-    Application.put_env(:jido_harness, :provider_config, %{pi: %{retention: %{journal_dir: journal_dir}}})
+
+    Application.put_env(:jido_harness, :provider_config, %{
+      pi: %{retention: %{journal_dir: journal_dir}}
+    })
+
     Application.delete_env(:jido_harness, :default_provider)
 
     on_exit(fn ->

@@ -49,6 +49,7 @@ defmodule ForemanServer.Agents.VfsIsolation do
   `false` otherwise (including when the agent has no binding).
   """
   def allowed?(agent_id, path), do: GenServer.call(__MODULE__, {:allowed?, agent_id, path})
+
   @doc """
   Returns `:ok` if `worktree_path` is under one of the configured
   allowed roots (from `:jido_vfs, :allowed_roots`), or
@@ -57,10 +58,12 @@ defmodule ForemanServer.Agents.VfsIsolation do
   """
   @spec allowlist_check(String.t()) :: :ok | {:error, :worktree_not_in_allowed_list}
   def allowlist_check(worktree_path) do
-    enforce? = Application.get_env(:foreman_server, :jido_vfs, []) |> Keyword.get(:enforce_allowlist, true)
+    enforce? =
+      Application.get_env(:foreman_server, :jido_vfs, []) |> Keyword.get(:enforce_allowlist, true)
 
     if enforce? do
-      allowed_roots = Application.get_env(:foreman_server, :jido_vfs, []) |> Keyword.get(:allowed_roots, [])
+      allowed_roots =
+        Application.get_env(:foreman_server, :jido_vfs, []) |> Keyword.get(:allowed_roots, [])
 
       if Enum.any?(allowed_roots, &String.starts_with?(worktree_path, &1)) do
         :ok
@@ -108,26 +111,33 @@ defmodule ForemanServer.Agents.VfsIsolation do
     case :ets.lookup(@table, agent_id) do
       [{^agent_id, worktree}] ->
         allowed = String.starts_with?(path, worktree)
+
         if allowed do
           {:reply, true, state}
         else
           # Access denied — log and emit security telemetry
-          Logger.warning("VFS sandbox denied: agent=#{agent_id} path=#{path} reason=outside_worktree")
+          Logger.warning(
+            "VFS sandbox denied: agent=#{agent_id} path=#{path} reason=outside_worktree"
+          )
+
           :telemetry.execute([:foreman_server, :security, :vfs_denied], %{count: 1}, %{
             agent_id: agent_id,
             path: path,
             reason: :outside_worktree
           })
+
           {:reply, false, state}
         end
 
       [] ->
         Logger.warning("VFS sandbox denied: agent=#{agent_id} path=#{path} reason=no_binding")
+
         :telemetry.execute([:foreman_server, :security, :vfs_denied], %{count: 1}, %{
           agent_id: agent_id,
           path: path,
           reason: :no_binding
         })
+
         {:reply, false, state}
     end
   end

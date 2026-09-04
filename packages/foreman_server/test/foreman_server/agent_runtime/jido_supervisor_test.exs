@@ -27,7 +27,6 @@ defmodule ForemanServer.AgentRuntime.JidoSupervisorTest do
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
-
   # Minimal stub Jido agent module used by start_agent/1 tests. Jido's
   # AgentServer.start_link/1 expects an `agent:` module that defines
   # `Jido.Agent` behaviour. We provide just enough to compile and start.

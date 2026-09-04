@@ -34,7 +34,6 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   use GenServer
 
-
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
   alias ForemanServer.Overwatch.{WorkerLogPolicy, WorkerProtocol}

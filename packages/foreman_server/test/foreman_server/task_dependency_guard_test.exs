@@ -189,8 +189,8 @@ defmodule ForemanServer.TaskDependencyGuardTest do
       seed_task("dep-waiter-5", "open", dependencies: ["dep-m1", "dep-m2", "dep-m3"])
 
       assert {:error,
-              {:task_dependencies_unsatisfied,
-               [{"dep-m1", "open"}, {"dep-m3", "in_progress"}]}} = approve("dep-waiter-5")
+              {:task_dependencies_unsatisfied, [{"dep-m1", "open"}, {"dep-m3", "in_progress"}]}} =
+               approve("dep-waiter-5")
     end
   end
 

@@ -162,7 +162,10 @@ defmodule ForemanServer.Agents.SignalToCommandAdapter do
           end
 
         {:error, reason} ->
-          Logger.warning("SignalToCommandAdapter: dropping malformed CloudEvent: #{inspect(reason)}")
+          Logger.warning(
+            "SignalToCommandAdapter: dropping malformed CloudEvent: #{inspect(reason)}"
+          )
+
           :ok
       end
 
@@ -191,9 +194,7 @@ defmodule ForemanServer.Agents.SignalToCommandAdapter do
 
   @impl true
   def handle_call({:subscribe, bus}, _from, state) do
-    case Jido.Signal.Bus.subscribe(bus, @default_topic,
-           dispatch: {:pid, target: self()}
-         ) do
+    case Jido.Signal.Bus.subscribe(bus, @default_topic, dispatch: {:pid, target: self()}) do
       {:ok, ref} ->
         {:reply, :ok, %{state | bus: bus, subscription_ref: ref}}
 
@@ -204,9 +205,7 @@ defmodule ForemanServer.Agents.SignalToCommandAdapter do
 
   @impl true
   def handle_info({:auto_subscribe, bus}, state) do
-    case Jido.Signal.Bus.subscribe(bus, @default_topic,
-           dispatch: {:pid, target: self()}
-         ) do
+    case Jido.Signal.Bus.subscribe(bus, @default_topic, dispatch: {:pid, target: self()}) do
       {:ok, ref} ->
         {:noreply, %{state | bus: bus, subscription_ref: ref}}
 

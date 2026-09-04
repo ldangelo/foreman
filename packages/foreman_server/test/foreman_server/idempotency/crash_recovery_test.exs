@@ -30,7 +30,9 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
     # Keys created before TRD-077 have no run_id in metadata.
     # CrashRecovery falls back to safe (no side effects) so recovery can proceed.
     :ok = ForemanServer.Idempotency.KeyStore.mark_ambiguous("legacy-key")
-    assert {:retry, :no_side_effects} = ForemanServer.Idempotency.CrashRecovery.reconcile("legacy-key")
+
+    assert {:retry, :no_side_effects} =
+             ForemanServer.Idempotency.CrashRecovery.reconcile("legacy-key")
   end
 
   test "ambiguous, no side effects (default check, no ProjectionStore) -> no_side_effects" do
@@ -43,8 +45,10 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
   test "ambiguous, side effects detected via custom check -> side_effects_present and key marked completed" do
     # Custom side_effects_check returns false (has side effects).
     :ok = ForemanServer.Idempotency.KeyStore.mark_ambiguous("k3")
+
     assert {:retry, :side_effects_present} =
              ForemanServer.Idempotency.CrashRecovery.reconcile("k3", fn _ -> false end)
+
     # reconcile should have marked the key completed so a subsequent retry
     # does not re-trigger the ambiguous path.
     assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status("k3")
@@ -52,6 +56,7 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
 
   test "ambiguous, custom check reports no side effects -> no_side_effects" do
     :ok = ForemanServer.Idempotency.KeyStore.mark_ambiguous("k5")
+
     assert {:retry, :no_side_effects} =
              ForemanServer.Idempotency.CrashRecovery.reconcile("k5", fn _ -> true end)
   end
@@ -67,28 +72,42 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
     # mark_ambiguous/2 wraps its arg as %{reason: arg}, not top-level metadata.
     # Use mark_started first to establish correct metadata, then mark_ambiguous
     # with a plain string reason.
-    :ok = ForemanServer.Idempotency.KeyStore.mark_started("meta-key-#{:rand.uniform(999_999)}",
-             %{run_id: "known-run-id", task_id: "task-1"})
+    :ok =
+      ForemanServer.Idempotency.KeyStore.mark_started(
+        "meta-key-#{:rand.uniform(999_999)}",
+        %{run_id: "known-run-id", task_id: "task-1"}
+      )
 
-    :ok = ForemanServer.Idempotency.KeyStore.mark_ambiguous("meta-key-#{:rand.uniform(999_999)}",
-             "timeout")
+    :ok =
+      ForemanServer.Idempotency.KeyStore.mark_ambiguous(
+        "meta-key-#{:rand.uniform(999_999)}",
+        "timeout"
+      )
 
     custom_check = fn key ->
       case ForemanServer.Idempotency.KeyStore.get(key) do
-        {:ok, %{metadata: %{run_id: "known-run-id"}}} -> false  # has side effects
+        # has side effects
+        {:ok, %{metadata: %{run_id: "known-run-id"}}} -> false
         _ -> true
       end
     end
 
     # Use a fresh key for this sub-assertion so ETS state is clean.
     key = "meta-verify-#{:rand.uniform(999_999)}"
-    :ok = ForemanServer.Idempotency.KeyStore.mark_started(key, %{run_id: "known-run-id", task_id: "task-1"})
+
+    :ok =
+      ForemanServer.Idempotency.KeyStore.mark_started(key, %{
+        run_id: "known-run-id",
+        task_id: "task-1"
+      })
+
     :ok = ForemanServer.Idempotency.KeyStore.mark_ambiguous(key, "timeout")
 
     # custom_check returns false -> side effects detected -> reconcile returns
     # :side_effects_present and marks the key completed.
     assert {:retry, :side_effects_present} =
              ForemanServer.Idempotency.CrashRecovery.reconcile(key, custom_check)
+
     assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
   end
 

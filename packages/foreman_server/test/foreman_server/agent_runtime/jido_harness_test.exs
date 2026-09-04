@@ -108,7 +108,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
     # even when the `Jido.Harness.Adapter` stub is in control. The
     # stub returned by `status/1` is the source of truth for the
     # `installed` flag observed by `ReadinessCheck.installed?/1`.
-    bin_dir = Path.join(System.tmp_dir!(), "jido-harness-trd008-#{System.unique_integer([:positive])}")
+    bin_dir =
+      Path.join(System.tmp_dir!(), "jido-harness-trd008-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(bin_dir)
     File.write!(Path.join(bin_dir, "pi"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(bin_dir, "pi"), 0o755)

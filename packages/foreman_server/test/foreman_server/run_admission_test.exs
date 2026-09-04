@@ -9,6 +9,7 @@ defmodule ForemanServer.RunAdmissionTest do
     ProjectionStore,
     RunAdmission
   }
+
   alias ForemanServer.TestSupport.RunSlotsReset
 
   @poll_timeout_ms 8_000
@@ -96,8 +97,10 @@ defmodule ForemanServer.RunAdmissionTest do
       try do
         result = RunAdmission.start(project_id, payload)
         assert {:ok, _} = result
+
         refute result in [{:ok, :queued}, {:ok, :slot_queued}],
                "RunAdmission.start returned #{inspect(result)} — slot/lease phase did not proceed"
+
         assert_receive {
           :telemetry_event,
           [:foreman, :run_admission, :start],

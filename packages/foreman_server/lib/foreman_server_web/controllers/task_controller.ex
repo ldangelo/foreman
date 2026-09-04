@@ -14,10 +14,14 @@ defmodule ForemanServerWeb.TaskController do
 
     filtered =
       Enum.filter(all_tasks, fn task ->
-        project_match = params["project_id"] == nil ||
-                         Map.get(task, :project_id) == params["project_id"]
-        status_match = params["status"] == nil ||
-                         Map.get(task, :status) == params["status"]
+        project_match =
+          params["project_id"] == nil ||
+            Map.get(task, :project_id) == params["project_id"]
+
+        status_match =
+          params["status"] == nil ||
+            Map.get(task, :status) == params["status"]
+
         project_match && status_match
       end)
 

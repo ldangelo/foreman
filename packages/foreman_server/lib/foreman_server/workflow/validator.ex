@@ -46,7 +46,7 @@ defmodule ForemanServer.Workflow.Validator do
       true ->
         validate_phases(Map.get(workflow, "phases", []), 0)
     end
-end
+  end
 
   def validate(_), do: {:error, {:invalid_workflow, :not_a_map}}
 

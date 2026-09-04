@@ -65,7 +65,8 @@ defmodule ForemanServer.Workflow.CommitDeferralTest do
       # let alone `validate_commits!`. If this ever regresses the operator gets
       # a FunctionClauseError instead of a located message, and THAT is the
       # failure worth catching here rather than papering over with a fallback.
-      path = Path.join(System.tmp_dir!(), "commit-deferral-#{System.unique_integer([:positive])}.yaml")
+      path =
+        Path.join(System.tmp_dir!(), "commit-deferral-#{System.unique_integer([:positive])}.yaml")
 
       on_exit(fn -> File.rm_rf(path) end)
 

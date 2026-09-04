@@ -188,7 +188,12 @@ defmodule ForemanServer.Aggregates.VcsOperation do
         }
 
       "VcsOperationStarted" ->
-        %State{state | exists?: true, status: "started", operation_id: Aggregate.get(payload, :operation_id)}
+        %State{
+          state
+          | exists?: true,
+            status: "started",
+            operation_id: Aggregate.get(payload, :operation_id)
+        }
 
       "VcsOperationCompleted" ->
         %State{
@@ -342,7 +347,6 @@ defmodule ForemanServer.Aggregates.VcsOperation do
        }}
     end
   end
-
 
   def handle_command(state, %{type: type, payload: payload})
       when type in [

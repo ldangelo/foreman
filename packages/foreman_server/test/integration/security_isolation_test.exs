@@ -12,6 +12,7 @@ defmodule ForemanServer.Integration.SecurityIsolationTest do
       nil -> start_supervised!(VfsIsolation)
       _pid -> :ok
     end
+
     :ok = VfsIsolation.bind("agent-sec", "/tmp/wt-sec")
     refute VfsIsolation.allowed?("agent-sec", "/etc/passwd")
     assert VfsIsolation.allowed?("agent-sec", "/tmp/wt-sec/file.txt")

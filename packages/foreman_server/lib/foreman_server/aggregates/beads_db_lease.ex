@@ -121,7 +121,6 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     end
   end
 
-
   def handle_command(state, %{type: "lease.release"} = command) do
     payload = Map.get(command, :payload) || %{}
 
@@ -310,7 +309,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   or timeout. Use this around every `br` call in BeadsAdapter to
   serialize concurrent writes against the same DB file.
   """
-  @spec with_lease(String.t(), String.t(), String.t(), (() -> {:ok, term()} | {:error, term()})) ::
+  @spec with_lease(String.t(), String.t(), String.t(), (-> {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()}
   def with_lease(db_path, run_id, task_id, callback)
       when is_binary(db_path) and db_path != "" and is_binary(run_id) and
@@ -413,7 +412,6 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
   defp holder?(%State{holder: %Holder{run_id: r}}, run_id), do: r == run_id
   defp holder?(_state, _run_id), do: false
-
 
   @doc """
   Build the lease stream id for a Beads database path.

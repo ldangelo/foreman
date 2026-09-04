@@ -28,11 +28,13 @@ defmodule ForemanServer.Workflow.CodecRegistryTest do
       assert decoded.run_id == "run-1"
       assert decoded.sequence == 7
       assert decoded.command_id == "workflow:run-1:start"
+
       assert decoded.run_start_payload == %{
                "project_id" => "project-1",
                "run_id" => "run-1",
                "task_id" => "task-1"
              }
+
       assert decoded.implementation_key == "impl-1"
     end
 
@@ -60,7 +62,11 @@ defmodule ForemanServer.Workflow.CodecRegistryTest do
       # start_lifecycle_reconciler? is false in test config; add the
       # reconciler as a child of the application supervisor at runtime
       # to mirror production supervision structure.
-      Supervisor.start_child(ForemanServer.Application, {ForemanServer.RunLifecycleReconciler, []})
+      Supervisor.start_child(
+        ForemanServer.Application,
+        {ForemanServer.RunLifecycleReconciler, []}
+      )
+
       assert is_pid(Process.whereis(ForemanServer.RunLifecycleReconciler))
 
       child_ids =

@@ -96,7 +96,11 @@ defmodule ForemanServer.VcsAdapter.Default do
 
     emit_started(operation_id, "worktree_create", target, metadata)
 
-    base_args = if branch_exists?(repo_path, branch), do: [worktree_path, branch], else: branch_args(branch) ++ [worktree_path, base]
+    base_args =
+      if branch_exists?(repo_path, branch),
+        do: [worktree_path, branch],
+        else: branch_args(branch) ++ [worktree_path, base]
+
     args = ["-C", repo_path, "worktree", "add"] ++ base_args
 
     case System.cmd("git", args, stderr_to_stdout: true) do
@@ -333,15 +337,19 @@ defmodule ForemanServer.VcsAdapter.Default do
     end
   end
 
-
   defp branch_exists?(_repo_path, nil), do: false
 
   defp branch_exists?(repo_path, branch) do
-    case System.cmd("git", ["-C", repo_path, "rev-parse", "--verify", "--quiet", "refs/heads/" <> branch], stderr_to_stdout: true) do
+    case System.cmd(
+           "git",
+           ["-C", repo_path, "rev-parse", "--verify", "--quiet", "refs/heads/" <> branch],
+           stderr_to_stdout: true
+         ) do
       {_output, 0} -> true
       _ -> false
     end
   end
+
   defp branch_args(nil), do: []
   defp branch_args(branch), do: ["-b", branch]
 

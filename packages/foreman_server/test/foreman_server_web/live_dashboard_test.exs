@@ -42,7 +42,14 @@ defmodule ForemanServerWeb.LiveDashboardViewsTest do
 
   alias ForemanServerWeb.LiveDashboard
 
-  @dashboard_section_path Path.join([__DIR__, "..", "..", "lib", "foreman_server_web", "live_dashboard.ex"])
+  @dashboard_section_path Path.join([
+                            __DIR__,
+                            "..",
+                            "..",
+                            "lib",
+                            "foreman_server_web",
+                            "live_dashboard.ex"
+                          ])
 
   test "all four view sections are present in the dashboard module" do
     {:ok, source} = File.read(@dashboard_section_path)

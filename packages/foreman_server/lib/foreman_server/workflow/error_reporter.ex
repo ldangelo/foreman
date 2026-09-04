@@ -20,18 +20,22 @@ defmodule ForemanServer.Workflow.ErrorReporter do
   # Validator.validate/1 top-level errors
   defp format(:missing_name),
     do: "Workflow is missing the required 'name' field"
+
   defp format(:missing_phases),
     do: "Workflow is missing the required 'phases' field"
+
   defp format(:empty_phases),
     do: "Workflow 'phases' list is empty; at least one phase is required"
 
   # Skill validation
   defp format({:unknown_skill, skill}),
-    do: "Unknown skill: '#{skill}'. Known skills: create-prd, refine-prd, create-trd, refine-trd, implement-trd, fix-issue, ensemble-fix-issue, ensemble-full-create-prd, ensemble-full-refine-prd, ensemble-full-create-trd, ensemble-full-create-trd-foreman, ensemble-full-implement-trd, ensemble-full-implement-trd-beads, ensemble-full-refine-trd-foreman."
+    do:
+      "Unknown skill: '#{skill}'. Known skills: create-prd, refine-prd, create-trd, refine-trd, implement-trd, fix-issue, ensemble-fix-issue, ensemble-full-create-prd, ensemble-full-refine-prd, ensemble-full-create-trd, ensemble-full-create-trd-foreman, ensemble-full-implement-trd, ensemble-full-implement-trd-beads, ensemble-full-refine-trd-foreman."
 
   # Validator.validate_phase/2 errors — bare inner tuples (outer {:error, ..} stripped by caller)
   defp format({:missing_phase_name, index}),
     do: "Phase #{index} is missing the required 'name' field"
+
   defp format({:missing_phase_action, index}),
     do: "Phase #{index} is missing a required action field (one of: command, prompt, bash)"
 

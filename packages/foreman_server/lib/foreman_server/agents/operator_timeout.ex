@@ -11,7 +11,8 @@ defmodule ForemanServer.Agents.OperatorTimeout do
   require Logger
 
   @table :operator_timeout_registry
-  @default_timeout_ms 5 * 60 * 1000  # 5 minutes
+  # 5 minutes
+  @default_timeout_ms 5 * 60 * 1000
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -42,6 +43,7 @@ defmodule ForemanServer.Agents.OperatorTimeout do
         :timer.cancel(ref)
         :ets.delete(@table, {workflow_id, task_id})
         {:reply, :ok, state}
+
       [] ->
         {:reply, :ok, state}
     end
@@ -50,7 +52,10 @@ defmodule ForemanServer.Agents.OperatorTimeout do
   @impl true
   def handle_info({:expire, workflow_id, task_id}, state) do
     :ets.delete(@table, {workflow_id, task_id})
-    Logger.warning("Operator timeout for workflow=#{workflow_id} task=#{task_id}; task.block handler removed, no-op")
+
+    Logger.warning(
+      "Operator timeout for workflow=#{workflow_id} task=#{task_id}; task.block handler removed, no-op"
+    )
 
     {:noreply, state}
   end

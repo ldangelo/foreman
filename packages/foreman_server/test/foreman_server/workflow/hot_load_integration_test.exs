@@ -12,6 +12,7 @@ defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
     File.mkdir_p!("priv/workflows")
     on_exit(fn -> File.rm_rf("priv/workflows") end)
   end
+
   describe "Loader.load_all/0" do
     test "returns a list of loaded workflow descriptors" do
       assert is_list(Loader.load_all())
@@ -96,7 +97,9 @@ defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
   describe "Validator.validate/1 — invalid workflows" do
     test "rejects workflow missing name" do
       assert {:error, :missing_name} =
-               Validator.validate(%{"phases" => [%{"name" => "s", "command" => "/skill:create-prd"}]})
+               Validator.validate(%{
+                 "phases" => [%{"name" => "s", "command" => "/skill:create-prd"}]
+               })
     end
 
     test "rejects workflow with empty phases" do
@@ -106,7 +109,10 @@ defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
 
     test "rejects step missing name" do
       assert {:error, {:missing_phase_name, 0}} =
-               Validator.validate(%{"name" => "bad", "phases" => [%{"command" => "/skill:create-prd"}]})
+               Validator.validate(%{
+                 "name" => "bad",
+                 "phases" => [%{"command" => "/skill:create-prd"}]
+               })
     end
 
     test "rejects step missing action" do

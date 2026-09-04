@@ -45,7 +45,6 @@ defmodule ForemanServerWeb.Router do
     post("/external_trigger", WebhookController, :external_trigger)
     post("/github", GithubWebhookController, :github)
     post("/operator/ingest", WebhookController, :operator_ingest)
-
   end
 
   if Mix.env() == :dev do

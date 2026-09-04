@@ -76,6 +76,7 @@ defmodule ForemanServer.Agents.MissingSubscriberPolicy do
         :error
     end
   end
+
   # Resolve the effective policy for a topic: per-topic override
   # takes precedence over the default; absent both, return the
   # default (:warn).

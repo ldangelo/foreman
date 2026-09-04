@@ -22,6 +22,7 @@ defmodule ForemanServer.Agents.McpClientPool do
 
   def handle_call({:tools, server_id}, _from, state) do
     client = Map.get(state.clients, server_id)
+
     case client do
       nil -> {:reply, [], state}
       c -> {:reply, safe_tools(c), state}

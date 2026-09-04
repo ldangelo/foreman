@@ -222,7 +222,6 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
     end
   end
 
-
   @impl true
   def handle_info({:overwatch_activated, pid}, %{worker_pid: pid} = state) do
     Process.cancel_timer(state.activation_ref)

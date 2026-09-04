@@ -96,8 +96,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
           %{
             "query_id" => event.correlation_id,
             "question" => Map.get(payload, "question") || Map.get(payload, :question),
-            "options" =>
-              Map.get(payload, "options") || Map.get(payload, :options) || %{}
+            "options" => Map.get(payload, "options") || Map.get(payload, :options) || %{}
           },
           source: "foreman.operator_directive_projector"
         )
@@ -133,6 +132,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   @impl true
   def init(opts) do
     bus = Keyword.get(opts, :bus, :default)
+
     case attach(self()) do
       :ok ->
         {:ok, %{bus: bus}}
@@ -147,7 +147,10 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   end
 
   @impl true
-  def handle_info({:inbox_item_started, _handler, %InboxItemStarted{} = event}, %{bus: bus} = state) do
+  def handle_info(
+        {:inbox_item_started, _handler, %InboxItemStarted{} = event},
+        %{bus: bus} = state
+      ) do
     publish(event, bus)
     {:noreply, state}
   end

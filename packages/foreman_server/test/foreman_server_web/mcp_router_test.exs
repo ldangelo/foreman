@@ -31,7 +31,10 @@ defmodule ForemanServerWeb.MCPRouterTest do
     :persistent_term.put(@session_config_key, %{
       server_module: ForemanServer.MCP,
       registry_mod: Anubis.Server.Registry.Local,
-      transport: [layer: Anubis.Server.Transport.StreamableHTTP, name: ForemanServer.MCP.Transport],
+      transport: [
+        layer: Anubis.Server.Transport.StreamableHTTP,
+        name: ForemanServer.MCP.Transport
+      ],
       session_idle_timeout: nil,
       timeout: 30_000,
       task_supervisor: ForemanServer.MCP.TaskSupervisor,

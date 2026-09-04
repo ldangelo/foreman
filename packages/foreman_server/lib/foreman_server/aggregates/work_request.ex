@@ -87,6 +87,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
       when is_map(payload) do
     handle_submit_payload(payload)
   end
+
   def handle_command(state, %{type: type, payload: payload})
       when is_struct(state, State) do
     case {type, state.status} do
@@ -95,7 +96,10 @@ defmodule ForemanServer.Aggregates.WorkRequest do
 
       {"work.submit", :submitted} ->
         work_id = Map.get(payload, "work_id") || Map.get(payload, :work_id)
-        if state.work_id == work_id, do: {:ok, nil}, else: {:error, {:already_submitted, state.work_id}}
+
+        if state.work_id == work_id,
+          do: {:ok, nil},
+          else: {:error, {:already_submitted, state.work_id}}
 
       {"work.execution_complete", _} ->
         handle_execution_complete(state, payload)
@@ -126,12 +130,16 @@ defmodule ForemanServer.Aggregates.WorkRequest do
           EventStore.UUID.uuid4()
 
       work_id = Map.get(payload, "work_id") || Map.get(payload, :work_id)
+
       run_id =
         Map.get(payload, "run_id") || Map.get(payload, :run_id) ||
           Identity.run_id(work_id, submission_id)
 
       project_id = Map.get(payload, "project_id") || Map.get(payload, :project_id)
-      workflow_snapshot = Map.get(payload, "workflow_snapshot") || Map.get(payload, :workflow_snapshot)
+
+      workflow_snapshot =
+        Map.get(payload, "workflow_snapshot") || Map.get(payload, :workflow_snapshot)
+
       backend = Map.get(payload, "backend") || Map.get(payload, :backend)
 
       workflow =

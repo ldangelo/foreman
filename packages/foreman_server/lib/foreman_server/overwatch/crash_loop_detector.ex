@@ -115,6 +115,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
           crashed_sealed: %{{String.t(), String.t()} => true},
           paused_sealed: %{{String.t(), String.t()} => true}
         }
+
   # ------------------------------------------------------------------
   # Public API
   # ------------------------------------------------------------------
@@ -171,6 +172,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   def pending_timers(server \\ __MODULE__) do
     GenServer.call(server, :pending_timers)
   end
+
   # ------------------------------------------------------------------
   # GenServer callbacks
   # ------------------------------------------------------------------
@@ -189,6 +191,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
       crashed_sealed: %{},
       paused_sealed: %{}
     }
+
     {:ok, state}
   end
 
@@ -213,6 +216,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   def handle_call(:restart_history, _from, state) do
     {:reply, state.restart_history, state}
   end
+
   def handle_call(:attempt_count, _from, state) do
     {:reply, state.attempt_count, state}
   end
@@ -296,7 +300,9 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
     # means the previous backoff schedule is no longer relevant.
     state =
       case Map.get(state.pending_timers, key) do
-        nil -> state
+        nil ->
+          state
+
         timer_ref ->
           _ = Process.cancel_timer(timer_ref)
           %{state | pending_timers: Map.delete(state.pending_timers, key)}
@@ -524,14 +530,10 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
     case CommandGateway.dispatch_system(command) do
       :ok ->
-        Logger.info(
-          "Overwatch.CrashLoopDetector: RunBlocked accepted for #{worker_id}/#{run_id}"
-        )
+        Logger.info("Overwatch.CrashLoopDetector: RunBlocked accepted for #{worker_id}/#{run_id}")
 
       {:ok, _event_spec} ->
-        Logger.info(
-          "Overwatch.CrashLoopDetector: RunBlocked accepted for #{worker_id}/#{run_id}"
-        )
+        Logger.info("Overwatch.CrashLoopDetector: RunBlocked accepted for #{worker_id}/#{run_id}")
 
       {:error, reason} ->
         Logger.error(

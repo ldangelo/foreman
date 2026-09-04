@@ -49,6 +49,7 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
   defp build_otlp_headers do
     public = System.get_env("LANGFUSE_PUBLIC_KEY", "")
     secret = System.get_env("LANGFUSE_SECRET_KEY", "")
+
     if public != "" and secret != "" do
       encoded = Base.encode64("#{public}:#{secret}")
       [{"Authorization", "Basic " <> encoded}]
@@ -56,7 +57,6 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
       []
     end
   end
-
 
   # Run `body` with $LANGFUSE_PUBLIC_KEY and $LANGFUSE_SECRET_KEY set to the
   # given values for the duration, restoring the original shell values on
@@ -67,12 +67,16 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
     secret_orig = System.get_env("LANGFUSE_SECRET_KEY")
     System.put_env("LANGFUSE_PUBLIC_KEY", public)
     System.put_env("LANGFUSE_SECRET_KEY", secret)
+
     try do
       body.()
     after
-      if public_orig, do: System.put_env("LANGFUSE_PUBLIC_KEY", public_orig),
+      if public_orig,
+        do: System.put_env("LANGFUSE_PUBLIC_KEY", public_orig),
         else: System.delete_env("LANGFUSE_PUBLIC_KEY")
-      if secret_orig, do: System.put_env("LANGFUSE_SECRET_KEY", secret_orig),
+
+      if secret_orig,
+        do: System.put_env("LANGFUSE_SECRET_KEY", secret_orig),
         else: System.delete_env("LANGFUSE_SECRET_KEY")
     end
   end
@@ -129,16 +133,25 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
 
   defp http_post_json(url, body_map, headers) do
     body = Jason.encode!(body_map)
+
     full_headers = [
-      {~c"Content-Type", ~c"application/json"} | Enum.map(headers, fn {k, v} ->
-        {String.to_charlist(k), String.to_charlist(v)}
-      end)
+      {~c"Content-Type", ~c"application/json"}
+      | Enum.map(headers, fn {k, v} ->
+          {String.to_charlist(k), String.to_charlist(v)}
+        end)
     ]
+
     url_charlist = String.to_charlist(url)
 
-    case :httpc.request(:post, {url_charlist, full_headers, ~c"application/json", body}, @http_opts, body_format: :binary) do
+    case :httpc.request(
+           :post,
+           {url_charlist, full_headers, ~c"application/json", body},
+           @http_opts,
+           body_format: :binary
+         ) do
       {:ok, {{_version, status, _reason}, _resp_headers, resp_body}} ->
         {:ok, status, resp_body}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -146,11 +159,14 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
 
   defp http_get(url, headers) do
     url_charlist = String.to_charlist(url)
-    erl_headers = Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+
+    erl_headers =
+      Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
 
     case :httpc.request(:get, {url_charlist, erl_headers}, @http_opts, body_format: :binary) do
       {:ok, {{_version, status, _reason}, _resp_headers, resp_body}} ->
         {:ok, status, resp_body}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -162,6 +178,7 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
         System.get_env("LANGFUSE_PUBLIC_KEY", "") <>
           ":" <> System.get_env("LANGFUSE_SECRET_KEY", "")
       )
+
     [{"Authorization", "Basic " <> encoded}]
   end
 
@@ -186,10 +203,12 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
                 Process.sleep(delay_ms)
                 {:cont, false}
               end
+
             _ ->
               Process.sleep(delay_ms)
               {:cont, false}
           end
+
         _ ->
           Process.sleep(delay_ms)
           {:cont, false}
@@ -218,10 +237,12 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
         case build_otlp_headers() do
           [] ->
             :ok
+
           [{"Authorization", "Bearer " <> _}] ->
             flunk(
               "regression: emitted Bearer-with-public-only — this is the broken shape from earlier this session"
             )
+
           [{"Authorization", "Basic " <> _}] ->
             flunk(
               "half-set keys produced a Basic header; with only the public key set this should be empty"
@@ -267,64 +288,65 @@ defmodule ForemanServer.Config.LangfuseOtelTest do
              "trace '#{tag}' not visible in Langfuse /api/public/traces within retry budget"
     end
 
-     test "Langfuse rejects Bearer-with-public-only on its OTLP endpoint" do
-       # Regression guard for the earlier bug. Hits the Langfuse OTLP
-       # ingest directly (bypassing the collector's Basic header) to
-       # confirm the 403-vs-Basic distinction is real. Requires the
-       # stack to be up.
+    test "Langfuse rejects Bearer-with-public-only on its OTLP endpoint" do
+      # Regression guard for the earlier bug. Hits the Langfuse OTLP
+      # ingest directly (bypassing the collector's Basic header) to
+      # confirm the 403-vs-Basic distinction is real. Requires the
+      # stack to be up.
 
-       bearer_url = "#{@langfuse_url}/api/public/otel/v1/traces"
-       bearer_headers = [
-         {~c"Content-Type", ~c"application/x-protobuf"},
-         {~c"Authorization",
-          String.to_charlist("Bearer " <> System.get_env("LANGFUSE_PUBLIC_KEY", ""))}
-       ]
+      bearer_url = "#{@langfuse_url}/api/public/otel/v1/traces"
 
-       # Retry up to 3 times on 5xx (Langfuse workers can return 503
-       # during boot or short traffic shaping). 2xx is the failure
-       # mode (auth accepted); non-5xx 4xx are unambiguous rejections.
-       run_once = fn ->
-         :httpc.request(
-           :post,
-           {String.to_charlist(bearer_url), bearer_headers,
-            ~c"application/x-protobuf", <<0x0A, 0x00>>},
-           @http_opts,
-           body_format: :binary
-         )
-       end
+      bearer_headers = [
+        {~c"Content-Type", ~c"application/x-protobuf"},
+        {~c"Authorization",
+         String.to_charlist("Bearer " <> System.get_env("LANGFUSE_PUBLIC_KEY", ""))}
+      ]
 
-       result =
-         Enum.reduce_while(1..3, :retry, fn _, _ ->
-           case run_once.() do
-             {:ok, {{_v, 503, _r}, _, _}} -> {:cont, :retry}
-             other -> {:halt, other}
-           end
-         end)
+      # Retry up to 3 times on 5xx (Langfuse workers can return 503
+      # during boot or short traffic shaping). 2xx is the failure
+      # mode (auth accepted); non-5xx 4xx are unambiguous rejections.
+      run_once = fn ->
+        :httpc.request(
+          :post,
+          {String.to_charlist(bearer_url), bearer_headers, ~c"application/x-protobuf",
+           <<0x0A, 0x00>>},
+          @http_opts,
+          body_format: :binary
+        )
+      end
 
-       case result do
-         :retry ->
-           flunk("Langfuse returned 503 for Bearer three times in a row — workers unhealthy")
+      result =
+        Enum.reduce_while(1..3, :retry, fn _, _ ->
+          case run_once.() do
+            {:ok, {{_v, 503, _r}, _, _}} -> {:cont, :retry}
+            other -> {:halt, other}
+          end
+        end)
 
-         {:ok, {{_v, 403, _r}, _, _}} ->
-           :ok
+      case result do
+        :retry ->
+          flunk("Langfuse returned 503 for Bearer three times in a row — workers unhealthy")
 
-         {:ok, {{_v, status, _r}, _, body}} when status in [400, 415] ->
-           flunk(
-             "Langfuse returned #{status} (not 403) for Bearer-with-public-only — body=#{body}"
-           )
+        {:ok, {{_v, 403, _r}, _, _}} ->
+          :ok
 
-         {:ok, {{_v, status, _r}, _, body}} when status in [200, 201] ->
-           flunk(
-             "Langfuse accepted Bearer-with-public-only (#{status}) — " <>
-               "was the regression fix reverted? body=#{body}"
-           )
+        {:ok, {{_v, status, _r}, _, body}} when status in [400, 415] ->
+          flunk(
+            "Langfuse returned #{status} (not 403) for Bearer-with-public-only — body=#{body}"
+          )
 
-         {:ok, {{_v, status, _r}, _, body}} ->
-           flunk("unexpected Bearer status #{status}, body=#{body}")
+        {:ok, {{_v, status, _r}, _, body}} when status in [200, 201] ->
+          flunk(
+            "Langfuse accepted Bearer-with-public-only (#{status}) — " <>
+              "was the regression fix reverted? body=#{body}"
+          )
 
-         {:error, reason} ->
-           flunk("Langfuse unreachable: #{inspect(reason)}")
-       end
-end
-end
+        {:ok, {{_v, status, _r}, _, body}} ->
+          flunk("unexpected Bearer status #{status}, body=#{body}")
+
+        {:error, reason} ->
+          flunk("Langfuse unreachable: #{inspect(reason)}")
+      end
+    end
+  end
 end

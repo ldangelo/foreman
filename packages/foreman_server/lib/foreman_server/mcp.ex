@@ -77,7 +77,6 @@ defmodule ForemanServer.MCP do
   # Private
   # -------------------------------------------------------------------
 
-
   # The only genuinely HTTP-specific piece of tool handling: where the token
   # lives. Anubis puts the request headers on `frame.context.headers`
   # (downcased) — there is no `frame.transport_context`, so the previous

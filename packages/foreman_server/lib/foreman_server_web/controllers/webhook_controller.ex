@@ -84,7 +84,10 @@ defmodule ForemanServerWeb.WebhookController do
       {:error, :no_correlation_id} ->
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{error: "no_correlation_id", message: "payload must include question_id or agent_id"})
+        |> json(%{
+          error: "no_correlation_id",
+          message: "payload must include question_id or agent_id"
+        })
 
       {:error, reason} ->
         conn

@@ -42,9 +42,7 @@ defmodule ForemanServer.Agents.OperatorQuestionSubscriber do
   def init(opts) do
     bus = Keyword.fetch!(opts, :bus)
 
-    case Jido.Signal.Bus.subscribe(bus, @operator_topic,
-           dispatch: {:pid, target: self()}
-         ) do
+    case Jido.Signal.Bus.subscribe(bus, @operator_topic, dispatch: {:pid, target: self()}) do
       :ok ->
         {:ok, %{bus: bus, subscription_ref: nil}}
 

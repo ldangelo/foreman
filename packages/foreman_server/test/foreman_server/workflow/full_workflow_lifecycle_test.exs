@@ -50,8 +50,12 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
   defp poll_loop(fun, deadline, message) do
     case fun.() do
-      {:ok, value} -> value
-      other when is_tuple(other) -> poll_loop_recv(other, fun, deadline, message)
+      {:ok, value} ->
+        value
+
+      other when is_tuple(other) ->
+        poll_loop_recv(other, fun, deadline, message)
+
       other ->
         if System.monotonic_time(:millisecond) >= deadline do
           flunk("timed out waiting for #{message} (last: #{inspect(other)})")
@@ -73,7 +77,12 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     end
   end
 
-  defp dump, do: %{projects: ProjectionStore.list_projects() |> Enum.map(&{&1.project_id, &1}) |> Map.new(), tasks: ProjectionStore.list_tasks() |> Enum.map(&{&1.task_id, &1}) |> Map.new(), runs: Map.new(ProjectionStore.list_runs(), &{&1.run_id, &1})}
+  defp dump,
+    do: %{
+      projects: ProjectionStore.list_projects() |> Enum.map(&{&1.project_id, &1}) |> Map.new(),
+      tasks: ProjectionStore.list_tasks() |> Enum.map(&{&1.task_id, &1}) |> Map.new(),
+      runs: Map.new(ProjectionStore.list_runs(), &{&1.run_id, &1})
+    }
 
   # The test's project path (System.tmp_dir!()) is not a real git
   # working tree, so the REAL RunExecutor spawned by RunSupervisor via
@@ -143,6 +152,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     start_or_ignore(ForemanServer.CommandRouter)
     :ok
   end
+
   setup do
     # `run_slots:global` is a process-wide singleton shared across every
     # test file (and, in this shared-Postgres dev environment, every
@@ -171,7 +181,11 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                  command_id: "test-#{project_id}",
                  aggregate_id: "project:#{project_id}",
                  type: "project.register",
-                 payload: %{project_id: project_id, name: "Lifecycle Test", path: System.tmp_dir!()}
+                 payload: %{
+                   project_id: project_id,
+                   name: "Lifecycle Test",
+                   path: System.tmp_dir!()
+                 }
                })
 
       # 2. Create task.
@@ -259,6 +273,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
         end,
         "task run_terminal_reason set"
       )
+
       # 7. Verify slot was released (run_slots released on terminal event).
       before_state = before
       %{projects: projects} = dump()
@@ -304,6 +319,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                  type: "task.approve",
                  payload: %{task_id: task_id, approved_by: "test-operator"}
                })
+
       # Wait for run aggregate to be created (async via Dispatcher PubSub).
       run_id =
         poll_until(
@@ -375,7 +391,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
   describe "AC 1: workflow manifest correctness via Interpreter.load/1" do
     test "prd.yaml has 5 phases with Ensemble skill commands" do
-      path = Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "prd.yaml")
+      path =
+        Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "prd.yaml")
 
       assert {:ok, manifest} = ForemanServer.Workflow.Interpreter.load(path)
 
@@ -386,6 +403,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       # All phases must have a name and at least one action field.
       for phase <- phases do
         assert is_binary(phase["name"]), "phase missing name"
+
         assert Map.has_key?(phase, "command") or Map.has_key?(phase, "prompt") or
                  Map.has_key?(phase, "bash"),
                "phase missing action field"
@@ -398,7 +416,10 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
     test "implement-trd.yaml dispatches ensemble-full-implement-trd with --foreman" do
       path =
-        Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "implement-trd.yaml")
+        Path.join(
+          Application.app_dir(:foreman_server, "priv/defaults/workflows"),
+          "implement-trd.yaml"
+        )
 
       assert {:ok, manifest} = ForemanServer.Workflow.Interpreter.load(path)
 
@@ -409,7 +430,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     end
 
     test "fix.yaml dispatches ensemble-fix-issue with --foreman" do
-      path = Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "fix.yaml")
+      path =
+        Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "fix.yaml")
 
       assert {:ok, manifest} = ForemanServer.Workflow.Interpreter.load(path)
 

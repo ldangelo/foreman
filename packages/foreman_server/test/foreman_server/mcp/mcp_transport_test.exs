@@ -15,6 +15,7 @@ defmodule ForemanServer.MCP.TransportTest do
     on_exit(fn -> Application.put_env(:foreman_server, :mcp, prev) end)
     :ok
   end
+
   describe "Anubis dispatch contract — both transports" do
     # Each assertion below corresponds to a defect that made EVERY tool call
     # fail at runtime while the tool *schemas* still looked correct, so
@@ -27,7 +28,6 @@ defmodule ForemanServer.MCP.TransportTest do
       on_exit(fn -> Application.put_env(:foreman_server, :mcp, prev) end)
       :ok
     end
-
 
     test "tools declare handler: nil so dispatch reaches handle_tool_call/3" do
       # Anubis.Server.Handlers.Tools.forward_to/4 routes to
@@ -214,6 +214,7 @@ defmodule ForemanServer.MCP.TransportTest do
       start_args = elem(spec[:start], 2)
       opts = start_args |> tl() |> hd()
       transport = Keyword.get(opts, :transport)
+
       assert transport == :stdio,
              "Stdio transport must use :stdio, got: #{inspect(transport)}"
     end
@@ -233,6 +234,7 @@ defmodule ForemanServer.MCP.TransportTest do
       start_args = elem(spec[:start], 2)
       opts = start_args |> tl() |> hd()
       transport = Keyword.get(opts, :transport)
+
       assert transport == :streamable_http,
              "MCP transport must use :streamable_http, got: #{inspect(transport)}"
     end

@@ -532,11 +532,16 @@ defmodule ForemanServer.Aggregates.TaskTest do
   describe "handle_command/2 — task.update" do
     setup do
       state = Task.initial_state()
-      %{task_id: "foreman-iv00", state: %{state | exists?: true, task_id: "foreman-iv00", status: "open"}}
+
+      %{
+        task_id: "foreman-iv00",
+        state: %{state | exists?: true, task_id: "foreman-iv00", status: "open"}
+      }
     end
 
     test "accepts valid status update", %{state: state} do
-      assert {:ok, %{event_type: "TaskUpdated", payload: %{task_id: "foreman-iv00", status: "closed"}}} =
+      assert {:ok,
+              %{event_type: "TaskUpdated", payload: %{task_id: "foreman-iv00", status: "closed"}}} =
                Task.handle_command(state, %{
                  type: "task.update",
                  payload: %{task_id: "foreman-iv00", status: "closed"}
@@ -584,7 +589,6 @@ defmodule ForemanServer.Aggregates.TaskTest do
                  payload: %{task_id: "foreman-iv00", status: "open"}
                })
     end
-
   end
 
   describe "handle_command/2 — unknown" do

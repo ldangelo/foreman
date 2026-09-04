@@ -245,6 +245,7 @@ defmodule ForemanServer.Workflow.Worktree do
       end)
 
     all_errors = cleanup_errors ++ branch_delete_errors
+
     if all_errors != [] do
       :telemetry.execute(
         [:foreman_server, :run, :worktree_cleanup_failed],

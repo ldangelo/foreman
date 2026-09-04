@@ -12,6 +12,7 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
   describe "apply_event" do
     test "InboxMessageAppended adds message to state" do
       state = InboxThread.initial_state()
+
       event = %InboxMessageAppended{
         run_id: "run-123",
         message_id: "msg-1",
@@ -28,12 +29,14 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
 
     test "InboxDeliveryUpdated updates delivery status" do
       state = InboxThread.initial_state()
+
       append_event = %InboxMessageAppended{
         run_id: "run-123",
         message_id: "msg-1",
         body: "Hello",
         metadata: %{}
       }
+
       state = InboxThread.apply_event(state, append_event)
 
       update_event = %InboxDeliveryUpdated{
@@ -42,6 +45,7 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
         delivery_status: "delivered",
         metadata: %{"delivered_at" => "2026-09-01"}
       }
+
       new_state = InboxThread.apply_event(state, update_event)
 
       assert new_state.messages["msg-1"].delivery_status == "delivered"
@@ -51,6 +55,7 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
   describe "handle_command inbox.send" do
     test "creates InboxMessageAppended event" do
       state = InboxThread.initial_state()
+
       command = %{
         type: "inbox.send",
         payload: %{
@@ -63,12 +68,13 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
 
       result = InboxThread.handle_command(state, command)
 
-      assert {:ok, %InboxMessageAppended{
-        run_id: "run-123",
-        message_id: "msg-1",
-        body: "Test message",
-        metadata: %{"source" => "test"}
-      }} = result
+      assert {:ok,
+              %InboxMessageAppended{
+                run_id: "run-123",
+                message_id: "msg-1",
+                body: "Test message",
+                metadata: %{"source" => "test"}
+              }} = result
     end
 
     test "rejects duplicate message_id" do
@@ -82,6 +88,7 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
         type: "inbox.send",
         payload: %{run_id: "run-123", message_id: "msg-1", body: "Duplicate"}
       }
+
       result = InboxThread.handle_command(state_with_msg, command)
 
       assert {:error, {:already_exists, :message, "msg-1"}} = result
@@ -89,6 +96,7 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
 
     test "requires run_id" do
       state = InboxThread.initial_state()
+
       command = %{
         type: "inbox.send",
         payload: %{message_id: "msg-1", body: "Test"}
@@ -115,15 +123,17 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
 
       result = InboxThread.handle_command(state_with_msg, update_cmd)
 
-      assert {:ok, %InboxDeliveryUpdated{
-        run_id: "run-123",
-        message_id: "msg-1",
-        delivery_status: "delivered"
-      }} = result
+      assert {:ok,
+              %InboxDeliveryUpdated{
+                run_id: "run-123",
+                message_id: "msg-1",
+                delivery_status: "delivered"
+              }} = result
     end
 
     test "rejects update for non-existent message" do
       state = InboxThread.initial_state()
+
       command = %{
         type: "inbox.delivery.update",
         payload: %{run_id: "run-123", message_id: "msg-999", delivery_status: "delivered"}

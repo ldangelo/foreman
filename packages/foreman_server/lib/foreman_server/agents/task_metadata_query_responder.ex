@@ -50,7 +50,8 @@ defmodule ForemanServer.Agents.TaskMetadataQueryResponder do
   """
   @spec build_query(String.t(), String.t(), String.t(), String.t()) :: struct()
   def build_query(project, task_id, agent_id, query_id)
-      when is_binary(project) and is_binary(task_id) and is_binary(agent_id) and is_binary(query_id) do
+      when is_binary(project) and is_binary(task_id) and is_binary(agent_id) and
+             is_binary(query_id) do
     {:ok, signal} =
       Jido.Signal.new(
         "com.foreman.query.task_metadata.#{project}",
@@ -130,6 +131,7 @@ defmodule ForemanServer.Agents.TaskMetadataQueryResponder do
   def lookup(provider, task_id) when is_function(provider, 1) and is_binary(task_id) do
     provider.(task_id)
   end
+
   @doc """
   Handle an incoming query signal end-to-end: extract task_id, look
   up the task via the supplied provider, build a response signal,
@@ -152,7 +154,8 @@ defmodule ForemanServer.Agents.TaskMetadataQueryResponder do
   or the publish fails. The provider's `{:error, reason}` is
   propagated as a response with `data.error` set to `reason`.
   """
-  @spec respond(struct(), GenServer.server() | :default, (String.t() -> {:ok, term()} | {:error, term()})) ::
+  @spec respond(struct(), GenServer.server() | :default, (String.t() ->
+                                                            {:ok, term()} | {:error, term()})) ::
           {:ok, {:response, Jido.Signal.Bus.RecordedSignal.t()}} | {:error, term()}
   def respond(query_signal, bus, provider)
       when is_struct(query_signal, Jido.Signal) and is_function(provider, 1) do
@@ -161,6 +164,7 @@ defmodule ForemanServer.Agents.TaskMetadataQueryResponder do
          {:ok, query_id} <- Map.fetch(query_signal.data, :query_id) do
       result = provider.(task_id)
       response_signal = build_response(agent_id, query_id, result)
+
       ForemanServer.Agents.SignalDirectivePublisher.publish(bus, agent_id, response_signal.data)
       |> case do
         {:ok, [recorded]} -> {:ok, {:response, recorded}}

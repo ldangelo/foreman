@@ -138,6 +138,7 @@ defmodule ForemanServer.CommandGatewayWorkSubmitTest do
       # Short-circuits: command returned unchanged without calling prepare
       assert is_map(event["payload"])
     end
+
     test "project not found returns project_not_found from validate_aggregate_id" do
       work_id = "work-notfound-#{unique_id()}"
       command_id = "cmd-notfound-#{unique_id()}"

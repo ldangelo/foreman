@@ -388,6 +388,7 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
       # And exactly one worktree was ever created for the run.
       worktrees = git!(repo, ["worktree", "list", "--porcelain"])
+
       assert length(Regex.scan(~r/^worktree /m, worktrees)) == 2,
              "the main checkout plus exactly one run worktree"
 
@@ -508,7 +509,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   end
 
   defp resolve!(repo, ref) do
-    {sha, 0} = System.cmd("git", ["-C", repo, "rev-parse", "--verify", ref], stderr_to_stdout: true)
+    {sha, 0} =
+      System.cmd("git", ["-C", repo, "rev-parse", "--verify", ref], stderr_to_stdout: true)
+
     String.trim(sha)
   end
 

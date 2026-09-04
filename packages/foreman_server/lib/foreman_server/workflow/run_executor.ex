@@ -104,6 +104,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   def claim(_project_id, _task_id, _actor, _run_id), do: {:error, :invalid_claim}
+
   @spec complete(String.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok, term()} | {:error, term()}
   def complete(project_id, task_id, run_id, artifact_path)
@@ -2716,7 +2717,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-
   # Phase specs are normalized to canonical atom keys by
   # `PhaseSpec.normalize/1` at `extract_phase_specs/1`, the single funnel
   # through which every spec enters the executor. That absorbs both inbound
@@ -3044,7 +3044,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Application.put_env(:foreman_server, :run_executor_test_dispatch_attempt_count, next)
     next
   end
-
 
   defp resolve_provider(project_id, transition, run_id) do
     with {:ok, project} <- fetch_project_projection(project_id),

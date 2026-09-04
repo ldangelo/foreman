@@ -45,7 +45,6 @@ defmodule ForemanServer.Agents.JidoCheckpointStore do
 
   alias Jido.Ecto.Storage
 
-
   @doc """
   Persist a checkpoint under the given key. Returns `:ok` on success
   (matches `Jido.Ecto.Storage.put_checkpoint/3`).

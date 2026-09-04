@@ -89,6 +89,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
       end
 
       sup_name = :"InvocationSupervisor.Test.terminate_ok"
+
       InvocationSupervisorHelpers.start({InvocationSupervisor, [name: sup_name]},
         id: :invocation_supervisor_terminate_ok
       )
@@ -122,6 +123,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
       assert_receive {:DOWN, ^monitor, :process, ^pid, :shutdown}, 1_000
     end
   end
+
   describe "DynamicSupervisor configuration" do
     test "uses :one_for_one strategy" do
       sup_name = :"InvocationSupervisor.Test.config"

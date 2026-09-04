@@ -82,7 +82,14 @@ defmodule ForemanServer.Aggregates.Phase do
   end
 
   def handle_command(state, %{type: type, payload: payload})
-      when type in ["phase.complete", "phase.fail", "phase.timeout", "phase.retry", "phase.skip", "phase.block"] do
+      when type in [
+             "phase.complete",
+             "phase.fail",
+             "phase.timeout",
+             "phase.retry",
+             "phase.skip",
+             "phase.block"
+           ] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, phase_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
@@ -119,8 +126,8 @@ defmodule ForemanServer.Aggregates.Phase do
   defp reject_terminal(_state), do: :ok
 
   defp reject_terminal_for_non_retry(%State{status: status}, "phase.retry")
-      when status in ["failed", "timed_out", "retrying"],
-      do: :ok
+       when status in ["failed", "timed_out", "retrying"],
+       do: :ok
 
   defp reject_terminal_for_non_retry(%State{}, "phase.retry"), do: {:error, :phase_not_retryable}
   defp reject_terminal_for_non_retry(state, _type), do: reject_terminal(state)
