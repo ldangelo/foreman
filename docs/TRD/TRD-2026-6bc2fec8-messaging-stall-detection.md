@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-6bc2fec8
 label: trd-messaging-stall-detection
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-04
 prd_reference: docs/PRD/PRD-2026-6bc2fec8-messaging-stall-detection.md
@@ -9,8 +9,8 @@ prd_label: prd-messaging-stall-detection
 scale_depth: STANDARD
 total_requirements: 15
 total_acceptance_criteria: 40
-design_readiness_score: 4.6
-readiness_score: 4.6
+design_readiness_score: 4.7
+readiness_score: 4.7
 total_tasks: 35
 kind: trd
 ---
@@ -21,13 +21,15 @@ Foreman task title from `FOREMAN_TASK_TITLE`: **Use messaging stall detection an
 
 ## 1. Executive Summary
 
-This TRD converts `PRD-2026-6bc2fec8` into a brownfield implementation plan for durable phase-level stall detection. The design adds one canonical detector path for active phases, derives activity from persisted events/projections, records stalls through aggregate commands, and exposes the resulting stall state through existing run/task/CLI/MCP/cockpit/debug surfaces.
+This TRD converts `PRD-2026-6bc2fec8` into a brownfield implementation plan for durable phase-level stall detection. The design adds one canonical detector path for active phases, derives activity from persisted events/projections, records stalls through aggregate commands, and exposes the resulting stall state through existing run/task/CLI/MCP/cockpit/debug surfaces. Refinement v1.0.1 tightens the plan around current source gaps: workflow phases do not yet carry stall metadata, `phase.start` / `PhaseStarted` payloads currently omit metadata, and run aggregate state has no stall idempotency ledger.
 
 Source verification found these relevant contracts:
 
 - `ForemanServer.StuckDetector` scans active run projections and dispatches `run.flag_stuck` after idle run activity; it already respects `RunExecutorLiveness` future deadlines.
 - `ProjectionStore.stuck_runs/2` uses run `last_event_at_ms`; it does not model phase-specific output or messaging progress.
 - `ProjectionStore.run/1`, `phases_for_run/1`, `run_logs/1`, and `run_activity/1` are current read-model surfaces for run, phase, output, and worker activity.
+- `Workflow.Validator` currently validates only name/action/skill shape; it has no typed stall metadata validation, so this feature must extend validation rather than rely on permissive unknown keys.
+- `Commands.StartPhase` and `Events.PhaseStarted` currently carry `phase_id`, `run_id`, `index`, `name`, `attempt`, and `artifact_template`; stall metadata must be added there or copied from an authoritative workflow snapshot before projection.
 - Worker event types include `WorkerStarted`, `WorkerHeartbeat`, `WorkerExited`, `WorkerStdout`, `WorkerStderr`, `AssistantMessage`, and `ToolCallFinished`; heartbeats currently touch run activity and must not count as output progress for this feature.
 - Inbox projections fold `InboxMessageAppended` and `InboxDeliveryUpdated`; only appended messages count as messaging progress in v1.
 - Run failure/stuck mutations already flow through `CommandGateway` / `CommandRouter` / `Aggregates.Run`; projections are read models only.
@@ -98,11 +100,11 @@ Foreman mode: auto-selected Option C (new phase stall detector over projections)
 
 | Component | Responsibility | Change |
 |---|---|---|
-| Workflow phase schema/validator | Typed phase metadata | Accept `stall_detection` map or enum with `kind`, `threshold_ms`, and policy; reject malformed overrides loudly. |
+| Workflow phase schema/validator | Typed phase metadata | Accept `stall_detection` map or enum with `kind`, `threshold_ms`, and policy; reject malformed overrides loudly instead of ignoring unknown keys. |
 | `ProjectionStore` | Canonical activity/stall read model | Track phase `output_activity_at_ms`, `messaging_activity_at_ms`, `stall_policy`, `latest_stall`; expose run/task latest stall. |
 | `ForemanServer.StallDetector` | Periodic stall scan | Scan active phases, apply thresholds and exemptions, dispatch one stall command per idempotency key. |
 | `RunExecutorLiveness` | Active agent invocation deadline registry | Read-only dependency; no ownership change. |
-| `Aggregates.Run` | Durable stall event emission | Add command handling for `run.report_stall` or equivalent typed command with terminal/attention policy guard. |
+| `Aggregates.Run` | Durable stall event emission | Add `run.report_stall` handling, terminal/attention policy guard, and an idempotency-key ledger in run state. |
 | `RunStallReported` event | Durable fact | Include run, task, phase, kind, threshold, idle duration, detected time, policy, idempotency key. |
 | Telemetry | Operational signals | Emit scan and detection measurements with stall kind, phase, run, skipped/exempted counts. |
 | API/CLI/MCP/cockpit/debug | Operator rendering | Read canonical projection fields; do not recompute stall rules per transport. |
@@ -145,6 +147,7 @@ Qualifying activity:
   phase_name: binary() | nil,
   stall_kind: "agent_no_output" | "messaging_no_progress",
   policy: "fail" | "attention",
+  status_effect: "failed" | "blocked" | "stuck" | nil,
   threshold_ms: pos_integer(),
   idle_ms: non_neg_integer(),
   activity_at_ms: non_neg_integer() | nil,
@@ -157,6 +160,7 @@ Qualifying activity:
 Projection fields:
 
 - Phase: `output_activity_at_ms`, `messaging_activity_at_ms`, `stall_detection_kind`, `stall_threshold_ms`, `stall_policy`, `latest_stall`.
+- Detector query: a bounded `ProjectionStore.stall_candidates/1`-style read returning active phase candidates only; detector code must not enumerate internal projection maps directly.
 - Run: `latest_stall`, optional `failure_reason`, status/terminal policy derived by aggregate event semantics.
 - Task: `latest_stall` / attention marker when the active/latest run has a stall.
 
@@ -182,20 +186,20 @@ Config defaults:
   - Implementation ACs:
     - Given default app env, when tests read stall config, then expected defaults are returned.
     - Given `0`, negative, or wrong-type threshold, when validation runs, then a typed error is asserted.
-- [ ] **TRD-002** Extend workflow phase schema/validator to accept explicit stall metadata (`agent`, `messaging`, threshold override, policy) and reject phase-name heuristics. (4h) [satisfies REQ-001, REQ-004, REQ-006]
+- [ ] **TRD-002** Extend workflow loader/phase spec/schema/validator to accept explicit stall metadata (`agent`, `messaging`, threshold override, policy), preserve it in parsed phase specs, and reject phase-name heuristics. (4h) [satisfies REQ-001, REQ-004, REQ-006]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-004-3, AC-006-3
   - Implementation ACs:
-    - Given `stall_detection: messaging`, when workflow validation succeeds, then the phase spec carries messaging stall kind.
+    - Given `stall_detection: messaging`, when workflow validation succeeds, then the parsed phase spec carries messaging stall kind.
     - Given only a phase name containing "message", when no metadata exists, then no messaging scope is inferred.
 - [ ] **TRD-002-TEST** Add workflow validator tests for valid overrides, malformed overrides, and no name-based classification. (2h) [verifies TRD-002] [satisfies REQ-001, REQ-004] [depends: TRD-002]
   - Validates PRD ACs: AC-001-2, AC-004-3
   - Implementation ACs:
     - Given a malformed override, when validation runs, then it returns a specific error tuple.
     - Given equivalent phase names with/without metadata, when validated, then only metadata changes stall kind.
-- [ ] **TRD-003** Extend phase projections with activity fields and stall metadata copied from phase start/snapshot data. (4h) [satisfies REQ-001, REQ-002, REQ-003, REQ-011]
+- [ ] **TRD-003** Extend `phase.start`, `Commands.StartPhase`, `Events.PhaseStarted`, and phase projections with activity fields and stall metadata copied from parsed phase specs. (4h) [satisfies REQ-001, REQ-002, REQ-003, REQ-011]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-002-1, AC-003-1, AC-011-3
   - Implementation ACs:
-    - Given `PhaseStarted`, when projected, then phase activity timestamps initialize from event time.
+    - Given `PhaseStarted` with stall metadata, when projected, then phase activity timestamps initialize from event time and policy fields match the source phase spec.
     - Given no stall has been reported, when projection is read, then stall fields are nil/absent.
 - [ ] **TRD-003-TEST** Add projection tests for phase metadata initialization and absent-stall projection shape. (2h) [verifies TRD-003] [satisfies REQ-001, REQ-011] [depends: TRD-003]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-011-3
@@ -226,7 +230,7 @@ Config defaults:
 ### PR 2: Stall detector and durable reporting
 **Shippable State:** Active runs with no qualifying agent output or messaging progress are reported once as durable stall facts with clear policy-controlled run state.
 
-- [ ] **TRD-006** Add `ForemanServer.StallDetector` one-shot scan over active phase projections with injected clock/dispatch functions for deterministic tests. (5h) [satisfies REQ-005, REQ-006, REQ-010, REQ-012]
+- [ ] **TRD-006** Add `ForemanServer.StallDetector` one-shot scan over `ProjectionStore.stall_candidates/1` active phase candidates with injected clock/dispatch functions for deterministic tests. (5h) [satisfies REQ-005, REQ-006, REQ-010, REQ-012]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-010-1, AC-012-2
   - Implementation ACs:
     - Given active phase activity inside threshold, when scan runs, then no command dispatch occurs.
@@ -256,15 +260,15 @@ Config defaults:
   - Implementation ACs:
     - Given `agent_no_output` and `messaging_no_progress`, when decoded, then both kinds are accepted.
     - Given unknown stall kind, when decoded, then a typed error is returned or raised per codec convention.
-- [ ] **TRD-009** Add run aggregate command handling for stall reporting with terminal-state guard, attention/fail policy, and idempotency key metadata. (5h) [satisfies REQ-007, REQ-009, REQ-010]
+- [ ] **TRD-009** Add run aggregate command handling for stall reporting with terminal-state guard, attention/fail policy, status effect, and persisted idempotency-key tracking. (5h) [satisfies REQ-007, REQ-009, REQ-010]
   - Validates PRD ACs: AC-001-3, AC-007-2, AC-009-1, AC-009-2, AC-010-1, AC-010-2, AC-014-2
   - Implementation ACs:
     - Given terminal run, when stall command dispatches, then aggregate rejects or no-ops without mutating terminal state.
-    - Given duplicate idempotency key, when command re-dispatches, then no duplicate active stall event is persisted.
+    - Given duplicate idempotency key already folded into run state, when command re-dispatches, then no duplicate active stall event is persisted.
 - [ ] **TRD-009-TEST** Add aggregate/command gateway tests for active, terminal, duplicate, and policy-specific stall command paths. (4h) [verifies TRD-009] [satisfies REQ-007, REQ-009, REQ-010, REQ-014] [depends: TRD-009]
   - Validates PRD ACs: AC-001-3, AC-007-2, AC-009-2, AC-010-1, AC-010-2, AC-014-2, AC-014-3
   - Implementation ACs:
-    - Given active run and fail policy, when command succeeds, then run outcome matches existing failure/stuck semantics without contradiction.
+    - Given active run and fail policy, when command succeeds, then `RunStallReported` carries a single explicit status effect and projections do not also require a separate `RunFailed` event.
     - Given repeated scan after no activity, when command dispatches again, then event count remains one.
 - [ ] **TRD-010** Wire `StallDetector` supervision/config schedule alongside existing `StuckDetector` without replacing heartbeat, recovery, or run-stuck behavior. (3h) [satisfies REQ-009, REQ-012]
   - Validates PRD ACs: AC-009-1, AC-009-2, AC-012-2
@@ -429,7 +433,11 @@ MCP enhancement: skipped (no MCP tools detected in this Pi session).
 2. **Issue:** Messaging phase correlation may be incomplete when inbox events only carry run/thread metadata.
    - **Resolution:** PR 1/3 require explicit metadata projection and safe run-level fallback; malformed or uncorrelated messages must not fabricate progress for the wrong phase.
 3. **Issue:** Existing `run.flag_stuck` already sets terminal `stuck`; adding `run.report_stall` could create contradictory terminal states.
-   - **Resolution:** Aggregate terminal guards and policy-specific state transitions are explicit in PR 2; tests cover race with `RunFlaggedStuck`.
+   - **Resolution:** `RunStallReported` is the single durable stall fact with an explicit `status_effect`; aggregate/projection code must not emit or require a second `RunFailed` event for the same stall. Tests cover race with `RunFlaggedStuck`.
+4. **Issue:** Current `Workflow.Validator` and `PhaseStarted` contracts do not carry stall metadata; relying on unknown YAML keys would silently drop the operator's policy.
+   - **Resolution:** PR 1 must extend parsed phase specs plus `phase.start`/`PhaseStarted` payloads and pin metadata round-trip tests before detector work starts.
+5. **Issue:** Idempotency cannot be inferred from projections only because rebuilds/concurrent scans can replay the same candidate.
+   - **Resolution:** Run aggregate state must fold reported stall idempotency keys and reject duplicates before appending events.
 
 ### 8.2 Task Coverage Analysis
 
@@ -438,7 +446,7 @@ MCP enhancement: skipped (no MCP tools detected in this Pi session).
 2. **Issue:** Docs must not promise speculative auto-kill/restart behavior.
    - **Resolution:** PR 4 docs scope recovery to existing operator-controlled reset/kill-switch/retry/manual paths.
 
-Scratch parser self-check performed with `trd-cli.js parse` after save. Task lines include required checkbox prefix.
+Parser-equivalent self-check performed with local regex validation because `trd-cli.js` is not present in this worktree. Task lines include required checkbox prefix; implementation should rerun the real parser if that tool is restored.
 
 ### 8.3 Dependency and Estimate Review
 
@@ -455,11 +463,11 @@ Implementation ACs use observable inputs/outputs: config validation results, pro
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Architecture completeness | 4.6 | Components, event flow, projection fields, aggregate command, detector, and surfaces are defined. |
+| Architecture completeness | 4.7 | Components, event flow, metadata propagation, projection fields, aggregate command, detector, and surfaces are defined. |
 | Task coverage | 4.7 | Every PRD requirement has implementation and test coverage; tasks preserve parser-visible checkbox format. |
-| Dependency clarity | 4.5 | Dependencies are explicit and acyclic; PR boundaries follow projection -> detector -> surfaces -> validation. |
+| Dependency clarity | 4.6 | Dependencies are explicit and acyclic; PR boundaries follow metadata propagation -> projection -> detector -> surfaces -> validation. |
 | Estimate confidence | 4.5 | No task exceeds 5h; tests are paired with risky changes. |
-| Overall | 4.6 | PASS |
+| Overall | 4.7 | PASS |
 
 Gate decision: PASS.
 
@@ -486,7 +494,14 @@ git diff --check
 
 Docs validation must verify CLI/API examples against Go/Elixir source or a fresh build, not the stale root `./foreman` artifact.
 
-## 11. Next Steps
+## 11. Changelog
+
+| Version | Date | Notes |
+|---|---|---|
+| 1.0.1 | 2026-09-04 | Foreman refinement: source-verified metadata propagation gap, made `run.report_stall`/`RunStallReported` the single durable stall fact with explicit status effect, required aggregate idempotency-key tracking, and refreshed readiness score. |
+| 1.0.0 | 2026-09-04 | Initial TRD from refined PRD. |
+
+## 12. Next Steps
 
 1. Review and approve this TRD.
 2. Run `/ensemble-configure-team docs/TRD/TRD-2026-6bc2fec8-messaging-stall-detection.md`.
