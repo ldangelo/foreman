@@ -23,7 +23,7 @@ defmodule ForemanServer.MCP.Tools do
             project_id: String.t() | nil,
             task_id: String.t() | nil,
             workflow_name: String.t() | nil,
-            current_phase: PhaseStatus.t() | nil,
+            current_phase: ForemanServer.MCP.Tools.PhaseStatus.t() | nil,
             started_at_ms: integer() | nil,
             last_event_at_ms: integer() | nil,
             failure_reason: String.t() | nil
