@@ -77,11 +77,18 @@ defmodule ForemanServer.Aggregates.InboxThread do
         status = Aggregate.get(payload, :delivery_status)
         metadata = Aggregate.get(payload, :metadata) || %{}
 
-        updated_message = %Message{
-          message_id: message_id,
-          delivery_status: status,
-          metadata: metadata
-        }
+        updated_message =
+          case Map.fetch(state.messages, message_id) do
+            {:ok, %Message{} = existing} ->
+              %Message{
+                existing
+                | delivery_status: status,
+                  metadata: Map.merge(existing.metadata, metadata)
+              }
+
+            :error ->
+              %Message{message_id: message_id, delivery_status: status, metadata: metadata}
+          end
 
         %State{state | messages: Map.put(state.messages, message_id, updated_message)}
 

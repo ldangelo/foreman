@@ -50,6 +50,38 @@ defmodule ForemanServer.Aggregates.InboxThreadTest do
 
       assert new_state.messages["msg-1"].delivery_status == "delivered"
     end
+
+    test "raw-map InboxDeliveryUpdated replay preserves the existing message body" do
+      state = InboxThread.initial_state()
+
+      append_event = %{
+        "event_type" => "InboxMessageAppended",
+        "payload" => %{
+          "run_id" => "run-1",
+          "message_id" => "msg-1",
+          "body" => "Hello world",
+          "metadata" => %{"a" => 1}
+        }
+      }
+
+      state = InboxThread.apply_event(state, append_event)
+
+      update_event = %{
+        "event_type" => "InboxDeliveryUpdated",
+        "payload" => %{
+          "run_id" => "run-1",
+          "message_id" => "msg-1",
+          "delivery_status" => "delivered",
+          "metadata" => %{"b" => 2}
+        }
+      }
+
+      new_state = InboxThread.apply_event(state, update_event)
+
+      assert new_state.messages["msg-1"].body == "Hello world"
+      assert new_state.messages["msg-1"].delivery_status == "delivered"
+      assert new_state.messages["msg-1"].metadata == %{"a" => 1, "b" => 2}
+    end
   end
 
   describe "handle_command inbox.send" do
