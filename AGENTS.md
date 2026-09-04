@@ -147,7 +147,7 @@ that directory is not evidence a mechanism works — the supported set is
 `checkpointPr`, `create-pr`, `pr-wait`, or `merge` phases, and do not dispatch
 those stale workflows.
 
-**`commit:` and `stack_pr:` are phase-level booleans; top-level PR/merge tags
+**`commit:`, `stack_pr:`, and `timeout_minutes:` are phase-level fields; top-level PR/merge tags
 remain unsupported.** `commit: true` (the default when the key is absent)
 commits the phase's work when the phase completes; `commit: false` DEFERS it,
 leaving the changes in the worktree for a later phase's commit to absorb, which
@@ -156,7 +156,9 @@ phase PR record after that phase's commit decision, targeting the recorded run
 base branch from the same Foreman run branch. Absent or false preserves default
 final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
-is the complete declarable vocabulary; `Interpreter` and `PhaseSpec` still
+is the complete declarable vocabulary. `timeout_minutes:` is a positive integer
+phase execution timeout in minutes; absent means fall back to app-config
+`failure_policies` / `default_timeout_ms`. `Interpreter` and `PhaseSpec` still
 contain zero top-level `pr`, `merge`, or `checkpoint` keys.
 
 **Deferral is rejected at LOAD time in exactly ONE case — the one the manifest

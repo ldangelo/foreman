@@ -366,6 +366,26 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     {:ok, temp_dir: temp_dir}
   end
 
+  test "phase timeout_minutes overrides app-config failure policy timeout" do
+    previous = Application.get_env(:foreman_server, :agent_runtime)
+
+    Application.put_env(:foreman_server, :agent_runtime,
+      default_timeout_ms: 30_000,
+      failure_policies: %{"implement" => %{fallback: false, max_attempts: 1, timeout_ms: 10_000}}
+    )
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:foreman_server, :agent_runtime)
+        value -> Application.put_env(:foreman_server, :agent_runtime, value)
+      end
+    end)
+
+    phase = %{name: "implement", timeout_minutes: 3}
+
+    assert RunExecutor.__failure_policy_for_test__(phase).timeout_ms == 180_000
+  end
+
   test "start phase claims before dispatch and completes on TaskExecutionCompleted", %{
     temp_dir: temp_dir
   } do

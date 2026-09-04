@@ -614,7 +614,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       end
 
     task_type = phase_spec_name(phase_spec)
-    policy = AgentRuntime.FailurePolicy.resolve(task_type, [])
+    policy = AgentRuntime.FailurePolicy.resolve(task_type, phase_timeout_opts(phase_spec))
     deadline_ms = System.system_time(:millisecond) + Map.fetch!(policy, :timeout_ms)
 
     # TRD-076: build idempotency key and acquire heartbeat lease so the
@@ -2135,6 +2135,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # make callers go through `PhaseSpec.normalize/1` as production does.
   def __phase_commits_for_test__(phase_spec), do: phase_commits?(phase_spec)
 
+  @doc false
+  def __failure_policy_for_test__(phase_spec) do
+    AgentRuntime.FailurePolicy.resolve(
+      phase_spec_name(phase_spec),
+      phase_timeout_opts(phase_spec)
+    )
+  end
+
   defp commit_dirty_worktree(state, phase_index, path) do
     case worktree_dirty?(path) do
       {:ok, false} ->
@@ -2741,6 +2749,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp phase_spec_name(phase_spec) do
     Map.get(phase_spec, :name) || ""
+  end
+
+  defp phase_timeout_opts(phase_spec) do
+    case Map.get(phase_spec, :timeout_minutes) do
+      nil -> []
+      minutes when is_integer(minutes) -> [timeout_ms: minutes * 60_000]
+    end
   end
 
   defp phase_number(phase_spec, index) do

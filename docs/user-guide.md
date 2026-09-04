@@ -800,14 +800,17 @@ repository pre-commit hooks, and a phase that produced nothing creates no commit
 
 A phase controls **whether** it commits, with a phase-level `commit:` boolean.
 A phase can also request a phase PR record with `stack_pr: true`; that does not
-force a commit. Unlike `worktree:`, which is workflow-level because a run has
-only one worktree, each phase produces its own output, so these are genuinely
-per-phase questions:
+force a commit. A phase can declare `timeout_minutes:` as a positive integer
+number of minutes for its execution timeout; if omitted, Foreman uses the
+Elixir app-config failure policy for that phase name, then `default_timeout_ms`.
+Unlike `worktree:`, which is workflow-level because a run has only one worktree,
+each phase produces its own output, so these are genuinely per-phase questions:
 
 ```yaml
 phases:
   - name: create-prd
     command: "/skill:ensemble-full-create-prd --foreman"
+    timeout_minutes: 10   # execution timeout in minutes (optional)
     commit: true          # commit this phase's work when it completes (default)
     stack_pr: true        # create/reuse a phase PR after the commit
   - name: refine-prd

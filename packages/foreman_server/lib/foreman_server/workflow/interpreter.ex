@@ -46,6 +46,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
     validate_phase_prs!(workflow, path)
+    validate_phase_timeouts!(workflow, path)
     validate_commits!(workflow, path)
     {:ok, workflow}
   end
@@ -429,6 +430,42 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_stack_pr_value!(_phase, _index, _path), do: :ok
+
+  # `timeout_minutes:` is PHASE-level and intentionally expressed in minutes,
+  # not milliseconds, so workflow authors do not encode runtime internals in
+  # manifests. Absent remains absent; app config stays the fallback.
+  defp validate_phase_timeouts!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_timeout_minutes_value!(phase, index, path) end)
+
+    :ok
+  end
+
+  defp validate_timeout_minutes_value!(phase, index, path) when is_map(phase) do
+    case phase_timeout_minutes_value(phase) do
+      nil ->
+        :ok
+
+      value when is_integer(value) and value > 0 ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"timeout_minutes\" must be a positive integer number of minutes"
+    end
+  end
+
+  defp validate_timeout_minutes_value!(_phase, _index, _path), do: :ok
+
+  defp phase_timeout_minutes_value(phase) do
+    case Map.fetch(phase, "timeout_minutes") do
+      {:ok, value} -> value
+      :error -> Map.get(phase, "timeoutMinutes")
+    end
+  end
 
   # `commit:` is PHASE-level, and deliberately the opposite shape from
   # `worktree:`. A run has exactly one worktree, so a phase has nothing to

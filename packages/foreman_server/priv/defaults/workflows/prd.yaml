@@ -42,17 +42,22 @@ worktree:
 # legitimate stage-for-review outcome rather than an error).
 phases:
   - name: create-prd
+    timeout_minutes: 10
     command: "/skill:ensemble-create-prd --foreman"
     commit: true
   - name: refine-prd
+    timeout_minutes: 10
     command: "/skill:ensemble-refine-prd --foreman"
     commit: true
   - name: create-trd
+    timeout_minutes: 10
     command: "/skill:ensemble-create-trd --foreman"
     commit: true
   - name: refine-trd
+    timeout_minutes: 15
     command: "/skill:ensemble-refine-trd-foreman --foreman"
     commit: true
   - name: implement-trd
+    timeout_minutes: 60
     command: "/skill:ensemble-implement-trd --foreman"
     commit: true

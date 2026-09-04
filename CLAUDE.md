@@ -161,7 +161,8 @@ override it; the literal matches the TRD default verbatim).
 
 Resolution order, high → low:
 
-1. Per-call `opts` — **only present keys override.**
+1. Per-call `opts` — **only present keys override.** `RunExecutor` passes
+   `timeout_ms` here when a workflow phase declares `timeout_minutes:`.
 2. App config: `config :foreman_server, :agent_runtime, failure_policies: %{task_type => %{...}}`.
 3. Built-in defaults:
    `%{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}`.
@@ -269,9 +270,10 @@ without a TRD is out of scope.
 every parsed workflow manifest and prompt body in memory and keeps
 them in sync with the on-disk root (`~/.foreman/workflows`,
 hardcoded by `AssetCatalog.default/0`). Phase specs normalize `commit:` and
-`stack_pr:` as boolean phase fields; `stack_pr: true` records a phase PR from
-the single run branch to the recorded run base branch and keeps it separate
-from the final run `pr_url`.
+`stack_pr:` as boolean phase fields and `timeout_minutes:` as an optional
+positive-integer phase execution timeout in minutes. `stack_pr: true` records a
+phase PR from the single run branch to the recorded run base branch and keeps it
+separate from the final run `pr_url`.
 
 - **Single owner of manifests.** `Approval.resolve_workflow_snapshot/2`
   (the public `Approval.prepare/2` path) and the private

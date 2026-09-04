@@ -324,6 +324,21 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
       assert hd(loaded["phases"])["command"] == "/usr/bin/python test.py"
     end
 
+    test "round-trips phase timeout_minutes" do
+      manifest = %{
+        "name" => "timeout-workflow",
+        "phases" => [
+          %{"name" => "run", "command" => "/skill:run", "timeout_minutes" => 15}
+        ]
+      }
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ "timeout_minutes: 15"
+      path = write_temp_yaml!(yaml)
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(path)
+      assert hd(loaded["phases"])["timeout_minutes"] == 15
+    end
+
     test "rejects a phase with both prompt and command (list value)" do
       # This is about a list value in a phase property, not multiple properties
       manifest = %{
