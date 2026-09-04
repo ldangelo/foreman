@@ -231,7 +231,6 @@ defmodule ForemanServer.MCP.Tools do
           default: 0,
           description: "Zero-based task offset for pagination"
         }
-        }
       }
     }
   }
@@ -761,16 +760,6 @@ defmodule ForemanServer.MCP.Tools do
                message: message
              }}
 
-          {:error, {:unsupported_construct, _} = detail} ->
-            duration_us = System.monotonic_time(:microsecond) - start_us
-            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
-
-            {:error,
-             %ToolError{
-               code: "INVALID_MANIFEST",
-               message: "Manifest validation failed: #{inspect(detail)}"
-             }}
-
           {:error, reason} ->
             duration_us = System.monotonic_time(:microsecond) - start_us
             Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
@@ -781,6 +770,16 @@ defmodule ForemanServer.MCP.Tools do
                message: inspect(reason)
              }}
         end
+
+      {:error, {:unsupported_construct, _} = detail} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
+        {:error,
+         %ToolError{
+           code: "INVALID_MANIFEST",
+           message: "Manifest validation failed: #{inspect(detail)}"
+         }}
 
       {:error, :invalid_params} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
@@ -995,7 +994,6 @@ defmodule ForemanServer.MCP.Tools do
       other -> raise ArgumentError, "expected :terminal? boolean, got: #{inspect(other)}"
     end
   end
-
 
   defp current_phase([]), do: nil
 
