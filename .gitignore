@@ -83,3 +83,7 @@
 /packages/jido_harness/cover/**
 /packages/jido_harness/deps/**/_build/**
 .devbox/
+
+# Stray worktree test-fixture snapshots dropped at repo root by some
+# workflow/RunExecutor tests
+/.worktrees/
