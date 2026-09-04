@@ -117,7 +117,7 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
           janitor_running: janitor_running,
           orphan_backlog: orphan_backlog,
           error: %{
-            code: "TASK_PROVIDER_NOT_CONFIGURED",
+            code: task_provider_error_code(reason),
             message: "task_provider could not be resolved",
             hint: inspect(reason),
             exit_code: nil,
@@ -127,6 +127,11 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
         }
     end
   end
+
+  defp task_provider_error_code({:invalid_task_provider_reference, _}),
+    do: "TASK_PROVIDER_REFERENCE_INVALID"
+
+  defp task_provider_error_code(_reason), do: "TASK_PROVIDER_NOT_CONFIGURED"
 
   defp probe_project(report, provider_module, project_config, database_path) do
     case preflight_provider(provider_module, database_path) do
@@ -381,6 +386,9 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
     end
   end
 
+  defp resolve_provider_module(provider_module),
+    do: {:error, {:invalid_task_provider_reference, provider_module}}
+
   # Validate a full module name without interning arbitrary input.
   # Module.safe_concat/1 raises ArgumentError on invalid aliases (lowercase,
   # spaces, reserved words, etc.) BEFORE creating the atom, so a malformed
@@ -398,8 +406,6 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
       ArgumentError -> :not_full_module
     end
   end
-
-  defp resolve_provider_module(_provider_module), do: {:error, :task_provider_not_configured}
 
   defp ensure_schema_cache_started do
     case Process.whereis(@schema_cache_name) do

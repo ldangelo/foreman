@@ -47,7 +47,7 @@ defmodule ForemanServer.Agents.MissingSubscriberPolicy do
   what callers should branch on.
   """
   @spec apply(String.t(), GenServer.server() | nil, struct() | map()) :: verdict()
-  def apply(topic, bus, signal) when is_binary(topic) do
+  def apply(topic, bus, _signal) when is_binary(topic) do
     policy = effective_policy(topic)
 
     case policy do
@@ -76,6 +76,7 @@ defmodule ForemanServer.Agents.MissingSubscriberPolicy do
         :error
     end
   end
+
   # Resolve the effective policy for a topic: per-topic override
   # takes precedence over the default; absent both, return the
   # default (:warn).

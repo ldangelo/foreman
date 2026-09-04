@@ -36,7 +36,8 @@ defmodule ForemanServer.Agents.OperatorQuestionSource do
     # guards against Jido's data round-trip (atom keys → string keys)
     # and against operator signals where the field is present but empty.
     data
-    |> Map.get("question_id", :__missing__) |> non_empty()
+    |> Map.get("question_id", :__missing__)
+    |> non_empty()
     |> fallback(Map.get(data, :question_id, :__missing__) |> non_empty())
     |> fallback(Map.get(data, "agent_id", :__missing__) |> non_empty())
     |> fallback(Map.get(data, :agent_id, :__missing__) |> non_empty())

@@ -41,10 +41,16 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
   look up side effects without parsing the composite key string.
   Returns `{:ok, lease}` or `{:error, reason}`.
   """
-  @spec acquire(key :: String.t(), lease_ms :: non_neg_integer(), task_id :: String.t(), run_id :: String.t()) ::
+  @spec acquire(
+          key :: String.t(),
+          lease_ms :: non_neg_integer(),
+          task_id :: String.t(),
+          run_id :: String.t()
+        ) ::
           {:ok, %__MODULE__{}} | {:error, term()}
   def acquire(key, lease_ms \\ @default_lease_ms, task_id \\ "", run_id \\ "")
-      when is_binary(key) and is_integer(lease_ms) and lease_ms >= 0 and is_binary(task_id) and is_binary(run_id),
+      when is_binary(key) and is_integer(lease_ms) and lease_ms >= 0 and is_binary(task_id) and
+             is_binary(run_id),
       do: GenServer.call(__MODULE__, {:acquire, key, lease_ms, task_id, run_id})
 
   @doc """
@@ -109,13 +115,20 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
           :ok | :not_found
   def on_worker_unresponsive(worker_id, run_id),
     do: GenServer.call(__MODULE__, {:on_worker_unresponsive, worker_id, run_id})
+
   @impl true
   def init(_opts), do: {:ok, %{leases: %{}, workers: %{}}}
   @impl true
   def handle_call({:acquire, key, lease_ms, task_id, run_id}, _from, state) do
     lease_id = "lease-#{System.unique_integer([:positive])}"
     timer_ref = Process.send_after(self(), {:expire, key}, lease_ms)
-    lease = %__MODULE__{lease_id: lease_id, key: key, expires_at: System.monotonic_time(:millisecond) + lease_ms, timer_ref: timer_ref}
+
+    lease = %__MODULE__{
+      lease_id: lease_id,
+      key: key,
+      expires_at: System.monotonic_time(:millisecond) + lease_ms,
+      timer_ref: timer_ref
+    }
 
     metadata = %{
       lease_id: lease_id,
@@ -130,11 +143,19 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
   @impl true
   def handle_call({:renew, key, lease_ms}, _from, state) do
     case Map.get(state.leases, key) do
-      nil -> {:reply, :not_found, state}
+      nil ->
+        {:reply, :not_found, state}
+
       lease ->
         Process.cancel_timer(lease.timer_ref)
         new_ref = Process.send_after(self(), {:expire, key}, lease_ms)
-        updated = %{lease | timer_ref: new_ref, expires_at: System.monotonic_time(:millisecond) + lease_ms}
+
+        updated = %{
+          lease
+          | timer_ref: new_ref,
+            expires_at: System.monotonic_time(:millisecond) + lease_ms
+        }
+
         {:reply, {:ok, updated}, put_in(state.leases[key], updated)}
     end
   end
@@ -180,7 +201,9 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
         # also fire and double-mark.
         state =
           case Map.get(state.leases, key) do
-            nil -> state
+            nil ->
+              state
+
             lease ->
               Process.cancel_timer(lease.timer_ref)
               remove_lease(state, key)
@@ -229,14 +252,18 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
 
   defp remove_lease(state, key) do
     case Map.pop(state.leases, key) do
-      {nil, _} -> state
+      {nil, _} ->
+        state
+
       {lease, new_leases} ->
         Process.cancel_timer(lease.timer_ref)
         %{state | leases: new_leases}
     end
   end
 
-  defp remove_worker_mapping(state, {_w, _r} = wk), do: %{state | workers: Map.delete(state.workers, wk)}
+  defp remove_worker_mapping(state, {_w, _r} = wk),
+    do: %{state | workers: Map.delete(state.workers, wk)}
+
   defp remove_worker_mapping(state, nil), do: state
 
   # Invert the workers map to find the worker key for a given idempotency key.

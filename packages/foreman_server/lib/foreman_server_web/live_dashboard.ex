@@ -117,7 +117,9 @@ defmodule ForemanServerWeb.LiveDashboard do
   # `{agent_id, state}` so the dashboard can show "agent-1: :ready"
   # style labels in the Current state section.
   defp state_label(entry) when is_atom(entry), do: "#{entry}"
+
   defp state_label({agent_id, state}) when is_atom(agent_id) or is_binary(agent_id),
     do: "#{agent_id}: #{state}"
+
   defp state_label(other), do: inspect(other)
 end

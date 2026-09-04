@@ -54,12 +54,11 @@ defmodule ForemanServer.Agents.OperatorQuestionFlowTest do
     # Subscribe self() to the directive bus so we can
     # assert_receive. (Agent doesn't auto-record messages.)
     {:ok, _ref} =
-      Jido.Signal.Bus.subscribe(bus_name, "agents.*.directive",
-        dispatch: {:pid, target: self()}
-      )
+      Jido.Signal.Bus.subscribe(bus_name, "agents.*.directive", dispatch: {:pid, target: self()})
 
     # Start the projector (it attaches itself to the Poller).
     projector_name = :"IntegrationProjector.#{:erlang.unique_integer()}"
+
     {:ok, _projector_pid} =
       OperatorDirectiveProjector.start_link(name: projector_name, bus: bus_name)
 

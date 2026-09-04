@@ -26,6 +26,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   defp meck_expect(module, fun, mock_fn) do
     :meck.expect(module, fun, mock_fn)
   end
+
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
     {:ok, _} = Application.ensure_all_started(:meck)
@@ -54,7 +55,11 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
 
     case Process.whereis(ForemanServer.Agents.OperatorTimeout) do
       nil ->
-        {:ok, _} = ForemanServer.Agents.OperatorTimeout.start_link(name: ForemanServer.Agents.OperatorTimeout)
+        {:ok, _} =
+          ForemanServer.Agents.OperatorTimeout.start_link(
+            name: ForemanServer.Agents.OperatorTimeout
+          )
+
         :ok
 
       _pid ->
@@ -140,12 +145,20 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
 
       # Mock OperatorTimeout.schedule/3 → send captured timeout_ms to test process
       meck_expect(ForemanServer.Agents.OperatorTimeout, :schedule, fn
-        question_id, agent_id, timeout_ms when question_id == "q-timeout-test" and agent_id == "agent-manifest-123" ->
+        question_id, agent_id, timeout_ms
+        when question_id == "q-timeout-test" and agent_id == "agent-manifest-123" ->
           send(self(), {:captured_timeout_ms, timeout_ms})
           :ok
       end)
 
-      on_exit(fn -> :meck.unload([ForemanServer.ProjectionStore, ForemanServer.Workflow.Catalog, ForemanServer.Agents.OperatorTimeout]) end)
+      on_exit(fn ->
+        :meck.unload([
+          ForemanServer.ProjectionStore,
+          ForemanServer.Workflow.Catalog,
+          ForemanServer.Agents.OperatorTimeout
+        ])
+      end)
+
       :ok
     end
 
@@ -164,9 +177,13 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
         })
 
       assert {:ok, :started, _} = OperatorQuestionDispatcher.dispatch(signal)
-      assert_receive {:captured_timeout_ms, 900_000}, 1_000, "OperatorTimeout.schedule/3 was not called with the manifest's operator_timeout_ms"
+
+      assert_receive {:captured_timeout_ms, 900_000},
+                     1_000,
+                     "OperatorTimeout.schedule/3 was not called with the manifest's operator_timeout_ms"
     end
   end
+
   describe "OperatorQuestionSource.correlation_id/1" do
     test "extracts question_id from the signal data" do
       assert "q-42" ==

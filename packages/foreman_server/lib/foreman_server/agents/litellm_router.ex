@@ -16,7 +16,8 @@ defmodule ForemanServer.Agents.LitellmRouter do
   require Logger
 
   @doc "LiteLLM HTTP endpoint (default `http://localhost:4000`)."
-  def endpoint, do: Application.get_env(:foreman_server, :litellm)[:endpoint] || "http://localhost:4000"
+  def endpoint,
+    do: Application.get_env(:foreman_server, :litellm)[:endpoint] || "http://localhost:4000"
 
   @doc ~S(LiteLLM model name; `"auto"` defers selection to LiteLLM per capability.)
   def model, do: Application.get_env(:foreman_server, :litellm)[:model] || "auto"

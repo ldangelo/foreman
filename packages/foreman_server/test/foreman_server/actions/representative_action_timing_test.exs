@@ -15,8 +15,10 @@ defmodule ForemanServer.Actions.RepresentativeActionTimingTest do
   test "representative action development time scaffolding artifacts exist" do
     assert File.exists?("#{@adt_docs}representative-action.md"),
            "ADT-T001 template missing"
+
     assert File.exists?("#{@adt_docs}representative-action-run.md"),
            "ADT-T002 E2E run plan missing"
+
     assert File.exists?("#{@adt_docs}representative-action-timing.md"),
            "ADT-T003 timing doc missing"
   end
@@ -27,10 +29,13 @@ defmodule ForemanServer.Actions.RepresentativeActionTimingTest do
 
     assert content =~ "NFR-01",
            "timing doc must reference NFR-01 target"
+
     assert content =~ "methodology",
            "timing doc must document methodology"
+
     assert content =~ "Baseline",
            "timing doc must have Baseline section"
+
     assert content =~ "Benchmark log",
            "timing doc must have Benchmark log section"
   end
@@ -41,6 +46,7 @@ defmodule ForemanServer.Actions.RepresentativeActionTimingTest do
 
     assert content =~ "GitStatusAction",
            "run doc must reference the representative action"
+
     assert content =~ "e2e",
            "run doc must describe e2e test scaffold"
   end

@@ -89,6 +89,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   # --- genserver callbacks ---
 
+  @impl true
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
     {:ok, %{repo: repo_from_config()}}
@@ -115,7 +116,10 @@ defmodule ForemanServer.Idempotency.KeyStore do
         metadata: merged
       })
 
-    case repo.insert(changeset, conflict_target: :key, on_conflict: [set: [status: status, metadata: merged]]) do
+    case repo.insert(changeset,
+           conflict_target: :key,
+           on_conflict: [set: [status: status, metadata: merged]]
+         ) do
       {:ok, _} ->
         :ets.insert(@table, {key, status, merged})
         {:reply, :ok, state}
@@ -148,12 +152,15 @@ defmodule ForemanServer.Idempotency.KeyStore do
       when repo != nil do
     result =
       case :ets.lookup(@table, key) do
-        [{^key, status, _meta}] -> {:ok, status}
+        [{^key, status, _meta}] ->
+          {:ok, status}
+
         [] ->
           # Miss in ETS but might exist in DB — query repo
           case repo.get(IdempotencyKey, key) do
             %IdempotencyKey{status: status} ->
               {:ok, status}
+
             nil ->
               :not_found
           end
@@ -182,10 +189,12 @@ defmodule ForemanServer.Idempotency.KeyStore do
       case :ets.lookup(@table, key) do
         [{^key, status, meta}] ->
           {:ok, %{key: key, status: status, metadata: meta}}
+
         [] ->
           case repo.get(IdempotencyKey, key) do
             %IdempotencyKey{} = record ->
               {:ok, %{key: record.key, status: record.status, metadata: record.metadata}}
+
             nil ->
               :not_found
           end
@@ -211,9 +220,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
   def handle_call({:list_by_status, status}, _from, %{repo: repo} = state)
       when repo != nil do
     keys =
-      repo.all(
-        from(k in IdempotencyKey, where: k.status == ^status, select: k.key)
-      )
+      repo.all(from(k in IdempotencyKey, where: k.status == ^status, select: k.key))
 
     {:reply, keys, state}
   rescue

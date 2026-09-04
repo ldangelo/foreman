@@ -15,6 +15,7 @@ defmodule ForemanServer.Workflow.MergeGate do
   @spec clear() :: :ok
   def clear, do: GenServer.call(__MODULE__, :clear)
 
+  @impl true
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table])
     {:ok, %{}}
@@ -55,7 +56,16 @@ defmodule ForemanServer.Workflow.MergeGate do
   @impl true
   def handle_call({:request, pr_url, requested_by}, _from, state) do
     Logger.info("Merge approval requested: pr=#{pr_url} by=#{requested_by}")
-    record = %{status: :pending, requested_by: requested_by, approver: nil, approver_identity: nil, requested_at: System.system_time(:millisecond), approved_at: nil}
+
+    record = %{
+      status: :pending,
+      requested_by: requested_by,
+      approver: nil,
+      approver_identity: nil,
+      requested_at: System.system_time(:millisecond),
+      approved_at: nil
+    }
+
     :ets.insert(@table, {pr_url, record})
     {:reply, {:ok, :pending}, state}
   end
@@ -63,10 +73,18 @@ defmodule ForemanServer.Workflow.MergeGate do
   def handle_call({:approve, pr_url, approver, identity}, _from, state) do
     case :ets.lookup(@table, pr_url) do
       [{^pr_url, req}] ->
-        updated = %{req | status: :approved, approver: approver, approver_identity: identity, approved_at: System.system_time(:millisecond)}
+        updated = %{
+          req
+          | status: :approved,
+            approver: approver,
+            approver_identity: identity,
+            approved_at: System.system_time(:millisecond)
+        }
+
         :ets.insert(@table, {pr_url, updated})
         Logger.info("Merge approved: pr=#{pr_url} approver=#{approver}")
         {:reply, {:ok, :approved}, state}
+
       [] ->
         {:reply, {:error, :not_found}, state}
     end
@@ -76,10 +94,18 @@ defmodule ForemanServer.Workflow.MergeGate do
     # Find the entry with matching run_id in the value's requested_by field
     case :ets.tab2list(@table) |> Enum.find(fn {_url, req} -> req.requested_by == key end) do
       {pr_url, req} ->
-        updated = %{req | status: :approved, approver: approver, approver_identity: identity, approved_at: System.system_time(:millisecond)}
+        updated = %{
+          req
+          | status: :approved,
+            approver: approver,
+            approver_identity: identity,
+            approved_at: System.system_time(:millisecond)
+        }
+
         :ets.insert(@table, {pr_url, updated})
         Logger.info("Merge approved by key: key=#{key} pr=#{pr_url} approver=#{approver}")
         {:reply, {:ok, :approved}, state}
+
       nil ->
         {:reply, {:error, :not_found}, state}
     end

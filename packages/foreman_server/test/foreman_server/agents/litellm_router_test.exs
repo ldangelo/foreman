@@ -41,6 +41,7 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
     assert route.temperature == 0.2
     assert route.max_tokens == 256
   end
+
   # REQ-020 AC-020-2: Verify that routing decisions change when LiteLLM
   # configuration changes at runtime. This ensures operators can change
   # model selection without restarting Foreman.
@@ -60,7 +61,12 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
       assert default_route.model == "auto"
 
       # Switch to explicit model — route/2 should reflect immediately
-      Application.put_env(:foreman_server, :litellm, Keyword.put(original, :model, "openai:gpt-4o"))
+      Application.put_env(
+        :foreman_server,
+        :litellm,
+        Keyword.put(original, :model, "openai:gpt-4o")
+      )
+
       explicit_route = LitellmRouter.route(:chat)
       assert explicit_route.model == "openai:gpt-4o"
 
@@ -87,6 +93,7 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
         :litellm,
         Keyword.put(original, :endpoint, "https://litellm.internal.example.com")
       )
+
       updated_route = LitellmRouter.route(:chat)
       assert updated_route.endpoint == "https://litellm.internal.example.com"
     end

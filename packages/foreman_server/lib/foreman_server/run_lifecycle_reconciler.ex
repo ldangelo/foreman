@@ -348,7 +348,6 @@ defmodule ForemanServer.RunLifecycleReconciler do
     :ok
   end
 
-
   defp dispatch_slot_release(run_id, reason, state) do
     ms = System.monotonic_time(:millisecond)
 

@@ -297,9 +297,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
   setup :set_mox_global
   setup :verify_on_exit!
+
   setup do
     previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
-
 
     ForemanServer.TestSupport.RunSlotsReset.reset!()
 
@@ -312,7 +312,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         adapter -> Application.put_env(:foreman_server, :worker_adapter, adapter)
       end
     end)
-
 
     Application.put_env(
       :foreman_server,
@@ -1093,10 +1092,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # Default: preserve the worktree after completion so AutoPR can inspect it.
     # A short bounded wait observes the disk is still there.
     Process.sleep(200)
+
     assert File.dir?(worktree_path),
            "default cleanup must preserve worktree at #{worktree_path}"
   end
-
 
   test "cleanup: always removes the run's worktree once the run finalizes" do
     start_schema_cache!()
@@ -1147,7 +1146,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert wait_until_cleaned(worktree_path, 500),
            "worktree #{worktree_path} was not cleaned despite cleanup: always"
   end
-
 
   test "cleanup: never preserves the worktree across the phase" do
     start_schema_cache!()
@@ -1862,17 +1860,17 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       end)
 
     configured ||
-      (AdapterCatalog.routing_snapshot()
-       |> Enum.find_value(fn
-         %{name: name, adapter: adapter, available: true} ->
-           case AdapterCatalog.lookup(name) do
-             {:ok, ^adapter} -> name
-             _ -> nil
-           end
+      AdapterCatalog.routing_snapshot()
+      |> Enum.find_value(fn
+        %{name: name, adapter: adapter, available: true} ->
+          case AdapterCatalog.lookup(name) do
+            {:ok, ^adapter} -> name
+            _ -> nil
+          end
 
-         _ ->
-           nil
-       end))
+        _ ->
+          nil
+      end)
   end
 
   defp start_telemetry_collector(events) do
@@ -2169,7 +2167,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute result in [:slot_queued, :queued, nil],
            "RunAdmission.start returned #{inspect(result)} — seeded run did not start"
   end
-
 
   defp dispatch_system!(type, aggregate_id, payload) do
     command_id = "#{type}:#{aggregate_id}:#{System.unique_integer([:positive])}"
@@ -2489,7 +2486,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     start_run_executor!(run_id, task_id)
 
-
     # Claim lands first.
     assert_receive {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}}, 1_000
 
@@ -2578,7 +2574,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
             "path" => "workspace",
             "cleanup" => "always"
           },
-
           "phases" => [
             %{
               "name" => "implement",
@@ -2610,6 +2605,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                cleanup: "always"
              }
     end
+
     test "falls back to phase_specs == [] when workflow_snapshot is missing or malformed" do
       # Snapshot absent: zero phases is the safe default.
       assert {:ok, state} =

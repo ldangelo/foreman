@@ -117,9 +117,8 @@ defmodule ForemanServer.Agents.VfsIsolationSecurityEventTest do
     # Attempt access outside the worktree — should be denied
     refute VfsIsolation.allowed?("agent-sec", "/etc/passwd")
 
-    assert_receive {:telemetry, ^ref, [:foreman_server, :security, :vfs_denied],
-                   %{count: 1},
-                   %{agent_id: "agent-sec", path: "/etc/passwd", reason: :outside_worktree}}
+    assert_receive {:telemetry, ^ref, [:foreman_server, :security, :vfs_denied], %{count: 1},
+                    %{agent_id: "agent-sec", path: "/etc/passwd", reason: :outside_worktree}}
   end
 
   test "security event emitted when unbound agent tries to access path", %{ref: ref} do
@@ -133,9 +132,8 @@ defmodule ForemanServer.Agents.VfsIsolationSecurityEventTest do
     # No binding — any path is denied
     refute VfsIsolation.allowed?("agent-unbound-sec", "/tmp/somewhere")
 
-    assert_receive {:telemetry, ^ref, [:foreman_server, :security, :vfs_denied],
-                   %{count: 1},
-                   %{agent_id: "agent-unbound-sec", path: "/tmp/somewhere", reason: :no_binding}}
+    assert_receive {:telemetry, ^ref, [:foreman_server, :security, :vfs_denied], %{count: 1},
+                    %{agent_id: "agent-unbound-sec", path: "/tmp/somewhere", reason: :no_binding}}
   end
 
   test "no security event emitted when access is allowed", %{ref: ref} do

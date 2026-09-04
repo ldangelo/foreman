@@ -21,6 +21,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
   defmodule LifecycleStore do
     use Agent
+
     def start_link(opts \\ []) do
       Agent.start_link(fn -> %{} end, Keyword.put_new(opts, :name, __MODULE__))
     end
@@ -289,6 +290,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         adapter -> Application.put_env(:foreman_server, :worker_adapter, adapter)
       end
     end)
+
     previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
 
     Application.put_env(

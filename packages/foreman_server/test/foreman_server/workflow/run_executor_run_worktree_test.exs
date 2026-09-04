@@ -120,6 +120,32 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
+  describe "fetch_project_id/1" do
+    test "nil and empty project_id are both project_id_missing" do
+      assert RunExecutor.__fetch_project_id_for_test__(%{project_id: nil}) ==
+               {:error, :project_id_missing}
+
+      assert RunExecutor.__fetch_project_id_for_test__(%{project_id: ""}) ==
+               {:error, :project_id_missing}
+    end
+
+    test "a non-empty binary project_id is accepted" do
+      assert RunExecutor.__fetch_project_id_for_test__(%{project_id: "proj-1"}) ==
+               {:ok, "proj-1"}
+    end
+
+    # A malformed projection (e.g. `project_id: %{}`) must not reach
+    # `Path.join/1` in `run_worktree_path/3`, which raises rather than
+    # returning an error for a non-binary path segment.
+    test "a non-binary project_id is rejected as malformed, not accepted" do
+      assert RunExecutor.__fetch_project_id_for_test__(%{project_id: %{}}) ==
+               {:error, {:project_id_malformed, %{}}}
+
+      assert RunExecutor.__fetch_project_id_for_test__(%{project_id: :proj}) ==
+               {:error, {:project_id_malformed, :proj}}
+    end
+  end
+
   describe "commit_phase_worktree/4" do
     test "commits what the phase produced, on a checkout with no git identity", %{
       repo: repo,
@@ -388,6 +414,7 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
       # And exactly one worktree was ever created for the run.
       worktrees = git!(repo, ["worktree", "list", "--porcelain"])
+
       assert length(Regex.scan(~r/^worktree /m, worktrees)) == 2,
              "the main checkout plus exactly one run worktree"
 
@@ -508,7 +535,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   end
 
   defp resolve!(repo, ref) do
-    {sha, 0} = System.cmd("git", ["-C", repo, "rev-parse", "--verify", ref], stderr_to_stdout: true)
+    {sha, 0} =
+      System.cmd("git", ["-C", repo, "rev-parse", "--verify", ref], stderr_to_stdout: true)
+
     String.trim(sha)
   end
 

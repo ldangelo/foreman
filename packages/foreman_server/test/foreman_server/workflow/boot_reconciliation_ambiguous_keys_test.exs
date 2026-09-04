@@ -40,6 +40,7 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
 
     on_exit(fn ->
       :telemetry.detach(handler_id)
+
       if :ets.info(:foreman_idempotency_keys) != :undefined do
         :ets.delete_all_objects(:foreman_idempotency_keys)
       end
@@ -52,7 +53,8 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     test "empty ambiguous key list → telemetry fires with zero counts" do
       BootReconciliation.do_reconcile_ambiguous_keys()
 
-      assert_receive {@ambiguous_event, _, measurements, _}, 5_000,
+      assert_receive {@ambiguous_event, _, measurements, _},
+                     5_000,
                      "scan must emit ambiguous_reconciled telemetry"
 
       assert measurements == %{skipped: 0, retried: 0}
@@ -72,7 +74,10 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     test "ambiguous key with side effects → retried = 1, key remediated to :completed" do
       # side_effects_check always returns false → "has side effects" → mark_completed
       # then {:retry, :side_effects_present}.
-      :ets.insert(:foreman_idempotency_keys, {"ambig-has-effects", :ambiguous, %{run_id: "run-x"}})
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {"ambig-has-effects", :ambiguous, %{run_id: "run-x"}}
+      )
 
       side_effects_check = fn _key -> false end
       BootReconciliation.do_reconcile_ambiguous_keys(side_effects_check)
@@ -83,7 +88,6 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       # Verify the key was remediated to :completed.
       assert KeyStore.status("ambig-has-effects") == {:ok, :completed}
     end
-
 
     test "mixed ambiguous keys → counts sum correctly" do
       # 2 no-effects + 1 has-effects
@@ -134,7 +138,8 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       assert result_state.ambiguous_reconciled? == false,
              "ambiguous_reconciled? must remain false when scan is deferred"
 
-      refute_receive {@ambiguous_event, _, _, _}, 100,
+      refute_receive {@ambiguous_event, _, _, _},
+                     100,
                      "no telemetry synchronously when scan is deferred"
 
       {:ok, _} = Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
@@ -147,7 +152,8 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       # The cast is silently dropped (same behaviour as production with a dead process).
       assert :ok = BootReconciliation.scan_ambiguous_keys()
 
-      refute_receive {@ambiguous_event, _, _, _}, 200,
+      refute_receive {@ambiguous_event, _, _, _},
+                     200,
                      "no telemetry when GenServer is not running"
     end
   end

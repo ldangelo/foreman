@@ -43,7 +43,7 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
       assert_eventually(fn ->
         with {:ok, events} <- Store.read_stream_forward(@run_slots_stream, 0, 20),
              %RecordedEvent{event_type: "RunSlotTransferred", data: data}
-               when is_map(data) <- List.last(events) do
+             when is_map(data) <- List.last(events) do
           released = Map.get(data, "released_run_id") || Map.get(data, :released_run_id)
           acquired = Map.get(data, "acquired_run_id") || Map.get(data, :acquired_run_id)
 
@@ -69,7 +69,7 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
       assert_eventually(fn ->
         with {:ok, events} <- Store.read_stream_forward(@run_slots_stream, 0, 20),
              %RecordedEvent{event_type: "RunSlotReleased", data: data}
-               when is_map(data) <- List.last(events) do
+             when is_map(data) <- List.last(events) do
           run_id_str = Map.get(data, "run_id") || Map.get(data, :run_id)
 
           if run_id_str == holder_run_id do

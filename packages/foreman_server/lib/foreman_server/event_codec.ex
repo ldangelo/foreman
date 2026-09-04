@@ -65,27 +65,27 @@ defmodule ForemanServer.EventCodec do
   # Each event source yields {event_type, module, enforce_keys}. Both the
   # type->module registry and the enforced-key lookup come from this single
   # scan, so neither can drift from the structs on disk.
-  @event_specs (@event_sources
-                |> Enum.map(&File.read!/1)
-                |> Enum.filter(&String.contains?(&1, "defstruct"))
-                |> Enum.flat_map(fn body ->
-                  enforce_keys =
-                    case Regex.run(~r/@enforce_keys\s*\[([^\]]*)\]/, body) do
-                      [_full, inner] ->
-                        ~r/:([a-z_][A-Za-z0-9_]*[?!]?)/
-                        |> Regex.scan(inner)
-                        |> Enum.map(fn [_, key] -> String.to_atom(key) end)
+  @event_specs @event_sources
+               |> Enum.map(&File.read!/1)
+               |> Enum.filter(&String.contains?(&1, "defstruct"))
+               |> Enum.flat_map(fn body ->
+                 enforce_keys =
+                   case Regex.run(~r/@enforce_keys\s*\[([^\]]*)\]/, body) do
+                     [_full, inner] ->
+                       ~r/:([a-z_][A-Za-z0-9_]*[?!]?)/
+                       |> Regex.scan(inner)
+                       |> Enum.map(fn [_, key] -> String.to_atom(key) end)
 
-                      nil ->
-                        []
-                    end
+                     nil ->
+                       []
+                   end
 
-                  ~r/defmodule\s+ForemanServer\.Events\.([A-Za-z0-9_]+)\s+do/
-                  |> Regex.scan(body)
-                  |> Enum.map(fn [_full, short_name] ->
-                    {short_name, Module.concat(ForemanServer.Events, short_name), enforce_keys}
-                  end)
-                end))
+                 ~r/defmodule\s+ForemanServer\.Events\.([A-Za-z0-9_]+)\s+do/
+                 |> Regex.scan(body)
+                 |> Enum.map(fn [_full, short_name] ->
+                   {short_name, Module.concat(ForemanServer.Events, short_name), enforce_keys}
+                 end)
+               end)
 
   @registry Map.new(@event_specs, fn {type, module, _keys} -> {type, module} end)
 

@@ -14,9 +14,9 @@ defmodule ForemanServer.Idempotency.IdempotencyKey do
   @statuses [:started, :completed, :ambiguous]
 
   schema "idempotency_keys" do
-    field :status, Ecto.Enum, values: @statuses
-    field :metadata, :map, default: %{}
-    timestamps type: :utc_datetime_usec, updated_at: false
+    field(:status, Ecto.Enum, values: @statuses)
+    field(:metadata, :map, default: %{})
+    timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
   @type t :: %__MODULE__{

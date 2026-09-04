@@ -9,6 +9,7 @@ defmodule ForemanServer.Agents.McpToolSync do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @impl true
   def init(_opts), do: {:ok, %{tool_cache: %{}}}
 
   def sync(server_ids), do: GenServer.call(__MODULE__, {:sync, server_ids})

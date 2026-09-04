@@ -28,7 +28,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
   def initial_state, do: %State{messages: %{}}
 
   @impl true
-  def apply_event(state, %InboxMessageAppended{} = event) do
+  def apply_event(%State{} = state, %InboxMessageAppended{} = event) do
     message = %Message{
       message_id: event.message_id,
       body: event.body,
@@ -38,10 +38,10 @@ defmodule ForemanServer.Aggregates.InboxThread do
     %State{state | messages: Map.put(state.messages, event.message_id, message)}
   end
 
-  def apply_event(state, %InboxDeliveryUpdated{} = event) do
+  def apply_event(%State{} = state, %InboxDeliveryUpdated{} = event) do
     updated_message =
       case Map.fetch(state.messages, event.message_id) do
-        {:ok, existing} ->
+        {:ok, %Message{} = existing} ->
           %Message{
             existing
             | delivery_status: event.delivery_status,
@@ -59,29 +59,36 @@ defmodule ForemanServer.Aggregates.InboxThread do
     %State{state | messages: Map.put(state.messages, event.message_id, updated_message)}
   end
 
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     # Handle raw map events from event store replay (string keys)
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
       "InboxMessageAppended" ->
-        message_id = Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id")
-        body = Aggregate.get(payload, :body) || Aggregate.get(payload, "body")
-        metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
+        message_id = Aggregate.get(payload, :message_id)
+        body = Aggregate.get(payload, :body)
+        metadata = Aggregate.get(payload, :metadata) || %{}
 
         message = %Message{message_id: message_id, body: body, metadata: metadata}
         %State{state | messages: Map.put(state.messages, message_id, message)}
 
       "InboxDeliveryUpdated" ->
-        message_id = Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id")
-        status = Aggregate.get(payload, :delivery_status) || Aggregate.get(payload, "delivery_status")
-        metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
+        message_id = Aggregate.get(payload, :message_id)
+        status = Aggregate.get(payload, :delivery_status)
+        metadata = Aggregate.get(payload, :metadata) || %{}
 
-        updated_message = %Message{
-          message_id: message_id,
-          delivery_status: status,
-          metadata: metadata
-        }
+        updated_message =
+          case Map.fetch(state.messages, message_id) do
+            {:ok, %Message{} = existing} ->
+              %Message{
+                existing
+                | delivery_status: status,
+                  metadata: Map.merge(existing.metadata, metadata)
+              }
+
+            :error ->
+              %Message{message_id: message_id, delivery_status: status, metadata: metadata}
+          end
 
         %State{state | messages: Map.put(state.messages, message_id, updated_message)}
 
@@ -92,11 +99,14 @@ defmodule ForemanServer.Aggregates.InboxThread do
 
   @impl true
   def handle_command(state, %{type: "inbox.send", payload: payload}) do
-    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id) || Aggregate.get(payload, "run_id"), :run_id),
-         {:ok, message_id} <- Aggregate.required_binary(Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id"), :message_id),
-         {:ok, body} <- Aggregate.required_binary(Aggregate.get(payload, :body) || Aggregate.get(payload, "body"), :body),
+    with {:ok, run_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, message_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :message_id), :message_id),
+         {:ok, body} <-
+           Aggregate.required_binary(Aggregate.get(payload, :body), :body),
          :ok <- require_absent(state, message_id) do
-      metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
+      metadata = Aggregate.get(payload, :metadata) || %{}
 
       {:ok,
        %InboxMessageAppended{
@@ -109,11 +119,14 @@ defmodule ForemanServer.Aggregates.InboxThread do
   end
 
   def handle_command(state, %{type: "inbox.delivery.update", payload: payload}) do
-    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id) || Aggregate.get(payload, "run_id"), :run_id),
-         {:ok, message_id} <- Aggregate.required_binary(Aggregate.get(payload, :message_id) || Aggregate.get(payload, "message_id"), :message_id),
-         {:ok, status} <- Aggregate.required_binary(Aggregate.get(payload, :delivery_status) || Aggregate.get(payload, "delivery_status"), :delivery_status),
+    with {:ok, run_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, message_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :message_id), :message_id),
+         {:ok, status} <-
+           Aggregate.required_binary(Aggregate.get(payload, :delivery_status), :delivery_status),
          :ok <- require_message(state, message_id) do
-      metadata = Aggregate.get(payload, :metadata) || Aggregate.get(payload, "metadata") || %{}
+      metadata = Aggregate.get(payload, :metadata) || %{}
 
       {:ok,
        %InboxDeliveryUpdated{

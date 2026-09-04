@@ -56,7 +56,8 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
 
       case File.rm(path) do
         :ok -> {:cont, {:ok, [path | paths]}}
-        {:error, :enoent} -> {:cont, {:ok, paths}}  # already absent — idempotent
+        # already absent — idempotent
+        {:error, :enoent} -> {:cont, {:ok, paths}}
         {:error, reason} -> {:halt, {:error, {:remove_failed, path, reason}}}
       end
     end)
@@ -87,6 +88,7 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
       {:ok, []}
     end
   end
+
   @spec fetch_remote([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def fetch_remote(opts) when is_list(opts) do
     with {:ok, remote_url} <- remote_url(opts),

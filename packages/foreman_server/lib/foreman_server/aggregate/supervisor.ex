@@ -30,7 +30,7 @@ defmodule ForemanServer.Aggregator do
   end
 
   @doc "Start (or look up) a supervised aggregate actor for aggregate_id."
-  @spec start_aggregate(module, aggregate_id :: String.t()) :: {:ok, pid()}
+  @spec start_aggregate(module, aggregate_id :: String.t()) :: {:ok, pid()} | {:error, term()}
   def start_aggregate(aggregate_module, aggregate_id) do
     # Check if already running first (avoids Supervisor.start_child overhead for the common case).
     case Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id) do
@@ -52,6 +52,7 @@ defmodule ForemanServer.Aggregator do
     case Supervisor.start_child(__MODULE__, child_spec) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
+      {:error, reason} -> {:error, reason}
     end
   end
 end

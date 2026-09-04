@@ -19,14 +19,14 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @spec emit_cmd_span(String.t(), String.t(), non_neg_integer()) :: :ok
   def emit_cmd_span(agent_id, action_name, duration_us)
       when is_binary(agent_id) and is_binary(action_name) and is_integer(duration_us) do
-    OpenTelemetry.Tracer.with_span(
-      "jido.cmd",
-      %{attributes: %{
-        "jido.agent_id" => agent_id,
-        "jido.action" => action_name,
-        "duration_us" => duration_us
-      }}
-    ) do
+    OpenTelemetry.Tracer.with_span "jido.cmd",
+                                   %{
+                                     attributes: %{
+                                       "jido.agent_id" => agent_id,
+                                       "jido.action" => action_name,
+                                       "duration_us" => duration_us
+                                     }
+                                   } do
       :ok
     end
   end
@@ -38,15 +38,15 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @spec emit_llm_span(String.t(), non_neg_integer(), number(), String.t()) :: :ok
   def emit_llm_span(model, token_count, cost_usd, routing_reason)
       when is_binary(model) and is_integer(token_count) and is_binary(routing_reason) do
-    OpenTelemetry.Tracer.with_span(
-      "jido.llm",
-      %{attributes: %{
-        "llm.model" => model,
-        "llm.tokens" => token_count,
-        "llm.cost_usd" => cost_usd,
-        "llm.routing_reason" => routing_reason
-      }}
-    ) do
+    OpenTelemetry.Tracer.with_span "jido.llm",
+                                   %{
+                                     attributes: %{
+                                       "llm.model" => model,
+                                       "llm.tokens" => token_count,
+                                       "llm.cost_usd" => cost_usd,
+                                       "llm.routing_reason" => routing_reason
+                                     }
+                                   } do
       :ok
     end
   end
@@ -58,14 +58,14 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @spec emit_signal_span(String.t(), String.t(), String.t()) :: :ok
   def emit_signal_span(signal_type, topic, delivery_status)
       when is_binary(signal_type) and is_binary(topic) and is_binary(delivery_status) do
-    OpenTelemetry.Tracer.with_span(
-      "jido.signal",
-      %{attributes: %{
-        "signal.type" => signal_type,
-        "signal.topic" => topic,
-        "signal.delivery_status" => delivery_status
-      }}
-    ) do
+    OpenTelemetry.Tracer.with_span "jido.signal",
+                                   %{
+                                     attributes: %{
+                                       "signal.type" => signal_type,
+                                       "signal.topic" => topic,
+                                       "signal.delivery_status" => delivery_status
+                                     }
+                                   } do
       :ok
     end
   end

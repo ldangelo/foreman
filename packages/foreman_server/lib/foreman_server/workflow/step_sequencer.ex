@@ -4,7 +4,6 @@ defmodule ForemanServer.Workflow.StepSequencer do
   TRD-2026-4212be7e / WFD-T003 / TRD-066.
   """
   require Logger
-  @terminal_states [:completed, :failed, :blocked]
 
   @doc """
   Propagate terminal status from previous step to next step.
@@ -15,9 +14,11 @@ defmodule ForemanServer.Workflow.StepSequencer do
       prev_status == :failed ->
         Logger.warning("Previous step failed; not running #{inspect(next_step)}")
         {:halt, :failed}
+
       prev_status == :blocked ->
         Logger.warning("Previous step blocked; not running #{inspect(next_step)}")
         {:halt, :blocked}
+
       true ->
         {:cont, nil}
     end
@@ -38,6 +39,7 @@ defmodule ForemanServer.Workflow.StepSequencer do
       case propagate_terminal(prev_status, step) do
         {:halt, terminal} ->
           {:halt, {:halted, terminal, step}}
+
         {:cont, _} ->
           {:cont, {:ok, :completed}}
       end

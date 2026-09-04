@@ -45,7 +45,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   alias ForemanServer.Agents.JidoSignalTopics
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Agents.SignalDirectivePublisher
-  alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted, Poller}
+  alias ForemanServer.Inbox.{InboxItemStarted, Poller}
 
   ## Public API
 
@@ -87,28 +87,48 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   """
   @spec build_directive(InboxItemStarted.t()) :: struct() | nil
   def build_directive(%InboxItemStarted{payload: payload} = event) do
-    agent_id = Map.get(payload, "agent_id") || Map.get(payload, :agent_id)
-
-    if is_binary(agent_id) and agent_id != "" do
+    with {:ok, agent_id} <- canonical_field(payload, :agent_id),
+         true <- is_binary(agent_id) and agent_id != "",
+         {:ok, question} <- canonical_field(payload, :question),
+         {:ok, options} <- canonical_field(payload, :options) do
       {:ok, signal} =
         Jido.Signal.new(
           JidoSignalTopics.agent_directive(agent_id),
           %{
             "query_id" => event.correlation_id,
-            "question" => Map.get(payload, "question") || Map.get(payload, :question),
-            "options" =>
-              Map.get(payload, "options") || Map.get(payload, :options) || %{}
+            "question" => question,
+            "options" => options || %{}
           },
           source: "foreman.operator_directive_projector"
         )
 
       signal
     else
-      Logger.warning(
-        "OperatorDirectiveProjector.build_directive: no agent_id in payload, skipping: #{inspect(payload)}"
-      )
+      _ ->
+        Logger.warning(
+          "OperatorDirectiveProjector.build_directive: no agent_id, or conflicting " <>
+            "atom/string payload keys, skipping: #{inspect(payload)}"
+        )
 
-      nil
+        nil
+    end
+  end
+
+  # Read a field that may arrive as either an atom or a string key
+  # (Jido's data round-trip is not key-convention-stable). Uses
+  # Map.fetch/2 rather than Map.get/2 so a key present with an explicit
+  # `nil` value is distinguished from an absent key. Returns the shared
+  # value when only one representation is present or both agree
+  # (including both explicitly `nil`); returns `:error` when both are
+  # present with differing values, so a conflicting payload is dropped
+  # rather than silently resolved by picking one representation.
+  defp canonical_field(payload, atom_key) do
+    case {Map.fetch(payload, atom_key), Map.fetch(payload, Atom.to_string(atom_key))} do
+      {{:ok, value}, :error} -> {:ok, value}
+      {:error, {:ok, value}} -> {:ok, value}
+      {:error, :error} -> {:ok, nil}
+      {{:ok, value}, {:ok, value}} -> {:ok, value}
+      {{:ok, _}, {:ok, _}} -> :error
     end
   end
 
@@ -133,6 +153,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   @impl true
   def init(opts) do
     bus = Keyword.get(opts, :bus, :default)
+
     case attach(self()) do
       :ok ->
         {:ok, %{bus: bus}}
@@ -147,7 +168,10 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   end
 
   @impl true
-  def handle_info({:inbox_item_started, _handler, %InboxItemStarted{} = event}, %{bus: bus} = state) do
+  def handle_info(
+        {:inbox_item_started, _handler, %InboxItemStarted{} = event},
+        %{bus: bus} = state
+      ) do
     publish(event, bus)
     {:noreply, state}
   end

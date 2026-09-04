@@ -22,6 +22,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
     @impl true
     def capabilities,
       do: %{type: :cli, strengths: [:general], weaknesses: [], supported_contexts: [:code]}
+
     @impl true
     def available?, do: true
     @impl true
@@ -127,7 +128,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       result = Tools.call_tool("foreman_task_create", params)
 
       assert result ==
-               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:task_not_found, \"task-123\"}"}}
+               {:error,
+                %ToolError{code: "DOMAIN_ERROR", message: "{:task_not_found, \"task-123\"}"}}
     end
 
     test "maps invalid_envelope errors to MCP tool errors" do
@@ -146,7 +148,10 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       assert result ==
                {:error,
-                %ToolError{code: "DOMAIN_ERROR", message: "{:invalid_envelope, :missing_project_id}"}}
+                %ToolError{
+                  code: "DOMAIN_ERROR",
+                  message: "{:invalid_envelope, :missing_project_id}"
+                }}
     end
   end
 
@@ -177,7 +182,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       result = Tools.call_tool("foreman_run_cancel", params)
 
       assert result ==
-               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:run_not_found, \"run-789\"}"}}
+               {:error,
+                %ToolError{code: "DOMAIN_ERROR", message: "{:run_not_found, \"run-789\"}"}}
     end
 
     test "maps command_not_allowed errors to MCP tool errors" do
@@ -191,7 +197,10 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       assert result ==
                {:error,
-                %ToolError{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"run.cancel\"}"}}
+                %ToolError{
+                  code: "DOMAIN_ERROR",
+                  message: "{:command_not_allowed, \"run.cancel\"}"
+                }}
     end
   end
 end

@@ -1,4 +1,3 @@
-
 defmodule ForemanServer.TaskProviders.BeadsAdapterSetPriorityTest do
   use ExUnit.Case, async: false
 

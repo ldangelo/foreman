@@ -87,6 +87,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
       when is_map(payload) do
     handle_submit_payload(payload)
   end
+
   def handle_command(state, %{type: type, payload: payload})
       when is_struct(state, State) do
     case {type, state.status} do
@@ -95,7 +96,10 @@ defmodule ForemanServer.Aggregates.WorkRequest do
 
       {"work.submit", :submitted} ->
         work_id = Map.get(payload, "work_id") || Map.get(payload, :work_id)
-        if state.work_id == work_id, do: {:ok, nil}, else: {:error, {:already_submitted, state.work_id}}
+
+        if state.work_id == work_id,
+          do: {:ok, nil},
+          else: {:error, {:already_submitted, state.work_id}}
 
       {"work.execution_complete", _} ->
         handle_execution_complete(state, payload)
@@ -126,12 +130,16 @@ defmodule ForemanServer.Aggregates.WorkRequest do
           EventStore.UUID.uuid4()
 
       work_id = Map.get(payload, "work_id") || Map.get(payload, :work_id)
+
       run_id =
         Map.get(payload, "run_id") || Map.get(payload, :run_id) ||
           Identity.run_id(work_id, submission_id)
 
       project_id = Map.get(payload, "project_id") || Map.get(payload, :project_id)
-      workflow_snapshot = Map.get(payload, "workflow_snapshot") || Map.get(payload, :workflow_snapshot)
+
+      workflow_snapshot =
+        Map.get(payload, "workflow_snapshot") || Map.get(payload, :workflow_snapshot)
+
       backend = Map.get(payload, "backend") || Map.get(payload, :backend)
 
       workflow =
@@ -275,7 +283,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   end
 
   # Called by apply_event/2 — kept private for use in tests (struct pattern matching).
-  defp apply_work_submitted(state, payload) do
+  defp apply_work_submitted(%State{} = state, payload) do
     %State{
       state
       | work_id: Aggregate.get(payload, :work_id),
@@ -289,7 +297,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     }
   end
 
-  defp apply_work_cancelled(state, payload) do
+  defp apply_work_cancelled(%State{} = state, _payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
@@ -298,7 +306,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     %State{state | status: :cancelled}
   end
 
-  defp apply_work_execution_complete(state, payload) do
+  defp apply_work_execution_complete(%State{} = state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
@@ -308,7 +316,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     %State{state | status: :succeeded}
   end
 
-  defp apply_work_execution_failed(state, payload) do
+  defp apply_work_execution_failed(%State{} = state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 

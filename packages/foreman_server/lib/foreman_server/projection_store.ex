@@ -581,20 +581,6 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
-  end
-
-  defp broadcast_events(state, events) do
-    for event <- events,
-        pid <- Map.keys(state.subscribers) do
-      send(pid, {:projection_event, event})
-    end
-
-    state
-  end
-
-  @impl true
   def handle_call({:pr_association, run_id}, _from, state) do
     case Map.get(state.pr_associations, run_id) do
       nil -> {:reply, {:error, :not_found}, state}
@@ -749,6 +735,20 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
 
     {:reply, orphans, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+  end
+
+  defp broadcast_events(state, events) do
+    for event <- events,
+        pid <- Map.keys(state.subscribers) do
+      send(pid, {:projection_event, event})
+    end
+
+    state
   end
 
   # -------------------------------------------------------------------------
@@ -1068,23 +1068,6 @@ defmodule ForemanServer.ProjectionStore do
 
       _ ->
         touch_run_for_payload(state, payload)
-    end
-  end
-
-  defp append_phase_id_to_run(state, run_id, phase_id) do
-    case Map.get(state.runs, run_id) do
-      nil ->
-        state
-
-      run ->
-        existing = Map.get(run, :phase_ids, [])
-
-        if phase_id in existing do
-          state
-        else
-          updated = %{run | phase_ids: existing ++ [phase_id]}
-          %{state | runs: Map.put(state.runs, run_id, updated)}
-        end
     end
   end
 
@@ -1694,7 +1677,7 @@ defmodule ForemanServer.ProjectionStore do
         run_id: run_id,
         submission_id: submission_id,
         backend: backend
-      } = event
+      }
       when not is_nil(work_id) and work_id != "" ->
         work = %{
           work_id: work_id,
@@ -1762,6 +1745,23 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state
+
+  defp append_phase_id_to_run(state, run_id, phase_id) do
+    case Map.get(state.runs, run_id) do
+      nil ->
+        state
+
+      run ->
+        existing = Map.get(run, :phase_ids, [])
+
+        if phase_id in existing do
+          state
+        else
+          updated = %{run | phase_ids: existing ++ [phase_id]}
+          %{state | runs: Map.put(state.runs, run_id, updated)}
+        end
+    end
+  end
 
   defp update_intent(state, payload, status) do
     intent_id = get(payload, :intent_id)

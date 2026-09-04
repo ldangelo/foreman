@@ -49,9 +49,10 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
     test "ambiguous key: side-effects check decides within 30s" do
       :ok = KeyStore.mark_ambiguous("k-resume-ambiguous")
 
-      {time_us, result} = :timer.tc(fn ->
-        CrashRecovery.reconcile("k-resume-ambiguous", fn _ -> true end)
-      end)
+      {time_us, result} =
+        :timer.tc(fn ->
+          CrashRecovery.reconcile("k-resume-ambiguous", fn _ -> true end)
+        end)
 
       time_ms = div(time_us, 1000)
 
@@ -65,9 +66,10 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
     test "completed key: skip decision within 30s (fastest path)" do
       :ok = KeyStore.mark_completed("k-resume-completed")
 
-      {time_us, result} = :timer.tc(fn ->
-        CrashRecovery.reconcile("k-resume-completed")
-      end)
+      {time_us, result} =
+        :timer.tc(fn ->
+          CrashRecovery.reconcile("k-resume-completed")
+        end)
 
       time_ms = div(time_us, 1000)
 
@@ -78,9 +80,10 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
     end
 
     test "fresh key: retry decision within 30s (no prior state)" do
-      {time_us, result} = :timer.tc(fn ->
-        CrashRecovery.reconcile("k-resume-fresh-#{:rand.uniform(1_000_000)}")
-      end)
+      {time_us, result} =
+        :timer.tc(fn ->
+          CrashRecovery.reconcile("k-resume-fresh-#{:rand.uniform(1_000_000)}")
+        end)
 
       time_ms = div(time_us, 1000)
 
@@ -93,9 +96,10 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
     test "started-but-unknown key: retry within 30s" do
       :ok = KeyStore.mark_started("k-resume-started")
 
-      {time_us, result} = :timer.tc(fn ->
-        CrashRecovery.reconcile("k-resume-started")
-      end)
+      {time_us, result} =
+        :timer.tc(fn ->
+          CrashRecovery.reconcile("k-resume-started")
+        end)
 
       time_ms = div(time_us, 1000)
 

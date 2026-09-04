@@ -101,6 +101,7 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
 
         result = RunAdmission.start(project_id, lease_payload(run_id, task_id))
         assert {:ok, _} = result
+
         refute result in [{:ok, :queued}, {:ok, :slot_queued}],
                "RunAdmission.start returned #{inspect(result)} — slot/lease phase did not proceed"
 
@@ -135,7 +136,7 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
 
       acquired_run_ids =
         for %{event_type: "RunSlotAcquired", data: data} <- events,
-            run_id = (Map.get(data, "run_id") || Map.get(data, :run_id)),
+            run_id = Map.get(data, "run_id") || Map.get(data, :run_id),
             do: run_id
 
       assert acquired_run_ids == run_ids

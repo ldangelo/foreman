@@ -42,6 +42,7 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriberTest do
       assert TaskMetadataQuerySubscriber.query_topic() == "com.foreman.query.task_metadata.*"
     end
   end
+
   describe "handle_query/3" do
     test "returns the projection map when present" do
       task = %{id: "task-present-1", title: "Implement Jido", status: "ready", priority: 2}
@@ -86,6 +87,7 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriberTest do
       {:ok, _rb} = Jido.Signal.Bus.start_link(name: response_bus)
 
       name = :"TestSubscriber.#{:erlang.unique_integer()}"
+
       start_supervised!(
         {TaskMetadataQuerySubscriber,
          [

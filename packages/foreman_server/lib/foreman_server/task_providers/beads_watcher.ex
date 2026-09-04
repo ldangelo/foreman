@@ -490,9 +490,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       :transient ->
         {%{state | partial_line: line}, :transient}
-
-      other ->
-        {%{state | partial_line: line}, {:unknown, other}}
     end
   end
 
@@ -553,9 +550,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         )
 
         :malformed
-
-      :transient ->
-        :transient
     end
   end
 

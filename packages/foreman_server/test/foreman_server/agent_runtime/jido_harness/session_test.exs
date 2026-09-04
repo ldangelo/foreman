@@ -2,7 +2,15 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.AgentRuntime.JidoHarness.Session
-  alias Jido.Harness.{Adapter, AdapterSpec, Capabilities, Event, ProviderStatus, SessionTransportSpec}
+
+  alias Jido.Harness.{
+    Adapter,
+    AdapterSpec,
+    Capabilities,
+    Event,
+    ProviderStatus,
+    SessionTransportSpec
+  }
 
   defmodule Stub do
     @moduledoc false
@@ -62,11 +70,17 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
     original_config = Application.get_env(:jido_harness, :provider_config)
     original_default = Application.get_env(:jido_harness, :default_provider)
 
-    journal_dir = Path.join(System.tmp_dir!(), "foreman-session-test-#{System.unique_integer([:positive])}")
+    journal_dir =
+      Path.join(System.tmp_dir!(), "foreman-session-test-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(journal_dir)
 
     Application.put_env(:jido_harness, :providers, %{pi: Stub})
-    Application.put_env(:jido_harness, :provider_config, %{pi: %{retention: %{journal_dir: journal_dir}}})
+
+    Application.put_env(:jido_harness, :provider_config, %{
+      pi: %{retention: %{journal_dir: journal_dir}}
+    })
+
     Application.delete_env(:jido_harness, :default_provider)
 
     on_exit(fn ->
@@ -130,12 +144,15 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
       assert second.text == "fixture-ok"
     end
   end
+
   defp await_idle(session_id), do: await_idle(session_id, 100)
   defp await_idle(_session_id, 0), do: {:error, :timeout}
 
   defp await_idle(session_id, attempts) do
     case Jido.Harness.Session.info(session_id) do
-      {:ok, %{state: :idle}} -> :ok
+      {:ok, %{state: :idle}} ->
+        :ok
+
       _other ->
         Process.sleep(10)
         await_idle(session_id, attempts - 1)
@@ -145,7 +162,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
   defp cleanup_sessions do
     Jido.Harness.Session.list()
     |> Enum.each(fn info ->
-      unless Jido.Harness.SessionInfo.terminal?(info), do: Jido.Harness.Session.close(info.session_id)
+      unless Jido.Harness.SessionInfo.terminal?(info),
+        do: Jido.Harness.Session.close(info.session_id)
+
       Jido.Harness.Session.prune(info.session_id)
     end)
   end
@@ -161,7 +180,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
   defp cleanup_processes do
     Jido.Harness.Process.list()
     |> Enum.each(fn info ->
-      unless Jido.Harness.ProcessInfo.terminal?(info), do: Jido.Harness.Process.kill(info.process_id)
+      unless Jido.Harness.ProcessInfo.terminal?(info),
+        do: Jido.Harness.Process.kill(info.process_id)
+
       _ = Jido.Harness.Process.await(info.process_id, 2_000)
       Jido.Harness.Process.prune(info.process_id)
     end)

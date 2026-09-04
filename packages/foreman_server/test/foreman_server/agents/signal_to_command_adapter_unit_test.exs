@@ -180,7 +180,7 @@ defmodule ForemanServer.Agents.SignalToCommandAdapterUnitTest do
                SignalToCommandAdapter.normalize(nil)
 
       assert {:error, {:invalid_cloud_event, :not_a_map}} =
-               SignalToCommandAdapter.normalize([a: 1])
+               SignalToCommandAdapter.normalize(a: 1)
     end
   end
 

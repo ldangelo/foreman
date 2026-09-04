@@ -50,7 +50,8 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
            ]}
 
         "fail" ->
-          {:ok, [Event.new!(provider: :pi, type: :run_failed, payload: %{"error" => "stub failure"})]}
+          {:ok,
+           [Event.new!(provider: :pi, type: :run_failed, payload: %{"error" => "stub failure"})]}
       end
     end
   end
@@ -62,7 +63,12 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     original_path = System.get_env("PATH")
     baseline_runs = MapSet.new(Enum.map(Jido.Harness.Run.list(), & &1.run_id))
 
-    tmp_dir = Path.join(System.tmp_dir!(), "jido-harness-adapter-test-#{System.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "jido-harness-adapter-test-#{System.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(tmp_dir)
     write_executable!(Path.join(tmp_dir, "pi"), "#!/bin/sh\nexit 0\n")
 
@@ -86,6 +92,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
       catch
         :error, _ -> :ok
       end
+
       prune_new_runs(baseline_runs)
       File.rm_rf!(tmp_dir)
     end)
@@ -114,15 +121,18 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     assert JidoHarnessAdapter.available?()
   end
 
-
-
   test "available?/0 returns false when enabled but no provider reports installed",
        %{original_path: original_path} do
     # ReadinessCheck probes Jido.Harness.status/1. Flip the :pi stub
     # marker to not-installed; empty PATH so the built-in :claude adapter
     # (Registry merges @builtins with the test override) also reports
     # not-installed.
-    empty_dir = Path.join(System.tmp_dir!(), "jido-harness-adapter-empty-#{System.unique_integer([:positive])}")
+    empty_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "jido-harness-adapter-empty-#{System.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(empty_dir)
     :persistent_term.put({Stub, :installed}, false)
 
@@ -135,7 +145,9 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     end
   end
 
-  test "execute/2 returns normalized success metadata and forwards cwd/env/runtime timeout", %{tmp_dir: tmp_dir} do
+  test "execute/2 returns normalized success metadata and forwards cwd/env/runtime timeout", %{
+    tmp_dir: tmp_dir
+  } do
     request = %{prompt: "ping", context: %{provider: :pi, working_directory: tmp_dir}}
 
     assert {:ok, "pong", %{provider: :pi, adapter: :jido_harness}} =
@@ -198,8 +210,6 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     assert JidoHarnessAdapter.execute(request, []) == {:error, :unsupported_provider}
   end
 
-
-
   test "execute/2 returns {:error, :backend_unavailable} when the requested provider is not installed" do
     # ReadinessCheck.installed?/1 probes Jido.Harness.status/1; flip the
     # stub marker so :pi reports not-installed.
@@ -214,13 +224,16 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     # Create a fake `pi` binary in PATH so :pi is "installed" but :claude is not.
     # This proves the per-provider check uses ReadinessCheck.installed?(provider)
     # and not the OR-check in available?/0.
-    tmp = Path.join(System.tmp_dir!(), "jido-harness-pi-only-#{System.unique_integer([:positive])}")
+    tmp =
+      Path.join(System.tmp_dir!(), "jido-harness-pi-only-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(tmp)
     File.write!(Path.join(tmp, "pi"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(tmp, "pi"), 0o755)
 
     try do
       System.put_env("PATH", tmp)
+
       assert JidoHarnessAdapter.execute(%{prompt: "ping", context: %{provider: :claude}}, []) ==
                {:error, :backend_unavailable}
     after
@@ -238,7 +251,8 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
 
     request = %{prompt: "ping", context: %{provider: :pi}}
 
-    assert {:ok, "pong", %{provider: :pi, adapter: :jido_harness}} = JidoHarnessAdapter.execute(request, [])
+    assert {:ok, "pong", %{provider: :pi, adapter: :jido_harness}} =
+             JidoHarnessAdapter.execute(request, [])
 
     assert_receive {:telemetry_event, [:foreman, :dispatch, :run, :stop], measurements, metadata}
     assert is_integer(measurements.duration_ms)
@@ -254,9 +268,14 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     handler_id = "jido-harness-adapter-test-#{System.unique_integer([:positive, :monotonic])}"
 
     :ok =
-      :telemetry.attach_many(handler_id, events, fn event, measurements, metadata, owner ->
-        send(owner, {:telemetry_event, event, measurements, metadata})
-      end, pid)
+      :telemetry.attach_many(
+        handler_id,
+        events,
+        fn event, measurements, metadata, owner ->
+          send(owner, {:telemetry_event, event, measurements, metadata})
+        end,
+        pid
+      )
 
     handler_id
   end

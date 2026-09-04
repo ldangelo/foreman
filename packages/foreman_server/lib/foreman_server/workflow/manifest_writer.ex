@@ -66,9 +66,10 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   # anything else is named here rather than crashing three calls later.
   defp validate_required_keys(manifest) do
     cond do
-      missing = Enum.find(@required_top_level_keys, fn key ->
-                  not Map.has_key?(manifest, key) or blank?(manifest[key])
-                end) ->
+      missing =
+          Enum.find(@required_top_level_keys, fn key ->
+            not Map.has_key?(manifest, key) or blank?(manifest[key])
+          end) ->
         {:error, {:unsupported_construct, {:missing_required, missing}}}
 
       is_float(manifest["name"]) ->
@@ -116,9 +117,14 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
         {key, value} when is_map(value) ->
           case validate_nested_map(value) do
-            :ok -> false
-            :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
-            {:float_value, inner} -> {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
+            :ok ->
+              false
+
+            :deep_nesting ->
+              {:error, {:unsupported_construct, {:deep_nesting, key}}}
+
+            {:float_value, inner} ->
+              {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
           end
       end)
 
@@ -203,11 +209,16 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
       {key, %{} = v} ->
         case validate_nested_map(v) do
-          :ok -> false
+          :ok ->
+            false
+
           # Was `_key`, which Elixir binds but warns about when read: the
           # warning was live for the life of this clause.
-          :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
-          {:float_value, inner} -> {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
+          :deep_nesting ->
+            {:error, {:unsupported_construct, {:deep_nesting, key}}}
+
+          {:float_value, inner} ->
+            {:error, {:unsupported_construct, {:float_value, "#{key}.#{inner}"}}}
         end
 
       {key, value} when is_list(value) ->

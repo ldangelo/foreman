@@ -9,7 +9,6 @@ defmodule ForemanServer.AgentRuntime.Router do
   """
 
   alias ForemanServer.AgentRuntime.AdapterCatalog
-  alias ForemanServer.AgentRuntime.BackendAdapter
   @type backend_name :: atom()
   @type adapter :: module()
 
@@ -99,8 +98,8 @@ defmodule ForemanServer.AgentRuntime.Router do
   Returns `{:ok, adapter_module}` or `{:error, :no_available_backend}`.
   """
   @spec automatic(map(), keyword()) :: {:ok, adapter()} | {:error, :no_available_backend}
-  def automatic(_request, opts \\ []) do
-    case automatic_candidates(_request, opts) do
+  def automatic(request, opts \\ []) do
+    case automatic_candidates(request, opts) do
       {:ok, []} -> {:error, :no_available_backend}
       {:ok, [{adapter, _} | _]} -> {:ok, adapter}
       {:error, _} = err -> err

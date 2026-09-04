@@ -284,6 +284,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     {"Beads updated issue payload failed schema validation.",
      "Refresh the cached schema or re-fetch the Beads payload."}
   end
+
   defp templates_for("SCHEMA_VALIDATION_FAILED") do
     {"Beads JSON payload failed schema validation.",
      "Refresh the cached schema or re-fetch the Beads payload."}
@@ -361,7 +362,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
   @create_known_codes ~w(INVALID_TITLE INVALID_PRIORITY INVALID_ISSUE_TYPE DUPLICATE_TASK_ID)
 
   defp create_known_code?(code) when is_binary(code), do: code in @create_known_codes
-  defp create_known_code?(_), do: false
 
   defp classify_create_error(%ProviderErrorInput{} = input) do
     case {normalize_code(input.code), hint_string(input)} do

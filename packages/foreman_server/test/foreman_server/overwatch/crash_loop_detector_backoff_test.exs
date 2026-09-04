@@ -145,8 +145,10 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
         assert Map.get(attempt_count, {worker_id, run_id}) == attempt
 
         status = CrashLoopDetector.status(detector)
+
         assert {worker_id, run_id} not in status.crashed,
                "attempt #{attempt}: should NOT be crashed yet"
+
         assert {worker_id, run_id} not in status.paused,
                "attempt #{attempt}: should NOT be paused yet"
       end
@@ -159,11 +161,13 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
 
       # WorkerCrashed must be emitted exactly once.
       worker_events = read_worker_events(worker_id, run_id)
+
       assert count(worker_events, "WorkerCrashed") == 1,
              "expected exactly 1 WorkerCrashed, got #{count(worker_events, "WorkerCrashed")}"
 
       # Run aggregate must have RunBlocked (run.block).
       run_events = read_run_events(run_id)
+
       assert count(run_events, "RunBlocked") == 1,
              "expected exactly 1 RunBlocked, got #{count(run_events, "RunBlocked")}"
 
@@ -210,6 +214,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       end
 
       worker_events = read_worker_events(worker_id, run_id)
+
       assert count(worker_events, "WorkerCrashed") == 1,
              "expected exactly 1 WorkerCrashed even after additional crashes"
     end
@@ -259,6 +264,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       Process.sleep(50)
 
       pending = CrashLoopDetector.pending_timers(detector)
+
       assert Map.has_key?(pending, {worker_id, run_id}),
              "pending timer should be registered after crash 1"
 
@@ -302,10 +308,12 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       # - incrementing the attempt counter
       # - emitting any WorkerCrashed
       attempt_count = CrashLoopDetector.attempt_count(detector)
+
       assert Map.get(attempt_count, key) == nil,
              "backoff_expired should NOT increment attempt_count"
 
       status = CrashLoopDetector.status(detector)
+
       assert {worker_id, run_id} not in status.crashed,
              "backoff_expired should NOT trigger crash"
     end
@@ -360,6 +368,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       # Attempt count is reset (pending timers don't survive restart —
       # this is correct; a fresh restart must re-evaluate from scratch).
       attempt_after = CrashLoopDetector.attempt_count()
+
       assert Map.get(attempt_after, {worker_id, run_id}) == nil,
              "attempt_count does not survive GenServer restart"
     end

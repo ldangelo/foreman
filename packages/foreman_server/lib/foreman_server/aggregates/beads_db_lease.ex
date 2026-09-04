@@ -121,7 +121,6 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     end
   end
 
-
   def handle_command(state, %{type: "lease.release"} = command) do
     payload = Map.get(command, :payload) || %{}
 
@@ -162,7 +161,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def apply_event(state, %BeadsDbLeaseAcquired{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseAcquired{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -177,7 +176,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseReleased{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseReleased{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -188,7 +187,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseWaiterRegistered{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseWaiterRegistered{} = event) do
     payload = event_data_to_map(event)
 
     new_waiter = %Waiter{
@@ -205,7 +204,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseWaiterRemoved{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseWaiterRemoved{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -216,7 +215,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseTransferred{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseTransferred{} = event) do
     payload = event_data_to_map(event)
 
     new_holder = %Holder{
@@ -234,7 +233,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -310,7 +309,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   or timeout. Use this around every `br` call in BeadsAdapter to
   serialize concurrent writes against the same DB file.
   """
-  @spec with_lease(String.t(), String.t(), String.t(), (() -> {:ok, term()} | {:error, term()})) ::
+  @spec with_lease(String.t(), String.t(), String.t(), (-> {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()}
   def with_lease(db_path, run_id, task_id, callback)
       when is_binary(db_path) and db_path != "" and is_binary(run_id) and
@@ -413,7 +412,6 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
   defp holder?(%State{holder: %Holder{run_id: r}}, run_id), do: r == run_id
   defp holder?(_state, _run_id), do: false
-
 
   @doc """
   Build the lease stream id for a Beads database path.

@@ -65,7 +65,6 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ErrorCodesTest do
       assert ErrorCodes.map(%{}) == {:error, :unknown_error}
     end
 
-
     test "returns {:error, :unknown_error} for a struct" do
       result = Jido.Harness.RunResult.new!(%{run_id: "r-1", provider: :pi, status: :failed})
       assert ErrorCodes.map(result) == {:error, :unknown_error}

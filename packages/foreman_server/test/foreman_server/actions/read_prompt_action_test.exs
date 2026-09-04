@@ -54,6 +54,7 @@ defmodule ForemanServer.Actions.ReadPromptActionTest do
 
     test "passes through {:error, reason} from the Catalog" do
       stub = fn _path -> {:error, :prompt_not_tracked} end
+
       assert {:error, :prompt_not_tracked} =
                ReadPromptAction.run(%{path: "/tmp/missing.md"}, %{catalog_reader: stub})
     end

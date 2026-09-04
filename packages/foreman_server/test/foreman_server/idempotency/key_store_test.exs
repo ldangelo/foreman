@@ -73,6 +73,7 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
 
     test "get/1 returns full record with metadata" do
       :ok = KeyStore.mark_started("k4", %{workflow: "impl", step: 2})
+
       assert {:ok, %{key: "k4", status: :started, metadata: %{workflow: "impl", step: 2}}} =
                KeyStore.get("k4")
     end

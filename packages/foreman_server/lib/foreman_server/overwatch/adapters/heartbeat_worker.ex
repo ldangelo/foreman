@@ -20,9 +20,6 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorker do
   """
 
   use GenServer
-
-  require Logger
-
   alias ForemanServer.Overwatch.WorkerProtocol
 
   @default_heartbeat_interval_ms 5_000

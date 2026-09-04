@@ -43,7 +43,7 @@ defmodule ForemanServer.Aggregates.SchedulerIntent do
     }
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
     intent_id = Aggregate.get(payload, :intent_id)
 

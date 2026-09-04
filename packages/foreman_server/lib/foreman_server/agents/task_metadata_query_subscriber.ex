@@ -54,14 +54,24 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
     bus = Keyword.fetch!(opts, :bus)
     response_bus = Keyword.get(opts, :response_bus, bus)
 
-    case Jido.Signal.Bus.subscribe(bus, @query_topic,
-           dispatch: {:pid, target: self()}
-         ) do
+    case Jido.Signal.Bus.subscribe(bus, @query_topic, dispatch: {:pid, target: self()}) do
       :ok ->
-        {:ok, %{bus: bus, response_bus: response_bus, reader: Keyword.get(opts, :reader, &read_metadata/1), subscription_ref: nil}}
+        {:ok,
+         %{
+           bus: bus,
+           response_bus: response_bus,
+           reader: Keyword.get(opts, :reader, &read_metadata/1),
+           subscription_ref: nil
+         }}
 
       {:ok, ref} ->
-        {:ok, %{bus: bus, response_bus: response_bus, reader: Keyword.get(opts, :reader, &read_metadata/1), subscription_ref: ref}}
+        {:ok,
+         %{
+           bus: bus,
+           response_bus: response_bus,
+           reader: Keyword.get(opts, :reader, &read_metadata/1),
+           subscription_ref: ref
+         }}
 
       other ->
         Logger.warning(
@@ -83,7 +93,8 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
   # Handle a query signal end-to-end. Public so the JSI-T013 test
   # can drive the responder without going through the bus.
   @doc false
-  @spec handle_query(struct(), GenServer.server() | :default, (String.t() -> {:ok, term()} | {:error, term()})) ::
+  @spec handle_query(struct(), GenServer.server() | :default, (String.t() ->
+                                                                 {:ok, term()} | {:error, term()})) ::
           {:ok, {:response, Jido.Signal.Bus.RecordedSignal.t()}} | {:error, term()}
   def handle_query(%Jido.Signal{} = signal, response_bus, reader) when is_function(reader, 1) do
     TaskMetadataQueryResponder.respond(signal, response_bus, reader)
@@ -101,7 +112,6 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
       map when is_map(map) -> {:ok, map}
     end
   end
-
 
   @doc """
   Sanity helper: the query topic pattern this subscriber consumes.

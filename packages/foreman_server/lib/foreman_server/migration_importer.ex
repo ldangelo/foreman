@@ -13,7 +13,7 @@ defmodule ForemanServer.MigrationImporter do
   alias ForemanServer.CommandGateway
 
   @type import_id :: String.t()
-  @type record :: map()
+  @type import_record :: map()
 
   @doc """
   Start a new migration import batch.

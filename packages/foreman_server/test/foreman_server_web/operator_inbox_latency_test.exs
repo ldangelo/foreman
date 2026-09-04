@@ -68,9 +68,7 @@ defmodule ForemanServerWeb.OperatorInboxLatencyTest do
     p99 = Enum.at(sorted, div(count * 99, 100)) |> div(1000)
     max_ms = List.last(sorted) |> div(1000)
 
-    IO.puts(
-      "Operator→inbox latency: p50=#{p50}ms p95=#{p95}ms p99=#{p99}ms max=#{max_ms}ms"
-    )
+    IO.puts("Operator→inbox latency: p50=#{p50}ms p95=#{p95}ms p99=#{p99}ms max=#{max_ms}ms")
 
     assert p95 < @p95_threshold_ms,
            "p95 latency #{p95}ms exceeds threshold #{@p95_threshold_ms}ms"

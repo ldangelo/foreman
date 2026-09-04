@@ -470,9 +470,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
         })
 
       assert input.retryable? == nil
-      assert %ProviderError{retryable?: false} = CodeMap.build_provider_error(input, "br ready", 0)
+
+      assert %ProviderError{retryable?: false} =
+               CodeMap.build_provider_error(input, "br ready", 0)
     end
   end
+
   defp code_map_source, do: File.read!(@source_file)
 
   defp mapping_rows do

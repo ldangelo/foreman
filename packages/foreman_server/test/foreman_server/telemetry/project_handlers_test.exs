@@ -35,8 +35,8 @@ defmodule ForemanServer.Telemetry.ProjectHandlersTest do
 
     assert :ok = Telemetry.project_list(7, 3, %{outcome: :ok})
 
-    assert_receive {[:foreman_server, :project, :list], ^ref,
-                    %{duration_ms: 7, count: 3}, %{outcome: :ok}}
+    assert_receive {[:foreman_server, :project, :list], ^ref, %{duration_ms: 7, count: 3},
+                    %{outcome: :ok}}
   end
 
   test "project_register emits duration_ms and lifecycle metadata" do

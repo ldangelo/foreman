@@ -14,8 +14,11 @@ defmodule ForemanServer.Workflow.MergeGateTest do
   end
 
   test "request then approve" do
-    assert {:ok, :pending} = MergeGate.request_approval("https://github.com/foo/bar/pull/1", "ensemble")
-    assert {:ok, :approved} = MergeGate.approve("https://github.com/foo/bar/pull/1", "alice", "github:alice")
+    assert {:ok, :pending} =
+             MergeGate.request_approval("https://github.com/foo/bar/pull/1", "ensemble")
+
+    assert {:ok, :approved} =
+             MergeGate.approve("https://github.com/foo/bar/pull/1", "alice", "github:alice")
   end
 
   test "approve unknown PR returns error" do

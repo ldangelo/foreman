@@ -37,9 +37,7 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
 
     start_supervised!({
       Plug.Cowboy,
-      scheme: :http,
-      plug: Endpoint,
-      options: [ip: {127, 0, 0, 1}, port: 0, ref: ref]
+      scheme: :http, plug: Endpoint, options: [ip: {127, 0, 0, 1}, port: 0, ref: ref]
     })
 
     base_url = "http://127.0.0.1:#{:ranch.get_port(ref)}"
@@ -59,7 +57,9 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
     {:ok, base_url: base_url}
   end
 
-  test "projects API smoke contract returns 200, 200-empty, 404, and 401 in sequence", %{base_url: base_url} do
+  test "projects API smoke contract returns 200, 200-empty, 404, and 401 in sequence", %{
+    base_url: base_url
+  } do
     visible_project_id = unique_project_id("visible")
 
     assert {:ok, _} =
@@ -109,7 +109,10 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
                project_id: archived_project_id,
                path: "/tmp/#{archived_project_id}",
                name: "Archived Smoke Project",
-               task_provider: %{provider: :beads, config: %{"database_path" => "/tmp/archived.db"}}
+               task_provider: %{
+                 provider: :beads,
+                 config: %{"database_path" => "/tmp/archived.db"}
+               }
              })
 
     assert {:ok, _} = ProjectStore.archive(archived_project_id)
@@ -136,7 +139,11 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
     missing_project_id = unique_project_id("missing")
 
     assert {:ok, 404, not_found_body, _headers} =
-             request(:get, base_url <> "/api/projects/#{missing_project_id}", authorized_headers())
+             request(
+               :get,
+               base_url <> "/api/projects/#{missing_project_id}",
+               authorized_headers()
+             )
 
     assert not_found_body == %{"error" => "not_found", "reason" => ":project_not_found"}
 
@@ -182,7 +189,9 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
   end
 
   defp maybe_put_content_length(headers, ""), do: headers
-  defp maybe_put_content_length(headers, body), do: headers ++ [{"content-length", byte_size(body)}]
+
+  defp maybe_put_content_length(headers, body),
+    do: headers ++ [{"content-length", byte_size(body)}]
 
   defp recv_all(socket, acc) do
     case :gen_tcp.recv(socket, 0, 5_000) do
@@ -203,7 +212,9 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
   defp request_path(%URI{path: path, query: nil}) when is_binary(path) and path != "", do: path
   defp request_path(%URI{path: nil, query: query}), do: "/?" <> query
   defp request_path(%URI{path: "", query: nil}), do: "/"
-  defp request_path(%URI{path: path, query: query}) when is_binary(query), do: path <> "?" <> query
+
+  defp request_path(%URI{path: path, query: query}) when is_binary(query),
+    do: path <> "?" <> query
 
   defp authorized_headers do
     [{"authorization", "Bearer #{@token}"}]

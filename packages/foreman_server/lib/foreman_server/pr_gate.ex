@@ -8,7 +8,6 @@ defmodule ForemanServer.PrGate do
 
   TRD-2026-4212be7e / MGH-T001 / TRD-071.
   """
-  require Logger
 
   @doc """
   Evaluate a raw PR status atom (as reported by GitHub webhooks or

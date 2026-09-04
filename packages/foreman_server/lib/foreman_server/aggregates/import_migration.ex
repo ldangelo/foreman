@@ -14,7 +14,7 @@ defmodule ForemanServer.Aggregates.ImportMigration do
     do: %State{exists?: false, completed?: false, import_id: nil, records: MapSet.new()}
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -109,8 +109,6 @@ defmodule ForemanServer.Aggregates.ImportMigration do
   defp require_active(%State{exists?: false}), do: {:error, :migration_import_not_started}
   defp require_active(%State{completed?: true}), do: {:error, :migration_import_completed}
   defp require_active(_state), do: :ok
-
-  defp reject_duplicate_record(_state, nil), do: :ok
 
   defp reject_duplicate_record(%State{records: records}, record_id) do
     if MapSet.member?(records || MapSet.new(), record_id),

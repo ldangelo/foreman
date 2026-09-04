@@ -71,7 +71,7 @@ defmodule ForemanServer.Aggregates.Task do
     }
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -165,16 +165,6 @@ defmodule ForemanServer.Aggregates.Task do
       "TaskRetried" ->
         apply_task_retried(state, payload)
 
-      "TaskUpdated" ->
-        %State{
-          state
-          | task_id: Aggregate.get(payload, :task_id) || state.task_id,
-            title: Aggregate.get(payload, :title) || state.title,
-            description: Aggregate.get(payload, :description) || state.description,
-            priority: Aggregate.get(payload, :priority) || state.priority,
-            status: Aggregate.get(payload, :status) || state.status
-        }
-
       _ ->
         state
     end
@@ -248,7 +238,6 @@ defmodule ForemanServer.Aggregates.Task do
   end
 
   # REMOVED: task.close — pruned per TRD-049
-
 
   def handle_command(state, %{type: "task.dispatch", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
@@ -358,7 +347,9 @@ defmodule ForemanServer.Aggregates.Task do
         |> Map.new(fn field -> {field, Aggregate.get(payload, field)} end)
 
       if map_size(updates) == 0 do
-        {:error, {:invalid_command, "task.update requires at least one of title, description, priority, or status"}}
+        {:error,
+         {:invalid_command,
+          "task.update requires at least one of title, description, priority, or status"}}
       else
         {:ok,
          %{
@@ -370,12 +361,11 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-
   def handle_command(%State{} = _state, cmd) do
     {:error, {:unsupported_command, cmd.__struct__}}
   end
 
-  defp maybe_apply_terminal_run(state, payload, status) do
+  defp maybe_apply_terminal_run(%State{} = state, payload, status) do
     if Aggregate.get(payload, :task_id) == Map.get(state, :task_id),
       do: %State{state | status: status},
       else: state
@@ -388,7 +378,7 @@ defmodule ForemanServer.Aggregates.Task do
   # NEVER transitions status here: the design intent is a two-step gate
   # (acknowledge, then retry). `TaskRetried` is the only event that
   # resets status back to `open`.
-  defp apply_task_run_terminated(state, payload) do
+  defp apply_task_run_terminated(%State{} = state, payload) do
     event_run_id = Aggregate.get(payload, :run_id)
 
     cond do
@@ -414,7 +404,7 @@ defmodule ForemanServer.Aggregates.Task do
   # so we trust the payload and clear every run-bound field the same way
   # `Approval.prepare/1` rebuilds them — and append to retry_history so the
   # operator path leaves a forensic trail.
-  defp apply_task_retried(state, payload) do
+  defp apply_task_retried(%State{} = state, payload) do
     previous_run_id = state.run_id
     retried_at = Aggregate.get(payload, :retried_at)
     reason = Aggregate.get(payload, :reason)
@@ -458,14 +448,20 @@ defmodule ForemanServer.Aggregates.Task do
       else: {:error, {:invalid_task_status, status}}
   end
 
+  defp validate_status(status), do: {:error, {:invalid_task_status, status}}
+
   defp require_approvable(%State{status: "open"}), do: :ok
 
   defp require_approvable(%State{status: status}),
     do: {:error, {:task_not_approvable, status}}
 
-  defp validate_status(status), do: {:error, {:invalid_task_status, status}}
-
   defp allow_transition(_state, nil), do: :ok
+
+  defp allow_transition(%State{status: status}, new_status)
+       when status == "merged" and new_status != status,
+       do: {:error, {:invalid_task_transition, status, new_status}}
+
+  defp allow_transition(_state, _new_status), do: :ok
 
   # Dispatch requires a fully-approved task with a bound run and approval id.
   defp require_dispatchable(%State{
@@ -482,6 +478,7 @@ defmodule ForemanServer.Aggregates.Task do
   defp require_executing(%State{status: "in_progress"}), do: :ok
   defp require_executing(%State{status: status}), do: {:error, {:task_not_executing, status}}
   defp require_in_progress(%State{status: "in_progress"}), do: :ok
+
   defp require_in_progress(%State{status: status}),
     do: {:error, {:task_not_in_progress, status}}
 
@@ -504,15 +501,6 @@ defmodule ForemanServer.Aggregates.Task do
   defp require_run_matches_bound(%State{run_id: bound}, run_id),
     do: {:error, {:run_id_mismatch, bound, run_id}}
 
-  defp allow_transition(%State{status: status}, new_status)
-       when status == "merged" and new_status != status,
-       do: {:error, {:invalid_task_transition, status, new_status}}
-
-  defp allow_transition(_state, _new_status), do: :ok
-
-  defp reject_self_dependency(task_id, task_id), do: {:error, :self_dependency}
-  defp reject_self_dependency(_task_id, _depends_on), do: :ok
-
   defp validate_project_allows_tasks(nil), do: {:error, :project_id_required}
 
   defp validate_project_allows_tasks(project_id) do
@@ -533,7 +521,9 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp require_workflow_snapshot(snapshot),
     do: {:error, {:missing_or_invalid, :workflow_snapshot, snapshot}}
+
   defp validate_status_update(nil), do: {:ok, nil}
+
   defp validate_status_update(status) do
     case validate_status(status) do
       :ok -> {:ok, status}

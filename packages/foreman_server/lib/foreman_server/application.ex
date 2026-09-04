@@ -486,6 +486,7 @@ defmodule ForemanServer.Application do
     end
   end
 
+  @impl true
   def config_change(changed, _new, removed) do
     ForemanServerWeb.Endpoint.config_change(changed, removed)
     :ok

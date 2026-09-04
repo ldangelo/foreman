@@ -19,7 +19,8 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
     test "returns INVALID_FILENAME for path traversal attempt" do
       assert Tools.call_tool("foreman_prompt_get", %{name: "../etc/passwd"}) ==
                {:error,
-                %ToolError{                  code: "INVALID_FILENAME",
+                %ToolError{
+                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end
@@ -27,7 +28,8 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
     test "returns INVALID_FILENAME for backslash path attempt" do
       assert Tools.call_tool("foreman_prompt_get", %{name: "subdir\\test.md"}) ==
                {:error,
-                %ToolError{                  code: "INVALID_FILENAME",
+                %ToolError{
+                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end
@@ -40,7 +42,8 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
                content: "# Test"
              }) ==
                {:error,
-                %ToolError{                  code: "INVALID_FILENAME",
+                %ToolError{
+                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end
@@ -51,7 +54,8 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
                content: "# Test"
              }) ==
                {:error,
-                %ToolError{                  code: "INVALID_FILENAME",
+                %ToolError{
+                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end

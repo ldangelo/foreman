@@ -135,7 +135,6 @@ defmodule ForemanServer.TelemetryTest do
 
     assert_receive {[:foreman_server, :run_slots, :reconciled], ^ref,
                     %{holders_dropped: 1, waiters_dropped: 2}, %{phase: :boot}}
-
   end
 
   test "dispatch_run_stop/2 emits [:foreman, :dispatch, :run, :stop] with the expected measurements and metadata" do
@@ -147,8 +146,7 @@ defmodule ForemanServer.TelemetryTest do
 
     assert :ok = Telemetry.dispatch_run_stop(measurements, metadata)
 
-    assert_receive {[:foreman, :dispatch, :run, :stop], ^ref,
-                    %{duration_ms: 42},
+    assert_receive {[:foreman, :dispatch, :run, :stop], ^ref, %{duration_ms: 42},
                     %{provider: :pi, status: :ok, run_id: "run-1", adapter: :jido_harness}}
   end
 
@@ -184,8 +182,11 @@ defmodule ForemanServer.TelemetryTest do
     assert :ok = Telemetry.dispatch_provider_check(%{}, metadata)
 
     assert_receive {[:foreman, :dispatch, :provider, :check], ^ref, %{},
-                    %{provider: :pi, installed: true,
-                      install_hint: "npm install -g @earendil-works/pi-coding-agent"}}
+                    %{
+                      provider: :pi,
+                      installed: true,
+                      install_hint: "npm install -g @earendil-works/pi-coding-agent"
+                    }}
   end
 
   test "dispatch_provider_check/2 with installed: false emits metadata containing installed: false" do
@@ -196,10 +197,15 @@ defmodule ForemanServer.TelemetryTest do
 
     Telemetry.dispatch_provider_check(
       %{},
-      %{provider: :pi, installed: false, install_hint: "npm install -g @earendil-works/pi-coding-agent"}
+      %{
+        provider: :pi,
+        installed: false,
+        install_hint: "npm install -g @earendil-works/pi-coding-agent"
+      }
     )
 
-    assert_receive {[:foreman, :dispatch, :provider, :check], ^ref, _measurements, received_metadata}
+    assert_receive {[:foreman, :dispatch, :provider, :check], ^ref, _measurements,
+                    received_metadata}
 
     assert received_metadata.installed == false
     assert received_metadata.provider == :pi

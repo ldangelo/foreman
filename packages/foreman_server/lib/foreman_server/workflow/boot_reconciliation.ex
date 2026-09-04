@@ -209,6 +209,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
      }, {:continue, :reconcile}}
   end
 
+  @impl true
   def handle_continue(:reconcile, state) do
     reconcile()
     state = reconcile_ambiguous_keys(state)

@@ -108,7 +108,7 @@ defmodule ForemanServer.Aggregates.BoardItemStateMachine do
   def handle_command(_state, _command), do: :unhandled
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do

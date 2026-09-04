@@ -31,7 +31,20 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
     @impl true
     def cmd(_request, _project_config, _opts) do
       bead_id = "br-stub-#{System.unique_integer([:positive])}"
-      {:ok, %{stdout: Jason.encode!(%{"id" => bead_id, "title" => "stubbed", "status" => "open", "priority" => 2, "issue_type" => "task"}), stderr: "", exit_code: 0}}
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(%{
+             "id" => bead_id,
+             "title" => "stubbed",
+             "status" => "open",
+             "priority" => 2,
+             "issue_type" => "task"
+           }),
+         stderr: "",
+         exit_code: 0
+       }}
     end
   end
 
@@ -254,6 +267,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       # Verify JSON-encoded path is present
       expected_arg = Jason.encode!(trd_path)
+
       assert phase["command"] =~ expected_arg,
              "Command should contain JSON-encoded TRD path"
     end
@@ -291,6 +305,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       # Verify all required implementation context fields
       assert is_binary(impl["trd_path"]),
              "implementation.trd_path should be a binary"
+
       assert impl["trd_path"] == trd_path,
              "implementation.trd_path should match task's trd_path"
 
@@ -299,11 +314,13 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       assert is_binary(impl["source_revision"]),
              "implementation.source_revision should be a binary"
+
       assert byte_size(impl["source_revision"]) > 0,
              "implementation.source_revision should not be empty"
 
       assert is_binary(impl["implementation_key"]),
              "implementation.implementation_key should be a binary"
+
       assert byte_size(impl["implementation_key"]) == 64,
              "implementation.implementation_key should be SHA-256 (64 hex chars)"
     end
@@ -346,6 +363,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       # Verify worktree.base is concrete (not a placeholder)
       assert is_binary(worktree["base"]),
              "worktree.base should be a binary"
+
       refute worktree["base"] =~ "{",
              "worktree.base should not contain placeholders"
 
@@ -378,6 +396,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       # Simulate the workflow_snapshot that TaskApproved would persist:
       # it is a JSON-decoded map so all keys are strings.
       run_id = "run-cth-t002"
+
       workflow_snapshot = %{
         "run_id" => run_id,
         "workflow_name" => "implement-trd",
@@ -428,14 +447,17 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       assert state.worktree_spec[:base] == "abc123",
              "worktree.base should be the concrete source revision"
+
       assert state.worktree_spec[:branch] == "foreman/{task_id}/{run_id}",
              "worktree.branch should retain runtime placeholders"
 
       # Verify initial state: no phases completed yet
       assert state.completed == [],
              "initially no phases should be completed"
+
       assert state.phase_statuses == %{},
              "initially phase_statuses should be empty"
+
       assert state.status == :ready,
              "initial status should be :ready"
     end
@@ -457,10 +479,12 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       assert state.phase_specs == [],
              "empty phases list should result in empty phase_specs"
+
       assert state.completed == [],
              "no phases means nothing to complete"
     end
   end
+
   # --- Fix workflow tests (ensemble-fix-issue) ---
 
   describe "fix workflow dispatch (WFD-T006 / TRD-069)" do
@@ -593,6 +617,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       # Verify phase name
       phase = hd(snapshot["phases"])
+
       assert phase["name"] == "fix",
              "Phase should be named 'fix'"
     end
@@ -649,6 +674,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
     test "RunExecutor.init/1 extracts correct phase_specs from fix workflow_snapshot" do
       run_id = "run-cth-t003"
+
       workflow_snapshot = %{
         "run_id" => run_id,
         "workflow_name" => "fix",
@@ -681,6 +707,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       # Verify skill name and --foreman flag
       assert phase_spec[:command] =~ "ensemble-fix-issue",
              "phase_spec command should include ensemble-fix-issue skill"
+
       assert phase_spec[:command] =~ "--foreman",
              "phase_spec command should include --foreman flag"
 
@@ -695,10 +722,12 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       # Verify initial state
       assert state.completed == [],
              "initially no phases should be completed"
+
       assert state.status == :ready,
              "initial status should be :ready"
     end
   end
+
   # --- Idempotency key format tests ---
   describe "idempotency key format (REQ-026 / TRD-026)" do
     alias ForemanServer.Idempotency.KeyStore
@@ -726,7 +755,8 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       :ok = KeyStore.mark_started(key)
       assert {:ok, :started} = KeyStore.status(key)
     end
-    end
+  end
+
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------

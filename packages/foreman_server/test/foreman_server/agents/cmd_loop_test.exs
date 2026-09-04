@@ -52,7 +52,10 @@ defmodule ForemanServer.Agents.CmdLoopTest do
   defmodule ScheduleAction do
     use Jido.Action,
       name: "schedule_action",
-      schema: [delay: [type: :integer, required: true], tag: [type: :string, default: "scheduled"]]
+      schema: [
+        delay: [type: :integer, required: true],
+        tag: [type: :string, default: "scheduled"]
+      ]
 
     def run(%{delay: delay, tag: tag}, _ctx) do
       {:ok, %{scheduled: tag}, [%Directive.Schedule{delay_ms: delay, message: {:scheduled, tag}}]}
@@ -101,8 +104,14 @@ defmodule ForemanServer.Agents.CmdLoopTest do
 
       assert updated.state.emitted == true
       assert is_list(directives)
-      assert directive.__struct__ in [Directive.Emit, Directive.Error, Directive.Schedule,
-                                     Directive.Spawn, Directive.Stop]
+
+      assert directive.__struct__ in [
+               Directive.Emit,
+               Directive.Error,
+               Directive.Schedule,
+               Directive.Spawn,
+               Directive.Stop
+             ]
     end
 
     test "normalizes bare action module with no params" do
@@ -125,8 +134,13 @@ defmodule ForemanServer.Agents.CmdLoopTest do
 
     test "dispatches Emit directive (bus not running — dropped silently)" do
       agent = TestCmdAgent.new(actions: [EmitSignalAction])
+
       assert {:ok, updated, 1} =
-               CmdLoop.apply_and_dispatch(agent, EmitSignalAction, %{topic: "test.drop", payload: %{}})
+               CmdLoop.apply_and_dispatch(agent, EmitSignalAction, %{
+                 topic: "test.drop",
+                 payload: %{}
+               })
+
       assert updated.state.emitted == true
     end
 
@@ -138,8 +152,10 @@ defmodule ForemanServer.Agents.CmdLoopTest do
 
     test "dispatches Schedule directive" do
       agent = TestCmdAgent.new(actions: [ScheduleAction])
+
       assert {:ok, updated, 1} =
                CmdLoop.apply_and_dispatch(agent, ScheduleAction, %{delay: 100, tag: "tick"})
+
       assert updated.state.scheduled == "tick"
     end
 
@@ -154,8 +170,10 @@ defmodule ForemanServer.Agents.CmdLoopTest do
 
     test "dispatches Spawn directive (no supervisor in test — dropped gracefully)" do
       agent = TestCmdAgent.new(actions: [SpawnAction])
+
       assert {:ok, updated, 1} =
                CmdLoop.apply_and_dispatch(agent, SpawnAction, %{module: Agent, tag: "test-child"})
+
       assert updated.state.spawning == "test-child"
     end
 
@@ -166,6 +184,7 @@ defmodule ForemanServer.Agents.CmdLoopTest do
       spawn(fn ->
         assert catch_exit(CmdLoop.apply_and_dispatch(agent, StopAction, %{reason: "test-stop"})) ==
                  {:directive_stop, "test-stop"}
+
         send(pid, :exited_cleanly)
       end)
 
@@ -174,14 +193,17 @@ defmodule ForemanServer.Agents.CmdLoopTest do
 
     test "handles nil directive in list gracefully" do
       # A no-op action produces zero directives; returns {:ok, agent, 0}.
-      assert {:ok, _updated, 0} = CmdLoop.apply_and_dispatch(TestCmdAgent.new(actions: []), NoOpAction, %{})
+      assert {:ok, _updated, 0} =
+               CmdLoop.apply_and_dispatch(TestCmdAgent.new(actions: []), NoOpAction, %{})
     end
   end
 
   describe "directive dispatch: Error directive logs without crashing" do
     test "Error directive with context includes context in log" do
       agent = TestCmdAgent.new(actions: [EmitErrorAction])
-      assert {:ok, _updated, 1} = CmdLoop.apply_and_dispatch(agent, EmitErrorAction, %{msg: "boom"})
+
+      assert {:ok, _updated, 1} =
+               CmdLoop.apply_and_dispatch(agent, EmitErrorAction, %{msg: "boom"})
     end
   end
 end

@@ -34,7 +34,9 @@ defmodule ForemanServer.Workflow.Approval do
 
   @spec prepare(map() | prepare_input(), keyword()) ::
           {:ok, prepare_result()} | {:error, term()}
-  def prepare(%{task_id: task_id} = payload, opts \\ [])
+  def prepare(payload, opts \\ [])
+
+  def prepare(%{task_id: task_id} = payload, opts)
       when is_binary(task_id) and task_id != "" do
     with {:ok, approval_id} <- ensure_approval_id(payload, opts),
          run_id = Identity.run_id(task_id, approval_id),

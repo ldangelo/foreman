@@ -10,6 +10,7 @@ defmodule ForemanServer.Agents.JidoVfsSandboxVerificationTest do
       nil -> start_supervised!(VfsIsolation)
       _pid -> :ok
     end
+
     :ok = VfsIsolation.bind("agent-x", "/tmp/wt-test")
 
     refute VfsIsolation.allowed?("agent-x", "/etc/passwd")
@@ -24,6 +25,7 @@ defmodule ForemanServer.Agents.JidoVfsSandboxVerificationTest do
       nil -> start_supervised!(VfsIsolation)
       _pid -> :ok
     end
+
     refute VfsIsolation.allowed?("agent-unbound", "/tmp/anything")
   end
 end

@@ -436,9 +436,11 @@ defmodule ForemanServer.Overwatch.Tracker do
                 # timeout so crash-recovery reconciliation knows to inspect
                 # side effects before retrying. Safe no-op when no lease is
                 # registered (key already completed or expiry fired first).
-                _ = ForemanServer.Idempotency.HeartbeatLease.on_worker_unresponsive(
-                       worker.worker_id, worker.run_id
-                     )
+                _ =
+                  ForemanServer.Idempotency.HeartbeatLease.on_worker_unresponsive(
+                    worker.worker_id,
+                    worker.run_id
+                  )
 
                 state = put_sequence(state, k, new_seq)
 
@@ -493,6 +495,8 @@ defmodule ForemanServer.Overwatch.Tracker do
     {:noreply, state}
   end
 
+  def handle_info(_msg, state), do: {:noreply, state}
+
   # Forward worker DOWN to the crash-loop detector (TRD-012) when present.
   # The detector is an optional sibling supervisor child; in tests and
   # dev where it is not started, this is a silent no-op. Failure to
@@ -509,8 +513,6 @@ defmodule ForemanServer.Overwatch.Tracker do
   end
 
   defp notify_crash_loop_detector(_worker, _reason), do: :ok
-
-  def handle_info(_msg, state), do: {:noreply, state}
 
   # ------------------------------------------------------------------
   # Internals
@@ -539,17 +541,19 @@ defmodule ForemanServer.Overwatch.Tracker do
       payload: payload,
       command_id: command_id
     }
+
     case dispatch_command(command) do
       :ok ->
         # TRD-076: renew the heartbeat lease so the idempotency key
         # stays `started` while the worker is alive. Safe no-op when no
         # lease is registered for this worker.
-        _ = ForemanServer.Idempotency.HeartbeatLease.renew(
-               case ForemanServer.Idempotency.HeartbeatLease.key_for(worker.worker_id, worker.run_id) do
-                 {:ok, key} -> key
-                 :not_found -> nil
-               end
-             )
+        _ =
+          ForemanServer.Idempotency.HeartbeatLease.renew(
+            case ForemanServer.Idempotency.HeartbeatLease.key_for(worker.worker_id, worker.run_id) do
+              {:ok, key} -> key
+              :not_found -> nil
+            end
+          )
 
         state = put_sequence(state, k, new_seq)
 

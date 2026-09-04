@@ -239,22 +239,23 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       counter_file = Path.join(temp_dir, "concurrency.counter")
       max_file = Path.join(temp_dir, "concurrency.max")
 
-      fake_br_body = [
-        "echo \"CALL:$$\" >> \"#{log_file}\"",
-        "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
-        "n=$((n + 1))",
-        "echo $n > \"#{counter_file}\"",
-        "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
-        "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
-        "sleep 0.5",
-        "n=$(cat \"#{counter_file}\")",
-        "n=$((n - 1))",
-        "echo $n > \"#{counter_file}\"",
-        "echo \"DONE:$$\" >> \"#{log_file}\""
-      ]
-      |> Enum.join("\n")
+      fake_br_body =
+        [
+          "echo \"CALL:$$\" >> \"#{log_file}\"",
+          "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
+          "n=$((n + 1))",
+          "echo $n > \"#{counter_file}\"",
+          "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
+          "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
+          "sleep 0.5",
+          "n=$(cat \"#{counter_file}\")",
+          "n=$((n - 1))",
+          "echo $n > \"#{counter_file}\"",
+          "echo \"DONE:$$\" >> \"#{log_file}\""
+        ]
+        |> Enum.join("\n")
 
-    with_fake_br(temp_dir, fake_br_body, fn ->
+      with_fake_br(temp_dir, fake_br_body, fn ->
         db_path = "/tmp/test.db"
         parent = self()
 
@@ -287,6 +288,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
         assert length(call_lines) == 2,
                "Expected 2 CALL markers, got #{length(call_lines)}: #{inspect(lines)}"
+
         assert length(done_lines) == 2,
                "Expected 2 DONE markers, got #{length(done_lines)}: #{inspect(lines)}"
 
@@ -306,16 +308,17 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     test ":create uses project_config database_path and enters global trans",
          %{temp_dir: temp_dir} do
       # Parse --db flag to confirm the correct database path was received.
-      fake_br_body = [
-        "while [ $# -gt 0 ]; do",
-        "  case \"$1\" in",
-        "    --db) echo \"DB_PATH=$2\" && shift 2 ;;",
-        "    *) shift ;;",
-        "  esac",
-        "done",
-        "echo ACTION=create"
-      ]
-      |> Enum.join("\n")
+      fake_br_body =
+        [
+          "while [ $# -gt 0 ]; do",
+          "  case \"$1\" in",
+          "    --db) echo \"DB_PATH=$2\" && shift 2 ;;",
+          "    *) shift ;;",
+          "  esac",
+          "done",
+          "echo ACTION=create"
+        ]
+        |> Enum.join("\n")
 
       db_path = "/tmp/serialized.db"
 
@@ -343,16 +346,17 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     test ":update uses project_config database_path and enters global trans",
          %{temp_dir: temp_dir} do
       # :update appends --json, so Port stdout is available and fake_br succeeds.
-      fake_br_body = [
-        "while [ $# -gt 0 ]; do",
-        "  case \"$1\" in",
-        "    --db) echo \"DB_PATH=$2\" && shift 2 ;;",
-        "    --json) echo HAS_JSON=1 && shift ;;",
-        "    *) shift ;;",
-        "  esac",
-        "done"
-      ]
-      |> Enum.join("\n")
+      fake_br_body =
+        [
+          "while [ $# -gt 0 ]; do",
+          "  case \"$1\" in",
+          "    --db) echo \"DB_PATH=$2\" && shift 2 ;;",
+          "    --json) echo HAS_JSON=1 && shift ;;",
+          "    *) shift ;;",
+          "  esac",
+          "done"
+        ]
+        |> Enum.join("\n")
 
       db_path = "/tmp/serialized.db"
 
@@ -375,18 +379,19 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       counter_file = Path.join(temp_dir, "all_ops.counter")
       max_file = Path.join(temp_dir, "all_ops.max")
 
-      fake_br_body = [
-        "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
-        "n=$((n + 1))",
-        "echo $n > \"#{counter_file}\"",
-        "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
-        "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
-        "sleep 0.3",
-        "n=$(cat \"#{counter_file}\")",
-        "n=$((n - 1))",
-        "echo $n > \"#{counter_file}\""
-      ]
-      |> Enum.join("\n")
+      fake_br_body =
+        [
+          "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
+          "n=$((n + 1))",
+          "echo $n > \"#{counter_file}\"",
+          "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
+          "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
+          "sleep 0.3",
+          "n=$(cat \"#{counter_file}\")",
+          "n=$((n - 1))",
+          "echo $n > \"#{counter_file}\""
+        ]
+        |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
         db_path = "/tmp/mixed_ops.db"
@@ -402,6 +407,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
             {:update, %{flags: ["issue-2", "--status", "in_progress"]}},
             %{database_path: db_path}
           )
+
           send(parent, :op2_done)
         end)
 
@@ -418,6 +424,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
              }},
             %{database_path: db_path}
           )
+
           send(parent, :op3_done)
         end)
 
@@ -450,16 +457,17 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       success_log = Path.join(temp_dir, "success.log")
 
       # No "set -eu": explicit exit must not crash the shell.
-      fake_br_body = [
-        "if [ -f \"#{marker}\" ]; then",
-        "  echo CALLER2 >> \"#{success_log}\"",
-        "  exit 0",
-        "else",
-        "  echo CALLER1 > \"#{marker}\"",
-        "  exit 1",
-        "fi"
-      ]
-      |> Enum.join("\n")
+      fake_br_body =
+        [
+          "if [ -f \"#{marker}\" ]; then",
+          "  echo CALLER2 >> \"#{success_log}\"",
+          "  exit 0",
+          "else",
+          "  echo CALLER1 > \"#{marker}\"",
+          "  exit 1",
+          "fi"
+        ]
+        |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
         db_path = "/tmp/error_unlock.db"
@@ -486,12 +494,13 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       marker = Path.join(temp_dir, "timeout.flag")
       success_log = Path.join(temp_dir, "success.log")
       # Both calls write to success_log so we can verify both ran.
-      fake_br_body = [
-        "echo START >> \"#{success_log}\"",
-        "sleep 30",
-        "echo DONE >> \"#{success_log}\""
-      ]
-      |> Enum.join("\n")
+      fake_br_body =
+        [
+          "echo START >> \"#{success_log}\"",
+          "sleep 30",
+          "echo DONE >> \"#{success_log}\""
+        ]
+        |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
         db_path = "/tmp/timeout_unlock.db"
@@ -512,6 +521,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       end)
     end
   end
+
   describe "invalid and missing database paths" do
     test "non-binary database_path raises ArgumentError", %{temp_dir: temp_dir} do
       with_fake_br(temp_dir, "echo done", fn ->
@@ -526,10 +536,10 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       with_fake_br(temp_dir, "echo done", fn ->
         # Map without :database_path: fetch_database_path! raises with the project_config in the message.
         assert_raise ArgumentError,
-                    ~r"expected project_config with binary :database_path",
-                    fn ->
-                      SystemBrRunner.cmd({:where, %{}}, %{other_key: "value"})
-                    end
+                     ~r"expected project_config with binary :database_path",
+                     fn ->
+                       SystemBrRunner.cmd({:where, %{}}, %{other_key: "value"})
+                     end
       end)
     end
 

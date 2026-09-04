@@ -39,7 +39,8 @@ defmodule ForemanServer.Idempotency.CrashRecovery do
           | {:retry, :no_side_effects | :side_effects_present | :fresh | :unknown_state}
   def reconcile(key, side_effects_check \\ &has_no_side_effects?/1)
 
-  def reconcile(key, side_effects_check) when is_binary(key) and is_function(side_effects_check, 1) do
+  def reconcile(key, side_effects_check)
+      when is_binary(key) and is_function(side_effects_check, 1) do
     case ForemanServer.Idempotency.KeyStore.status(key) do
       {:ok, :completed} ->
         Logger.info("CrashRecovery: key=#{key} completed; skipping")
@@ -50,7 +51,10 @@ defmodule ForemanServer.Idempotency.CrashRecovery do
         has_side_effects = not side_effects_check.(key)
 
         if has_side_effects do
-          Logger.warning("CrashRecovery: key=#{key} has side effects; marking completed before retry")
+          Logger.warning(
+            "CrashRecovery: key=#{key} has side effects; marking completed before retry"
+          )
+
           :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key, %{recovered: true})
           {:retry, :side_effects_present}
         else

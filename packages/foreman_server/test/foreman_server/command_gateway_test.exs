@@ -2069,8 +2069,8 @@ defmodule ForemanServer.CommandGatewayTest do
                  }
                })
     end
-
   end
+
   describe "task.create auto_approve" do
     setup do
       project_id = unique_id("project")

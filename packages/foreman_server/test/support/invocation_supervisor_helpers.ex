@@ -28,13 +28,9 @@ defmodule ForemanServer.TestSupport.InvocationSupervisorHelpers do
   the same `persistent_term` key.
   """
 
-  require ExUnit.Callbacks
-
   @registry_key {ForemanServer.AgentRuntime.InvocationSupervisor, :registry_name}
-  @missing :__invocation_supervisor_registry_missing__
 
-  @doc "Like `ExUnit.Callbacks.start_supervised!/2`, but preserves the"
-  @doc " InvocationSupervisor persistent-term key across the test."
+  @doc "Like `ExUnit.Callbacks.start_supervised!/2`, but preserves the InvocationSupervisor persistent-term key across the test."
   @spec start(Supervisor.child_spec() | {module(), keyword()}, keyword()) ::
           Supervisor.on_start()
   def start(child_spec, opts \\ []) do

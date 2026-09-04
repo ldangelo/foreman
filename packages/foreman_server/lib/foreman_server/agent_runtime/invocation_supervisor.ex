@@ -91,7 +91,6 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisor do
     end
   end
 
-
   # Returns the Registry name for the most recently started supervisor
   # instance. Tests and production both run a single named supervisor at
   # a time, so a single key is sufficient.

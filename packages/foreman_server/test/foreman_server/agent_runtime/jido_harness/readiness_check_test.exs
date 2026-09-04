@@ -208,6 +208,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheckTest do
       result = ReadinessCheck.run()
 
       assert {:provider, :pi, :installed, "npm install -g @earendil-works/pi-coding-agent"} in result
+
       assert {:provider, :claude, :installed, "npm install -g @anthropic-ai/claude-code"} in result
     end
 
@@ -225,7 +226,6 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheckTest do
       assert {:provider, :claude, :installed, claude_hint} = claude_tuple
       assert claude_hint == "npm install -g @anthropic-ai/claude-code"
     end
-
   end
 
   describe "telemetry" do

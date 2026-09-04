@@ -76,7 +76,10 @@ defmodule ForemanServer.Workflow.WorktreeCleanForRunTest do
       assert is_atom(reason_type)
     end
 
-    test "emits no telemetry event when all worktrees clean successfully", %{repo: repo, base: base} do
+    test "emits no telemetry event when all worktrees clean successfully", %{
+      repo: repo,
+      base: base
+    } do
       # Use a test-name prefix so aggregate stream IDs are provably distinct.
       run_id = "run-clean-#{System.unique_integer([:positive])}"
       phase_id = "phase-1"

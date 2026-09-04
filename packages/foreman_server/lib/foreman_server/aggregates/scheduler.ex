@@ -30,7 +30,7 @@ defmodule ForemanServer.Aggregates.Scheduler do
     }
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do

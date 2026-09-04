@@ -39,6 +39,7 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
   alias ForemanServer.Agents.DirectiveQueue
   alias ForemanServer.Agents.OtelSpanEmitter
   alias Jido.Signal.Bus
+
   @doc """
   Sentinel value for `bus` that resolves to the supervised
   `foreman_jido_signal_bus` process.
@@ -78,9 +79,7 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
     topic = JidoSignalTopics.agent_directive(agent_id)
 
     {:ok, signal} =
-      Jido.Signal.new(topic, payload,
-        source: "foreman.signal_directive_publisher"
-      )
+      Jido.Signal.new(topic, payload, source: "foreman.signal_directive_publisher")
 
     # Record in directive queue before publishing (TRD-056 / JLD-T002).
     # If the queue is not running, record_in_queue/2 returns nil and we

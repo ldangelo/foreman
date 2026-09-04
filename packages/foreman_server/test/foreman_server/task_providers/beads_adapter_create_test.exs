@@ -1,4 +1,3 @@
-
 defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
   use ExUnit.Case, async: false
 

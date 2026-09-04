@@ -77,7 +77,7 @@ defmodule ForemanServer.Aggregates.Worker do
   end
 
   # ------------------------------------------------------------------
-  defp apply_typed_event(state, %WorkerStarted{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerStarted{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -95,7 +95,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %WorkerHeartbeat{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerHeartbeat{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -106,7 +106,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %WorkerUnresponsive{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerUnresponsive{} = e) do
     new_state = bump_sequence(state, e.sequence)
     # Unresponsive is recoverable: a fresh `WorkerStarted` (re-launch)
     # or a `WorkerHeartbeat` after the worker reconnects must NOT be
@@ -122,7 +122,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %ToolCallFinished{} = e) do
+  defp apply_typed_event(%State{} = state, %ToolCallFinished{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -134,7 +134,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %AssistantMessage{} = e) do
+  defp apply_typed_event(%State{} = state, %AssistantMessage{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -146,7 +146,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %WorkerStdout{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerStdout{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -157,7 +157,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %WorkerStderr{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerStderr{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -174,7 +174,7 @@ defmodule ForemanServer.Aggregates.Worker do
   # already terminal — a late WorkerExited arriving after WorkerCrashed
   # must NOT overwrite `status: "crashed"` with `"exited"`. Only
   # `WorkerCrashed` is a fresh seal; the `terminal?` flag is monotonic.
-  defp apply_typed_event(state, %WorkerExited{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerExited{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     base = %State{
@@ -196,7 +196,7 @@ defmodule ForemanServer.Aggregates.Worker do
   # further events are accepted on this worker stream — the slot is
   # permanently released. `worker_status` reflects `"crashed"` so the
   # Run projection surfaces the failure clearly to operators.
-  defp apply_typed_event(state, %WorkerCrashed{} = e) do
+  defp apply_typed_event(%State{} = state, %WorkerCrashed{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -208,7 +208,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %RunCompleted{} = e) do
+  defp apply_typed_event(%State{} = state, %RunCompleted{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -219,7 +219,7 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp apply_typed_event(state, %RunFailed{} = e) do
+  defp apply_typed_event(%State{} = state, %RunFailed{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
@@ -230,9 +230,9 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
-  defp bump_sequence(state, nil), do: state
+  defp bump_sequence(%State{} = state, nil), do: state
 
-  defp bump_sequence(state, sequence) when is_integer(sequence),
+  defp bump_sequence(%State{} = state, sequence) when is_integer(sequence),
     do: %State{state | last_sequence: max(sequence, state.last_sequence)}
 
   @impl true

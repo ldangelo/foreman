@@ -38,7 +38,8 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.Catalog
 
-  @operator_timeout_ms_default 5 * 60 * 1000  # 5 minutes
+  # 5 minutes
+  @operator_timeout_ms_default 5 * 60 * 1000
 
   @doc """
   Dispatch a single `com.foreman.operator.*` CloudEvent to the
@@ -57,10 +58,13 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   def dispatch(%{} = data) do
     case SharedInbox.ingest(OperatorQuestionSource, data) do
       {:ok, :started, _item} = result ->
-        question_id = data |> Map.get("question_id") |> non_empty() ||
-                         data |> Map.get(:question_id) |> non_empty()
-        agent_id = data |> Map.get("agent_id") |> non_empty() ||
-                       data |> Map.get(:agent_id) |> non_empty()
+        question_id =
+          data |> Map.get("question_id") |> non_empty() ||
+            data |> Map.get(:question_id) |> non_empty()
+
+        agent_id =
+          data |> Map.get("agent_id") |> non_empty() ||
+            data |> Map.get(:agent_id) |> non_empty()
 
         if question_id && agent_id do
           timeout_ms = resolve_operator_timeout(agent_id)
@@ -73,6 +77,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
         other
     end
   end
+
   def dispatch(other) do
     {:error, {:invalid_payload, other}}
   end
@@ -82,7 +87,8 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   # → workflow_name → Catalog manifest → "operator_timeout_ms" field.
   @spec resolve_operator_timeout(String.t()) :: pos_integer()
   defp resolve_operator_timeout(task_id) do
-    with %{workflow_snapshot: snapshot} when is_map(snapshot) <- ProjectionStore.task_projection(task_id),
+    with %{workflow_snapshot: snapshot} when is_map(snapshot) <-
+           ProjectionStore.task_projection(task_id),
          workflow_name when is_binary(workflow_name) <-
            Map.get(snapshot, "workflow_name") || Map.get(snapshot, :workflow_name),
          {:ok, manifest} <- Catalog.load(workflow_name <> ".yaml"),

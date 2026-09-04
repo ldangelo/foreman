@@ -8,6 +8,7 @@ defmodule ForemanServer.Agents.McpClientPool do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @impl true
   def init(_opts), do: {:ok, %{clients: %{}}}
 
   def register(server_id, client), do: GenServer.call(__MODULE__, {:register, server_id, client})
@@ -21,6 +22,7 @@ defmodule ForemanServer.Agents.McpClientPool do
 
   def handle_call({:tools, server_id}, _from, state) do
     client = Map.get(state.clients, server_id)
+
     case client do
       nil -> {:reply, [], state}
       c -> {:reply, safe_tools(c), state}

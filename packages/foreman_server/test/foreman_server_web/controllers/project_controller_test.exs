@@ -207,6 +207,7 @@ defmodule ForemanServerWeb.ProjectControllerTest do
     assert Enum.map(body["projects"], & &1["project_id"]) == [archived_id]
     assert Enum.map(body["projects"], & &1["archived?"]) == [true]
   end
+
   test "GET /api/projects enumerates projection-store state only for order count and archived filtering" do
     event_only_id = unique_project_id()
     archived_projection_id = unique_project_id()
@@ -262,7 +263,11 @@ defmodule ForemanServerWeb.ProjectControllerTest do
 
     assert Enum.map(default_body["projects"], & &1["project_id"]) == expected_visible_ids
     assert expected_visible_ids == [visible_projection_id]
-    assert get_resp_header(default_conn, "x-total-count") == [Integer.to_string(length(expected_visible_ids))]
+
+    assert get_resp_header(default_conn, "x-total-count") == [
+             Integer.to_string(length(expected_visible_ids))
+           ]
+
     refute event_only_id in Enum.map(default_body["projects"], & &1["project_id"])
 
     archived_conn = authorized_conn() |> get("/api/projects?include_archived=true")
@@ -270,7 +275,11 @@ defmodule ForemanServerWeb.ProjectControllerTest do
 
     assert Enum.map(archived_body["projects"], & &1["project_id"]) == expected_all_ids
     assert expected_all_ids == [archived_projection_id, visible_projection_id]
-    assert get_resp_header(archived_conn, "x-total-count") == [Integer.to_string(length(expected_all_ids))]
+
+    assert get_resp_header(archived_conn, "x-total-count") == [
+             Integer.to_string(length(expected_all_ids))
+           ]
+
     refute event_only_id in Enum.map(archived_body["projects"], & &1["project_id"])
   end
 

@@ -48,9 +48,11 @@ defmodule ForemanServerWeb.EventStoreWebEnforcementTest do
   test "web layer does not call RunLifecycleReconciler.retry_run_start/2" do
     offenders =
       web_files()
-      |> Enum.flat_map(&find_matches(&1, fn node ->
-        call_to?(node, :RunLifecycleReconciler, :retry_run_start)
-      end))
+      |> Enum.flat_map(
+        &find_matches(&1, fn node ->
+          call_to?(node, :RunLifecycleReconciler, :retry_run_start)
+        end)
+      )
 
     assert offenders == [], format_offenders(offenders)
   end

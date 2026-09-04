@@ -95,7 +95,8 @@ defmodule ForemanServer.EventCodecTest do
       result = EventCodec.decode!("WorkerExited", %{worker_id: "w1"})
       assert %WorkerExited{worker_id: "w1", run_id: nil} = result
     end
-    end
+  end
+
   describe "decode!/2 TaskCreated replay safety" do
     test "a historical TaskCreated with neither new field decodes tracker-backed" do
       result =
@@ -444,7 +445,9 @@ defmodule ForemanServer.EventCodecTest do
       # for every module would silently accept an incomplete event.
       assert_raise ArgumentError,
                    ~r/missing enforced keys: \[:project_id\]/,
-                   fn -> EventCodec.decode!("RunCompleted", %{"run_id" => "r", "sequence" => 1}) end
+                   fn ->
+                     EventCodec.decode!("RunCompleted", %{"run_id" => "r", "sequence" => 1})
+                   end
     end
 
     test "previously-unregistered event types now decode" do
