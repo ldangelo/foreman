@@ -162,7 +162,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def apply_event(state, %BeadsDbLeaseAcquired{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseAcquired{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -177,7 +177,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseReleased{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseReleased{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -188,7 +188,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseWaiterRegistered{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseWaiterRegistered{} = event) do
     payload = event_data_to_map(event)
 
     new_waiter = %Waiter{
@@ -205,7 +205,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseWaiterRemoved{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseWaiterRemoved{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -216,7 +216,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, %BeadsDbLeaseTransferred{} = event) do
+  def apply_event(%State{} = state, %BeadsDbLeaseTransferred{} = event) do
     payload = event_data_to_map(event)
 
     new_holder = %Holder{
@@ -234,7 +234,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     }
   end
 
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do

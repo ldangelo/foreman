@@ -45,7 +45,7 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   alias ForemanServer.Agents.JidoSignalTopics
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Agents.SignalDirectivePublisher
-  alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted, Poller}
+  alias ForemanServer.Inbox.{InboxItemStarted, Poller}
 
   ## Public API
 

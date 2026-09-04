@@ -65,9 +65,6 @@ defmodule ForemanServer.Agents.JidoAiRunner do
 
           %{result: result} ->
             {:ok, Map.put(raw, :output, inspect(result))}
-
-          _ ->
-            {:ok, Map.put(raw, :output, inspect(raw))}
         end
       rescue
         e ->
@@ -75,7 +72,8 @@ defmodule ForemanServer.Agents.JidoAiRunner do
           {:error, {:run_error, Exception.message(e)}}
       end
     else
-      {:ok, %{strategy: :react, output: "(stub) react reasoning for: #{prompt}", status: :placeholder}}
+      {:ok,
+       %{strategy: :react, output: "(stub) react reasoning for: #{prompt}", status: :placeholder}}
     end
   end
 
@@ -113,7 +111,8 @@ defmodule ForemanServer.Agents.JidoAiRunner do
           {:ok, %{strategy: :cot, output: prompt, status: :degraded, error: Exception.message(e)}}
       end
     else
-      {:ok, %{strategy: :cot, output: "(stub) chain-of-thought for: #{prompt}", status: :placeholder}}
+      {:ok,
+       %{strategy: :cot, output: "(stub) chain-of-thought for: #{prompt}", status: :placeholder}}
     end
   end
 

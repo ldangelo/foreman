@@ -246,7 +246,7 @@ defmodule ForemanServer.AgentRuntime do
          catalog,
          inv_supervisor,
          policy,
-         fail_on_unavailable,
+         _fail_on_unavailable,
          env
        ) do
     start_time = System.system_time()
@@ -551,7 +551,7 @@ defmodule ForemanServer.AgentRuntime do
          catalog,
          inv_supervisor,
          policy,
-         fail_on_unavailable,
+         _fail_on_unavailable,
          env
        ) do
     start_time = System.system_time()
@@ -708,7 +708,7 @@ defmodule ForemanServer.AgentRuntime do
           emit_early_exit_completion(monotonic_start, :ok, task_type)
           {:ok, inspect(output)}
 
-        {:error, _reason} = error ->
+        {:error, reason} ->
           stop_time = System.system_time()
 
           Telemetry.execute(
@@ -722,7 +722,7 @@ defmodule ForemanServer.AgentRuntime do
           # REQ-008 AC-008-2: classify LLM errors and return as agent directives
           # so the agent can retry or escalate rather than treating them as fatal.
           error_kind =
-            case _reason do
+            case reason do
               :failed -> :llm_failed
               {:run_error, _} -> :llm_run_error
               _ -> :llm_error
@@ -795,7 +795,7 @@ defmodule ForemanServer.AgentRuntime do
           emit_early_exit_completion(monotonic_start, :ok, task_type)
           {:ok, inspect(output)}
 
-        {:error, _reason} = error ->
+        {:error, reason} ->
           stop_time = System.system_time()
 
           Telemetry.execute(
@@ -809,7 +809,7 @@ defmodule ForemanServer.AgentRuntime do
           # REQ-008 AC-008-2: classify LLM errors and return as agent directives
           # so the agent can retry or escalate rather than treating them as fatal.
           error_kind =
-            case _reason do
+            case reason do
               :failed -> :llm_failed
               {:run_error, _} -> :llm_run_error
               _ -> :llm_error
@@ -894,16 +894,16 @@ defmodule ForemanServer.AgentRuntime do
 
             {:ok, content}
 
-          {:error, reason} ->
+          {:error, :no_available_backend} ->
             stop_time = System.system_time()
 
             Telemetry.execute(
               [:foreman, :agent_runtime, :execute, :stop],
-              %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
+              %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
               %{strategy: strategy, backend: backend}
             )
 
-            {:error, reason}
+            {:error, :no_available_backend}
 
           {:error, :all_backends_failed, %{attempts: attempts}} ->
             stop_time = System.system_time()
@@ -920,16 +920,16 @@ defmodule ForemanServer.AgentRuntime do
 
             {:error, :all_backends_failed, %{attempts: attempts}}
 
-          {:error, :no_available_backend} ->
+          {:error, reason} ->
             stop_time = System.system_time()
 
             Telemetry.execute(
               [:foreman, :agent_runtime, :execute, :stop],
-              %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
+              %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
               %{strategy: strategy, backend: backend}
             )
 
-            {:error, :no_available_backend}
+            {:error, reason}
         end
     end
   end
@@ -991,11 +991,17 @@ defmodule ForemanServer.AgentRuntime do
   defp routing_reason_for(:code_generation), do: "auto-routing:code"
   defp routing_reason_for(:embedding), do: "auto-routing:embedding"
   defp routing_reason_for(:chat), do: "auto-routing:chat"
-  defp routing_reason_for(_), do: "auto-routing"
 
   # Test-only export. Avoid calling from production code.
   @doc false
-  def __emit_langfuse_trace_for_test__(prompt, response, model, monotonic_start, task_type, token_count) do
+  def __emit_langfuse_trace_for_test__(
+        prompt,
+        response,
+        model,
+        monotonic_start,
+        task_type,
+        token_count
+      ) do
     emit_langfuse_trace(prompt, response, model, monotonic_start, task_type, token_count)
   end
 end

@@ -275,7 +275,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   end
 
   # Called by apply_event/2 — kept private for use in tests (struct pattern matching).
-  defp apply_work_submitted(state, payload) do
+  defp apply_work_submitted(%State{} = state, payload) do
     %State{
       state
       | work_id: Aggregate.get(payload, :work_id),
@@ -289,7 +289,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     }
   end
 
-  defp apply_work_cancelled(state, payload) do
+  defp apply_work_cancelled(%State{} = state, _payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
@@ -298,7 +298,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     %State{state | status: :cancelled}
   end
 
-  defp apply_work_execution_complete(state, payload) do
+  defp apply_work_execution_complete(%State{} = state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
@@ -308,7 +308,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     %State{state | status: :succeeded}
   end
 
-  defp apply_work_execution_failed(state, payload) do
+  defp apply_work_execution_failed(%State{} = state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 

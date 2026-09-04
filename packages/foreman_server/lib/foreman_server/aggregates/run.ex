@@ -58,7 +58,7 @@ defmodule ForemanServer.Aggregates.Run do
     }
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -86,10 +86,19 @@ defmodule ForemanServer.Aggregates.Run do
         %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id)}
 
       "PrReady" ->
-        %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id), merge_gate: :pending}
+        %State{
+          state
+          | exists?: true,
+            run_id: Aggregate.get(payload, :run_id),
+            merge_gate: :pending
+        }
 
       "MergeGateApproved" ->
-        %State{state | merge_gate: :approved}
+        %State{
+          state
+          | merge_gate: :approved,
+            run_id: Aggregate.get(payload, :run_id) || state.run_id
+        }
 
       "RunCompleted" ->
         %State{
@@ -197,10 +206,11 @@ defmodule ForemanServer.Aggregates.Run do
         state
 
       "MergeGatePending" ->
-        %State{state | merge_gate: :pending, run_id: Aggregate.get(payload, :run_id) || state.run_id}
-
-      "MergeGateApproved" ->
-        %State{state | merge_gate: :approved, run_id: Aggregate.get(payload, :run_id) || state.run_id}
+        %State{
+          state
+          | merge_gate: :pending,
+            run_id: Aggregate.get(payload, :run_id) || state.run_id
+        }
     end
   end
 
@@ -447,6 +457,7 @@ defmodule ForemanServer.Aggregates.Run do
       pr_url = Aggregate.get(payload, :pr_url)
       # PrGate.record_pending calls MergeGate.request_approval internally.
       :ok = PrGate.record_pending(run_id, pr_url)
+
       {:ok,
        %{
          stream_id: "run:#{run_id}",
@@ -499,7 +510,7 @@ defmodule ForemanServer.Aggregates.Run do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp put_phase(state, payload, status) do
+  defp put_phase(%State{} = state, payload, status) do
     phase_id = Aggregate.get(payload, :phase_id)
 
     if is_binary(phase_id) and phase_id != "" do
@@ -515,7 +526,7 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
-  defp put_worker(state, payload, status) do
+  defp put_worker(%State{} = state, payload, status) do
     worker_id = Aggregate.get(payload, :worker_id)
 
     if is_binary(worker_id) and worker_id != "" do
@@ -587,8 +598,8 @@ defmodule ForemanServer.Aggregates.Run do
   defp ensure_pr_gate_ok(state, "run.pr.merge", _run_id) do
     case state.merge_gate do
       :approved -> :ok
-      :pending  -> {:error, :pr_not_acceptable}
-      nil       -> {:error, :pr_not_acceptable}
+      :pending -> {:error, :pr_not_acceptable}
+      nil -> {:error, :pr_not_acceptable}
     end
   end
 
@@ -638,7 +649,6 @@ defmodule ForemanServer.Aggregates.Run do
        when is_integer(sequence) and sequence > last_sequence + 1,
        do: {:error, :out_of_order}
 
-  defp require_sequence(%State{}, nil), do: :ok
   defp require_sequence(%State{}, _sequence), do: {:error, :out_of_order}
 
   # Sequence normalization for `run.complete` against a non-terminal run.
@@ -678,8 +688,9 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp reject_terminal_mutation(_state), do: :ok
 
-  defp require_resettable(%State{status: status}) when status in ["failed", "stuck", "blocked", "paused"],
-    do: :ok
+  defp require_resettable(%State{status: status})
+       when status in ["failed", "stuck", "blocked", "paused"],
+       do: :ok
 
   defp require_resettable(%State{status: status}), do: {:error, {:run_not_resettable, status}}
 

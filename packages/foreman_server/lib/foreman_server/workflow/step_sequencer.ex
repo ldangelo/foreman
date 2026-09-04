@@ -4,7 +4,6 @@ defmodule ForemanServer.Workflow.StepSequencer do
   TRD-2026-4212be7e / WFD-T003 / TRD-066.
   """
   require Logger
-  @terminal_states [:completed, :failed, :blocked]
 
   @doc """
   Propagate terminal status from previous step to next step.

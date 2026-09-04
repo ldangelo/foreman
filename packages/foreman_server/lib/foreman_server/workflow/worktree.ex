@@ -530,6 +530,7 @@ defmodule ForemanServer.Workflow.Worktree do
       run_id: run_id,
       phase_id: phase_id,
       operation_id: op_id,
+      project_id: project_id,
       repo_path: repo_path,
       worktree_path: worktree_path,
       base: base,
@@ -574,6 +575,7 @@ defmodule ForemanServer.Workflow.Worktree do
         run_id: run_id,
         phase_id: phase_id,
         operation_id: op_id,
+        project_id: project_id,
         worktree_path: worktree_path,
         noop?: noop?
       }
@@ -623,6 +625,7 @@ defmodule ForemanServer.Workflow.Worktree do
         run_id: run_id,
         phase_id: phase_id,
         operation_id: op_id,
+        project_id: project_id,
         worktree_path: worktree_path,
         reason: reason
       }
@@ -674,6 +677,7 @@ defmodule ForemanServer.Workflow.Worktree do
         run_id: run_id,
         phase_id: phase_id,
         operation_id: op_id,
+        project_id: project_id,
         worktree_path: worktree_path,
         reason: reason
       }

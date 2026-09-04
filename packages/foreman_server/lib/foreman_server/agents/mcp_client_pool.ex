@@ -8,6 +8,7 @@ defmodule ForemanServer.Agents.McpClientPool do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @impl true
   def init(_opts), do: {:ok, %{clients: %{}}}
 
   def register(server_id, client), do: GenServer.call(__MODULE__, {:register, server_id, client})

@@ -381,6 +381,8 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
     end
   end
 
+  defp resolve_provider_module(_provider_module), do: {:error, :task_provider_not_configured}
+
   # Validate a full module name without interning arbitrary input.
   # Module.safe_concat/1 raises ArgumentError on invalid aliases (lowercase,
   # spaces, reserved words, etc.) BEFORE creating the atom, so a malformed
@@ -398,8 +400,6 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
       ArgumentError -> :not_full_module
     end
   end
-
-  defp resolve_provider_module(_provider_module), do: {:error, :task_provider_not_configured}
 
   defp ensure_schema_cache_started do
     case Process.whereis(@schema_cache_name) do

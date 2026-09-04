@@ -20,7 +20,8 @@ defmodule ForemanServer.Aggregates.Phase do
       attempt: 0
     }
 
-  def apply_event(state, event) do
+  @impl true
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do

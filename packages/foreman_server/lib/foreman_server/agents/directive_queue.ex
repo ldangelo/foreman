@@ -95,7 +95,7 @@ defmodule ForemanServer.Agents.DirectiveQueue do
   # ─────────────────────────────────────────────────────────────────────────
 
   def init(_opts) do
-    table_opts =
+    _table_opts =
       case :ets.info(@table) do
         :undefined ->
           :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])

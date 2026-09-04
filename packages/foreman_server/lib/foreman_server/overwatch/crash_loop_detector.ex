@@ -102,7 +102,6 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   alias ForemanServer.Idempotency.RestartBackoff
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.Overwatch.WorkerSupervisor
-  alias ForemanServer.ProjectionStore
 
   @default_window_ms 5 * 60 * 1000
   @default_threshold 5

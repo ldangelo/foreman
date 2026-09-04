@@ -22,7 +22,6 @@ defmodule ForemanServer.Workflow.Validator do
   # Regex to extract skill name from a command string, e.g.
   # "/skill:ensemble-full-implement-trd ..." → "ensemble-full-implement-trd"
   @skill_from_command ~r{^/skill:(\S+)}
-  @required_top_level_keys ~w(name phases)a
 
   @type validation_error ::
           :missing_name

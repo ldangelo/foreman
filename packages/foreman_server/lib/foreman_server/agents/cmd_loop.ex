@@ -8,12 +8,9 @@ defmodule ForemanServer.Agents.CmdLoop do
 
   require Logger
 
-  alias ForemanServer.Agents.JidoSignalTopics
-  alias ForemanServer.Agents.DirectiveQueue
   alias ForemanServer.Agents.OtelSpanEmitter
   alias Jido.Agent
   alias Jido.Agent.Directive
-  alias Jido.Signal.Bus
   alias Jido.Signal.Dispatch
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -34,7 +31,6 @@ defmodule ForemanServer.Agents.CmdLoop do
   """
   @spec call(Jido.Agent.t(), module(), map()) ::
           {:ok, Jido.Agent.t(), [Directive.t()]}
-          | {:error, term()}
   def call(agent, action_module, params) when is_map(params) do
     # Agent.new/1 returns {:ok, %Agent{}}; Agent.cmd/3 requires bare %Agent{}.
     agent_struct = unwrap_agent(agent)
@@ -62,12 +58,10 @@ defmodule ForemanServer.Agents.CmdLoop do
   Applies an action, dispatches all directives, and returns the directive count.
 
   ## Returns
-    `{:ok, updated_agent, directive_count :: non_neg_integer()}` on success
-    `{:error, reason}` on failure
+    `{:ok, updated_agent, directive_count :: non_neg_integer()}`
   """
   @spec apply_and_dispatch(Jido.Agent.t(), module(), map() | nil) ::
           {:ok, Jido.Agent.t(), non_neg_integer()}
-          | {:error, term()}
   def apply_and_dispatch(agent, action_module, params \\ %{})
 
   def apply_and_dispatch(agent, action_module, params) when is_map(params) do
@@ -75,9 +69,6 @@ defmodule ForemanServer.Agents.CmdLoop do
       {:ok, updated, directives} ->
         _ = Enum.each(directives, &dispatch_directive/1)
         {:ok, updated, length(directives)}
-
-      {:error, _reason} = error ->
-        error
     end
   end
 
@@ -106,7 +97,7 @@ defmodule ForemanServer.Agents.CmdLoop do
   defp unwrap_agent(%Agent{} = agent), do: agent
   # An empty map becomes [] so Agent.cmd/3 uses bare-module → default-params.
   defp params_to_opts(%{}), do: []
-  
+
   # Directive dispatch
   # AgentServer executes directives via the DirectiveExec protocol; CmdLoop
   # handles the same directives outside the AgentServer GenServer context.
@@ -183,6 +174,7 @@ defmodule ForemanServer.Agents.CmdLoop do
             nil -> nil
             sup -> sup
           end
+
         sup ->
           sup
       end

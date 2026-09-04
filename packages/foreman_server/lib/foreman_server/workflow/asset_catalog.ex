@@ -61,7 +61,7 @@ defmodule ForemanServer.Workflow.AssetCatalog do
 
   @doc "Resolve a prompt relative to the catalog's prompts directory."
   @spec resolve_prompt(t(), String.t() | nil) :: Path.t() | nil
-  def resolve_prompt(%__MODULE__{prompts_dir: prompts_dir}, nil), do: nil
+  def resolve_prompt(%__MODULE__{prompts_dir: _prompts_dir}, nil), do: nil
 
   def resolve_prompt(%__MODULE__{prompts_dir: prompts_dir}, prompt) when is_binary(prompt) do
     Path.join(prompts_dir, prompt)

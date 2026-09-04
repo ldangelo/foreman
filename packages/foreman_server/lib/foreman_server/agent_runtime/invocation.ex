@@ -82,6 +82,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
     {:ok, state, {:continue, :orchestrate}}
   end
 
+  @impl true
   def handle_continue(
         :orchestrate,
         state = %{

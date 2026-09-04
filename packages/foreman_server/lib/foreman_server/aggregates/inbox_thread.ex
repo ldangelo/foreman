@@ -28,7 +28,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
   def initial_state, do: %State{messages: %{}}
 
   @impl true
-  def apply_event(state, %InboxMessageAppended{} = event) do
+  def apply_event(%State{} = state, %InboxMessageAppended{} = event) do
     message = %Message{
       message_id: event.message_id,
       body: event.body,
@@ -38,10 +38,10 @@ defmodule ForemanServer.Aggregates.InboxThread do
     %State{state | messages: Map.put(state.messages, event.message_id, message)}
   end
 
-  def apply_event(state, %InboxDeliveryUpdated{} = event) do
+  def apply_event(%State{} = state, %InboxDeliveryUpdated{} = event) do
     updated_message =
       case Map.fetch(state.messages, event.message_id) do
-        {:ok, existing} ->
+        {:ok, %Message{} = existing} ->
           %Message{
             existing
             | delivery_status: event.delivery_status,
@@ -59,7 +59,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
     %State{state | messages: Map.put(state.messages, event.message_id, updated_message)}
   end
 
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     # Handle raw map events from event store replay (string keys)
     payload = Aggregate.event_payload(event)
 

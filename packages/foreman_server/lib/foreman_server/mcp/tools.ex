@@ -106,7 +106,8 @@ defmodule ForemanServer.MCP.Tools do
   }
   @schema_foreman_task_create %{
     name: "foreman_task_create",
-    description: "Create a task and dispatch it in one call (defaults to untracked + auto-approving, matching the retired foreman_work_submit ergonomics)",
+    description:
+      "Create a task and dispatch it in one call (defaults to untracked + auto-approving, matching the retired foreman_work_submit ergonomics)",
     inputSchema: %{
       type: "object",
       properties: %{
@@ -124,21 +125,25 @@ defmodule ForemanServer.MCP.Tools do
           type: "string",
           enum: ["jido_harness", "pi", "claude"],
           default: "jido_harness",
-          description: "Backend readiness check performed before dispatch. Defaults to jido_harness (the production default since TRD-2026-4212be7e JHA-T002). The :pi and :claude atoms are routed through the same JidoHarnessAdapter as their upstream Jido.Harness provider names."
+          description:
+            "Backend readiness check performed before dispatch. Defaults to jido_harness (the production default since TRD-2026-4212be7e JHA-T002). The :pi and :claude atoms are routed through the same JidoHarnessAdapter as their upstream Jido.Harness provider names."
         },
         provider_tracked: %{
           type: "boolean",
           default: false,
-          description: "Whether this task should be claimed/completed/failed against the project's TaskProvider (e.g. a Beads issue). Defaults to false for ad-hoc dispatch."
+          description:
+            "Whether this task should be claimed/completed/failed against the project's TaskProvider (e.g. a Beads issue). Defaults to false for ad-hoc dispatch."
         },
         auto_approve: %{
           type: "boolean",
           default: true,
-          description: "Immediately approve and dispatch the task after creation. Defaults to true for one-call dispatch."
+          description:
+            "Immediately approve and dispatch the task after creation. Defaults to true for one-call dispatch."
         },
         description: %{
           type: "string",
-          description: "Task description, shown to command-phase agents as FOREMAN_TASK_DESCRIPTION"
+          description:
+            "Task description, shown to command-phase agents as FOREMAN_TASK_DESCRIPTION"
         }
       },
       required: ["project_id", "description", "workflow"]
@@ -151,7 +156,10 @@ defmodule ForemanServer.MCP.Tools do
       type: "object",
       properties: %{
         project_id: %{type: "string", description: "The project ID"},
-        status: %{type: "string", description: "Filter by status (open, ready, in_progress, blocked, closed, failed)"}
+        status: %{
+          type: "string",
+          description: "Filter by status (open, ready, in_progress, blocked, closed, failed)"
+        }
       }
     }
   }
@@ -178,7 +186,10 @@ defmodule ForemanServer.MCP.Tools do
         title: %{type: "string", description: "New task title"},
         description: %{type: "string", description: "New task description"},
         priority: %{type: "integer", description: "Priority 0-4 (0=critical, 4=backlog)"},
-        status: %{type: "string", description: "New status (open, ready, in_progress, closed, failed)"}
+        status: %{
+          type: "string",
+          description: "New status (open, ready, in_progress, closed, failed)"
+        }
       },
       required: ["task_id"]
     }
@@ -282,8 +293,6 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
-
-
   @schema_foreman_run_get_logs %{
     name: "foreman_run_get_logs",
     description: "Return all logs for a run.",
@@ -291,7 +300,7 @@ defmodule ForemanServer.MCP.Tools do
       type: "object",
       required: ["run_id"],
       properties: %{
-        "run_id" => %{"type": "string", "description": "The run_id."}
+        "run_id" => %{type: "string", description: "The run_id."}
       }
     }
   }
@@ -303,7 +312,7 @@ defmodule ForemanServer.MCP.Tools do
       type: "object",
       required: ["run_id"],
       properties: %{
-        "run_id" => %{"type": "string", "description": "The run_id."}
+        "run_id" => %{type: "string", description: "The run_id."}
       }
     }
   }
@@ -315,7 +324,7 @@ defmodule ForemanServer.MCP.Tools do
       type: "object",
       required: ["run_id"],
       properties: %{
-        "run_id" => %{"type": "string", "description": "The run_id."}
+        "run_id" => %{type: "string", description: "The run_id."}
       }
     }
   }
@@ -327,7 +336,7 @@ defmodule ForemanServer.MCP.Tools do
       type: "object",
       required: ["run_id"],
       properties: %{
-        "run_id" => %{"type": "string", "description": "The run_id."}
+        "run_id" => %{type: "string", description: "The run_id."}
       }
     }
   }
@@ -354,7 +363,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_run_get_logs,
     @schema_foreman_run_get_events,
     @schema_foreman_run_get_activity,
-    @schema_foreman_inbox_get,
+    @schema_foreman_inbox_get
   ]
 
   def list_tools, do: @tools
@@ -438,7 +447,10 @@ defmodule ForemanServer.MCP.Tools do
     duration_us = System.monotonic_time(:microsecond) - start_us
     outcome = if result, do: :ok, else: :not_found
     Telemetry.mcp_tool_call(duration_us, "foreman_work_get", outcome)
-    if result, do: {:ok, result}, else: {:error, %ToolError{code: "NOT_FOUND", message: "Work not found"}}
+
+    if result,
+      do: {:ok, result},
+      else: {:error, %ToolError{code: "NOT_FOUND", message: "Work not found"}}
   end
 
   defp tool_foreman_run_get(%{run_id: run_id}) do
@@ -447,7 +459,10 @@ defmodule ForemanServer.MCP.Tools do
     duration_us = System.monotonic_time(:microsecond) - start_us
     outcome = if result, do: :ok, else: :not_found
     Telemetry.mcp_tool_call(duration_us, "foreman_run_get", outcome)
-    if result, do: {:ok, result}, else: {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+
+    if result,
+      do: {:ok, result},
+      else: {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
   end
 
   defp tool_foreman_run_get_logs(%{run_id: run_id}) do
@@ -500,7 +515,6 @@ defmodule ForemanServer.MCP.Tools do
       {:error, :run_not_found} ->
         Telemetry.mcp_tool_call(duration_us, tool_name, :not_found)
         {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
-
 
       {:error, reason} ->
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)
@@ -600,68 +614,72 @@ defmodule ForemanServer.MCP.Tools do
               {:error, {:file_write_failed, reason}}
           end
 
-          case parse_result do
-            {:ok, workflow} ->
-              # HLW-T004 / TRD-094: check structural AND skill constraints
-              case Validator.validate(workflow) do
-                :ok ->
-                  duration_us = System.monotonic_time(:microsecond) - start_us
-                  Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :ok)
-                  {:ok, %{valid: true}}
+        case parse_result do
+          {:ok, workflow} ->
+            # HLW-T004 / TRD-094: check structural AND skill constraints
+            case Validator.validate(workflow) do
+              :ok ->
+                duration_us = System.monotonic_time(:microsecond) - start_us
+                Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :ok)
+                {:ok, %{valid: true}}
 
-                {:error, reason} ->
-                  duration_us = System.monotonic_time(:microsecond) - start_us
-                  Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
-                  message = ErrorReporter.report(reason)
-                  {:error, %ToolError{code: "INVALID_WORKFLOW", message: message}}
-              end
+              {:error, reason} ->
+                duration_us = System.monotonic_time(:microsecond) - start_us
+                Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+                message = ErrorReporter.report(reason)
+                {:error, %ToolError{code: "INVALID_WORKFLOW", message: message}}
+            end
 
-            {:error, {:manifest_load_failed, _path, message}} ->
-              duration_us = System.monotonic_time(:microsecond) - start_us
-              Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+          {:error, {:manifest_load_failed, _path, message}} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
 
-              {:error,
-               %ToolError{
-                 code: "INVALID_MANIFEST",
-                 message: message
-               }}
+            {:error,
+             %ToolError{
+               code: "INVALID_MANIFEST",
+               message: message
+             }}
 
-            {:error, {:unsupported_construct, _} = detail} ->
-              duration_us = System.monotonic_time(:microsecond) - start_us
-              Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+          {:error, reason} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
 
-              {:error,
-               %ToolError{
-                 code: "INVALID_MANIFEST",
-                 message: "Manifest validation failed: #{inspect(detail)}"
-               }}
+            {:error,
+             %ToolError{
+               code: "INVALID_MANIFEST",
+               message: inspect(reason)
+             }}
+        end
 
-            {:error, reason} ->
-              duration_us = System.monotonic_time(:microsecond) - start_us
-              Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+      {:error, {:unsupported_construct, _} = detail} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
 
-              {:error,
-               %ToolError{
-                 code: "INVALID_MANIFEST",
-                 message: inspect(reason)
-               }}
-          end
+        {:error,
+         %ToolError{
+           code: "INVALID_MANIFEST",
+           message: "Manifest validation failed: #{inspect(detail)}"
+         }}
 
       {:error, :invalid_params} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
         {:error,
          %ToolError{
            code: "INVALID_PARAMS",
            message: "Expected manifest as a YAML string or map"
          }}
-      end
+    end
   end
-  defp tool_foreman_task_create(%{
-        project_id: project_id,
-        workflow: workflow,
-        description: description
-      } = args) do
+
+  defp tool_foreman_task_create(
+         %{
+           project_id: project_id,
+           workflow: workflow,
+           description: description
+         } = args
+       ) do
     backend = Map.get(args, :backend) || "jido_harness"
 
     with :ok <- check_backend(backend) do
@@ -686,6 +704,7 @@ defmodule ForemanServer.MCP.Tools do
         provider_tracked: Map.get(args, :provider_tracked, false),
         auto_approve: Map.get(args, :auto_approve, true)
       }
+
       envelope = %{
         type: "task.create",
         command_id: command_id,
@@ -709,16 +728,21 @@ defmodule ForemanServer.MCP.Tools do
         {:error, %ToolError{code: "INVALID_BACKEND", message: reason}}
     end
   end
+
   defp tool_foreman_task_list(%{} = args) do
     start_us = System.monotonic_time(:microsecond)
     all_tasks = ProjectionStore.list_tasks()
 
     filtered =
       Enum.filter(all_tasks, fn task ->
-        project_match = Map.get(args, :project_id) == nil ||
-                         Map.get(task, :project_id) == Map.get(args, :project_id)
-        status_match = Map.get(args, :status) == nil ||
-                         Map.get(task, :status) == Map.get(args, :status)
+        project_match =
+          Map.get(args, :project_id) == nil ||
+            Map.get(task, :project_id) == Map.get(args, :project_id)
+
+        status_match =
+          Map.get(args, :status) == nil ||
+            Map.get(task, :status) == Map.get(args, :status)
+
         project_match && status_match
       end)
 
@@ -733,7 +757,10 @@ defmodule ForemanServer.MCP.Tools do
     duration_us = System.monotonic_time(:microsecond) - start_us
     outcome = if result, do: :ok, else: :not_found
     Telemetry.mcp_tool_call(duration_us, "foreman_task_get", outcome)
-    if result, do: {:ok, result}, else: {:error, %ToolError{code: "NOT_FOUND", message: "Task not found"}}
+
+    if result,
+      do: {:ok, result},
+      else: {:error, %ToolError{code: "NOT_FOUND", message: "Task not found"}}
   end
 
   defp tool_foreman_task_update(%{task_id: task_id} = args) do
@@ -773,11 +800,19 @@ defmodule ForemanServer.MCP.Tools do
     case Map.fetch(@backend_atoms, backend) do
       {:ok, backend_atom} ->
         case Router.manual(backend_atom) do
-          {:ok, _adapter} -> :ok
-          {:error, :backend_not_found}    -> {:error, "backend \"#{backend}\" is not registered."}
-          {:error, :backend_unavailable}  -> {:error, "backend \"#{backend}\" is registered but currently unavailable."}
-          {:error, :no_available_backend} -> {:error, "no backends are currently available."}
+          {:ok, _adapter} ->
+            :ok
+
+          {:error, :backend_not_found} ->
+            {:error, "backend \"#{backend}\" is not registered."}
+
+          {:error, :backend_unavailable} ->
+            {:error, "backend \"#{backend}\" is registered but currently unavailable."}
+
+          {:error, :no_available_backend} ->
+            {:error, "no backends are currently available."}
         end
+
       :error ->
         hint =
           case backend do
@@ -785,11 +820,10 @@ defmodule ForemanServer.MCP.Tools do
               # Delegate to the runtime source of truth so MCP and
               # `foreman server doctor` can never disagree on the
               # install instruction.
-              ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck.install_hint(
-                :claude
-              )
+              ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck.install_hint(:claude)
 
-            _ -> "Ensure the backend binary is on your PATH"
+            _ ->
+              "Ensure the backend binary is on your PATH"
           end
 
         # The accepted backend set is `jido_harness`, `pi`, `claude`
@@ -798,9 +832,11 @@ defmodule ForemanServer.MCP.Tools do
         # `codex`/`opencode` names are NOT accepted; they appear
         # in this error message only as part of the legacy contract
         # for operators who may have old runbooks referencing them.
-        {:error, "unknown backend \"#{backend}\". Must be one of: jido_harness, pi, claude. " <> hint}
+        {:error,
+         "unknown backend \"#{backend}\". Must be one of: jido_harness, pi, claude. " <> hint}
     end
   end
+
   defp tool_foreman_run_cancel(%{run_id: run_id} = args) do
     start_us = System.monotonic_time(:microsecond)
     command_id = "mcp:#{run_id}:#{System.unique_integer([:positive])}"
@@ -840,59 +876,66 @@ defmodule ForemanServer.MCP.Tools do
       filename = name <> ".yaml"
 
       case CatalogWriter.write_manifest(filename, manifest) do
-      {:ok, path} ->
-        # Check if the catalog poll has observed the change
-        observed = match?({:ok, _}, Catalog.load(filename))
+        {:ok, path} ->
+          # Check if the catalog poll has observed the change
+          observed = match?({:ok, _}, Catalog.load(filename))
 
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :ok)
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :ok)
 
-        {:ok,
-         %{
-           manifest_path: "workflows/#{name}.yaml",
-           catalog_path: path,
-           observed: observed
-         }}
+          {:ok,
+           %{
+             manifest_path: "workflows/#{name}.yaml",
+             catalog_path: path,
+             observed: observed
+           }}
 
-      {:error, :invalid_filename} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
-        {:error, %ToolError{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+        {:error, :invalid_filename} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
 
-      {:error, :outside_catalog} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
-        {:error, %ToolError{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+          {:error,
+           %ToolError{
+             code: "INVALID_FILENAME",
+             message: "Path separators and '..' are not allowed"
+           }}
 
-      {:error, {:name_stem_mismatch, expected, actual}} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+        {:error, :outside_catalog} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
 
-        {:error,
-         %ToolError{
-           code: "NAME_STEM_MISMATCH",
-           message: "Manifest name '#{actual}' does not match filename stem '#{expected}'"
-         }}
+          {:error,
+           %ToolError{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
 
-      {:error, {:invalid_manifest, detail}} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+        {:error, {:name_stem_mismatch, expected, actual}} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
 
-        {:error,
-         %ToolError{
-           code: "INVALID_MANIFEST",
-           message: "Manifest validation failed: #{inspect(detail)}"
-         }}
+          {:error,
+           %ToolError{
+             code: "NAME_STEM_MISMATCH",
+             message: "Manifest name '#{actual}' does not match filename stem '#{expected}'"
+           }}
 
-      {:error, {:unsupported_construct, _} = detail} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+        {:error, {:invalid_manifest, detail}} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
 
-        {:error,
-         %ToolError{
-           code: "INVALID_MANIFEST",
-           message: "Manifest validation failed: #{inspect(detail)}"
-         }}
+          {:error,
+           %ToolError{
+             code: "INVALID_MANIFEST",
+             message: "Manifest validation failed: #{inspect(detail)}"
+           }}
+
+        {:error, {:unsupported_construct, _} = detail} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+
+          {:error,
+           %ToolError{
+             code: "INVALID_MANIFEST",
+             message: "Manifest validation failed: #{inspect(detail)}"
+           }}
       end
     else
       duration_us = System.monotonic_time(:microsecond) - start_us
@@ -908,33 +951,40 @@ defmodule ForemanServer.MCP.Tools do
       filename = name <> ".yaml"
 
       case CatalogWriter.delete_manifest(filename) do
-      :ok ->
-        # Check if the catalog poll has observed the deletion
-        observed = match?({:error, _}, Catalog.load(filename))
+        :ok ->
+          # Check if the catalog poll has observed the deletion
+          observed = match?({:error, _}, Catalog.load(filename))
 
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :ok)
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :ok)
 
-        {:ok,
-         %{
-           manifest_path: "workflows/#{name}.yaml",
-           observed: observed
-         }}
+          {:ok,
+           %{
+             manifest_path: "workflows/#{name}.yaml",
+             observed: observed
+           }}
 
-      {:error, :invalid_filename} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
-        {:error, %ToolError{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+        {:error, :invalid_filename} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
 
-      {:error, :outside_catalog} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
-        {:error, %ToolError{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+          {:error,
+           %ToolError{
+             code: "INVALID_FILENAME",
+             message: "Path separators and '..' are not allowed"
+           }}
 
-      {:error, :not_found} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :not_found)
-        {:error, %ToolError{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
+        {:error, :outside_catalog} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
+
+          {:error,
+           %ToolError{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+
+        {:error, :not_found} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :not_found)
+          {:error, %ToolError{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
       end
     else
       duration_us = System.monotonic_time(:microsecond) - start_us
@@ -972,7 +1022,8 @@ defmodule ForemanServer.MCP.Tools do
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_prompt_get", :error)
 
-        {:error, %ToolError{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+        {:error,
+         %ToolError{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
     end
   end
 
@@ -998,13 +1049,18 @@ defmodule ForemanServer.MCP.Tools do
           duration_us = System.monotonic_time(:microsecond) - start_us
           Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
 
-          {:error, %ToolError{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+          {:error,
+           %ToolError{
+             code: "INVALID_FILENAME",
+             message: "Path separators and '..' are not allowed"
+           }}
 
         {:error, :outside_catalog} ->
           duration_us = System.monotonic_time(:microsecond) - start_us
           Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
 
-          {:error, %ToolError{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+          {:error,
+           %ToolError{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
       end
     else
       duration_us = System.monotonic_time(:microsecond) - start_us
@@ -1027,11 +1083,14 @@ defmodule ForemanServer.MCP.Tools do
       {:error, :provider_missing, _output} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_doctor", :error)
-        {:error, %ToolError{code: "PROVIDER_MISSING", message: "One or more required providers are unavailable"}}
+
+        {:error,
+         %ToolError{
+           code: "PROVIDER_MISSING",
+           message: "One or more required providers are unavailable"
+         }}
     end
   end
-
-
 
   # -------------------------------------------------------------------
   # Private helpers
@@ -1043,7 +1102,6 @@ defmodule ForemanServer.MCP.Tools do
       %{provider: provider, installed: status == :installed, install_hint: hint}
     end)
   end
-
 
   defp validate_filename_or_error(filename) do
     if String.contains?(filename, "/") or

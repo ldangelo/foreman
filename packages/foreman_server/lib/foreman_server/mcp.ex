@@ -26,7 +26,6 @@ defmodule ForemanServer.MCP do
   # tools are unadvertised when the gate is off (TRD-037 / REQ-020).
   # -------------------------------------------------------------------
 
-  @impl true
   def __components__(:tool), do: Dispatch.components()
 
   # -------------------------------------------------------------------

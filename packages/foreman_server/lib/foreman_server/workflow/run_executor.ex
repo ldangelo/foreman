@@ -31,7 +31,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.Catalog
-  alias ForemanServer.EventStore, as: EventStore
   alias ForemanServer.Idempotency.HeartbeatLease
   alias ForemanServer.RunExecutorLiveness
   alias ForemanServer.Identity
@@ -50,6 +49,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.StepSequencer
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.WorkerEnvironment
@@ -175,7 +175,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     plan_context =
       case plan_context_for(task_projection) do
         {:ok, ctx} -> ctx
-        {:not_applicable, _} -> nil
         {:error, reason} -> %{__plan_context_error__: reason}
       end
 
@@ -1936,7 +1935,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp fetch_project_id(state) do
     pid = project_id(state)
 
-    if pid == "" do
+    if is_nil(pid) or pid == "" do
       {:error, :project_id_missing}
     else
       {:ok, pid}
@@ -2717,9 +2716,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp project_id(state) do
-    Map.get(state.task, :project_id) || Map.get(state.task, "project_id") || ""
-  end
 
   # Phase specs are normalized to canonical atom keys by
   # `PhaseSpec.normalize/1` at `extract_phase_specs/1`, the single funnel
@@ -3049,9 +3045,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     next
   end
 
-  defp resolve_provider(project_id, transition) do
-    resolve_provider(project_id, transition, nil)
-  end
 
   defp resolve_provider(project_id, transition, run_id) do
     with {:ok, project} <- fetch_project_projection(project_id),
@@ -3218,7 +3211,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
          {:ok, enriched} <- merge_implementation_context(base, task_projection) do
       {:ok, enriched}
     else
-      {:not_applicable, _} = na -> na
       {:error, _} = err -> err
     end
   end
@@ -3226,7 +3218,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp fetch_plan_base(task_projection) do
     case ForemanServer.Workflow.PlanContext.build(task_projection) do
       {:ok, ctx} -> {:ok, ctx}
-      {:not_applicable, _} = na -> {:ok, %{}}
+      {:not_applicable, _} -> {:ok, %{}}
       {:error, _} = err -> err
     end
   end

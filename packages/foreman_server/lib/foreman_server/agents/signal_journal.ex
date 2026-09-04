@@ -4,11 +4,11 @@ defmodule ForemanServer.Agents.SignalJournal do
   TRD-2026-4212be7e / JSI-T004 / TRD-022.
   """
   use GenServer
-  require Logger
   @table :foreman_signal_journal
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @impl true
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
     {:ok, %{}}

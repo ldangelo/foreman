@@ -40,7 +40,7 @@ defmodule ForemanServer.Aggregates.Recovery do
     }
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
     type = Aggregate.event_type(event)
     run_id = Aggregate.get(payload, :run_id)

@@ -15,6 +15,7 @@ defmodule ForemanServer.Workflow.MergeGate do
   @spec clear() :: :ok
   def clear, do: GenServer.call(__MODULE__, :clear)
 
+  @impl true
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table])
     {:ok, %{}}

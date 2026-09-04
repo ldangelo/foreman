@@ -84,7 +84,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   @spec apply_event(State.t(), any()) :: State.t()
   @impl true
-  def apply_event(state, %RunSlotAcquired{} = event) do
+  def apply_event(%State{} = state, %RunSlotAcquired{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -102,7 +102,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   @impl true
-  def apply_event(state, %RunSlotQueued{} = event) do
+  def apply_event(%State{} = state, %RunSlotQueued{} = event) do
     payload = event_data_to_map(event)
 
     new_waiter = %Waiter{
@@ -117,7 +117,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   @impl true
-  def apply_event(state, %RunSlotReleased{} = event) do
+  def apply_event(%State{} = state, %RunSlotReleased{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -127,7 +127,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   @impl true
-  def apply_event(state, %RunSlotTransferred{} = event) do
+  def apply_event(%State{} = state, %RunSlotTransferred{} = event) do
     payload = event_data_to_map(event)
 
     new_holder_run_id = Aggregate.get(payload, :acquired_run_id)
@@ -145,7 +145,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   @impl true
-  def apply_event(state, %RunSlotWaiterRemoved{} = event) do
+  def apply_event(%State{} = state, %RunSlotWaiterRemoved{} = event) do
     payload = event_data_to_map(event)
 
     %State{
@@ -159,7 +159,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   # -------------------------------------------------------------------------
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -230,8 +230,6 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   # Converts a RecordedEvent or typed struct to a plain map for field access.
-  defp event_data_to_map(%EventStore.RecordedEvent{data: data}) when is_map(data), do: data
-  defp event_data_to_map(%EventStore.RecordedEvent{data: nil}), do: %{}
   defp event_data_to_map(%_{} = struct) when is_struct(struct), do: struct
 
   # -------------------------------------------------------------------------
@@ -361,7 +359,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
     end
   end
 
-  defp required_non_neg_integer(value, field) when is_integer(value) and value >= 0,
+  defp required_non_neg_integer(value, _field) when is_integer(value) and value >= 0,
     do: {:ok, value}
 
   defp required_non_neg_integer(_value, field), do: {:error, {:missing_or_invalid, field}}

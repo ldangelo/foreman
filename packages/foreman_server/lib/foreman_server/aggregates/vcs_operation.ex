@@ -47,6 +47,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
       cleanup: nil
     }
 
+  @impl true
   def apply_event(state, %WorktreeCreated{} = e), do: apply_typed_event(state, e)
   def apply_event(state, %WorktreeCleaned{} = e), do: apply_typed_event(state, e)
   def apply_event(state, %WorktreeCreateOrphanRecorded{} = e), do: apply_typed_event(state, e)
@@ -95,7 +96,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     end
   end
 
-  defp apply_typed_event(state, %WorktreeCreated{} = e) do
+  defp apply_typed_event(%State{} = state, %WorktreeCreated{} = e) do
     %State{
       state
       | exists?: true,
@@ -111,7 +112,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     }
   end
 
-  defp apply_typed_event(state, %WorktreeCleaned{} = e) do
+  defp apply_typed_event(%State{} = state, %WorktreeCleaned{} = e) do
     %State{
       state
       | operation_id: e.operation_id,
@@ -124,7 +125,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     }
   end
 
-  defp apply_typed_event(state, %WorktreeCreateOrphanRecorded{} = e) do
+  defp apply_typed_event(%State{} = state, %WorktreeCreateOrphanRecorded{} = e) do
     %State{
       state
       | exists?: true,
@@ -138,7 +139,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     }
   end
 
-  defp apply_typed_event(state, %WorktreeCreateOrphanResolved{} = e) do
+  defp apply_typed_event(%State{} = state, %WorktreeCreateOrphanResolved{} = e) do
     %State{
       state
       | operation_id: e.operation_id,
@@ -150,7 +151,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     }
   end
 
-  defp apply_untyped_event(state, event) do
+  defp apply_untyped_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -342,17 +343,6 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     end
   end
 
-  defp validate_correlation(
-         %State{operation_id: op, project_id: p, run_id: r, phase_id: ph},
-         op,
-         p,
-         r,
-         ph
-       ),
-       do: :ok
-
-  defp validate_correlation(_state, _op, _p, _r, _ph),
-    do: {:error, :correlation_mismatch}
 
   def handle_command(state, %{type: type, payload: payload})
       when type in [
@@ -421,6 +411,18 @@ defmodule ForemanServer.Aggregates.VcsOperation do
   end
 
   def handle_command(_state, _command), do: :unhandled
+
+  defp validate_correlation(
+         %State{operation_id: op, project_id: p, run_id: r, phase_id: ph},
+         op,
+         p,
+         r,
+         ph
+       ),
+       do: :ok
+
+  defp validate_correlation(_state, _op, _p, _r, _ph),
+    do: {:error, :correlation_mismatch}
 
   defp require_existing_operation_for_terminal(_state, type)
        when type in [

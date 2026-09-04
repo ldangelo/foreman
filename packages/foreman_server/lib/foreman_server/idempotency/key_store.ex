@@ -89,6 +89,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   # --- genserver callbacks ---
 
+  @impl true
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
     {:ok, %{repo: repo_from_config()}}

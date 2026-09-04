@@ -41,7 +41,6 @@ defmodule ForemanServer.Workflow.Dispatcher do
   require Logger
 
   alias ForemanServer.Work.RunPayload
-  alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.{ProjectionStore, RunAdmission, Telemetry}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.{BootReconciliation, Worktree}

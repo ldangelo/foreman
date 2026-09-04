@@ -73,7 +73,7 @@ defmodule ForemanServer.Aggregates.PrAssociation do
   def handle_command(_state, _command), do: :unhandled
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -104,14 +104,10 @@ defmodule ForemanServer.Aggregates.PrAssociation do
     end
   end
 
-  defp validate_url(_), do: {:error, {:missing_or_invalid, :pr_url}}
-
   defp extract_pr_number(url) when is_binary(url) do
     case Regex.run(~r{/pull/(\d+)(?:\D|$)}, url) do
       [_, n] -> String.to_integer(n)
       _ -> nil
     end
   end
-
-  defp extract_pr_number(_), do: nil
 end

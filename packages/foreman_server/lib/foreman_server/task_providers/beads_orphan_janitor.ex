@@ -368,7 +368,7 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
   #     and status ∈ {`closed`, `failed`} → close with
   #     `transition_comment: "foreman-orphan:terminal-task"`. Otherwise
   #     retain (the Foreman-side story is still in flight).
-  defp process_line(state, line, now_ms, counters) do
+  defp process_line(state, line, now_ms, %Counters{} = counters) do
     counters = %{counters | lines_processed: counters.lines_processed + 1}
 
     case classify_line(state, line, now_ms) do
@@ -732,10 +732,6 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
       | lines_retained: counters.lines_retained + 1,
         lines_tagged: counters.lines_tagged + 1
     }
-  end
-
-  defp increment_retained(counters, _other) do
-    %{counters | lines_retained: counters.lines_retained + 1}
   end
 
   # ISO8601 / RFC 3339 timestamp → Unix epoch milliseconds.

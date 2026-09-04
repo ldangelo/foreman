@@ -72,7 +72,7 @@ defmodule ForemanServer.Actions.ValidationMiddleware do
     end)
   end
 
-  defp normalize_params(action_module, params) when is_map(params) and not is_list(params) do
+  defp normalize_params(_action_module, params) when is_map(params) and not is_list(params) do
     {:ok, Map.to_list(params)}
   end
 

@@ -41,7 +41,7 @@ defmodule ForemanServer.Aggregates.Project do
     }
 
   @impl true
-  def apply_event(state, event) do
+  def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
 
     case Aggregate.event_type(event) do
@@ -276,28 +276,28 @@ defmodule ForemanServer.Aggregates.Project do
     end
   end
 
-  defp update_status(state, payload) do
+  defp update_status(%State{} = state, payload) do
     if status = Aggregate.get(payload, :status),
       do: %State{state | status: status},
       else: state
   end
 
-  defp update_default_branch(state, payload) do
+  defp update_default_branch(%State{} = state, payload) do
     if db = Aggregate.get(payload, :default_branch),
       do: %State{state | default_branch: db},
       else: state
   end
 
-  defp update_health(state, payload) do
+  defp update_health(%State{} = state, payload) do
     if health = Aggregate.get(payload, :health),
       do: %State{state | health: health},
       else: state
   end
 
   defp put_task_provider(state, nil), do: state
-  defp put_task_provider(state, task_provider), do: %State{state | task_provider: task_provider}
+  defp put_task_provider(%State{} = state, task_provider), do: %State{state | task_provider: task_provider}
 
-  defp put_config(state, config), do: %State{state | config: config}
+  defp put_config(%State{} = state, config), do: %State{state | config: config}
 
   defp normalize_task_provider_payload(payload) do
     case payload |> task_provider_from() |> normalize_task_provider() do
@@ -441,7 +441,7 @@ defmodule ForemanServer.Aggregates.Project do
   defp reserved_run(%State{active_run_reservations: reservations}, run_id),
     do: Aggregate.get(reservations, run_id)
 
-  defp put_run_reservation(state, payload) do
+  defp put_run_reservation(%State{} = state, payload) do
     run_id = Aggregate.get(payload, :run_id)
 
     reservation = %{
@@ -458,7 +458,7 @@ defmodule ForemanServer.Aggregates.Project do
     }
   end
 
-  defp release_run_reservation(state, payload) do
+  defp release_run_reservation(%State{} = state, payload) do
     run_id = Aggregate.get(payload, :run_id)
 
     %State{state | active_run_reservations: Map.delete(state.active_run_reservations, run_id)}

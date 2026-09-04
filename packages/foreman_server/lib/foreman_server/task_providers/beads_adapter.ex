@@ -9,7 +9,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
-  alias ForemanServer.CommandGateway
   alias ForemanServer.Aggregates.BeadsDbLease
   require Logger
 
@@ -95,9 +94,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          payload = build_create_payload(attrs),
          :ok <- emit_create_start(project_id, attrs),
          synthetic_run_id = "create:#{project_id}:#{System.system_time(:nanosecond)}",
-         {:ok, issue} <- BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
-           run_create(project_id, project_config, payload)
-         end) do
+         {:ok, issue} <-
+           BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
+             run_create(project_id, project_config, payload)
+           end) do
       emit_create_ok(project_id, attrs, issue)
       {:ok, issue}
     else
@@ -113,6 +113,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
            nil,
            0
          )}
+
       {:error, provider_error} = error ->
         emit_create_error(project_id, attrs, provider_error)
         error
@@ -962,10 +963,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp parse_closed_issue_payload(_payload, _task_id) do
-    {:error, build_complete_contract_error("Beads closed issue payload must be a JSON object.")}
-  end
-
   defp assert_close_id_matches(id, id), do: :ok
 
   defp assert_close_id_matches(_id, _expected) do
@@ -1182,10 +1179,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       {:error, provider_error} ->
         {:error, provider_error}
     end
-  end
-
-  defp parse_failed_issue_payload(_payload, _task_id, argv) do
-    {:error, build_fail_contract_error("Beads failed issue payload must be a JSON object.", argv)}
   end
 
   defp fetch_fail_required_string(payload, key, argv) do
@@ -1493,10 +1486,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     populate_issue_from_payload(payload, argv)
   end
 
-  defp parse_get_issue_payload(_payload, argv) do
-    {:error, build_get_contract_error("Beads issue-details payload must be a JSON object.", argv)}
-  end
-
   defp populate_issue_from_payload(payload, argv) do
     with :ok <- JsonSchemaCache.validate(:issue_details, payload),
          {:ok, id} <- fetch_required_string(payload, :id),
@@ -1659,6 +1648,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     |> Enum.join(" ")
   end
 
+  @impl true
   def claim(task_id, actor, project_config) do
     if is_binary(task_id) and String.trim(task_id) != "" do
       database_path =
@@ -1873,6 +1863,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
             raise ArgumentError,
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
+
       # 4-arity callers (janitor) must supply an explicit run_id.
       # Synthesizing silently here would mask a genuine caller defect.
       if is_binary(run_id) and run_id != "" do
@@ -1910,7 +1901,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
        )}
     end
   end
-
 
   # TRD-008 contract reconciliation: `complete/3` honors a map-shaped
   # `completion_token` with a `:transition_comment` key (consumed by the
@@ -2123,11 +2113,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       {:error, provider_error} ->
         {:error, provider_error}
     end
-  end
-
-  defp parse_reopened_issue_payload(_payload, _task_id, argv) do
-    {:error,
-     build_reopen_contract_error("Beads reopened issue payload must be a JSON object.", argv)}
   end
 
   defp fetch_reopen_required_string(payload, key, argv) do
@@ -2511,11 +2496,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       {:error, provider_error} ->
         {:error, provider_error}
     end
-  end
-
-  defp parse_updated_issue_payload(_payload, _dependency_id) do
-    {:error,
-     build_add_dependency_contract_error("Beads updated issue payload must be a JSON object.")}
   end
 
   defp fetch_add_dependency_required_string(payload, key) do

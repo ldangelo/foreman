@@ -208,6 +208,7 @@ defmodule ForemanServer.CommandGateway do
         :ok
     end
   end
+
   defp validate_aggregate_id(%{
          type: "project.reactivate",
          aggregate_id: aggregate_id,
@@ -276,11 +277,13 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
-  defp validate_aggregate_id(%{
-         type: "task.approve",
-         aggregate_id: aggregate_id,
-         payload: payload
-       } = command) do
+  defp validate_aggregate_id(
+         %{
+           type: "task.approve",
+           aggregate_id: aggregate_id,
+           payload: payload
+         } = command
+       ) do
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
 
     cond do
@@ -301,6 +304,61 @@ defmodule ForemanServer.CommandGateway do
           nil -> {:error, {:task_not_found, task_id}}
           task -> require_dependencies_satisfied(task, command)
         end
+    end
+  end
+
+  defp validate_aggregate_id(%{type: "task.retry", aggregate_id: aggregate_id, payload: payload}) do
+    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
+
+    cond do
+      not is_binary(task_id) or task_id == "" ->
+        {:error, {:invalid_envelope, :missing_task_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("task", task_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{type: "task.update", aggregate_id: aggregate_id, payload: payload}) do
+    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
+
+    cond do
+      not is_binary(task_id) or task_id == "" ->
+        {:error, {:invalid_envelope, :missing_task_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("task", task_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in ["run.cancel", "run.remove", "run.reset"] do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+
+    cond do
+      not is_binary(run_id) or run_id == "" ->
+        {:error, {:invalid_envelope, :missing_run_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("run", run_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
     end
   end
 
@@ -393,61 +451,6 @@ defmodule ForemanServer.CommandGateway do
     |> Enum.reverse()
   end
 
-  defp validate_aggregate_id(%{type: "task.retry", aggregate_id: aggregate_id, payload: payload}) do
-    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
-
-    cond do
-      not is_binary(task_id) or task_id == "" ->
-        {:error, {:invalid_envelope, :missing_task_id}}
-
-      not is_binary(aggregate_id) or aggregate_id == "" ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      aggregate_id != stream_id("task", task_id) ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_aggregate_id(%{type: "task.update", aggregate_id: aggregate_id, payload: payload}) do
-    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
-
-    cond do
-      not is_binary(task_id) or task_id == "" ->
-        {:error, {:invalid_envelope, :missing_task_id}}
-
-      not is_binary(aggregate_id) or aggregate_id == "" ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      aggregate_id != stream_id("task", task_id) ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
-       when type in ["run.cancel", "run.remove", "run.reset"] do
-    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
-
-    cond do
-      not is_binary(run_id) or run_id == "" ->
-        {:error, {:invalid_envelope, :missing_run_id}}
-
-      not is_binary(aggregate_id) or aggregate_id == "" ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      aggregate_id != stream_id("run", run_id) ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      true ->
-        :ok
-    end
-  end
-
   @reserved_approval_fields ~w(approval_id approved_at run_id workflow_snapshot)a
   defp reserved_approval_field?(payload) do
     Enum.any?(@reserved_approval_fields, fn key ->
@@ -497,6 +500,110 @@ defmodule ForemanServer.CommandGateway do
       _ ->
         enrich_approval_via_workflow(command, %{})
     end
+  end
+
+  defp enrich_operator_command(%{type: "task.create"} = command) do
+    enriched =
+      command.payload
+      |> Map.put_new(:status, "open")
+      |> Map.put_new(:dependencies, [])
+      |> Map.put_new(:priority, 0)
+      |> Map.put_new(:source, nil)
+      |> Map.put_new(:external_link, nil)
+      |> Map.put_new(:dedupe_key, nil)
+      |> Map.put_new(:integration_event_type, nil)
+      |> Map.put_new(:planning_run_id, nil)
+      |> Map.put_new(:planning_kind, nil)
+      |> Map.put_new(:planning_phase_id, nil)
+      |> Map.put_new(:trace_event_id, nil)
+
+    {:ok, %{command | payload: enriched}}
+  end
+
+  defp enrich_operator_command(%{type: "task.retry"} = command) do
+    task_id =
+      get_value(command.payload, :task_id) || get_value(command.payload, "task_id")
+
+    cond do
+      not is_binary(task_id) or task_id == "" ->
+        {:error, {:invalid_envelope, :missing_task_id}}
+
+      true ->
+        enrich_task_retry_with_bound_run(command, task_id)
+    end
+  end
+
+  defp enrich_operator_command(command), do: {:ok, command}
+  # `task.retry` is the unconditional operator remediation path. It MUST
+  # only commit when the task is bound to a run that is currently
+  # terminal — so we look up the bound run projection through the
+  # gateway (single trusted boundary), refuse to enrich otherwise, and
+  # attach the terminal evidence to the payload. The aggregate then
+  # validates that the attached `acknowledged_run_id` matches its own
+  # currently-bound run before emitting `TaskRetried`.
+  #
+  # The Dispatcher subscriber path (run.cancel → task.run_terminated)
+  # remains in place for newly observed terminal events; the aggregate
+  # also accepts that path. Both paths converge on the same payload
+  # shape, so the aggregate needs only one precondition:
+  # `payload.acknowledged_run_id == state.run_id`.
+  defp enrich_task_retry_with_bound_run(command, task_id) do
+    task = ProjectionStore.task_projection(task_id)
+
+    cond do
+      task == nil ->
+        {:error, {:task_not_found, task_id}}
+
+      true ->
+        enrich_task_retry_with_run_projection(command, task)
+    end
+  end
+
+  defp enrich_task_retry_with_run_projection(command, task) do
+    bound_run_id = Map.get(task, :run_id)
+
+    cond do
+      not is_binary(bound_run_id) or bound_run_id == "" ->
+        {:error, {:missing_or_invalid, :run_id}}
+
+      true ->
+        run = ProjectionStore.run(bound_run_id)
+
+        cond do
+          run == nil ->
+            {:error, {:run_not_found, bound_run_id}}
+
+          Map.get(run, :task_id) != Map.get(task, :task_id) ->
+            {:error,
+             {:run_task_binding_drift, bound_run_id, Map.get(run, :task_id),
+              Map.get(task, :task_id)}}
+
+          Map.get(run, :terminal?) != true ->
+            {:error, {:run_not_terminal, Map.get(run, :status)}}
+
+          true ->
+            attach_retry_evidence(command, run)
+        end
+    end
+  end
+
+  defp attach_retry_evidence(command, run) do
+    acknowledged_at =
+      case Map.get(run, :last_event_at_ms) do
+        ms when is_integer(ms) ->
+          DateTime.from_unix!(ms, :millisecond) |> DateTime.to_iso8601()
+
+        _ ->
+          DateTime.utc_now() |> DateTime.to_iso8601()
+      end
+
+    enriched_payload =
+      command.payload
+      |> Map.put(:acknowledged_run_id, Map.get(run, :run_id))
+      |> Map.put(:acknowledged_at, acknowledged_at)
+      |> Map.put(:run_terminal_reason, Map.get(run, :failure_reason))
+
+    {:ok, %{command | payload: enriched_payload}}
   end
 
   defp enrich_approval_via_workflow(
@@ -641,7 +748,6 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp normalize_input_for_render(input), do: input
-
 
   def render_command(phase, impl, input) do
     template = get_value(phase, "command") || get_value(phase, :command)
@@ -790,113 +896,6 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp prepare_operator_command(command), do: {:ok, command}
-
-  defp enrich_operator_command(%{type: "task.create"} = command) do
-    enriched =
-      command.payload
-      |> Map.put_new(:status, "open")
-      |> Map.put_new(:dependencies, [])
-      |> Map.put_new(:priority, 0)
-      |> Map.put_new(:source, nil)
-      |> Map.put_new(:external_link, nil)
-      |> Map.put_new(:dedupe_key, nil)
-      |> Map.put_new(:integration_event_type, nil)
-      |> Map.put_new(:planning_run_id, nil)
-      |> Map.put_new(:planning_kind, nil)
-      |> Map.put_new(:planning_phase_id, nil)
-      |> Map.put_new(:trace_event_id, nil)
-
-    {:ok, %{command | payload: enriched}}
-  end
-
-  defp enrich_operator_command(%{type: "task.retry"} = command) do
-    task_id =
-      get_value(command.payload, :task_id) || get_value(command.payload, "task_id")
-
-    cond do
-      not is_binary(task_id) or task_id == "" ->
-        {:error, {:invalid_envelope, :missing_task_id}}
-
-      true ->
-        enrich_task_retry_with_bound_run(command, task_id)
-    end
-  end
-
-  # `task.retry` is the unconditional operator remediation path. It MUST
-  # only commit when the task is bound to a run that is currently
-  # terminal — so we look up the bound run projection through the
-  # gateway (single trusted boundary), refuse to enrich otherwise, and
-  # attach the terminal evidence to the payload. The aggregate then
-  # validates that the attached `acknowledged_run_id` matches its own
-  # currently-bound run before emitting `TaskRetried`.
-  #
-  # The Dispatcher subscriber path (run.cancel → task.run_terminated)
-  # remains in place for newly observed terminal events; the aggregate
-  # also accepts that path. Both paths converge on the same payload
-  # shape, so the aggregate needs only one precondition:
-  # `payload.acknowledged_run_id == state.run_id`.
-  defp enrich_task_retry_with_bound_run(command, task_id) do
-    task = ProjectionStore.task_projection(task_id)
-
-    cond do
-      task == nil ->
-        {:error, {:task_not_found, task_id}}
-
-      true ->
-        enrich_task_retry_with_run_projection(command, task)
-    end
-  end
-
-  defp enrich_task_retry_with_run_projection(command, task) do
-    bound_run_id = Map.get(task, :run_id)
-
-    cond do
-      not is_binary(bound_run_id) or bound_run_id == "" ->
-        {:error, {:missing_or_invalid, :run_id}}
-
-      true ->
-        run = ProjectionStore.run(bound_run_id)
-
-        cond do
-          run == nil ->
-            {:error, {:run_not_found, bound_run_id}}
-
-          Map.get(run, :task_id) != Map.get(task, :task_id) ->
-            {:error,
-             {:run_task_binding_drift, bound_run_id, Map.get(run, :task_id),
-              Map.get(task, :task_id)}}
-
-          Map.get(run, :terminal?) != true ->
-            {:error, {:run_not_terminal, Map.get(run, :status)}}
-
-          true ->
-            attach_retry_evidence(command, run)
-        end
-    end
-  end
-
-  defp attach_retry_evidence(command, run) do
-    acknowledged_at =
-      case Map.get(run, :last_event_at_ms) do
-        ms when is_integer(ms) ->
-          DateTime.from_unix!(ms, :millisecond) |> DateTime.to_iso8601()
-
-        _ ->
-          DateTime.utc_now() |> DateTime.to_iso8601()
-      end
-
-    enriched_payload =
-      command.payload
-      |> Map.put(:acknowledged_run_id, Map.get(run, :run_id))
-      |> Map.put(:acknowledged_at, acknowledged_at)
-      |> Map.put(:run_terminal_reason, Map.get(run, :failure_reason))
-
-    {:ok, %{command | payload: enriched_payload}}
-  end
-
-
-  defp enrich_operator_command(command), do: {:ok, command}
-
 
   defp dispatch_and_emit_project_telemetry(command, timeout) do
     started_at = System.monotonic_time()

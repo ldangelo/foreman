@@ -159,15 +159,32 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   end
 
   defp run_shell(cmd, args, cwd, vfs_root) do
-    # Try the actual jido_shell API first; fall back to System.cmd
-    if Code.ensure_loaded?(Jido.Shell) do
+    # Try the actual jido_shell session-based API first; fall back to
+    # System.cmd. `Jido.Shell` (bare) only exports `version/0` — the real
+    # single-command entrypoint is the session-based `Jido.Shell.Agent`
+    # API already used elsewhere in this module (start_session/stop_session).
+    if Code.ensure_loaded?(Jido.Shell.Agent) do
       try do
-        Jido.Shell.run(cmd, args, cwd: cwd, vfs_root: vfs_root)
+        run_via_agent(cmd, args, vfs_root)
       rescue
         _ -> system_cmd(cmd, args, cwd)
       end
     else
       system_cmd(cmd, args, cwd)
+    end
+  end
+
+  defp run_via_agent(cmd, args, vfs_root) do
+    command = Enum.join([cmd | args], " ")
+
+    with {:ok, session_id} <- Jido.Shell.Agent.new(vfs_root) do
+      result = Jido.Shell.Agent.run(session_id, command)
+      _ = Jido.Shell.Agent.stop(session_id)
+
+      case result do
+        {:ok, output} -> {:ok, output, 0}
+        {:error, _} = error -> error
+      end
     end
   end
 

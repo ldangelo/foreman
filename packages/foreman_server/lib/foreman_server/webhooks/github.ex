@@ -22,8 +22,6 @@ defmodule ForemanServer.Webhooks.Github do
 
   alias ForemanServer.CommandGateway
 
-  require Logger
-
   @merged_status :merged
   @closed_status :closed
   @open_status :open
@@ -129,5 +127,4 @@ defmodule ForemanServer.Webhooks.Github do
   defp status_to_phase(:open), do: "pr_open"
   defp status_to_phase(:closed), do: "pr_closed"
   defp status_to_phase(:conflicted), do: "pr_conflict"
-  defp status_to_phase(_), do: "pr_open"
 end

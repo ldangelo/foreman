@@ -54,7 +54,6 @@ defmodule ForemanServer.RunAdmission do
   derived from `db_path` and `run_id` so retries collapse through
   the router's idempotency path.
   """
-  require Logger
   alias ForemanServer.EventStore
   alias ForemanServer.{Aggregate.Actor, CommandGateway, CommandRouter, Telemetry}
   alias ForemanServer.RunSlots.Config
@@ -287,7 +286,7 @@ defmodule ForemanServer.RunAdmission do
   defp compensable_admission_error?({:command_rejected, _reason}), do: true
   defp compensable_admission_error?(_other), do: false
 
-  defp release_after_failed_start(payload, timeout) do
+  defp release_after_failed_start(payload, _timeout) do
     # Release the slot first so capacity is restored.
     release_after_failed_slot(payload)
 
@@ -328,6 +327,7 @@ defmodule ForemanServer.RunAdmission do
   # Public recovery API
   # --------------------------------------------------------------------------------
 
+  alias ForemanServer.Aggregate
   alias ForemanServer.Aggregates.Run
 
   @doc """
@@ -345,13 +345,8 @@ defmodule ForemanServer.RunAdmission do
     # Check stream existence by reading the first event; missing stream → :stream_not_found.
     case EventStore.read_stream_forward(stream_id, 0, 1) do
       {:ok, _events} ->
-        case Run.load(stream_id) do
-          {state, version} ->
-            {:ok, state, version}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        {state, version} = Aggregate.load(Run, stream_id)
+        {:ok, state, version}
 
       {:error, :stream_not_found} ->
         {:error, :stream_not_found}
