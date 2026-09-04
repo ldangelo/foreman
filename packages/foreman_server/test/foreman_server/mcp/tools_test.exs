@@ -196,6 +196,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       run = %{
         run_id: "run-2",
         status: "failed",
+        terminal?: true,
         project_id: "proj-1",
         task_id: "task-2",
         workflow_name: "verify",
