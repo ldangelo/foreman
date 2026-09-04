@@ -270,7 +270,7 @@ without a TRD is out of scope.
 every parsed workflow manifest and prompt body in memory and keeps
 them in sync with the on-disk root (`~/.foreman/workflows`,
 hardcoded by `AssetCatalog.default/0`). Phase specs normalize `commit:` and
-`stack_pr:` as boolean phase fields and `timeout_minutes:` as an optional
+`stack_pr:` as boolean phase fields and `timeout_minutes:` (or camelCase `timeoutMinutes:`) as an optional
 positive-integer phase execution timeout in minutes. `stack_pr: true` records a
 phase PR from the single run branch to the recorded run base branch and keeps it
 separate from the final run `pr_url`.

@@ -135,7 +135,7 @@ documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
 Workflow phases support `commit:` to defer phase commits, `stack_pr:` to
 request a phase PR record from the single Foreman run branch to the recorded run
-base branch, and `timeout_minutes:` to declare a positive-integer execution
+base branch, and `timeout_minutes:` (alias `timeoutMinutes:`) to declare a positive-integer execution
 timeout in minutes. Omitted phase timeouts fall back to the Elixir app-config
 failure policy. The default run branch is `foreman/<task-id>/<run-id>` — `<task-id>` is
 the provider-facing identifier when available (falls back to `<run-id>` for ad-hoc),

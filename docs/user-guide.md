@@ -800,7 +800,7 @@ repository pre-commit hooks, and a phase that produced nothing creates no commit
 
 A phase controls **whether** it commits, with a phase-level `commit:` boolean.
 A phase can also request a phase PR record with `stack_pr: true`; that does not
-force a commit. A phase can declare `timeout_minutes:` as a positive integer
+force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinutes:` also accepted) as a positive integer
 number of minutes for its execution timeout; if omitted, Foreman uses the
 Elixir app-config failure policy for that phase name, then `default_timeout_ms`.
 Unlike `worktree:`, which is workflow-level because a run has only one worktree,
