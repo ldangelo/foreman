@@ -127,7 +127,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
              BeadsAdapter.fail(
                "bead-901",
                %{transition_comment: "operator-comment", run_id: "run-901"},
-               project_config
+               Map.put(project_config, "run_id", "run-901")
              )
 
     assert issue.status == "open"
@@ -211,7 +211,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
              BeadsAdapter.fail(
                "bead-902",
                %{transition_comment: nil, run_id: "run-902", artifact_path: artifact_path},
-               project_config
+               Map.put(project_config, "run_id", "run-902")
              )
   end
 
@@ -283,7 +283,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                  BeadsAdapter.fail(
                    "bead-903",
                    %{run_id: "run-903", artifact_path: artifact_path},
-                   project_config
+                   Map.put(project_config, "run_id", "run-903")
                  )
 
         assert provider_error.code == "BR_ERROR_ENVELOPE"
@@ -363,7 +363,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
              BeadsAdapter.fail(
                "bead-904",
                %{transition_comment: "schema-check", run_id: "run-904"},
-               project_config
+               Map.put(project_config, "run_id", "run-904")
              )
 
     assert provider_error.code == "VALIDATION_FAILED"
@@ -437,7 +437,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
              BeadsAdapter.fail(
                "bead-905",
                %{transition_comment: "cached-path", run_id: "run-905"},
-               project_config
+               Map.put(project_config, "run_id", "run-905")
              )
   end
 

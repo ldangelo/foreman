@@ -123,7 +123,10 @@ defmodule ForemanServer.TaskProviders.SideChannelCaptureTest do
 
   test "claim/3 keeps raw argv in the runner while side channels stay scrubbed" do
     parent = self()
-    project_config = register_project!("side-channel-claim")
+
+    project_config =
+      "side-channel-claim" |> register_project!() |> Map.put(:run_id, "run-claim-1")
+
     raw_argv = claim_argv(@database_path, "bead-claim-1")
 
     stderr =
@@ -201,7 +204,10 @@ defmodule ForemanServer.TaskProviders.SideChannelCaptureTest do
 
   test "fail/3 keeps raw argv in the runner while side channels stay scrubbed" do
     parent = self()
-    project_config = register_project!("side-channel-fail")
+
+    project_config =
+      "side-channel-fail" |> register_project!() |> Map.put(:run_id, "run-fail-1")
+
     raw_argv = reopen_argv(@database_path, "bead-fail-1", @transition_comment)
 
     stderr =
