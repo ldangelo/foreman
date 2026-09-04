@@ -76,6 +76,7 @@ defmodule JidoHarnessSmokeTest do
            "Jido.Harness module not loaded — vendoring incomplete"
 
     exports = Jido.Harness.__info__(:functions)
+
     assert {:run, 3} in exports,
            "Jido.Harness.run/3 must be exported (got functions: #{inspect(exports)})"
 
