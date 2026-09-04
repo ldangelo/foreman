@@ -134,53 +134,53 @@ No foundational TRD capabilities were registered by `trd-graph-cli capabilities 
 
 **Shippable State:** Operators can enable messaging configuration and Foreman can accept provider-neutral notification requests that are validated, deduped, projected, and visible in run detail without sending external chat messages yet.
 
-- [ ] **TRD-001** — Add provider-neutral messaging DTOs and validation helpers (4h) [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014]
+- [x] **TRD-001** — Add provider-neutral messaging DTOs and validation helpers (4h) [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-009-2, AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given a notification map contains recipient, severity, subject, body, optional URL, correlation id, and metadata, when normalized, then a typed struct is returned.
     - Given unknown or malformed keys are provided, when validation runs, then it returns a typed error and drops no known data silently.
     - Given an unsupported provider is configured, when the notification boundary resolves delivery, then a typed `unsupported_provider` error is recorded/logged without crashing the lifecycle caller.
 
-- [ ] **TRD-001-TEST** — Test DTO validation, unknown-key rejection, unsupported-provider errors, and safe-field allowlist (3h) [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014] [depends: TRD-001]
+- [x] **TRD-001-TEST** — Test DTO validation, unknown-key rejection, unsupported-provider errors, and safe-field allowlist (3h) [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014] [depends: TRD-001]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-009-2, AC-014-1
   - Implementation AC checklist:
     - Given valid and invalid notification maps, when tests run, then valid structs pass and invalid fields produce typed errors.
     - Given an unsupported provider atom/string is configured, when tests exercise the boundary, then the result is a typed config error and the caller process stays alive.
     - Given raw prompts/env/artifacts/full descriptions are supplied in metadata, when rendering allowlist tests run, then those fields are absent by default.
 
-- [ ] **TRD-002** — Add messaging config resolver for workflow/project/app defaults (5h) [satisfies REQ-005] [satisfies REQ-011]
+- [x] **TRD-002** — Add messaging config resolver for workflow/project/app defaults (5h) [satisfies REQ-005] [satisfies REQ-011]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-011-1, AC-011-2
   - Implementation AC checklist:
     - Given workflow notifications are present, when config resolves, then workflow settings override project and app defaults.
     - Given messaging is disabled or an event class is disabled, when notification is evaluated, then provider delivery is suppressed with normal run behavior unchanged.
     - Given a destination is malformed, when config resolves, then no alternate destination is selected.
 
-- [ ] **TRD-002-TEST** — Test config precedence, opt-out classes, and malformed destination errors (4h) [verifies TRD-002] [satisfies REQ-005] [satisfies REQ-011] [depends: TRD-002]
+- [x] **TRD-002-TEST** — Test config precedence, opt-out classes, and malformed destination errors (4h) [verifies TRD-002] [satisfies REQ-005] [satisfies REQ-011] [depends: TRD-002]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-011-1, AC-011-2
   - Implementation AC checklist:
     - Given conflicting workflow/project/app config, when tests run, then precedence is deterministic.
     - Given disabled classes include `run_update`, when run updates emit, then no provider call is attempted.
 
-- [ ] **TRD-003** — Add notification aggregate commands/events for enqueue, suppress, attempt, success, and failure (6h) [satisfies REQ-002] [satisfies REQ-008] [satisfies REQ-010]
+- [x] **TRD-003** — Add notification aggregate commands/events for enqueue, suppress, attempt, success, and failure (6h) [satisfies REQ-002] [satisfies REQ-008] [satisfies REQ-010]
   - Validates PRD ACs: AC-002-2, AC-002-3, AC-008-1, AC-008-2, AC-010-2
   - Implementation AC checklist:
     - Given a notification correlation id is new, when enqueue dispatches, then `NotificationEnqueued` is appended.
     - Given the same correlation id repeats inside the dedupe window, when enqueue dispatches, then a duplicate skip/suppression event is recorded.
     - Given delivery succeeds or fails, when result commands dispatch, then provider, destination ref, correlation id, timestamp, status, and reason are recorded.
 
-- [ ] **TRD-003-TEST** — Test notification aggregate state transitions, dedupe, and EventCodec replay (5h) [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-008] [satisfies REQ-010] [depends: TRD-003]
+- [x] **TRD-003-TEST** — Test notification aggregate state transitions, dedupe, and EventCodec replay (5h) [verifies TRD-003] [satisfies REQ-002] [satisfies REQ-008] [satisfies REQ-010] [depends: TRD-003]
   - Validates PRD ACs: AC-002-3, AC-008-1, AC-008-2, AC-010-2
   - Implementation AC checklist:
     - Given duplicate enqueue commands share correlation id and window, when tests run, then exactly one delivery-eligible event exists.
     - Given notification events are replayed through EventCodec, when projections rebuild, then strict decoding succeeds with no unknown keys.
 
-- [ ] **TRD-004** — Project notification delivery state into `ProjectionStore.run/1` and run detail DTOs (5h) [satisfies REQ-008] [satisfies REQ-010]
+- [x] **TRD-004** — Project notification delivery state into `ProjectionStore.run/1` and run detail DTOs (5h) [satisfies REQ-008] [satisfies REQ-010]
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-010-3
   - Implementation AC checklist:
     - Given notification lifecycle events are applied, when `ProjectionStore.run(run_id)` is read, then latest delivery state is present.
     - Given a critical notification fails, when run status/API/MCP detail is read, then failed notification metadata is visible without raw secrets.
 
-- [ ] **TRD-004-TEST** — Test notification projection in run detail and duplicate skip visibility (4h) [verifies TRD-004] [satisfies REQ-008] [satisfies REQ-010] [depends: TRD-004]
+- [x] **TRD-004-TEST** — Test notification projection in run detail and duplicate skip visibility (4h) [verifies TRD-004] [satisfies REQ-008] [satisfies REQ-010] [depends: TRD-004]
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-010-3
   - Implementation AC checklist:
     - Given attempt/success/failure events, when projection tests read a run, then status and failure reason match events.

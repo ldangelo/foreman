@@ -11,7 +11,8 @@ defmodule ForemanServer.Messaging.Renderer do
       metadata_line(notification.metadata)
     ]
 
-    {:ok, lines |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.join("\n") |> Redactor.redact()}
+    {:ok,
+     lines |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.join("\n") |> Redactor.redact()}
   end
 
   defp metadata_line(metadata) when map_size(metadata) == 0, do: nil

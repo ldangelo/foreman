@@ -1,7 +1,16 @@
 defmodule ForemanServer.Messaging.Notification do
   @moduledoc "Provider-neutral outbound notification DTO and boundary validation."
 
-  @enforce_keys [:notification_id, :provider, :recipient, :event_class, :severity, :subject, :body, :correlation_id]
+  @enforce_keys [
+    :notification_id,
+    :provider,
+    :recipient,
+    :event_class,
+    :severity,
+    :subject,
+    :body,
+    :correlation_id
+  ]
   @derive Jason.Encoder
   defstruct [
     :notification_id,
@@ -19,12 +28,24 @@ defmodule ForemanServer.Messaging.Notification do
 
   @type t :: %__MODULE__{}
 
-  @allowed_keys MapSet.new(~w(notification_id provider recipient event_class severity subject body url correlation_id run_id metadata)a)
-  @required_keys [:provider, :recipient, :event_class, :severity, :subject, :body, :correlation_id]
+  @allowed_keys MapSet.new(
+                  ~w(notification_id provider recipient event_class severity subject body url correlation_id run_id metadata)a
+                )
+  @required_keys [
+    :provider,
+    :recipient,
+    :event_class,
+    :severity,
+    :subject,
+    :body,
+    :correlation_id
+  ]
   @providers [:telegram, :slack]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
   @severities [:info, :warning, :critical]
-  @safe_metadata_keys MapSet.new(~w(run_id task_id phase_id workflow_name project_id status reason dedupe_key)a)
+  @safe_metadata_keys MapSet.new(
+                        ~w(run_id task_id phase_id workflow_name project_id status reason dedupe_key)a
+                      )
 
   @spec normalize(map()) :: {:ok, t()} | {:error, term()}
   def normalize(attrs) when is_map(attrs) do
@@ -110,9 +131,10 @@ defmodule ForemanServer.Messaging.Notification do
       metadata when is_map(metadata) ->
         {:ok,
          Enum.reduce(metadata, %{}, fn {key, value}, acc ->
-           atom_key = normalize_key(key)
-
-           if MapSet.member?(@safe_metadata_keys, atom_key), do: Map.put(acc, atom_key, value), else: acc
+           case safe_metadata_key(key) do
+             nil -> acc
+             safe_key -> Map.put(acc, safe_key, value)
+           end
          end)}
 
       value ->
@@ -120,16 +142,30 @@ defmodule ForemanServer.Messaging.Notification do
     end
   end
 
-  defp get(map, key, default \\ nil), do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  defp get(map, key, default \\ nil),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+
   defp normalize_atom(value) when is_atom(value), do: value
-  defp normalize_atom(value) when is_binary(value), do: String.to_existing_atom(value)
+
+  defp normalize_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
   rescue
     ArgumentError -> value
   end
+
   defp normalize_atom(value), do: value
   defp normalize_key(key) when is_atom(key), do: key
-  defp normalize_key(key) when is_binary(key), do: String.to_existing_atom(key)
-  rescue
-    ArgumentError -> String.to_atom(key)
+  defp normalize_key(key) when is_binary(key), do: matching_allowed_key(key) || key
+
+  defp matching_allowed_key(key) when is_binary(key) do
+    Enum.find(@allowed_keys, &(Atom.to_string(&1) == key))
+  end
+
+  defp safe_metadata_key(key) when is_atom(key) do
+    if MapSet.member?(@safe_metadata_keys, key), do: key
+  end
+
+  defp safe_metadata_key(key) when is_binary(key) do
+    Enum.find(@safe_metadata_keys, &(Atom.to_string(&1) == key))
   end
 end

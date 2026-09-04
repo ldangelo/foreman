@@ -961,6 +961,26 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp apply_event_by_type(state, "NotificationEnqueued", payload) do
+    project_notification_event(state, payload, "enqueued")
+  end
+
+  defp apply_event_by_type(state, "NotificationSuppressed", payload) do
+    project_notification_event(state, payload, "suppressed")
+  end
+
+  defp apply_event_by_type(state, "NotificationDeliveryAttempted", payload) do
+    project_notification_event(state, payload, "attempted")
+  end
+
+  defp apply_event_by_type(state, "NotificationDeliverySucceeded", payload) do
+    project_notification_event(state, payload, "succeeded")
+  end
+
+  defp apply_event_by_type(state, "NotificationDeliveryFailed", payload) do
+    project_notification_event(state, payload, "failed")
+  end
+
   defp apply_event_by_type(state, "RunStarted", payload) do
     case decode_for_projection("RunStarted", payload) do
       %ForemanServer.Events.RunStarted{run_id: run_id} = event ->
@@ -982,7 +1002,8 @@ defmodule ForemanServer.ProjectionStore do
             last_event_at_ms: event_at_ms,
             failure_reason: nil,
             pr_url: nil,
-            phase_prs: []
+            phase_prs: [],
+            notifications: []
           }
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
@@ -1862,6 +1883,34 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp project_notification_event(state, payload, status) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      update_run_projection(state, run_id, payload_event_at_ms(payload), fn run ->
+        notification = %{
+          notification_id: get(payload, :notification_id),
+          provider: get(payload, :provider),
+          event_class: get(payload, :event_class),
+          severity: get(payload, :severity),
+          correlation_id: get(payload, :correlation_id),
+          status: status,
+          reason: get(payload, :reason),
+          retryable?: get(payload, :retryable?),
+          metadata: get(payload, :metadata, %{})
+        }
+
+        Map.update(run, :notifications, [notification], fn notifications ->
+          notifications
+          |> Enum.reject(&(get(&1, :notification_id) == get(notification, :notification_id)))
+          |> Kernel.++([notification])
+        end)
+      end)
+    else
+      state
+    end
+  end
+
   defp apply_terminal_run_event(state, payload, status) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       run
@@ -1910,7 +1959,8 @@ defmodule ForemanServer.ProjectionStore do
       terminal?: false,
       failure_reason: nil,
       pr_url: nil,
-      phase_prs: []
+      phase_prs: [],
+      notifications: []
     }
   end
 

@@ -5,7 +5,15 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   @providers [:telegram, :slack]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
-  @defaults %{enabled: false, provider: :telegram, event_classes: [:collab_url, :action_needed, :stall, :failure], dedupe_window_ms: 300_000, run_update_rate_limit_ms: 300_000, telegram: %{}, slack: %{}}
+  @defaults %{
+    enabled: false,
+    provider: :telegram,
+    event_classes: [:collab_url, :action_needed, :stall, :failure],
+    dedupe_window_ms: 300_000,
+    run_update_rate_limit_ms: 300_000,
+    telegram: %{},
+    slack: %{}
+  }
 
   @spec resolve(keyword()) :: {:ok, Config.t()} | {:error, term()}
   def resolve(opts \\ []) when is_list(opts) do
@@ -14,14 +22,16 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     workflow = opts |> Keyword.get(:workflow_config, %{}) |> messaging_section()
     raw = @defaults |> Map.merge(app) |> Map.merge(project) |> Map.merge(workflow)
 
+    enabled? = truthy?(get(raw, :enabled))
+
     with {:ok, provider} <- provider(raw),
          {:ok, event_classes} <- event_classes(raw),
-         {:ok, destination} <- destination(raw, provider),
+         {:ok, destination} <- maybe_destination(raw, provider, enabled?),
          {:ok, dedupe_window_ms} <- non_negative_int(raw, :dedupe_window_ms),
          {:ok, run_update_rate_limit_ms} <- non_negative_int(raw, :run_update_rate_limit_ms) do
       {:ok,
        %Config{
-         enabled?: truthy?(get(raw, :enabled)),
+         enabled?: enabled?,
          provider: provider,
          event_classes: event_classes,
          dedupe_window_ms: dedupe_window_ms,
@@ -68,6 +78,9 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     end
   end
 
+  defp maybe_destination(_raw, _provider, false), do: {:ok, nil}
+  defp maybe_destination(raw, provider, true), do: destination(raw, provider)
+
   defp destination(raw, :telegram) do
     cfg = provider_config(raw, :telegram)
     token = get(cfg, :token)
@@ -110,15 +123,21 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     end
   end
 
-  defp truthy?(value), do: value in [true, "true", :true, "1", 1]
+  defp truthy?(value), do: value in [true, "true", true, "1", 1]
   defp normalize_map(list) when is_list(list), do: Map.new(list)
   defp normalize_map(map) when is_map(map), do: map
   defp normalize_map(_), do: %{}
-  defp get(map, key, default \\ nil), do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+
+  defp get(map, key, default \\ nil),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+
   defp normalize_atom(value) when is_atom(value), do: value
-  defp normalize_atom(value) when is_binary(value), do: String.to_existing_atom(value)
+
+  defp normalize_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
   rescue
     ArgumentError -> value
   end
+
   defp normalize_atom(value), do: value
 end
