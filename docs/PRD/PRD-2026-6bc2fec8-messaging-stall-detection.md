@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-6bc2fec8
 label: prd-messaging-stall-detection
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-04
 scale_depth: STANDARD
 total_requirements: 15
 total_acceptance_criteria: 40
-readiness_score: 4.1
+readiness_score: 4.4
 ---
 
 # PRD: Use messaging stall detection and failure reporting
@@ -29,8 +29,8 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **Use messaging stall detecti
 | Acceptance criteria coverage | 15/15 (100%) |
 | Risk flags | 11 |
 | Dependencies | 11 |
-| Open ambiguity markers | 12 |
-| TRD decisions required | 8 |
+| Open ambiguity markers | 0 |
+| TRD decisions required | 0 |
 
 ## Acceptance Criteria Summary
 
@@ -58,7 +58,7 @@ Foreman already has worker heartbeat liveness and run-level stuck detection. Tho
 
 This PRD defines configurable stall detection for active phases based on durable Foreman events, not raw log scraping. Agent-phase output activity comes from worker event streams such as stdout, stderr, assistant messages, tool-call completions, and phase lifecycle events. Messaging activity comes from Foreman's inbox/message projections. When a phase stalls past a threshold, Foreman records a clear failure/attention fact, alerts operators, and avoids silently leaving tasks in an apparently progressing state.
 
-Foreman mode auto-selected STANDARD depth. Interviews and adversarial issue prompts were skipped under `--foreman`; unresolved choices are marked inline with `[NEEDS CLARIFICATION: ...]` for PRD refinement.
+Foreman mode auto-selected STANDARD depth. Interviews and adversarial issue prompts were skipped under `--foreman`. Refinement v1.0.1 auto-applied best-effort defaults for all clarification markers using source-verified Foreman boundaries: durable events/projections, existing aggregate commands, current CLI status surfaces, and existing liveness exemptions.
 
 ## 2. Background and Evidence
 
@@ -105,7 +105,7 @@ Consumes run/task status and inbox signals programmatically. Needs machine-reada
 - Detect no-message-progress stalls for active messaging phases.
 - Configurable thresholds with safe defaults.
 - Failure/attention reporting when stalls are detected.
-- Operator alert visibility in existing status, inbox, debug, or projection surfaces [NEEDS CLARIFICATION: Which operator surface is the primary alert destination: task status, inbox, cockpit attention lane, CLI stderr, or all of these?].
+- Operator alert visibility in existing run/task status projections first, with CLI, MCP, cockpit, debug, and inbox/Agent Mail surfaces rendering the same canonical stall state when those surfaces are enabled.
 - Tests for event-driven activity, idempotency, race handling, and threshold behavior.
 - Documentation of configuration and recovery behavior.
 
@@ -114,14 +114,14 @@ Consumes run/task status and inbox signals programmatically. Needs machine-reada
 - Replacing `StuckDetector`, `RunExecutorLiveness`, or `Overwatch.Tracker`.
 - Scraping raw log files as authoritative activity.
 - New agent provider behavior or SDK changes.
-- Auto-killing operating-system processes unless the existing recovery path already owns that behavior [NEEDS CLARIFICATION: Should stall detection only report failures, or also terminate/restart the stalled worker automatically?].
+- Auto-killing, terminating, or restarting operating-system processes. Stall detection reports durable failure/attention facts only; existing recovery paths remain operator-controlled.
 - New messaging product features unrelated to stall detection.
 
 ## 5. Assumptions From Foreman Mode
 
 - "Output" means durable worker/projection activity visible to Foreman, not terminal bytes that bypass event persistence.
 - Agent-phase stalls use a separate no-output threshold from heartbeat timeout and pipeline wall-clock budget.
-- Messaging stalls apply only to phases explicitly classified as messaging/waiting phases [NEEDS CLARIFICATION: What exact workflow phase metadata identifies a "messaging phase"?].
+- Messaging stalls apply only to phases explicitly classified by workflow phase metadata as `stall_detection: messaging` or an equivalent typed field introduced for this feature; phase-name heuristics are not authoritative.
 - The first release should fail/flag the run or phase and alert the operator rather than silently retrying.
 - Existing recovery operations remain operator-controlled unless a later PRD/TRD requests auto-remediation.
 
@@ -138,7 +138,7 @@ Risk: If scope classification is fuzzy, normal long-running phases may be flagge
 Foreman MUST distinguish agent-phase stall detection from messaging-phase stall detection.
 
 - AC-001-1: Given a workflow phase is executing through the agent/worker path, when stall detection evaluates it, then it uses the agent-phase activity model.
-- AC-001-2: Given a workflow phase is classified as messaging/waiting, when stall detection evaluates it, then it uses the messaging activity model [NEEDS CLARIFICATION: Should classification come from phase name, workflow metadata, prompt command type, or runtime event type?].
+- AC-001-2: Given a workflow phase declares explicit workflow metadata such as `stall_detection: messaging`, when stall detection evaluates it, then it uses the messaging activity model; otherwise worker-backed phases use the agent activity model and phase names are ignored.
 - AC-001-3: Given a run is terminal (`completed`, `failed`, `cancelled`, `stuck`, or blocked by an explicit operator decision), when stall detection scans, then no new stall report is emitted for that run.
 
 ### REQ-002: Track output activity from worker events
@@ -150,7 +150,7 @@ Risk: Output activity can drift if one worker event type updates liveness and an
 Foreman MUST derive agent-phase no-output activity from durable worker/phase events.
 
 - AC-002-1: Given a worker emits stdout, stderr, assistant message, tool-call completion, phase start, phase completion, or phase failure, when projections update, then the active phase's output-activity timestamp advances.
-- AC-002-2: Given only heartbeat events occur, when no-output stall detection evaluates the phase, then heartbeat alone does not count as output activity [NEEDS CLARIFICATION: Should heartbeat-only progress ever extend the no-output deadline for providers known to suppress streaming output?].
+- AC-002-2: Given only heartbeat events occur, when no-output stall detection evaluates the phase, then heartbeat alone does not count as output activity; providers that suppress streaming output must rely on explicit `RunExecutorLiveness` deadlines or configured exemptions, not heartbeat-only extension.
 - AC-002-3: Given a raw compatibility log file changes without a corresponding persisted worker event, when stall detection evaluates activity, then the raw file change is ignored.
 
 ### REQ-003: Track messaging activity from inbox events
@@ -162,7 +162,7 @@ Risk: Inbox delivery and message append events can represent different kinds of 
 Foreman MUST derive messaging activity from existing inbox/message events and projections.
 
 - AC-003-1: Given an inbox message is appended for the run, when messaging stall detection evaluates the phase, then the messaging-activity timestamp advances.
-- AC-003-2: Given only a delivery/read-status update occurs, when messaging stall detection evaluates the phase, then Foreman treats it according to the configured activity policy [NEEDS CLARIFICATION: Do delivery/read acknowledgements count as messaging progress, or only new messages?].
+- AC-003-2: Given only a delivery/read-status update occurs, when messaging stall detection evaluates the phase, then it does not advance messaging-progress activity by default; only appended messages count unless a future typed policy explicitly opts in delivery acknowledgements.
 
 ### REQ-004: Configure stall thresholds safely
 
@@ -172,9 +172,9 @@ Risk: Thresholds that default too low create noisy false failures; thresholds th
 
 Operators MUST be able to configure no-output and messaging stall thresholds.
 
-- AC-004-1: Given no custom config is set, when Foreman starts, then no-output stall detection uses a documented safe default [NEEDS CLARIFICATION: Is the desired default 15 minutes to match `StuckDetector`, 5 minutes, or workflow-specific?].
+- AC-004-1: Given no custom config is set, when Foreman starts, then agent no-output stall detection defaults to 15 minutes to align with the existing `StuckDetector` safety net, and messaging no-progress stall detection defaults to 30 minutes to reduce false positives for human-adjacent waits.
 - AC-004-2: Given config sets a non-positive threshold, when Foreman validates config, then detection is disabled only when the documented disable value is used; malformed values fail loudly.
-- AC-004-3: Given a phase declares an override threshold, when detection evaluates that phase, then the phase override wins over application default if the override is valid [NEEDS CLARIFICATION: Are per-phase YAML overrides required for v1?].
+- AC-004-3: Given a phase declares a valid per-phase workflow YAML override for stall threshold or stall policy, when detection evaluates that phase, then the explicit phase override wins over the application default; malformed overrides fail workflow validation loudly.
 
 ### 6b. Stall Detection
 
@@ -188,7 +188,7 @@ Foreman MUST detect active agent phases that exceed the no-output threshold whil
 
 - AC-005-1: Given an agent phase has output activity within the configured threshold, when the detector scans, then no stall report is emitted.
 - AC-005-2: Given an agent phase has no output activity for at least the threshold and is not exempted by an explicit in-flight deadline policy, when the detector scans, then a stall is reported once.
-- AC-005-3: Given an agent invocation has a valid future timeout deadline from `RunExecutorLiveness`, when no output has occurred, then the detector follows the documented exemption policy rather than contradicting `StuckDetector` [NEEDS CLARIFICATION: Should no-output stalls ignore, shorten, or respect `RunExecutorLiveness` deadlines?].
+- AC-005-3: Given an agent invocation has a valid future timeout deadline from `RunExecutorLiveness`, when no output has occurred, then no-output stall detection respects that deadline and does not flag the phase until the deadline expires or is cleared.
 
 ### REQ-006: Detect messaging stalls without false positives
 
@@ -200,7 +200,7 @@ Foreman MUST detect messaging phases that have not produced message progress for
 
 - AC-006-1: Given a messaging phase is waiting and inbox/message activity occurs within the threshold, when the detector scans, then no stall report is emitted.
 - AC-006-2: Given a messaging phase has no message activity for at least the threshold, when the detector scans, then Foreman reports a messaging stall with run, task, phase, and idle duration.
-- AC-006-3: Given a phase is explicitly waiting for operator input, when detection scans, then the configured wait-for-human policy is applied [NEEDS CLARIFICATION: Should explicit operator-wait phases be exempt, warned only, or failed after threshold?].
+- AC-006-3: Given a phase is explicitly waiting for operator input, when detection scans, then the default wait-for-human policy is warning-only attention after the messaging threshold; it must not mark the run failed unless the phase explicitly opts into failure-on-stall.
 
 ### REQ-007: Report detected stalls as failure facts
 
@@ -223,7 +223,7 @@ Risk: A durable event without a visible operator surface still leaves work unatt
 Foreman MUST surface stall reports to operators through existing attention channels.
 
 - AC-008-1: Given a stall is detected, when the operator views active/attention task or run status, then the stalled task/run is visible with the stall reason.
-- AC-008-2: Given an inbox/Agent Mail surface is enabled for the run, when a stall is detected, then Foreman creates or exposes an operator-facing alert message [NEEDS CLARIFICATION: Should alert messages be persisted as `InboxMessageAppended`, a separate event, or projection-only attention metadata?].
+- AC-008-2: Given an inbox/Agent Mail surface is enabled for the run, when a stall is detected, then Foreman persists a typed stall event/fact and exposes it as operator-facing inbox attention metadata; it does not fabricate an `InboxMessageAppended` message unless an actual message body is intentionally sent.
 
 ### REQ-009: Preserve existing liveness semantics
 
@@ -393,14 +393,22 @@ Resolution auto-applied under Foreman mode: Scope excludes automatic process kil
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4.0 | Covers activity, thresholds, detection, reporting, alerts, projections, docs, tests. |
-| Testability | 4.3 | ACs are event/projection observable; time-based tests need deterministic clocks. |
-| Clarity | 3.8 | 12 ambiguity markers remain for phase classification, thresholds, and alert policy. |
-| Feasibility | 4.2 | Fits existing Overwatch, StuckDetector, ProjectionStore, and inbox boundaries. |
-| Overall | 4.1 | PASS |
+| Completeness | 4.3 | Covers activity, thresholds, detection, reporting, alerts, projections, docs, tests, and explicit v1 policy defaults. |
+| Testability | 4.4 | ACs are event/projection observable with deterministic expectations for heartbeat, inbox delivery updates, deadlines, idempotency, and human-wait policy. |
+| Clarity | 4.4 | All clarification markers resolved with explicit v1 defaults for classification, thresholds, alert surfaces, and liveness interaction. |
+| Feasibility | 4.3 | Fits existing Overwatch, StuckDetector, ProjectionStore, inbox boundaries, and aggregate-command discipline without process auto-remediation. |
+| Overall | 4.4 | PASS |
 
-Gate decision: PASS. PRD saved.
+Gate decision: PASS. PRD refined.
 
-Concerns: The TRD must resolve the 12 inline `[NEEDS CLARIFICATION]` markers before implementation or carry them into an explicit refine step. Under `--foreman`, concerns were logged and saving proceeded.
+Readiness score: 4.1 -> 4.4 (improved). No dimensions declined.
 
-Ambiguity scan complete: 12 items marked for clarification.
+Ambiguity scan complete: 0 items marked for clarification.
+
+## 11. Change Log
+
+### 2026-09-04 — v1.0.1
+
+- Auto-applied Foreman-mode refinement for 12 clarification markers.
+- Resolved v1 policy defaults for alert surfaces, no process auto-remediation, messaging phase metadata, heartbeat treatment, delivery/read acknowledgements, thresholds, per-phase YAML overrides, liveness deadlines, human-wait behavior, and inbox alert persistence.
+- Updated PRD Health Summary and Implementation Readiness Gate score from 4.1 to 4.4.
