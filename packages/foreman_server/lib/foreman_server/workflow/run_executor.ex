@@ -1934,12 +1934,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp fetch_project_id(state) do
-    pid = project_id(state)
-
-    if is_nil(pid) or pid == "" do
-      {:error, :project_id_missing}
-    else
-      {:ok, pid}
+    case project_id(state) do
+      nil -> {:error, :project_id_missing}
+      "" -> {:error, :project_id_missing}
+      pid when is_binary(pid) -> {:ok, pid}
+      pid -> {:error, {:project_id_malformed, pid}}
     end
   end
 
@@ -2702,6 +2701,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
+
+  @doc false
+  def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})
 
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads
