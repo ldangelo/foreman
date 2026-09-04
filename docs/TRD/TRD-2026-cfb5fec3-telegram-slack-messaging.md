@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-cfb5fec3
 label: trd-telegram-slack-messaging
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-04
 prd_reference: docs/PRD/PRD-2026-cfb5fec3-telegram-slack-messaging.md
@@ -9,8 +9,8 @@ prd_label: prd-telegram-slack-messaging
 scale_depth: STANDARD
 total_requirements: 14
 total_acceptance_criteria: 36
-design_readiness_score: 4.5
-readiness_score: 4.5
+design_readiness_score: 4.6
+readiness_score: 4.6
 total_tasks: 40
 kind: trd
 ---
@@ -25,15 +25,19 @@ This TRD turns `PRD-2026-cfb5fec3` into a source-verified plan for outbound oper
 
 The PRD subject matches the Foreman task title. PRD readiness score is 4.4, so generation proceeds. MCP enhancement: skipped (no MCP tools detected).
 
+Refinement pass v1.0.1 source-verified the existing server/CLI surfaces, closed one missing AC trace for unsupported-provider behavior, and tightened dispatcher/config/operator-surface implementation notes without changing scope or task count.
+
 ## 2. Source Verification Notes
 
 - No runtime Slack or Telegram adapter exists in source; existing Slack/Telegram mentions identify a planned, unbuilt channel in `docs/PRD/PRD-2026-d306444f-phase-commit-control.md`.
-- `ForemanServer.Recovery.do_detect/1` scans `ProjectionStore.list_runs/0`, uses `last_event_at`, and defaults `:run_stale_after_ms` to five minutes; messaging must observe/extend this path, not add a second stall detector.
-- `ForemanServer.Workflow.RunExecutor.emit_phase_failure/4` and `emit_run_failure/2` are the phase/run failure emission points.
-- `ProjectionStore.run/1` and `ProjectionStore.phases_for_run/1` are bounded run-detail read surfaces; delivery state must project into these surfaces and MCP/API run detail.
-- `EventCodec` derives its registry from `lib/foreman_server/events/*.ex`; adding event structs registers them, but replay tests must pin strict decoding.
-- `ProjectUpdated` currently enforces `project_id` and `task_provider` while the Project aggregate/projection also preserve a general `config` map. Messaging project config should use that config path and update the event struct if strict decoding requires it.
-- `PhaseSpec` whitelists known phase keys. Workflow-level `notifications:` settings must be normalized at the workflow snapshot/catalog boundary rather than hidden in arbitrary phase maps.
+- `ForemanServer.Recovery.do_detect/1` scans `ProjectionStore.list_runs/0`, filters non-terminal runs, reads `last_event_at`, and defaults `:run_stale_after_ms` to five minutes; messaging must observe/extend this path, not add a second stall detector.
+- `ForemanServer.Workflow.RunExecutor.emit_phase_failure/4` dispatches `phase.fail`, then delegates to `emit_run_failure/2`, which treats `{:run_terminal, _}` as idempotent success and propagates other dispatch failures. Failure notification hooks must preserve that total handling.
+- `ProjectionStore.run/1` and `ProjectionStore.phases_for_run/1` are bounded run-detail read surfaces. MCP `foreman_run_get` returns the raw run projection, and `foreman_run_status` builds a `RunStatus` DTO from those two reads; notification state must extend both read paths without weakening required identity/terminal checks.
+- `ProjectionStore.subscribe/0` broadcasts `{:projection_event, event}` after `apply_events/1`/rebuild. The dispatcher can subscribe to this live event stream, but tests must pin no duplicate sends during rebuild/replay.
+- `EventCodec` derives its registry from `lib/foreman_server/events/*.ex`; adding event structs registers them, but replay tests must pin strict decoding and unknown-key rejection.
+- `ProjectUpdated` currently enforces only `project_id` and `task_provider`, while `ProjectionStore.apply_event_by_type/3` reads optional `:config` into the project projection. Messaging project config should use that config path and update the event struct plus aggregate tests if strict project-update commands persist config.
+- `PhaseSpec` whitelists known phase keys and drops unrecognized keys. Workflow-level `notifications:` settings must be normalized at the workflow snapshot/catalog boundary rather than hidden in arbitrary phase maps.
+- The Go CLI currently exposes `foreman run get <id>` against `/api/runs/:id`; there is no `run status` or messaging command yet. Any test-delivery CLI addition must be verified against `packages/foreman_cli/cmd/foreman/*.go` or a fresh `go build ./cmd/foreman`.
 - `JidoSignalTopics.foreman_inbox/0` documents `com.foreman.inbox.*` as a human-facing agent-to-operator bus; messaging is an additional outbound delivery target, not a replacement for inbox/webhook ingest.
 
 ## 3. Architecture Decision
@@ -70,13 +74,13 @@ Foreman mode: auto-selected Option C (event-sourced notification pipeline with p
 | DTOs | `messaging/notification.ex`, `destination.ex`, `config.ex`, `delivery_result.ex` | Provider-neutral structs and validators. Unknown keys rejected. |
 | Aggregate | `aggregates/notification.ex` | Event-sourced dedupe/attempt lifecycle on `notification:<correlation_id>`. |
 | Events | `notification_enqueued/suppressed/delivery_attempted/delivery_succeeded/delivery_failed.ex` | Durable notification lifecycle source of truth. |
-| Dispatcher | `messaging/dispatcher.ex` | Supervised async provider I/O after enqueue. |
+| Dispatcher | `messaging/dispatcher.ex` | Supervised `ProjectionStore.subscribe/0` consumer for enqueue events; dispatches provider I/O after local enqueue and ignores replay/rebuild duplicates by notification id/attempt id. |
 | Providers | `messaging/provider.ex`, `providers/telegram.ex`, `providers/slack.ex` | Behavior plus HTTP adapters; no network in tests. |
 | Rendering | `messaging/renderer.ex`, `messaging/redactor.ex` | Safe-field rendering and secret/private URL redaction. |
 | Config | `messaging/config_resolver.ex` | Workflow `notifications:` → project config → `:foreman_server, :messaging`; disabled by default. |
 | Triggers | focused trigger functions/modules | Collab URL, action-needed, stall, failure, run-update enqueue calls. |
 | Projection | `projection_store.ex` | Fold notification events into per-run delivery state. |
-| Operator surfaces | API/MCP/CLI/docs | Failed critical notifications and test-delivery operation. |
+| Operator surfaces | API/MCP/CLI/docs | Failed critical notifications in run reads plus a source-verified test-delivery operation. |
 
 ### 3.3 Data Flow
 
@@ -131,15 +135,17 @@ No foundational TRD capabilities were registered by `trd-graph-cli capabilities 
 **Shippable State:** Operators can enable messaging configuration and Foreman can accept provider-neutral notification requests that are validated, deduped, projected, and visible in run detail without sending external chat messages yet.
 
 - [ ] **TRD-001** — Add provider-neutral messaging DTOs and validation helpers (4h) [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014]
-  - Validates PRD ACs: AC-001-1, AC-001-2, AC-009-2, AC-014-1, AC-014-2
+  - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-009-2, AC-014-1, AC-014-2
   - Implementation AC checklist:
     - Given a notification map contains recipient, severity, subject, body, optional URL, correlation id, and metadata, when normalized, then a typed struct is returned.
     - Given unknown or malformed keys are provided, when validation runs, then it returns a typed error and drops no known data silently.
+    - Given an unsupported provider is configured, when the notification boundary resolves delivery, then a typed `unsupported_provider` error is recorded/logged without crashing the lifecycle caller.
 
-- [ ] **TRD-001-TEST** — Test DTO validation, unknown-key rejection, and safe-field allowlist (3h) [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014] [depends: TRD-001]
-  - Validates PRD ACs: AC-001-1, AC-001-2, AC-009-2, AC-014-1
+- [ ] **TRD-001-TEST** — Test DTO validation, unknown-key rejection, unsupported-provider errors, and safe-field allowlist (3h) [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-009] [satisfies REQ-014] [depends: TRD-001]
+  - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-009-2, AC-014-1
   - Implementation AC checklist:
     - Given valid and invalid notification maps, when tests run, then valid structs pass and invalid fields produce typed errors.
+    - Given an unsupported provider atom/string is configured, when tests exercise the boundary, then the result is a typed config error and the caller process stays alive.
     - Given raw prompts/env/artifacts/full descriptions are supplied in metadata, when rendering allowlist tests run, then those fields are absent by default.
 
 - [ ] **TRD-002** — Add messaging config resolver for workflow/project/app defaults (5h) [satisfies REQ-005] [satisfies REQ-011]
@@ -188,6 +194,7 @@ No foundational TRD capabilities were registered by `trd-graph-cli capabilities 
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-010-3
   - Implementation AC checklist:
     - Given a lifecycle event triggers messaging, when provider I/O is slow, then the lifecycle caller returns after local enqueue without waiting on HTTP.
+    - Given `ProjectionStore.subscribe/0` delivers live or rebuild projection events, when the dispatcher sees an already-attempted notification id, then no duplicate provider call occurs.
     - Given provider delivery fails, when the run is otherwise healthy, then the run status does not become failed solely due to messaging.
 
 - [ ] **TRD-005-TEST** — Test dispatcher non-blocking behavior and failed-delivery isolation (4h) [verifies TRD-005] [satisfies REQ-010] [depends: TRD-005]
@@ -448,11 +455,11 @@ Traceability check: 14 requirements covered, 0 uncovered, 0 orphaned annotations
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Architecture completeness | 4.5 | Components, events, providers, data flow, config, and projections defined; exact workflow normalizer location remains implementation detail. |
-| Task coverage | 4.7 | Every REQ has implementation and test coverage; traceability matrix complete. |
-| Dependency clarity | 4.4 | PR ordering is acyclic; trigger work waits for core/dispatcher. |
-| Estimate confidence | 4.3 | Tasks are under 8h and scoped to narrow modules; provider/client choice may affect estimates. |
-| Overall | 4.5 | PASS |
+| Architecture completeness | 4.6 | Components, events, providers, data flow, config, projections, CLI/API/MCP surfaces, and dispatcher subscription source are defined. |
+| Task coverage | 4.8 | Every REQ and every PRD AC has implementation and test coverage; unsupported-provider AC now traced explicitly. |
+| Dependency clarity | 4.5 | PR ordering is acyclic; trigger work waits for core/dispatcher and rebuild duplicate behavior is called out. |
+| Estimate confidence | 4.4 | Tasks are under 8h and scoped to narrow modules; HTTP client/test-delivery CLI shape may affect estimates. |
+| Overall | 4.6 | PASS |
 
 Gate decision: **PASS — ready for implementation planning after approval**.
 
@@ -472,3 +479,12 @@ After review/approval:
 /ensemble-configure-team docs/TRD/TRD-2026-cfb5fec3-telegram-slack-messaging.md
 /ensemble-implement-trd-beads docs/TRD/TRD-2026-cfb5fec3-telegram-slack-messaging.md
 ```
+
+## 12. Changelog
+
+### 1.0.1 — 2026-09-04
+
+- Source-verified recovery, run failure, projection subscription, EventCodec, ProjectUpdated config, MCP run-status, and CLI run-get surfaces.
+- Added explicit AC-001-3 coverage for unsupported-provider behavior.
+- Tightened dispatcher requirements around `ProjectionStore.subscribe/0` rebuild/replay duplicate avoidance.
+- Raised readiness score from 4.5 to 4.6 without changing scope or task count.
