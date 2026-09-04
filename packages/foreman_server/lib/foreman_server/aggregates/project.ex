@@ -236,10 +236,10 @@ defmodule ForemanServer.Aggregates.Project do
   defp require_absent(%State{exists?: true}, project_id),
     do: {:error, {:already_exists, :project, project_id}}
 
-  defp require_absent(_state, _project_id), do: :ok
+  defp require_absent(%State{}, _project_id), do: :ok
 
   defp require_exists(%State{exists?: true}, _project_id), do: :ok
-  defp require_exists(_state, project_id), do: {:error, {:not_found, :project, project_id}}
+  defp require_exists(%State{}, project_id), do: {:error, {:not_found, :project, project_id}}
 
   defp validate_status(nil), do: :ok
 
@@ -257,15 +257,15 @@ defmodule ForemanServer.Aggregates.Project do
        when map_size(reservations) > 0,
        do: {:error, :project_has_active_runs, Map.keys(reservations)}
 
-  defp validate_archive(_state), do: :ok
+  defp validate_archive(%State{}), do: :ok
 
   defp validate_reactivate(%State{archived?: false}), do: {:error, {:not_archived, :project}}
-  defp validate_reactivate(_state), do: :ok
+  defp validate_reactivate(%State{}), do: :ok
 
   defp reject_archived(%State{archived?: true}, project_id),
     do: {:error, {:project_archived, project_id}}
 
-  defp reject_archived(_state, _project_id), do: :ok
+  defp reject_archived(%State{}, _project_id), do: :ok
 
   defp reject_at_run_limit(%State{active_run_reservations: reservations}, limit)
        when is_integer(limit) and limit >= 0 do
@@ -405,7 +405,7 @@ defmodule ForemanServer.Aggregates.Project do
   defp validate_implementation_key(_key),
     do: {:error, {:missing_or_invalid, :implementation_key}}
 
-  defp reject_same_implementation_key(_state, _project_id, _run_id, nil), do: :ok
+  defp reject_same_implementation_key(%State{}, _project_id, _run_id, nil), do: :ok
 
   defp reject_same_implementation_key(
          %State{active_run_reservations: reservations},
