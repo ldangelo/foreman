@@ -279,3 +279,9 @@ bash scripts/trigger-jido-upgrade.sh
 ```
 
 The evaluation logic itself lives in [`scripts/ci/jido-upgrade-evaluation.sh`](./scripts/ci/jido-upgrade-evaluation.sh) (JRM-T004): it runs the full Foreman test suite against the candidate Jido version and reports pass/fail. See [`JIDO_FORKS.md`](./JIDO_FORKS.md) for the pinned fork manifest and [`docs/user-guide.md`](./docs/user-guide.md) §7 for runtime configuration.
+
+## Phase stall detection
+
+Foreman supports opt-in phase stall detection through workflow phase `stall_detection` metadata. Valid values are `agent`, `agent_no_output`, `messaging`, `messaging_no_progress`, or a map with `kind`, optional positive `threshold_ms`, and optional `policy` (`fail` or `attention`). Defaults are 900000 ms for agent no-output stalls and 1800000 ms for messaging no-progress stalls. Disable the detector with `config :foreman_server, :stall_detection_enabled, false`; non-positive thresholds are malformed, not a disable shortcut.
+
+Stalls are persisted as `RunStallReported` events via `run.report_stall`, projected to `latest_stall` on run/phase/task projections, and rendered by HTTP/MCP/CLI JSON surfaces that read those projections. Worker heartbeats keep liveness checks alive but do not count as agent output progress.

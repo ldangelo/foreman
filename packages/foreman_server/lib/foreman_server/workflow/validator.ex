@@ -73,15 +73,31 @@ defmodule ForemanServer.Workflow.Validator do
           missing_key?(phase, "bash") ->
         {:error, {:missing_phase_action, index}}
 
-      Map.has_key?(phase, "command") ->
-        validate_skill_from_command(phase["command"], index)
-
       true ->
-        :ok
+        with :ok <- validate_stall_detection(phase, index) do
+          if Map.has_key?(phase, "command") do
+            validate_skill_from_command(phase["command"], index)
+          else
+            :ok
+          end
+        end
     end
   end
 
   defp validate_phase(_non_map, _index), do: :ok
+
+  defp validate_stall_detection(phase, index) do
+    case Map.fetch(phase, "stall_detection") do
+      {:ok, value} ->
+        case ForemanServer.Workflow.StallPolicy.normalize(value) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, {:invalid_stall_detection, index, reason}}
+        end
+
+      :error ->
+        :ok
+    end
+  end
 
   defp validate_skill_from_command(command, _index) when is_binary(command) do
     case Regex.run(@skill_from_command, command) do

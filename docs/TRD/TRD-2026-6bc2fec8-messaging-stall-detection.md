@@ -2,7 +2,7 @@
 document_id: TRD-2026-6bc2fec8
 label: trd-messaging-stall-detection
 version: 1.0.1
-status: Draft
+status: Implemented
 date: 2026-09-04
 prd_reference: docs/PRD/PRD-2026-6bc2fec8-messaging-stall-detection.md
 prd_label: prd-messaging-stall-detection
@@ -176,52 +176,52 @@ Config defaults:
 ### PR 1: Activity model and workflow metadata
 **Shippable State:** Operators can define and validate stall policy metadata in workflow phases, and Foreman projections expose deterministic activity timestamps for agent and messaging phases without changing run outcomes.
 
-- [ ] **TRD-001** Define typed stall policy structs/helpers for agent and messaging scopes in `packages/foreman_server/lib/foreman_server/workflow` and config modules. (3h) [satisfies REQ-001, REQ-004, REQ-006]
+- [x] **TRD-001** Define typed stall policy structs/helpers for agent and messaging scopes in `packages/foreman_server/lib/foreman_server/workflow` and config modules. (3h) [satisfies REQ-001, REQ-004, REQ-006]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-004-1, AC-004-2, AC-006-3
   - Implementation ACs:
     - Given absent config, when defaults load, then agent threshold is 900000 ms and messaging threshold is 1800000 ms.
     - Given a malformed non-positive integer, when config validates, then validation returns a typed error and does not silently disable detection.
-- [ ] **TRD-001-TEST** Add config/unit tests for default thresholds, documented disable value, and malformed threshold rejection. (2h) [verifies TRD-001] [satisfies REQ-004] [depends: TRD-001]
+- [x] **TRD-001-TEST** Add config/unit tests for default thresholds, documented disable value, and malformed threshold rejection. (2h) [verifies TRD-001] [satisfies REQ-004] [depends: TRD-001]
   - Validates PRD ACs: AC-004-1, AC-004-2
   - Implementation ACs:
     - Given default app env, when tests read stall config, then expected defaults are returned.
     - Given `0`, negative, or wrong-type threshold, when validation runs, then a typed error is asserted.
-- [ ] **TRD-002** Extend workflow loader/phase spec/schema/validator to accept explicit stall metadata (`agent`, `messaging`, threshold override, policy), preserve it in parsed phase specs, and reject phase-name heuristics. (4h) [satisfies REQ-001, REQ-004, REQ-006]
+- [x] **TRD-002** Extend workflow loader/phase spec/schema/validator to accept explicit stall metadata (`agent`, `messaging`, threshold override, policy), preserve it in parsed phase specs, and reject phase-name heuristics. (4h) [satisfies REQ-001, REQ-004, REQ-006]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-004-3, AC-006-3
   - Implementation ACs:
     - Given `stall_detection: messaging`, when workflow validation succeeds, then the parsed phase spec carries messaging stall kind.
     - Given only a phase name containing "message", when no metadata exists, then no messaging scope is inferred.
-- [ ] **TRD-002-TEST** Add workflow validator tests for valid overrides, malformed overrides, and no name-based classification. (2h) [verifies TRD-002] [satisfies REQ-001, REQ-004] [depends: TRD-002]
+- [x] **TRD-002-TEST** Add workflow validator tests for valid overrides, malformed overrides, and no name-based classification. (2h) [verifies TRD-002] [satisfies REQ-001, REQ-004] [depends: TRD-002]
   - Validates PRD ACs: AC-001-2, AC-004-3
   - Implementation ACs:
     - Given a malformed override, when validation runs, then it returns a specific error tuple.
     - Given equivalent phase names with/without metadata, when validated, then only metadata changes stall kind.
-- [ ] **TRD-003** Extend `phase.start`, `Commands.StartPhase`, `Events.PhaseStarted`, and phase projections with activity fields and stall metadata copied from parsed phase specs. (4h) [satisfies REQ-001, REQ-002, REQ-003, REQ-011]
+- [x] **TRD-003** Extend `phase.start`, `Commands.StartPhase`, `Events.PhaseStarted`, and phase projections with activity fields and stall metadata copied from parsed phase specs. (4h) [satisfies REQ-001, REQ-002, REQ-003, REQ-011]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-002-1, AC-003-1, AC-011-3
   - Implementation ACs:
     - Given `PhaseStarted` with stall metadata, when projected, then phase activity timestamps initialize from event time and policy fields match the source phase spec.
     - Given no stall has been reported, when projection is read, then stall fields are nil/absent.
-- [ ] **TRD-003-TEST** Add projection tests for phase metadata initialization and absent-stall projection shape. (2h) [verifies TRD-003] [satisfies REQ-001, REQ-011] [depends: TRD-003]
+- [x] **TRD-003-TEST** Add projection tests for phase metadata initialization and absent-stall projection shape. (2h) [verifies TRD-003] [satisfies REQ-001, REQ-011] [depends: TRD-003]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-011-3
   - Implementation ACs:
     - Given phase-start events with explicit stall metadata, when projected, then kind/threshold/policy fields match.
     - Given active phase no stall event, when `phases_for_run/1` is read, then latest stall is nil.
-- [ ] **TRD-004** Update projection event handlers so qualifying worker/phase events advance agent output activity but `WorkerHeartbeat` does not. (4h) [satisfies REQ-002, REQ-009]
+- [x] **TRD-004** Update projection event handlers so qualifying worker/phase events advance agent output activity but `WorkerHeartbeat` does not. (4h) [satisfies REQ-002, REQ-009]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-009-3
   - Implementation ACs:
     - Given stdout/stderr/assistant/tool/phase lifecycle events, when applied, then output activity advances to event time.
     - Given only heartbeat events, when applied, then output activity timestamp is unchanged while existing run liveness behavior remains intact.
-- [ ] **TRD-004-TEST** Add projection tests proving output event advancement, heartbeat exclusion, and raw-log ignorance. (3h) [verifies TRD-004] [satisfies REQ-002, REQ-009, REQ-014] [depends: TRD-004]
+- [x] **TRD-004-TEST** Add projection tests proving output event advancement, heartbeat exclusion, and raw-log ignorance. (3h) [verifies TRD-004] [satisfies REQ-002, REQ-009, REQ-014] [depends: TRD-004]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-009-3, AC-014-1
   - Implementation ACs:
     - Given synthetic worker output events, when projected in timestamp order, then output activity equals latest qualifying event.
     - Given a compatibility log file changes without an event, when projections are read, then activity is unchanged.
-- [ ] **TRD-005** Update inbox projection/correlation logic so `InboxMessageAppended` advances messaging activity and `InboxDeliveryUpdated` does not by default. (3h) [satisfies REQ-003, REQ-006]
+- [x] **TRD-005** Update inbox projection/correlation logic so `InboxMessageAppended` advances messaging activity and `InboxDeliveryUpdated` does not by default. (3h) [satisfies REQ-003, REQ-006]
   - Validates PRD ACs: AC-003-1, AC-003-2, AC-006-1
   - Implementation ACs:
     - Given an appended inbox message for a run, when projected, then messaging activity advances.
     - Given only delivery/read update, when projected, then messaging progress activity is unchanged.
-- [ ] **TRD-005-TEST** Add inbox projection tests for appended-message progress and delivery-update non-progress. (2h) [verifies TRD-005] [satisfies REQ-003, REQ-014] [depends: TRD-005]
+- [x] **TRD-005-TEST** Add inbox projection tests for appended-message progress and delivery-update non-progress. (2h) [verifies TRD-005] [satisfies REQ-003, REQ-014] [depends: TRD-005]
   - Validates PRD ACs: AC-003-1, AC-003-2, AC-014-1
   - Implementation ACs:
     - Given message append then delivery update, when projected, then only append timestamp becomes messaging activity.
@@ -230,52 +230,52 @@ Config defaults:
 ### PR 2: Stall detector and durable reporting
 **Shippable State:** Active runs with no qualifying agent output or messaging progress are reported once as durable stall facts with clear policy-controlled run state.
 
-- [ ] **TRD-006** Add `ForemanServer.StallDetector` one-shot scan over `ProjectionStore.stall_candidates/1` active phase candidates with injected clock/dispatch functions for deterministic tests. (5h) [satisfies REQ-005, REQ-006, REQ-010, REQ-012]
+- [x] **TRD-006** Add `ForemanServer.StallDetector` one-shot scan over `ProjectionStore.stall_candidates/1` active phase candidates with injected clock/dispatch functions for deterministic tests. (5h) [satisfies REQ-005, REQ-006, REQ-010, REQ-012]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-010-1, AC-012-2
   - Implementation ACs:
     - Given active phase activity inside threshold, when scan runs, then no command dispatch occurs.
     - Given idle duration equals or exceeds threshold, when scan runs, then exactly one stall command is prepared.
-- [ ] **TRD-006-TEST** Add detector unit tests for agent and messaging candidate selection at threshold boundaries. (3h) [verifies TRD-006] [satisfies REQ-005, REQ-006, REQ-014] [depends: TRD-006]
+- [x] **TRD-006-TEST** Add detector unit tests for agent and messaging candidate selection at threshold boundaries. (3h) [verifies TRD-006] [satisfies REQ-005, REQ-006, REQ-014] [depends: TRD-006]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-006-1, AC-006-2, AC-014-1
   - Implementation ACs:
     - Given idle time threshold minus one, when scanned, then no stall is emitted.
     - Given idle time at threshold, when scanned, then the expected stall kind is emitted.
-- [ ] **TRD-007** Integrate `RunExecutorLiveness.lookup/2` into agent stall scans so valid future deadlines exempt quiet agent phases until expiration. (3h) [satisfies REQ-005, REQ-009]
+- [x] **TRD-007** Integrate `RunExecutorLiveness.lookup/2` into agent stall scans so valid future deadlines exempt quiet agent phases until expiration. (3h) [satisfies REQ-005, REQ-009]
   - Validates PRD ACs: AC-005-3, AC-009-2
   - Implementation ACs:
     - Given registered executor PID and future deadline, when no output exists, then scan skips the phase.
     - Given expired or stale-owner deadline, when no output exceeds threshold, then scan may report a stall.
-- [ ] **TRD-007-TEST** Add liveness exemption tests covering future, expired, stale-owner, and absent deadline cases. (3h) [verifies TRD-007] [satisfies REQ-005, REQ-009, REQ-014] [depends: TRD-007]
+- [x] **TRD-007-TEST** Add liveness exemption tests covering future, expired, stale-owner, and absent deadline cases. (3h) [verifies TRD-007] [satisfies REQ-005, REQ-009, REQ-014] [depends: TRD-007]
   - Validates PRD ACs: AC-005-3, AC-009-2, AC-014-3
   - Implementation ACs:
     - Given future deadline owned by current executor, when scanned, then dispatch list is empty.
     - Given stale PID owner, when scanned, then no exemption applies.
-- [ ] **TRD-008** Add typed `RunStallReported` event, codec registration, and event tests with required payload fields. (4h) [satisfies REQ-007, REQ-010]
+- [x] **TRD-008** Add typed `RunStallReported` event, codec registration, and event tests with required payload fields. (4h) [satisfies REQ-007, REQ-010]
   - Validates PRD ACs: AC-007-1, AC-010-1, AC-010-2
   - Implementation ACs:
     - Given complete payload, when encoded/decoded, then all stall fields round-trip.
     - Given missing run/phase/kind fields, when decoded, then validation fails loudly.
-- [ ] **TRD-008-TEST** Add event codec tests for valid stall payloads and malformed payload rejection. (2h) [verifies TRD-008] [satisfies REQ-007] [depends: TRD-008]
+- [x] **TRD-008-TEST** Add event codec tests for valid stall payloads and malformed payload rejection. (2h) [verifies TRD-008] [satisfies REQ-007] [depends: TRD-008]
   - Validates PRD ACs: AC-007-1
   - Implementation ACs:
     - Given `agent_no_output` and `messaging_no_progress`, when decoded, then both kinds are accepted.
     - Given unknown stall kind, when decoded, then a typed error is returned or raised per codec convention.
-- [ ] **TRD-009** Add run aggregate command handling for stall reporting with terminal-state guard, attention/fail policy, status effect, and persisted idempotency-key tracking. (5h) [satisfies REQ-007, REQ-009, REQ-010]
+- [x] **TRD-009** Add run aggregate command handling for stall reporting with terminal-state guard, attention/fail policy, status effect, and persisted idempotency-key tracking. (5h) [satisfies REQ-007, REQ-009, REQ-010]
   - Validates PRD ACs: AC-001-3, AC-007-2, AC-009-1, AC-009-2, AC-010-1, AC-010-2, AC-014-2
   - Implementation ACs:
     - Given terminal run, when stall command dispatches, then aggregate rejects or no-ops without mutating terminal state.
     - Given duplicate idempotency key already folded into run state, when command re-dispatches, then no duplicate active stall event is persisted.
-- [ ] **TRD-009-TEST** Add aggregate/command gateway tests for active, terminal, duplicate, and policy-specific stall command paths. (4h) [verifies TRD-009] [satisfies REQ-007, REQ-009, REQ-010, REQ-014] [depends: TRD-009]
+- [x] **TRD-009-TEST** Add aggregate/command gateway tests for active, terminal, duplicate, and policy-specific stall command paths. (4h) [verifies TRD-009] [satisfies REQ-007, REQ-009, REQ-010, REQ-014] [depends: TRD-009]
   - Validates PRD ACs: AC-001-3, AC-007-2, AC-009-2, AC-010-1, AC-010-2, AC-014-2, AC-014-3
   - Implementation ACs:
     - Given active run and fail policy, when command succeeds, then `RunStallReported` carries a single explicit status effect and projections do not also require a separate `RunFailed` event.
     - Given repeated scan after no activity, when command dispatches again, then event count remains one.
-- [ ] **TRD-010** Wire `StallDetector` supervision/config schedule alongside existing `StuckDetector` without replacing heartbeat, recovery, or run-stuck behavior. (3h) [satisfies REQ-009, REQ-012]
+- [x] **TRD-010** Wire `StallDetector` supervision/config schedule alongside existing `StuckDetector` without replacing heartbeat, recovery, or run-stuck behavior. (3h) [satisfies REQ-009, REQ-012]
   - Validates PRD ACs: AC-009-1, AC-009-2, AC-012-2
   - Implementation ACs:
     - Given app boot with detection enabled, when supervisor starts, then both stuck and stall detectors are supervised.
     - Given detection disabled by documented value, when app boots, then detector is not scheduled and config is explicit.
-- [ ] **TRD-010-TEST** Add supervision/config tests proving stall detector starts only when enabled and does not alter Overwatch tracker ownership. (2h) [verifies TRD-010] [satisfies REQ-009, REQ-012] [depends: TRD-010]
+- [x] **TRD-010-TEST** Add supervision/config tests proving stall detector starts only when enabled and does not alter Overwatch tracker ownership. (2h) [verifies TRD-010] [satisfies REQ-009, REQ-012] [depends: TRD-010]
   - Validates PRD ACs: AC-009-1, AC-012-2
   - Implementation ACs:
     - Given enabled config, when child specs are built, then `StallDetector` is present.
@@ -284,42 +284,42 @@ Config defaults:
 ### PR 3: Canonical projections and operator surfaces
 **Shippable State:** Operators and automation can see the latest stall reason consistently through run/task APIs, CLI JSON, MCP status, cockpit/debug, and inbox attention metadata.
 
-- [ ] **TRD-011** Project `RunStallReported` into phase/run/task latest stall fields and attention-needed task selection without fabricating inbox messages. (5h) [satisfies REQ-007, REQ-008, REQ-011]
+- [x] **TRD-011** Project `RunStallReported` into phase/run/task latest stall fields and attention-needed task selection without fabricating inbox messages. (5h) [satisfies REQ-007, REQ-008, REQ-011]
   - Validates PRD ACs: AC-007-1, AC-007-3, AC-008-1, AC-008-2, AC-011-1, AC-011-2, AC-011-3
   - Implementation ACs:
     - Given stall event, when `ProjectionStore.run/1` is read, then latest stall fields include kind, reason, threshold, idle, detected time.
     - Given inbox enabled, when stall projects, then attention metadata exists without adding an `InboxMessageAppended` row.
-- [ ] **TRD-011-TEST** Add projection tests for run/task/phase latest stall fields and no-fabricated-message behavior. (3h) [verifies TRD-011] [satisfies REQ-008, REQ-011, REQ-014] [depends: TRD-011]
+- [x] **TRD-011-TEST** Add projection tests for run/task/phase latest stall fields and no-fabricated-message behavior. (3h) [verifies TRD-011] [satisfies REQ-008, REQ-011, REQ-014] [depends: TRD-011]
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-011-1, AC-011-2, AC-011-3, AC-014-3
   - Implementation ACs:
     - Given stall event for run with task, when task projection/list is read, then task is attention-selectable.
     - Given stall event, when inbox thread messages are read, then message count is unchanged unless an actual message was appended.
-- [ ] **TRD-012** Extend HTTP run/task projection serializers and `foreman run get/list` JSON output to include canonical stall fields from projections only. (3h) [satisfies REQ-008, REQ-011, REQ-015]
+- [x] **TRD-012** Extend HTTP run/task projection serializers and `foreman run get/list` JSON output to include canonical stall fields from projections only. (3h) [satisfies REQ-008, REQ-011, REQ-015]
   - Validates PRD ACs: AC-007-3, AC-008-1, AC-011-1, AC-011-2, AC-015-1, AC-015-2
   - Implementation ACs:
     - Given stalled run, when `/api/runs/:id` and `foreman run get` are read, then JSON includes same latest stall object.
     - Given non-stalled run, when read, then stall fields are absent or null, not synthetic defaults.
-- [ ] **TRD-012-TEST** Add API/Go CLI tests or fixture tests for run/task stall field rendering and non-stalled absence. (3h) [verifies TRD-012] [satisfies REQ-008, REQ-011, REQ-015] [depends: TRD-012]
+- [x] **TRD-012-TEST** Add API/Go CLI tests or fixture tests for run/task stall field rendering and non-stalled absence. (3h) [verifies TRD-012] [satisfies REQ-008, REQ-011, REQ-015] [depends: TRD-012]
   - Validates PRD ACs: AC-008-1, AC-011-1, AC-011-2, AC-011-3, AC-015-1
   - Implementation ACs:
     - Given API fixture with latest stall, when CLI command renders JSON, then field names match API.
     - Given no stall in fixture, when rendered, then no fake reason appears.
-- [ ] **TRD-013** Extend MCP run-status DTO and cockpit/debug readers to render the canonical stall reason without recomputing detector rules. (4h) [satisfies REQ-007, REQ-011, REQ-015]
+- [x] **TRD-013** Extend MCP run-status DTO and cockpit/debug readers to render the canonical stall reason without recomputing detector rules. (4h) [satisfies REQ-007, REQ-011, REQ-015]
   - Validates PRD ACs: AC-007-3, AC-011-1, AC-015-1, AC-015-2
   - Implementation ACs:
     - Given `foreman_run_status` reads a stalled run, then DTO includes latest stall and failure/attention reason from projection.
     - Given cockpit/debug reads the same run, then display text uses the projection reason, not local stall calculations.
-- [ ] **TRD-013-TEST** Add MCP/cockpit/debug tests proving transport parity and no duplicated stall computation. (3h) [verifies TRD-013] [satisfies REQ-011, REQ-015] [depends: TRD-013]
+- [x] **TRD-013-TEST** Add MCP/cockpit/debug tests proving transport parity and no duplicated stall computation. (3h) [verifies TRD-013] [satisfies REQ-011, REQ-015] [depends: TRD-013]
   - Validates PRD ACs: AC-011-1, AC-015-1, AC-015-2
   - Implementation ACs:
     - Given one stalled run projection, when MCP and HTTP DTOs are read, then stall fields match.
     - Given transport code paths, when searched/tested, then detector threshold logic remains server-side only.
-- [ ] **TRD-014** Add operator-facing inbox/Agent Mail attention metadata rendering for stall facts without appending synthetic messages. (3h) [satisfies REQ-008, REQ-015]
+- [x] **TRD-014** Add operator-facing inbox/Agent Mail attention metadata rendering for stall facts without appending synthetic messages. (3h) [satisfies REQ-008, REQ-015]
   - Validates PRD ACs: AC-008-2, AC-015-1, AC-015-2
   - Implementation ACs:
     - Given a stall fact, when inbox surface renders run metadata, then stall attention is visible.
     - Given no actual message body, when inbox messages list renders, then no fabricated message appears.
-- [ ] **TRD-014-TEST** Add inbox/Agent Mail surface tests for attention metadata and no message fabrication. (2h) [verifies TRD-014] [satisfies REQ-008, REQ-015] [depends: TRD-014]
+- [x] **TRD-014-TEST** Add inbox/Agent Mail surface tests for attention metadata and no message fabrication. (2h) [verifies TRD-014] [satisfies REQ-008, REQ-015] [depends: TRD-014]
   - Validates PRD ACs: AC-008-2, AC-015-1
   - Implementation ACs:
     - Given stall projection with inbox thread, when rendered, then metadata displays stall reason.
@@ -328,37 +328,37 @@ Config defaults:
 ### PR 4: Observability, races, docs, and validation
 **Shippable State:** Operators can tune, diagnose, and recover from stall alerts with documented config/recovery guidance and deterministic tests covering boundary/race behavior.
 
-- [ ] **TRD-015** Add telemetry for detector scans, detected stalls, skipped/exempted candidates, idle duration, threshold, run, phase, and stall kind. (3h) [satisfies REQ-012]
+- [x] **TRD-015** Add telemetry for detector scans, detected stalls, skipped/exempted candidates, idle duration, threshold, run, phase, and stall kind. (3h) [satisfies REQ-012]
   - Validates PRD ACs: AC-012-1, AC-012-2
   - Implementation ACs:
     - Given detected stall, when telemetry fires, then measurements include idle and threshold.
     - Given clean scan, when diagnostics are enabled, then scan/skipped/exempted counts are inspectable without noisy logs.
-- [ ] **TRD-015-TEST** Add telemetry tests for stall detection and clean-scan diagnostics. (2h) [verifies TRD-015] [satisfies REQ-012] [depends: TRD-015]
+- [x] **TRD-015-TEST** Add telemetry tests for stall detection and clean-scan diagnostics. (2h) [verifies TRD-015] [satisfies REQ-012] [depends: TRD-015]
   - Validates PRD ACs: AC-012-1, AC-012-2
   - Implementation ACs:
     - Given test telemetry handler, when stall emits, then expected metadata keys are asserted.
     - Given no stalled candidates, when scan completes, then diagnostic count event is asserted.
-- [ ] **TRD-016** Add race/restart tests for terminal event during scan, concurrent scans, projection rebuild, and same phase re-stall after new activity. (4h) [satisfies REQ-010, REQ-014]
+- [x] **TRD-016** Add race/restart tests for terminal event during scan, concurrent scans, projection rebuild, and same phase re-stall after new activity. (4h) [satisfies REQ-010, REQ-014]
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-014-2, AC-014-3
   - Implementation ACs:
     - Given terminal event arrives before aggregate mutation, when stall command runs, then stale mutation is blocked.
     - Given new activity after a stall then later idle gap, when scanned, then new idempotency key permits one new report.
-- [ ] **TRD-016-TEST** Run/add integration tests covering restart/projection rebuild and concurrent detector scans. (3h) [verifies TRD-016] [satisfies REQ-010, REQ-014] [depends: TRD-016]
+- [x] **TRD-016-TEST** Run/add integration tests covering restart/projection rebuild and concurrent detector scans. (3h) [verifies TRD-016] [satisfies REQ-010, REQ-014] [depends: TRD-016]
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-014-2, AC-014-3
   - Implementation ACs:
     - Given rebuilt projections from event log, when detector scans, then duplicate stalls are not emitted.
     - Given two scans race, when both see same candidate, then aggregate/event idempotency stores one active report.
-- [ ] **TRD-017** Update `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `docs/workflow-yaml-reference.md`, and `docs/troubleshooting.md` with real config names, defaults, disable behavior, status fields, alert surfaces, and recovery paths. (4h) [satisfies REQ-013, REQ-015]
+- [x] **TRD-017** Update `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `docs/workflow-yaml-reference.md`, and `docs/troubleshooting.md` with real config names, defaults, disable behavior, status fields, alert surfaces, and recovery paths. (4h) [satisfies REQ-013, REQ-015]
   - Validates PRD ACs: AC-013-1, AC-013-2, AC-015-3
   - Implementation ACs:
     - Given docs are read, when operator searches stall detection, then config/defaults/status/recovery guidance is present.
     - Given CLI examples are documented, when checked against Go/Elixir source or fresh build, then command names/fields match.
-- [ ] **TRD-017-TEST** Add documentation/source validation checklist or tests proving documented commands/fields match source and stale binary is not used. (2h) [verifies TRD-017] [satisfies REQ-013, REQ-015] [depends: TRD-017]
+- [x] **TRD-017-TEST** Add documentation/source validation checklist or tests proving documented commands/fields match source and stale binary is not used. (2h) [verifies TRD-017] [satisfies REQ-013, REQ-015] [depends: TRD-017]
   - Validates PRD ACs: AC-013-1, AC-013-2, AC-015-3
   - Implementation ACs:
     - Given docs mention run/task status fields, when source validation script/checklist runs, then fields match source DTOs.
     - Given root `./foreman` differs, when validation is performed, then fresh source/build is used instead.
-- [ ] **TRD-018** Run focused validation suite and fix only regressions caused by this feature. (3h) [satisfies REQ-014, REQ-015]
+- [x] **TRD-018** Run focused validation suite and fix only regressions caused by this feature. (3h) [satisfies REQ-014, REQ-015]
   - Validates PRD ACs: AC-014-1, AC-014-2, AC-014-3, AC-015-1, AC-015-2, AC-015-3
   - Implementation ACs:
     - Given focused ExUnit/Go tests run, when complete, then detector/projection/workflow/MCP/CLI/doc checks pass.

@@ -1524,3 +1524,7 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 
 
 
+
+## Stall fields in run/task JSON
+
+`foreman run get <run-id> --format json`, `foreman run list --format json`, task JSON reads, and MCP `foreman_run_status` may include `latest_stall` when the server has persisted a `RunStallReported` event. The object is projection-derived and contains `stall_kind`, `policy`, `status_effect`, `threshold_ms`, `idle_ms`, `activity_at_ms`, `detected_at_ms`, `phase_id`, optional task/phase labels, `idempotency_key`, and `reason`. Non-stalled runs return `null`/absence, not synthetic defaults.

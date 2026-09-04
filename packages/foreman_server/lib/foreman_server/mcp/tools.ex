@@ -27,7 +27,8 @@ defmodule ForemanServer.MCP.Tools do
             current_phase: ForemanServer.MCP.Tools.PhaseStatus.t() | nil,
             started_at_ms: integer() | nil,
             last_event_at_ms: integer() | nil,
-            failure_reason: String.t() | nil
+            failure_reason: String.t() | nil,
+            latest_stall: map() | nil
           }
     @derive Jason.Encoder
     defstruct [
@@ -40,7 +41,8 @@ defmodule ForemanServer.MCP.Tools do
       :current_phase,
       :started_at_ms,
       :last_event_at_ms,
-      :failure_reason
+      :failure_reason,
+      :latest_stall
     ]
   end
 
@@ -54,7 +56,8 @@ defmodule ForemanServer.MCP.Tools do
             attempt: integer() | nil,
             started_at_ms: integer() | nil,
             last_event_at_ms: integer() | nil,
-            failure_reason: String.t() | nil
+            failure_reason: String.t() | nil,
+            latest_stall: map() | nil
           }
     @derive Jason.Encoder
     defstruct [
@@ -65,7 +68,8 @@ defmodule ForemanServer.MCP.Tools do
       :attempt,
       :started_at_ms,
       :last_event_at_ms,
-      :failure_reason
+      :failure_reason,
+      :latest_stall
     ]
   end
 
@@ -992,7 +996,8 @@ defmodule ForemanServer.MCP.Tools do
       current_phase: current_phase(phases),
       started_at_ms: Map.get(run, :started_at_ms),
       last_event_at_ms: Map.get(run, :last_event_at_ms),
-      failure_reason: Map.get(run, :failure_reason)
+      failure_reason: Map.get(run, :failure_reason),
+      latest_stall: Map.get(run, :latest_stall)
     }
   end
 
@@ -1050,7 +1055,8 @@ defmodule ForemanServer.MCP.Tools do
       attempt: Map.get(phase, :attempt),
       started_at_ms: Map.get(phase, :started_at_ms),
       last_event_at_ms: Map.get(phase, :last_event_at_ms),
-      failure_reason: Map.get(phase, :failure_reason)
+      failure_reason: Map.get(phase, :failure_reason),
+      latest_stall: Map.get(phase, :latest_stall)
     }
   end
 

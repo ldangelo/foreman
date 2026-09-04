@@ -42,7 +42,8 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     # NOT the same as `false` — `fetch_any/2` below preserves a present `false`
     # — because absent means "default" (commit) and `false` means "defer".
     {:commit, [:commit, "commit"]},
-    {:stack_pr, [:stack_pr, "stack_pr"]}
+    {:stack_pr, [:stack_pr, "stack_pr"]},
+    {:stall_detection, [:stall_detection, "stall_detection", :stallDetection, "stallDetection"]}
   ]
 
   @doc """
@@ -58,7 +59,10 @@ defmodule ForemanServer.Workflow.PhaseSpec do
   """
   @spec normalize(map()) :: map()
   def normalize(phase) when is_map(phase) do
-    spec = Enum.reduce(@fields, %{}, &put_field(&1, phase, &2))
+    spec =
+      @fields
+      |> Enum.reduce(%{}, &put_field(&1, phase, &2))
+      |> normalize_stall_detection!()
 
     Map.put(spec, :action, derive_action(spec))
   end
@@ -95,6 +99,21 @@ defmodule ForemanServer.Workflow.PhaseSpec do
       :error -> fetch_any(source_map, rest)
     end
   end
+
+  defp normalize_stall_detection!(%{stall_detection: value} = spec) do
+    case ForemanServer.Workflow.StallPolicy.normalize(value) do
+      {:ok, nil} ->
+        Map.delete(spec, :stall_detection)
+
+      {:ok, policy} ->
+        Map.put(spec, :stall_detection, policy)
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid stall_detection in phase spec: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_stall_detection!(spec), do: spec
 
   defp derive_action(spec) do
     cond do

@@ -562,3 +562,7 @@ on the resident READ MODEL and is distinct from `WorkerLogPolicy`'s bound on how
 many events are durably WRITTEN — different resources, not a duplicated
 boundary. Every eviction is accounted in `omitted_entries` / `omitted_bytes`, so
 a truncated read can never present itself as complete.
+
+## Phase stall detection
+
+`stall_detection` is explicit phase metadata, never inferred from phase names. Normalize it through `ForemanServer.Workflow.StallPolicy`; valid scopes are agent/no-output and messaging/no-progress. `RunExecutor` copies normalized policy onto `phase.start`/`PhaseStarted`, `ProjectionStore.stall_candidates/1` is the bounded detector read, and `ForemanServer.StallDetector` persists stalls through `run.report_stall` only. Do not write projection state directly from the detector. Worker heartbeats do not advance phase output activity; stdout/stderr, assistant messages, tool completions, worker start/exit, and phase lifecycle do.
