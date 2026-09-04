@@ -9,7 +9,7 @@ defmodule Jido.Harness.MixProject do
     [
       app: :jido_harness,
       version: @version,
-      elixir: "~> 1.19",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
