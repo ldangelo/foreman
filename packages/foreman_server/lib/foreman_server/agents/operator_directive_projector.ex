@@ -115,20 +115,20 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   end
 
   # Read a field that may arrive as either an atom or a string key
-  # (Jido's data round-trip is not key-convention-stable). Returns the
-  # shared value when only one representation is present or both agree;
-  # returns `:error` when both are present with conflicting non-nil
-  # values, so a conflicting payload is dropped rather than silently
-  # resolved by picking one representation.
+  # (Jido's data round-trip is not key-convention-stable). Uses
+  # Map.fetch/2 rather than Map.get/2 so a key present with an explicit
+  # `nil` value is distinguished from an absent key. Returns the shared
+  # value when only one representation is present or both agree
+  # (including both explicitly `nil`); returns `:error` when both are
+  # present with differing values, so a conflicting payload is dropped
+  # rather than silently resolved by picking one representation.
   defp canonical_field(payload, atom_key) do
-    atom_value = Map.get(payload, atom_key)
-    string_value = Map.get(payload, Atom.to_string(atom_key))
-
-    cond do
-      is_nil(atom_value) -> {:ok, string_value}
-      is_nil(string_value) -> {:ok, atom_value}
-      atom_value == string_value -> {:ok, atom_value}
-      true -> :error
+    case {Map.fetch(payload, atom_key), Map.fetch(payload, Atom.to_string(atom_key))} do
+      {{:ok, value}, :error} -> {:ok, value}
+      {:error, {:ok, value}} -> {:ok, value}
+      {:error, :error} -> {:ok, nil}
+      {{:ok, value}, {:ok, value}} -> {:ok, value}
+      {{:ok, _}, {:ok, _}} -> :error
     end
   end
 
