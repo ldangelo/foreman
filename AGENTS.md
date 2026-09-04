@@ -156,7 +156,7 @@ phase PR record after that phase's commit decision, targeting the recorded run
 base branch from the same Foreman run branch. Absent or false preserves default
 final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
-is the complete declarable vocabulary. `timeout_minutes:` (alias `timeoutMinutes:`) is a positive integer
+is the complete declarable vocabulary. `timeout_minutes:` is a positive integer
 phase execution timeout in minutes; absent means fall back to app-config
 `failure_policies` / `default_timeout_ms`. `Interpreter` and `PhaseSpec` still
 contain zero top-level `pr`, `merge`, or `checkpoint` keys.

@@ -11,7 +11,6 @@ defmodule ForemanServer.Workflow.Interpreter do
   # executor's run-terminal reporting MUST agree on what "pending" means, and
   # they can only do that by reading one predicate.
   alias ForemanServer.Workflow.CommitDeferral
-  alias ForemanServer.Workflow.PhaseSpec
   @required_top_level_keys ~w(name phases)
   @required_phase_keys ~w(name)
   @allowed_phase_actions ~w(prompt command bash)
@@ -461,12 +460,11 @@ defmodule ForemanServer.Workflow.Interpreter do
 
   defp validate_timeout_minutes_value!(_phase, _index, _path), do: :ok
 
-  # Reuses `PhaseSpec.normalize/1` rather than hand-checking "timeout_minutes"
-  # / "timeoutMinutes" separately, so the accepted spellings can only ever be
-  # defined once (AGENTS.md §5.4b) — the same drift class as the phase-level
-  # `worktree:` duplication documented above.
   defp phase_timeout_minutes_value(phase) do
-    phase |> PhaseSpec.normalize() |> Map.get(:timeout_minutes)
+    case Map.fetch(phase, "timeout_minutes") do
+      {:ok, value} -> value
+      :error -> Map.get(phase, "timeoutMinutes")
+    end
   end
 
   # `commit:` is PHASE-level, and deliberately the opposite shape from
