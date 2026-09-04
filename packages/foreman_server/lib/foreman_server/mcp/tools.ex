@@ -18,8 +18,8 @@ defmodule ForemanServer.MCP.Tools do
   defmodule RunStatus do
     @enforce_keys [:run_id, :status, :terminal]
     @type t :: %__MODULE__{
-            run_id: String.t() | nil,
-            status: String.t() | nil,
+            run_id: String.t(),
+            status: String.t(),
             terminal: boolean(),
             project_id: String.t() | nil,
             task_id: String.t() | nil,
@@ -973,9 +973,18 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp run_status_dto(run, phases) when is_map(run) and is_list(phases) do
+    run_id = Map.get(run, :run_id)
+    status = Map.get(run, :status)
+
+    unless is_binary(run_id) and is_binary(status) do
+      raise ArgumentError,
+            "run_status_dto: run projection missing required identity fields " <>
+              "(run_id: #{inspect(run_id)}, status: #{inspect(status)})"
+    end
+
     %RunStatus{
-      run_id: Map.get(run, :run_id),
-      status: Map.get(run, :status),
+      run_id: run_id,
+      status: status,
       terminal: run_terminal?(run),
       project_id: Map.get(run, :project_id),
       task_id: Map.get(run, :task_id),
@@ -1012,7 +1021,14 @@ defmodule ForemanServer.MCP.Tools do
 
   defp latest_phase(phases) do
     Enum.max_by(phases, fn phase ->
-      {Map.get(phase, :index, 0), Map.get(phase, :last_event_at_ms, 0)}
+      case Map.get(phase, :index) do
+        index when is_integer(index) ->
+          {index, Map.get(phase, :last_event_at_ms) || 0}
+
+        other ->
+          raise ArgumentError,
+                "latest_phase: expected integer :index, got: #{inspect(other)}"
+      end
     end)
   end
 

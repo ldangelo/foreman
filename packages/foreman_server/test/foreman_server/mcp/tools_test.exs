@@ -189,7 +189,22 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert dto.task_id == "task-1"
       assert dto.workflow_name == "implement"
       assert dto.current_phase.phase_id == "phase-2"
-      refute Map.has_key?(dto, :secret)
+
+      assert dto |> Map.from_struct() |> Map.keys() |> Enum.sort() == [
+               :current_phase,
+               :failure_reason,
+               :last_event_at_ms,
+               :project_id,
+               :run_id,
+               :started_at_ms,
+               :status,
+               :task_id,
+               :terminal,
+               :workflow_name
+             ]
+
+      assert {:ok, json} = Jason.encode(dto)
+      refute json =~ "not-in-status"
     end
 
     test "returns terminal true for terminal statuses and falls back to latest phase" do
