@@ -239,6 +239,26 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert Tools.call_tool("foreman_run_status", %{run_id: "missing"}) ==
                {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
     end
+
+    test "returns nil current_phase when run has no phases" do
+      run = %{
+        run_id: "run-3",
+        status: "in_progress",
+        terminal?: false,
+        project_id: "proj-1",
+        task_id: "task-3",
+        workflow_name: "implement",
+        started_at_ms: 10,
+        last_event_at_ms: 10,
+        failure_reason: nil
+      }
+
+      replace_state(%{runs: %{"run-3" => run}, phases: %{}})
+
+      assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: "run-3"})
+      assert dto.run_id == "run-3"
+      assert dto.current_phase == nil
+    end
   end
 
   describe "foreman_queue_status" do
