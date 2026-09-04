@@ -10,7 +10,7 @@ docker start foreman-postgres
 docker exec foreman-postgres psql -U postgres -c '\l'
 
 # 3. Start foreman server
-cd /Users/ldangelo/Development/Fortium/foreman
+cd /path/to/foreman
 devbox run server
 ```
 
@@ -25,10 +25,17 @@ Both on `localhost:55432`, user `postgres`, password `postgres`.
 
 ## Beads DB Recovery
 
-If `br` commands fail with `database disk image malformed`:
+If `br` commands fail with `database disk image malformed`, run this as one
+script (`set -euo pipefail`) — the ID-loss check below MUST abort the
+procedure before the corrupt database is replaced. See
+`skill://beads-corrupt-db-recovery-safe` for the full recipe and traps
+(notably: never `br sync --import-only --rebuild` / `--force-jsonl` here —
+that treats the JSONL as authoritative and can silently drop DB-only issues
+that `.recover` still holds).
 
 ```bash
-cd /Users/ldangelo/Development/Fortium/foreman
+set -euo pipefail
+cd /path/to/foreman
 
 # Backup first
 cp -R .beads /tmp/beads-backup-$(date +%s)
@@ -37,17 +44,31 @@ cp -R .beads /tmp/beads-backup-$(date +%s)
 cd .beads
 sqlite3 beads.db ".recover" > /tmp/rec.sql
 sqlite3 /tmp/rec.db < /tmp/rec.sql
+sqlite3 /tmp/rec.db "pragma integrity_check;"   # must print "ok"
 
-# CRITICAL: compare IDs before swapping
-# If rows are in corrupt DB but NOT recovered, they are LOST — check JSONL
+# CRITICAL: compare IDs before swapping — fail closed on any loss
 sqlite3 /tmp/rec.db "select id from issues;" 2>/dev/null | tr '|' '\n' | sort > /tmp/rec_ids
 sqlite3 beads.db "select id from issues;" 2>/dev/null | tr '|' '\n' | sort > /tmp/corrupt_ids
-echo "Lost from DB: $(comm -23 /tmp/corrupt_ids /tmp/rec_ids | wc -l)"
-# Check if lost IDs are in JSONL:
-comm -23 /tmp/corrupt_ids /tmp/rec_ids | while read id; do grep -q "\"$id\"" issues.jsonl && echo "$id in JSONL" || echo "$id MISSING"; done
+comm -23 /tmp/corrupt_ids /tmp/rec_ids > /tmp/lost_ids
+lost_count=$(wc -l < /tmp/lost_ids | tr -d ' ')
+echo "Lost from recovered DB: $lost_count"
 
-# Swap in recovered DB only after checking above
-rm beads.db beads.db-shm beads.db-wal beads.db-wal-cert beads.db-wal-cert-head
+if [ "$lost_count" -gt 0 ]; then
+  missing=0
+  while read -r id; do
+    if grep -q "\"$id\"" issues.jsonl; then
+      echo "$id in JSONL — must be restored via 'br sync --reconcile-additive' (or manual re-import) before proceeding"
+    else
+      echo "$id MISSING from both recovered DB and JSONL — unrecoverable"
+      missing=$((missing + 1))
+    fi
+  done < /tmp/lost_ids
+  echo "ABORTING: $lost_count issue(s) lost by .recover; resolve every one above before swapping in the recovered DB." >&2
+  exit 1
+fi
+
+# Swap in recovered DB — only reached when the loss check above passed with zero losses
+rm -f beads.db beads.db-shm beads.db-wal beads.db-wal-cert beads.db-wal-cert-head
 cp /tmp/rec.db beads.db && chmod 600 beads.db
 
 # Clean orphaned FK rows
