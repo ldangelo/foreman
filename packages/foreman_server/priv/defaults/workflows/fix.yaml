@@ -26,5 +26,5 @@ worktree:
 # propose nothing either way, since it gates on commits.
 phases:
   - name: fix
-    command: "/skill:ensemble-fix-issue --foreman"
+    command: "/skill:ensemble-fix-issue {{input.prompt}} --foreman"
     commit: true
