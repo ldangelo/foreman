@@ -461,7 +461,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
   end
 
-
   test "start phase claims before dispatch and completes on TaskExecutionCompleted", %{
     temp_dir: temp_dir
   } do
