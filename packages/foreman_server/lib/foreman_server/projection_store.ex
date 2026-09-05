@@ -70,6 +70,11 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:stuck_runs, threshold_ms, normalize_now_ms_fun(now_ms)})
   end
 
+  @spec stall_candidates(integer() | nil) :: [map()]
+  def stall_candidates(now_ms \\ nil) do
+    GenServer.call(__MODULE__, {:stall_candidates, normalize_now_ms_fun(now_ms)})
+  end
+
   @doc """
   Apply a list of confirmed events to the projection.
 
@@ -1993,15 +1998,25 @@ defmodule ForemanServer.ProjectionStore do
 
   defp touch_active_phase_activity(state, run_id, kind, event_at_ms) do
     if valid_id?(run_id) do
-      Map.update!(state, :phases, fn phases ->
-        Map.new(phases, fn {phase_id, phase} ->
-          if get(phase, :run_id) == run_id and get(phase, :status) == "in_progress" do
-            key =
-              if kind == :messaging, do: :messaging_activity_at_ms, else: :output_activity_at_ms
+      phase_ids = state.runs |> Map.get(run_id, %{}) |> Map.get(:phase_ids, [])
 
-            {phase_id, Map.put(phase, key, event_at_ms)}
-          else
-            {phase_id, phase}
+      Map.update!(state, :phases, fn phases ->
+        Enum.reduce(phase_ids, phases, fn phase_id, acc ->
+          case Map.fetch(acc, phase_id) do
+            {:ok, phase} ->
+              if get(phase, :status) == "in_progress" do
+                key =
+                  if kind == :messaging,
+                    do: :messaging_activity_at_ms,
+                    else: :output_activity_at_ms
+
+                Map.put(acc, phase_id, Map.put(phase, key, event_at_ms))
+              else
+                acc
+              end
+
+            :error ->
+              acc
           end
         end)
       end)
@@ -2038,6 +2053,11 @@ defmodule ForemanServer.ProjectionStore do
     |> Map.put(:terminal?, status in ["failed", "blocked", "stuck"])
     |> Map.put(:failure_reason, reason)
   end
+
+  # Unknown status_effect (a future/unrecognized value persisted by a newer
+  # writer): record it as the latest stall without changing run status, so
+  # replay does not crash on a value this reader does not recognize yet.
+  defp maybe_put_status_effect(run, _status, _reason), do: run
 
   defp update_task_latest_stall(state, nil, _stall), do: state
 

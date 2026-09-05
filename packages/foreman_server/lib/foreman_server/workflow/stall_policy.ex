@@ -12,9 +12,12 @@ defmodule ForemanServer.Workflow.StallPolicy do
   @attention_policy "attention"
   @disabled_values [false, :disabled, "disabled"]
 
+  @enforce_keys [:kind, :threshold_ms, :policy]
+  defstruct [:kind, :threshold_ms, :policy]
+
   @type kind :: String.t()
   @type policy :: String.t()
-  @type t :: %{
+  @type t :: %__MODULE__{
           kind: kind(),
           threshold_ms: pos_integer(),
           policy: policy()
@@ -51,7 +54,9 @@ defmodule ForemanServer.Workflow.StallPolicy do
   def normalize(value) when value in @disabled_values, do: {:ok, nil}
 
   def normalize("agent"),
-    do: {:ok, %{kind: @agent_kind, threshold_ms: agent_threshold_ms!(), policy: @fail_policy}}
+    do:
+      {:ok,
+       %__MODULE__{kind: @agent_kind, threshold_ms: agent_threshold_ms!(), policy: @fail_policy}}
 
   def normalize(:agent), do: normalize("agent")
   def normalize("agent_no_output"), do: normalize("agent")
@@ -60,7 +65,7 @@ defmodule ForemanServer.Workflow.StallPolicy do
   def normalize("messaging"),
     do:
       {:ok,
-       %{
+       %__MODULE__{
          kind: @messaging_kind,
          threshold_ms: messaging_threshold_ms!(),
          policy: @attention_policy
@@ -78,7 +83,7 @@ defmodule ForemanServer.Workflow.StallPolicy do
              kind
            ),
          {:ok, policy} <- normalize_policy(fetch_any(map, [:policy, "policy"]), kind) do
-      {:ok, %{kind: kind, threshold_ms: threshold_ms, policy: policy}}
+      {:ok, %__MODULE__{kind: kind, threshold_ms: threshold_ms, policy: policy}}
     end
   end
 

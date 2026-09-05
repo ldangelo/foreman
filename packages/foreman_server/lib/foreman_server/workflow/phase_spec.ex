@@ -73,6 +73,21 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     Enum.map(phases, &normalize/1)
   end
 
+  @doc """
+  Fetch one field's raw value from a phase map by its canonical atom key,
+  accepting every source spelling `normalize/1` accepts. Lets callers that
+  must inspect a single field before full normalization (e.g. `Validator`)
+  reuse the same accepted-spellings table instead of hand-checking one
+  spelling (AGENTS.md §5.4b).
+  """
+  @spec fetch(map(), atom()) :: term()
+  def fetch(phase, canonical_key) when is_map(phase) and is_atom(canonical_key) do
+    case List.keyfind(@fields, canonical_key, 0) do
+      {^canonical_key, sources} -> fetch_any(phase, sources)
+      nil -> nil
+    end
+  end
+
   # An ABSENT source key is omitted, not stored as `nil`. AGENTS.md 5.4b states
   # this directly ("Never insert `nil` for an absent key"), and `commit:` is the
   # field that makes it matter: `nil` would be a third state alongside the two
