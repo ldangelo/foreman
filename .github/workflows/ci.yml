@@ -57,6 +57,8 @@ jobs:
         run: cd packages/foreman_server && mix credo --min-priority higher
       - name: Doctor
         run: cd packages/foreman_server && mix doctor --raise
+      - name: Setup database
+        run: cd packages/foreman_server && MIX_ENV=test mix ecto.create && MIX_ENV=test mix ecto.migrate && MIX_ENV=test mix event_store.init
       - name: Run tests with coverage
         run: cd packages/foreman_server && mix test --cover
       - name: Upload coverage
