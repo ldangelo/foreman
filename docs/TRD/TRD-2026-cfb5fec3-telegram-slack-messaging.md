@@ -82,6 +82,15 @@ Foreman mode: auto-selected Option C (event-sourced notification pipeline with p
 | Projection | `projection_store.ex` | Fold notification events into per-run delivery state. |
 | Operator surfaces | API/MCP/CLI/docs | Failed critical notifications in run reads plus a source-verified test-delivery operation. |
 
+
+> **Note (2026-09-05):** `messaging/dispatcher.ex` is not part of this slice's
+> diff — this TRD row documents the target shape for whoever implements it.
+> `ProjectionStore.subscribe/0` only delivers live events to current
+> subscribers, so the dispatcher implementation MUST add durable recovery
+> (replay/catch-up keyed by notification id and attempt id, plus a
+> restart-recovery test) or a Foreman restart can leave notifications stuck
+> in `:enqueued` indefinitely. Tracked for the dispatcher's own PR.
+
 ### 3.3 Data Flow
 
 ```

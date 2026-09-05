@@ -31,15 +31,6 @@ defmodule ForemanServer.Messaging.Notification do
   @allowed_keys MapSet.new(
                   ~w(notification_id provider recipient event_class severity subject body url correlation_id run_id metadata)a
                 )
-  @required_keys [
-    :provider,
-    :recipient,
-    :event_class,
-    :severity,
-    :subject,
-    :body,
-    :correlation_id
-  ]
   @providers [:telegram, :slack]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
   @severities [:info, :warning, :critical]
@@ -106,8 +97,13 @@ defmodule ForemanServer.Messaging.Notification do
 
   defp enum_field(attrs, key, allowed) do
     case normalize_atom(get(attrs, key)) do
-      atom when atom in allowed -> {:ok, atom}
-      value -> {:error, {:missing_or_invalid, key, value}}
+      atom when is_atom(atom) ->
+        if atom in allowed,
+          do: {:ok, atom},
+          else: {:error, {:missing_or_invalid, key, atom}}
+
+      value ->
+        {:error, {:missing_or_invalid, key, value}}
     end
   end
 
@@ -129,13 +125,17 @@ defmodule ForemanServer.Messaging.Notification do
   defp metadata_field(attrs) do
     case get(attrs, :metadata, %{}) do
       metadata when is_map(metadata) ->
-        {:ok,
-         Enum.reduce(metadata, %{}, fn {key, value}, acc ->
-           case safe_metadata_key(key) do
-             nil -> acc
-             safe_key -> Map.put(acc, safe_key, value)
-           end
-         end)}
+        if Enum.all?(Map.keys(metadata), &(is_atom(&1) or is_binary(&1))) do
+          {:ok,
+           Enum.reduce(metadata, %{}, fn {key, value}, acc ->
+             case safe_metadata_key(key) do
+               nil -> acc
+               safe_key -> Map.put(acc, safe_key, value)
+             end
+           end)}
+        else
+          {:error, {:missing_or_invalid, :metadata, metadata}}
+        end
 
       value ->
         {:error, {:missing_or_invalid, :metadata, value}}

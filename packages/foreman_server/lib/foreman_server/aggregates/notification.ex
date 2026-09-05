@@ -75,13 +75,14 @@ defmodule ForemanServer.Aggregates.Notification do
     with {:ok, dto} <- payload |> notification_attrs() |> NotificationDto.normalize(),
          {:ok, now_ms} <- non_negative_int(get(payload, :now_ms), :now_ms),
          {:ok, dedupe_window_ms} <-
-           non_negative_int(get(payload, :dedupe_window_ms, 300_000), :dedupe_window_ms) do
+           non_negative_int(get(payload, :dedupe_window_ms, 300_000), :dedupe_window_ms),
+         {:ok, enabled?} <- parse_enabled(payload) do
       cond do
         duplicate?(state, dto.correlation_id, now_ms, dedupe_window_ms) ->
-          suppressed(dto, payload, "duplicate")
+          suppressed(state, dto, "duplicate")
 
-        get(payload, :enabled, true) in [false, "false"] ->
-          suppressed(dto, payload, "disabled")
+        not enabled? ->
+          suppressed(state, dto, "disabled")
 
         true ->
           {:ok,
@@ -100,23 +101,28 @@ defmodule ForemanServer.Aggregates.Notification do
 
   def handle_command(state, %{type: "notification.delivery_attempt", payload: payload}) do
     with {:ok, notification_id} <-
-           required_binary(get(payload, :notification_id), :notification_id),
+           required_binary(
+             get(payload, :notification_id) || state.notification_id,
+             :notification_id
+           ),
          {:ok, attempt_id} <- required_binary(get(payload, :attempt_id), :attempt_id),
-         {:ok, provider} <- required_binary(to_string_value(get(payload, :provider)), :provider),
+         {:ok, provider} <-
+           required_binary(to_string_value(get(payload, :provider) || state.provider), :provider),
          {:ok, correlation_id} <-
            required_binary(get(payload, :correlation_id) || state.correlation_id, :correlation_id) do
       {:ok,
        %{
          stream_id: stream_id(correlation_id),
          event_type: "NotificationDeliveryAttempted",
-         payload:
-           Map.merge(payload, %{
-             notification_id: notification_id,
-             attempt_id: attempt_id,
-             provider: provider,
-             correlation_id: correlation_id,
-             sequence: next_sequence(state)
-           })
+         payload: %{
+           notification_id: notification_id,
+           attempt_id: attempt_id,
+           provider: provider,
+           correlation_id: correlation_id,
+           run_id: get(payload, :run_id) || state.run_id,
+           sequence: next_sequence(state),
+           metadata: get(payload, :metadata, %{})
+         }
        }}
     end
   end
@@ -141,7 +147,7 @@ defmodule ForemanServer.Aggregates.Notification do
 
   defp duplicate?(_, _, _, _), do: false
 
-  defp suppressed(dto, payload, reason) do
+  defp suppressed(state, dto, reason) do
     {:ok,
      %{
        stream_id: stream_id(dto.correlation_id),
@@ -153,7 +159,7 @@ defmodule ForemanServer.Aggregates.Notification do
          correlation_id: dto.correlation_id,
          run_id: dto.run_id,
          reason: reason,
-         sequence: get(payload, :sequence, 0),
+         sequence: next_sequence(state),
          metadata: dto.metadata
        }
      }}
@@ -176,16 +182,24 @@ defmodule ForemanServer.Aggregates.Notification do
          stream_id: stream_id(correlation_id),
          event_type: event_type,
          payload:
-           Map.merge(payload, %{
+           %{
              notification_id: notification_id,
              attempt_id: attempt_id,
              provider: provider,
              correlation_id: correlation_id,
              run_id: get(payload, :run_id) || state.run_id,
-             sequence: next_sequence(state)
-           })
+             sequence: next_sequence(state),
+             metadata: get(payload, :metadata, %{})
+           }
+           |> put_required_keys(payload, required_keys)
        }}
     end
+  end
+
+  defp put_required_keys(event_payload, payload, required_keys) do
+    Enum.reduce(required_keys, event_payload, fn key, acc ->
+      Map.put(acc, key, get(payload, key))
+    end)
   end
 
   defp require_keys(payload, keys) do
@@ -195,7 +209,7 @@ defmodule ForemanServer.Aggregates.Notification do
     end
   end
 
-  defp put_attempt(state, payload, status) do
+  defp put_attempt(%State{} = state, payload, status) do
     attempt_id = get(payload, :attempt_id)
 
     attempt = %{
@@ -235,10 +249,18 @@ defmodule ForemanServer.Aggregates.Notification do
     ])
   end
 
+  defp parse_enabled(payload) do
+    case get(payload, :enabled) do
+      value when is_boolean(value) -> {:ok, value}
+      "true" -> {:ok, true}
+      "false" -> {:ok, false}
+      value -> {:error, {:missing_or_invalid, :enabled, value}}
+    end
+  end
+
   defp get(map, key, default \\ nil), do: Aggregate.get(map, key, default)
   defp required_binary(value, key), do: Aggregate.required_binary(value, key)
-  defp non_negative_int(value, key) when is_integer(value) and value >= 0, do: {:ok, value}
-  defp non_negative_int(nil, :now_ms), do: {:ok, System.system_time(:millisecond)}
+  defp non_negative_int(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
   defp non_negative_int(value, key), do: {:error, {:missing_or_invalid, key, value}}
   defp to_string_value(value) when is_atom(value), do: Atom.to_string(value)
   defp to_string_value(value), do: value

@@ -13,7 +13,8 @@ defmodule ForemanServer.Aggregates.NotificationTest do
     correlation_id: "run-1:failure",
     run_id: "run-1",
     now_ms: 1_000,
-    dedupe_window_ms: 300_000
+    dedupe_window_ms: 300_000,
+    enabled: true
   }
 
   test "enqueues a new notification" do
@@ -32,7 +33,10 @@ defmodule ForemanServer.Aggregates.NotificationTest do
     state =
       Notification.apply_event(Notification.initial_state(), %{
         event_type: "NotificationEnqueued",
-        payload: Map.put(@payload, :notification_id, "n-1")
+        payload:
+          @payload
+          |> Map.put(:notification_id, "n-1")
+          |> Map.put(:enqueued_at_ms, 1_000)
       })
 
     assert {:ok, event} =
@@ -62,6 +66,8 @@ defmodule ForemanServer.Aggregates.NotificationTest do
 
     assert attempted.event_type == "NotificationDeliveryAttempted"
 
+    state = Notification.apply_event(state, attempted)
+
     assert {:ok, failed} =
              Notification.handle_command(state, %{
                type: "notification.delivery_failure",
@@ -70,5 +76,12 @@ defmodule ForemanServer.Aggregates.NotificationTest do
 
     assert failed.event_type == "NotificationDeliveryFailed"
     assert failed.payload.reason == "timeout"
+
+    state = Notification.apply_event(state, failed)
+
+    assert state.status == :failed
+    assert state.attempts["a-1"].status == :failed
+    assert state.attempts["a-1"].reason == "timeout"
+    assert state.attempts["a-1"].retryable? == true
   end
 end

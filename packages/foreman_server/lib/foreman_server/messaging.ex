@@ -28,7 +28,7 @@ defmodule ForemanServer.Messaging do
            ) do
         {:ok, %{payload: %{notification_id: notification_id}}} -> {:ok, notification_id}
         {:ok, %{payload: %{"notification_id" => notification_id}}} -> {:ok, notification_id}
-        {:ok, nil} -> {:ok, notification.notification_id}
+        {:ok, nil} -> {:error, :not_persisted}
         {:error, reason} -> {:error, reason}
       end
     end

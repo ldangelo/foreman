@@ -46,7 +46,7 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
   test "disabled event classes suppress provider delivery" do
     assert {:ok, config} =
              ConfigResolver.resolve(
-               workflow_config: %{notifications: %{event_classes: [:failure]}}
+               workflow_config: %{notifications: %{enabled: true, event_classes: [:failure]}}
              )
 
     refute ConfigResolver.enabled_for?(config, :run_update)
@@ -56,7 +56,30 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
   test "malformed selected destination returns typed error and does not fall back" do
     assert {:error, {:missing_or_invalid, :slack_destination}} =
              ConfigResolver.resolve(
-               workflow_config: %{notifications: %{provider: :slack, slack: %{webhook_url: ""}}}
+               workflow_config: %{
+                 notifications: %{enabled: true, provider: :slack, slack: %{webhook_url: ""}}
+               }
              )
+  end
+
+  test "string-keyed project overrides are not silently discarded by defaults" do
+    assert {:ok, config} =
+             ConfigResolver.resolve(
+               project_config: %{
+                 "notifications" => %{
+                   "enabled" => true,
+                   "provider" => "slack",
+                   "slack" => %{"webhook_url" => {:system, "PROJECT_WEBHOOK"}}
+                 }
+               }
+             )
+
+    assert config.enabled? == true
+    assert config.provider == :slack
+  end
+
+  test "malformed enabled value fails loudly instead of silently disabling" do
+    assert {:error, {:missing_or_invalid, :enabled, "yes"}} =
+             ConfigResolver.resolve(workflow_config: %{notifications: %{enabled: "yes"}})
   end
 end

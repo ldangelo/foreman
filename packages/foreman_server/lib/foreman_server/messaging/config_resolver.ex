@@ -5,6 +5,15 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   @providers [:telegram, :slack]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
+  @known_keys [
+    :enabled,
+    :provider,
+    :event_classes,
+    :dedupe_window_ms,
+    :run_update_rate_limit_ms,
+    :telegram,
+    :slack
+  ]
   @defaults %{
     enabled: false,
     provider: :telegram,
@@ -17,27 +26,33 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   @spec resolve(keyword()) :: {:ok, Config.t()} | {:error, term()}
   def resolve(opts \\ []) when is_list(opts) do
-    app = Application.get_env(:foreman_server, :messaging, []) |> normalize_map()
-    project = opts |> Keyword.get(:project_config, %{}) |> messaging_section()
-    workflow = opts |> Keyword.get(:workflow_config, %{}) |> messaging_section()
-    raw = @defaults |> Map.merge(app) |> Map.merge(project) |> Map.merge(workflow)
+    app =
+      Application.get_env(:foreman_server, :messaging, []) |> normalize_map() |> normalize_layer()
 
-    enabled? = truthy?(get(raw, :enabled))
+    with {:ok, project} <- opts |> Keyword.get(:project_config, %{}) |> messaging_section(),
+         {:ok, workflow} <- opts |> Keyword.get(:workflow_config, %{}) |> messaging_section() do
+      raw =
+        @defaults
+        |> Map.merge(app)
+        |> Map.merge(normalize_layer(project))
+        |> Map.merge(normalize_layer(workflow))
 
-    with {:ok, provider} <- provider(raw),
-         {:ok, event_classes} <- event_classes(raw),
-         {:ok, destination} <- maybe_destination(raw, provider, enabled?),
-         {:ok, dedupe_window_ms} <- non_negative_int(raw, :dedupe_window_ms),
-         {:ok, run_update_rate_limit_ms} <- non_negative_int(raw, :run_update_rate_limit_ms) do
-      {:ok,
-       %Config{
-         enabled?: enabled?,
-         provider: provider,
-         event_classes: event_classes,
-         dedupe_window_ms: dedupe_window_ms,
-         run_update_rate_limit_ms: run_update_rate_limit_ms,
-         destination: destination
-       }}
+      with {:ok, enabled?} <- parse_enabled(raw),
+           {:ok, provider} <- provider(raw),
+           {:ok, event_classes} <- event_classes(raw),
+           {:ok, destination} <- maybe_destination(raw, provider, enabled?),
+           {:ok, dedupe_window_ms} <- non_negative_int(raw, :dedupe_window_ms),
+           {:ok, run_update_rate_limit_ms} <- non_negative_int(raw, :run_update_rate_limit_ms) do
+        {:ok,
+         %Config{
+           enabled?: enabled?,
+           provider: provider,
+           event_classes: event_classes,
+           dedupe_window_ms: dedupe_window_ms,
+           run_update_rate_limit_ms: run_update_rate_limit_ms,
+           destination: destination
+         }}
+      end
     end
   end
 
@@ -46,14 +61,43 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   def enabled_for?(%Config{}, _event_class), do: false
 
-  defp messaging_section(map) when is_map(map) do
-    case get(map, :notifications) || get(map, :messaging) do
-      value when is_map(value) -> normalize_map(value)
-      _ -> normalize_map(map)
+  defp parse_enabled(raw) do
+    case get(raw, :enabled) do
+      value when is_boolean(value) -> {:ok, value}
+      "true" -> {:ok, true}
+      "false" -> {:ok, false}
+      value -> {:error, {:missing_or_invalid, :enabled, value}}
     end
   end
 
-  defp messaging_section(_), do: %{}
+  # Whitelist and atomize known top-level keys once per layer, so a
+  # string-keyed override (the normal shape for project/workflow config
+  # loaded from YAML or JSON) is not silently discarded by `@defaults`
+  # always supplying the atom key.
+  defp normalize_layer(map) when is_map(map) do
+    Enum.reduce(@known_keys, %{}, fn key, acc ->
+      case Map.fetch(map, key) do
+        {:ok, value} ->
+          Map.put(acc, key, value)
+
+        :error ->
+          case Map.fetch(map, Atom.to_string(key)) do
+            {:ok, value} -> Map.put(acc, key, value)
+            :error -> acc
+          end
+      end
+    end)
+  end
+
+  defp messaging_section(map) when is_map(map) do
+    case get(map, :notifications) || get(map, :messaging) do
+      nil -> {:ok, normalize_map(map)}
+      value when is_map(value) -> {:ok, normalize_map(value)}
+      value -> {:error, {:missing_or_invalid, :messaging_section, value}}
+    end
+  end
+
+  defp messaging_section(_), do: {:ok, %{}}
 
   defp provider(raw) do
     case normalize_atom(get(raw, :provider)) do
@@ -123,7 +167,6 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     end
   end
 
-  defp truthy?(value), do: value in [true, "true", true, "1", 1]
   defp normalize_map(list) when is_list(list), do: Map.new(list)
   defp normalize_map(map) when is_map(map), do: map
   defp normalize_map(_), do: %{}

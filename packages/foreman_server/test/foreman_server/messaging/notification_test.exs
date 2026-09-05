@@ -31,4 +31,9 @@ defmodule ForemanServer.Messaging.NotificationTest do
     assert {:error, {:missing_or_invalid, :provider, "irc"}} =
              Notification.normalize(%{@valid | provider: "irc"})
   end
+
+  test "rejects metadata maps with non-atom, non-binary keys instead of crashing" do
+    assert {:error, {:missing_or_invalid, :metadata, _}} =
+             Notification.normalize(%{@valid | metadata: %{1 => "x"}})
+  end
 end

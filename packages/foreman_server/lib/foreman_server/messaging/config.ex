@@ -8,7 +8,7 @@ defmodule ForemanServer.Messaging.Config do
     :dedupe_window_ms,
     :run_update_rate_limit_ms
   ]
-  @derive Jason.Encoder
+  @derive {Jason.Encoder, except: [:destination]}
   defstruct [
     :enabled?,
     :provider,

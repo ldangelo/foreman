@@ -23,8 +23,11 @@ defmodule ForemanServer.ProjectionStoreNotificationsTest do
       data: %{
         notification_id: "n-1",
         provider: "telegram",
+        recipient: "chat-1",
         event_class: "failure",
         severity: "critical",
+        subject: "Run failed",
+        body: "phase failed",
         correlation_id: "corr-1",
         run_id: "run-n1",
         metadata: %{run_id: "run-n1"}
@@ -47,7 +50,14 @@ defmodule ForemanServer.ProjectionStoreNotificationsTest do
     assert :ok = ProjectionStore.apply_events([run_started, enqueued, failed])
     run = ProjectionStore.run("run-n1")
 
-    assert [%{notification_id: "n-1", status: "failed", reason: "timeout", retryable?: true}] =
-             run.notifications
+    assert [
+             %{
+               notification_id: "n-1",
+               status: "failed",
+               reason: "timeout",
+               retryable?: true,
+               metadata: %{run_id: "run-n1"}
+             }
+           ] = run.notifications
   end
 end

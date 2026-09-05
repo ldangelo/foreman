@@ -4,6 +4,7 @@ defmodule ForemanServer.Messaging.Redactor do
   def redact(value) when is_binary(value) do
     value
     |> String.replace(~r/bot[0-9]+:[A-Za-z0-9_-]+/, "bot[REDACTED]")
+    |> String.replace(~r/\b[0-9]{6,}:[A-Za-z0-9_-]{30,}\b/, "[REDACTED]")
     |> String.replace(
       ~r/https:\/\/hooks\.slack\.com\/services\/[^\s]+/,
       "https://hooks.slack.com/services/[REDACTED]"
