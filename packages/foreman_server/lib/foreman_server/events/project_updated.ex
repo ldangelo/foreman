@@ -3,8 +3,9 @@ defmodule ForemanServer.Events.ProjectUpdated do
   @enforce_keys [:project_id, :task_provider]
   @type t :: %__MODULE__{
           project_id: String.t(),
-          task_provider: map() | nil
+          task_provider: map() | nil,
+          config: map()
         }
   @derive Jason.Encoder
-  defstruct [:project_id, :task_provider]
+  defstruct [:project_id, :task_provider, config: %{}]
 end
