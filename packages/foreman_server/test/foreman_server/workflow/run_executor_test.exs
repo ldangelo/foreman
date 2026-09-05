@@ -453,11 +453,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert {:adapter_env, _env} = receive_message()
     assert {:adapter_driver_opts, driver_opts} = receive_message()
 
-    # 1 minute = 60_000ms; allow generous scheduling slack while asserting
-    # this is nowhere near the 30-minute app-config/default ceiling a
-    # dropped override would leave in place.
-    assert Keyword.fetch!(driver_opts, :timeout) in 1..60_000
-    assert Keyword.fetch!(driver_opts, :await_timeout) in 1..60_000
+    # 1 minute = 60_000ms exactly; allow only scheduling slack on the lower
+    # bound so this is nowhere near the 30-minute app-config/default ceiling
+    # a dropped override would leave in place, and a x1000 or x60 conversion
+    # bug (1_000ms or 1ms) fails this assertion instead of passing it.
+    assert Keyword.fetch!(driver_opts, :timeout) in 55_000..60_000
+    assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
   end
 
 
