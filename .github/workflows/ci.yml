@@ -38,6 +38,10 @@ jobs:
           otp-version: '27.3'
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
+      - name: Install br (Beads CLI)
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh" | bash -s -- --quiet
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify Jido fork pins
         run: echo "JRM-T003 reading pins from JIDO_FORKS.md"
       - name: Cache deps
