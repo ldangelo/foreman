@@ -8,7 +8,10 @@ defmodule ForemanServer.Events.PhaseStarted do
           index: pos_integer(),
           name: String.t(),
           attempt: pos_integer(),
-          artifact_template: String.t()
+          artifact_template: String.t(),
+          stall_detection_kind: String.t() | nil,
+          stall_threshold_ms: pos_integer() | nil,
+          stall_policy: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -18,6 +21,9 @@ defmodule ForemanServer.Events.PhaseStarted do
     :index,
     :name,
     :attempt,
-    :artifact_template
+    :artifact_template,
+    :stall_detection_kind,
+    :stall_threshold_ms,
+    :stall_policy
   ]
 end

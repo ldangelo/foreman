@@ -548,14 +548,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp emit_phase_start(state, phase_spec, phase_index) do
     phase_id = Identity.phase_id(state.run_id, phase_index)
 
-    payload = %{
-      run_id: state.run_id,
-      phase_id: phase_id,
-      index: phase_index,
-      name: Map.get(phase_spec, :name),
-      attempt: 1,
-      artifact_template: Map.get(phase_spec, :artifact_template) || %{}
-    }
+    payload =
+      %{
+        run_id: state.run_id,
+        phase_id: phase_id,
+        index: phase_index,
+        name: Map.get(phase_spec, :name),
+        attempt: 1,
+        artifact_template: Map.get(phase_spec, :artifact_template) || %{}
+      }
+      |> Map.merge(
+        ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
+      )
 
     dispatch_system(
       "phase.start",

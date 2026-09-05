@@ -68,7 +68,8 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
       worktrees: %{},
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
-      works: %{}
+      works: %{},
+      inbox_threads: %{}
     }
   end
 end

@@ -1897,3 +1897,7 @@ Investigation and remediation options:
 3. Investigate async/sync interleaving of shared singletons, then implement the required isolation fix
 Do NOT run `br sync --force-jsonl` against a drifted workspace — has destroyed issues here before.
 See ``skill://beads-corrupt-db-recovery-safe`` for safe recovery procedure.
+
+## Phase stall detection notes
+
+When editing stall detection, keep one durable fact: `RunStallReported` from `run.report_stall`. Do not infer messaging scope from phase names, do not count `WorkerHeartbeat` as agent output, and do not recompute stall rules in CLI/MCP/HTTP surfaces; read `latest_stall` from projections.

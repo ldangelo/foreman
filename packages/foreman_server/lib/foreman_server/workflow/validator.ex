@@ -28,8 +28,10 @@ defmodule ForemanServer.Workflow.Validator do
           | :missing_phases
           | :empty_phases
           | {:unknown_skill, String.t()}
+          | {:invalid_phase_entry, non_neg_integer()}
           | {:missing_phase_name, non_neg_integer()}
           | {:missing_phase_action, non_neg_integer()}
+          | {:invalid_stall_detection, non_neg_integer(), term()}
 
   @spec validate(map()) :: :ok | {:error, validation_error()}
   def validate(workflow) when is_map(workflow) do
@@ -73,15 +75,35 @@ defmodule ForemanServer.Workflow.Validator do
           missing_key?(phase, "bash") ->
         {:error, {:missing_phase_action, index}}
 
-      Map.has_key?(phase, "command") ->
-        validate_skill_from_command(phase["command"], index)
-
       true ->
-        :ok
+        with :ok <- validate_stall_detection(phase, index) do
+          if Map.has_key?(phase, "command") do
+            validate_skill_from_command(phase["command"], index)
+          else
+            :ok
+          end
+        end
     end
   end
 
-  defp validate_phase(_non_map, _index), do: :ok
+  defp validate_phase(_non_map, index), do: {:error, {:invalid_phase_entry, index}}
+
+  # Reuses `PhaseSpec.fetch/2`'s accepted-spellings table rather than
+  # hand-checking the string key "stall_detection" alone, so an atom or
+  # camelCase spelling that `PhaseSpec.normalize/1` accepts cannot pass
+  # validation and then raise later at normalize time (AGENTS.md §5.4b).
+  defp validate_stall_detection(phase, index) do
+    case ForemanServer.Workflow.PhaseSpec.fetch(phase, :stall_detection) do
+      nil ->
+        :ok
+
+      value ->
+        case ForemanServer.Workflow.StallPolicy.normalize(value) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, {:invalid_stall_detection, index, reason}}
+        end
+    end
+  end
 
   defp validate_skill_from_command(command, _index) when is_binary(command) do
     case Regex.run(@skill_from_command, command) do

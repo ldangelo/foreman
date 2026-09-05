@@ -459,7 +459,16 @@ defmodule ForemanServer.Application do
     seconds =
       Application.get_env(:foreman_server, :stuck_run_check_interval_seconds, 60)
 
-    [{ForemanServer.StuckDetector, [interval_ms: seconds * 1000]}]
+    stuck = [{ForemanServer.StuckDetector, [interval_ms: seconds * 1000]}]
+
+    if ForemanServer.Workflow.StallPolicy.enabled?() do
+      stall_seconds =
+        Application.get_env(:foreman_server, :stall_detection_check_interval_seconds, 60)
+
+      stuck ++ [{ForemanServer.StallDetector, [interval_ms: stall_seconds * 1000]}]
+    else
+      stuck
+    end
   end
 
   # Gated on :start_lifecycle_reconciler? config so the test suite

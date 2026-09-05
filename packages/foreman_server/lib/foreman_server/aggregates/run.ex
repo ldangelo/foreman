@@ -37,7 +37,8 @@ defmodule ForemanServer.Aggregates.Run do
       :merge_gate,
       phase_status: %{},
       worker_status: %{},
-      retry_history: []
+      retry_history: [],
+      reported_stall_keys: MapSet.new()
     ]
   end
 
@@ -54,7 +55,8 @@ defmodule ForemanServer.Aggregates.Run do
       merge_gate: nil,
       phase_status: %{},
       worker_status: %{},
-      retry_history: []
+      retry_history: [],
+      reported_stall_keys: MapSet.new()
     }
 
   @impl true
@@ -137,6 +139,19 @@ defmodule ForemanServer.Aggregates.Run do
             terminal?: true,
             run_id: Aggregate.get(payload, :run_id),
             project_id: Aggregate.get(payload, :project_id) || state.project_id,
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
+        }
+
+      "RunStallReported" ->
+        status_effect = Aggregate.get(payload, :status_effect)
+
+        %State{
+          state
+          | status: status_effect || state.status,
+            terminal?: status_effect in ["failed", "blocked", "stuck"],
+            run_id: Aggregate.get(payload, :run_id) || state.run_id,
+            reported_stall_keys:
+              MapSet.put(state.reported_stall_keys, Aggregate.get(payload, :idempotency_key)),
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
@@ -418,6 +433,44 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  def handle_command(state, %{type: "run.report_stall", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state),
+         {:ok, phase_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
+         {:ok, idempotency_key} <-
+           Aggregate.required_binary(Aggregate.get(payload, :idempotency_key), :idempotency_key),
+         :ok <- reject_duplicate_stall(state, idempotency_key),
+         {:ok, stall_kind} <- require_known_stall_kind(Aggregate.get(payload, :stall_kind)),
+         {:ok, policy} <- require_known_stall_policy(Aggregate.get(payload, :policy)),
+         {:ok, threshold_ms} <- require_non_negative_integer(payload, :threshold_ms, true),
+         {:ok, idle_ms} <- require_non_negative_integer(payload, :idle_ms, false),
+         {:ok, detected_at_ms} <- require_non_negative_integer(payload, :detected_at_ms, false),
+         {:ok, reason} <- Aggregate.required_binary(Aggregate.get(payload, :reason), :reason) do
+      status_effect = status_effect_for(policy)
+
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunStallReported",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:task_id, state.task_id)
+           |> Map.put(:phase_id, phase_id)
+           |> Map.put(:stall_kind, stall_kind)
+           |> Map.put(:policy, policy)
+           |> Map.put(:status_effect, status_effect)
+           |> Map.put(:threshold_ms, threshold_ms)
+           |> Map.put(:idle_ms, idle_ms)
+           |> Map.put(:detected_at_ms, detected_at_ms)
+           |> Map.put(:idempotency_key, idempotency_key)
+           |> Map.put(:reason, reason)
+       }}
+    end
+  end
+
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "run.pr.update",
@@ -509,6 +562,35 @@ defmodule ForemanServer.Aggregates.Run do
   end
 
   def handle_command(_state, _command), do: :unhandled
+
+  defp reject_duplicate_stall(%State{} = state, idempotency_key) do
+    if MapSet.member?(state.reported_stall_keys, idempotency_key) do
+      {:ok, nil}
+    else
+      :ok
+    end
+  end
+
+  defp require_known_stall_kind(kind) when kind in ["agent_no_output", "messaging_no_progress"],
+    do: {:ok, kind}
+
+  defp require_known_stall_kind(kind), do: {:error, {:invalid_stall_kind, kind}}
+
+  defp require_known_stall_policy(policy) when policy in ["fail", "attention"], do: {:ok, policy}
+  defp require_known_stall_policy(policy), do: {:error, {:invalid_stall_policy, policy}}
+
+  defp require_non_negative_integer(payload, key, positive?) do
+    value = Aggregate.get(payload, key)
+
+    cond do
+      is_integer(value) and positive? and value > 0 -> {:ok, value}
+      is_integer(value) and not positive? and value >= 0 -> {:ok, value}
+      true -> {:error, {:invalid_integer, key, value}}
+    end
+  end
+
+  defp status_effect_for("fail"), do: "failed"
+  defp status_effect_for("attention"), do: "blocked"
 
   defp put_phase(%State{} = state, payload, status) do
     phase_id = Aggregate.get(payload, :phase_id)

@@ -875,3 +875,19 @@ claims as written; add a forward-pointer note instead of rewriting them.
 
 - Command syntax: [CLI Reference](./cli-reference.md)
 - Adding a Jido Harness provider: [docs/guides/adding-a-jido-harness-provider.md](./guides/adding-a-jido-harness-provider.md)
+
+## Phase stall detection
+
+Workflow authors can opt a phase into stall detection with `stall_detection`. `agent` detects no qualifying agent output; `messaging` detects no appended inbox/message progress. Example:
+
+```yaml
+phases:
+  - name: wait-for-reply
+    command: "/skill:verify"
+    stall_detection:
+      kind: messaging
+      threshold_ms: 1800000
+      policy: attention
+```
+
+Defaults: agent no-output = 900000 ms; messaging no-progress = 1800000 ms. Disable detector scheduling with `config :foreman_server, :stall_detection_enabled, false`. Do not use `0` or negative thresholds; validation treats those as malformed. A detected stall writes `RunStallReported`, updates `latest_stall` on run/phase/task projections, and appears in `foreman run get --format json`, MCP `foreman_run_status`, and API projection reads. Heartbeats alone are not progress.

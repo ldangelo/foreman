@@ -362,6 +362,28 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp validate_aggregate_id(%{
+         type: "run.report_stall",
+         aggregate_id: aggregate_id,
+         payload: payload
+       }) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+
+    cond do
+      not is_binary(run_id) or run_id == "" ->
+        {:error, {:invalid_envelope, :missing_run_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("run", run_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
   # Approval is the transition that triggers dispatch, so it is the only place a
   # declared dependency can still change the outcome. `task.create` accepted
   # `dependencies`, the aggregate stored them, and `TaskCreated` carried them —

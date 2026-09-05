@@ -70,6 +70,11 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:stuck_runs, threshold_ms, normalize_now_ms_fun(now_ms)})
   end
 
+  @spec stall_candidates(integer() | nil) :: [map()]
+  def stall_candidates(now_ms \\ nil) do
+    GenServer.call(__MODULE__, {:stall_candidates, normalize_now_ms_fun(now_ms)})
+  end
+
   @doc """
   Apply a list of confirmed events to the projection.
 
@@ -462,6 +467,12 @@ defmodule ForemanServer.ProjectionStore do
       end)
 
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:stall_candidates, now_ms_fun}, _from, state) do
+    now_ms = now_ms_fun.()
+    {:reply, stall_candidates_from_state(state, now_ms), state}
   end
 
   @impl true
@@ -1038,6 +1049,27 @@ defmodule ForemanServer.ProjectionStore do
     apply_terminal_run_event(state, payload, "stuck")
   end
 
+  defp apply_event_by_type(state, "RunStallReported", payload) do
+    stall = latest_stall_from_payload(payload)
+    run_id = get(payload, :run_id)
+    phase_id = get(payload, :phase_id)
+    task_id = get(payload, :task_id)
+    status_effect = get(payload, :status_effect)
+
+    state
+    |> update_run_projection(run_id, payload_event_at_ms(payload), fn run ->
+      run
+      |> Map.put(:latest_stall, stall)
+      |> maybe_put_status_effect(status_effect, stall.reason)
+    end)
+    |> Map.update!(:phases, fn phases ->
+      Map.update(phases, phase_id, %{latest_stall: stall}, fn phase ->
+        Map.put(phase, :latest_stall, stall)
+      end)
+    end)
+    |> update_task_latest_stall(task_id, stall)
+  end
+
   defp apply_event_by_type(state, "RunCancelled", payload) do
     apply_terminal_run_event(state, payload, "cancelled")
   end
@@ -1058,7 +1090,13 @@ defmodule ForemanServer.ProjectionStore do
           failure_reason: nil,
           last_sequence: event.sequence,
           started_at_ms: payload_event_at_ms(payload),
-          last_event_at_ms: payload_event_at_ms(payload)
+          last_event_at_ms: payload_event_at_ms(payload),
+          output_activity_at_ms: payload_event_at_ms(payload),
+          messaging_activity_at_ms: payload_event_at_ms(payload),
+          stall_detection_kind: event.stall_detection_kind,
+          stall_threshold_ms: event.stall_threshold_ms,
+          stall_policy: event.stall_policy,
+          latest_stall: nil
         }
 
         state
@@ -1086,6 +1124,7 @@ defmodule ForemanServer.ProjectionStore do
           })
           |> Map.put(:last_sequence, event.sequence)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+          |> Map.put(:output_activity_at_ms, payload_event_at_ms(payload))
 
         state
         |> touch_run_for_payload(payload)
@@ -1107,6 +1146,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:failure_reason, event.reason)
           |> Map.put(:last_sequence, event.sequence)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+          |> Map.put(:output_activity_at_ms, payload_event_at_ms(payload))
 
         state
         |> touch_run_for_payload(payload)
@@ -1286,12 +1326,14 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "WorkerStarted", payload) do
-    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+    state
+    |> update_run_projection(get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       case run do
         %{status: "awaiting_worker"} -> %{run | status: "in_progress"}
         run -> run
       end
     end)
+    |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
   end
 
   defp apply_event_by_type(state, "WorkerHeartbeat", payload) do
@@ -1299,7 +1341,9 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "WorkerExited", payload) do
-    touch_run_for_payload(state, payload)
+    state
+    |> touch_run_for_payload(payload)
+    |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
   end
 
   defp apply_event_by_type(state, "WorkerStdout", payload) do
@@ -1439,8 +1483,16 @@ defmodule ForemanServer.ProjectionStore do
     update_intent(state, payload, "stale")
   end
 
+  defp apply_event_by_type(state, "AssistantMessage", payload) do
+    state
+    |> touch_run_for_payload(payload)
+    |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
+  end
+
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
-    touch_run_for_payload(state, payload)
+    state
+    |> touch_run_for_payload(payload)
+    |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
   end
 
   defp apply_event_by_type(state, "WorktreeCreated", payload) do
@@ -1559,7 +1611,9 @@ defmodule ForemanServer.ProjectionStore do
           msgs ++ [msg]
         end)
 
-      %{state | inbox_threads: Map.put(state.inbox_threads, run_id, thread)}
+      state
+      |> Map.put(:inbox_threads, Map.put(state.inbox_threads, run_id, thread))
+      |> touch_active_phase_activity(run_id, :messaging, payload_event_at_ms(payload))
     else
       state
     end
@@ -1879,6 +1933,153 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  defp stall_candidates_from_state(state, now_ms) do
+    state.phases
+    |> Map.values()
+    |> Enum.filter(&(get(&1, :status) == "in_progress"))
+    |> Enum.filter(
+      &(get(&1, :stall_detection_kind) in ["agent_no_output", "messaging_no_progress"])
+    )
+    |> Enum.filter(fn phase ->
+      case Map.get(state.runs, get(phase, :run_id)) do
+        %{status: status} when status in @active_run_statuses -> true
+        _ -> false
+      end
+    end)
+    |> Enum.flat_map(fn phase ->
+      kind = get(phase, :stall_detection_kind)
+      threshold_ms = get(phase, :stall_threshold_ms)
+      activity_at_ms = activity_at_ms_for_kind(phase, kind)
+
+      if is_integer(threshold_ms) and threshold_ms > 0 and is_integer(activity_at_ms) and
+           activity_at_ms + threshold_ms <= now_ms do
+        idle_ms = max(now_ms - activity_at_ms, 0)
+
+        [
+          %{
+            run_id: get(phase, :run_id),
+            task_id: get(Map.get(state.runs, get(phase, :run_id)), :task_id),
+            phase_id: get(phase, :phase_id),
+            phase_index: get(phase, :index),
+            phase_name: get(phase, :name),
+            stall_kind: kind,
+            policy: get(phase, :stall_policy) || "attention",
+            threshold_ms: threshold_ms,
+            idle_ms: idle_ms,
+            activity_at_ms: activity_at_ms,
+            detected_at_ms: now_ms,
+            idempotency_key: stall_idempotency_key(phase, kind, activity_at_ms),
+            reason: stall_reason(phase, kind, idle_ms, threshold_ms)
+          }
+        ]
+      else
+        []
+      end
+    end)
+  end
+
+  defp activity_at_ms_for_kind(phase, "agent_no_output"), do: get(phase, :output_activity_at_ms)
+
+  defp activity_at_ms_for_kind(phase, "messaging_no_progress"),
+    do: get(phase, :messaging_activity_at_ms)
+
+  defp stall_idempotency_key(phase, kind, activity_at_ms) do
+    [get(phase, :run_id), get(phase, :phase_id), kind, activity_at_ms]
+    |> Enum.join(":")
+  end
+
+  defp stall_reason(phase, "agent_no_output", idle_ms, threshold_ms) do
+    "phase #{get(phase, :index)} (#{get(phase, :name)}) produced no agent output for #{idle_ms}ms (threshold #{threshold_ms}ms)"
+  end
+
+  defp stall_reason(phase, "messaging_no_progress", idle_ms, threshold_ms) do
+    "phase #{get(phase, :index)} (#{get(phase, :name)}) had no messaging progress for #{idle_ms}ms (threshold #{threshold_ms}ms)"
+  end
+
+  defp touch_active_phase_activity(state, run_id, kind, event_at_ms) do
+    if valid_id?(run_id) do
+      phase_ids = state.runs |> Map.get(run_id, %{}) |> Map.get(:phase_ids, [])
+
+      Map.update!(state, :phases, fn phases ->
+        Enum.reduce(phase_ids, phases, fn phase_id, acc ->
+          case Map.fetch(acc, phase_id) do
+            {:ok, phase} ->
+              if get(phase, :status) == "in_progress" do
+                key =
+                  if kind == :messaging,
+                    do: :messaging_activity_at_ms,
+                    else: :output_activity_at_ms
+
+                Map.put(acc, phase_id, Map.put(phase, key, event_at_ms))
+              else
+                acc
+              end
+
+            :error ->
+              acc
+          end
+        end)
+      end)
+    else
+      state
+    end
+  end
+
+  defp latest_stall_from_payload(payload) do
+    %{
+      run_id: get(payload, :run_id),
+      task_id: get(payload, :task_id),
+      phase_id: get(payload, :phase_id),
+      phase_index: get(payload, :phase_index),
+      phase_name: get(payload, :phase_name),
+      stall_kind: get(payload, :stall_kind),
+      policy: get(payload, :policy),
+      status_effect: get(payload, :status_effect),
+      threshold_ms: get(payload, :threshold_ms),
+      idle_ms: get(payload, :idle_ms),
+      activity_at_ms: get(payload, :activity_at_ms),
+      detected_at_ms: get(payload, :detected_at_ms),
+      idempotency_key: get(payload, :idempotency_key),
+      reason: get(payload, :reason)
+    }
+  end
+
+  defp maybe_put_status_effect(run, nil, _reason), do: run
+
+  defp maybe_put_status_effect(run, status, reason)
+       when status in ["failed", "blocked", "stuck"] do
+    run
+    |> Map.put(:status, status)
+    |> Map.put(:terminal?, status in ["failed", "blocked", "stuck"])
+    |> Map.put(:failure_reason, reason)
+  end
+
+  # Unknown status_effect (a future/unrecognized value persisted by a newer
+  # writer): record it as the latest stall without changing run status, so
+  # replay does not crash on a value this reader does not recognize yet.
+  defp maybe_put_status_effect(run, _status, _reason), do: run
+
+  defp update_task_latest_stall(state, nil, _stall), do: state
+
+  defp update_task_latest_stall(state, task_id, stall) do
+    if valid_id?(task_id) do
+      Map.update!(state, :tasks, fn tasks ->
+        Map.update(
+          tasks,
+          task_id,
+          %{task_id: task_id, latest_stall: stall, attention_reason: stall.reason},
+          fn task ->
+            task
+            |> Map.put(:latest_stall, stall)
+            |> Map.put(:attention_reason, stall.reason)
+          end
+        )
+      end)
+    else
+      state
+    end
+  end
+
   defp update_run_projection(state, run_id, event_at_ms, updater) when is_function(updater, 1) do
     if valid_id?(run_id) do
       run =
@@ -1909,6 +2110,7 @@ defmodule ForemanServer.ProjectionStore do
       last_event_at_ms: now_ms,
       terminal?: false,
       failure_reason: nil,
+      latest_stall: nil,
       pr_url: nil,
       phase_prs: []
     }
@@ -2001,6 +2203,7 @@ defmodule ForemanServer.ProjectionStore do
 
     state
     |> touch_run_for_payload(payload)
+    |> touch_active_phase_activity(run_id, :output, payload_event_at_ms(payload))
     |> Map.update(:run_logs, %{run_id => log_state}, &Map.put(&1, run_id, log_state))
   end
 
