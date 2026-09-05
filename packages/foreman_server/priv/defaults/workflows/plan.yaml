@@ -4,8 +4,10 @@ description: Create draft product and technical requirements for later refinemen
 operator_timeout_ms: 300000
 phases:
   - name: create-prd
+    timeout_minutes: 10
     command: "/skill:ensemble-full-create-prd --foreman"
     requiredFile: planning.prd_path
   - name: create-trd
+    timeout_minutes: 10
     command: "/skill:ensemble-full-create-trd-foreman --foreman"
     requiredFile: planning.trd_path

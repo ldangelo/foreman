@@ -11,6 +11,7 @@ defmodule ForemanServer.Workflow.Interpreter do
   # executor's run-terminal reporting MUST agree on what "pending" means, and
   # they can only do that by reading one predicate.
   alias ForemanServer.Workflow.CommitDeferral
+  alias ForemanServer.Workflow.PhaseSpec
   @required_top_level_keys ~w(name phases)
   @required_phase_keys ~w(name)
   @allowed_phase_actions ~w(prompt command bash)
@@ -46,6 +47,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
     validate_phase_prs!(workflow, path)
+    validate_phase_timeouts!(workflow, path)
     validate_commits!(workflow, path)
     {:ok, workflow}
   end
@@ -429,6 +431,43 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_stack_pr_value!(_phase, _index, _path), do: :ok
+
+  # `timeout_minutes:` is PHASE-level and intentionally expressed in minutes,
+  # not milliseconds, so workflow authors do not encode runtime internals in
+  # manifests. Absent remains absent; app config stays the fallback.
+  defp validate_phase_timeouts!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_timeout_minutes_value!(phase, index, path) end)
+
+    :ok
+  end
+
+  defp validate_timeout_minutes_value!(phase, index, path) when is_map(phase) do
+    case phase_timeout_minutes_value(phase) do
+      nil ->
+        :ok
+
+      value when is_integer(value) and value > 0 ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"timeout_minutes\" must be a positive integer number of minutes"
+    end
+  end
+
+  defp validate_timeout_minutes_value!(_phase, _index, _path), do: :ok
+
+  # Reuses `PhaseSpec.normalize/1` rather than hand-checking "timeout_minutes"
+  # / "timeoutMinutes" separately, so the accepted spellings can only ever be
+  # defined once (AGENTS.md §5.4b) — the same drift class as the phase-level
+  # `worktree:` duplication documented above.
+  defp phase_timeout_minutes_value(phase) do
+    phase |> PhaseSpec.normalize() |> Map.get(:timeout_minutes)
+  end
 
   # `commit:` is PHASE-level, and deliberately the opposite shape from
   # `worktree:`. A run has exactly one worktree, so a phase has nothing to

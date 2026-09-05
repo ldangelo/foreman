@@ -2,6 +2,8 @@ name: trd
 description: Create a TRD from a PRD and implement it via the ensemble chain.
 phases:
   - name: create-trd
+    timeout_minutes: 10
     command: "/skill:ensemble-full-create-trd --foreman"
   - name: implement-trd
+    timeout_minutes: 60
     command: "/skill:ensemble-full-implement-trd --foreman"

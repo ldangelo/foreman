@@ -28,7 +28,8 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     :prompt,
     :prompt_path,
     :required_file,
-    :stack_pr
+    :stack_pr,
+    :timeout_minutes
   ]
 
   describe "both key conventions converge" do
@@ -39,7 +40,8 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         "index" => 1,
         "artifact" => "REPORT.md",
         "requiredFile" => "docs/TRD/x.md",
-        "maxTurns" => 40
+        "maxTurns" => 40,
+        "timeoutMinutes" => 15
       }
 
       atom_keyed = %{
@@ -48,7 +50,8 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         index: 1,
         artifact_template: "REPORT.md",
         required_file: "docs/TRD/x.md",
-        max_turns: 40
+        max_turns: 40,
+        timeout_minutes: 15
       }
 
       assert PhaseSpec.normalize(string_keyed) == PhaseSpec.normalize(atom_keyed)
@@ -62,10 +65,17 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     end
 
     test "camelCase YAML keys map onto their snake_case canonical names" do
-      spec = PhaseSpec.normalize(%{"requiredFile" => "a.md", "maxTurns" => 12, "artifact" => "b"})
+      spec =
+        PhaseSpec.normalize(%{
+          "requiredFile" => "a.md",
+          "maxTurns" => 12,
+          "timeoutMinutes" => 7,
+          "artifact" => "b"
+        })
 
       assert spec[:required_file] == "a.md"
       assert spec[:max_turns] == 12
+      assert spec[:timeout_minutes] == 7
       assert spec[:artifact_template] == "b"
     end
   end
@@ -91,6 +101,7 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         "index" => 3,
         "models" => ["m"],
         "maxTurns" => 9,
+        "timeout_minutes" => 11,
         "mail" => %{"to" => "x"},
         "context" => %{"k" => "v"},
         "commit" => false,
@@ -112,8 +123,10 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
       assert Enum.sort(Map.keys(spec)) == [:action, :name]
       refute Map.has_key?(spec, :commit)
       refute Map.has_key?(spec, :stack_pr)
+      refute Map.has_key?(spec, :timeout_minutes)
       # Map.get/2 readers are unaffected: an omitted key still reads as nil.
       assert Map.get(spec, :commit) == nil
+      assert Map.get(spec, :timeout_minutes) == nil
     end
 
     test "no string keys survive normalization" do

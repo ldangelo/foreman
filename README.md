@@ -133,9 +133,11 @@ the Beads side and splits Foreman's responsibilities by lifecycle:
 Enablement, the per-project `task_provider` block, and doctor output are
 documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
-Workflow phases support `commit:` to defer phase commits and `stack_pr:` to
+Workflow phases support `commit:` to defer phase commits, `stack_pr:` to
 request a phase PR record from the single Foreman run branch to the recorded run
-base branch. The default run branch is `foreman/<task-id>/<run-id>` — `<task-id>` is
+base branch, and `timeout_minutes:` (alias `timeoutMinutes:`) to declare a positive-integer execution
+timeout in minutes. Omitted phase timeouts fall back to the Elixir app-config
+failure policy. The default run branch is `foreman/<task-id>/<run-id>` — `<task-id>` is
 the provider-facing identifier when available (falls back to `<run-id>` for ad-hoc),
 so each retry of the same task gets a unique branch. `stack_pr:` reuses the existing head/base PR when present, records
 no-op when there are no committed diffs, and suppresses final AutoPR only for

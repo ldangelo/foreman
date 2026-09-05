@@ -34,5 +34,6 @@ worktree:
 # stay uncommitted, and AutoPR proposes commits only.
 phases:
   - name: implement-trd
+    timeout_minutes: 60
     command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
     commit: true

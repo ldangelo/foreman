@@ -215,6 +215,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         if map_size(env) > 0 do
           send(pid, {:adapter_env, env})
         end
+
+        send(pid, {:adapter_driver_opts, Keyword.get(state, :driver_opts, [])})
       end
 
       result = LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
@@ -364,6 +366,99 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end)
 
     {:ok, temp_dir: temp_dir}
+  end
+
+  test "phase timeout_minutes overrides app-config failure policy timeout" do
+    previous = Application.get_env(:foreman_server, :agent_runtime)
+
+    Application.put_env(:foreman_server, :agent_runtime,
+      default_timeout_ms: 30_000,
+      failure_policies: %{"implement" => %{fallback: false, max_attempts: 1, timeout_ms: 10_000}}
+    )
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:foreman_server, :agent_runtime)
+        value -> Application.put_env(:foreman_server, :agent_runtime, value)
+      end
+    end)
+
+    phase = %{name: "implement", timeout_minutes: 3}
+
+    assert RunExecutor.__failure_policy_for_test__(phase).timeout_ms == 180_000
+  end
+
+  test "phase timeout_minutes reaches the dispatched worker's driver_opts, not just FailurePolicy.resolve/2",
+       %{temp_dir: _temp_dir} do
+    # __failure_policy_for_test__/1 above proves resolution in isolation; this
+    # proves dispatch_agent/5 still forwards that resolved deadline as
+    # driver_opts on the real worker-launch path, so a future refactor that
+    # stops calling phase_timeout_opts/1 there fails this test, not just the
+    # unit-level one.
+    start_schema_cache!()
+
+    # A dropped override falls back to this default, not a hardcoded
+    # module constant — set it far from 60_000ms so the assertion below
+    # actually distinguishes "honored" from "silently ignored".
+    previous_agent_runtime = Application.get_env(:foreman_server, :agent_runtime)
+    Application.put_env(:foreman_server, :agent_runtime, default_timeout_ms: 1_800_000)
+
+    on_exit(fn ->
+      case previous_agent_runtime do
+        nil -> Application.delete_env(:foreman_server, :agent_runtime)
+        value -> Application.put_env(:foreman_server, :agent_runtime, value)
+      end
+    end)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    phase = Map.put(phase_spec(script_key, artifact_dir), :timeout_minutes, 1)
+    workflow_snapshot = snapshot([phase])
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    stub(BrRunnerMock, :cmd, fn
+      {:update, %{flags: ["--claim", ^task_id]}}, _project_config, _opts ->
+        {:ok,
+         %{
+           stdout: Jason.encode!(issue_payload(task_id, "in_progress", %{})),
+           stderr: "",
+           exit_code: 0
+         }}
+
+      {:close, %{id: ^task_id}}, _project_config, _opts ->
+        {:ok,
+         %{stdout: Jason.encode!(issue_payload(task_id, "closed", %{})), stderr: "", exit_code: 0}}
+    end)
+
+    assert is_pid(start_run_executor!(run_id, task_id))
+
+    assert {:adapter_execute, "Run phase implement", _context} = receive_message()
+    assert {:adapter_env, _env} = receive_message()
+    assert {:adapter_driver_opts, driver_opts} = receive_message()
+
+    # 1 minute = 60_000ms exactly; allow only scheduling slack on the lower
+    # bound so this is nowhere near the 30-minute app-config/default ceiling
+    # a dropped override would leave in place, and a x1000 or x60 conversion
+    # bug (1_000ms or 1ms) fails this assertion instead of passing it.
+    assert Keyword.fetch!(driver_opts, :timeout) in 55_000..60_000
+    assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
   end
 
   test "start phase claims before dispatch and completes on TaskExecutionCompleted", %{

@@ -489,6 +489,30 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       assert hd(workflow["phases"])["commit"] == true
     end
 
+    test "accepts a positive integer timeout_minutes" do
+      path = commit_manifest([{"a", "    timeout_minutes: 15\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert hd(workflow["phases"])["timeout_minutes"] == 15
+    end
+
+    test "accepts camelCase timeoutMinutes" do
+      path = commit_manifest([{"a", "    timeoutMinutes: 20\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert hd(workflow["phases"])["timeoutMinutes"] == 20
+    end
+
+    test "rejects non-positive and non-integer timeout_minutes values" do
+      for value <- ["0", "-1", "later", "\"15\"", "false"] do
+        path = commit_manifest([{"a", "    timeout_minutes: #{value}\n"}])
+
+        assert_raise Workflow.MissingRequiredPhaseError,
+                     ~r/phase 0 "timeout_minutes" must be a positive integer number of minutes/,
+                     fn -> Workflow.Interpreter.load!(path) end
+      end
+    end
+
     test "accepts an absent commit key and does not synthesize one" do
       # Absent must stay absent through the parser: the default lives in
       # `RunExecutor.phase_commits?/1`, and injecting `true` here would make
