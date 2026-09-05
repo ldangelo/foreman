@@ -140,7 +140,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
 
       assert fix_phase["name"] == "fix"
       assert fix_phase.action == :command
-      assert fix_phase.command == "/skill:ensemble-fix-issue --foreman"
+      assert fix_phase.command == "/skill:ensemble-fix-issue {{input.prompt}} --foreman"
       # Single-phase workflow has no routing requirement
       assert fix_phase.required_file in [nil, ""]
     end
