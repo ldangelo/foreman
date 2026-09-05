@@ -17,7 +17,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: foreman_test
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
@@ -26,7 +26,7 @@ jobs:
     env:
       MIX_ENV: test
       POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
+      POSTGRES_PORT: 55432
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: foreman_test
