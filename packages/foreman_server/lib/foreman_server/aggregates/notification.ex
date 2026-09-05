@@ -143,7 +143,8 @@ defmodule ForemanServer.Aggregates.Notification do
          now_ms,
          window
        )
-       when is_integer(last), do: now_ms - last < window
+       when is_integer(last),
+       do: now_ms - last < window
 
   defp duplicate?(_, _, _, _), do: false
 
