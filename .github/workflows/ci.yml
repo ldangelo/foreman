@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   foreman-server:
     name: foreman_server
@@ -17,7 +20,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: foreman_test
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
@@ -26,7 +29,7 @@ jobs:
     env:
       MIX_ENV: test
       POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
+      POSTGRES_PORT: 55432
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: foreman_test
@@ -38,6 +41,15 @@ jobs:
           otp-version: '27.3'
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
+      - name: Install br (Beads CLI)
+        env:
+          BR_INSTALLER_SHA: 6c8283c43773212ad1509c2caa4f400674674a50
+          BR_INSTALLER_SHA256: b2b3ed0ae2712e53a72d48afd5a980a7c1d346bb6e6b9fb9e4f3b20566726c2f
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/${BR_INSTALLER_SHA}/install.sh" -o /tmp/br-install.sh
+          echo "${BR_INSTALLER_SHA256}  /tmp/br-install.sh" | shasum -a 256 -c -
+          bash /tmp/br-install.sh --version v0.5.10 --quiet
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify Jido fork pins
         run: echo "JRM-T003 reading pins from JIDO_FORKS.md"
       - name: Cache deps
@@ -57,6 +69,8 @@ jobs:
         run: cd packages/foreman_server && mix credo --min-priority higher
       - name: Doctor
         run: cd packages/foreman_server && mix doctor --raise
+      - name: Setup database
+        run: cd packages/foreman_server && MIX_ENV="test" mix ecto.create && MIX_ENV="test" mix ecto.migrate && MIX_ENV="test" mix event_store.init
       - name: Run tests with coverage
         run: cd packages/foreman_server && mix test --cover
       - name: Upload coverage
