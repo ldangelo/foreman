@@ -672,56 +672,113 @@ defmodule ForemanServer.Workflow.RunExecutor do
       env =
         foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-      remaining_ms = max(deadline_ms - System.system_time(:millisecond), 1_000)
+      # floor of 0 — once deadline_ms has elapsed, give the driver zero
+      # additional budget so the FailurePolicy deadline is honoured even when
+      # admission/dispatch already consumed the budget (CodeRabbit review).
+      remaining_ms = max(deadline_ms - System.system_time(:millisecond), 0)
 
-      # Overwatch.build_launch_env assembles the env map from project_id +
-      # opts[:env_map]. We pass our env there so the supervised worker
-      # sees the same env the original AgentRuntime path did.
-      launch_opts = [
-        run_id: state.run_id,
-        session_id: generate_session_id(),
-        # Overridable so integration tests can inject an
-        # Overwatch-worker-protocol test double (start_link/1 +
-        # {:overwatch_activate,...} handshake + {:worker_result,...})
-        # instead of spawning a real Jido.Harness agent session.
-        # Defaults to the real production adapter everywhere this isn't
-        # explicitly configured.
-        adapter:
-          Application.get_env(
-            :foreman_server,
-            :worker_adapter,
-            ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
-          ),
-        adapter_name: "jido_harness",
-        prompt_path: prompt_path,
-        provider: provider,
-        prompt: prompt,
-        driver_opts:
-          [
-            timeout: remaining_ms,
-            await_timeout: remaining_ms,
-            cwd: cwd
-          ]
-          |> maybe_put_driver_model(model),
-        project_id: project_id(state),
-        env_map: env,
-        result_recipient: self(),
-        activation_timeout_ms: @default_activation_timeout_ms,
-        secrets:
-          WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
-      ]
+      if remaining_ms <= 0 do
+        Logger.warning(
+          "[#{state.run_id}] phase #{phase_index} deadline exhausted before worker activation"
+        )
 
-      phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))
+        {:error, :worker_timeout}
+      else
+        # Cap activation by the remaining phase budget: passing the fixed
+        # default here would let worker admission alone consume time past
+        # deadline_ms before the deadline-aware receive in
+        # wait_for_worker_result/4 even starts (CodeRabbit review).
+        activation_timeout_ms = min(@default_activation_timeout_ms, remaining_ms)
 
-      case Overwatch.start_phase(phase, launch_opts) do
-        {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
-          wait_for_worker_result(launch_pid, worker_id, state.run_id)
+        # Overwatch.build_launch_env assembles the env map from project_id +
+        # opts[:env_map]. We pass our env there so the supervised worker
+        # sees the same env the original AgentRuntime path did.
+        launch_opts = [
+          run_id: state.run_id,
+          session_id: generate_session_id(),
+          # Overridable so integration tests can inject an
+          # Overwatch-worker-protocol test double (start_link/1 +
+          # {:overwatch_activate,...} handshake + {:worker_result,...})
+          # instead of spawning a real Jido.Harness agent session.
+          # Defaults to the real production adapter everywhere this isn't
+          # explicitly configured.
+          adapter:
+            Application.get_env(
+              :foreman_server,
+              :worker_adapter,
+              ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+            ),
+          adapter_name: "jido_harness",
+          prompt_path: prompt_path,
+          provider: provider,
+          prompt: prompt,
+          driver_opts:
+            [
+              timeout: remaining_ms,
+              await_timeout: remaining_ms,
+              cwd: cwd
+            ]
+            |> maybe_put_driver_model(model),
+          project_id: project_id(state),
+          env_map: env,
+          result_recipient: self(),
+          activation_timeout_ms: activation_timeout_ms,
+          secrets:
+            WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
+        ]
 
-        {:error, {:already_started, _pid}} ->
-          {:error, :worker_already_started}
+        phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))
 
-        {:error, reason} ->
-          {:error, {:overwatch_start_failed, reason}}
+        case Overwatch.start_phase(phase, launch_opts) do
+          {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
+            # Recompute the receive ceiling AFTER Overwatch.start_phase/2
+            # returns: any time spent in worker admission, LaunchWorker
+            # supervision, or provider handshake has already elapsed
+            # against deadline_ms, so the receive budget reflects only
+            # post-start wall time. Pre-computing before dispatch would
+            # let worker-setup eat into the budget.
+            remaining_after_start_ms = deadline_ms - System.system_time(:millisecond)
+
+            # Deadlines already exhausted at the receive boundary never
+            # reach wait_for_worker_result/4: its `after N` clause only
+            # schedules a future check, so passing `0` would trip its
+            # timeout branch on the same tick but lose the explicit
+            # "budget exhausted before receive" signal here. Surface it
+            # synchronously with the same warning operator log.
+            case remaining_after_start_ms do
+              ms when ms > 0 ->
+                # Pass the absolute deadline (not the receive budget):
+                # wait_for_worker_result/4 validates wall-clock time
+                # against it inside the receive itself, so a result
+                # already queued in the mailbox when the receive starts
+                # (e.g. worker finished during the gap between this check
+                # and entering the function) is still rejected as late
+                # rather than accepted as success (CodeRabbit review).
+                wait_for_worker_result(launch_pid, worker_id, state.run_id, deadline_ms)
+
+              _ ->
+                Logger.warning(
+                  "[#{state.run_id}] worker #{worker_id} deadline exhausted before receive; supervisor will reap launch process"
+                )
+
+                # Schedule non-blocking teardown so the supervised
+                # LaunchWorker is stopped even on this fast path, which
+                # never reaches wait_for_worker_result/4's own cleanup
+                # (CodeRabbit review). Detached, for the same
+                # self-deadlock reason documented on the call below.
+                Task.start(fn ->
+                  Overwatch.WorkerSupervisor.stop_worker(worker_id, state.run_id)
+                end)
+
+                {:error, :worker_timeout}
+            end
+
+          {:error, {:already_started, _pid}} ->
+            {:error, :worker_already_started}
+
+          {:error, reason} ->
+            {:error, {:overwatch_start_failed, reason}}
+        end
       end
     after
       # TRD-076: release the heartbeat lease on every exit path (normal
@@ -737,20 +794,44 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # sends `{:worker_result, result}` before exiting; the launch_pid dies
   # normally after the worker exits. We accept either ordering: the
   # result message is the signal, the DOWN is just cleanup.
-  @spec wait_for_worker_result(pid(), String.t(), String.t()) ::
+  #
+  # `deadline_ms` is the absolute wall-clock budget (System.system_time
+  # milliseconds), not a relative timeout: the receive validates the
+  # current time against it BEFORE accepting a queued `{:worker_result,
+  # result}`, so a result already sitting in the mailbox when this
+  # receive starts — because wall time crossed deadline_ms during the
+  # gap between the caller's own check and this call — is rejected as
+  # late instead of accepted as success (CodeRabbit review). The
+  # caller already short-circuits a deadline exhausted before this call,
+  # so in practice `deadline_ms` is still in the future on entry, but
+  # the receive itself never trusts that.
+  @spec wait_for_worker_result(pid(), String.t(), String.t(), integer()) ::
           {:ok, String.t()} | {:error, term()}
-  defp wait_for_worker_result(launch_pid, worker_id, run_id) do
+  defp wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms) do
     ref = Process.monitor(launch_pid)
+    timeout_ms = max(deadline_ms - System.system_time(:millisecond), 0)
 
     result =
       receive do
         {:worker_result, result} ->
-          result
+          if System.system_time(:millisecond) >= deadline_ms do
+            Logger.warning(
+              "[#{run_id}] worker #{worker_id} result arrived after deadline; supervisor will reap launch process"
+            )
+
+            {:error, :worker_timeout}
+          else
+            result
+          end
 
         {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
           {:error, :worker_died_no_result}
       after
-        :timer.minutes(30) ->
+        timeout_ms ->
+          Logger.warning(
+            "[#{run_id}] worker #{worker_id} did not deliver result within #{timeout_ms}ms; supervisor will reap launch process"
+          )
+
           {:error, :worker_timeout}
       end
 
@@ -780,12 +861,35 @@ defmodule ForemanServer.Workflow.RunExecutor do
     # block this GenServer callback.
     Task.start(fn -> Overwatch.WorkerSupervisor.stop_worker(worker_id, run_id) end)
 
-    # Drain the DOWN if it hasn't arrived yet, so the process monitor
-    # doesn't fire a stray message later.
-    receive do
-      {:DOWN, ^ref, :process, ^launch_pid, _reason} -> :ok
-    after
-      5_000 -> :ok
+    # Once the deadline is exhausted (either receive-timeout branch above,
+    # or a late worker_result rejected as timeout), the launch_pid's exit
+    # order no longer matters to this call — the detached stop_worker task
+    # above reaps it. Blocking here up to 5,000ms to drain a DOWN we no
+    # longer need would just add caller-visible latency after the timeout
+    # has already been decided (CodeRabbit review); demonitor and flush any
+    # already-queued DOWN instead.
+    #
+    # `:worker_died_no_result` already consumed the DOWN in the receive
+    # above — draining again here would just spin the full 5,000ms waiting
+    # for a message that can never arrive.
+    #
+    # Only a real result reaches this point without the DOWN already
+    # accounted for: the worker may still be tearing down, so drain it if
+    # it hasn't arrived yet, so the process monitor doesn't fire a stray
+    # message later.
+    case result do
+      {:error, :worker_timeout} ->
+        Process.demonitor(ref, [:flush])
+
+      {:error, :worker_died_no_result} ->
+        Process.demonitor(ref, [:flush])
+
+      _ ->
+        receive do
+          {:DOWN, ^ref, :process, ^launch_pid, _reason} -> :ok
+        after
+          5_000 -> :ok
+        end
     end
 
     result
@@ -2145,6 +2249,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_spec_name(phase_spec),
       phase_timeout_opts(phase_spec)
     )
+  end
+
+  @doc false
+  def __wait_for_worker_result_for_test__(launch_pid, worker_id, run_id, deadline_ms) do
+    wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms)
   end
 
   defp commit_dirty_worktree(state, phase_index, path) do

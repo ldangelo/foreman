@@ -10,7 +10,7 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
   result exits `:normal`; one the operator or `RunExecutor` tore down
   exits `:shutdown`. Under `:permanent` the supervisor relaunched both,
   spawning a second agent process for a phase that was already over:
-  `RunExecutor.wait_for_worker_result/3` compensates by removing the
+  `RunExecutor.wait_for_worker_result/4` compensates by removing the
   child spec from a detached task, but that is a race, and it loses.
   run-de055c18749db5e9c702d24950268cf9 is the proof — `RunFailed`
   landed at 22:25:26.060334Z, the supervisor relaunched at

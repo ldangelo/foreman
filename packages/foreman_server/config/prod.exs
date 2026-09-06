@@ -17,6 +17,23 @@ config :foreman_server, ForemanServerWeb.Endpoint,
   debug_errors: false,
   check_origin: ["//#{phx_host}", "https://#{phx_host}"]
 
+# Plan workflow phases are long-running (ensemble full PRD/TRD/implementation
+# skill invocations can exceed 10 minutes on first run with cold pi skill cache
+# and a large implementation surface; implement-trd-beads for the MCP server
+# has 48 tasks over ~90h of estimated work). Without this block, prod falls
+# through to FailurePolicy's built-in default of timeout_ms: 60_000 which
+# aborts every phase mid-skill. Mirrors dev.exs verbatim.
+config :foreman_server, :agent_runtime,
+  default_timeout_ms: 1_800_000,
+  failure_policies: %{
+    "create-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
+    "create-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
+    "refine-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
+    "refine-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
+    "implement-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000},
+    "implement-trd-beads" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000}
+  }
+
 
 config :foreman_server, :prod_secret_provider,
   provider: ForemanServer.ConfigProviders.Secrets,

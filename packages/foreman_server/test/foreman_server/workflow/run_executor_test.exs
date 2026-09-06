@@ -196,9 +196,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       # Mirrors Overwatch.Adapters.JidoHarnessWorker.handle_info/2 for
       # {:agent_done, result}: the worker MUST exit after delivering its
       # result so LaunchWorker's monitor fires and RunExecutor's
-      # wait_for_worker_result/1 drain-receive (which waits on launch_pid
-      # going DOWN) completes instead of blocking until its internal
-      # 30-minute ceiling.
+      # wait_for_worker_result/4 drain-receive (which waits on launch_pid
+      # going DOWN) completes instead of blocking until the phase deadline
+      # (FailurePolicy timeout_ms or default_timeout_ms).
       {:stop, :normal, state}
     end
 
@@ -459,6 +459,55 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # bug (1_000ms or 1ms) fails this assertion instead of passing it.
     assert Keyword.fetch!(driver_opts, :timeout) in 55_000..60_000
     assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
+  end
+
+  # CodeRabbit review on PR #481: wait_for_worker_result/4 used to accept
+  # any `{:worker_result, result}` message unconditionally once it was in
+  # the mailbox, trusting only a *relative* receive timeout computed at
+  # call time. A result that finished dispatch-side (Overwatch admission,
+  # LaunchWorker supervision, provider handshake) during the scheduling
+  # gap between the caller's deadline check and this receive actually
+  # starting could therefore be accepted as success even though the
+  # phase's absolute deadline had already elapsed. Passing the absolute
+  # `deadline_ms` and validating wall-clock time inside the receive closes
+  # that race: a message already queued when the receive starts is still
+  # rejected as late.
+  test "wait_for_worker_result/4 rejects a worker result already queued after the deadline has passed" do
+    {:ok, launch_pid} = Agent.start_link(fn -> :ok end)
+    on_exit(fn -> if Process.alive?(launch_pid), do: Agent.stop(launch_pid) end)
+
+    # Queue the result in this process's mailbox BEFORE calling
+    # wait_for_worker_result/4 so Erlang's receive matches it immediately,
+    # ahead of the `after` timer — reproducing "already-queued, deadline
+    # already past" rather than "arrives during a live wait".
+    send(self(), {:worker_result, {:ok, "late artifact"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:error, :worker_timeout} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-late",
+               "run-late",
+               deadline_ms
+             )
+  end
+
+  test "wait_for_worker_result/4 accepts a worker result delivered before the deadline" do
+    {:ok, launch_pid} = Agent.start_link(fn -> :ok end)
+    on_exit(fn -> if Process.alive?(launch_pid), do: Agent.stop(launch_pid) end)
+
+    send(self(), {:worker_result, {:ok, "on-time artifact"}})
+
+    deadline_ms = System.system_time(:millisecond) + 60_000
+
+    assert {:ok, "on-time artifact"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-on-time",
+               "run-on-time",
+               deadline_ms
+             )
   end
 
   test "start phase claims before dispatch and completes on TaskExecutionCompleted", %{
