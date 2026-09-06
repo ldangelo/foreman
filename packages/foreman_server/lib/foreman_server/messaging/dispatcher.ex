@@ -345,5 +345,13 @@ defmodule ForemanServer.Messaging.Dispatcher do
   defp provider_destination_error(:telegram), do: :telegram_destination
   defp provider_destination_error(:slack), do: :slack_destination
 
-  defp attempt_id(%Notification{notification_id: id}), do: id <> ":attempt-1"
+  # A static suffix would collide across retries: since a retryable failure
+  # is now redelivered (see pending_notifications/1), a second attempt with
+  # the same attempt_id would overwrite the first in the Notification
+  # aggregate's attempts map, losing that attempt's history even though the
+  # aggregate itself does not dedupe or reject on attempt_id (CodeRabbit
+  # review follow-up). Each call gets a fresh monotonic id instead.
+  defp attempt_id(%Notification{notification_id: id}) do
+    id <> ":attempt-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
+  end
 end
