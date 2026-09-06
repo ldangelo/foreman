@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a8fc7664
 label: prd-telegram-slack-messaging
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-05
 scale_depth: STANDARD
@@ -27,7 +27,7 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **Integrate Telegram Slack me
 |---|---:|
 | Requirement coverage | 16/16 (100%) |
 | Acceptance criteria coverage | 16/16 (100%) |
-| Risk flags | 11 |
+| Risk flags | 16 |
 | Dependencies | 14 |
 | Open ambiguity markers | 0 |
 
@@ -250,6 +250,7 @@ Foreman MUST dedupe repeated notifications and keep routine run updates opt-in o
 
 Priority: Should  
 Complexity: Medium
+Risk: Operators may not discover invalid chat configuration until an urgent workflow needs messaging.
 
 Foreman SHOULD provide a CLI/API operation that lets operators verify Telegram or Slack config without running a full workflow.
 
@@ -260,6 +261,7 @@ Foreman SHOULD provide a CLI/API operation that lets operators verify Telegram o
 
 Priority: Should  
 Complexity: Medium
+Risk: Missed or failed alerts are hard to diagnose if delivery state is hidden outside raw event logs.
 
 Foreman SHOULD expose notification delivery state in operator/debug read paths.
 
@@ -270,6 +272,7 @@ Foreman SHOULD expose notification delivery state in operator/debug read paths.
 
 Priority: Should  
 Complexity: Medium
+Risk: Operators can misconfigure provider credentials, destinations, or event classes without clear setup guidance.
 
 Foreman SHOULD document Telegram and Slack setup, config, secrets, test delivery, and troubleshooting.
 
@@ -280,6 +283,7 @@ Foreman SHOULD document Telegram and Slack setup, config, secrets, test delivery
 
 Priority: Should  
 Complexity: Medium
+Risk: Provider payloads, redaction behavior, and trigger wiring can regress without contract tests.
 
 Foreman SHOULD include tests that pin provider payloads, redaction, config precedence, notification lifecycle, and trigger wiring.
 
@@ -291,6 +295,7 @@ Foreman SHOULD include tests that pin provider payloads, redaction, config prece
 
 Priority: Should  
 Complexity: Medium
+Risk: Future providers can force repeated scheduler/run changes if the behavior contract is underspecified.
 
 Foreman SHOULD keep provider-specific code behind the `ForemanServer.Messaging.Provider` behavior.
 
@@ -339,7 +344,7 @@ Foreman mode auto-applied these resolutions:
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 5 | Providers, config, lifecycle, triggers, safety, docs, tests, and read surfaces covered. |
+| Completeness | 5 | Providers, config, lifecycle, triggers, safety, docs, tests, read surfaces, and risk indicators covered. |
 | Testability | 5 | ACs pin config precedence, provider payloads, trigger behavior, redaction, and delivery state. |
 | Clarity | 4 | The product boundary is clear; TRD still must map exact event-source hooks and worker placement. |
 | Feasibility | 4 | Fits existing Elixir/Phoenix/OTP messaging foundation and event aggregate model. |
@@ -352,3 +357,12 @@ Gate decision: **READY — save PRD and proceed to TRD creation after approval.*
 ```bash
 /ensemble-create-trd docs/PRD/PRD-2026-a8fc7664-telegram-slack-messaging.md
 ```
+
+
+## Changelog
+
+### 2026-09-05 — v1.0.1
+
+- Added missing risk indicators for REQ-012 through REQ-016.
+- Updated PRD Health risk flag count from 11 to 16.
+- Re-scored readiness at 4.5; no score delta from v1.0.0.
