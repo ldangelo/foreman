@@ -722,15 +722,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
           # returns: any time spent in worker admission, LaunchWorker
           # supervision, or provider handshake has already elapsed
           # against deadline_ms, so the receive budget reflects only
-          # post-start wall time (CodeRabbit review: pre-computing
-          # before dispatch lets worker-setup eat into the budget).
-          receive_remaining_ms =
-          # floor of 0 — once deadline_ms has elapsed, give the receive loop
-          # zero additional budget so an already-expired deadline still trips
-          # immediately into `{:error, :worker_timeout}` (CodeRabbit review).
-            max(deadline_ms - System.system_time(:millisecond), 0)
+          # post-start wall time. Pre-computing before dispatch would
+          # let worker-setup eat into the budget.
+          remaining_ms = deadline_ms - System.system_time(:millisecond)
 
-          wait_for_worker_result(launch_pid, worker_id, state.run_id, receive_remaining_ms)
+          # Deadlines already exhausted at the receive boundary never
+          # reach wait_for_worker_result/4: its `after N` clause only
+          # schedules a future check, so passing `0` would trip its
+          # timeout branch on the same tick but lose the explicit
+          # "budget exhausted before receive" signal here. Surface it
+          # synchronously with the same warning operator log.
+          case remaining_ms do
+            ms when ms > 0 ->
+              wait_for_worker_result(launch_pid, worker_id, state.run_id, ms)
+
+            _ ->
+              Logger.warning(
+                "[#{state.run_id}] worker #{worker_id} deadline exhausted before receive; supervisor will reap launch process"
+              )
+
+              {:error, :worker_timeout}
+          end
 
         {:error, {:already_started, _pid}} ->
           {:error, :worker_already_started}
@@ -752,12 +764,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # sends `{:worker_result, result}` before exiting; the launch_pid dies
   # normally after the worker exits. We accept either ordering: the
   # result message is the signal, the DOWN is just cleanup.
-  # `non_neg_integer()` (Dialyzer annotation, not runtime-enforced) — caller may pass
-  # `0` when the FailurePolicy deadline has already elapsed by the time we reach the
-  # receive boundary. `after 0` is a valid Elixir receive that fires immediately when
-  # no message matches, returning `{:error, :worker_timeout}` cleanly without
-  # blocking. The old `pos_integer()` spec would have flagged `0` to Dialyzer.
-  @spec wait_for_worker_result(pid(), String.t(), String.t(), non_neg_integer()) ::
+  # `pos_integer()` — wait N milliseconds for a worker result. Deadlines
+  # already exhausted at the receive boundary are surfaced by the caller
+  # as `{:error, :worker_timeout}` rather than reaching this receive with
+  # `0`, so the `after timeout_ms` arithmetic assumes N > 0 and Dialyzer
+  # treats the case exhaustively.
+  @spec wait_for_worker_result(pid(), String.t(), String.t(), pos_integer()) ::
           {:ok, String.t()} | {:error, term()}
   defp wait_for_worker_result(launch_pid, worker_id, run_id, timeout_ms) do
     ref = Process.monitor(launch_pid)
