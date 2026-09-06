@@ -1,8 +1,10 @@
 defmodule ForemanServer.Messaging.HttpClient do
   @moduledoc "Minimal JSON HTTP client used by chat provider adapters."
 
+  alias ForemanServer.Messaging.HttpResponse
+
   @spec post_json(String.t(), map(), [{String.t(), String.t()}], non_neg_integer()) ::
-          {:ok, %{status: non_neg_integer(), body: String.t()}} | {:error, term()}
+          {:ok, HttpResponse.t()} | {:error, term()}
   def post_json(url, body, headers \\ [], timeout_ms \\ 5_000)
       when is_binary(url) and is_map(body) and is_integer(timeout_ms) do
     :ok = ensure_inets_started()
@@ -19,7 +21,7 @@ defmodule ForemanServer.Messaging.HttpClient do
 
     case :httpc.request(:post, request, [timeout: timeout_ms], body_format: :binary) do
       {:ok, {{_, status, _}, _headers, response_body}} ->
-        {:ok, %{status: status, body: response_body}}
+        {:ok, %HttpResponse{status: status, body: response_body}}
 
       {:error, reason} ->
         {:error, reason}

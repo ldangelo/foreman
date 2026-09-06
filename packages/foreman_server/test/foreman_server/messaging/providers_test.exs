@@ -1,13 +1,13 @@
 defmodule ForemanServer.Messaging.ProvidersTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Messaging.Notification
+  alias ForemanServer.Messaging.{HttpResponse, Notification}
   alias ForemanServer.Messaging.Providers.{Slack, Telegram}
 
   defmodule FakeHttpClient do
     def post_json(url, body, headers, timeout) do
       send(self(), {:provider_request, url, body, headers, timeout})
-      Process.get(:fake_http_response, {:ok, %{status: 200, body: "ok"}})
+      Process.get(:fake_http_response, {:ok, %HttpResponse{status: 200, body: "ok"}})
     end
   end
 
@@ -56,7 +56,7 @@ defmodule ForemanServer.Messaging.ProvidersTest do
 
     Process.put(
       :fake_http_response,
-      {:ok, %{status: 401, body: "bad bot123456:abcdefghijklmnopqrstuvwxyzABCDE"}}
+      {:ok, %HttpResponse{status: 401, body: "bad bot123456:abcdefghijklmnopqrstuvwxyzABCDE"}}
     )
 
     assert {:error, failed} =
@@ -77,7 +77,7 @@ defmodule ForemanServer.Messaging.ProvidersTest do
           recipient: "https://hooks.slack.com/services/T/B/C"
       })
 
-    Process.put(:fake_http_response, {:ok, %{status: 429, body: "rate limited"}})
+    Process.put(:fake_http_response, {:ok, %HttpResponse{status: 429, body: "rate limited"}})
 
     assert {:error, failed} =
              Slack.send(notification, %{webhook_url: "https://hooks.slack.com/services/T/B/C"})

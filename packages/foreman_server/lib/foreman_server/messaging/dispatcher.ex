@@ -4,8 +4,15 @@ defmodule ForemanServer.Messaging.Dispatcher do
 
   Delivery is intentionally outside `ForemanServer.Messaging.notify/2`: notify only
   persists enqueue/suppression events, while this process catches up from the event
-  log and reacts to projection broadcasts. A notification is sent at most once after
-  any delivery attempt event exists for its notification id.
+  log and reacts to projection broadcasts. A notification is delivered at most once
+  per dispatcher process lifetime: the first delivery attempt (from catch-up or a
+  live projection event, whichever reaches it first) claims the notification id for
+  the rest of this process's life, closing the catch-up/live-delivery race where a
+  notification committed during dispatcher startup could otherwise be picked up by
+  both paths (CodeRabbit review). Across a process restart, catch-up re-derives the
+  pending set from the event log and only excludes notifications with a durable
+  terminal outcome (delivered, or failed non-retryably) — an attempt with no
+  recorded outcome, or a retryable failure, is retried (CodeRabbit review).
   """
 
   use GenServer
@@ -29,7 +36,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
             event_store: Store,
             projection_store: ForemanServer.ProjectionStore,
             provider_modules: %{},
-            delivering: MapSet.new(),
+            claimed: MapSet.new(),
             subscribe?: true,
             catch_up?: true
 
@@ -49,7 +56,12 @@ defmodule ForemanServer.Messaging.Dispatcher do
       catch_up?: Keyword.get(opts, :catch_up?, true)
     }
 
-    if state.subscribe?, do: safe_subscribe(state.projection_store)
+    # Do not swallow a subscribe failure into a plausible-looking :ok
+    # (CodeRabbit review): a dispatcher that "started" without live delivery
+    # would silently never deliver a notification enqueued after catch-up
+    # completes. Let init crash so the supervisor restarts it and retries
+    # subscribing.
+    if state.subscribe?, do: state.projection_store.subscribe()
     if state.catch_up?, do: send(self(), :catch_up)
 
     {:ok, state}
@@ -57,20 +69,24 @@ defmodule ForemanServer.Messaging.Dispatcher do
 
   @impl true
   def handle_info(:catch_up, state) do
-    state =
-      state.event_store.read_all_streams_forward(0, @event_page_size)
-      |> case do
-        {:ok, events} ->
+    case state.event_store.read_all_streams_forward(0, @event_page_size) do
+      {:ok, events} ->
+        state =
           events
           |> pending_notifications()
           |> Enum.reduce(state, &deliver/2)
 
-        {:error, reason} ->
-          Logger.warning("messaging dispatcher catch-up failed: #{inspect(reason)}")
-          state
-      end
+        {:noreply, state}
 
-    {:noreply, state}
+      {:error, reason} ->
+        # A silently-skipped catch-up leaves every notification enqueued
+        # before this point stranded with no live delivery to pick it up
+        # (CodeRabbit review): crash under supervision instead, so the
+        # supervisor restarts this process and catch-up is retried rather
+        # than permanently abandoned.
+        Logger.error("messaging dispatcher catch-up failed: #{inspect(reason)}")
+        exit({:catch_up_failed, reason})
+    end
   end
 
   def handle_info({:projection_event, event}, state) do
@@ -87,51 +103,88 @@ defmodule ForemanServer.Messaging.Dispatcher do
 
   @doc false
   def pending_notifications(events) when is_list(events) do
-    {enqueued, attempted} =
-      Enum.reduce(events, {%{}, MapSet.new()}, fn event, {enqueued, attempted} ->
+    {enqueued, terminal} =
+      Enum.reduce(events, {%{}, MapSet.new()}, fn event, {enqueued, terminal} ->
         case event_type_and_payload(event) do
           {"NotificationEnqueued", payload} ->
             case Notification.normalize(payload) do
               {:ok, notification} ->
-                {Map.put(enqueued, notification.notification_id, notification), attempted}
+                {Map.put(enqueued, notification.notification_id, notification), terminal}
 
-              {:error, _reason} ->
-                {enqueued, attempted}
+              {:error, reason} ->
+                # A malformed enqueued event silently vanishing left no trace
+                # that a notification was ever lost (CodeRabbit review). This
+                # runs on every catch-up, including on boot, so — unlike a
+                # one-time boundary check — an unconditional raise here would
+                # crash-loop the dispatcher forever on a single bad historical
+                # event (the same hazard documented for ProjectionStore.init/1
+                # in AGENTS.md); log loudly instead of silently discarding.
+                Logger.error(
+                  "messaging dispatcher: malformed NotificationEnqueued " <>
+                    "payload=#{inspect(payload)} reason=#{inspect(reason)}"
+                )
+
+                {enqueued, terminal}
             end
 
-          {type, payload}
-          when type in [
-                 "NotificationDeliveryAttempted",
-                 "NotificationDeliverySucceeded",
-                 "NotificationDeliveryFailed"
-               ] ->
-            notification_id = get(payload, :notification_id)
+          {"NotificationDeliveryAttempted", _payload} ->
+            # An attempt alone is not terminal: the dispatching process may
+            # have crashed before recording success or failure. Leave the
+            # notification pending so catch-up retries it (CodeRabbit review).
+            {enqueued, terminal}
 
-            if is_binary(notification_id) and notification_id != "" do
-              {enqueued, MapSet.put(attempted, notification_id)}
+          {"NotificationDeliverySucceeded", payload} ->
+            {enqueued, mark_terminal(terminal, payload)}
+
+          {"NotificationDeliveryFailed", payload} ->
+            if get(payload, :retryable?) do
+              # Retryable failure: not terminal, catch-up must retry it
+              # (CodeRabbit review) rather than excluding it forever.
+              {enqueued, unmark_terminal(terminal, payload)}
             else
-              {enqueued, attempted}
+              {enqueued, mark_terminal(terminal, payload)}
             end
 
           _ ->
-            {enqueued, attempted}
+            {enqueued, terminal}
         end
       end)
 
     enqueued
     |> Map.reject(fn {notification_id, _notification} ->
-      MapSet.member?(attempted, notification_id)
+      MapSet.member?(terminal, notification_id)
     end)
     |> Map.values()
   end
 
+  defp mark_terminal(terminal, payload) do
+    case get(payload, :notification_id) do
+      id when is_binary(id) and id != "" -> MapSet.put(terminal, id)
+      _ -> terminal
+    end
+  end
+
+  defp unmark_terminal(terminal, payload) do
+    case get(payload, :notification_id) do
+      id when is_binary(id) and id != "" -> MapSet.delete(terminal, id)
+      _ -> terminal
+    end
+  end
+
   defp deliver(%Notification{notification_id: notification_id} = notification, state) do
-    if MapSet.member?(state.delivering, notification_id) do
+    if MapSet.member?(state.claimed, notification_id) do
       state
     else
-      state = %{state | delivering: MapSet.put(state.delivering, notification_id)}
+      # Claim before delivering and never release for the life of this
+      # process: catch-up and a queued live `:projection_event` for the same
+      # notification (committed during dispatcher startup, before catch-up's
+      # read completes) would otherwise both call do_deliver/2 and send the
+      # notification twice (CodeRabbit review). A process restart clears the
+      # claim and re-derives the pending set from the event log, which is
+      # where retry after a genuine failure belongs.
+      state = %{state | claimed: MapSet.put(state.claimed, notification_id)}
       _ = do_deliver(notification, state)
-      %{state | delivering: MapSet.delete(state.delivering, notification_id)}
+      state
     end
   end
 
@@ -219,8 +272,19 @@ defmodule ForemanServer.Messaging.Dispatcher do
     case event_type_and_payload(event) do
       {"NotificationEnqueued", payload} ->
         case Notification.normalize(payload) do
-          {:ok, notification} -> {:ok, notification}
-          {:error, _reason} -> :ignore
+          {:ok, notification} ->
+            {:ok, notification}
+
+          {:error, reason} ->
+            # Same "fail loudly, don't silently discard" fix as the replay
+            # path above, but this event is live (not historical replay), so
+            # there is no crash-loop hazard to weigh against — log it loudly.
+            Logger.error(
+              "messaging dispatcher: malformed live NotificationEnqueued " <>
+                "payload=#{inspect(payload)} reason=#{inspect(reason)}"
+            )
+
+            :ignore
         end
 
       _ ->
@@ -282,19 +346,4 @@ defmodule ForemanServer.Messaging.Dispatcher do
   defp provider_destination_error(:slack), do: :slack_destination
 
   defp attempt_id(%Notification{notification_id: id}), do: id <> ":attempt-1"
-
-  defp safe_subscribe(projection_store) do
-    projection_store.subscribe()
-  rescue
-    exception ->
-      Logger.warning(
-        "messaging dispatcher projection subscribe failed: #{Exception.message(exception)}"
-      )
-
-      :ok
-  catch
-    :exit, reason ->
-      Logger.warning("messaging dispatcher projection subscribe failed: #{inspect(reason)}")
-      :ok
-  end
 end

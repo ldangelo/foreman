@@ -3,7 +3,7 @@ defmodule ForemanServer.Messaging.Providers.Telegram do
 
   @behaviour ForemanServer.Messaging.Provider
 
-  alias ForemanServer.Messaging.{DeliveryResult, Notification, Redactor, Renderer}
+  alias ForemanServer.Messaging.{DeliveryResult, HttpResponse, Notification, Redactor, Renderer}
 
   @timeout_ms 5_000
 
@@ -15,11 +15,11 @@ defmodule ForemanServer.Messaging.Providers.Telegram do
       {url, body, headers, timeout} = build_request(token, chat_id, text)
 
       case http_client().post_json(url, body, headers, timeout) do
-        {:ok, %{status: status, body: response_body}} when status in 200..299 ->
+        {:ok, %HttpResponse{status: status, body: response_body}} when status in 200..299 ->
           {:ok,
            result(notification, :succeeded, false, nil, %{status: status, body: response_body})}
 
-        {:ok, %{status: status, body: response_body}} ->
+        {:ok, %HttpResponse{status: status, body: response_body}} ->
           {:error,
            result(
              notification,
@@ -65,19 +65,39 @@ defmodule ForemanServer.Messaging.Providers.Telegram do
   defp retryable_status?(status), do: status == 429 or status >= 500
 
   defp required_binary(map, key, error_key) do
-    map
-    |> Map.get(key, Map.get(map, Atom.to_string(key)))
-    |> resolve_secret_ref()
-    |> case do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _ -> {:error, {:missing_or_invalid, error_key}}
+    case fetch_field(map, key) do
+      :absent ->
+        {:error, {:missing_field, error_key, key}}
+
+      {:present, {:system, env_name} = ref} when is_binary(env_name) ->
+        case resolve_secret_ref(ref) do
+          value when is_binary(value) and value != "" -> {:ok, value}
+          _ -> {:error, {:unresolved_secret_ref, error_key, key, env_name}}
+        end
+
+      {:present, value} when is_binary(value) and value != "" ->
+        {:ok, value}
+
+      {:present, value} ->
+        {:error, {:invalid_field, error_key, key, value}}
+    end
+  end
+
+  # Distinguishes an absent destination field from one present but invalid
+  # (§5.4b of AGENTS.md): both atom and string keys are checked since
+  # destinations round-trip through JSON.
+  defp fetch_field(map, key) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(map, key) -> {:present, Map.get(map, key)}
+      Map.has_key?(map, string_key) -> {:present, Map.get(map, string_key)}
+      true -> :absent
     end
   end
 
   defp resolve_secret_ref({:system, env_name}) when is_binary(env_name),
     do: System.get_env(env_name)
-
-  defp resolve_secret_ref(value), do: value
 
   defp http_client do
     Application.get_env(:foreman_server, :messaging, [])
