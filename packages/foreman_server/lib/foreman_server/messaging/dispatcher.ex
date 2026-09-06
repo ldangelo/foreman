@@ -121,7 +121,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
                 # in AGENTS.md); log loudly instead of silently discarding.
                 Logger.error(
                   "messaging dispatcher: malformed NotificationEnqueued " <>
-                    "payload=#{inspect(payload)} reason=#{inspect(reason)}"
+                    "payload=#{inspect(Redactor.redact(payload))} reason=#{inspect(reason)}"
                 )
 
                 {enqueued, terminal}
@@ -281,7 +281,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
             # there is no crash-loop hazard to weigh against — log it loudly.
             Logger.error(
               "messaging dispatcher: malformed live NotificationEnqueued " <>
-                "payload=#{inspect(payload)} reason=#{inspect(reason)}"
+                "payload=#{inspect(Redactor.redact(payload))} reason=#{inspect(reason)}"
             )
 
             :ignore
@@ -350,8 +350,13 @@ defmodule ForemanServer.Messaging.Dispatcher do
   # the same attempt_id would overwrite the first in the Notification
   # aggregate's attempts map, losing that attempt's history even though the
   # aggregate itself does not dedupe or reject on attempt_id (CodeRabbit
-  # review follow-up). Each call gets a fresh monotonic id instead.
+  # review follow-up). `System.unique_integer/1` is only unique within the
+  # current BEAM runtime instance, so a dispatcher restart could reuse an
+  # earlier id and collide with a pre-restart attempt in the reconstructed
+  # attempts map (CodeRabbit review) — use a UUID, restart-safe by
+  # construction, matching this repo's existing convention for durable ids
+  # (see RunExecutor.generate_session_id/0, WorkRequest.handle_command/2).
   defp attempt_id(%Notification{notification_id: id}) do
-    id <> ":attempt-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
+    id <> ":attempt-" <> EventStore.UUID.uuid4()
   end
 end
