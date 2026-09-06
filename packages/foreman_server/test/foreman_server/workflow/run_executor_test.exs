@@ -196,9 +196,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       # Mirrors Overwatch.Adapters.JidoHarnessWorker.handle_info/2 for
       # {:agent_done, result}: the worker MUST exit after delivering its
       # result so LaunchWorker's monitor fires and RunExecutor's
-      # wait_for_worker_result/1 drain-receive (which waits on launch_pid
-      # going DOWN) completes instead of blocking until its internal
-      # 30-minute ceiling.
+      # wait_for_worker_result/4 drain-receive (which waits on launch_pid
+      # going DOWN) completes instead of blocking until the phase deadline
+      # (FailurePolicy timeout_ms or default_timeout_ms).
       {:stop, :normal, state}
     end
 

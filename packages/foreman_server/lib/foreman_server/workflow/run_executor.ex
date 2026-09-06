@@ -672,7 +672,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
       env =
         foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-      remaining_ms = max(deadline_ms - System.system_time(:millisecond), 1_000)
+      # floor of 0 — once deadline_ms has elapsed, give the driver zero
+      # additional budget so the FailurePolicy deadline is honoured even when
+      # admission/dispatch already consumed the budget (CodeRabbit review).
+      remaining_ms = max(deadline_ms - System.system_time(:millisecond), 0)
 
       # Overwatch.build_launch_env assembles the env map from project_id +
       # opts[:env_map]. We pass our env there so the supervised worker
@@ -715,7 +718,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       case Overwatch.start_phase(phase, launch_opts) do
         {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
-          wait_for_worker_result(launch_pid, worker_id, state.run_id)
+          # Recompute the receive ceiling AFTER Overwatch.start_phase/2
+          # returns: any time spent in worker admission, LaunchWorker
+          # supervision, or provider handshake has already elapsed
+          # against deadline_ms, so the receive budget reflects only
+          # post-start wall time (CodeRabbit review: pre-computing
+          # before dispatch lets worker-setup eat into the budget).
+          receive_remaining_ms =
+          # floor of 0 — once deadline_ms has elapsed, give the receive loop
+          # zero additional budget so an already-expired deadline still trips
+          # immediately into `{:error, :worker_timeout}` (CodeRabbit review).
+            max(deadline_ms - System.system_time(:millisecond), 0)
+
+          wait_for_worker_result(launch_pid, worker_id, state.run_id, receive_remaining_ms)
 
         {:error, {:already_started, _pid}} ->
           {:error, :worker_already_started}
@@ -737,9 +752,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # sends `{:worker_result, result}` before exiting; the launch_pid dies
   # normally after the worker exits. We accept either ordering: the
   # result message is the signal, the DOWN is just cleanup.
-  @spec wait_for_worker_result(pid(), String.t(), String.t()) ::
+  # `non_neg_integer()` (Dialyzer annotation, not runtime-enforced) — caller may pass
+  # `0` when the FailurePolicy deadline has already elapsed by the time we reach the
+  # receive boundary. `after 0` is a valid Elixir receive that fires immediately when
+  # no message matches, returning `{:error, :worker_timeout}` cleanly without
+  # blocking. The old `pos_integer()` spec would have flagged `0` to Dialyzer.
+  @spec wait_for_worker_result(pid(), String.t(), String.t(), non_neg_integer()) ::
           {:ok, String.t()} | {:error, term()}
-  defp wait_for_worker_result(launch_pid, worker_id, run_id) do
+  defp wait_for_worker_result(launch_pid, worker_id, run_id, timeout_ms) do
     ref = Process.monitor(launch_pid)
 
     result =
@@ -750,7 +770,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
           {:error, :worker_died_no_result}
       after
-        :timer.minutes(30) ->
+        timeout_ms ->
           {:error, :worker_timeout}
       end
 
