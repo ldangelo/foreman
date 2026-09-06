@@ -9,6 +9,11 @@ defmodule ForemanServer.Messaging.Redactor do
       ~r/https:\/\/hooks\.slack\.com\/services\/[^\s]+/,
       "https://hooks.slack.com/services/[REDACTED]"
     )
+    |> String.replace(~r/(https?:\/\/)[^\s\/]+:[^\s@]+@/i, "\\1[REDACTED]@")
+    |> String.replace(
+      ~r/([?&](?:token|key|secret|webhook|access_token)=)[^\s&]+/i,
+      "\\1[REDACTED]"
+    )
   end
 
   def redact(%{} = map), do: Map.new(map, fn {k, v} -> {k, redact(v)} end)

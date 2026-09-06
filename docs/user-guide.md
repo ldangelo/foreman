@@ -891,3 +891,7 @@ phases:
 ```
 
 Defaults: agent no-output = 900000 ms; messaging no-progress = 1800000 ms. Disable detector scheduling with `config :foreman_server, :stall_detection_enabled, false`. Do not use `0` or negative thresholds; validation treats those as malformed. A detected stall writes `RunStallReported`, updates `latest_stall` on run/phase/task projections, and appears in `foreman run get --format json`, MCP `foreman_run_status`, and API projection reads. Heartbeats alone are not progress.
+
+## Outbound messaging delivery
+
+Enable outbound Telegram/Slack delivery with `config :foreman_server, :messaging`. Runtime config keys: `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, `telegram: [token:, chat_id:]`, and `slack: [webhook_url:]`. `ForemanServer.Messaging.notify/2` never calls provider HTTP directly; it persists notification lifecycle state. The supervised dispatcher starts after `CommandRouter`, performs restart catch-up from the event log, subscribes to projection events, skips notifications that already have any delivery attempt, and records redacted success/failure state. Delivery failure is notification state only; it must not turn a healthy run into failed.

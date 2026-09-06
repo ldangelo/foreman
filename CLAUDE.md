@@ -566,3 +566,7 @@ a truncated read can never present itself as complete.
 ## Phase stall detection
 
 `stall_detection` is explicit phase metadata, never inferred from phase names. Normalize it through `ForemanServer.Workflow.StallPolicy`; valid scopes are agent/no-output and messaging/no-progress. `RunExecutor` copies normalized policy onto `phase.start`/`PhaseStarted`, `ProjectionStore.stall_candidates/1` is the bounded detector read, and `ForemanServer.StallDetector` persists stalls through `run.report_stall` only. Do not write projection state directly from the detector. Worker heartbeats do not advance phase output activity; stdout/stderr, assistant messages, tool completions, worker start/exit, and phase lifecycle do.
+
+## Outbound messaging delivery
+
+Keep outbound chat delivery behind `ForemanServer.Messaging`. Runtime/run/recovery/inbox code may enqueue provider-neutral notifications only; provider HTTP belongs in `ForemanServer.Messaging.Providers.*`. `ForemanServer.Messaging.Dispatcher` is supervised after `CommandRouter`, replays unattempted enqueued notifications on boot, subscribes to projection broadcasts, and treats any delivery attempt/success/failure event as a replay dedupe marker. Redact provider URLs/tokens/errors before persistence/logging. Provider delivery failure is notification lifecycle state, not a recursive run failure trigger.
