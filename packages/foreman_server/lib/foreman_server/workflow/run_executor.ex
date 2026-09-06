@@ -869,11 +869,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     # has already been decided (CodeRabbit review); demonitor and flush any
     # already-queued DOWN instead.
     #
-    # Otherwise (a real result, or the worker already reported
-    # worker_died_no_result), drain the DOWN if it hasn't arrived yet so the
-    # process monitor doesn't fire a stray message later.
+    # `:worker_died_no_result` already consumed the DOWN in the receive
+    # above — draining again here would just spin the full 5,000ms waiting
+    # for a message that can never arrive.
+    #
+    # Only a real result reaches this point without the DOWN already
+    # accounted for: the worker may still be tearing down, so drain it if
+    # it hasn't arrived yet, so the process monitor doesn't fire a stray
+    # message later.
     case result do
       {:error, :worker_timeout} ->
+        Process.demonitor(ref, [:flush])
+
+      {:error, :worker_died_no_result} ->
         Process.demonitor(ref, [:flush])
 
       _ ->
