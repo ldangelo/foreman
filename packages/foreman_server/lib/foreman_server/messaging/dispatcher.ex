@@ -121,7 +121,8 @@ defmodule ForemanServer.Messaging.Dispatcher do
                 # in AGENTS.md); log loudly instead of silently discarding.
                 Logger.error(
                   "messaging dispatcher: malformed NotificationEnqueued " <>
-                    "payload=#{inspect(Redactor.redact(payload))} reason=#{inspect(reason)}"
+                    "payload=#{inspect(Redactor.redact(payload))} " <>
+                    "reason=#{inspect(Redactor.redact(reason))}"
                 )
 
                 {enqueued, terminal}
@@ -281,7 +282,8 @@ defmodule ForemanServer.Messaging.Dispatcher do
             # there is no crash-loop hazard to weigh against — log it loudly.
             Logger.error(
               "messaging dispatcher: malformed live NotificationEnqueued " <>
-                "payload=#{inspect(Redactor.redact(payload))} reason=#{inspect(reason)}"
+                "payload=#{inspect(Redactor.redact(payload))} " <>
+                "reason=#{inspect(Redactor.redact(reason))}"
             )
 
             :ignore

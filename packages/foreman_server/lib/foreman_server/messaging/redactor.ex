@@ -18,5 +18,14 @@ defmodule ForemanServer.Messaging.Redactor do
 
   def redact(%{} = map), do: Map.new(map, fn {k, v} -> {k, redact(v)} end)
   def redact(list) when is_list(list), do: Enum.map(list, &redact/1)
+
+  # Error reasons are conventionally shaped as tuples embedding the
+  # offending raw value (e.g. `{:missing_or_invalid, :recipient, value}`),
+  # which can carry the same secrets as a payload map (CodeRabbit review).
+  # Recurse into tuple elements instead of returning them untouched.
+  def redact(tuple) when is_tuple(tuple) do
+    tuple |> Tuple.to_list() |> Enum.map(&redact/1) |> List.to_tuple()
+  end
+
   def redact(value), do: value
 end
