@@ -783,6 +783,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
           {:error, :worker_died_no_result}
       after
         timeout_ms ->
+          Logger.warning(
+            "[#{run_id}] worker #{worker_id} did not deliver result within #{timeout_ms}ms; supervisor will reap launch process"
+          )
+
           {:error, :worker_timeout}
       end
 
