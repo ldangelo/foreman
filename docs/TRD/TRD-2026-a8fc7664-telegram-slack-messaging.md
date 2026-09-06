@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-a8fc7664
 label: trd-telegram-slack-messaging
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-05
 prd_reference: docs/PRD/PRD-2026-a8fc7664-telegram-slack-messaging.md
@@ -9,8 +9,8 @@ prd_label: prd-telegram-slack-messaging
 scale_depth: STANDARD
 total_requirements: 16
 total_acceptance_criteria: 38
-design_readiness_score: 4.6
-readiness_score: 4.6
+design_readiness_score: 4.7
+readiness_score: 4.7
 total_tasks: 36
 kind: trd
 ---
@@ -36,7 +36,11 @@ MCP enhancement: skipped (no MCP tools detected).
 - `ProjectionStore` folds notification lifecycle events into `run.notifications`, so run detail can expose latest delivery state.
 - `ForemanServer.Messaging.Provider`, `DeliveryResult`, `Renderer`, and `Redactor` exist, but no `messaging/providers/telegram.ex`, `messaging/providers/slack.ex`, or dispatcher module exists.
 - `Recovery.do_detect/1` and the newer `StallDetector`/`run.report_stall` flow are stall sources; notification hooks must observe existing stale/stall facts instead of adding another detector.
+- `Workflow.RunExecutor.ArtifactTemplate.write/4` writes each phase artifact before `emit_phase_complete/3` records `PhaseCompleted`; collaboration URL extraction should use that artifact path and the phase metadata already in the completion payload.
+- `ForemanServer.StallDetector.scan/1` persists canonical stall facts via `run.report_stall`; messaging must observe those accepted facts or the successful dispatch result, not rescan liveness independently.
 - `Workflow.RunExecutor.emit_phase_failure/4` and `emit_run_failure/2` are failure transition hooks; notification failures must never recurse into run failure.
+- `ForemanServer.Agents.OperatorQuestionDispatcher.dispatch/1` is the source-verified action-needed hook because it converts `com.foreman.operator.*` signals into `ForemanServer.Inbox.SharedInbox.ingest/2` and returns `{:ok, :started, item}` only for new requests.
+- `ForemanServer.Application.start/2` owns the top-level supervisor child ordering; a messaging dispatcher should be supervised there after `CommandRouter` so it can subscribe to projections and dispatch attempt/result commands during runtime catch-up.
 - Go CLI currently has run/project/task surfaces, but no source-verified messaging test-delivery command.
 
 ## 3. Architecture Decision
@@ -72,10 +76,11 @@ Foreman mode: auto-selected Option C (event-sourced notification pipeline with p
 | Boundary | `lib/foreman_server/messaging.ex` | Public fast enqueue API; never performs provider network I/O. |
 | DTO/config | `messaging/notification.ex`, `config.ex`, `config_resolver.ex` | Provider-neutral validation, safe metadata, deterministic precedence, selected-provider destination validation. |
 | Aggregate/events | `aggregates/notification.ex`, `events/notification_*` | Durable lifecycle source: enqueue/suppress/attempt/success/failure. |
-| Dispatcher | new `messaging/dispatcher.ex` | Supervised durable delivery worker; consumes enqueued notifications, records attempts/results, catches up after restart, avoids replay duplicates. |
+| Dispatcher | new `messaging/dispatcher.ex` | Supervised durable delivery worker; loads delivery-eligible projected notifications at boot, subscribes to projection events, records attempts/results, and skips already-attempted ids on replay. |
+| Supervisor placement | `lib/foreman_server/application.ex` | Add dispatcher as a top-level child after `ForemanServer.CommandRouter`; `ProjectionStore` and command dispatch are then available before delivery catch-up runs. |
 | Providers | new `messaging/providers/telegram.ex`, `messaging/providers/slack.ex` | HTTP adapters behind `Messaging.Provider`; return typed `DeliveryResult`. |
 | Rendering/redaction | `messaging/renderer.ex`, `redactor.ex` | Safe text from allowlisted fields; redact tokens, webhook URLs, private URL credentials, and provider errors. |
-| Triggers | focused hook modules/functions near run/recovery/inbox/artifact code | Emit `collab_url`, `action_needed`, `stall`, `failure`, and opt-in `run_update` notifications by correlation id. |
+| Triggers | new `messaging/triggers.ex` plus narrow call sites in `workflow/run_executor.ex`, `stall_detector.ex`, and `agents/operator_question_dispatcher.ex` | Emit `collab_url`, `action_needed`, `stall`, `failure`, and opt-in `run_update` notifications by deterministic correlation id. |
 | Read surfaces | `ProjectionStore`, HTTP/MCP/Go CLI | Show latest per-run notification state and redacted failure/suppression reason. |
 | Test delivery | new API/CLI operation | Resolve config, send `test` event, report status without requiring a workflow run. |
 
@@ -115,6 +120,17 @@ config :foreman_server, :messaging,
 ```
 
 Workflow/project config may use `notifications:` or `messaging:` with the same normalized keys. Unknown top-level keys are dropped only at the config boundary; malformed known keys return typed errors. Destination fallback across providers is forbidden.
+
+### 3.6 Source-Verified Trigger Map
+
+| Event class | Source-verified hook | Trigger rule | Correlation id seed |
+|---|---|---|---|
+| `collab_url` | `ForemanServer.Workflow.RunExecutor.emit_phase_complete/3` after `ArtifactTemplate.write/4` and successful `phase.complete` dispatch | Inspect the completed phase artifact/output for structured URL labels; emit only when an actual URL exists. | `collab_url:<run_id>:<phase_id>:<url_hash>` |
+| `stall` | `ForemanServer.StallDetector.scan/1` after `run.report_stall` dispatch succeeds, or a projection subscriber handling `RunStallReported` | Use the persisted stall candidate fields (`run_id`, `phase_id`, `stall_kind`, `idle_ms`, `threshold_ms`) and do not perform a second stall scan. | `stall:<run_id>:<phase_id>:<stall_kind>` |
+| `failure` | `ForemanServer.Workflow.RunExecutor.emit_phase_failure/4` for phase failures and terminal run events already observed by `ForemanServer.Workflow.Dispatcher` (`RunFailed`, `RunCancelled`) | Enqueue one redacted failure notification after the source transition is accepted; provider delivery failures never enqueue failure notifications. | `failure:<run_id>:<phase_id-or-run>:<status>` |
+| `action_needed` | `ForemanServer.Agents.OperatorQuestionDispatcher.dispatch/1` when `SharedInbox.ingest/2` returns `{:ok, :started, item}` | Notify only newly-started operator questions; deduped inbox retries do not emit provider work. | `action_needed:<question_id-or-agent_id>` |
+| `run_update` | `RunExecutor.emit_phase_complete/3`, `emit_phase_blocked/3`, and terminal run projection events | Disabled by default; when enabled, route through class-specific rate limit before enqueue. | `run_update:<run_id>:<transition>` |
+
 
 ## 4. Reused Capabilities
 
@@ -178,7 +194,8 @@ Workflow/project config may use `notifications:` or `messaging:` with the same n
   - Validates PRD ACs: AC-006-1, AC-006-2, AC-006-3, AC-007-1
   - Implementation AC checklist:
     - Given provider I/O is slow, when `Messaging.notify/2` returns, then caller waits only for local enqueue within the 250 ms budget.
-    - Given Foreman restarts after enqueue, when dispatcher starts, then unattempted enqueued notifications are claimed once and delivered or failed.
+    - Given Foreman boots, when `ForemanServer.Application.start/2` reaches the post-`CommandRouter` child list, then `Messaging.Dispatcher` starts under supervision and subscribes to `ProjectionStore`.
+    - Given Foreman restarts after enqueue, when dispatcher starts, then projection catch-up claims unattempted enqueued notifications once and records delivered or failed state.
     - Given projection replay/rebuild emits old events, when dispatcher sees already-attempted notification ids, then no duplicate provider sends occur.
 
 - [ ] **TRD-005-TEST** — Test dispatcher non-blocking, restart catch-up, replay dedupe, and failure isolation (5h) [verifies TRD-005] [satisfies REQ-006] [satisfies REQ-007] [depends: TRD-005]
@@ -233,10 +250,10 @@ Workflow/project config may use `notifications:` or `messaging:` with the same n
 
 **Shippable State:** Operators receive configured Telegram/Slack alerts for collab URLs, stalls, failures, and action-needed events; duplicate and routine update noise is suppressed.
 
-- [ ] **TRD-009** — Emit `collab_url` notifications from structured phase artifacts and safe URL output patterns (5h) [satisfies REQ-008] [satisfies REQ-005] [depends: TRD-005]
+- [ ] **TRD-009** — Emit `collab_url` notifications from `RunExecutor` phase artifact completion (5h) [satisfies REQ-008] [satisfies REQ-005] [depends: TRD-005]
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-005-2
   - Implementation AC checklist:
-    - Given a phase artifact/output exposes a collaboration URL, when phase output is recorded, then one `collab_url` notification includes run/task/phase/url/expiration when known.
+    - Given `ArtifactTemplate.write/4` has produced an artifact and `emit_phase_complete/3` accepts `phase.complete`, when the artifact/output exposes a collaboration URL, then one `collab_url` notification includes run/task/phase/url/expiration when known.
     - Given no URL exists, when a collaboration phase needs action, then no URL is invented and an action/failure notification can be emitted instead.
 
 - [ ] **TRD-009-TEST** — Test collab URL extraction, non-invention, redaction, and correlation-id dedupe (4h) [verifies TRD-009] [satisfies REQ-008] [satisfies REQ-005] [satisfies REQ-015] [depends: TRD-009]
@@ -245,10 +262,10 @@ Workflow/project config may use `notifications:` or `messaging:` with the same n
     - Given supported URL labels in artifacts/output, when tests run, then exactly one URL notification is enqueued.
     - Given tokenized/private URLs, when tests inspect persisted/rendered data, then secrets are redacted.
 
-- [ ] **TRD-010** — Emit `stall` notifications from stale/stall detection paths without adding a second detector (4h) [satisfies REQ-009] [satisfies REQ-011] [depends: TRD-005]
+- [ ] **TRD-010** — Emit `stall` notifications from accepted `StallDetector` facts without adding a second detector (4h) [satisfies REQ-009] [satisfies REQ-011] [depends: TRD-005]
   - Validates PRD ACs: AC-009-1, AC-009-2, AC-011-1
   - Implementation AC checklist:
-    - Given `Recovery.do_detect/1` or `StallDetector` records a stale/stall fact, when messaging is enabled for `stall`, then one notification with suggested next action is enqueued.
+    - Given `ForemanServer.StallDetector.scan/1` successfully dispatches `run.report_stall`, when messaging is enabled for `stall`, then one notification with run/phase/stall_kind/idle_ms/threshold_ms and suggested next action is enqueued.
     - Given repeated scans happen inside the dedupe window, when notifications evaluate, then duplicates are suppressed by correlation id.
 
 - [ ] **TRD-010-TEST** — Test stall trigger from existing recovery/stall facts and duplicate suppression (3h) [verifies TRD-010] [satisfies REQ-009] [satisfies REQ-011] [satisfies REQ-015] [depends: TRD-010]
@@ -257,11 +274,11 @@ Workflow/project config may use `notifications:` or `messaging:` with the same n
     - Given a stale active run crosses threshold, when trigger tests run, then one `stall` notification is enqueued.
     - Given same run remains stale, when scan repeats, then provider delivery is suppressed.
 
-- [ ] **TRD-011** — Emit `failure` notifications from phase/run failed and cancelled transitions with recursion guard (4h) [satisfies REQ-010] [satisfies REQ-006] [depends: TRD-005]
+- [ ] **TRD-011** — Emit `failure` notifications from `RunExecutor` and terminal run event hooks with recursion guard (4h) [satisfies REQ-010] [satisfies REQ-006] [depends: TRD-005]
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-006-2
   - Implementation AC checklist:
-    - Given phase failure is recorded, when transition succeeds, then one phase-level failure notification is enqueued with redacted reason.
-    - Given run terminal failed/cancelled transition is recorded, when transition succeeds, then one run-level failure notification is enqueued.
+    - Given `RunExecutor.emit_phase_failure/4` records `phase.fail`, when the transition succeeds, then one phase-level failure notification is enqueued with redacted reason.
+    - Given `RunFailed` or `RunCancelled` is observed by the terminal-event path used by `Workflow.Dispatcher`, when the transition is accepted, then one run-level failure notification is enqueued.
     - Given provider delivery fails, when failure is recorded, then no recursive provider-error notification is emitted.
 
 - [ ] **TRD-011-TEST** — Test phase failure, run failure/cancelled trigger, provider-failure isolation, and recursion guard (4h) [verifies TRD-011] [satisfies REQ-010] [satisfies REQ-006] [satisfies REQ-015] [depends: TRD-011]
@@ -270,11 +287,11 @@ Workflow/project config may use `notifications:` or `messaging:` with the same n
     - Given phase/run failures occur, when tests run, then expected notifications are enqueued exactly once.
     - Given provider fails while reporting a failure, when tests finish, then run state remains sourced from the original run failure only.
 
-- [ ] **TRD-012** — Emit `action_needed` notifications from operator-question/inbox paths (4h) [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-005]
+- [ ] **TRD-012** — Emit `action_needed` notifications from `OperatorQuestionDispatcher.dispatch/1` (4h) [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-005]
   - Validates PRD ACs: AC-010-3, AC-011-1, AC-011-2
   - Implementation AC checklist:
-    - Given an agent/operator question requires human input, when the action request is created, then one safe `action_needed` notification is enqueued.
-    - Given class is disabled or duplicate correlation id exists, when request repeats, then provider delivery is suppressed and state records why.
+    - Given `SharedInbox.ingest/2` returns `{:ok, :started, item}` for an agent/operator question, when the action request is created, then one safe `action_needed` notification is enqueued with question/run/task ids only.
+    - Given `SharedInbox.ingest/2` returns `:deduped`, class is disabled, or duplicate correlation id exists, when request repeats, then provider delivery is suppressed and state records why.
 
 - [ ] **TRD-012-TEST** — Test action-needed trigger, safe identifiers, disabled class, and duplicate suppression (3h) [verifies TRD-012] [satisfies REQ-010] [satisfies REQ-011] [satisfies REQ-015] [depends: TRD-012]
   - Validates PRD ACs: AC-010-3, AC-011-1, AC-011-2, AC-015-3
@@ -285,7 +302,7 @@ Workflow/project config may use `notifications:` or `messaging:` with the same n
 - [ ] **TRD-013** — Add opt-in `run_update` trigger with class-specific rate limiting (3h) [satisfies REQ-011] [satisfies REQ-002] [depends: TRD-005]
   - Validates PRD ACs: AC-011-2, AC-002-2, AC-002-3
   - Implementation AC checklist:
-    - Given `run_update` is enabled, when configured run lifecycle updates occur, then notifications are rate-limited by config.
+    - Given `run_update` is enabled, when `RunExecutor.emit_phase_complete/3`, `emit_phase_blocked/3`, or terminal run projection events occur, then notifications are rate-limited by config.
     - Given `run_update` is disabled by default, when routine run progress occurs, then no provider delivery is attempted.
 
 - [ ] **TRD-013-TEST** — Test run-update disabled default, opt-in delivery, and rate-limit suppression (3h) [verifies TRD-013] [satisfies REQ-011] [satisfies REQ-002] [satisfies REQ-015] [depends: TRD-013]
@@ -399,7 +416,7 @@ PR 5. Outcome: setup/troubleshooting/extension docs, architecture isolation test
 | REQ-015 | Provider contracts and trigger tests | TRD-007, TRD-008, TRD-009, TRD-010, TRD-011, TRD-012, TRD-013, TRD-015, TRD-018 | TRD-007-TEST, TRD-008-TEST, TRD-009-TEST, TRD-010-TEST, TRD-011-TEST, TRD-012-TEST, TRD-013-TEST, TRD-015-TEST, TRD-018-TEST |
 | REQ-016 | Extensible provider interface | TRD-001, TRD-007, TRD-008, TRD-016, TRD-017 | TRD-001-TEST, TRD-007-TEST, TRD-008-TEST, TRD-016-TEST, TRD-017-TEST |
 
-Traceability check: 16 requirements covered, 0 uncovered, 0 orphaned annotations.
+Traceability check: 16 requirements covered, 0 uncovered, 0 orphaned annotations. Task/header validation after refinement: 36 unique tasks, 18 implementation tasks, 18 paired test tasks, no forward PR dependencies.
 
 ## 8. Adversarial Review
 
@@ -431,13 +448,15 @@ Traceability check: 16 requirements covered, 0 uncovered, 0 orphaned annotations
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Architecture completeness | 4.6 | Boundary/config/aggregate/projection exist; missing dispatcher/providers/triggers/surfaces are explicitly placed. |
+| Architecture completeness | 4.8 | Boundary/config/aggregate/projection exist; dispatcher supervision placement and trigger call sites are now source-verified. |
 | Task coverage | 4.7 | All 16 PRD requirements and all 38 ACs map to implementation and test tasks. |
-| Dependency clarity | 4.5 | PR order is acyclic; triggers wait for dispatcher/adapters; docs and E2E come last. |
-| Estimate confidence | 4.5 | No task exceeds 6h; largest risks are dispatcher durability and CLI/API test-delivery shape. |
-| Overall | 4.6 | PASS |
+| Dependency clarity | 4.7 | PR order is acyclic; trigger sources, dispatcher catch-up, and action-needed hook boundaries are explicit. |
+| Estimate confidence | 4.6 | No task exceeds 6h; remaining risks are dispatcher durability and source-verified CLI/API test-delivery shape. |
+| Overall | 4.7 | PASS |
 
 Gate decision: **PASS — ready for implementation planning after approval**.
+
+Design Readiness: 4.6 -> 4.7 (improved).
 
 ## 10. Validation Plan
 
@@ -458,8 +477,15 @@ After review/approval:
 
 ## 12. Changelog
 
+### 1.0.1 — 2026-09-06
+
+- Refined dispatcher supervision placement and durable projection catch-up guidance.
+- Added source-verified trigger hook map for collaboration URLs, stalls, failures, action-needed events, and opt-in run updates.
+- Updated affected trigger tasks with exact source modules and transition rules.
+- Re-scored design readiness from 4.6 to 4.7.
+
 ### 1.0.0 — 2026-09-05
 
 - Created TRD from `PRD-2026-a8fc7664` with shared micro UUID correlation.
 - Source-verified existing messaging foundation and remaining provider/dispatcher/trigger gaps.
-- Defined five shippable PR boundaries, 32 tasks, full REQ/AC traceability, and design readiness score 4.6.
+- Defined five shippable PR boundaries, 36 tasks, full REQ/AC traceability, and design readiness score 4.6.
