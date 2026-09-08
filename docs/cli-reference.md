@@ -331,7 +331,7 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 | `--model <model>` | — | Force a specific model (overrides `FOREMAN_DEFAULT_MODEL`) |
 | `--dry-run` | — | Show what would be dispatched without doing it |
 | `--no-watch` | — | Exit immediately after dispatching (don't monitor agents) |
-| `--telemetry` | — | Enable OpenTelemetry tracing on spawned agents (requires `OTEL_*` env vars) |
+| `--telemetry` | — | Enable OpenTelemetry tracing on spawned agents (requires `OTEL_*` env vars). This is the Langfuse trace path; SigNoz operational logs are configured separately with `FOREMAN_SIGNOZ_*` env vars. |
 | `--resume` | — | Resume stuck/rate-limited runs from a previous dispatch |
 | `--resume-failed` | — | Also resume failed runs (not just stuck/rate-limited) |
 | `--no-pipeline` | — | Skip the explorer/qa/reviewer pipeline — run as single worker agent |

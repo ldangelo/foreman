@@ -6,6 +6,7 @@ import Config
 
 phx_host = System.get_env("PHX_HOST", "localhost")
 secret_source = System.get_env("FOREMAN_SERVER_SECRET_SOURCE", "auto")
+
 config :foreman_server, ForemanServer.EventStore,
   serializer: ForemanServer.TermOrJsonSerializer,
   schema: "public"
@@ -33,7 +34,6 @@ config :foreman_server, :agent_runtime,
     "implement-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000},
     "implement-trd-beads" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000}
   }
-
 
 config :foreman_server, :prod_secret_provider,
   provider: ForemanServer.ConfigProviders.Secrets,
@@ -117,6 +117,7 @@ otlp_headers =
   else
     []
   end
+
 config :jido_otel, otlp_endpoint: otlp_endpoint, otlp_headers: otlp_headers
 
 # OpenTelemetry OTLP exporter override (TRD-2026-4212be7e / JOT-T001).
@@ -127,5 +128,38 @@ config :opentelemetry_exporter,
   otlp_endpoint: otlp_endpoint,
   otlp_protocol: :http_protobuf,
   otlp_headers: otlp_headers
+
+signoz_logs_enabled = System.get_env("FOREMAN_SIGNOZ_LOGS_ENABLED", "false") == "true"
+
+signoz_logs_endpoint =
+  System.get_env("FOREMAN_SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs")
+
+signoz_logs_level =
+  case System.get_env("FOREMAN_SIGNOZ_LOG_LEVEL", "info") |> String.downcase() do
+    "debug" -> :debug
+    "info" -> :info
+    "notice" -> :notice
+    "warning" -> :warning
+    "error" -> :error
+    _ -> :info
+  end
+
+signoz_logs_headers =
+  System.get_env("FOREMAN_SIGNOZ_OTLP_HEADERS", "")
+  |> String.split(",", trim: true)
+  |> Enum.flat_map(fn pair ->
+    case String.split(pair, "=", parts: 2) do
+      [key, value] when key != "" -> [{String.trim(key), String.trim(value)}]
+      _ -> []
+    end
+  end)
+
+config :foreman_server, :signoz_logs,
+  enabled: signoz_logs_enabled,
+  endpoint: signoz_logs_endpoint,
+  headers: signoz_logs_headers,
+  level: signoz_logs_level,
+  exporter: :otel
+
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("JIDO_CHECKPOINT_DATABASE_URL", "")

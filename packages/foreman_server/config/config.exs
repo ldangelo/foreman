@@ -114,6 +114,15 @@ config :opentelemetry,
   ],
   traces_exporter: {:otel_exporter_traces_otlp, %{endpoints: ["http://localhost:4318"]}}
 
+# SigNoz operational logs are opt-in and deliberately separate from the
+# Langfuse/Jido trace path above. The bridge preserves console Logger output and
+# falls back to no-op when disabled.
+config :foreman_server, :signoz_logs,
+  enabled: System.get_env("FOREMAN_SIGNOZ_LOGS_ENABLED", "false") == "true",
+  endpoint: System.get_env("FOREMAN_SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs"),
+  headers: [],
+  level: :debug,
+  exporter: :otel
 
 # TRD-2026-4212be7e LGL-T001: litellm-langfuse-stack integration.
 # LiteLLM runs on port 4000, Langfuse on port 3000. The `model: "auto"`

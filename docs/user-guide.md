@@ -624,6 +624,25 @@ Defaults and env vars:
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.
 
+SigNoz operational logs are separate from the Langfuse LLM-trace path.
+Foreman keeps Langfuse traces on `OTEL_EXPORTER_OTLP_ENDPOINT` and adds an
+opt-in Phoenix Logger bridge for operational logs only:
+
+- `FOREMAN_SIGNOZ_LOGS_ENABLED=true` enables the bridge.
+- `FOREMAN_SIGNOZ_OTLP_ENDPOINT` points at the collector/SigNoz OTLP logs
+  endpoint; default is `http://localhost:4318/v1/logs`.
+- `FOREMAN_SIGNOZ_OTLP_HEADERS` accepts comma-separated `key=value` headers.
+  Diagnostics report only endpoint host/port and never header values.
+- `FOREMAN_SIGNOZ_LOG_LEVEL` defaults to `info` in production.
+- Test config remains no-network: log export is disabled unless a test installs
+  the capture exporter explicitly.
+- `ops/otel-collector/signoz-logs.example.yaml` is a reference collector logs
+  pipeline: OTLP receiver -> batch processor -> `otlphttp/signoz_logs`.
+
+Retention is enforced by SigNoz/storage, not Foreman. Use a 30-day default
+retention policy for Foreman operational logs unless the deployment has a
+stricter compliance requirement.
+
 ## 9. MCP tool integration
 
 The server exposes an MCP endpoint at `/mcp` (HTTP, recommended) and via

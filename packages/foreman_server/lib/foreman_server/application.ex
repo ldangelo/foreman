@@ -136,6 +136,11 @@ defmodule ForemanServer.Application do
     # Seed MCP allowlist with read-only tools after supervisor starts.
     _ = seed_mcp_allowlist()
 
+    # Optional SigNoz operational-log bridge. Disabled by default and by test
+    # config, so console logging and no-network test mode stay unchanged unless
+    # operators opt in.
+    _ = ForemanServer.Observability.OtelLogBridge.install_from_config()
+
     {:ok, pid}
   end
 

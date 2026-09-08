@@ -133,6 +133,11 @@ the Beads side and splits Foreman's responsibilities by lifecycle:
 Enablement, the per-project `task_provider` block, and doctor output are
 documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
+Observability is split by destination: Langfuse remains the LLM trace target
+for existing OTel spans, while SigNoz operational logs are opt-in via
+`FOREMAN_SIGNOZ_LOGS_ENABLED=true` plus `FOREMAN_SIGNOZ_OTLP_ENDPOINT` for an
+OTLP logs endpoint. See [`docs/user-guide.md`](./docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse).
+
 Workflow phases support `commit:` to defer phase commits, `stack_pr:` to
 request a phase PR record from the single Foreman run branch to the recorded run
 base branch, and `timeout_minutes:` (alias `timeoutMinutes:`) to declare a positive-integer execution
