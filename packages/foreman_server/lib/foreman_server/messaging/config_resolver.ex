@@ -126,18 +126,16 @@ defmodule ForemanServer.Messaging.ConfigResolver do
   defp maybe_destination(raw, provider, true), do: destination(raw, provider)
 
   defp destination(raw, :telegram) do
-    cfg = provider_config(raw, :telegram)
-
-    with {:ok, token} <- required_secret_ref(cfg, :token, :telegram_destination),
+    with {:ok, cfg} <- provider_config(raw, :telegram, :telegram_destination),
+         {:ok, token} <- required_secret_ref(cfg, :token, :telegram_destination),
          {:ok, chat_id} <- required_string(cfg, :chat_id, :telegram_destination) do
       {:ok, %{provider: :telegram, token: token, chat_id: chat_id}}
     end
   end
 
   defp destination(raw, :slack) do
-    cfg = provider_config(raw, :slack)
-
-    with {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination) do
+    with {:ok, cfg} <- provider_config(raw, :slack, :slack_destination),
+         {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination) do
       {:ok, %{provider: :slack, webhook_url: webhook_url}}
     end
   end
@@ -167,21 +165,37 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     end
   end
 
+  # Same fix as get/3 below (AGENTS.md 5.4): a map legitimately carrying both
+  # key representations with differing values must fail loudly instead of
+  # silently preferring the atom form.
   defp fetch_field(map, key) do
     string_key = Atom.to_string(key)
 
-    cond do
-      Map.has_key?(map, key) -> {:present, Map.get(map, key)}
-      Map.has_key?(map, string_key) -> {:present, Map.get(map, string_key)}
-      true -> :absent
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, value}, :error} ->
+        {:present, value}
+
+      {:error, {:ok, value}} ->
+        {:present, value}
+
+      {:error, :error} ->
+        :absent
+
+      {{:ok, value}, {:ok, value}} ->
+        {:present, value}
+
+      {{:ok, atom_value}, {:ok, string_value}} ->
+        raise ArgumentError,
+              "conflicting atom/string keys for #{inspect(key)}: " <>
+                "#{inspect(atom_value)} vs #{inspect(string_value)}"
     end
   end
 
-  defp provider_config(raw, provider) do
+  defp provider_config(raw, provider, error_key) do
     case get(raw, provider, %{}) do
-      cfg when is_map(cfg) -> normalize_map(cfg)
-      cfg when is_list(cfg) -> Map.new(cfg)
-      _ -> %{}
+      cfg when is_map(cfg) -> {:ok, normalize_map(cfg)}
+      cfg when is_list(cfg) -> {:ok, Map.new(cfg)}
+      other -> {:error, {:invalid_field, error_key, provider, other}}
     end
   end
 
