@@ -328,7 +328,7 @@ are deployed by `foreman init --force`. The CLI selects them via
 Strict approval rendering materializes the `command` field and the
 `worktree.base` field so the human review surfaces the exact slash
 command and base ref Foreman will execute. Branch placeholders
-(`{task_id}`, `{run_id}`) and the path placeholder (`{run_id}`) remain
+(`{task_id}`, `{run_id}`) and the path placeholders (`{task_id}`, `{run_id}`) remain
 runtime-resolved; `{phase}` is retained only as literal text, not substituted.
 
 The phase runner (`ForemanServer.Workflow.RunExecutor`) auto-injects

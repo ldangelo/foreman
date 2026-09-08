@@ -1774,6 +1774,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     spec = state.worktree_spec || %{}
 
     with {:ok, project_id} <- fetch_project_id(state),
+         :ok <- assert_safe_path_identifier(project_id),
+         :ok <- assert_safe_path_identifier(worktree_task_id(state)),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
            resolve_run_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
@@ -2052,6 +2054,29 @@ defmodule ForemanServer.Workflow.RunExecutor do
       pid -> {:error, {:project_id_malformed, pid}}
     end
   end
+  # Validates that a path identifier (task_id, project_id, run_id) is safe for use
+  # in filesystem paths. Rejects identifiers containing path separators, traversal
+  # segments, or other unsafe characters that could escape the intended directory
+  # hierarchy or cause shell/path interpretation issues.
+  defp assert_safe_path_identifier(identifier) do
+    cond do
+      # Reject traversal segments
+      identifier in [".", ".."] ->
+        {:error, {:unsafe_path_identifier, identifier, "traversal segment"}}
+
+      # Reject path separators (forward and back slash)
+      String.contains?(identifier, ["/", "\\"]) ->
+        {:error, {:unsafe_path_identifier, identifier, "contains path separator"}}
+
+      # Reject null bytes and other control characters
+      String.contains?(identifier, "\0") ->
+        {:error, {:unsafe_path_identifier, identifier, "contains null byte"}}
+
+      true ->
+        :ok
+    end
+  end
+
 
   defp worktree_base_root do
     Path.join([System.user_home!(), ".foreman", "worktrees"])
