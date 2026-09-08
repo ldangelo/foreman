@@ -1776,6 +1776,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, project_id} <- fetch_project_id(state),
          :ok <- assert_safe_path_identifier(project_id),
          :ok <- assert_safe_path_identifier(worktree_task_id(state)),
+         :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
            resolve_run_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
@@ -2854,6 +2855,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __assert_safe_path_identifier_for_test__(identifier), do: assert_safe_path_identifier(identifier)
+
+  @doc false
+  def __create_run_worktree_for_test__(state, phase_index),
+    do: create_run_worktree(state, phase_index)
 
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads

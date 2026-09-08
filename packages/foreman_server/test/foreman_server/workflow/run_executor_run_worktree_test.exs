@@ -190,6 +190,42 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
+  # CodeRabbit flagged that create_run_worktree/2 validated project_id and
+  # the task segment but not state.run_id itself. In production, run_id is
+  # always Identity.run_id/2's deterministic sha256 hex output ("run-" <>
+  # 32 lowercase hex chars) EXCEPT one path: ForemanServer.Aggregates.WorkRequest
+  # accepts `cmd.run_id` verbatim when present, bypassing the safe derivation
+  # entirely (`run_id = cmd.run_id || Identity.run_id(cmd.work_id, submission_id)`).
+  # A traversal-bearing run_id from that path would otherwise reach
+  # Path.join/1 in run_worktree_path/3 unvalidated.
+  describe "create_run_worktree/2 validates state.run_id" do
+    test "a traversal-bearing run_id is rejected before filesystem path construction" do
+      state = %{
+        task: %{project_id: "proj-1", task_id: "task-1"},
+        run_id: "../../../outside",
+        worktree_spec: %{}
+      }
+
+      assert RunExecutor.__create_run_worktree_for_test__(state, 1) ==
+               {:error, {:unsafe_path_identifier, "../../../outside", "contains path separator"}}
+    end
+
+    test "a well-formed run_id is not rejected by the identifier guard" do
+      state = %{
+        task: %{project_id: "proj-1", task_id: "task-1"},
+        run_id: "run-" <> String.duplicate("a", 32),
+        worktree_spec: %{},
+        plan_context: nil
+      }
+
+      # Passes the run_id guard and proceeds to resolve_run_base/2, which
+      # fails on this minimal fixture for an unrelated reason (no registered
+      # project on disk) — proving the guard itself let a safe run_id
+      # through rather than rejecting on identifier shape.
+      assert RunExecutor.__create_run_worktree_for_test__(state, 1) == {:error, :project_not_found}
+    end
+  end
+
   describe "commit_phase_worktree/4" do
     test "commits what the phase produced, on a checkout with no git identity", %{
       repo: repo,
