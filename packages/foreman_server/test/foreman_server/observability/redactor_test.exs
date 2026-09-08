@@ -56,6 +56,17 @@ defmodule ForemanServer.Observability.RedactorTest do
     assert redacted =~ "normal"
   end
 
+  test "a composite (non-atom/binary) tuple key does not bypass recursion into itself" do
+    redacted =
+      Redactor.redact_message(
+        {:report, %{reason: :normal, extra: {{:token, "nested-in-key-secret"}, "plain-value"}}}
+      )
+
+    refute redacted =~ "nested-in-key-secret"
+    assert redacted =~ "plain-value"
+    assert redacted =~ "normal"
+  end
+
   test "redacts sentinel secrets, auth headers, database urls, env values, and home paths" do
     text =
       "Authorization: Bearer secret-token DATABASE_URL=postgres://user:pass@db/app " <>

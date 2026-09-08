@@ -146,7 +146,8 @@ defmodule ForemanServer.Observability.Redactor do
     end)
   end
 
-  defp redact_report({key, value}, depth) when depth < @report_redact_max_depth do
+  defp redact_report({key, value}, depth)
+       when depth < @report_redact_max_depth and (is_atom(key) or is_binary(key)) do
     {key, redact_report_field(key, value, depth)}
   end
 
