@@ -306,8 +306,34 @@ defmodule ForemanServer.Messaging.Dispatcher do
   defp event_type_and_payload(%{event_type: type, payload: payload}), do: {type, payload || %{}}
   defp event_type_and_payload(%{type: type, payload: payload}), do: {type, payload || %{}}
 
-  defp get(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  # Normalizes atom/string key access to a single lookup instead of
+  # silently preferring the atom form when both are present (CodeRabbit
+  # review; AGENTS.md 5.4). A payload legitimately carrying both forms of
+  # the same field with different values indicates corrupt or conflicting
+  # data, not a shape this dispatcher should guess through — raise rather
+  # than pick one silently (5.2).
+  defp get(map, key, default \\ nil) do
+    string_key = Atom.to_string(key)
+
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, value}, :error} ->
+        value
+
+      {:error, {:ok, value}} ->
+        value
+
+      {:error, :error} ->
+        default
+
+      {{:ok, value}, {:ok, value}} ->
+        value
+
+      {{:ok, atom_value}, {:ok, string_value}} ->
+        raise ArgumentError,
+              "conflicting atom/string keys for #{inspect(key)}: " <>
+                "#{inspect(atom_value)} vs #{inspect(string_value)}"
+    end
+  end
 
   defp provider_modules(opts) do
     app = Application.get_env(:foreman_server, :messaging, [])

@@ -54,10 +54,19 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
   end
 
   test "malformed selected destination returns typed error and does not fall back" do
-    assert {:error, {:missing_or_invalid, :slack_destination}} =
+    assert {:error, {:invalid_field, :slack_destination, :webhook_url, ""}} =
              ConfigResolver.resolve(
                workflow_config: %{
                  notifications: %{enabled: true, provider: :slack, slack: %{webhook_url: ""}}
+               }
+             )
+  end
+
+  test "absent destination field is reported distinctly from a malformed one" do
+    assert {:error, {:missing_field, :slack_destination, :webhook_url}} =
+             ConfigResolver.resolve(
+               workflow_config: %{
+                 notifications: %{enabled: true, provider: :slack, slack: %{}}
                }
              )
   end
@@ -81,5 +90,40 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
   test "malformed enabled value fails loudly instead of silently disabling" do
     assert {:error, {:missing_or_invalid, :enabled, "yes"}} =
              ConfigResolver.resolve(workflow_config: %{notifications: %{enabled: "yes"}})
+  end
+
+  test "a non-map, non-keyword-list provider value is a typed invalid-field error, not an empty config" do
+    assert {:error, {:invalid_field, :slack_destination, :slack, "not-a-config"}} =
+             ConfigResolver.resolve(
+               workflow_config: %{
+                 notifications: %{enabled: true, provider: :slack, slack: "not-a-config"}
+               }
+             )
+  end
+
+  test "a non-keyword list provider value is a typed invalid-field error, not a crash" do
+    assert {:error, {:invalid_field, :slack_destination, :slack, ["not-a-config"]}} =
+             ConfigResolver.resolve(
+               workflow_config: %{
+                 notifications: %{enabled: true, provider: :slack, slack: ["not-a-config"]}
+               }
+             )
+  end
+
+  test "conflicting atom/string destination field keys raise instead of silently preferring one" do
+    assert_raise ArgumentError, ~r/conflicting atom\/string keys for :webhook_url/, fn ->
+      ConfigResolver.resolve(
+        workflow_config: %{
+          notifications: %{
+            enabled: true,
+            provider: :slack,
+            slack: %{
+              :webhook_url => {:system, "ATOM_WEBHOOK"},
+              "webhook_url" => {:system, "STRING_WEBHOOK"}
+            }
+          }
+        }
+      )
+    end
   end
 end
