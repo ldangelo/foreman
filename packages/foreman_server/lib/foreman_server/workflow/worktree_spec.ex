@@ -36,7 +36,13 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
       (asserted by `RunExecutor`); otherwise the project checkout's `HEAD` is
       used and a declared `base` is resolved against the project root.
     * `branch` — branch template. `{task_id}` and `{run_id}` are substituted.
-      Default `foreman/{task_id}/{run_id}`.
+      `{task_id}` resolves via `RunExecutor.worktree_task_id/1`'s precedence:
+      the task's `external_id`, then `task_id`, then `work_id`, then `id`,
+      then falls back to `run_id` itself if none of those is a non-empty
+      binary. When a task's provider `external_id` differs from its
+      internal `task_id`, the worktree path and branch name are keyed on
+      `external_id` — operators following a stale `task_id` reference will
+      look in the wrong place. Default `foreman/{task_id}/{run_id}`.
     * `path` — leaf directory name under
       `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`. `{task_id}` and `{run_id}` are substituted.
       Default `workspace`.

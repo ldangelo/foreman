@@ -2729,13 +2729,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Map.get(state.task, :id) || Map.get(state.task, "id") || ""
   end
 
+  # An empty string is truthy in Elixir, so the naive `||` chain this used to
+  # be would short-circuit on `external_id: ""` and never try `task_id`,
+  # falling straight through to `run_id` even when a perfectly valid
+  # `task_id` was available (CodeRabbit finding on PR #484; see AGENTS.md
+  # 5.4b's `dependencies: false` bug for the same truthiness class).
+  # `Enum.find/2` tries every candidate in priority order and only falls
+  # back to `run_id` when none of them is a non-empty binary.
   defp worktree_task_id(state) do
-    case Map.get(state.task, :external_id) || Map.get(state.task, "external_id") ||
-           Map.get(state.task, :task_id) || Map.get(state.task, "task_id") ||
-           Map.get(state.task, :work_id) || Map.get(state.task, "work_id") ||
-           Map.get(state.task, :id) || Map.get(state.task, "id") do
-      id when is_binary(id) and id != "" -> id
-      _ -> state.run_id
+    [
+      Map.get(state.task, :external_id),
+      Map.get(state.task, "external_id"),
+      Map.get(state.task, :task_id),
+      Map.get(state.task, "task_id"),
+      Map.get(state.task, :work_id),
+      Map.get(state.task, "work_id"),
+      Map.get(state.task, :id),
+      Map.get(state.task, "id")
+    ]
+    |> Enum.find(&(is_binary(&1) and &1 != ""))
+    |> case do
+      nil -> state.run_id
+      id -> id
     end
   end
 
@@ -2849,6 +2864,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
+
+  @doc false
+  def __worktree_task_id_for_test__(task, run_id),
+    do: worktree_task_id(%{task: task, run_id: run_id})
 
   @doc false
   def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})

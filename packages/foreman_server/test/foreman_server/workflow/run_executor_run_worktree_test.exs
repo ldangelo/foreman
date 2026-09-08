@@ -120,6 +120,44 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
+  describe "worktree_task_id/1" do
+    test "prefers external_id over task_id when both are present" do
+      assert RunExecutor.__worktree_task_id_for_test__(
+               %{external_id: "ext-1", task_id: "task-1"},
+               "run-1"
+             ) == "ext-1"
+    end
+
+    # CodeRabbit finding on PR #484: an empty string is truthy in Elixir, so
+    # `Map.get(..., :external_id) || Map.get(..., :task_id) || ...` used to
+    # short-circuit on `external_id: ""` and never try task_id at all,
+    # falling straight to run_id even though a valid task_id existed. This
+    # is the same truthiness class as AGENTS.md 5.4b's `dependencies: false`
+    # bug.
+    test "an empty external_id does not block falling through to a valid task_id" do
+      assert RunExecutor.__worktree_task_id_for_test__(
+               %{external_id: "", task_id: "task-1"},
+               "run-1"
+             ) == "task-1"
+    end
+
+    test "falls through empty external_id and task_id to work_id" do
+      assert RunExecutor.__worktree_task_id_for_test__(
+               %{external_id: "", task_id: "", work_id: "work-1"},
+               "run-1"
+             ) == "work-1"
+    end
+
+    test "falls back to run_id only when no candidate is a non-empty binary" do
+      assert RunExecutor.__worktree_task_id_for_test__(
+               %{external_id: "", task_id: nil, work_id: "", id: nil},
+               "run-1"
+             ) == "run-1"
+
+      assert RunExecutor.__worktree_task_id_for_test__(%{}, "run-1") == "run-1"
+    end
+  end
+
   describe "fetch_project_id/1" do
     test "nil and empty project_id are both project_id_missing" do
       assert RunExecutor.__fetch_project_id_for_test__(%{project_id: nil}) ==
