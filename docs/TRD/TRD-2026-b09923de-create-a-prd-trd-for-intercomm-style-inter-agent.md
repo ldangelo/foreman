@@ -186,7 +186,7 @@ Expose direct messaging entirely through existing `InboxThread` aggregate comman
   sessions_by_id: %{session_id => %Session{}},
   targets: %{normalized_target => MapSet.t(session_id)},
   pending_by_recipient: %{recipient_id => [ask_id]},
-  asks: %{ask_id => %{message_id: id, sender_id: id, recipient_id: id, from: GenServer.from(), timeout_ref: ref()}},
+  asks: %{ask_id => %{message_id: id, sender_id: id, recipient_id: id, from: GenServer.from(), timeout_ref: reference()}},
   mailboxes: %{session_key => :queue.queue(message_id)},
   messages: %{message_id => %Message{}},
   config: %{mailbox_ttl_ms: 300_000, mailbox_max_messages: 100, ask_timeout_ms: 60_000, max_body_bytes: 65_536, max_attachment_bytes: 262_144},

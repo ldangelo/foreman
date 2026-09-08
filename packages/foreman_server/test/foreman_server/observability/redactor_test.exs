@@ -48,6 +48,14 @@ defmodule ForemanServer.Observability.RedactorTest do
     assert redacted =~ "normal"
   end
 
+  test "redacts a sensitive key nested inside a tuple" do
+    redacted =
+      Redactor.redact_message({:report, %{reason: :normal, extra: {:token, "tuple-secret"}}})
+
+    refute redacted =~ "tuple-secret"
+    assert redacted =~ "normal"
+  end
+
   test "redacts sentinel secrets, auth headers, database urls, env values, and home paths" do
     text =
       "Authorization: Bearer secret-token DATABASE_URL=postgres://user:pass@db/app " <>

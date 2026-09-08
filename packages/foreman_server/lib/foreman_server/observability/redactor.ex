@@ -146,6 +146,17 @@ defmodule ForemanServer.Observability.Redactor do
     end)
   end
 
+  defp redact_report({key, value}, depth) when depth < @report_redact_max_depth do
+    {key, redact_report_field(key, value, depth)}
+  end
+
+  defp redact_report(tuple, depth) when is_tuple(tuple) and depth < @report_redact_max_depth do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&redact_report(&1, depth + 1))
+    |> List.to_tuple()
+  end
+
   # A map or list still nested at/beyond the depth limit would otherwise
   # fall through unredacted (CWE-532: the recursive redaction clauses above
   # only fire while depth < @report_redact_max_depth), silently shipping any
@@ -153,6 +164,7 @@ defmodule ForemanServer.Observability.Redactor do
   # raw subtree through (CodeRabbit review).
   defp redact_report(%{} = _map, _depth), do: "[REDACTED:MAX_DEPTH]"
   defp redact_report(list, _depth) when is_list(list), do: "[REDACTED:MAX_DEPTH]"
+  defp redact_report(tuple, _depth) when is_tuple(tuple), do: "[REDACTED:MAX_DEPTH]"
   defp redact_report(other, _depth), do: other
 
   defp redact_report_field(key, value, depth) do

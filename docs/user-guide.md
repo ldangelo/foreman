@@ -632,7 +632,9 @@ opt-in Phoenix Logger bridge for operational logs only:
 - `FOREMAN_SIGNOZ_OTLP_ENDPOINT` points at the collector/SigNoz OTLP logs
   endpoint; default is `http://localhost:4318/v1/logs`.
 - `FOREMAN_SIGNOZ_OTLP_HEADERS` accepts comma-separated `key=value` headers.
-  Diagnostics report only endpoint host/port and never header values.
+  Diagnostics report only endpoint host/port and never header values. Setting
+  any header requires `FOREMAN_SIGNOZ_OTLP_ENDPOINT` to use `https://`; boot
+  raises otherwise to avoid sending credentials over plaintext.
 - `FOREMAN_SIGNOZ_LOG_LEVEL` defaults to `info` in production.
 - Test config remains no-network: log export is disabled unless a test installs
   the capture exporter explicitly.
