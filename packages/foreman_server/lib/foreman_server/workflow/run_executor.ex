@@ -2055,6 +2055,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       pid -> {:error, {:project_id_malformed, pid}}
     end
   end
+
   # Validates that a path identifier (task_id, project_id, run_id) is safe for use
   # in filesystem paths. Rejects identifiers containing path separators, traversal
   # segments, or other unsafe characters that could escape the intended directory
@@ -2079,7 +2080,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         :ok
     end
   end
-
 
   defp worktree_base_root do
     Path.join([System.user_home!(), ".foreman", "worktrees"])
@@ -2873,7 +2873,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})
 
   @doc false
-  def __assert_safe_path_identifier_for_test__(identifier), do: assert_safe_path_identifier(identifier)
+  def __assert_safe_path_identifier_for_test__(identifier),
+    do: assert_safe_path_identifier(identifier)
 
   @doc false
   def __create_run_worktree_for_test__(state, phase_index),

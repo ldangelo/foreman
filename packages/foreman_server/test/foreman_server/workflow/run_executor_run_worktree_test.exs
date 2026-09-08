@@ -260,7 +260,8 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
       # fails on this minimal fixture for an unrelated reason (no registered
       # project on disk) — proving the guard itself let a safe run_id
       # through rather than rejecting on identifier shape.
-      assert RunExecutor.__create_run_worktree_for_test__(state, 1) == {:error, :project_not_found}
+      assert RunExecutor.__create_run_worktree_for_test__(state, 1) ==
+               {:error, :project_not_found}
     end
   end
 
