@@ -156,6 +156,34 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
       assert RunExecutor.__worktree_task_id_for_test__(%{}, "run-1") == "run-1"
     end
+
+    # CodeRabbit review on PR #484: worktree_task_id/1 and provider_task_id/1
+    # used to run independent atom/string lookups, so a task carrying both
+    # forms of a field with different values (e.g. a decode artifact) could
+    # give the worktree and the provider a different notion of the task's
+    # identity for the same run. Both now share task_identity/1.
+    test "worktree_task_id and provider_task_id agree on identity even with mixed keys" do
+      task = %{"external_id" => "ext-1", external_id: "", task_id: "task-1"}
+
+      assert RunExecutor.__worktree_task_id_for_test__(task, "run-1") == "ext-1"
+      assert RunExecutor.__provider_task_id_for_test__(task, "run-1") == "ext-1"
+    end
+
+    # CodeRabbit review on PR #484: Enum.find/2 over the raw candidates
+    # discarded a non-binary value (e.g. `external_id: 123`) the same way it
+    # discarded a genuinely absent one, silently falling through to run_id
+    # and provisioning a plausible-looking worktree for corrupt data instead
+    # of failing loudly (AGENTS.md 5.2).
+    test "a non-binary candidate is rejected instead of silently falling through" do
+      assert_raise ArgumentError, ~r/task\.external_id/, fn ->
+        RunExecutor.__worktree_task_id_for_test__(%{external_id: 123}, "run-1")
+      end
+    end
+
+    test "provider_task_id falls back to task_id, not run_id, when no external_id exists" do
+      assert RunExecutor.__provider_task_id_for_test__(%{task_id: "task-1"}, "run-1") ==
+               "task-1"
+    end
   end
 
   describe "fetch_project_id/1" do
@@ -187,6 +215,11 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   describe "assert_safe_path_identifier/1 (via __assert_safe_path_identifier_for_test__)" do
     test "a safe slug identifier is accepted" do
       assert RunExecutor.__assert_safe_path_identifier_for_test__("my-task_123") == :ok
+    end
+
+    test "an empty identifier is rejected" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("") ==
+               {:error, {:unsafe_path_identifier, "", "empty identifier"}}
     end
 
     test "traversal segments are rejected" do
@@ -262,6 +295,23 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
       # through rather than rejecting on identifier shape.
       assert RunExecutor.__create_run_worktree_for_test__(state, 1) ==
                {:error, :project_not_found}
+    end
+
+    # CodeRabbit review on PR #484: assert_safe_path_identifier/1 accepted
+    # "", and WorkRequest accepts `cmd.run_id` verbatim
+    # (`cmd.run_id || Identity.run_id(...)`) — an empty string is truthy in
+    # Elixir, so an empty run_id bypassed safe generation entirely, colliding
+    # every such run on the same "wt-" operation id and dropping the run
+    # component from the worktree path.
+    test "an empty run_id is rejected before filesystem path construction" do
+      state = %{
+        task: %{project_id: "proj-1", task_id: "task-1"},
+        run_id: "",
+        worktree_spec: %{}
+      }
+
+      assert RunExecutor.__create_run_worktree_for_test__(state, 1) ==
+               {:error, {:unsafe_path_identifier, "", "empty identifier"}}
     end
   end
 

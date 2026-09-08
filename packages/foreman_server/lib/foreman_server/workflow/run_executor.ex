@@ -2062,6 +2062,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # hierarchy or cause shell/path interpretation issues.
   defp assert_safe_path_identifier(identifier) do
     cond do
+      # Reject an empty identifier: `WorkRequest` accepts `cmd.run_id`
+      # verbatim (`cmd.run_id || Identity.run_id(...)`), and an empty
+      # string is truthy in Elixir, so `""` bypasses that safe-generation
+      # fallback entirely and would otherwise collide every such run on
+      # the same `wt-` operation id and drop the run component from the
+      # worktree path (CodeRabbit review).
+      identifier == "" ->
+        {:error, {:unsafe_path_identifier, identifier, "empty identifier"}}
+
       # Reject traversal segments
       identifier in [".", ".."] ->
         {:error, {:unsafe_path_identifier, identifier, "traversal segment"}}
@@ -2729,28 +2738,51 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Map.get(state.task, :id) || Map.get(state.task, "id") || ""
   end
 
-  # An empty string is truthy in Elixir, so the naive `||` chain this used to
-  # be would short-circuit on `external_id: ""` and never try `task_id`,
-  # falling straight through to `run_id` even when a perfectly valid
-  # `task_id` was available (CodeRabbit finding on PR #484; see AGENTS.md
-  # 5.4b's `dependencies: false` bug for the same truthiness class).
-  # `Enum.find/2` tries every candidate in priority order and only falls
-  # back to `run_id` when none of them is a non-empty binary.
+  # Canonical task-identity lookup shared by the worktree path (which prefers
+  # the provider's external_id) and provider dispatch (claim/complete/fail),
+  # so the two can no longer name a different task for the same run
+  # (CodeRabbit review). Each field is checked in both key forms; an empty
+  # string is truthy in Elixir, so the naive `||` chain this used to be would
+  # short-circuit on e.g. `external_id: ""` and never try the next field,
+  # falling straight to the caller's fallback even though a valid candidate
+  # existed elsewhere (same truthiness class as AGENTS.md 5.4b's
+  # `dependencies: false` bug). A field present but not a binary at all is
+  # corrupt data, not a reason to try the next field — raise rather than
+  # silently skip past it into a plausible-looking fallback (AGENTS.md 5.2;
+  # CodeRabbit review).
+  defp task_identity_field(task, field) do
+    atom_value = Map.get(task, field)
+    string_value = Map.get(task, Atom.to_string(field))
+
+    cond do
+      is_binary(atom_value) and atom_value != "" -> {:found, atom_value}
+      is_binary(string_value) and string_value != "" -> {:found, string_value}
+      atom_value not in [nil, ""] -> {:malformed, atom_value}
+      string_value not in [nil, ""] -> {:malformed, string_value}
+      true -> :absent
+    end
+  end
+
+  defp task_identity(task) do
+    Enum.find_value([:external_id, :task_id, :work_id, :id], fn field ->
+      case task_identity_field(task, field) do
+        {:found, value} ->
+          {:found, value}
+
+        {:malformed, value} ->
+          raise ArgumentError,
+                "task.#{field} is present but not a usable identifier: #{inspect(value)}"
+
+        :absent ->
+          nil
+      end
+    end)
+  end
+
   defp worktree_task_id(state) do
-    [
-      Map.get(state.task, :external_id),
-      Map.get(state.task, "external_id"),
-      Map.get(state.task, :task_id),
-      Map.get(state.task, "task_id"),
-      Map.get(state.task, :work_id),
-      Map.get(state.task, "work_id"),
-      Map.get(state.task, :id),
-      Map.get(state.task, "id")
-    ]
-    |> Enum.find(&(is_binary(&1) and &1 != ""))
-    |> case do
+    case task_identity(state.task) do
+      {:found, id} -> id
       nil -> state.run_id
-      id -> id
     end
   end
 
@@ -2870,6 +2902,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
     do: worktree_task_id(%{task: task, run_id: run_id})
 
   @doc false
+  def __provider_task_id_for_test__(task, run_id),
+    do: provider_task_id(%{task: task, run_id: run_id})
+
+  @doc false
   def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})
 
   @doc false
@@ -2880,17 +2916,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __create_run_worktree_for_test__(state, phase_index),
     do: create_run_worktree(state, phase_index)
 
-  # Provider-facing identifier for the task. When the task projection
-  # carries an `external_id` (the provider's identifier, e.g. the Beads
-  # issue id `foreman-zuk0`), use that — adapters translate it directly
-  # into `br update --claim <id>` and other provider-specific commands.
-  # Falls back to `task_id` for tasks that were never linked to a
-  # provider issue (e.g. tests that bypass the import path).
+  # Provider-facing identifier for the task. Shares `task_identity/1` with
+  # `worktree_task_id/1` (CodeRabbit review) so the worktree and the
+  # provider dispatch (claim/complete/fail) can never disagree about which
+  # task a run belongs to. Falls back to `task_id/1` — not `state.run_id` —
+  # for tasks that were never linked to a provider issue (e.g. tests that
+  # bypass the import path).
   defp provider_task_id(state) do
-    case Map.get(state.task, :external_id) || Map.get(state.task, "external_id") do
+    case task_identity(state.task) do
+      {:found, id} -> id
       nil -> task_id(state)
-      "" -> task_id(state)
-      id -> id
     end
   end
 
