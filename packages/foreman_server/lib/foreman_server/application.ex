@@ -104,6 +104,7 @@ defmodule ForemanServer.Application do
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter
         ] ++
+        maybe_messaging_dispatcher_child() ++
         maybe_stuck_detector_child() ++
         maybe_lifecycle_reconciler_child() ++
         maybe_jido_signal_bus_child() ++
@@ -159,6 +160,14 @@ defmodule ForemanServer.Application do
       end
     else
       nil
+    end
+  end
+
+  defp maybe_messaging_dispatcher_child do
+    if Application.get_env(:foreman_server, :start_messaging_dispatcher?, true) do
+      [ForemanServer.Messaging.Dispatcher]
+    else
+      []
     end
   end
 
