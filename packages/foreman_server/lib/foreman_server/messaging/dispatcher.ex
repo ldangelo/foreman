@@ -329,13 +329,24 @@ defmodule ForemanServer.Messaging.Dispatcher do
     end
   end
 
-  defp destination(%Notification{provider: provider, recipient: recipient}) do
+  # Public (like pending_notifications/1) so tests can drive it without a
+  # running GenServer.
+  @doc false
+  def destination(%Notification{provider: provider, recipient: recipient}) do
     case ConfigResolver.resolve() do
       {:ok, %{provider: ^provider, destination: destination}} when is_map(destination) ->
         {:ok, Map.put(destination, recipient_key(provider), recipient)}
 
       {:ok, _config} ->
-        {:error, {:missing_or_invalid, provider_destination_error(provider)}}
+        # Config resolved, but not for this notification's provider (a
+        # different provider is currently active) or the feature is disabled
+        # for it — there is no destination to try, which is a different
+        # cause than a malformed one. ConfigResolver already returns its own
+        # `{:missing_or_invalid, ...}` for a present-but-invalid destination
+        # (passed through by the clause below unchanged); reusing that same
+        # tag here would make "no config for this provider" indistinguishable
+        # from "config present but malformed" (AGENTS.md 5.3).
+        {:error, {:provider_not_configured, provider}}
 
       {:error, reason} ->
         {:error, reason}
@@ -344,8 +355,6 @@ defmodule ForemanServer.Messaging.Dispatcher do
 
   defp recipient_key(:telegram), do: :chat_id
   defp recipient_key(:slack), do: :webhook_url
-  defp provider_destination_error(:telegram), do: :telegram_destination
-  defp provider_destination_error(:slack), do: :slack_destination
 
   # A static suffix would collide across retries: since a retryable failure
   # is now redelivered (see pending_notifications/1), a second attempt with

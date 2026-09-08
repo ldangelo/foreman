@@ -17,7 +17,22 @@ defmodule ForemanServer.Messaging.Redactor do
   end
 
   def redact(%{} = map), do: Map.new(map, fn {k, v} -> {k, redact(v)} end)
-  def redact(list) when is_list(list), do: Enum.map(list, &redact/1)
+  # A charlist (list of codepoints) is text, not a heterogeneous list —
+  # walking it element-by-element hands each integer codepoint to the
+  # catch-all clause unchanged, so a printable charlist round-trips through
+  # `redact/1` with its secret intact (CodeRabbit review). Detect that case
+  # before the generic list clause, redact it as text, and convert back so
+  # the return shape still matches the input shape.
+  def redact(list) when is_list(list) do
+    if List.ascii_printable?(list) do
+      list
+      |> List.to_string()
+      |> redact()
+      |> String.to_charlist()
+    else
+      Enum.map(list, &redact/1)
+    end
+  end
 
   # Error reasons are conventionally shaped as tuples embedding the
   # offending raw value (e.g. `{:missing_or_invalid, :recipient, value}`),

@@ -1,5 +1,8 @@
 defmodule ForemanServer.Messaging.DispatcherTest do
-  use ExUnit.Case, async: true
+  # async: false — the destination/1 tests below mutate the shared
+  # :foreman_server, :messaging Application env (same reason
+  # ConfigResolverTest is async: false).
+  use ExUnit.Case, async: false
 
   alias EventStore.EventData
   alias ForemanServer.Messaging.{Dispatcher, Notification}
@@ -102,5 +105,46 @@ defmodule ForemanServer.Messaging.DispatcherTest do
     ]
 
     assert [] = Dispatcher.pending_notifications(events)
+  end
+
+  describe "destination/1" do
+    setup do
+      original = Application.get_env(:foreman_server, :messaging)
+
+      on_exit(fn ->
+        if is_nil(original),
+          do: Application.delete_env(:foreman_server, :messaging),
+          else: Application.put_env(:foreman_server, :messaging, original)
+      end)
+
+      :ok
+    end
+
+    test "does not reuse ConfigResolver's malformed-destination code for a provider mismatch" do
+      # Config is valid for telegram, but this notification is for slack: no
+      # destination exists for it, which is a different cause than a
+      # malformed one (CodeRabbit review; AGENTS.md 5.3).
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :telegram,
+        telegram: [token: "t-token", chat_id: "t-chat"]
+      )
+
+      {:ok, notification} = Notification.normalize(%{@notification | provider: :slack})
+
+      assert {:error, {:provider_not_configured, :slack}} = Dispatcher.destination(notification)
+    end
+
+    test "resolves a destination for the matching provider, keyed by the notification's recipient" do
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :telegram,
+        telegram: [token: "t-token", chat_id: "config-chat"]
+      )
+
+      {:ok, notification} = Notification.normalize(@notification)
+
+      assert {:ok, %{token: "t-token", chat_id: "chat-1"}} = Dispatcher.destination(notification)
+    end
   end
 end
