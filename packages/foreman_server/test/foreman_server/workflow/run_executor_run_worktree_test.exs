@@ -146,6 +146,46 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
+  describe "assert_safe_path_identifier/1 (via __assert_safe_path_identifier_for_test__)" do
+    test "a safe slug identifier is accepted" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("my-task_123") == :ok
+    end
+
+    test "an empty identifier is rejected" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("") ==
+               {:error, {:unsafe_path_identifier, "", "empty"}}
+    end
+
+    test "traversal segments are rejected" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__(".") ==
+               {:error, {:unsafe_path_identifier, ".", "traversal segment"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("..") ==
+               {:error, {:unsafe_path_identifier, "..", "traversal segment"}}
+    end
+
+    test "path separators are rejected" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo/bar") ==
+               {:error, {:unsafe_path_identifier, "foo/bar", "contains path separator"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\\bar") ==
+               {:error, {:unsafe_path_identifier, "foo\\bar", "contains path separator"}}
+    end
+
+    test "null bytes are rejected" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\0bar") ==
+               {:error, {:unsafe_path_identifier, "foo\0bar", "contains null byte"}}
+    end
+
+    # A traversal segment embedded inside a longer identifier (e.g.
+    # "../etc/passwd") is caught by the path-separator check above, not the
+    # exact-match traversal check, since it necessarily contains "/".
+    test "a traversal segment embedded in a longer identifier is rejected via the separator check" do
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("../etc/passwd") ==
+               {:error, {:unsafe_path_identifier, "../etc/passwd", "contains path separator"}}
+    end
+  end
+
   describe "commit_phase_worktree/4" do
     test "commits what the phase produced, on a checkout with no git identity", %{
       repo: repo,

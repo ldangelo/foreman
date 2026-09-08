@@ -2060,6 +2060,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # hierarchy or cause shell/path interpretation issues.
   defp assert_safe_path_identifier(identifier) do
     cond do
+      # Reject empty identifiers, which are not a valid path segment
+      identifier == "" ->
+        {:error, {:unsafe_path_identifier, identifier, "empty"}}
+
       # Reject traversal segments
       identifier in [".", ".."] ->
         {:error, {:unsafe_path_identifier, identifier, "traversal segment"}}
@@ -2849,6 +2853,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})
+
+  @doc false
+  def __assert_safe_path_identifier_for_test__(identifier), do: assert_safe_path_identifier(identifier)
 
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads
