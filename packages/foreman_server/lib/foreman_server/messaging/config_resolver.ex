@@ -200,8 +200,31 @@ defmodule ForemanServer.Messaging.ConfigResolver do
   defp normalize_map(map) when is_map(map), do: map
   defp normalize_map(_), do: %{}
 
-  defp get(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  # Same fix as Dispatcher.get/3 (AGENTS.md 5.4): normalize to a single
+  # lookup instead of silently preferring the atom form when a map
+  # legitimately carries both key representations with different values.
+  defp get(map, key, default \\ nil) do
+    string_key = Atom.to_string(key)
+
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, value}, :error} ->
+        value
+
+      {:error, {:ok, value}} ->
+        value
+
+      {:error, :error} ->
+        default
+
+      {{:ok, value}, {:ok, value}} ->
+        value
+
+      {{:ok, atom_value}, {:ok, string_value}} ->
+        raise ArgumentError,
+              "conflicting atom/string keys for #{inspect(key)}: " <>
+                "#{inspect(atom_value)} vs #{inspect(string_value)}"
+    end
+  end
 
   defp normalize_atom(value) when is_atom(value), do: value
 
