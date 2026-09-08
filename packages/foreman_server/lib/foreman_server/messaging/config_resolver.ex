@@ -194,8 +194,16 @@ defmodule ForemanServer.Messaging.ConfigResolver do
   defp provider_config(raw, provider, error_key) do
     case get(raw, provider, %{}) do
       cfg when is_map(cfg) -> {:ok, normalize_map(cfg)}
-      cfg when is_list(cfg) -> {:ok, Map.new(cfg)}
+      cfg when is_list(cfg) -> provider_config_from_list(cfg, provider, error_key)
       other -> {:error, {:invalid_field, error_key, provider, other}}
+    end
+  end
+
+  defp provider_config_from_list(cfg, provider, error_key) do
+    if Keyword.keyword?(cfg) do
+      {:ok, Map.new(cfg)}
+    else
+      {:error, {:invalid_field, error_key, provider, cfg}}
     end
   end
 

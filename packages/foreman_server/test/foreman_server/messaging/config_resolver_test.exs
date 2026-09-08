@@ -101,6 +101,15 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
              )
   end
 
+  test "a non-keyword list provider value is a typed invalid-field error, not a crash" do
+    assert {:error, {:invalid_field, :slack_destination, :slack, ["not-a-config"]}} =
+             ConfigResolver.resolve(
+               workflow_config: %{
+                 notifications: %{enabled: true, provider: :slack, slack: ["not-a-config"]}
+               }
+             )
+  end
+
   test "conflicting atom/string destination field keys raise instead of silently preferring one" do
     assert_raise ArgumentError, ~r/conflicting atom\/string keys for :webhook_url/, fn ->
       ConfigResolver.resolve(
