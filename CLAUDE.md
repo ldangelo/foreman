@@ -576,8 +576,8 @@ separate from the Langfuse LLM-trace path (`jido_otel`/`opentelemetry_exporter`,
 §7 above) — different destination, different payload shape, different
 on/off switch.
 
-Config (`:foreman_server, :signoz_logs`) is parsed and validated exactly
-once, in `packages/foreman_server/config/config.exs`, from four env vars:
+Config (`:foreman_server, :signoz_logs`) is parsed once, in
+`packages/foreman_server/config/config.exs`, from four env vars:
 `FOREMAN_SIGNOZ_LOGS_ENABLED`, `FOREMAN_SIGNOZ_OTLP_ENDPOINT`,
 `FOREMAN_SIGNOZ_OTLP_HEADERS` (comma-separated `key=value` pairs), and
 `FOREMAN_SIGNOZ_LOG_LEVEL`. `prod.exs` adds no override — one boundary for
@@ -596,14 +596,14 @@ and the underlying `:httpc.request/4` call sets `autoredirect: false` so a
 3xx response can never replay those headers against a different or
 less-secure origin.
 
-Only the blocking `:httpc` POST itself runs off the logging client process
-(`Task.start/1`, unsupervised — the same pattern `boot_reconciliation.ex`
-and `run_executor.ex` already use for fire-and-forget cleanup work);
-config/payload validation stays synchronous so `export/2` still reports
-precondition errors (missing endpoint, insecure headers, unavailable OTLP
-protobuf module) to its caller immediately. There is no bounded queue or
-backpressure policy for a burst of concurrent exports — a deliberate scope
-cut, not an oversight.
+The blocking `:httpc` POST runs off the logging client process via
+`Task.Supervisor.start_child/2` against `ForemanServer.Observability.OtelLogExportSupervisor`
+(started under `ForemanServer.Application`, `max_children: 50`); config/payload
+validation stays synchronous so `export/2` still reports precondition errors
+(missing endpoint, insecure headers, unavailable OTLP protobuf module) to its
+caller immediately. A rejected `{:error, :max_children}` emits
+`Telemetry.signoz_log_export_overload/1` and drops the record instead of
+accumulating unbounded work.
 
 `ForemanServer.Observability.Redactor` and `LogMetadata` are the redaction
 boundary: metadata is whitelist-filtered (unknown keys dropped, not
