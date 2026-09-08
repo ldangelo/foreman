@@ -1774,13 +1774,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     spec = state.worktree_spec || %{}
 
     with {:ok, project_id} <- fetch_project_id(state),
+         :ok <- assert_safe_path_identifier(project_id),
+         :ok <- assert_safe_path_identifier(worktree_task_id(state)),
+         :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
            resolve_run_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = "wt-" <> state.run_id,
-         worktree_path = run_worktree_path(project_id, state.run_id, spec),
-         :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
+         worktree_path = run_worktree_path(project_id, state, spec),
+         :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
          branch = render_worktree_template(branch_template(spec), state),
          :ok <- ensure_worktree_parent_dir(worktree_path) do
       Worktree.create(%{
@@ -1863,9 +1866,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # The run's single worktree lives at one leaf directory under
-  # `~/.foreman/worktrees/<project_id>/<run_id>/`, so the path is deterministic
-  # and trivially auditable from the run_id alone. The workflow may name that
-  # leaf with `worktree: path:`; the default is `workspace`.
+  # `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`, so the path is
+  # deterministic and auditable from the operator-facing task id plus run id.
+  # The workflow may name that leaf with `worktree: path:`; the default is
+  # `workspace`.
   #
   # This replaced `default_worktree_path_for/3` and `worktree_path_for/4`, which
   # appended a per-phase slug because each phase had its own worktree. Along with
@@ -1877,14 +1881,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # phase" property the chained base existed to preserve is now supplied by
   # `reuse_run_worktree/2`, which refreshes `base_ref` to the shared checkout's
   # HEAD at each phase start.
-  defp run_worktree_path(project_id, run_id, spec) do
+  defp run_worktree_path(project_id, %{run_id: run_id} = state, spec) do
+    task_id = worktree_task_id(state)
+
     leaf =
       case Map.get(spec, :path) do
-        path when is_binary(path) and path != "" -> render_worktree_template(path, run_id)
+        path when is_binary(path) and path != "" -> render_worktree_template(path, state)
         _ -> "workspace"
       end
 
-    Path.join([worktree_base_root(), project_id, run_id, leaf])
+    Path.join([worktree_base_root(), project_id, task_id, run_id, leaf])
   end
 
   # Resolve the project_root for default-on worktrees. Prefers
@@ -2050,6 +2056,41 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # Validates that a path identifier (task_id, project_id, run_id) is safe for use
+  # in filesystem paths. Rejects identifiers containing path separators, traversal
+  # segments, or other unsafe characters that could escape the intended directory
+  # hierarchy or cause shell/path interpretation issues.
+  defp assert_safe_path_identifier(identifier) do
+    cond do
+      # Reject an empty identifier: `WorkRequest` accepts `cmd.run_id`
+      # verbatim (`cmd.run_id || Identity.run_id(...)`), and an empty
+      # string is truthy in Elixir, so `""` bypasses that safe-generation
+      # fallback entirely and would otherwise collide every such run on
+      # the same `wt-` operation id and drop the run component from the
+      # worktree path (CodeRabbit review).
+      identifier == "" ->
+        {:error, {:unsafe_path_identifier, identifier, "empty identifier"}}
+
+      # Reject traversal segments
+      identifier in [".", ".."] ->
+        {:error, {:unsafe_path_identifier, identifier, "traversal segment"}}
+
+      # Reject path separators (forward and back slash)
+      String.contains?(identifier, ["/", "\\"]) ->
+        {:error, {:unsafe_path_identifier, identifier, "contains path separator"}}
+
+      # Reject C0 control characters (0x00-0x1F), DEL (0x7F), and the C1
+      # control range (0x80-0x9F) — not just the null byte, matching the
+      # "or other unsafe characters" scope documented above (CodeRabbit
+      # review: DEL was previously excluded from the range).
+      String.match?(identifier, ~r/[\x00-\x1F\x7F-\x9F]/) ->
+        {:error, {:unsafe_path_identifier, identifier, "contains control character"}}
+
+      true ->
+        :ok
+    end
+  end
+
   defp worktree_base_root do
     Path.join([System.user_home!(), ".foreman", "worktrees"])
   end
@@ -2132,17 +2173,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> String.replace("{task_id}", worktree_task_id(state))
   end
 
-  defp render_worktree_template(template, run_id) when is_binary(run_id) do
-    String.replace(template, "{run_id}", run_id)
-  end
-
   # Containment check: the rendered worktree path MUST resolve to a
-  # location under `~/.foreman/worktrees/<project_id>/<run_id>/`. This
-  # guards against template payloads that smuggle `..` segments through
+  # location under `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`.
+  # This guards against template payloads that smuggle `..` segments through
   # placeholders or that render to absolute paths.
-  defp assert_worktree_path_contained(project_id, run_id, worktree_path) do
+  defp assert_worktree_path_contained(project_id, %{run_id: run_id} = state, worktree_path) do
     expected_root =
-      Path.join([worktree_base_root(), project_id, run_id])
+      Path.join([worktree_base_root(), project_id, worktree_task_id(state), run_id])
       |> Path.expand()
 
     actual_root = Path.expand(worktree_path)
@@ -2702,13 +2739,51 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Map.get(state.task, :id) || Map.get(state.task, "id") || ""
   end
 
+  # Canonical task-identity lookup shared by the worktree path (which prefers
+  # the provider's external_id) and provider dispatch (claim/complete/fail),
+  # so the two can no longer name a different task for the same run
+  # (CodeRabbit review). Each field is checked in both key forms; an empty
+  # string is truthy in Elixir, so the naive `||` chain this used to be would
+  # short-circuit on e.g. `external_id: ""` and never try the next field,
+  # falling straight to the caller's fallback even though a valid candidate
+  # existed elsewhere (same truthiness class as AGENTS.md 5.4b's
+  # `dependencies: false` bug). A field present but not a binary at all is
+  # corrupt data, not a reason to try the next field — raise rather than
+  # silently skip past it into a plausible-looking fallback (AGENTS.md 5.2;
+  # CodeRabbit review).
+  defp task_identity_field(task, field) do
+    atom_value = Map.get(task, field)
+    string_value = Map.get(task, Atom.to_string(field))
+
+    cond do
+      is_binary(atom_value) and atom_value != "" -> {:found, atom_value}
+      is_binary(string_value) and string_value != "" -> {:found, string_value}
+      atom_value not in [nil, ""] -> {:malformed, atom_value}
+      string_value not in [nil, ""] -> {:malformed, string_value}
+      true -> :absent
+    end
+  end
+
+  defp task_identity(task) do
+    Enum.find_value([:external_id, :task_id, :work_id, :id], fn field ->
+      case task_identity_field(task, field) do
+        {:found, value} ->
+          {:found, value}
+
+        {:malformed, value} ->
+          raise ArgumentError,
+                "task.#{field} is present but not a usable identifier: #{inspect(value)}"
+
+        :absent ->
+          nil
+      end
+    end)
+  end
+
   defp worktree_task_id(state) do
-    case Map.get(state.task, :external_id) || Map.get(state.task, "external_id") ||
-           Map.get(state.task, :task_id) || Map.get(state.task, "task_id") ||
-           Map.get(state.task, :work_id) || Map.get(state.task, "work_id") ||
-           Map.get(state.task, :id) || Map.get(state.task, "id") do
-      id when is_binary(id) and id != "" -> id
-      _ -> state.run_id
+    case task_identity(state.task) do
+      {:found, id} -> id
+      nil -> state.run_id
     end
   end
 
@@ -2824,19 +2899,34 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
 
   @doc false
+  def __worktree_task_id_for_test__(task, run_id),
+    do: worktree_task_id(%{task: task, run_id: run_id})
+
+  @doc false
+  def __provider_task_id_for_test__(task, run_id),
+    do: provider_task_id(%{task: task, run_id: run_id})
+
+  @doc false
   def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})
 
-  # Provider-facing identifier for the task. When the task projection
-  # carries an `external_id` (the provider's identifier, e.g. the Beads
-  # issue id `foreman-zuk0`), use that — adapters translate it directly
-  # into `br update --claim <id>` and other provider-specific commands.
-  # Falls back to `task_id` for tasks that were never linked to a
-  # provider issue (e.g. tests that bypass the import path).
+  @doc false
+  def __assert_safe_path_identifier_for_test__(identifier),
+    do: assert_safe_path_identifier(identifier)
+
+  @doc false
+  def __create_run_worktree_for_test__(state, phase_index),
+    do: create_run_worktree(state, phase_index)
+
+  # Provider-facing identifier for the task. Shares `task_identity/1` with
+  # `worktree_task_id/1` (CodeRabbit review) so the worktree and the
+  # provider dispatch (claim/complete/fail) can never disagree about which
+  # task a run belongs to. Falls back to `task_id/1` — not `state.run_id` —
+  # for tasks that were never linked to a provider issue (e.g. tests that
+  # bypass the import path).
   defp provider_task_id(state) do
-    case Map.get(state.task, :external_id) || Map.get(state.task, "external_id") do
+    case task_identity(state.task) do
+      {:found, id} -> id
       nil -> task_id(state)
-      "" -> task_id(state)
-      id -> id
     end
   end
 

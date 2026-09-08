@@ -1182,6 +1182,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert String.ends_with?(env["FOREMAN_ARTIFACT_PATH"], ".md")
 
     worktree_path = env["FOREMAN_WORKTREE_PATH"]
+    assert worktree_path == default_worktree_path(project_id, task_id, run_id)
     assert String.starts_with?(worktree_path, worktree_root_prefix())
     assert File.dir?(worktree_path)
 
@@ -1377,7 +1378,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     repo_path = make_bare_minimum_git_repo!(test_pid)
     run_base = current_head_sha!(repo_path)
     on_exit_worktree_cleanup(repo_path, project_id, run_id)
-    workspace = default_worktree_path(project_id, run_id)
+    workspace = default_worktree_path(project_id, external_id, run_id)
     run_branch = "foreman/#{external_id}/#{run_id}"
     prd = "docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md"
 
@@ -1782,12 +1783,19 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   end
 
   # Mirrors `RunExecutor.run_worktree_path/3`: the run's single worktree lives at
-  # a fixed leaf, so the path is derivable from the run id alone and a test can
+  # a fixed leaf, so the path is derivable from task id plus run id and a test can
   # drive the agent's own checkout. (Named for `default_worktree_path_for/3`,
   # which this change DELETED along with `worktree_path_for/4` — a reader
   # following the old name lands on nothing.)
-  defp default_worktree_path(project_id, run_id) do
-    Path.join([System.user_home!(), ".foreman/worktrees", project_id, run_id, "workspace"])
+  defp default_worktree_path(project_id, task_id, run_id) do
+    Path.join([
+      System.user_home!(),
+      ".foreman/worktrees",
+      project_id,
+      task_id,
+      run_id,
+      "workspace"
+    ])
   end
 
   # A phase with NO `worktree:` key: the default-on shape every bundled
@@ -1804,12 +1812,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     Path.join(System.user_home!(), ".foreman/worktrees") <> "/"
   end
 
-  defp on_exit_worktree_cleanup(repo_path, project_id, run_id) do
+  defp on_exit_worktree_cleanup(repo_path, project_id, _run_id) do
     project_root = Path.join([System.user_home!(), ".foreman/worktrees", project_id])
-    wt_root = Path.join(project_root, run_id)
 
     on_exit(fn ->
-      File.rm_rf(wt_root)
       File.rm_rf(project_root)
       File.rm_rf(repo_path)
     end)

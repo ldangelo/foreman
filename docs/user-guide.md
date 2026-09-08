@@ -55,9 +55,9 @@ PR creation is not phase-driven; see
 Each run executes in **one** git worktree, isolating one agent's edits from your
 main checkout and from every other concurrent run. Unless the workflow says
 otherwise, the worktree is provisioned by the run's first phase at
-`~/.foreman/worktrees/<project-id>/<run-id>/workspace` on branch
-`foreman/<task-id>/<run-id>` — the path uses the run id, while the branch uses
-`<task-id>/<run-id>` so retries get a unique branch; a `worktree:` block may change the path
+`~/.foreman/worktrees/<project-id>/<task-id>/<run-id>/workspace` on branch
+`foreman/<task-id>/<run-id>` — both path and branch include
+`<task-id>/<run-id>` so retries stay unique and easy to navigate; a `worktree:` block may change the path
 and branch or switch provisioning off entirely (see below). Every
 phase reads an earlier phase's documents as ordinary files. Foreman commits
 whatever each phase produced at the phase boundary, so the run branch
@@ -72,7 +72,7 @@ name: prd
 worktree:
   enabled: true            # false opts the whole workflow out
   branch: foreman/{task_id}/{run_id} # {task_id} and {run_id} are placeholders
-  path: workspace          # leaf dir under ~/.foreman/worktrees/<project>/<run>/
+  path: workspace          # leaf dir under ~/.foreman/worktrees/<project>/<task>/<run>/
   cleanup: never           # never | always | on_success
 phases:
   - name: create-prd

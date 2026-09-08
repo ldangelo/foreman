@@ -328,7 +328,7 @@ are deployed by `foreman init --force`. The CLI selects them via
 Strict approval rendering materializes the `command` field and the
 `worktree.base` field so the human review surfaces the exact slash
 command and base ref Foreman will execute. Branch placeholders
-(`{task_id}`, `{run_id}`) and the path placeholder (`{run_id}`) remain
+(`{task_id}`, `{run_id}`) and the path placeholders (`{task_id}`, `{run_id}`) remain
 runtime-resolved; `{phase}` is retained only as literal text, not substituted.
 
 The phase runner (`ForemanServer.Workflow.RunExecutor`) auto-injects
@@ -363,7 +363,7 @@ JSON round-trip is lossless.
   directory, symlink, and traversal cases; the frozen relative path
   and SHA persist for idempotent re-approval.
 - **Worktree ownership.** Foreman exclusively creates, pins, and
-  cleans the worktree at `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
+  cleans the worktree at `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/<path>`.
   Skills under `--foreman` must verify the trusted
   cwd/branch/revision markers and must not create, switch, append,
   or stack branches. There is no skill-owned worktree fallback.
