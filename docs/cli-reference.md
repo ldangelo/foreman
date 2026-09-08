@@ -307,6 +307,14 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > `--no-auto-dispatch`, `--runtime-mode`, `--telemetry`, `--project`,
 > `--project-path`, `--default-branch`, `--task`, `--foreman`. To start work, use
 > `foreman task create` + `foreman task approve`, or `foreman run submit`.
+> Telemetry specifically is not a CLI flag on any command: Langfuse LLM
+> traces are controlled by `OTEL_EXPORTER_OTLP_ENDPOINT`,
+> `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`; SigNoz operational logs
+> are a separate opt-in path controlled by `FOREMAN_SIGNOZ_LOGS_ENABLED`,
+> `FOREMAN_SIGNOZ_OTLP_ENDPOINT`, `FOREMAN_SIGNOZ_OTLP_HEADERS`, and
+> `FOREMAN_SIGNOZ_LOG_LEVEL`, parsed once into `config :foreman_server,
+> :signoz_logs` (see
+> [`docs/user-guide.md`](../docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse)).
 
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
 
@@ -331,7 +339,6 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 | `--model <model>` | — | Force a specific model (overrides `FOREMAN_DEFAULT_MODEL`) |
 | `--dry-run` | — | Show what would be dispatched without doing it |
 | `--no-watch` | — | Exit immediately after dispatching (don't monitor agents) |
-| `--telemetry` | — | Enable OpenTelemetry tracing on spawned agents (requires `OTEL_*` env vars) |
 | `--resume` | — | Resume stuck/rate-limited runs from a previous dispatch |
 | `--resume-failed` | — | Also resume failed runs (not just stuck/rate-limited) |
 | `--no-pipeline` | — | Skip the explorer/qa/reviewer pipeline — run as single worker agent |

@@ -220,7 +220,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case plan_context_error(state) do
       {:error, reason} ->
         Logger.warning(
-          "RunExecutor plan context for #{state.run_id} rejected: #{inspect(reason)}"
+          "RunExecutor plan context for #{state.run_id} rejected: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.plan_context",
+          outcome: "error",
+          reason: inspect(reason)
         )
 
         _ = dispatch_task_execution_fail(state, {:plan_context_error, reason})
@@ -245,7 +250,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
                 # …) — re-route through the bounded retry helper so
                 # the reason is not dropped on the floor.
                 Logger.error(
-                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}"
+                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
+                  run_id: state.run_id,
+                  task_id: task_id(state),
+                  phase_index: 0,
+                  operation: "run_executor.phase_start",
+                  outcome: "error",
+                  reason: inspect(reason)
                 )
 
                 finalize_terminal_and_stop(state, {:initialization_failed, reason})
@@ -255,14 +266,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
               # cannot see the checkout it is supposed to reclaim.
               {:error, reason, phase_state} ->
                 Logger.error(
-                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}"
+                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
+                  run_id: state.run_id,
+                  task_id: task_id(state),
+                  phase_index: 0,
+                  operation: "run_executor.phase_start",
+                  outcome: "error",
+                  reason: inspect(reason)
                 )
 
                 finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
             end
 
           {:error, reason} ->
-            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}")
+            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.task_claim",
+              outcome: "error",
+              reason: inspect(reason)
+            )
 
             _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
             finalize_terminal_and_stop(state, {:claim_failure, reason})
@@ -308,7 +331,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
       nil ->
         # All phases complete - finalize run
         Logger.info(
-          "RunExecutor #{state.run_id} all #{length(state.phase_specs)} phases complete; finalizing"
+          "RunExecutor #{state.run_id} all #{length(state.phase_specs)} phases complete; finalizing",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.finalize",
+          outcome: "start"
         )
 
         next_state = %{state | completed: completed}
@@ -318,7 +345,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
             {:noreply, finalized_state}
 
           {:error, reason} ->
-            Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}")
+            Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.finalize",
+              outcome: "error",
+              reason: inspect(reason)
+            )
+
             finalize_terminal_and_stop(next_state, {:finalize_run_failed, reason})
         end
 

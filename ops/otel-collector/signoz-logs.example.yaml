@@ -1,0 +1,36 @@
+# Example SigNoz logs pipeline for Foreman operational logs.
+#
+# Use as a reference when wiring a local SigNoz/collector stack. It keeps the
+# existing Langfuse trace route separate from the SigNoz logs route: Foreman
+# traces continue to use OTEL_EXPORTER_OTLP_ENDPOINT; Foreman operational logs
+# use FOREMAN_SIGNOZ_OTLP_ENDPOINT (default http://localhost:4318/v1/logs).
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  debug:
+    verbosity: normal
+  # Replace this with your SigNoz collector/ingest host. The otlphttp exporter
+  # appends /v1/logs to the endpoint below.
+  otlphttp/signoz_logs:
+    endpoint: "http://signoz-otel-collector:4318"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlphttp/signoz_logs]
