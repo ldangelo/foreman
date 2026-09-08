@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-d852e34b
 label: prd-phoenix-otel-signoz-observability
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-08
 scale_depth: STANDARD
 total_requirements: 16
 total_acceptance_criteria: 43
-readiness_score: 4.4
+readiness_score: 4.7
 ---
 
 # PRD: Phoenix Logger → OTel → SigNoz Observability Gap
@@ -29,8 +29,8 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **PRD: Phoenix Logger → OTe
 | Acceptance criteria coverage | 16/16 (100%) |
 | Risk flags | 11 |
 | Dependencies | 14 |
-| Open ambiguity markers | 10 |
-| TRD decisions required | 10 |
+| Open ambiguity markers | 0 |
+| TRD decisions required | 5 |
 
 ## Acceptance Criteria Summary
 
@@ -57,9 +57,9 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **PRD: Phoenix Logger → OTe
 
 Foreman already routes LLM-call tracing through Langfuse, but Phoenix/RunExecutor operational logs do not have an equivalent SigNoz path. The product gap is dual observability: Langfuse remains the source for LLM traces and model-call auditability, while SigNoz becomes the source for Foreman server and workflow operational logs.
 
-This PRD defines the requirements for OpenTelemetry log instrumentation in the Phoenix backend, with focused coverage for `RunExecutor` and `AutoPR`, plus an OTel collector pipeline that delivers those logs to SigNoz. It also defines retention, redaction, correlation, rollout, tests, and docs. It does not prescribe a final implementation library choice where the Elixir OTel log signal contract needs TRD verification.
+This PRD defines requirements for OpenTelemetry log instrumentation in the Phoenix backend, with focused coverage for `RunExecutor` and `AutoPR`, plus an OTel collector pipeline that delivers those logs to SigNoz. It also defines retention, redaction, correlation, rollout, tests, and docs. It does not prescribe the final Elixir OTel log bridge API; the TRD must verify that contract against dependency source/docs and pin it with tests.
 
-Foreman mode auto-selected STANDARD depth. Interviews were skipped under `--foreman`; assumptions are stated and unresolved decisions are marked inline with `[NEEDS CLARIFICATION: ...]`.
+Foreman mode auto-selected STANDARD depth. Interviews were skipped under `--foreman`; ambiguity markers were resolved with best-effort defaults and residual TRD decisions are explicitly listed.
 
 ## 2. Background and Evidence
 
@@ -108,6 +108,7 @@ Needs to reconstruct workflow failures from SigNoz without reading local termina
 - Phoenix/Foreman Logger-to-OpenTelemetry log export requirements.
 - RunExecutor and AutoPR operational log coverage.
 - SigNoz collector/log pipeline requirements.
+- Minimal validation queries and operator docs for SigNoz log verification.
 - Log correlation fields for run, task, phase, worker, project, severity, source module, and trace/span context when available.
 - Retention expectations and operator configuration.
 - Redaction, test, rollout, health, and docs requirements.
@@ -117,8 +118,8 @@ Needs to reconstruct workflow failures from SigNoz without reading local termina
 - Replacing Langfuse for LLM tracing.
 - Building a new run-log storage product beyond the existing MCP/log projection behavior.
 - New workflow lifecycle states.
-- New SigNoz dashboards beyond minimal validation queries [NEEDS CLARIFICATION: Should this PRD require shipped SigNoz dashboards, or only queries/operators docs?].
-- Implementing the OTel collector or infrastructure in this PRD.
+- Full prebuilt SigNoz dashboard packages; the first release requires validation queries and docs, not shipped dashboards.
+- Implementing managed SigNoz infrastructure in Foreman.
 
 ## 5. Assumptions From Foreman Mode
 
@@ -126,7 +127,11 @@ Needs to reconstruct workflow failures from SigNoz without reading local termina
 - SigNoz is the target for Phoenix/RunExecutor operational logs.
 - OpenTelemetry is the preferred transport boundary so the collector can fan out traces/logs without code-specific vendor coupling.
 - The first release should be opt-in or explicitly configurable to reduce risk in local development.
-- Retention must be declared, but the exact duration is not present in the task description [NEEDS CLARIFICATION: What default SigNoz log retention period should Foreman operators use: 7, 14, 30, or another number of days?].
+- SigNoz-backed operational log docs should recommend a 30-day retention window unless an operator's SigNoz deployment overrides it.
+- The production default should keep direct-to-Langfuse traces and add a separate OTLP HTTP/protobuf log export path to a collector/SigNoz; collector fan-out for traces remains an explicit operator topology.
+- Console logging should remain enabled by default when SigNoz export is enabled, unless the operator explicitly changes Logger configuration.
+- Production log export should default to `info` and above; debug export is opt-in.
+- Exporter health should be surfaced through a Telemetry event, a Logger warning/error, and a doctor/troubleshooting check.
 
 ## 6. Requirements
 
@@ -141,8 +146,8 @@ Risk: Repointing existing OTLP config could silently break LLM call tracing.
 Foreman MUST keep LLM call traces flowing to Langfuse while adding SigNoz operational logs.
 
 - AC-001-1: Given existing Langfuse environment variables are configured, when a Foreman LLM call succeeds, then the Langfuse trace path continues to receive that call trace.
-- AC-001-2: Given SigNoz log export is enabled, when Foreman emits operational logs, then enabling SigNoz does not remove or overwrite the Langfuse OTLP trace endpoint unless the operator explicitly configures a collector fan-out [NEEDS CLARIFICATION: Should the production default be direct-to-Langfuse traces plus collector-to-SigNoz logs, or one collector endpoint that fans out both traces and logs?].
-- AC-001-3: Given a trace/log correlation field is present, when an operator opens a SigNoz log, then any referenced trace/span identifiers are compatible with the active Langfuse/SigNoz topology.
+- AC-001-2: Given SigNoz log export is enabled, when Foreman emits operational logs, then enabling SigNoz does not remove or overwrite the Langfuse OTLP trace endpoint; the default topology is direct-to-Langfuse traces plus collector-to-SigNoz logs, with collector trace fan-out only when explicitly configured.
+- AC-001-3: Given a trace/log correlation field is present, when an operator opens a SigNoz log, then any referenced trace/span identifiers are exposed as correlation fields and documented as belonging to the active Langfuse/SigNoz topology.
 
 ### REQ-002: Add SigNoz as the operational log destination
 
@@ -166,7 +171,7 @@ Foreman MUST route structured Phoenix Logger records through an OpenTelemetry-co
 
 - AC-003-1: Given a Logger record includes metadata, when exported as an OTel log, then severity, timestamp, message body, module/function/line where available, and whitelisted metadata are preserved.
 - AC-003-2: Given a Phoenix endpoint or supervised process logs an error, when SigNoz receives it, then the record is queryable by `service.name`, severity, module, and message text.
-- AC-003-3: Given the TRD selects an Elixir/Erlang OTel log bridge, when implementation begins, then the dependency API is verified against source/docs and pinned with tests rather than assumed from trace exporter behavior.
+- AC-003-3: Given the TRD selects an Elixir/Erlang OTel log bridge, when implementation begins, then the dependency API, OpenTelemetry Logs Data Model, and semantic-convention version are verified against source/docs and pinned with tests rather than assumed from trace exporter behavior.
 
 ### 6b. Workflow Execution Log Coverage
 
@@ -204,7 +209,7 @@ Risk: Uncorrelated logs are not useful during concurrent runs.
 Operational logs MUST be correlated across Foreman execution entities.
 
 - AC-006-1: Given multiple runs execute concurrently, when an operator filters SigNoz by `run_id`, then only logs for that run are returned.
-- AC-006-2: Given a log occurs inside an active OTel span, when exported, then trace/span identifiers are attached according to OTel log semantic conventions [NEEDS CLARIFICATION: Which exact OTel log semantic convention/version should Foreman target?].
+- AC-006-2: Given a log occurs inside an active OTel span, when exported, then trace/span identifiers are attached according to the TRD-pinned OpenTelemetry Logs Data Model and semantic-convention version.
 - AC-006-3: Given worker runtime logs are emitted by Overwatch/LaunchWorker paths related to a run, when exported, then logs include `worker_id` and `run_id` when known.
 
 ### 6c. Collector, Retention, and Operations
@@ -217,7 +222,7 @@ Risk: App-side instrumentation alone does not ensure SigNoz ingestion.
 
 Foreman MUST document and support an OTel collector route from app logs to SigNoz.
 
-- AC-007-1: Given a local or deployment collector is configured, when Foreman exports logs over OTLP HTTP/protobuf or gRPC [NEEDS CLARIFICATION: Should log export standardize on OTLP HTTP/protobuf to match current trace config, or allow gRPC as first-class?], then the collector accepts them and forwards them to SigNoz.
+- AC-007-1: Given a local or deployment collector is configured, when Foreman exports logs over OTLP HTTP/protobuf, then the collector accepts them and forwards them to SigNoz.
 - AC-007-2: Given both Langfuse and SigNoz are configured, when collector fan-out is used, then trace and log pipelines are independently configurable and one destination's outage does not silently disable the other.
 - AC-007-3: Given a malformed collector/SigNoz endpoint, when Foreman starts or exports logs, then operator-facing diagnostics identify the bad endpoint/header/pipeline without leaking credentials.
 
@@ -253,7 +258,7 @@ Risk: Operators may assume logs are available longer than SigNoz keeps them.
 
 Foreman MUST define log retention expectations for SigNoz-backed operational logs.
 
-- AC-010-1: Given SigNoz is the configured log store, when docs describe the integration, then they state the default retention window and how operators change it [NEEDS CLARIFICATION: Is retention configured in Foreman docs only, or should Foreman ship a collector/SigNoz config fragment that enforces retention?].
+- AC-010-1: Given SigNoz is the configured log store, when docs describe the integration, then they recommend a 30-day default retention window, state that actual retention is enforced by SigNoz/storage configuration, and explain how operators change it in SigNoz.
 - AC-010-2: Given a run is older than the retention window, when an operator searches logs by `run_id`, then docs explain that absence may mean retention expiry rather than no logs.
 
 ### REQ-011: Prove local developer observability end to end
@@ -278,7 +283,7 @@ Risk: Operators may confuse Langfuse traces with SigNoz logs.
 Documentation SHOULD explain the dual-observability model and troubleshooting steps.
 
 - AC-012-1: Given a user reads README/user-guide/CLI reference as applicable, when they configure observability, then docs clearly distinguish Langfuse LLM traces from SigNoz operational logs.
-- AC-012-2: Given logs are missing, when the operator follows troubleshooting docs, then they check app config, collector reachability, SigNoz ingestion, redaction/noise filters, and retention.
+- AC-012-2: Given logs are missing, when the operator follows troubleshooting docs, then they check app config, collector reachability, SigNoz ingestion, redaction/noise filters, log level filters, and retention.
 
 ### REQ-013: Add tests for log export shape and redaction
 
@@ -300,8 +305,8 @@ Risk: Naive Logger + OTel wiring can duplicate every record or flood SigNoz.
 
 Foreman SHOULD avoid duplicate exports and control high-volume debug logs.
 
-- AC-014-1: Given a single Logger event is emitted, when the log bridge and console logger are both enabled, then SigNoz receives at most one operational log record for that event [NEEDS CLARIFICATION: Should console logging remain enabled in production when SigNoz export is enabled?].
-- AC-014-2: Given debug-level logs are enabled locally, when production export runs, then debug verbosity is controlled by documented log level/filter settings [NEEDS CLARIFICATION: Which log levels should be exported by default in production?].
+- AC-014-1: Given a single Logger event is emitted, when the log bridge and console logger are both enabled, then SigNoz receives at most one operational log record for that event while console logging remains available by default.
+- AC-014-2: Given debug-level logs are enabled locally, when production export runs, then production exports `info` and above by default, with debug export available only through documented opt-in log level/filter settings.
 
 ### REQ-015: Expose health signals for the log pipeline
 
@@ -311,7 +316,7 @@ Risk: Silent exporter failures recreate the current observability gap.
 
 Foreman SHOULD surface whether the log export path is healthy.
 
-- AC-015-1: Given the exporter or collector rejects logs, when failures repeat, then Foreman surfaces a warning/error metric or log that can be detected locally [NEEDS CLARIFICATION: Should this be a Telemetry event, a Logger warning, a CLI doctor check, or all three?].
+- AC-015-1: Given the exporter or collector rejects logs, when failures repeat, then Foreman emits a `ForemanServer.Telemetry` event and a Logger warning/error that can be detected locally.
 - AC-015-2: Given a doctor/troubleshooting check exists, when the SigNoz path is correctly configured, then it reports success without requiring a real Foreman run.
 
 ### REQ-016: Preserve existing trace/span behavior
@@ -340,21 +345,21 @@ Non-functional requirements are included in the unified numbering above:
 
 | Requirement | Depends On | Blocked By | Notes |
 |---|---|---|---|
-| REQ-001 | Existing Langfuse/OTel trace config | Collector topology decision | Preserve before adding logs. |
+| REQ-001 | Existing Langfuse/OTel trace config | None | Preserve before adding logs. |
 | REQ-002 | REQ-003, REQ-007, REQ-009 | OTel log bridge choice | Product-level destination requirement. |
 | REQ-003 | Existing Logger metadata patterns | Library/API verification | Must be proven in TRD. |
 | REQ-004 | REQ-003, REQ-006, REQ-008 | RunExecutor context availability | Key coverage area. |
 | REQ-005 | REQ-003, REQ-006, REQ-008 | AutoPR metadata availability | Key coverage area. |
-| REQ-006 | REQ-003, REQ-004, REQ-005 | Semantic convention decision | Enables search during concurrency. |
+| REQ-006 | REQ-003, REQ-004, REQ-005 | Semantic convention version verification | Enables search during concurrency. |
 | REQ-007 | REQ-001, REQ-002 | Collector/SigNoz config details | Integration boundary. |
-| REQ-008 | REQ-003, REQ-004, REQ-005 | Redaction policy decision | Security gate for all exported logs. |
+| REQ-008 | REQ-003, REQ-004, REQ-005 | Redaction policy implementation | Security gate for all exported logs. |
 | REQ-009 | REQ-002, REQ-007 | Env var naming decision | Rollout control. |
-| REQ-010 | REQ-007 | Retention duration decision | Operator expectation. |
+| REQ-010 | REQ-007 | SigNoz deployment retention settings | Operator expectation. |
 | REQ-011 | REQ-002, REQ-004, REQ-005, REQ-007 | Local SigNoz availability | End-to-end proof. |
 | REQ-012 | REQ-001, REQ-002, REQ-010, REQ-015 | None | Docs required if behavior changes. |
 | REQ-013 | REQ-003, REQ-004, REQ-005, REQ-008 | Test capture harness | Drift protection. |
-| REQ-014 | REQ-003, REQ-009 | Production logging policy | Cost/noise control. |
-| REQ-015 | REQ-007, REQ-009 | Health-check mechanism choice | Avoid silent failure. |
+| REQ-014 | REQ-003, REQ-009 | Production logging policy implementation | Cost/noise control. |
+| REQ-015 | REQ-007, REQ-009 | Health-check mechanism implementation | Avoid silent failure. |
 | REQ-016 | REQ-001, REQ-003, REQ-007 | Existing trace validation | Regression prevention. |
 
 Implementation clusters:
@@ -367,7 +372,7 @@ No circular dependencies identified.
 
 ## 9. Adversarial Review
 
-Foreman mode auto-applied safe issue resolutions and marked unresolved points inline.
+Foreman mode auto-applied safe issue resolutions and replaced unresolved inline ambiguity markers with explicit defaults or TRD decisions.
 
 | Issue | Category | Resolution |
 |---|---|---|
@@ -375,40 +380,37 @@ Foreman mode auto-applied safe issue resolutions and marked unresolved points in
 | "OTel logs" may not be supported by the same exporter config used for traces. | Feasibility | Added REQ-003 AC-003-3 requiring TRD verification of the Elixir/Erlang log bridge API. |
 | RunExecutor logging is broad and could miss critical paths. | Gap | Added REQ-004 with explicit lifecycle/failure/worktree/artifact contexts. |
 | Logs can leak prompts, secrets, auth headers, DB URLs, or provider output. | Security | Added REQ-008 and redaction tests in REQ-013. |
-| Collector topology is ambiguous: direct endpoints vs fan-out. | Ambiguity | Added inline clarification markers in REQ-001 and REQ-007. |
-| Retention was requested but no duration was provided. | Ambiguity | Added REQ-010 and clarification markers for duration/config enforcement. |
+| Collector topology was ambiguous. | Ambiguity | Defaulted to direct-to-Langfuse traces plus collector-to-SigNoz logs; collector fan-out remains explicit. |
+| Retention was requested but no duration was provided. | Ambiguity | Defaulted docs recommendation to 30 days, enforced by SigNoz/storage configuration rather than Foreman. |
 | SigNoz validation could pass unit tests but fail locally. | Testability | Added REQ-011 for end-to-end local validation. |
-| Naive Logger handlers can duplicate every log line. | Missing edge case | Added REQ-014 duplicate/noise requirement. |
-| Pipeline outage could be silent. | Reliability | Added REQ-015 health-signal requirement. |
-| Console and exported logging policy is unspecified. | Ambiguity | Added clarification marker in REQ-014. |
+| Naive Logger handlers can duplicate every log line. | Missing edge case | Added REQ-014 duplicate/noise requirement and default production level policy. |
+| Pipeline outage could be silent. | Reliability | Added REQ-015 requiring Telemetry, Logger, and doctor/troubleshooting visibility. |
+| Console and exported logging policy was unspecified. | Ambiguity | Defaulted console logging to remain enabled and export level to `info` and above. |
 
 ## 10. Implementation Readiness Gate
 
 | Dimension | Score | Rationale |
 |---|---:|---|
-| Completeness | 4.5 | Covers dual observability, app logging, RunExecutor/AutoPR, collector, retention, redaction, tests, health, and docs. |
-| Testability | 4.5 | Every Must/Should requirement has verifiable ACs; local end-to-end proof is required. |
-| Clarity | 4.0 | Core product boundary is clear; several topology/retention details are intentionally marked for TRD/refinement. |
-| Feasibility | 4.5 | Builds on existing Phoenix Logger, OpenTelemetry exporter config, and known Foreman modules; library contract still needs TRD verification. |
+| Completeness | 4.8 | Covers dual observability, app logging, RunExecutor/AutoPR, collector, retention, redaction, tests, health, docs, and default topology/policy choices. |
+| Testability | 4.7 | Every Must/Should requirement has verifiable ACs; local end-to-end proof and schema/redaction tests are required. |
+| Clarity | 4.6 | Core product boundary and defaults are clear; only dependency/API specifics remain for TRD verification. |
+| Feasibility | 4.6 | Builds on existing Phoenix Logger, OpenTelemetry exporter config, and known Foreman modules; library contract still needs TRD verification. |
 
-Overall readiness score: **4.4**
+Overall readiness score: **4.7**
 
 Gate decision: **PASS**. Save PRD.
 
-## 11. Open Clarifications
+Readiness score: 4.4 -> 4.7 (improved)
 
-Ambiguity scan complete: 10 items marked for clarification.
+## 11. Open TRD Decisions
 
-1. Should this PRD require shipped SigNoz dashboards, or only queries/operators docs?
-2. What default SigNoz log retention period should Foreman operators use?
-3. Should the production default be direct-to-Langfuse traces plus collector-to-SigNoz logs, or one collector endpoint that fans out both traces and logs?
-4. Which exact OTel log semantic convention/version should Foreman target?
-5. Should log export standardize on OTLP HTTP/protobuf to match current trace config, or allow gRPC as first-class?
-6. Is retention configured in Foreman docs only, or should Foreman ship a collector/SigNoz config fragment that enforces retention?
-7. Should console logging remain enabled in production when SigNoz export is enabled?
-8. Should exporter health be a Telemetry event, a Logger warning, a CLI doctor check, or all three?
-9. What correlation behavior is expected when trace/span IDs exist only in Langfuse and not SigNoz?
-10. Which log levels should be exported by default in production?
+Ambiguity scan complete: 0 inline clarification markers remain. The TRD must still verify or choose these implementation details before coding:
+
+1. Exact Elixir/Erlang OTel log bridge package/API and version.
+2. Exact OpenTelemetry Logs Data Model and semantic-convention version supported by the selected deps.
+3. Final environment variable names for enabling log export, endpoint, headers, timeout, and log level filters.
+4. Concrete redaction whitelist/denylist and path-sanitization behavior.
+5. Exact local validation commands and SigNoz query syntax for the chosen local stack.
 
 ## 12. Suggested Next Step
 
@@ -417,3 +419,13 @@ Create a TRD from this PRD:
 ```bash
 /ensemble-create-trd docs/PRD/PRD-2026-d852e34b-phoenix-otel-signoz-observability.md
 ```
+
+## 13. Changelog
+
+### 2026-09-08 — v1.0.1
+
+- Repaired PRD Markdown/frontmatter/table structure for parser-ready format.
+- Auto-applied all refinement findings under `--foreman`.
+- Removed all inline clarification markers using best-effort defaults.
+- Clarified observability topology, retention default, OTLP transport, console/export log policy, and health-signal expectations.
+- Updated PRD Health summary and Implementation Readiness Gate score.
