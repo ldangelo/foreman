@@ -13,13 +13,27 @@ defmodule ForemanServer.Observability.RedactorTest do
   end
 
   test "removes sensitive keys entirely" do
-    refute Redactor.redact_metadata(%{
-             run_id: "run-1",
-             authorization: "Bearer token",
-             prompt: "user prompt",
-             database_url: "postgres://u:p@localhost/db"
-           })
-           |> Map.has_key?(:authorization)
+    result =
+      Redactor.redact_metadata(%{
+        run_id: "run-1",
+        authorization: "Bearer token",
+        prompt: "user prompt",
+        database_url: "postgres://u:p@localhost/db"
+      })
+
+    assert result == %{run_id: "run-1"}
+  end
+
+  test "redacts sensitive keys nested inside a Logger :report term before inspection" do
+    redacted =
+      Redactor.redact_message(
+        {:report, %{password: "hunter2", reason: :normal, nested: %{token: "abc123"}}}
+      )
+
+    refute redacted =~ "hunter2"
+    refute redacted =~ "abc123"
+    assert redacted =~ "[REDACTED]"
+    assert redacted =~ "normal"
   end
 
   test "redacts sentinel secrets, auth headers, database urls, env values, and home paths" do

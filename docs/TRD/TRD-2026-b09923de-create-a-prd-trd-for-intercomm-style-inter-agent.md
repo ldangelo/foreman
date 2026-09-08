@@ -432,7 +432,7 @@ Implementation AC:
 
 #### TRD-009 — Add privacy-safe comms telemetry (3h) [satisfies REQ-010, REQ-012, REQ-014]
 
-Extend `ForemanServer.Telemetry` with comms events such as `[:foreman, :comms, :message, :accepted]`, `:delivered`, `:failed`, `[:foreman, :comms, :ask, :timeout]`, and `[:foreman, :comms, :mailbox, :dropped]`.
+Extend `ForemanServer.Telemetry` with comms events such as `[:foreman, :comms, :message, :accepted]`, `[:foreman, :comms, :message, :delivered]`, `[:foreman, :comms, :message, :failed]`, `[:foreman, :comms, :ask, :timeout]`, and `[:foreman, :comms, :mailbox, :dropped]`.
 
 Validates PRD ACs: AC-010-1, AC-012-3, AC-014-1, AC-014-2
 
@@ -764,7 +764,7 @@ Testability concern:
 
 ## Follow-Up
 
-Before implementation, product/engineering should explicitly approve or revise these v1 defaults:
+Before expanding scope beyond these v1 defaults, product/engineering should explicitly approve or revise them (the Design Readiness Scorecard above already permits implementation to proceed on the v1 defaults as-is):
 
 1. Consumers: Pi workers only, all agent-runtime adapters, CLI, Web UI, or external clients.
 2. Durability: in-memory, event-audited, or replay/recovery semantics for asks/mailboxes.

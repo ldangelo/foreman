@@ -13,6 +13,8 @@ defmodule ForemanServer.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     children =
@@ -138,8 +140,21 @@ defmodule ForemanServer.Application do
 
     # Optional SigNoz operational-log bridge. Disabled by default and by test
     # config, so console logging and no-network test mode stay unchanged unless
-    # operators opt in.
-    _ = ForemanServer.Observability.OtelLogBridge.install_from_config()
+    # operators opt in. A failed install is reported loudly (Logger.error)
+    # instead of discarded, but does not abort boot: SigNoz export is an
+    # opt-in observability nicety, not a dependency of the CQRS/workflow
+    # engine this supervisor owns, so a bad env var or a `:logger` handler
+    # registration failure must not take down the whole server.
+    case ForemanServer.Observability.OtelLogBridge.install_from_config() do
+      result when result in [:ok, :disabled] ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "SigNoz log bridge failed to install; operational logs will not export to " <>
+            "SigNoz: #{inspect(reason)}"
+        )
+    end
 
     {:ok, pid}
   end

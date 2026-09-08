@@ -111,8 +111,48 @@ defmodule ForemanServer.Observability.Redactor do
   end
 
   defp safe_to_string({:string, chardata}), do: IO.iodata_to_binary(chardata)
-  defp safe_to_string({:report, report}), do: inspect(report, limit: 20, printable_limit: 500)
+
+  defp safe_to_string({:report, report}) do
+    report |> redact_report() |> inspect(limit: 20, printable_limit: 500)
+  end
+
   defp safe_to_string(chardata) when is_list(chardata), do: IO.iodata_to_binary(chardata)
   defp safe_to_string(binary) when is_binary(binary), do: binary
   defp safe_to_string(other), do: inspect(other, limit: 20, printable_limit: 500)
+
+  # Structured Logger `:report` terms (maps or proplists — OTP crash/progress
+  # reports use both) used to reach `inspect/2` raw: `redact_text/1` only
+  # scrubs value-shaped patterns (DB URLs, `Authorization: ...`,
+  # `UPPER_NAME=value`), so a report field like `%{password: "hunter2"}`
+  # rendered as `password: "hunter2"` in the inspected text and none of
+  # those regexes matched a lowercase, colon-separated key — the secret
+  # shipped in the OTLP body verbatim (CWE-532). Walk the term first and
+  # blank out any key matching `sensitive_key?/1` before it is ever
+  # stringified. Depth is bounded (crash reports are shallow in practice);
+  # `redact_text/1` still runs on the final inspected string afterward as a
+  # second pass over any value-shaped secret left under a non-sensitive key.
+  @report_redact_max_depth 6
+
+  defp redact_report(term, depth \\ 0)
+
+  defp redact_report(%{} = map, depth) when depth < @report_redact_max_depth do
+    Map.new(map, fn {key, value} -> {key, redact_report_field(key, value, depth)} end)
+  end
+
+  defp redact_report(list, depth) when is_list(list) and depth < @report_redact_max_depth do
+    Enum.map(list, fn
+      {key, value} -> {key, redact_report_field(key, value, depth)}
+      other -> redact_report(other, depth + 1)
+    end)
+  end
+
+  defp redact_report(other, _depth), do: other
+
+  defp redact_report_field(key, value, depth) do
+    if (is_atom(key) or is_binary(key)) and sensitive_key?(key) do
+      "[REDACTED]"
+    else
+      redact_report(value, depth + 1)
+    end
+  end
 end

@@ -115,13 +115,87 @@ config :opentelemetry,
   traces_exporter: {:otel_exporter_traces_otlp, %{endpoints: ["http://localhost:4318"]}}
 
 # SigNoz operational logs are opt-in and deliberately separate from the
-# Langfuse/Jido trace path above. The bridge preserves console Logger output and
-# falls back to no-op when disabled.
+# Langfuse/Jido trace path above. The bridge preserves console Logger output
+# and falls back to no-op when disabled.
+#
+# All four FOREMAN_SIGNOZ_* env vars are parsed once here so dev/test/prod
+# share identical validation — prod.exs previously re-derived `headers` and
+# `level` itself, which meant dev silently ignored FOREMAN_SIGNOZ_OTLP_HEADERS
+# and FOREMAN_SIGNOZ_LOG_LEVEL (neither config.exs nor dev.exs read them, so
+# they were stuck at `[]`/`:debug` in dev regardless of the env vars), and
+# test.exs had no override at all — an operator's FOREMAN_SIGNOZ_LOGS_ENABLED
+# left set from a dev session would enable the real network exporter under
+# `mix test` (see config/test.exs for the explicit test-env disable).
+#
+# Malformed input fails the boot instead of silently coercing to a default
+# (AGENTS.md 5.3, "distinguish absent from malformed"): an unrecognized
+# FOREMAN_SIGNOZ_LOG_LEVEL, a malformed FOREMAN_SIGNOZ_OTLP_HEADERS pair, or
+# credential headers paired with a non-https FOREMAN_SIGNOZ_OTLP_ENDPOINT all
+# raise at config load rather than shipping a plausible-looking default.
+signoz_logs_level =
+  case System.get_env("FOREMAN_SIGNOZ_LOG_LEVEL", "info") |> String.downcase() do
+    "debug" ->
+      :debug
+
+    "info" ->
+      :info
+
+    "notice" ->
+      :notice
+
+    "warning" ->
+      :warning
+
+    "error" ->
+      :error
+
+    "critical" ->
+      :critical
+
+    "alert" ->
+      :alert
+
+    "emergency" ->
+      :emergency
+
+    other ->
+      raise "invalid FOREMAN_SIGNOZ_LOG_LEVEL=#{inspect(other)}; expected one of " <>
+              "debug, info, notice, warning, error, critical, alert, emergency"
+  end
+
+signoz_logs_headers =
+  System.get_env("FOREMAN_SIGNOZ_OTLP_HEADERS", "")
+  |> String.split(",", trim: true)
+  |> Enum.map(fn pair ->
+    case String.split(pair, "=", parts: 2) do
+      [key, value] ->
+        trimmed_key = String.trim(key)
+
+        if trimmed_key == "" do
+          raise "invalid FOREMAN_SIGNOZ_OTLP_HEADERS pair #{inspect(pair)}: header name is blank"
+        end
+
+        {trimmed_key, String.trim(value)}
+
+      _ ->
+        raise "invalid FOREMAN_SIGNOZ_OTLP_HEADERS pair #{inspect(pair)}: expected key=value"
+    end
+  end)
+
+signoz_logs_endpoint =
+  System.get_env("FOREMAN_SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs")
+
+if signoz_logs_headers != [] and not String.starts_with?(signoz_logs_endpoint, "https://") do
+  raise "FOREMAN_SIGNOZ_OTLP_HEADERS is set but FOREMAN_SIGNOZ_OTLP_ENDPOINT=" <>
+          "#{signoz_logs_endpoint} is not https://; refusing to configure credentialed " <>
+          "headers over an insecure endpoint"
+end
+
 config :foreman_server, :signoz_logs,
   enabled: System.get_env("FOREMAN_SIGNOZ_LOGS_ENABLED", "false") == "true",
-  endpoint: System.get_env("FOREMAN_SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs"),
-  headers: [],
-  level: :debug,
+  endpoint: signoz_logs_endpoint,
+  headers: signoz_logs_headers,
+  level: signoz_logs_level,
   exporter: :otel
 
 # TRD-2026-4212be7e LGL-T001: litellm-langfuse-stack integration.

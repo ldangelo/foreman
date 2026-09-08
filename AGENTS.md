@@ -914,6 +914,16 @@ Why this exists:
   directly at the Langfuse ingest URL via the same `OTEL_EXPORTER_OTLP_ENDPOINT`
   env var (see `packages/foreman_server/config/prod.exs`).
 
+### SigNoz operational logs (separate from the Langfuse path above)
+
+`FOREMAN_SIGNOZ_LOGS_ENABLED`, `FOREMAN_SIGNOZ_OTLP_ENDPOINT`,
+`FOREMAN_SIGNOZ_OTLP_HEADERS`, and `FOREMAN_SIGNOZ_LOG_LEVEL` configure an
+opt-in `:logger` handler (`ForemanServer.Observability.OtelLogBridge`,
+parsed once in `packages/foreman_server/config/config.exs`) that exports
+redacted operational logs to SigNoz over OTLP/HTTP. Off by default and
+forced off in `config/test.exs`; console logging is unaffected either way.
+See `docs/user-guide.md` for the full operator contract and defaults.
+
 ### Lint warning
 
 `devbox.json` is in legacy format (the warning at every `devbox run`).

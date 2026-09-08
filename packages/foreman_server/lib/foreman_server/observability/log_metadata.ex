@@ -50,13 +50,9 @@ defmodule ForemanServer.Observability.LogMetadata do
   defp merge_phase(metadata, nil), do: metadata
 
   defp merge_phase(metadata, phase) when is_map(phase) do
-    metadata
-    |> put_present(
-      :phase_index,
-      first_present(phase, [:phase_index, "phase_index", :index, "index"])
-    )
-    |> put_present(:phase_name, first_present(phase, [:phase_name, "phase_name", :name, "name"]))
-    |> put_present(:phase_type, first_present(phase, [:phase_type, "phase_type", :type, "type"]))
+    Enum.reduce([:phase_index, :phase_name, :phase_type], metadata, fn field, acc ->
+      put_present(acc, field, first_present(phase, @field_aliases[field]))
+    end)
   end
 
   defp merge_phase(metadata, _), do: metadata

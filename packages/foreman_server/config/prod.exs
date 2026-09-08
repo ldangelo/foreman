@@ -129,37 +129,9 @@ config :opentelemetry_exporter,
   otlp_protocol: :http_protobuf,
   otlp_headers: otlp_headers
 
-signoz_logs_enabled = System.get_env("FOREMAN_SIGNOZ_LOGS_ENABLED", "false") == "true"
-
-signoz_logs_endpoint =
-  System.get_env("FOREMAN_SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs")
-
-signoz_logs_level =
-  case System.get_env("FOREMAN_SIGNOZ_LOG_LEVEL", "info") |> String.downcase() do
-    "debug" -> :debug
-    "info" -> :info
-    "notice" -> :notice
-    "warning" -> :warning
-    "error" -> :error
-    _ -> :info
-  end
-
-signoz_logs_headers =
-  System.get_env("FOREMAN_SIGNOZ_OTLP_HEADERS", "")
-  |> String.split(",", trim: true)
-  |> Enum.flat_map(fn pair ->
-    case String.split(pair, "=", parts: 2) do
-      [key, value] when key != "" -> [{String.trim(key), String.trim(value)}]
-      _ -> []
-    end
-  end)
-
-config :foreman_server, :signoz_logs,
-  enabled: signoz_logs_enabled,
-  endpoint: signoz_logs_endpoint,
-  headers: signoz_logs_headers,
-  level: signoz_logs_level,
-  exporter: :otel
+# SigNoz operational-log config (FOREMAN_SIGNOZ_*) is parsed once in
+# config.exs for every MIX_ENV, including prod — no production-specific
+# override is needed here. See config.exs for the validation contract.
 
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("JIDO_CHECKPOINT_DATABASE_URL", "")

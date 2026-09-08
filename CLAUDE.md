@@ -566,3 +566,49 @@ a truncated read can never present itself as complete.
 ## Phase stall detection
 
 `stall_detection` is explicit phase metadata, never inferred from phase names. Normalize it through `ForemanServer.Workflow.StallPolicy`; valid scopes are agent/no-output and messaging/no-progress. `RunExecutor` copies normalized policy onto `phase.start`/`PhaseStarted`, `ProjectionStore.stall_candidates/1` is the bounded detector read, and `ForemanServer.StallDetector` persists stalls through `run.report_stall` only. Do not write projection state directly from the detector. Worker heartbeats do not advance phase output activity; stdout/stderr, assistant messages, tool completions, worker start/exit, and phase lifecycle do.
+
+## 20. SigNoz operational-log bridge
+
+`ForemanServer.Observability.OtelLogBridge` installs an additional Erlang
+`:logger` handler (never replaces the default console handler) that exports
+redacted operational logs to SigNoz over OTLP/HTTP. It is deliberately
+separate from the Langfuse LLM-trace path (`jido_otel`/`opentelemetry_exporter`,
+§7 above) — different destination, different payload shape, different
+on/off switch.
+
+Config (`:foreman_server, :signoz_logs`) is parsed and validated exactly
+once, in `packages/foreman_server/config/config.exs`, from four env vars:
+`FOREMAN_SIGNOZ_LOGS_ENABLED`, `FOREMAN_SIGNOZ_OTLP_ENDPOINT`,
+`FOREMAN_SIGNOZ_OTLP_HEADERS` (comma-separated `key=value` pairs), and
+`FOREMAN_SIGNOZ_LOG_LEVEL`. `prod.exs` adds no override — one boundary for
+every `MIX_ENV`. Malformed input (unrecognized level, malformed header
+pair, or credential headers paired with a non-`https://` endpoint) raises
+at config load instead of silently coercing to a default. `config/test.exs`
+forces `enabled: false` regardless of the operator's shell env, so `mix
+test` never installs the real exporter; tests that need the bridge call
+`OtelLogBridge.install/1` directly with a `{:capture, pid}` exporter.
+
+Two security properties are enforced at the export boundary
+(`OtelLogBridge.export_to_otel/2`, not just at config-parse time, since
+`install/1` is a public function callable with an arbitrary config map):
+configured headers are refused for any non-`https://` endpoint (CWE-319),
+and the underlying `:httpc.request/4` call sets `autoredirect: false` so a
+3xx response can never replay those headers against a different or
+less-secure origin.
+
+Only the blocking `:httpc` POST itself runs off the logging client process
+(`Task.start/1`, unsupervised — the same pattern `boot_reconciliation.ex`
+and `run_executor.ex` already use for fire-and-forget cleanup work);
+config/payload validation stays synchronous so `export/2` still reports
+precondition errors (missing endpoint, insecure headers, unavailable OTLP
+protobuf module) to its caller immediately. There is no bounded queue or
+backpressure policy for a burst of concurrent exports — a deliberate scope
+cut, not an oversight.
+
+`ForemanServer.Observability.Redactor` and `LogMetadata` are the redaction
+boundary: metadata is whitelist-filtered (unknown keys dropped, not
+passed through), and log bodies — including structured Erlang `:report`
+terms (crash/progress reports) — are walked recursively for sensitive keys
+before they are ever inspected into text, then regex-scrubbed again as a
+second pass over value-shaped secrets (DB URLs, auth headers, `NAME=value`
+secrets, home-directory paths).

@@ -22,6 +22,12 @@ defmodule ForemanServer.Observability.OtelLogBridge do
   @handler_id :foreman_signoz_otel_log_bridge
   @schema_url "https://opentelemetry.io/schemas/1.27.0"
 
+  # RFC 5424 / Elixir Logger's full severity set, ordered least to most
+  # severe. Shared by normalize_level/1 (config + install/1 input),
+  # level_rank/1 (threshold comparison), and severity_number/1 (OTLP
+  # SeverityNumber encoding) so all three stay in lockstep.
+  @valid_levels [:debug, :info, :notice, :warning, :error, :critical, :alert, :emergency]
+
   @type exporter :: :otel | {:capture, pid()} | (map() -> :ok | {:error, term()})
 
   @spec install_from_config() :: :ok | {:error, term()} | :disabled
@@ -37,25 +43,31 @@ defmodule ForemanServer.Observability.OtelLogBridge do
 
   @spec install(keyword() | map()) :: :ok | {:error, term()}
   def install(config) do
-    _ = :logger.remove_handler(@handler_id)
+    case level(config) do
+      nil ->
+        {:error, {:invalid_level, config_value(config, :level, :info)}}
 
-    handler_config = %{
-      level: level(config),
-      exporter: exporter(config),
-      endpoint: endpoint(config),
-      headers: headers(config)
-    }
+      level ->
+        _ = :logger.remove_handler(@handler_id)
 
-    :logger.add_handler(@handler_id, __MODULE__, handler_config)
+        handler_config = %{
+          level: level,
+          exporter: exporter(config),
+          endpoint: endpoint(config),
+          headers: headers(config)
+        }
+
+        :logger.add_handler(@handler_id, __MODULE__, handler_config)
+    end
   end
 
   @spec uninstall() :: :ok | {:error, term()}
   def uninstall, do: :logger.remove_handler(@handler_id)
 
   @doc false
-  def log(%{level: level, msg: msg, meta: meta} = event, config) do
+  def log(%{level: level, msg: msg, meta: meta}, config) do
     if level_allowed?(level, Map.get(config, :level, :info)) do
-      payload = otel_payload(level, msg, meta, event)
+      payload = otel_payload(level, msg, meta)
 
       case export(payload, config) do
         :ok -> :ok
@@ -70,8 +82,8 @@ defmodule ForemanServer.Observability.OtelLogBridge do
       :ok
   end
 
-  @spec otel_payload(Logger.level(), term(), map() | keyword(), map()) :: map()
-  def otel_payload(level, msg, metadata \\ %{}, event \\ %{}) do
+  @spec otel_payload(Logger.level(), term(), map() | keyword()) :: map()
+  def otel_payload(level, msg, metadata \\ %{}) do
     attrs =
       metadata
       |> Redactor.redact_metadata()
@@ -99,7 +111,7 @@ defmodule ForemanServer.Observability.OtelLogBridge do
               schema_url: @schema_url,
               log_records: [
                 %{
-                  time_unix_nano: timestamp(event),
+                  time_unix_nano: timestamp(metadata),
                   observed_time_unix_nano: System.system_time(:nanosecond),
                   severity_number: severity_number(level),
                   severity_text: level |> to_string() |> String.upcase(),
@@ -143,15 +155,51 @@ defmodule ForemanServer.Observability.OtelLogBridge do
 
   defp export_to_otel(payload, config) do
     with endpoint when is_binary(endpoint) and endpoint != "" <- endpoint(config),
+         headers <- headers(config),
+         :ok <- ensure_https_for_headers(endpoint, headers),
          :ok <- ensure_inets_started(),
-         {:ok, body} <- encode_payload(payload),
-         {:ok, _response} <- post_logs(endpoint, headers(config), body) do
+         {:ok, body} <- encode_payload(payload) do
+      # Only the blocking network call runs off-process (Task.start/1, the
+      # same unsupervised fire-and-forget pattern already used in
+      # boot_reconciliation.ex/run_executor.ex): validation and payload
+      # encoding above stay synchronous and cheap, so config/precondition
+      # errors are still reported to the caller of export/2 immediately.
+      # A bounded queue with explicit overload/backpressure behavior is a
+      # larger redesign intentionally left out of this fix.
+      Task.start(fn ->
+        try do
+          case post_logs(endpoint, headers, body) do
+            {:ok, _status} ->
+              :ok
+
+            {:error, reason} ->
+              ForemanServer.Telemetry.signoz_log_export_failure(reason, config)
+          end
+        rescue
+          error ->
+            ForemanServer.Telemetry.signoz_log_export_failure({:bridge_crash, error}, config)
+        end
+      end)
+
       :ok
     else
       nil -> {:error, :missing_endpoint}
       "" -> {:error, :missing_endpoint}
       {:error, reason} -> {:error, reason}
       other -> {:error, {:unexpected_export_result, other}}
+    end
+  end
+
+  # CWE-319: refuse to send configured export headers (credentials) to a
+  # plaintext endpoint. Headerless exports (the local-dev default, no
+  # collector auth) are unaffected.
+  defp ensure_https_for_headers(_endpoint, []), do: :ok
+
+  defp ensure_https_for_headers(endpoint, [_ | _]) do
+    if String.starts_with?(endpoint, "https://") do
+      :ok
+    else
+      {:error, {:insecure_endpoint_with_headers, endpoint}}
     end
   end
 
@@ -182,7 +230,16 @@ defmodule ForemanServer.Observability.OtelLogBridge do
       body
     }
 
-    case :httpc.request(:post, request, [timeout: 5_000], []) do
+    # autoredirect: false — httpc defaults to following 3xx redirects and
+    # replaying the original request, including any configured
+    # Authorization/credential headers, against the redirect target, which
+    # can be a different and/or less-secure origin (CWE-319; see also
+    # erlang/otp GHSA-m75x-4vwg-ggjh, which hardened only a fixed list of
+    # well-known header names — our operator-supplied header name is
+    # arbitrary, so it is not necessarily covered even on a patched OTP).
+    # SigNoz/OTel collector log ingest has no legitimate reason to redirect
+    # this POST.
+    case :httpc.request(:post, request, [timeout: 5_000, autoredirect: false], []) do
       {:ok, {{_, status, _}, _headers, _body}} when status in 200..299 ->
         {:ok, status}
 
@@ -204,7 +261,7 @@ defmodule ForemanServer.Observability.OtelLogBridge do
   defp any_value(value), do: string_value(value)
   defp string_value(value), do: %{string_value: to_string(value)}
 
-  defp timestamp(%{time: time}) when is_integer(time), do: time
+  defp timestamp(%{time: time}) when is_integer(time), do: time * 1_000
   defp timestamp(_), do: System.system_time(:nanosecond)
 
   defp severity_number(:debug), do: 5
@@ -212,6 +269,9 @@ defmodule ForemanServer.Observability.OtelLogBridge do
   defp severity_number(:notice), do: 10
   defp severity_number(:warning), do: 13
   defp severity_number(:error), do: 17
+  defp severity_number(:critical), do: 18
+  defp severity_number(:alert), do: 19
+  defp severity_number(:emergency), do: 21
   defp severity_number(_), do: 9
 
   defp level_allowed?(level, min), do: level_rank(level) >= level_rank(min)
@@ -220,9 +280,12 @@ defmodule ForemanServer.Observability.OtelLogBridge do
   defp level_rank(:notice), do: 25
   defp level_rank(:warning), do: 30
   defp level_rank(:error), do: 40
+  defp level_rank(:critical), do: 50
+  defp level_rank(:alert), do: 60
+  defp level_rank(:emergency), do: 70
   defp level_rank(_), do: 20
 
-  defp normalize_level(level) when level in [:debug, :info, :notice, :warning, :error], do: level
+  defp normalize_level(level) when level in @valid_levels, do: level
 
   defp normalize_level(level) when is_binary(level) do
     case String.downcase(level) do
@@ -231,11 +294,14 @@ defmodule ForemanServer.Observability.OtelLogBridge do
       "notice" -> :notice
       "warning" -> :warning
       "error" -> :error
-      _ -> :info
+      "critical" -> :critical
+      "alert" -> :alert
+      "emergency" -> :emergency
+      _ -> nil
     end
   end
 
-  defp normalize_level(_), do: :info
+  defp normalize_level(_), do: nil
 
   defp config_value(config, key, default) when is_map(config), do: Map.get(config, key, default)
 
