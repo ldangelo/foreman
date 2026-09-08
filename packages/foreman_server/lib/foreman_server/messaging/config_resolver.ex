@@ -127,24 +127,53 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   defp destination(raw, :telegram) do
     cfg = provider_config(raw, :telegram)
-    token = get(cfg, :token)
-    chat_id = get(cfg, :chat_id)
 
-    if valid_secret_ref?(token) and is_binary(chat_id) and chat_id != "" do
+    with {:ok, token} <- required_secret_ref(cfg, :token, :telegram_destination),
+         {:ok, chat_id} <- required_string(cfg, :chat_id, :telegram_destination) do
       {:ok, %{provider: :telegram, token: token, chat_id: chat_id}}
-    else
-      {:error, {:missing_or_invalid, :telegram_destination}}
     end
   end
 
   defp destination(raw, :slack) do
     cfg = provider_config(raw, :slack)
-    webhook_url = get(cfg, :webhook_url)
 
-    if valid_secret_ref?(webhook_url) do
+    with {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination) do
       {:ok, %{provider: :slack, webhook_url: webhook_url}}
-    else
-      {:error, {:missing_or_invalid, :slack_destination}}
+    end
+  end
+
+  # Distinguishes an absent destination field from one present but invalid
+  # (AGENTS.md "Outbound messaging delivery notes"; CodeRabbit review),
+  # matching the `:missing_field` / `:invalid_field` convention already used
+  # by the Telegram/Slack send adapters instead of the generic
+  # `:missing_or_invalid` tag.
+  defp required_secret_ref(map, key, error_key) do
+    case fetch_field(map, key) do
+      :absent ->
+        {:error, {:missing_field, error_key, key}}
+
+      {:present, value} ->
+        if valid_secret_ref?(value),
+          do: {:ok, value},
+          else: {:error, {:invalid_field, error_key, key, value}}
+    end
+  end
+
+  defp required_string(map, key, error_key) do
+    case fetch_field(map, key) do
+      :absent -> {:error, {:missing_field, error_key, key}}
+      {:present, value} when is_binary(value) and value != "" -> {:ok, value}
+      {:present, value} -> {:error, {:invalid_field, error_key, key, value}}
+    end
+  end
+
+  defp fetch_field(map, key) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(map, key) -> {:present, Map.get(map, key)}
+      Map.has_key?(map, string_key) -> {:present, Map.get(map, string_key)}
+      true -> :absent
     end
   end
 

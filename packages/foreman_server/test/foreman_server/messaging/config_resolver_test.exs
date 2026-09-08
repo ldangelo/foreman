@@ -54,10 +54,19 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
   end
 
   test "malformed selected destination returns typed error and does not fall back" do
-    assert {:error, {:missing_or_invalid, :slack_destination}} =
+    assert {:error, {:invalid_field, :slack_destination, :webhook_url, ""}} =
              ConfigResolver.resolve(
                workflow_config: %{
                  notifications: %{enabled: true, provider: :slack, slack: %{webhook_url: ""}}
+               }
+             )
+  end
+
+  test "absent destination field is reported distinctly from a malformed one" do
+    assert {:error, {:missing_field, :slack_destination, :webhook_url}} =
+             ConfigResolver.resolve(
+               workflow_config: %{
+                 notifications: %{enabled: true, provider: :slack, slack: %{}}
                }
              )
   end
