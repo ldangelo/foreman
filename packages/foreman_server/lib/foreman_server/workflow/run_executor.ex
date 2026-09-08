@@ -2079,10 +2079,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
       String.contains?(identifier, ["/", "\\"]) ->
         {:error, {:unsafe_path_identifier, identifier, "contains path separator"}}
 
-      # Reject null bytes and other C0 control characters (0x00-0x1F), not
-      # just the null byte, matching the "or other unsafe characters" scope
-      # documented above.
-      String.match?(identifier, ~r/[\x00-\x1F]/) ->
+      # Reject C0 control characters (0x00-0x1F), DEL (0x7F), and the C1
+      # control range (0x80-0x9F) — not just the null byte, matching the
+      # "or other unsafe characters" scope documented above (CodeRabbit
+      # review: DEL was previously excluded from the range).
+      String.match?(identifier, ~r/[\x00-\x1F\x7F-\x9F]/) ->
         {:error, {:unsafe_path_identifier, identifier, "contains control character"}}
 
       true ->

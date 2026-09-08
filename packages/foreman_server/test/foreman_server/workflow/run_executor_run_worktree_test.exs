@@ -250,6 +250,12 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
       assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\rbar") ==
                {:error, {:unsafe_path_identifier, "foo\rbar", "contains control character"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\x7Fbar") ==
+               {:error, {:unsafe_path_identifier, "foo\x7Fbar", "contains control character"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\x80bar") ==
+               {:error, {:unsafe_path_identifier, "foo\x80bar", "contains control character"}}
     end
 
     # A traversal segment embedded inside a longer identifier (e.g.
