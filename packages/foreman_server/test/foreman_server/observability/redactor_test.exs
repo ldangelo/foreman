@@ -36,6 +36,18 @@ defmodule ForemanServer.Observability.RedactorTest do
     assert redacted =~ "normal"
   end
 
+  test "truncates report subtrees at the depth limit instead of passing sensitive keys through unredacted" do
+    deeply_nested_secret =
+      Enum.reduce(1..7, %{token: "deep-secret"}, fn _, acc -> %{nested: acc} end)
+
+    redacted =
+      Redactor.redact_message({:report, %{reason: :normal, chain: deeply_nested_secret}})
+
+    refute redacted =~ "deep-secret"
+    assert redacted =~ "[REDACTED:MAX_DEPTH]"
+    assert redacted =~ "normal"
+  end
+
   test "redacts sentinel secrets, auth headers, database urls, env values, and home paths" do
     text =
       "Authorization: Bearer secret-token DATABASE_URL=postgres://user:pass@db/app " <>

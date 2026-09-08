@@ -7,7 +7,8 @@ defmodule ForemanServer.Observability.DocsTest do
     "FOREMAN_SIGNOZ_LOGS_ENABLED",
     "FOREMAN_SIGNOZ_OTLP_ENDPOINT",
     "FOREMAN_SIGNOZ_OTLP_HEADERS",
-    "FOREMAN_SIGNOZ_LOG_LEVEL"
+    "FOREMAN_SIGNOZ_LOG_LEVEL",
+    ":signoz_logs"
   ]
 
   # The five-file documentation gate (AGENTS.md "Documentation Discipline"):

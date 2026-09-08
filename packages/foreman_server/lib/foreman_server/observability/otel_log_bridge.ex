@@ -159,27 +159,47 @@ defmodule ForemanServer.Observability.OtelLogBridge do
          :ok <- ensure_https_for_headers(endpoint, headers),
          :ok <- ensure_inets_started(),
          {:ok, body} <- encode_payload(payload) do
-      # Only the blocking network call runs off-process (Task.start/1, the
-      # same unsupervised fire-and-forget pattern already used in
-      # boot_reconciliation.ex/run_executor.ex): validation and payload
-      # encoding above stay synchronous and cheap, so config/precondition
-      # errors are still reported to the caller of export/2 immediately.
-      # A bounded queue with explicit overload/backpressure behavior is a
-      # larger redesign intentionally left out of this fix.
-      Task.start(fn ->
-        try do
-          case post_logs(endpoint, headers, body) do
-            {:ok, _status} ->
-              :ok
+      # The blocking network call runs off-process via a bounded, supervised
+      # Task.Supervisor pool (CodeRabbit review) rather than a raw
+      # Task.start/1: validation and payload encoding above stay synchronous
+      # and cheap, so config/precondition errors are still reported to the
+      # caller of export/2 immediately. `max_children` on
+      # OtelLogExportSupervisor bounds concurrent exports; once the pool is
+      # full, start_child/2 returns `{:error, :max_children}` and the record
+      # is dropped with an overload telemetry event rather than queuing
+      # unbounded work or blocking the logger handler.
+      case Task.Supervisor.start_child(
+             ForemanServer.Observability.OtelLogExportSupervisor,
+             fn ->
+               try do
+                 case post_logs(endpoint, headers, body) do
+                   {:ok, _status} ->
+                     :ok
 
-            {:error, reason} ->
-              ForemanServer.Telemetry.signoz_log_export_failure(reason, config)
-          end
-        rescue
-          error ->
-            ForemanServer.Telemetry.signoz_log_export_failure({:bridge_crash, error}, config)
-        end
-      end)
+                   {:error, reason} ->
+                     ForemanServer.Telemetry.signoz_log_export_failure(reason, config)
+                 end
+               rescue
+                 error ->
+                   ForemanServer.Telemetry.signoz_log_export_failure(
+                     {:bridge_crash, error},
+                     config
+                   )
+               end
+             end
+           ) do
+        {:ok, _pid} ->
+          :ok
+
+        {:ok, _pid, _info} ->
+          :ok
+
+        {:error, :max_children} ->
+          ForemanServer.Telemetry.signoz_log_export_overload(config)
+
+        {:error, reason} ->
+          ForemanServer.Telemetry.signoz_log_export_failure(reason, config)
+      end
 
       :ok
     else

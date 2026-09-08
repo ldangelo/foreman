@@ -19,6 +19,13 @@ defmodule ForemanServer.Application do
   def start(_type, _args) do
     children =
       [
+        # Bounds concurrent SigNoz log-export tasks (OtelLogBridge) so a slow
+        # or unreachable collector cannot accumulate unbounded off-process
+        # work; start_child/2 returns {:error, :max_children} once full and
+        # the caller drops the record with an overload telemetry event
+        # instead of queuing indefinitely (CodeRabbit review).
+        {Task.Supervisor,
+         name: ForemanServer.Observability.OtelLogExportSupervisor, max_children: 50},
         # PubSub backs LiveView debug subscriptions.
         {Phoenix.PubSub, name: ForemanServer.PubSub},
         # Phoenix Presence tracks live aggregate actors for debug pages.

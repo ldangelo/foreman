@@ -44,6 +44,7 @@ defmodule ForemanServer.Telemetry do
   @run_slots_reconciled [:foreman_server, :run_slots, :reconciled]
   @signal_command [:foreman, :signal, :command]
   @signoz_log_export_failure [:foreman_server, :observability, :signoz_logs, :export_failure]
+  @signoz_log_export_overload [:foreman_server, :observability, :signoz_logs, :export_overload]
   @all_events [
     @command_dispatch,
     @aggregate_rehydrated,
@@ -75,7 +76,8 @@ defmodule ForemanServer.Telemetry do
     @run_slots_transferred,
     @run_slots_waiter_removed,
     @run_slots_reconciled,
-    @signoz_log_export_failure
+    @signoz_log_export_failure,
+    @signoz_log_export_overload
   ]
 
   def all_events, do: @all_events
@@ -98,6 +100,17 @@ defmodule ForemanServer.Telemetry do
     }
 
     execute(@signoz_log_export_failure, %{count: 1}, metadata)
+  end
+
+  @spec signoz_log_export_overload(map()) :: :ok
+  def signoz_log_export_overload(config \\ %{}) when is_map(config) do
+    metadata = %{
+      status: :overload,
+      endpoint_host: endpoint_host(Map.get(config, :endpoint)),
+      endpoint_port: endpoint_port(Map.get(config, :endpoint))
+    }
+
+    execute(@signoz_log_export_overload, %{count: 1}, metadata)
   end
 
   defp reason_class(reason) when is_atom(reason), do: reason

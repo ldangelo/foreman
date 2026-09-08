@@ -185,6 +185,16 @@ signoz_logs_headers =
 signoz_logs_endpoint =
   System.get_env("FOREMAN_SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs")
 
+case URI.parse(signoz_logs_endpoint) do
+  %URI{scheme: scheme, host: host}
+  when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+    :ok
+
+  _ ->
+    raise "invalid FOREMAN_SIGNOZ_OTLP_ENDPOINT=#{inspect(signoz_logs_endpoint)}; " <>
+            "expected a parseable http:// or https:// URI with a non-empty host"
+end
+
 if signoz_logs_headers != [] and not String.starts_with?(signoz_logs_endpoint, "https://") do
   raise "FOREMAN_SIGNOZ_OTLP_HEADERS is set but FOREMAN_SIGNOZ_OTLP_ENDPOINT=" <>
           "#{signoz_logs_endpoint} is not https://; refusing to configure credentialed " <>

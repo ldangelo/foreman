@@ -502,7 +502,14 @@ Implementation AC:
 
 #### TRD-012 — Add ask/reply event-sink integration decision point (4h) [satisfies REQ-001, REQ-013]
 
-Implement or stub `Comms.EventSink` behind config. If `:event_store` durability is enabled, append compatible lifecycle events using existing aggregate/command conventions; otherwise document in-code why in-memory is the active v1 mode.
+Implement or stub `Comms.EventSink` behind config. `:comms_durability` has two
+modes: `:event_sink_optional` (default) keeps lifecycle state in memory only —
+no `ForemanServer.EventStore` write is attempted, and state does not survive a
+restart — and `:event_store` appends compatible lifecycle events to
+`ForemanServer.EventStore` using existing aggregate/command conventions, so
+state replays from the event log after restart. Document in-code why
+`:event_sink_optional` is the active v1 default when the `:event_store` mode
+is stubbed rather than implemented.
 
 Validates PRD ACs: AC-001-2, AC-013-1, AC-013-2, AC-013-3
 

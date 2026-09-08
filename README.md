@@ -138,7 +138,8 @@ for existing OTel spans, while SigNoz operational logs are opt-in via
 `FOREMAN_SIGNOZ_LOGS_ENABLED=true` plus `FOREMAN_SIGNOZ_OTLP_ENDPOINT` for an
 OTLP logs endpoint, `FOREMAN_SIGNOZ_OTLP_HEADERS` for optional collector
 credentials (comma-separated `key=value` pairs), and `FOREMAN_SIGNOZ_LOG_LEVEL`
-for the minimum exported severity (default `info`). See
+for the minimum exported severity (default `info`), parsed once into
+`config :foreman_server, :signoz_logs`. See
 [`docs/user-guide.md`](./docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse).
 
 Workflow phases support `commit:` to defer phase commits, `stack_pr:` to

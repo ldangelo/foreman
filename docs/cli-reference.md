@@ -312,7 +312,8 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`; SigNoz operational logs
 > are a separate opt-in path controlled by `FOREMAN_SIGNOZ_LOGS_ENABLED`,
 > `FOREMAN_SIGNOZ_OTLP_ENDPOINT`, `FOREMAN_SIGNOZ_OTLP_HEADERS`, and
-> `FOREMAN_SIGNOZ_LOG_LEVEL` (see
+> `FOREMAN_SIGNOZ_LOG_LEVEL`, parsed once into `config :foreman_server,
+> :signoz_logs` (see
 > [`docs/user-guide.md`](../docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse)).
 
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.

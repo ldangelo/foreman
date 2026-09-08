@@ -639,6 +639,9 @@ opt-in Phoenix Logger bridge for operational logs only:
 - `ops/otel-collector/signoz-logs.example.yaml` is a reference collector logs
   pipeline: OTLP receiver -> batch processor -> `otlphttp/signoz_logs`.
 
+These four env vars are parsed once into `config :foreman_server, :signoz_logs`
+in `packages/foreman_server/config/config.exs`.
+
 Retention is enforced by SigNoz/storage, not Foreman. Use a 30-day default
 retention policy for Foreman operational logs unless the deployment has a
 stricter compliance requirement.

@@ -919,7 +919,8 @@ Why this exists:
 `FOREMAN_SIGNOZ_LOGS_ENABLED`, `FOREMAN_SIGNOZ_OTLP_ENDPOINT`,
 `FOREMAN_SIGNOZ_OTLP_HEADERS`, and `FOREMAN_SIGNOZ_LOG_LEVEL` configure an
 opt-in `:logger` handler (`ForemanServer.Observability.OtelLogBridge`,
-parsed once in `packages/foreman_server/config/config.exs`) that exports
+parsed once into `config :foreman_server, :signoz_logs` in
+`packages/foreman_server/config/config.exs`) that exports
 redacted operational logs to SigNoz over OTLP/HTTP. Off by default and
 forced off in `config/test.exs`; console logging is unaffected either way.
 See `docs/user-guide.md` for the full operator contract and defaults.
