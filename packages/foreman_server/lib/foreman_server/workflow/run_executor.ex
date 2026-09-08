@@ -1779,8 +1779,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = "wt-" <> state.run_id,
-         worktree_path = run_worktree_path(project_id, state.run_id, spec),
-         :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
+         worktree_path = run_worktree_path(project_id, state, spec),
+         :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
          branch = render_worktree_template(branch_template(spec), state),
          :ok <- ensure_worktree_parent_dir(worktree_path) do
       Worktree.create(%{
@@ -1863,9 +1863,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # The run's single worktree lives at one leaf directory under
-  # `~/.foreman/worktrees/<project_id>/<run_id>/`, so the path is deterministic
-  # and trivially auditable from the run_id alone. The workflow may name that
-  # leaf with `worktree: path:`; the default is `workspace`.
+  # `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`, so the path is
+  # deterministic and auditable from the operator-facing task id plus run id.
+  # The workflow may name that leaf with `worktree: path:`; the default is
+  # `workspace`.
   #
   # This replaced `default_worktree_path_for/3` and `worktree_path_for/4`, which
   # appended a per-phase slug because each phase had its own worktree. Along with
@@ -1877,14 +1878,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # phase" property the chained base existed to preserve is now supplied by
   # `reuse_run_worktree/2`, which refreshes `base_ref` to the shared checkout's
   # HEAD at each phase start.
-  defp run_worktree_path(project_id, run_id, spec) do
+  defp run_worktree_path(project_id, %{run_id: run_id} = state, spec) do
+    task_id = worktree_task_id(state)
+
     leaf =
       case Map.get(spec, :path) do
-        path when is_binary(path) and path != "" -> render_worktree_template(path, run_id)
+        path when is_binary(path) and path != "" -> render_worktree_template(path, state)
         _ -> "workspace"
       end
 
-    Path.join([worktree_base_root(), project_id, run_id, leaf])
+    Path.join([worktree_base_root(), project_id, task_id, run_id, leaf])
   end
 
   # Resolve the project_root for default-on worktrees. Prefers
@@ -2132,17 +2135,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> String.replace("{task_id}", worktree_task_id(state))
   end
 
-  defp render_worktree_template(template, run_id) when is_binary(run_id) do
-    String.replace(template, "{run_id}", run_id)
-  end
-
   # Containment check: the rendered worktree path MUST resolve to a
-  # location under `~/.foreman/worktrees/<project_id>/<run_id>/`. This
-  # guards against template payloads that smuggle `..` segments through
+  # location under `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`.
+  # This guards against template payloads that smuggle `..` segments through
   # placeholders or that render to absolute paths.
-  defp assert_worktree_path_contained(project_id, run_id, worktree_path) do
+  defp assert_worktree_path_contained(project_id, %{run_id: run_id} = state, worktree_path) do
     expected_root =
-      Path.join([worktree_base_root(), project_id, run_id])
+      Path.join([worktree_base_root(), project_id, worktree_task_id(state), run_id])
       |> Path.expand()
 
     actual_root = Path.expand(worktree_path)

@@ -363,7 +363,7 @@ JSON round-trip is lossless.
   directory, symlink, and traversal cases; the frozen relative path
   and SHA persist for idempotent re-approval.
 - **Worktree ownership.** Foreman exclusively creates, pins, and
-  cleans the worktree at `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
+  cleans the worktree at `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/<path>`.
   Skills under `--foreman` must verify the trusted
   cwd/branch/revision markers and must not create, switch, append,
   or stack branches. There is no skill-owned worktree fallback.

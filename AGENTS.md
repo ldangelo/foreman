@@ -451,7 +451,7 @@ per-phase branch and directory that no longer exist.
 
 `create_run_worktree/2` is the single provisioning path. Absent a `worktree:`
 block it provisions one directory
-(`~/.foreman/worktrees/<project_id>/<run_id>/workspace`) on one branch
+(`~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/workspace`) on one branch
 (`foreman/<task-id>/<run-id>`) — both DEFAULTS, overridable by the workflow's `path:` and
 `branch:` — and every later phase reuses that record via
 `ensure_run_worktree/2` -> `reuse_run_worktree/2`, reading its predecessors'

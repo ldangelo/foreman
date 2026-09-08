@@ -12,7 +12,7 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
       worktree:
         enabled: true
         base: "{{implementation.source_revision}}"
-        branch: foreman/{task_id}
+        branch: foreman/{task_id}/{run_id}
         cleanup: never
       phases:
         - name: implement-trd
@@ -36,9 +36,9 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
       (asserted by `RunExecutor`); otherwise the project checkout's `HEAD` is
       used and a declared `base` is resolved against the project root.
     * `branch` — branch template. `{task_id}` and `{run_id}` are substituted.
-      Default `foreman/{task_id}`.
+      Default `foreman/{task_id}/{run_id}`.
     * `path` — leaf directory name under
-      `~/.foreman/worktrees/<project_id>/<run_id>/`. `{run_id}` is substituted.
+      `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`. `{task_id}` and `{run_id}` are substituted.
       Default `workspace`.
     * `cleanup` — `never` | `always` | `on_success`. Default `never`.
       `on_success` retains the worktree of a failed run so it can be inspected,
