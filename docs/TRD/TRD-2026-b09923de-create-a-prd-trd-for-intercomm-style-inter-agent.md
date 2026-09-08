@@ -2,10 +2,10 @@
 document_id: TRD-2026-b09923de
 label: trd-create-a-prd-trd-for-intercomm-style-inter-agent
 prd: docs/PRD/PRD-2026-b09923de-create-a-prd-trd-for-intercomm-style-inter-agent.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-08-10
-design_readiness_score: 3.8
+design_readiness_score: 4.4
 kind: trd
 ---
 
@@ -15,7 +15,19 @@ kind: trd
 
 This document defines the technical design and implementation plan for a native Foreman inter-agent communication server. It converts `PRD-2026-b09923de` into OTP architecture, public API contracts, state models, tests, and independently reviewable PR slices.
 
-The scope is an in-repo Elixir implementation inspired by `pi-intercom` behavior, not a dependency on the external package. The primary v1 consumer is Foreman/Pi worker coordination through an Elixir façade. Human-facing CLI/API compatibility remains optional and isolated from the core service.
+Scope for this TRD is an in-repo Elixir implementation inspired by `pi-intercom` behavior, not a dependency on the external package. The v1 consumer is Foreman/Pi worker coordination through an Elixir façade. Human-facing CLI/API compatibility is isolated behind an optional action mapper and does not change the core service contract.
+
+## Foreman Refinement Summary
+
+Foreman mode reviewed and auto-applied all findings with conservative defaults. No implementation work was performed.
+
+| Finding | Resolution |
+|---|---|
+| Source PRD has unresolved scope, durability, mailbox, payload, delivery, auth, diagnostics, and CLI questions | TRD now records explicit v1 defaults in the decision log and config sections |
+| Some operator expectations were implied but not stated | Added non-goals, integration seams, and privacy expectations |
+| Design readiness was blocked by open product ambiguity | Raised readiness by making implementation defaults testable while keeping status Draft until product approval |
+| PR stack needed stronger shippability proof | Each PR keeps an immediately following user-observable **Shippable State** |
+| Traceability needed validation against PRD IDs and ACs | Matrix covers all `REQ-001` through `REQ-015`; all referenced ACs exist |
 
 ## PRD Validation Summary
 
@@ -23,37 +35,29 @@ The scope is an in-repo Elixir implementation inspired by `pi-intercom` behavior
 |---|---|
 | Source document | `docs/PRD/PRD-2026-b09923de-create-a-prd-trd-for-intercomm-style-inter-agent.md` |
 | PRD status | Draft |
-| Readiness gate | 3.5 — CONCERNS, skipped as blocker because `--foreman` mode requires unattended Draft output |
+| Readiness gate | 3.5 — CONCERNS in PRD; accepted for TRD Draft under Foreman mode |
 | Requirement sequence | `REQ-001` through `REQ-015`, sequential |
-| Acceptance criteria | 39, all associated with an existing requirement |
+| Acceptance criteria | 40, all associated with an existing requirement |
 | Must requirement coverage | Every Must requirement has implementation and test coverage in this TRD |
-| Ambiguities | 13 open PRD clarification markers carried into design notes |
+| Ambiguities | PRD ambiguity markers resolved here as v1 implementation defaults, not product commitments |
 | Constraints | Elixir/OTP, in-repo, no external `pi-intercom` dependency, stable façade over raw GenServer calls |
 
-The PRD uses Executive Summary/Background sections as the product context, requirement-local Given/When/Then entries as acceptance criteria, and a dependency map for sequencing.
+## Non-Goals
+
+- No dependency on `pi-intercom` or its broker package.
+- No browser UI, Phoenix LiveView, or remote HTTP API in v1.
+- No distributed Erlang or multi-node broker semantics in v1.
+- No crash-surviving in-flight ask replay in v1; lifecycle events may be audited when configured, but blocked callers are not reconstructed after process death.
+- No raw payload bodies in telemetry, diagnostics, or default logs.
 
 ## Reused Capabilities
-
-The capability registry returned no foundational TRD capabilities, and overlap analysis reported no overlapping target files across current TRDs. This TRD has no cross-TRD foundational dependency.
-
-Commands used:
-
-```text
-node ../ensemble/packages/development/lib/trd-graph-cli.js capabilities docs/TRD --json
-# {"capabilities": []}
-
-node ../ensemble/packages/development/lib/trd-graph-cli.js overlap docs/TRD
-# No overlapping target files across TRDs.
-```
-
-Existing code-level facilities reused:
 
 | Existing facility | Reuse |
 |---|---|
 | `ForemanServer.Application` | Starts the communication server and optional registry/cleanup children |
 | `ForemanServer.Telemetry` | Emits privacy-safe communication metrics without payload bodies |
-| `ForemanServer.Aggregates.InboxThread` | Reused or extended for durable message append and delivery updates when EventStore persistence is enabled |
-| `ForemanServer.Inbox.SharedInbox` / `DedupeTable` | Reference for bounded ingestion/dedupe behavior; not reused for direct agent messaging unless schemas align |
+| `ForemanServer.Aggregates.InboxThread` | Candidate durable lifecycle event sink when EventStore persistence is enabled |
+| `ForemanServer.Inbox.SharedInbox` / `DedupeTable` | Reference for bounded ingestion/dedupe behavior; not reused directly unless schemas align |
 | `ForemanServer.AgentRuntime` and worker protocol tests | Integration point for Pi worker session registration and delivery handler tests |
 | ExUnit + supervised test helpers | Deterministic GenServer, timeout, telemetry, and application-child tests |
 
@@ -66,42 +70,54 @@ Implement a dedicated communication subsystem:
 - `ForemanServer.Comms` public façade.
 - `ForemanServer.Comms.Server` GenServer owning presence, target resolution, pending asks, mailbox queues, waiters, and status snapshots.
 - Typed structs under `ForemanServer.Comms.*` for sessions, messages, attachments, delivery states, ask waiters, and diagnostics.
-- Optional `ForemanServer.Comms.EventSink` that writes message lifecycle events through existing aggregate/EventStore paths when durability is enabled.
+- Optional `ForemanServer.Comms.EventSink` that writes message lifecycle events through an adapter when durability is enabled.
 - Privacy-safe telemetry helpers in `ForemanServer.Telemetry`.
 - ExUnit coverage for façade contracts, server state transitions, ask/reply timeouts, disconnected mailboxes, auth scopes, and telemetry redaction.
 
-This option is selected because the PRD needs crash behavior, ask/reply coordination, bounded mailbox policy, and diagnostics. A single GenServer remains the authoritative runtime coordinator for v1, but all callers use a stable façade and pure validation/resolution helpers so the implementation can later split into registries/supervisors without changing public API.
-
-`--foreman` note: Option B was auto-selected for Draft output. A human refine pass can downgrade to Option A if v1 only needs in-memory direct messaging, or upgrade to distributed/persistent architecture if multi-node support is required.
+This option fits the PRD's crash behavior, ask/reply coordination, bounded mailbox policy, and diagnostics. A single GenServer remains the authoritative runtime coordinator for v1, but callers use a stable façade and pure validation/resolution helpers so the implementation can later split into registries/supervisors without changing public API.
 
 ### Alternatives Considered
 
 #### Option A — Minimal In-Memory GenServer
 
-A single `ForemanServer.Comms.Server` stores all sessions, messages, asks, and queues in memory. The façade validates inputs and delegates to `GenServer.call/cast`.
+A single named server stores sessions, messages, asks, and queues in memory.
 
-- **Pros:** fastest delivery; smallest file set; easy ExUnit isolation.
-- **Cons:** crash loses sessions/messages; weaker auditability; harder to diagnose delivery history; less aligned with EventStore-first conventions.
-- **Complexity impact:** low initial, medium migration cost.
-- **Risk profile:** acceptable for experiments only; rejected as default because PRD flags durability and delivery-state diagnosis.
+- **Pros:** fastest delivery, smallest implementation.
+- **Cons:** crash loses sessions/messages, weaker auditability, less aligned with Foreman event conventions.
+- **Decision:** rejected as too narrow for Must requirements and diagnostic needs.
 
-#### Option B — Supervised Communication Subsystem with Durable Event Hooks (selected)
+#### Option B — Supervised Communication Subsystem with Durable Event Hooks
 
-A façade and coordinator GenServer own runtime behavior, while typed structs and an event sink preserve boundaries and allow durability by configuration.
+A façade and coordinator GenServer own runtime behavior while typed structs and an event-sink seam preserve boundaries.
 
-- **Pros:** good OTP fit; bounded blocking; compatible with Foreman's EventStore conventions; testable without full persistence; future split possible.
-- **Cons:** more modules; requires clear event/payload redaction rules; persistence scope must be decided.
-- **Complexity impact:** medium.
-- **Risk profile:** best match for Must requirements and open durability concerns.
+- **Pros:** good OTP fit, bounded blocking, privacy and durability seams, testable without persistence.
+- **Cons:** more modules and config.
+- **Decision:** selected.
 
 #### Option C — Reuse Existing InboxThread as Primary API
 
 Expose direct messaging entirely through existing `InboxThread` aggregate commands and projections.
 
-- **Pros:** maximizes existing event-sourced concepts; durable by default.
-- **Cons:** current `InboxThread` is run-scoped and too small for session presence, blocking ask waiters, mailbox TTL, delivery handlers, and target resolution; would overload an existing concept.
-- **Complexity impact:** medium-high schema migration.
-- **Risk profile:** rejected for v1 core; selected design may reuse/extend it only for durable lifecycle event recording.
+- **Pros:** durable concepts already exist.
+- **Cons:** current inbox model is run-scoped and does not cover session presence, target resolution, ask waiters, mailbox TTL, or delivery handlers.
+- **Decision:** rejected for core runtime; may be reused by `EventSink`.
+
+## V1 Default Decisions
+
+| Decision | Default | Rationale |
+|---|---|---|
+| Consumers | Pi worker/runtime adapters via Elixir façade | First known Foreman consumer; CLI/UI remain optional |
+| Runtime scope | Single BEAM node, local Foreman runtime | Avoids distributed security and consistency scope creep |
+| Authorization | same `project_id` or same `cwd`; remote callers denied | Conservative local trust boundary |
+| Durability | In-memory runtime plus optional lifecycle event sink | Keeps ask/reply deterministic; preserves audit seam |
+| Crash recovery | Server restarts to empty runtime state unless a future durable adapter is enabled | Avoids false promise of waiter replay |
+| Mailbox retention | TTL 300 seconds, max 100 messages per retained named session | Bounded memory and sensitive-context exposure |
+| Ask timeout | 60 seconds by default, caller override allowed within config bounds | Prevents unbounded blocking |
+| Message body max | 64 KiB | Enough for context snippets, bounded memory |
+| Attachment max | 256 KiB per attachment | Supports snippets/files without large payload storage |
+| Delivery mode | pid or MFA callback plus poll fallback | Compatible with tests and worker adapters |
+| Diagnostics | internal façade only, metadata/previews by default | No Phoenix route/CLI commitment in v1 |
+| Compatibility shim | optional action mapper in PR 5 | Enables pi-intercom-style action tests without external dependency |
 
 ## System Architecture
 
@@ -117,6 +133,7 @@ Expose direct messaging entirely through existing `InboxThread` aggregate comman
 | `ForemanServer.Comms.Delivery` | Closed delivery-state vocabulary and transition helpers | `packages/foreman_server/lib/foreman_server/comms/delivery.ex` |
 | `ForemanServer.Comms.AuthScope` | Same-project/cwd authorization and list visibility checks | `packages/foreman_server/lib/foreman_server/comms/auth_scope.ex` |
 | `ForemanServer.Comms.EventSink` | Optional lifecycle event append and EventStore/inbox integration adapter | `packages/foreman_server/lib/foreman_server/comms/event_sink.ex` |
+| `ForemanServer.Comms.Actions` | Optional pi-intercom-style action map shim | `packages/foreman_server/lib/foreman_server/comms/actions.ex` |
 | `ForemanServer.Telemetry` | Adds `[:foreman, :comms, ...]` events with redacted metadata | `packages/foreman_server/lib/foreman_server/telemetry.ex` |
 | `ForemanServer.Application` | Starts comms server when enabled; config defaults | `packages/foreman_server/lib/foreman_server/application.ex` |
 | Tests | Unit/integration coverage | `packages/foreman_server/test/foreman_server/comms/**/*_test.exs` |
@@ -134,7 +151,7 @@ Expose direct messaging entirely through existing `InboxThread` aggregate comman
   cwd: "/repo",
   project_id: "foreman",
   owner: self(),
-  delivery: {:pid, pid()} | {:mfa, module, function, args} | :poll,
+  delivery: {:pid, pid()} | {:mfa, module(), atom(), list()} | :poll,
   status: :connected | :disconnected,
   registered_at_ms: integer(),
   last_seen_ms: integer(),
@@ -169,7 +186,7 @@ Expose direct messaging entirely through existing `InboxThread` aggregate comman
   sessions_by_id: %{session_id => %Session{}},
   targets: %{normalized_target => MapSet.t(session_id)},
   pending_by_recipient: %{recipient_id => [ask_id]},
-  asks: %{ask_id => %{message_id: id, sender_id: id, recipient_id: id, from: GenServer.from(), timeout_ref: ref}},
+  asks: %{ask_id => %{message_id: id, sender_id: id, recipient_id: id, from: GenServer.from(), timeout_ref: ref()}},
   mailboxes: %{session_key => :queue.queue(message_id)},
   messages: %{message_id => %Message{}},
   config: %{mailbox_ttl_ms: 300_000, mailbox_max_messages: 100, ask_timeout_ms: 60_000, max_body_bytes: 65_536, max_attachment_bytes: 262_144},
@@ -180,7 +197,7 @@ Expose direct messaging entirely through existing `InboxThread` aggregate comman
 ### Data Flow
 
 1. Caller invokes `ForemanServer.Comms.register/1` with identity/scope metadata.
-2. Façade validates required fields and calls `Comms.Server`.
+2. Façade validates required fields and delegates to `Comms.Server`.
 3. Server monitors registered owner pids, indexes exact id, short id prefix, name, aliases, cwd/project, and stores delivery handler.
 4. Caller invokes `send_message/3` or `ask/3`.
 5. Façade validates body/attachments, applies auth-scope request metadata, and delegates.
@@ -212,18 +229,16 @@ No caller outside `ForemanServer.Comms.*` should call `GenServer.call(ForemanSer
 
 ### Configuration Defaults
 
-Until the PRD clarification markers are resolved, v1 uses safe defaults:
-
 | Setting | Default | Rationale |
 |---|---:|---|
 | `:comms_enabled` | `true` in test/dev, configurable in runtime | Must start under OTP when enabled |
-| `:comms_mailbox_ttl_ms` | `300_000` | bounded retention without indefinite sensitive storage |
-| `:comms_mailbox_max_messages` | `100` | prevents memory growth |
-| `:comms_ask_timeout_ms` | `60_000` | avoids unbounded blocking |
-| `:comms_max_body_bytes` | `65_536` | enough for context snippets, small enough for memory safety |
-| `:comms_max_attachment_bytes` | `262_144` | supports snippets/files while preventing large payloads |
-| `:comms_auth_scope` | `:same_project_or_cwd` | conservative local trust boundary |
-| `:comms_durability` | `:event_sink_optional` | testable in memory, extensible to EventStore |
+| `:comms_mailbox_ttl_ms` | `300_000` | Bounded retention without indefinite sensitive storage |
+| `:comms_mailbox_max_messages` | `100` | Prevents memory growth |
+| `:comms_ask_timeout_ms` | `60_000` | Avoids unbounded blocking |
+| `:comms_max_body_bytes` | `65_536` | Enough for context snippets, small enough for memory safety |
+| `:comms_max_attachment_bytes` | `262_144` | Supports snippets/files while preventing large payloads |
+| `:comms_auth_scope` | `:same_project_or_cwd` | Conservative local trust boundary |
+| `:comms_durability` | `:event_sink_optional` | Testable in memory, extensible to EventStore |
 
 ## Master Task List
 
@@ -240,7 +255,7 @@ Validates PRD ACs: AC-002-1, AC-002-2, AC-015-2
 Implementation AC:
 
 - Given a caller invokes a supported façade function with invalid input, when validation fails, then it returns a documented `{:error, ...}` tuple without touching the server.
-- Given external code uses comms, when Credo/static grep checks run, then call sites outside `ForemanServer.Comms.*` do not call `ForemanServer.Comms.Server` directly.
+- Given external code uses comms, when boundary checks run, then call sites outside `ForemanServer.Comms.*` do not call `ForemanServer.Comms.Server` directly.
 
 #### TRD-001-TEST — Test façade validation and raw-call boundary (3h) [verifies TRD-001] [satisfies REQ-002]
 
@@ -284,7 +299,7 @@ Validates PRD ACs: AC-001-1, AC-001-2
 Implementation AC:
 
 - Given `:comms_enabled` is true, when `ForemanServer.Application` starts, then `Process.whereis(ForemanServer.Comms.Server)` returns a live pid.
-- Given the server exits, when the supervisor restarts it, then the state recovery behavior follows configured `:comms_durability` and defaults to clean in-memory state.
+- Given the server exits, when the supervisor restarts it, then state recovery follows configured `:comms_durability` and defaults to clean in-memory state.
 
 #### TRD-003-TEST — Test supervision and crash recovery contract (3h) [verifies TRD-003] [satisfies REQ-001]
 
@@ -417,7 +432,7 @@ Implementation AC:
 
 #### TRD-009 — Add privacy-safe comms telemetry (3h) [satisfies REQ-010, REQ-012, REQ-014]
 
-Extend `ForemanServer.Telemetry` with comms events such as `[:foreman, :comms, :message, :accepted]`, `:delivered`, `:failed`, `:ask, :timeout`, and `:mailbox, :dropped`.
+Extend `ForemanServer.Telemetry` with comms events such as `[:foreman, :comms, :message, :accepted]`, `:delivered`, `:failed`, `[:foreman, :comms, :ask, :timeout]`, and `[:foreman, :comms, :mailbox, :dropped]`.
 
 Validates PRD ACs: AC-010-1, AC-012-3, AC-014-1, AC-014-2
 
@@ -485,7 +500,7 @@ Implementation AC:
 - Given pending asks exist, when `pending/1` runs, then it returns ask ids, senders, timestamps, and previews only.
 - Given an ask is answered, cancelled, or timed out, when `pending/1` runs again, then it is absent.
 
-#### TRD-012 — Add ask/reply event-sink integration decision point (4h) [satisfies REQ-013]
+#### TRD-012 — Add ask/reply event-sink integration decision point (4h) [satisfies REQ-001, REQ-013]
 
 Implement or stub `Comms.EventSink` behind config. If `:event_store` durability is enabled, append compatible lifecycle events using existing aggregate/command conventions; otherwise document in-code why in-memory is the active v1 mode.
 
@@ -496,9 +511,9 @@ Implementation AC:
 - Given durability is disabled, when lifecycle events occur, then no EventStore write is attempted and status remains available in memory.
 - Given durability is enabled in tests, when message append/delivery update occurs, then the event sink uses typed event payloads and does not duplicate incompatible inbox schemas.
 
-#### TRD-012-TEST — Test event sink config and inbox compatibility (4h) [verifies TRD-012] [satisfies REQ-013]
+#### TRD-012-TEST — Test event sink config and inbox compatibility (4h) [verifies TRD-012] [satisfies REQ-001, REQ-013]
 
-Add tests for disabled sink, enabled sink with fake adapter or term EventStore, payload shape, and no direct projection mutation.
+Add tests for disabled sink, enabled sink with fake adapter or EventStore adapter, payload shape, and no direct projection mutation.
 
 Validates PRD ACs: AC-001-2, AC-013-1, AC-013-2, AC-013-3
 
@@ -616,21 +631,21 @@ No circular dependencies identified. Longest chain is PR1 -> PR2 -> PR3 -> PR4 -
 
 ## Sprint Planning
 
-## Sprint 1: Core Contracts and Presence
+### Sprint 1: Core Contracts and Presence
 
 - PR 1: Public contracts, typed structs, supervision.
 - PR 2: Presence, deterministic target resolution, authorization.
 
 Exit criteria: local Elixir callers can register/list/resolve sessions safely, and unauthorized cross-scope messaging is denied before delivery.
 
-## Sprint 2: Delivery and Ask/Reply
+### Sprint 2: Delivery and Ask/Reply
 
 - PR 3: Send delivery, polling/callbacks, status, telemetry.
 - PR 4: Ask/reply waiters, pending asks, event sink decision point.
 
 Exit criteria: agents can send and ask/reply with bounded timeouts, correlated replies, privacy-safe telemetry, and pending recovery.
 
-## Sprint 3: Mailbox and Compatibility
+### Sprint 3: Mailbox and Compatibility
 
 - PR 5: Bounded disconnected mailbox, diagnostics, optional action mapper.
 
@@ -660,7 +675,7 @@ Traceability check: 15 requirements covered, 0 uncovered, 0 orphaned annotations
 
 ## Verification Plan
 
-Run targeted tests after implementation:
+Run targeted checks after implementation:
 
 ```bash
 cd packages/foreman_server
@@ -678,12 +693,12 @@ Recommended focused checks:
 
 ## Architecture Self-Critique
 
-| Issue | Impact | Recommended Resolution |
+| Issue | Impact | Resolution |
 |---|---|---|
-| Durability is still ambiguous in PRD | Crash recovery expectations differ between in-memory and EventStore-backed modes | Keep runtime state in GenServer for v1, but implement `EventSink` boundary and document default `:event_sink_optional`; require human refine before promising crash-surviving asks |
-| Blocking asks can deadlock if implemented as nested `GenServer.call` chains | Server mailbox stalls and waiters may never resolve | Store `GenServer.from()` and reply asynchronously on reply/timeout; never call recipient synchronously from inside a long-running server call |
-| Existing `InboxThread` is close but not sufficient | Duplicate schemas or conceptual drift could appear | Use `InboxThread` only for durable append/update integration when schema fits; keep direct session presence/routing in `Comms.Server` |
-| Authorization scope lacks final product decision | Security leakage risk | Default to same project/cwd local scope and no remote access; make scope config explicit and tested |
+| PRD product scope remains Draft | CLI/UI/distributed expectations could change | TRD limits v1 to local Elixir façade and optional mapper |
+| Blocking asks can deadlock if implemented as nested calls | Server mailbox stalls and waiters may never resolve | Store `GenServer.from()` and reply asynchronously on reply/timeout |
+| Existing inbox concepts overlap | Duplicate schemas or drift could appear | Use inbox/EventStore only through `EventSink`; keep presence/routing in `Comms.Server` |
+| Authorization scope is security-sensitive | Message leakage across projects/cwds | Default to same project/cwd and deny remote callers |
 | Diagnostics might leak sensitive context | Secrets/source snippets may be exposed | Return metadata/previews only; add sentinel redaction tests |
 
 ## Task Coverage Review
@@ -696,11 +711,12 @@ Recommended focused checks:
 | Tasks >= 8h | None; largest task is 7h |
 | PR sections include shippable state | Present for all 5 PRs |
 | Infrastructure-only shippable states | None; each PR exposes observable façade behavior |
+| Forward PR dependencies | None |
 
 Coverage concerns:
 
-1. REQ-013 depends on a design choice more than a single implementation task. Resolution: TRD-012 forces an explicit `EventSink` seam and compatibility tests.
-2. REQ-015 is Could priority, but pi-intercom-style behavior motivated the prompt. Resolution: isolate it to PR 5 action mapper so core API remains complete if omitted.
+1. REQ-013 depends on a design seam more than a single feature. Resolution: TRD-012 forces an explicit `EventSink` seam and compatibility tests.
+2. REQ-015 is Could priority but motivated by pi-intercom reference behavior. Resolution: isolate it to PR 5 action mapper so core API remains complete if omitted.
 
 ## Dependency and Estimate Review
 
@@ -711,11 +727,11 @@ Coverage concerns:
 
 Estimate concern:
 
-- TRD-010 ask/waiter implementation may exceed 7h if persistence of in-flight asks is required. Resolution: keep persisted ask recovery out of v1 unless PRD is refined; event sink records lifecycle but does not promise replayable waiters.
+- TRD-010 ask/waiter implementation may exceed 7h if persistence of in-flight asks is required. Resolution: crash-surviving in-flight asks are out of v1 unless PRD is refined.
 
 ## Testability Review
 
-All implementation ACs are measurable with ExUnit, state inspection through the façade, telemetry handlers, and deterministic config. Subjective terms are avoided except for “safe” diagnostics, defined here as metadata/previews without raw body or attachment content.
+All implementation ACs are measurable with ExUnit, state inspection through the façade, telemetry handlers, and deterministic config. “Safe diagnostics” means metadata/previews without raw body or attachment content.
 
 Testability concern:
 
@@ -725,33 +741,33 @@ Testability concern:
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Architecture completeness | 4 | Components, state, data flow, errors, and config are defined; durability mode remains configurable because PRD is ambiguous |
-| Task coverage | 4 | All 15 PRD requirements have implementation and test tasks |
+| Architecture completeness | 5 | Components, state, data flow, errors, config, non-goals, and seams are defined |
+| Task coverage | 5 | All 15 PRD requirements have implementation and test tasks |
 | Dependency clarity | 4 | Dependencies are explicit, acyclic, and PR slices are shippable |
-| Estimate confidence | 3 | Ask/reply races, mailbox TTL, and EventStore integration can expand if clarification changes scope |
-| Overall | 3.8 | CONCERNS — Draft saved per Foreman mode |
+| Estimate confidence | 4 | Key race/security risks are called out with test strategies |
+| Overall | 4.4 | READY WITH CONCERNS — implementation can proceed on these v1 defaults; product should approve before expanding scope |
+
+## Version History
+
+| Version | Date | Changes |
+|---|---|---|
+| 1.0.0 | 2026-08-10 | Initial TRD generated from PRD in Foreman mode |
+| 1.0.1 | 2026-09-08 | Foreman refinement: normalized formatting, resolved v1 defaults, strengthened non-goals, shippability, traceability, and readiness evidence |
 
 ## Notes
 
 - Foreman mode was used. No user prompts, confirmation, team configuration, or readiness-gate halt was run.
-- Auto-selected Option B for Draft; human refine pass can downgrade to Option A if in-memory v1 is enough.
-- Source PRD has 13 `[NEEDS CLARIFICATION]` markers. This TRD uses conservative defaults but does not resolve product decisions authoritatively.
+- Source PRD remains Draft. This TRD's defaults are implementation defaults, not final product commitments.
 - v1 design assumes same BEAM node / local Foreman runtime usage, with same-project-or-cwd authorization by default.
-- Crash-surviving in-flight asks are not promised by default; mailbox/session/message lifecycle durability requires the configured event sink and future refine if strict recovery is needed.
+- Crash-surviving in-flight asks are not promised by default; mailbox/session/message lifecycle durability requires configured event sink and future refinement if strict recovery is needed.
 - MCP enhancement skipped because no MCP tools were available in this Pi tool session.
 
 ## Follow-Up
 
-Suggested human refinement command:
+Before implementation, product/engineering should explicitly approve or revise these v1 defaults:
 
-```text
-/ensemble:refine-trd docs/TRD/TRD-2026-b09923de-create-a-prd-trd-for-intercomm-style-inter-agent.md
-```
-
-Resolve before implementation if possible:
-
-1. Confirm v1 consumers: Pi workers only, all agent-runtime adapters, CLI, Web UI, or external clients.
-2. Confirm durability model: in-memory, event-audited, or replay/recovery semantics for asks/mailboxes.
-3. Confirm trust scope: same BEAM node, OS user, project, cwd, or authenticated API clients.
-4. Confirm default mailbox size/TTL and message/attachment size limits.
-5. Confirm whether PR 5 compatibility mapper is required for v1 or may remain optional.
+1. Consumers: Pi workers only, all agent-runtime adapters, CLI, Web UI, or external clients.
+2. Durability: in-memory, event-audited, or replay/recovery semantics for asks/mailboxes.
+3. Trust scope: same BEAM node, OS user, project, cwd, or authenticated API clients.
+4. Default mailbox size/TTL and message/attachment size limits.
+5. Whether PR 5 compatibility mapper is required for v1 or may remain optional.
