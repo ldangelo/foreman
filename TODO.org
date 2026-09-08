@@ -1,0 +1,5 @@
+:PROPERTIES:
+:CATEGORY: foreman
+:END:
+* TODO Create LICENSE file for foreman (and ensemble)
+* TODO Remove homebrew tap from foreman's install instructions.
