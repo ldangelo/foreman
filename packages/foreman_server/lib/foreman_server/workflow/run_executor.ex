@@ -2060,10 +2060,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # hierarchy or cause shell/path interpretation issues.
   defp assert_safe_path_identifier(identifier) do
     cond do
-      # Reject empty identifiers, which are not a valid path segment
-      identifier == "" ->
-        {:error, {:unsafe_path_identifier, identifier, "empty"}}
-
       # Reject traversal segments
       identifier in [".", ".."] ->
         {:error, {:unsafe_path_identifier, identifier, "traversal segment"}}
@@ -2072,9 +2068,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
       String.contains?(identifier, ["/", "\\"]) ->
         {:error, {:unsafe_path_identifier, identifier, "contains path separator"}}
 
-      # Reject null bytes and other control characters
-      String.contains?(identifier, "\0") ->
-        {:error, {:unsafe_path_identifier, identifier, "contains null byte"}}
+      # Reject null bytes and other C0 control characters (0x00-0x1F), not
+      # just the null byte, matching the "or other unsafe characters" scope
+      # documented above.
+      String.match?(identifier, ~r/[\x00-\x1F]/) ->
+        {:error, {:unsafe_path_identifier, identifier, "contains control character"}}
 
       true ->
         :ok

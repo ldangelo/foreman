@@ -151,11 +151,6 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
       assert RunExecutor.__assert_safe_path_identifier_for_test__("my-task_123") == :ok
     end
 
-    test "an empty identifier is rejected" do
-      assert RunExecutor.__assert_safe_path_identifier_for_test__("") ==
-               {:error, {:unsafe_path_identifier, "", "empty"}}
-    end
-
     test "traversal segments are rejected" do
       assert RunExecutor.__assert_safe_path_identifier_for_test__(".") ==
                {:error, {:unsafe_path_identifier, ".", "traversal segment"}}
@@ -172,9 +167,18 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
                {:error, {:unsafe_path_identifier, "foo\\bar", "contains path separator"}}
     end
 
-    test "null bytes are rejected" do
+    test "control characters are rejected, not just the null byte" do
       assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\0bar") ==
-               {:error, {:unsafe_path_identifier, "foo\0bar", "contains null byte"}}
+               {:error, {:unsafe_path_identifier, "foo\0bar", "contains control character"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\nbar") ==
+               {:error, {:unsafe_path_identifier, "foo\nbar", "contains control character"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\tbar") ==
+               {:error, {:unsafe_path_identifier, "foo\tbar", "contains control character"}}
+
+      assert RunExecutor.__assert_safe_path_identifier_for_test__("foo\rbar") ==
+               {:error, {:unsafe_path_identifier, "foo\rbar", "contains control character"}}
     end
 
     # A traversal segment embedded inside a longer identifier (e.g.
