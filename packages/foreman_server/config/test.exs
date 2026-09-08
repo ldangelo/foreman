@@ -54,6 +54,7 @@ config :foreman_server, :stuck_run_check_interval_seconds, 3_600
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
 config :foreman_server, :start_project_provider_projector?, false
+config :foreman_server, :start_messaging_dispatcher?, false
 
 config :foreman_server, :start_json_schema_cache?, false
 

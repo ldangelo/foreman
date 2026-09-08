@@ -612,3 +612,8 @@ terms (crash/progress reports) — are walked recursively for sensitive keys
 before they are ever inspected into text, then regex-scrubbed again as a
 second pass over value-shaped secrets (DB URLs, auth headers, `NAME=value`
 secrets, home-directory paths).
+
+## 21. Outbound messaging delivery
+
+Keep outbound chat delivery behind `ForemanServer.Messaging`. Runtime/run/recovery/inbox code may enqueue provider-neutral notifications only; provider HTTP belongs in `ForemanServer.Messaging.Providers.*`. `ForemanServer.Messaging.Dispatcher` is supervised after `CommandRouter`. On boot it replays the event log and redelivers any enqueued notification that has no durable terminal outcome — a bare delivery-attempt event (crashed mid-send) or a retryable failure is redelivered, not treated as done; only a recorded success or a non-retryable failure is terminal. Within one dispatcher process lifetime, the first delivery attempt (from catch-up or a live projection event) claims the notification id for the rest of that process's life, so a notification enqueued during dispatcher startup cannot be delivered twice by both paths racing. A catch-up read failure or a projection-subscribe failure crashes the dispatcher under supervision rather than silently continuing without live/replay delivery. Redact provider URLs/tokens/errors before persistence/logging. Provider delivery failure is notification lifecycle state, not a recursive run failure trigger.
+</content>
