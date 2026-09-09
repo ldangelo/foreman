@@ -91,4 +91,19 @@ defmodule ForemanServer.Workflow.ReviewFindings do
       do: binary,
       else: drop_partial_codepoint(binary_part(binary, 0, byte_size(binary) - 1))
   end
+
+  @doc """
+  Builds the PR-body section for an unterminated findings block.
+
+  Shared by `PhasePR` and `AutoPR` (AGENTS.md §5.7: one implementation, not
+  duplicated per caller) so an unterminated block still names the artifact in
+  the PR body instead of silently vanishing. Callers additionally log a
+  warning naming their own module.
+  """
+  @spec unterminated_section(String.t()) :: String.t()
+  def unterminated_section(artifact_path) do
+    "\n## Unresolved review findings\n\n" <>
+      "The review phase left an unterminated findings block in `#{artifact_path}`; " <>
+      "its content could not be extracted. Check that artifact directly.\n"
+  end
 end

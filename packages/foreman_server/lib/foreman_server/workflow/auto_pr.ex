@@ -291,8 +291,6 @@ defmodule ForemanServer.Workflow.AutoPR do
       "AutoPR could not read unresolved review findings: unterminated block in #{artifact_path}"
     )
 
-    "\n## Unresolved review findings\n\n" <>
-      "The review phase left an unterminated findings block in `#{artifact_path}`; " <>
-      "its content could not be extracted. Check that artifact directly.\n"
+    ForemanServer.Workflow.ReviewFindings.unterminated_section(artifact_path)
   end
 end

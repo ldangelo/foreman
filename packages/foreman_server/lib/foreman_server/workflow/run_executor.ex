@@ -2950,6 +2950,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def __foreman_env_for_test__(state, worktree_record, artifact_path, model),
     do: foreman_env(state, worktree_record, artifact_path, model)
+
+  @doc false
   def __worktree_task_id_for_test__(task, run_id),
     do: worktree_task_id(%{task: task, run_id: run_id})
 

@@ -1,7 +1,16 @@
 defmodule ForemanServer.Workflow.InterpreterTest do
   use ExUnit.Case, async: false
 
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads verify release)
+  # Discovered from the real bundled directory rather than hand-maintained —
+  # a hardcoded list here silently drifted from `priv/defaults/workflows`
+  # once commit 04ba2383 removed several manifests it still named
+  # (AGENTS.md §5.5; the same defect `Installer` fixed for the same reason).
+  @template_names_source Application.app_dir(:foreman_server, "priv/defaults/workflows")
+  @template_names @template_names_source
+                  |> File.ls!()
+                  |> Enum.filter(&String.ends_with?(&1, ".yaml"))
+                  |> Enum.map(&Path.basename(&1, ".yaml"))
+                  |> Enum.sort()
 
   test "load!/1 loads each bundled workflow template" do
     Enum.each(@template_names, fn template_name ->

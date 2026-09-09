@@ -11,8 +11,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
   1. **PR created / workflow correctness** — covered by the three workflow
      characterization test files (create_workflow_characterization_test.exs,
      implement_fix_characterization_test.exs, merge_gate_characterization_test.exs):
-     - prd.yaml manifest has 5 phases with correct Ensemble skill commands
-     - implement-trd.yaml dispatches ensemble-full-implement-trd with --foreman
+     - prd.yaml manifest has 7 phases with correct Ensemble skill commands,
+       ending in the review phases
      - fix.yaml dispatches ensemble-fix-issue with --foreman
      - merge gate hold activates after implement-trd phase
 
@@ -414,21 +414,6 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       [second_to_last_phase, final_phase] = Enum.take(phases, -2)
       assert second_to_last_phase["name"] == "coderabbit-review"
       assert final_phase["name"] == "repo-rules-review"
-    end
-
-    test "implement-trd.yaml dispatches ensemble-full-implement-trd with --foreman" do
-      path =
-        Path.join(
-          Application.app_dir(:foreman_server, "priv/defaults/workflows"),
-          "implement-trd.yaml"
-        )
-
-      assert {:ok, manifest} = ForemanServer.Workflow.Interpreter.load(path)
-
-      assert manifest["name"] == "implement-trd"
-      [phase] = Map.get(manifest, "phases", [])
-      assert phase["command"] =~ "/skill:ensemble-full-implement-trd"
-      assert phase["command"] =~ "--foreman"
     end
 
     test "fix.yaml dispatches ensemble-fix-issue with --foreman" do

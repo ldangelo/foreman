@@ -819,10 +819,13 @@ record suppresses the final AutoPR; no-op records do not.
 `AutoPR` and a `stack_pr: true` phase PR) append a `## Unresolved review
 findings` section to the body when the PR-creating phase's artifact contains a
 `<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
--->` block — the format the bundled `review` workflow's phases write. Absent,
-empty, or unterminated blocks add nothing, so a PR body is byte-identical to
-before this feature when no review phase ran or none produced unresolved
-findings.
+-->` block — the format the bundled `review` workflow's phases write. Absent or
+empty blocks add nothing, so a PR body is byte-identical to before this feature
+when no review phase ran or none produced unresolved findings. An unterminated
+block (a start marker with no matching end marker) is distinct: the phase found
+something and failed to close its markers, so a warning is logged and the body
+instead names the artifact for a human to check directly, rather than silently
+dropping the findings.
 
 **Commits are Foreman's, not the agent's.** At each phase boundary Foreman
 stages and commits whatever the phase produced into the run's worktree, so an
