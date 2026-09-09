@@ -451,7 +451,7 @@ per-phase branch and directory that no longer exist.
 
 `create_run_worktree/2` is the single provisioning path. Absent a `worktree:`
 block it provisions one directory
-(`~/.foreman/worktrees/<project_id>/<run_id>/workspace`) on one branch
+(`~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/workspace`) on one branch
 (`foreman/<task-id>/<run-id>`) — both DEFAULTS, overridable by the workflow's `path:` and
 `branch:` — and every later phase reuses that record via
 `ensure_run_worktree/2` -> `reuse_run_worktree/2`, reading its predecessors'
@@ -913,6 +913,17 @@ Why this exists:
 - In dev, Foreman points at the collector; prod deployment points
   directly at the Langfuse ingest URL via the same `OTEL_EXPORTER_OTLP_ENDPOINT`
   env var (see `packages/foreman_server/config/prod.exs`).
+
+### SigNoz operational logs (separate from the Langfuse path above)
+
+`FOREMAN_SIGNOZ_LOGS_ENABLED`, `FOREMAN_SIGNOZ_OTLP_ENDPOINT`,
+`FOREMAN_SIGNOZ_OTLP_HEADERS`, and `FOREMAN_SIGNOZ_LOG_LEVEL` configure an
+opt-in `:logger` handler (`ForemanServer.Observability.OtelLogBridge`,
+parsed once into `config :foreman_server, :signoz_logs` in
+`packages/foreman_server/config/config.exs`) that exports
+redacted operational logs to SigNoz over OTLP/HTTP. Off by default and
+forced off in `config/test.exs`; console logging is unaffected either way.
+See `docs/user-guide.md` for the full operator contract and defaults.
 
 ### Lint warning
 
@@ -1902,3 +1913,22 @@ See ``skill://beads-corrupt-db-recovery-safe`` for safe recovery procedure.
 ## Phase stall detection notes
 
 When editing stall detection, keep one durable fact: `RunStallReported` from `run.report_stall`. Do not infer messaging scope from phase names, do not count `WorkerHeartbeat` as agent output, and do not recompute stall rules in CLI/MCP/HTTP surfaces; read `latest_stall` from projections.
+
+## Outbound messaging delivery notes
+
+`ForemanServer.Messaging.notify/2` only enqueues provider-neutral notification
+state; it never calls provider HTTP. `ForemanServer.Messaging.Dispatcher` owns
+delivery: on catch-up it treats only a recorded success or a non-retryable
+failure as terminal — a bare `NotificationDeliveryAttempted` or a retryable
+`NotificationDeliveryFailed` must stay pending and be redelivered. Within one
+dispatcher process lifetime a claimed notification id is never released, which
+closes the catch-up/live-delivery race where a notification committed during
+startup could otherwise be delivered twice. Run every payload, reason, and
+metadata value through `ForemanServer.Messaging.Redactor.redact/1` before it
+reaches `Logger` or an event — including charlist-shaped values, since a
+charlist is text and the generic list clause alone leaves it unredacted.
+Distinguish an absent provider-destination field from a malformed one with
+distinct error tags (`:missing_field` / `:invalid_field` in the Telegram/Slack
+adapters, `:provider_not_configured` when the currently active provider does
+not match the notification's); never collapse both causes into one
+`:missing_or_invalid` code (§5.3).

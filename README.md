@@ -133,6 +133,15 @@ the Beads side and splits Foreman's responsibilities by lifecycle:
 Enablement, the per-project `task_provider` block, and doctor output are
 documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
+Observability is split by destination: Langfuse remains the LLM trace target
+for existing OTel spans, while SigNoz operational logs are opt-in via
+`FOREMAN_SIGNOZ_LOGS_ENABLED=true` plus `FOREMAN_SIGNOZ_OTLP_ENDPOINT` for an
+OTLP logs endpoint, `FOREMAN_SIGNOZ_OTLP_HEADERS` for optional collector
+credentials (comma-separated `key=value` pairs), and `FOREMAN_SIGNOZ_LOG_LEVEL`
+for the minimum exported severity (default `info`), parsed once into
+`config :foreman_server, :signoz_logs`. See
+[`docs/user-guide.md`](./docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse).
+
 Workflow phases support `commit:` to defer phase commits, `stack_pr:` to
 request a phase PR record from the single Foreman run branch to the recorded run
 base branch, and `timeout_minutes:` (alias `timeoutMinutes:`) to declare a positive-integer execution
@@ -285,3 +294,7 @@ The evaluation logic itself lives in [`scripts/ci/jido-upgrade-evaluation.sh`](.
 Foreman supports opt-in phase stall detection through workflow phase `stall_detection` metadata. Valid values are `agent`, `agent_no_output`, `messaging`, `messaging_no_progress`, or a map with `kind`, optional positive `threshold_ms`, and optional `policy` (`fail` or `attention`). Defaults are 900000 ms for agent no-output stalls and 1800000 ms for messaging no-progress stalls. Disable the detector with `config :foreman_server, :stall_detection_enabled, false`; non-positive thresholds are malformed, not a disable shortcut.
 
 Stalls are persisted as `RunStallReported` events via `run.report_stall`, projected to `latest_stall` on run/phase/task projections, and rendered by HTTP/MCP/CLI JSON surfaces that read those projections. Worker heartbeats keep liveness checks alive but do not count as agent output progress.
+
+## Outbound messaging delivery
+
+Foreman has opt-in outbound messaging foundation for Telegram bot and Slack incoming-webhook notifications. `ForemanServer.Messaging.notify/2` is non-blocking: it validates provider-neutral attrs and persists enqueue/suppression state only. `ForemanServer.Messaging.Dispatcher` starts after `CommandRouter`, replays the event log on boot and redelivers any enqueued notification with no durable terminal outcome (a bare attempt or a retryable failure is redelivered; only a recorded success or non-retryable failure is terminal), subscribes to projection broadcasts, and records attempted/succeeded/failed delivery events without changing run status. Within one dispatcher process lifetime a notification is delivered at most once, even if both replay and a live projection event observe it. Configure `config :foreman_server, :messaging` with `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, and provider destinations (`telegram: [token:, chat_id:]` or `slack: [webhook_url:]`). Provider errors and rendered text are redacted before persistence/logging.

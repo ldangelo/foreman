@@ -6,6 +6,7 @@ import Config
 
 phx_host = System.get_env("PHX_HOST", "localhost")
 secret_source = System.get_env("FOREMAN_SERVER_SECRET_SOURCE", "auto")
+
 config :foreman_server, ForemanServer.EventStore,
   serializer: ForemanServer.TermOrJsonSerializer,
   schema: "public"
@@ -33,7 +34,6 @@ config :foreman_server, :agent_runtime,
     "implement-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000},
     "implement-trd-beads" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000}
   }
-
 
 config :foreman_server, :prod_secret_provider,
   provider: ForemanServer.ConfigProviders.Secrets,
@@ -117,6 +117,7 @@ otlp_headers =
   else
     []
   end
+
 config :jido_otel, otlp_endpoint: otlp_endpoint, otlp_headers: otlp_headers
 
 # OpenTelemetry OTLP exporter override (TRD-2026-4212be7e / JOT-T001).
@@ -127,5 +128,10 @@ config :opentelemetry_exporter,
   otlp_endpoint: otlp_endpoint,
   otlp_protocol: :http_protobuf,
   otlp_headers: otlp_headers
+
+# SigNoz operational-log config (FOREMAN_SIGNOZ_*) is parsed once in
+# config.exs for every MIX_ENV, including prod — no production-specific
+# override is needed here. See config.exs for the validation contract.
+
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("JIDO_CHECKPOINT_DATABASE_URL", "")

@@ -94,7 +94,13 @@ defmodule ForemanServer.Workflow.AutoPR do
         end
       else
         Logger.info(
-          "AutoPR.run_id=#{run_id} noop: #{head_branch} has no commits beyond #{base_branch}"
+          "AutoPR.run_id=#{run_id} noop: #{head_branch} has no commits beyond #{base_branch}",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          operation: "autopr.commits_ahead",
+          outcome: "noop",
+          reason: "no_commits_ahead"
         )
 
         :noop
@@ -150,7 +156,12 @@ defmodule ForemanServer.Workflow.AutoPR do
 
       {:error, reason} ->
         # Absent artifacts are normal: the head branch comes from run state.
-        Logger.debug("AutoPR could not read artifact #{path}: #{inspect(reason)}")
+        Logger.debug("AutoPR could not read artifact #{path}: #{inspect(reason)}",
+          operation: "autopr.read_artifact",
+          outcome: "skip",
+          reason: reason
+        )
+
         :skip
     end
   end
@@ -180,13 +191,27 @@ defmodule ForemanServer.Workflow.AutoPR do
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
-    Logger.info("AutoPR.run_id=#{run_id} git push -u origin #{head_branch}")
+    Logger.info("AutoPR.run_id=#{run_id} git push -u origin #{head_branch}",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: "autopr.git_push",
+      outcome: "start"
+    )
 
     case System.cmd("git", ["push", "-u", "origin", head_branch], opts) do
       {_output, 0} ->
         :ok
 
       {output, exit_code} ->
+        Logger.error("AutoPR.run_id=#{run_id} git push failed (#{exit_code})",
+          run_id: run_id,
+          head_branch: head_branch,
+          operation: "autopr.git_push",
+          outcome: "error",
+          exit_code: exit_code,
+          reason: String.trim(output)
+        )
+
         {:error, {:git_push_failed, exit_code, String.trim(output)}}
     end
   end
@@ -208,17 +233,40 @@ defmodule ForemanServer.Workflow.AutoPR do
 
     Logger.info(
       "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{head_branch}" <>
-        if(cwd, do: " (cwd=#{cwd})", else: "")
+        if(cwd, do: " (cwd=#{cwd})", else: ""),
+      run_id: run_id,
+      base_branch: base_branch,
+      head_branch: head_branch,
+      operation: "autopr.gh_create",
+      outcome: "start"
     )
 
     case System.cmd("gh", cmd, opts) do
       {output, 0} ->
         pr_url = pr_url_from_output(output) || String.trim(output)
-        Logger.info("AutoPR.run_id=#{run_id} PR created: #{pr_url}")
+
+        Logger.info("AutoPR.run_id=#{run_id} PR created: #{pr_url}",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          pr_url: pr_url,
+          operation: "autopr.gh_create",
+          outcome: "success"
+        )
+
         {:ok, pr_url}
 
       {output, exit_code} ->
-        Logger.error("AutoPR.run_id=#{run_id} gh pr create failed (#{exit_code}): #{output}")
+        Logger.error("AutoPR.run_id=#{run_id} gh pr create failed (#{exit_code}): #{output}",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          operation: "autopr.gh_create",
+          outcome: "error",
+          exit_code: exit_code,
+          reason: String.trim(output)
+        )
+
         {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
     end
   end

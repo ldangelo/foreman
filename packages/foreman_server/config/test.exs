@@ -54,6 +54,7 @@ config :foreman_server, :stuck_run_check_interval_seconds, 3_600
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
 config :foreman_server, :start_project_provider_projector?, false
+config :foreman_server, :start_messaging_dispatcher?, false
 
 config :foreman_server, :start_json_schema_cache?, false
 
@@ -100,3 +101,16 @@ config :foreman_server, :mcp,
   mount: "/mcp",
   allow_workflow_writes: false,
   allow_insecure_local: false
+
+# SigNoz log bridge stays off in tests regardless of the operator's shell env
+# (FOREMAN_SIGNOZ_LOGS_ENABLED may be `true` in the same shell a developer
+# also runs `mix phx.server`/prod from). Without this override, config.exs's
+# base `:signoz_logs` config — which reads that env var directly and
+# defaults `exporter: :otel` — falls through to `mix test` unchanged and
+# `Application.start/2` calls `OtelLogBridge.install_from_config/0`
+# unconditionally, silently enabling a real network exporter and breaking
+# the no-network test contract. Tests that need the bridge call
+# `OtelLogBridge.install/1` directly with a `{:capture, pid}` exporter
+# (see otel_log_bridge_test.exs), which bypasses this application-env gate
+# entirely.
+config :foreman_server, :signoz_logs, enabled: false

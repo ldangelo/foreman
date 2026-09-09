@@ -328,7 +328,7 @@ are deployed by `foreman init --force`. The CLI selects them via
 Strict approval rendering materializes the `command` field and the
 `worktree.base` field so the human review surfaces the exact slash
 command and base ref Foreman will execute. Branch placeholders
-(`{task_id}`, `{run_id}`) and the path placeholder (`{run_id}`) remain
+(`{task_id}`, `{run_id}`) and the path placeholders (`{task_id}`, `{run_id}`) remain
 runtime-resolved; `{phase}` is retained only as literal text, not substituted.
 
 The phase runner (`ForemanServer.Workflow.RunExecutor`) auto-injects
@@ -363,7 +363,7 @@ JSON round-trip is lossless.
   directory, symlink, and traversal cases; the frozen relative path
   and SHA persist for idempotent re-approval.
 - **Worktree ownership.** Foreman exclusively creates, pins, and
-  cleans the worktree at `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
+  cleans the worktree at `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/<path>`.
   Skills under `--foreman` must verify the trusted
   cwd/branch/revision markers and must not create, switch, append,
   or stack branches. There is no skill-owned worktree fallback.
@@ -566,3 +566,54 @@ a truncated read can never present itself as complete.
 ## Phase stall detection
 
 `stall_detection` is explicit phase metadata, never inferred from phase names. Normalize it through `ForemanServer.Workflow.StallPolicy`; valid scopes are agent/no-output and messaging/no-progress. `RunExecutor` copies normalized policy onto `phase.start`/`PhaseStarted`, `ProjectionStore.stall_candidates/1` is the bounded detector read, and `ForemanServer.StallDetector` persists stalls through `run.report_stall` only. Do not write projection state directly from the detector. Worker heartbeats do not advance phase output activity; stdout/stderr, assistant messages, tool completions, worker start/exit, and phase lifecycle do.
+
+## 20. SigNoz operational-log bridge
+
+`ForemanServer.Observability.OtelLogBridge` installs an additional Erlang
+`:logger` handler (never replaces the default console handler) that exports
+redacted operational logs to SigNoz over OTLP/HTTP. It is deliberately
+separate from the Langfuse LLM-trace path (`jido_otel`/`opentelemetry_exporter`,
+§7 above) — different destination, different payload shape, different
+on/off switch.
+
+Config (`:foreman_server, :signoz_logs`) is parsed once, in
+`packages/foreman_server/config/config.exs`, from four env vars:
+`FOREMAN_SIGNOZ_LOGS_ENABLED`, `FOREMAN_SIGNOZ_OTLP_ENDPOINT`,
+`FOREMAN_SIGNOZ_OTLP_HEADERS` (comma-separated `key=value` pairs), and
+`FOREMAN_SIGNOZ_LOG_LEVEL`. `prod.exs` adds no override — one boundary for
+every `MIX_ENV`. Malformed input (unrecognized level, malformed header
+pair, or credential headers paired with a non-`https://` endpoint) raises
+at config load instead of silently coercing to a default. `config/test.exs`
+forces `enabled: false` regardless of the operator's shell env, so `mix
+test` never installs the real exporter; tests that need the bridge call
+`OtelLogBridge.install/1` directly with a `{:capture, pid}` exporter.
+
+Two security properties are enforced at the export boundary
+(`OtelLogBridge.export_to_otel/2`, not just at config-parse time, since
+`install/1` is a public function callable with an arbitrary config map):
+configured headers are refused for any non-`https://` endpoint (CWE-319),
+and the underlying `:httpc.request/4` call sets `autoredirect: false` so a
+3xx response can never replay those headers against a different or
+less-secure origin.
+
+The blocking `:httpc` POST runs off the logging client process via
+`Task.Supervisor.start_child/2` against `ForemanServer.Observability.OtelLogExportSupervisor`
+(started under `ForemanServer.Application`, `max_children: 50`); config/payload
+validation stays synchronous so `export/2` still reports precondition errors
+(missing endpoint, insecure headers, unavailable OTLP protobuf module) to its
+caller immediately. A rejected `{:error, :max_children}` emits
+`Telemetry.signoz_log_export_overload/1` and drops the record instead of
+accumulating unbounded work.
+
+`ForemanServer.Observability.Redactor` and `LogMetadata` are the redaction
+boundary: metadata is whitelist-filtered (unknown keys dropped, not
+passed through), and log bodies — including structured Erlang `:report`
+terms (crash/progress reports) — are walked recursively for sensitive keys
+before they are ever inspected into text, then regex-scrubbed again as a
+second pass over value-shaped secrets (DB URLs, auth headers, `NAME=value`
+secrets, home-directory paths).
+
+## 21. Outbound messaging delivery
+
+Keep outbound chat delivery behind `ForemanServer.Messaging`. Runtime/run/recovery/inbox code may enqueue provider-neutral notifications only; provider HTTP belongs in `ForemanServer.Messaging.Providers.*`. `ForemanServer.Messaging.Dispatcher` is supervised after `CommandRouter`. On boot it replays the event log and redelivers any enqueued notification that has no durable terminal outcome — a bare delivery-attempt event (crashed mid-send) or a retryable failure is redelivered, not treated as done; only a recorded success or a non-retryable failure is terminal. Within one dispatcher process lifetime, the first delivery attempt (from catch-up or a live projection event) claims the notification id for the rest of that process's life, so a notification enqueued during dispatcher startup cannot be delivered twice by both paths racing. A catch-up read failure or a projection-subscribe failure crashes the dispatcher under supervision rather than silently continuing without live/replay delivery. Redact provider URLs/tokens/errors before persistence/logging. Provider delivery failure is notification lifecycle state, not a recursive run failure trigger.
+</content>

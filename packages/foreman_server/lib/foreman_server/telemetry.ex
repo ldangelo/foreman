@@ -43,6 +43,8 @@ defmodule ForemanServer.Telemetry do
   @run_slots_waiter_removed [:foreman_server, :run_slots, :waiter_removed]
   @run_slots_reconciled [:foreman_server, :run_slots, :reconciled]
   @signal_command [:foreman, :signal, :command]
+  @signoz_log_export_failure [:foreman_server, :observability, :signoz_logs, :export_failure]
+  @signoz_log_export_overload [:foreman_server, :observability, :signoz_logs, :export_overload]
   @all_events [
     @command_dispatch,
     @aggregate_rehydrated,
@@ -73,7 +75,9 @@ defmodule ForemanServer.Telemetry do
     @signal_command,
     @run_slots_transferred,
     @run_slots_waiter_removed,
-    @run_slots_reconciled
+    @run_slots_reconciled,
+    @signoz_log_export_failure,
+    @signoz_log_export_overload
   ]
 
   def all_events, do: @all_events
@@ -85,6 +89,42 @@ defmodule ForemanServer.Telemetry do
   def attach_many(handler_id, events, handler, config \\ nil) do
     :telemetry.attach_many(handler_id, events, handler, config)
   end
+
+  @spec signoz_log_export_failure(term(), map()) :: :ok
+  def signoz_log_export_failure(reason, config \\ %{}) when is_map(config) do
+    metadata = %{
+      status: :error,
+      reason: reason_class(reason),
+      endpoint_host: endpoint_host(Map.get(config, :endpoint)),
+      endpoint_port: endpoint_port(Map.get(config, :endpoint))
+    }
+
+    execute(@signoz_log_export_failure, %{count: 1}, metadata)
+  end
+
+  @spec signoz_log_export_overload(map()) :: :ok
+  def signoz_log_export_overload(config \\ %{}) when is_map(config) do
+    metadata = %{
+      status: :overload,
+      endpoint_host: endpoint_host(Map.get(config, :endpoint)),
+      endpoint_port: endpoint_port(Map.get(config, :endpoint))
+    }
+
+    execute(@signoz_log_export_overload, %{count: 1}, metadata)
+  end
+
+  defp reason_class(reason) when is_atom(reason), do: reason
+  defp reason_class({reason, _}) when is_atom(reason), do: reason
+  defp reason_class({reason, _, _}) when is_atom(reason), do: reason
+  defp reason_class(_), do: :unknown
+
+  defp endpoint_host(nil), do: nil
+  defp endpoint_host(endpoint) when is_binary(endpoint), do: URI.parse(endpoint).host
+  defp endpoint_host(_), do: nil
+
+  defp endpoint_port(nil), do: nil
+  defp endpoint_port(endpoint) when is_binary(endpoint), do: URI.parse(endpoint).port
+  defp endpoint_port(_), do: nil
 
   def command_dispatch(duration_ms, append_latency_ms, status, aggregate_id) do
     execute(

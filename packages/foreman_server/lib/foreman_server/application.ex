@@ -13,10 +13,19 @@ defmodule ForemanServer.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     children =
       [
+        # Bounds concurrent SigNoz log-export tasks (OtelLogBridge) so a slow
+        # or unreachable collector cannot accumulate unbounded off-process
+        # work; start_child/2 returns {:error, :max_children} once full and
+        # the caller drops the record with an overload telemetry event
+        # instead of queuing indefinitely (CodeRabbit review).
+        {Task.Supervisor,
+         name: ForemanServer.Observability.OtelLogExportSupervisor, max_children: 50},
         # PubSub backs LiveView debug subscriptions.
         {Phoenix.PubSub, name: ForemanServer.PubSub},
         # Phoenix Presence tracks live aggregate actors for debug pages.
@@ -104,6 +113,7 @@ defmodule ForemanServer.Application do
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter
         ] ++
+        maybe_messaging_dispatcher_child() ++
         maybe_stuck_detector_child() ++
         maybe_lifecycle_reconciler_child() ++
         maybe_jido_signal_bus_child() ++
@@ -136,6 +146,24 @@ defmodule ForemanServer.Application do
     # Seed MCP allowlist with read-only tools after supervisor starts.
     _ = seed_mcp_allowlist()
 
+    # Optional SigNoz operational-log bridge. Disabled by default and by test
+    # config, so console logging and no-network test mode stay unchanged unless
+    # operators opt in. A failed install is reported loudly (Logger.error)
+    # instead of discarded, but does not abort boot: SigNoz export is an
+    # opt-in observability nicety, not a dependency of the CQRS/workflow
+    # engine this supervisor owns, so a bad env var or a `:logger` handler
+    # registration failure must not take down the whole server.
+    case ForemanServer.Observability.OtelLogBridge.install_from_config() do
+      result when result in [:ok, :disabled] ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "SigNoz log bridge failed to install; operational logs will not export to " <>
+            "SigNoz: #{inspect(reason)}"
+        )
+    end
+
     {:ok, pid}
   end
 
@@ -159,6 +187,14 @@ defmodule ForemanServer.Application do
       end
     else
       nil
+    end
+  end
+
+  defp maybe_messaging_dispatcher_child do
+    if Application.get_env(:foreman_server, :start_messaging_dispatcher?, true) do
+      [ForemanServer.Messaging.Dispatcher]
+    else
+      []
     end
   end
 

@@ -874,7 +874,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     on_exit(fn ->
       File.rm_rf(repo_dir)
       # The executor's `after` block cleans up its own worktree under
-      # `~/.foreman/worktrees/<project_id>/<run_id>/`; the `on_exit`
+      # `~/.foreman/worktrees/<project_id>/<task_id>/<run_id>/`; the `on_exit`
       # here wipes the working dir on the daemon cwd side only.
     end)
 

@@ -126,33 +126,84 @@ defmodule ForemanServer.Messaging.ConfigResolver do
   defp maybe_destination(raw, provider, true), do: destination(raw, provider)
 
   defp destination(raw, :telegram) do
-    cfg = provider_config(raw, :telegram)
-    token = get(cfg, :token)
-    chat_id = get(cfg, :chat_id)
-
-    if valid_secret_ref?(token) and is_binary(chat_id) and chat_id != "" do
+    with {:ok, cfg} <- provider_config(raw, :telegram, :telegram_destination),
+         {:ok, token} <- required_secret_ref(cfg, :token, :telegram_destination),
+         {:ok, chat_id} <- required_string(cfg, :chat_id, :telegram_destination) do
       {:ok, %{provider: :telegram, token: token, chat_id: chat_id}}
-    else
-      {:error, {:missing_or_invalid, :telegram_destination}}
     end
   end
 
   defp destination(raw, :slack) do
-    cfg = provider_config(raw, :slack)
-    webhook_url = get(cfg, :webhook_url)
-
-    if valid_secret_ref?(webhook_url) do
+    with {:ok, cfg} <- provider_config(raw, :slack, :slack_destination),
+         {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination) do
       {:ok, %{provider: :slack, webhook_url: webhook_url}}
-    else
-      {:error, {:missing_or_invalid, :slack_destination}}
     end
   end
 
-  defp provider_config(raw, provider) do
+  # Distinguishes an absent destination field from one present but invalid
+  # (AGENTS.md "Outbound messaging delivery notes"; CodeRabbit review),
+  # matching the `:missing_field` / `:invalid_field` convention already used
+  # by the Telegram/Slack send adapters instead of the generic
+  # `:missing_or_invalid` tag.
+  defp required_secret_ref(map, key, error_key) do
+    case fetch_field(map, key) do
+      :absent ->
+        {:error, {:missing_field, error_key, key}}
+
+      {:present, value} ->
+        if valid_secret_ref?(value),
+          do: {:ok, value},
+          else: {:error, {:invalid_field, error_key, key, value}}
+    end
+  end
+
+  defp required_string(map, key, error_key) do
+    case fetch_field(map, key) do
+      :absent -> {:error, {:missing_field, error_key, key}}
+      {:present, value} when is_binary(value) and value != "" -> {:ok, value}
+      {:present, value} -> {:error, {:invalid_field, error_key, key, value}}
+    end
+  end
+
+  # Same fix as get/3 below (AGENTS.md 5.4): a map legitimately carrying both
+  # key representations with differing values must fail loudly instead of
+  # silently preferring the atom form.
+  defp fetch_field(map, key) do
+    string_key = Atom.to_string(key)
+
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, value}, :error} ->
+        {:present, value}
+
+      {:error, {:ok, value}} ->
+        {:present, value}
+
+      {:error, :error} ->
+        :absent
+
+      {{:ok, value}, {:ok, value}} ->
+        {:present, value}
+
+      {{:ok, atom_value}, {:ok, string_value}} ->
+        raise ArgumentError,
+              "conflicting atom/string keys for #{inspect(key)}: " <>
+                "#{inspect(atom_value)} vs #{inspect(string_value)}"
+    end
+  end
+
+  defp provider_config(raw, provider, error_key) do
     case get(raw, provider, %{}) do
-      cfg when is_map(cfg) -> normalize_map(cfg)
-      cfg when is_list(cfg) -> Map.new(cfg)
-      _ -> %{}
+      cfg when is_map(cfg) -> {:ok, normalize_map(cfg)}
+      cfg when is_list(cfg) -> provider_config_from_list(cfg, provider, error_key)
+      other -> {:error, {:invalid_field, error_key, provider, other}}
+    end
+  end
+
+  defp provider_config_from_list(cfg, provider, error_key) do
+    if Keyword.keyword?(cfg) do
+      {:ok, Map.new(cfg)}
+    else
+      {:error, {:invalid_field, error_key, provider, cfg}}
     end
   end
 
@@ -171,8 +222,31 @@ defmodule ForemanServer.Messaging.ConfigResolver do
   defp normalize_map(map) when is_map(map), do: map
   defp normalize_map(_), do: %{}
 
-  defp get(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  # Same fix as Dispatcher.get/3 (AGENTS.md 5.4): normalize to a single
+  # lookup instead of silently preferring the atom form when a map
+  # legitimately carries both key representations with different values.
+  defp get(map, key, default \\ nil) do
+    string_key = Atom.to_string(key)
+
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, value}, :error} ->
+        value
+
+      {:error, {:ok, value}} ->
+        value
+
+      {:error, :error} ->
+        default
+
+      {{:ok, value}, {:ok, value}} ->
+        value
+
+      {{:ok, atom_value}, {:ok, string_value}} ->
+        raise ArgumentError,
+              "conflicting atom/string keys for #{inspect(key)}: " <>
+                "#{inspect(atom_value)} vs #{inspect(string_value)}"
+    end
+  end
 
   defp normalize_atom(value) when is_atom(value), do: value
 

@@ -55,9 +55,9 @@ PR creation is not phase-driven; see
 Each run executes in **one** git worktree, isolating one agent's edits from your
 main checkout and from every other concurrent run. Unless the workflow says
 otherwise, the worktree is provisioned by the run's first phase at
-`~/.foreman/worktrees/<project-id>/<run-id>/workspace` on branch
-`foreman/<task-id>/<run-id>` — the path uses the run id, while the branch uses
-`<task-id>/<run-id>` so retries get a unique branch; a `worktree:` block may change the path
+`~/.foreman/worktrees/<project-id>/<task-id>/<run-id>/workspace` on branch
+`foreman/<task-id>/<run-id>` — both path and branch include
+`<task-id>/<run-id>` so retries stay unique and easy to navigate; a `worktree:` block may change the path
 and branch or switch provisioning off entirely (see below). Every
 phase reads an earlier phase's documents as ordinary files. Foreman commits
 whatever each phase produced at the phase boundary, so the run branch
@@ -72,7 +72,7 @@ name: prd
 worktree:
   enabled: true            # false opts the whole workflow out
   branch: foreman/{task_id}/{run_id} # {task_id} and {run_id} are placeholders
-  path: workspace          # leaf dir under ~/.foreman/worktrees/<project>/<run>/
+  path: workspace          # leaf dir under ~/.foreman/worktrees/<project>/<task>/<run>/
   cleanup: never           # never | always | on_success
 phases:
   - name: create-prd
@@ -624,6 +624,30 @@ Defaults and env vars:
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.
 
+SigNoz operational logs are separate from the Langfuse LLM-trace path.
+Foreman keeps Langfuse traces on `OTEL_EXPORTER_OTLP_ENDPOINT` and adds an
+opt-in Phoenix Logger bridge for operational logs only:
+
+- `FOREMAN_SIGNOZ_LOGS_ENABLED=true` enables the bridge.
+- `FOREMAN_SIGNOZ_OTLP_ENDPOINT` points at the collector/SigNoz OTLP logs
+  endpoint; default is `http://localhost:4318/v1/logs`.
+- `FOREMAN_SIGNOZ_OTLP_HEADERS` accepts comma-separated `key=value` headers.
+  Diagnostics report only endpoint host/port and never header values. Setting
+  any header requires `FOREMAN_SIGNOZ_OTLP_ENDPOINT` to use `https://`; boot
+  raises otherwise to avoid sending credentials over plaintext.
+- `FOREMAN_SIGNOZ_LOG_LEVEL` defaults to `info` in production.
+- Test config remains no-network: log export is disabled unless a test installs
+  the capture exporter explicitly.
+- `ops/otel-collector/signoz-logs.example.yaml` is a reference collector logs
+  pipeline: OTLP receiver -> batch processor -> `otlphttp/signoz_logs`.
+
+These four env vars are parsed once into `config :foreman_server, :signoz_logs`
+in `packages/foreman_server/config/config.exs`.
+
+Retention is enforced by SigNoz/storage, not Foreman. Use a 30-day default
+retention policy for Foreman operational logs unless the deployment has a
+stricter compliance requirement.
+
 ## 9. MCP tool integration
 
 The server exposes an MCP endpoint at `/mcp` (HTTP, recommended) and via
@@ -900,3 +924,7 @@ phases:
 ```
 
 Defaults: agent no-output = 900000 ms; messaging no-progress = 1800000 ms. Disable detector scheduling with `config :foreman_server, :stall_detection_enabled, false`. Do not use `0` or negative thresholds; validation treats those as malformed. A detected stall writes `RunStallReported`, updates `latest_stall` on run/phase/task projections, and appears in `foreman run get --format json`, MCP `foreman_run_status`, and API projection reads. Heartbeats alone are not progress.
+
+## Outbound messaging delivery
+
+Enable outbound Telegram/Slack delivery with `config :foreman_server, :messaging`. Runtime config keys: `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, `telegram: [token:, chat_id:]`, and `slack: [webhook_url:]`. `ForemanServer.Messaging.notify/2` never calls provider HTTP directly; it persists notification lifecycle state. The supervised dispatcher starts after `CommandRouter`, performs restart catch-up from the event log, subscribes to projection events, redelivers notifications with no durable terminal outcome (an in-flight attempt or a retryable failure is retried; only a recorded success or a non-retryable failure is skipped), guarantees at most one delivery per notification within one dispatcher process lifetime even if both catch-up and a live projection event observe it, and records redacted success/failure state. A catch-up or subscribe failure crashes the dispatcher under supervision rather than silently dropping live/replay delivery. Delivery failure is notification state only; it must not turn a healthy run into failed.
