@@ -222,6 +222,7 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
+  # Extract a GitHub PR URL from gh CLI stdout via regex.
   defp pr_url_from_output(output) do
     case Regex.run(~r"https://github\.com/[^\s]+", output) do
       [url | _] -> String.trim(url)
