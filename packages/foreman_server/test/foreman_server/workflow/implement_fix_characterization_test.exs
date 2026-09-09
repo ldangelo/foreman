@@ -699,6 +699,20 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
             "command" => "/skill:ensemble-fix-issue --foreman",
             "index" => 1,
             "phase_id" => "phase-#{run_id}-1"
+          },
+          %{
+            "name" => "coderabbit-review",
+            "action" => "prompt",
+            "prompt" => "review-coderabbit.md",
+            "index" => 2,
+            "phase_id" => "phase-#{run_id}-2"
+          },
+          %{
+            "name" => "repo-rules-review",
+            "action" => "prompt",
+            "prompt" => "review-repo-rules.md",
+            "index" => 3,
+            "phase_id" => "phase-#{run_id}-3"
           }
         ]
       }
@@ -712,11 +726,17 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       {:ok, state} = RunExecutor.init({run_id, task_projection})
 
-      # Verify single phase_spec
-      assert length(state.phase_specs) == 1,
-             "fix workflow should have exactly one phase_spec"
+      # Verify phase_specs: fix + the two appended review phases, in order.
+      assert length(state.phase_specs) == 3,
+             "fix workflow should have the fix phase plus two review phases"
 
-      [phase_spec] = state.phase_specs
+      [phase_spec, coderabbit_spec, repo_rules_spec] = state.phase_specs
+
+      assert coderabbit_spec[:name] == "coderabbit-review",
+             "second phase_spec should be the CodeRabbit review phase"
+
+      assert repo_rules_spec[:name] == "repo-rules-review",
+             "third phase_spec should be the repository-rules review phase"
 
       # Verify skill name and --foreman flag
       assert phase_spec[:command] =~ "ensemble-fix-issue",
