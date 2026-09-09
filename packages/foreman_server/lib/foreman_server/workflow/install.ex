@@ -43,16 +43,16 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   # but only surfaced once a manifest referenced a prompt that a remote
   # fallback install could never have fetched.
   @bundled_prompts_glob Path.join([
-                           __DIR__,
-                           "..",
-                           "..",
-                           "..",
-                           "priv",
-                           "defaults",
-                           "workflows",
-                           "prompts",
-                           "*.md"
-                         ])
+                          __DIR__,
+                          "..",
+                          "..",
+                          "..",
+                          "priv",
+                          "defaults",
+                          "workflows",
+                          "prompts",
+                          "*.md"
+                        ])
   @bundled_prompt_sources @bundled_prompts_glob |> Path.wildcard() |> Enum.sort()
 
   for source <- @bundled_prompt_sources do
@@ -62,8 +62,11 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @bundled_prompt_files Enum.map(@bundled_prompt_sources, &Path.basename/1)
 
   @bundled_sources_fingerprint :erlang.md5(
-                                  Enum.join(@bundled_template_sources ++ @bundled_prompt_sources, "\n")
-                                )
+                                 Enum.join(
+                                   @bundled_template_sources ++ @bundled_prompt_sources,
+                                   "\n"
+                                 )
+                               )
 
   # `@external_resource` only forces a recompile when a file already in the
   # list changes. A brand-new (or removed) manifest or prompt is not
@@ -159,7 +162,8 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @spec fetch_remote([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def fetch_remote(opts) when is_list(opts) do
     with {:ok, remote_url} <- remote_url(opts),
-         {:ok, manifest_downloads} <- download_templates(remote_url, @bundled_template_files, opts),
+         {:ok, manifest_downloads} <-
+           download_templates(remote_url, @bundled_template_files, opts),
          {:ok, prompt_downloads} <- download_templates(remote_url, prompt_relative_paths(), opts),
          {:ok, installed_paths} <-
            write_downloads(target_dir(opts), manifest_downloads ++ prompt_downloads) do

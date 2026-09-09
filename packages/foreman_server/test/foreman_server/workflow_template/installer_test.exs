@@ -103,7 +103,6 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
     end)
   end
 
-
   defp make_temp_dir!(prefix) do
     directory = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(directory)

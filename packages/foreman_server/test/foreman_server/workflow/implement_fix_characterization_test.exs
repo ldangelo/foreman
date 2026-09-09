@@ -507,6 +507,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
             prompt: review-repo-rules.md
         """
       )
+
       :ok = Catalog.reload()
 
       # Set up test project

@@ -63,7 +63,10 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
           long_block <> "\n<!-- FOREMAN_REVIEW_FINDINGS_END -->"
 
       assert {:ok, block} = ReviewFindings.extract_from(contents)
-      assert byte_size(block) <= 4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
+
+      assert byte_size(block) <=
+               4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
+
       assert block =~ "… truncated; see the phase artifact for the full list."
     end
 
@@ -76,7 +79,10 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
 
       assert {:ok, block} = ReviewFindings.extract_from(contents)
       assert String.valid?(block)
-      assert byte_size(block) <= 4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
+
+      assert byte_size(block) <=
+               4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
+
       assert block =~ "… truncated; see the phase artifact for the full list."
     end
   end
@@ -87,12 +93,16 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
     end
 
     test "returns :none for a nonexistent path" do
-      path = Path.join(System.tmp_dir!(), "does-not-exist-#{System.unique_integer([:positive])}.md")
+      path =
+        Path.join(System.tmp_dir!(), "does-not-exist-#{System.unique_integer([:positive])}.md")
+
       assert ReviewFindings.extract(path) == :none
     end
 
     test "reads and extracts from an existing file" do
-      dir = Path.join(System.tmp_dir!(), "review-findings-test-#{System.unique_integer([:positive])}")
+      dir =
+        Path.join(System.tmp_dir!(), "review-findings-test-#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf(dir) end)
 
