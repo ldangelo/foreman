@@ -489,7 +489,10 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
   describe "fix workflow dispatch (WFD-T006 / TRD-069)" do
     setup %{workflow_root: root} do
-      # Write the fix workflow manifest
+      # Write the fix workflow manifest — mirrors the bundled fix.yaml's
+      # phase structure (fix + the two appended review phases) so this
+      # fixture is genuinely exercised rather than silently riding a stale
+      # cached bundled manifest (CodeRabbit finding, implement_fix_characterization_test.exs:498-501).
       File.write!(
         Path.join(root, "fix.yaml"),
         """
@@ -498,8 +501,13 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         phases:
           - name: fix
             command: "/skill:ensemble-fix-issue --foreman"
+          - name: coderabbit-review
+            prompt: review-coderabbit.md
+          - name: repo-rules-review
+            prompt: review-repo-rules.md
         """
       )
+      :ok = Catalog.reload()
 
       # Set up test project
       project_id = unique_id("project")
