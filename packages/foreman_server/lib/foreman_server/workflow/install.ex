@@ -2,14 +2,93 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @moduledoc """
   Installs workflow templates into a Foreman workflows directory.
   """
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release prd trd)
-  @template_files Enum.map(@template_names, &"#{&1}.yaml")
 
   # Legacy workflows removed by remove_all/1 — discover, assess, implement, verify,
   # release.  plan.yaml remains (active as of this phase).  Curated workflows
   # (implement-trd, implement-trd-beads) are also preserved.
   @legacy_workflow_names ~w(discover assess implement verify release)
   @legacy_workflow_files Enum.map(@legacy_workflow_names, &"#{&1}.yaml")
+
+  # The bundled manifest filenames, discovered from the actual source
+  # directory at compile time rather than hand-maintained — a hardcoded list
+  # silently disagreed with the bundled directory the moment a workflow was
+  # added or removed, which is exactly what blocked `foreman init --force`
+  # after commit 04ba2383 removed several manifests this list still named
+  # (AGENTS.md §5.5). Used only by `download_templates/2`, the remote-fetch
+  # fallback exercised when no local bundled directory exists at all; the
+  # local-copy path (`bundled_templates_available?/1`, `copy_manifests/2`)
+  # lists its `source_dir` argument at runtime instead, since that argument
+  # need not be the bundled directory (e.g. tests).
+  @bundled_workflows_glob Path.join([
+                            __DIR__,
+                            "..",
+                            "..",
+                            "..",
+                            "priv",
+                            "defaults",
+                            "workflows",
+                            "*.yaml"
+                          ])
+  @bundled_template_sources @bundled_workflows_glob |> Path.wildcard() |> Enum.sort()
+
+  for source <- @bundled_template_sources do
+    @external_resource source
+  end
+
+  @bundled_template_files Enum.map(@bundled_template_sources, &Path.basename/1)
+
+  # Same discovery, for bundled prompt files. `fetch_remote/1`'s
+  # remote-fallback path previously downloaded only `.yaml` manifests, never
+  # `prompts/*.md` — real for every prompt, not just the ones this PR adds,
+  # but only surfaced once a manifest referenced a prompt that a remote
+  # fallback install could never have fetched.
+  @bundled_prompts_glob Path.join([
+                          __DIR__,
+                          "..",
+                          "..",
+                          "..",
+                          "priv",
+                          "defaults",
+                          "workflows",
+                          "prompts",
+                          "*.md"
+                        ])
+  @bundled_prompt_sources @bundled_prompts_glob |> Path.wildcard() |> Enum.sort()
+
+  for source <- @bundled_prompt_sources do
+    @external_resource source
+  end
+
+  @bundled_prompt_files Enum.map(@bundled_prompt_sources, &Path.basename/1)
+
+  # Sorted as one combined list, not `sort(a) ++ sort(b)` — the two are not
+  # equivalent once workflow and prompt paths interleave (e.g. `prompts/*`
+  # sorts between `prd.yaml` and `review.yaml`), and `__mix_recompile__?/0`
+  # below compares against a single sort of the combined wildcard results.
+  # A mismatched order here would make it report a spurious recompile need
+  # on every compile even with no file changes (CodeRabbit finding,
+  # install.ex:65-69).
+  @bundled_sources_fingerprint :erlang.md5(
+                                 Enum.join(
+                                   Enum.sort(
+                                     @bundled_template_sources ++ @bundled_prompt_sources
+                                   ),
+                                   "\n"
+                                 )
+                               )
+
+  # `@external_resource` only forces a recompile when a file already in the
+  # list changes. A brand-new (or removed) manifest or prompt is not
+  # reflected until this module recompiles; `__mix_recompile__?/0` is Mix's
+  # supported escape hatch for compile-time state derived from a glob
+  # (mirrors `EventCodec`).
+  @doc false
+  def __mix_recompile__? do
+    current =
+      (@bundled_workflows_glob |> Path.wildcard()) ++ (@bundled_prompts_glob |> Path.wildcard())
+
+    :erlang.md5(Enum.join(Enum.sort(current), "\n")) != @bundled_sources_fingerprint
+  end
 
   @default_retry_attempts 3
   @default_retry_delay_ms 250
@@ -92,21 +171,35 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @spec fetch_remote([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def fetch_remote(opts) when is_list(opts) do
     with {:ok, remote_url} <- remote_url(opts),
-         {:ok, downloads} <- download_templates(remote_url, opts),
-         {:ok, installed_paths} <- write_downloads(target_dir(opts), downloads) do
+         {:ok, manifest_downloads} <-
+           download_templates(remote_url, @bundled_template_files, opts),
+         {:ok, prompt_downloads} <- download_templates(remote_url, prompt_relative_paths(), opts),
+         {:ok, installed_paths} <-
+           write_downloads(target_dir(opts), manifest_downloads ++ prompt_downloads) do
       {:ok, installed_paths}
     end
   end
+
+  defp prompt_relative_paths, do: Enum.map(@bundled_prompt_files, &Path.join("prompts", &1))
 
   defp bundled_source_dir do
     Application.app_dir(:foreman_server, "priv/defaults/workflows")
   end
 
+  # Discovered from the source directory rather than a hand-maintained list:
+  # a hardcoded set of `.yaml` names silently disagrees with the bundled
+  # directory the moment a workflow is added or removed (AGENTS.md §5.5), and
+  # `Enum.all?/2` over a stale list blocked `foreman init --force` outright
+  # once commit 04ba2383 removed several bundled manifests it still named.
+  defp manifest_filenames(source_dir) do
+    source_dir
+    |> File.ls!()
+    |> Enum.filter(&String.ends_with?(&1, ".yaml"))
+    |> Enum.sort()
+  end
+
   defp bundled_templates_available?(source_dir) do
-    File.dir?(source_dir) and
-      Enum.all?(@template_files, fn filename ->
-        File.regular?(Path.join(source_dir, filename))
-      end)
+    File.dir?(source_dir) and manifest_filenames(source_dir) != []
   end
 
   defp copy_bundled_templates(source_dir, destination_dir) do
@@ -118,7 +211,8 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   end
 
   defp copy_manifests(source_dir, destination_dir) do
-    @template_files
+    source_dir
+    |> manifest_filenames()
     |> Enum.reduce_while({:ok, []}, fn filename, {:ok, paths} ->
       source_path = Path.join(source_dir, filename)
       destination_path = Path.join(destination_dir, filename)
@@ -171,19 +265,19 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     end
   end
 
-  defp download_templates(remote_url, opts) do
+  defp download_templates(remote_url, relative_paths, opts) do
     attempts = Keyword.get(opts, :retry_attempts, @default_retry_attempts)
     delay_ms = Keyword.get(opts, :retry_delay_ms, @default_retry_delay_ms)
 
-    @template_files
-    |> Enum.reduce_while({:ok, []}, fn filename, {:ok, downloads} ->
+    relative_paths
+    |> Enum.reduce_while({:ok, []}, fn relative_path, {:ok, downloads} ->
       case download_template(
-             remote_template_url(remote_url, filename),
-             filename,
+             remote_template_url(remote_url, relative_path),
+             relative_path,
              attempts,
              delay_ms
            ) do
-        {:ok, body} -> {:cont, {:ok, [{filename, body} | downloads]}}
+        {:ok, body} -> {:cont, {:ok, [{relative_path, body} | downloads]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -225,11 +319,13 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   defp write_downloads(destination_dir, downloads) do
     with :ok <- File.mkdir_p(destination_dir) do
       downloads
-      |> Enum.reduce_while({:ok, []}, fn {filename, body}, {:ok, paths} ->
-        destination_path = Path.join(destination_dir, filename)
+      |> Enum.reduce_while({:ok, []}, fn {relative_path, body}, {:ok, paths} ->
+        destination_path = Path.join(destination_dir, relative_path)
 
-        case File.write(destination_path, body) do
-          :ok -> {:cont, {:ok, [destination_path | paths]}}
+        with :ok <- File.mkdir_p(Path.dirname(destination_path)),
+             :ok <- File.write(destination_path, body) do
+          {:cont, {:ok, [destination_path | paths]}}
+        else
           {:error, reason} -> {:halt, {:error, {:write_failed, destination_path, reason}}}
         end
       end)

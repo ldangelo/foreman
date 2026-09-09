@@ -1,10 +1,20 @@
 defmodule ForemanServer.WorkflowTemplate.InstallerTest do
   use ExUnit.Case, async: false
 
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release)
-  @template_files Enum.map(@template_names, &"#{&1}.yaml")
-  @prompt_names ~w(create-pr discover assess implement verify release)
-  @prompt_files Enum.map(@prompt_names, &"#{&1}.md")
+  # Discovered from the real bundled directory rather than hand-maintained —
+  # a hardcoded list here would silently drift from `priv/defaults/workflows`
+  # exactly like the production defect this file's sibling module fixed
+  # (`ForemanServer.WorkflowTemplate.Installer` §5.5).
+  @bundled_source_dir Path.join([__DIR__, "..", "..", "..", "priv", "defaults", "workflows"])
+  @template_files @bundled_source_dir
+                  |> File.ls!()
+                  |> Enum.filter(&String.ends_with?(&1, ".yaml"))
+                  |> Enum.sort()
+  @template_names Enum.map(@template_files, &Path.basename(&1, ".yaml"))
+  @prompt_files @bundled_source_dir
+                |> Path.join("prompts")
+                |> File.ls!()
+                |> Enum.sort()
 
   test "install/1 copies bundled templates into the workflows directory" do
     home_dir = make_temp_dir!("workflow-installer-home")
@@ -24,7 +34,7 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
     end)
   end
 
-  test "fetch_remote/1 downloads templates from the configured remote URL" do
+  test "fetch_remote/1 downloads templates and prompts from the configured remote URL" do
     home_dir = make_temp_dir!("workflow-installer-remote")
     {remote_url, server_pid, listen_socket} = start_template_server()
 
@@ -42,11 +52,22 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
                retry_delay_ms: 10
              )
 
-    assert Enum.count(installed_paths) == length(@template_files)
+    assert Enum.count(installed_paths) == length(@template_files) + length(@prompt_files)
 
-    Enum.each(installed_paths, fn path ->
+    manifest_paths = Enum.filter(installed_paths, &String.ends_with?(&1, ".yaml"))
+    prompt_paths = Enum.filter(installed_paths, &String.ends_with?(&1, ".md"))
+
+    assert length(manifest_paths) == length(@template_files)
+    assert length(prompt_paths) == length(@prompt_files)
+
+    Enum.each(manifest_paths, fn path ->
       assert File.regular?(path)
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end)
+
+    Enum.each(prompt_paths, fn path ->
+      assert File.regular?(path)
+      assert path =~ ~r{/prompts/[^/]+\.md$}
     end)
   end
 
@@ -71,11 +92,14 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
                retry_delay_ms: 10
              )
 
-    assert Enum.count(installed_paths) == length(@template_files)
+    assert Enum.count(installed_paths) == length(@template_files) + length(@prompt_files)
 
     Enum.each(installed_paths, fn path ->
       assert File.regular?(path)
-      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+
+      if String.ends_with?(path, ".yaml") do
+        assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+      end
     end)
   end
 
@@ -92,12 +116,21 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
 
     {:ok, port} = :inet.port(listen_socket)
 
-    responses =
+    manifest_responses =
       Map.new(@template_names, fn template_name ->
         filename = "#{template_name}.yaml"
         path = "/templates/#{filename}"
         {path, remote_template_body(template_name)}
       end)
+
+    prompt_responses =
+      Map.new(@prompt_files, fn filename ->
+        path = "/templates/prompts/#{filename}"
+        body = File.read!(Path.join([@bundled_source_dir, "prompts", filename]))
+        {path, body}
+      end)
+
+    responses = Map.merge(manifest_responses, prompt_responses)
 
     server_pid = spawn_link(fn -> accept_loop(listen_socket, responses) end)
     {"http://127.0.0.1:#{port}/templates/", server_pid, listen_socket}
@@ -169,26 +202,13 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
   end
 
   defp remote_template_body(template_name) do
-    phase_name =
-      case template_name do
-        "discover" -> "scope-and-explore"
-        "assess" -> "impact-analysis"
-        "plan" -> "design-and-decompose"
-        "implement" -> "code-generation"
-        "implement-trd" -> "implement-trd"
-        "implement-trd-beads" -> "implement-trd-beads"
-        "fix" -> "fix-issue"
-        "verify" -> "test-and-validate"
-        "release" -> "finalize-and-release"
-      end
-
-    report_name = String.upcase(template_name)
+    report_name = template_name |> String.replace("-", "_") |> String.upcase()
 
     """
     name: #{template_name}
     description: Remote #{template_name} workflow template
     phases:
-      - name: #{phase_name}
+      - name: run-workflow
         prompt: #{template_name}.md
         models:
           default: MiniMax

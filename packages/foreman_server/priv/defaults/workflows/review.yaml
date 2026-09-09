@@ -1,0 +1,35 @@
+name: review
+description: Review the run's work with the CodeRabbit CLI and this repository's rules, then open the pull request.
+# Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min).
+operator_timeout_ms: 300000
+# The run's worktree. WORKFLOW-level, because a run has exactly one worktree for
+# its whole execution: both phases below review and fix the same checkout, and
+# `cleanup: never` keeps it after the run so a failed review can be inspected.
+worktree:
+  enabled: true
+  branch: foreman/{task_id}/{run_id}
+  path: workspace
+  cleanup: never
+phases:
+  - name: coderabbit-review
+    prompt: review-coderabbit.md
+    models:
+      default: MiniMax
+    maxTurns: 80
+    timeout_minutes: 25
+    artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
+    commit: true
+  # `stack_pr: true` is what makes PR creation an explicit workflow step:
+  # `RunExecutor.maybe_record_phase_pr/5` fires `PhasePR.maybe_create/1` after
+  # this phase's commit, so the PR opens AFTER both reviews, from the run branch
+  # against the recorded run base. A created or reused phase PR record then
+  # suppresses the final AutoPR, so exactly one PR is opened per run.
+  - name: repo-rules-review
+    prompt: review-repo-rules.md
+    models:
+      default: MiniMax
+    maxTurns: 80
+    timeout_minutes: 25
+    artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
+    commit: true
+    stack_pr: true

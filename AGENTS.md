@@ -232,7 +232,15 @@ workflow `merge:` or `pr:` fields."
 when durable phase PR records already represent the run. `AutoPR.maybe_create_pr/1`
 takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
 `cwd`) and derives title and body itself; there is no declarable title, body,
-draft, reviewer, or label. Foreman commits with a fixed message, its own author
+draft, reviewer, or label — except one automatic addition: when the
+PR-creating phase's artifact contains a
+`<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
+-->` block (the format the bundled `review` workflow's phases write),
+`ForemanServer.Workflow.ReviewFindings` appends its content to the body under
+`## Unresolved review findings`. Absent, empty, or unterminated blocks add
+nothing beyond a logged warning for the unterminated case, so a PR body from
+a non-review workflow is byte-identical to before this behavior existed.
+Foreman commits with a fixed message, its own author
 identity, and `--no-verify`; only WHETHER a phase commits and whether it asks
 for a phase PR record are declarable.
 
@@ -1162,6 +1170,7 @@ Bundled workflows live in `packages/foreman_server/priv/defaults/workflows/`:
 | `plan` | `--workflow-type plan` | Run the plan workflow (create-prd → create-trd). |
 | `prd` | `--workflow-type prd` | Full ensemble chain: create-prd, refine-prd, create-trd, refine-trd, implement-trd. |
 | `release` | `--workflow-type release` | Finalize outputs, publish deliverables, and complete release steps. |
+| `review` | `--workflow-type review` | Review the run's work with the CodeRabbit CLI and this repository's rules, then open the pull request. |
 | `trd` | `--workflow-type trd` | Create a TRD from a PRD and implement it via the ensemble chain. |
 | `verify` | `--workflow-type verify` | Run validation, testing, and quality checks for the completed work. |
 

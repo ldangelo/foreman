@@ -5,6 +5,7 @@ defmodule ForemanServer.Workflow.MergeToolRefuser do
   """
   require Logger
 
+  @doc "Logs and emits telemetry for a refused direct merge tool call, returning an error tuple."
   def refuse(actor, tool, reason) do
     Logger.error("MERGE REFUSED: actor=#{actor} tool=#{tool} reason=#{reason}")
 
@@ -18,5 +19,6 @@ defmodule ForemanServer.Workflow.MergeToolRefuser do
      "Direct merge tool calls by agents are not permitted; route through MergeGate."}
   end
 
+  @doc "Returns true if `actor` is permitted to call the merge tool directly."
   def permitted?(actor), do: actor == "merge_gate" or actor == "human:operator"
 end

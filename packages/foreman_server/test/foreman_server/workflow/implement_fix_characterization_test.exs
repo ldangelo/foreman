@@ -489,7 +489,10 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
   describe "fix workflow dispatch (WFD-T006 / TRD-069)" do
     setup %{workflow_root: root} do
-      # Write the fix workflow manifest
+      # Write the fix workflow manifest — mirrors the bundled fix.yaml's
+      # phase structure (fix + the two appended review phases) so this
+      # fixture is genuinely exercised rather than silently riding a stale
+      # cached bundled manifest (CodeRabbit finding, implement_fix_characterization_test.exs:498-501).
       File.write!(
         Path.join(root, "fix.yaml"),
         """
@@ -498,8 +501,14 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         phases:
           - name: fix
             command: "/skill:ensemble-fix-issue --foreman"
+          - name: coderabbit-review
+            prompt: review-coderabbit.md
+          - name: repo-rules-review
+            prompt: review-repo-rules.md
         """
       )
+
+      :ok = Catalog.reload()
 
       # Set up test project
       project_id = unique_id("project")
@@ -582,7 +591,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
              "Command should include --foreman flag"
     end
 
-    test "single phase workflow structure",
+    test "workflow structure: fix phase followed by the two review phases",
          %{project_id: project_id} do
       task_id = unique_id("task")
 
@@ -611,15 +620,21 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       snapshot = payload["workflow_snapshot"]
 
-      # Verify single phase
-      assert length(snapshot["phases"]) == 1,
-             "Fix workflow should have exactly one phase"
+      # Verify phase count: fix + the two appended review phases.
+      assert length(snapshot["phases"]) == 3,
+             "Fix workflow should have the fix phase plus two review phases"
 
-      # Verify phase name
-      phase = hd(snapshot["phases"])
+      # Verify phase names and order
+      [fix_phase, coderabbit_phase, repo_rules_phase] = snapshot["phases"]
 
-      assert phase["name"] == "fix",
-             "Phase should be named 'fix'"
+      assert fix_phase["name"] == "fix",
+             "First phase should be named 'fix'"
+
+      assert coderabbit_phase["name"] == "coderabbit-review",
+             "Second phase should be the CodeRabbit review phase"
+
+      assert repo_rules_phase["name"] == "repo-rules-review",
+             "Third phase should be the repository-rules review phase"
     end
 
     test "fix workflow does not require implementation context",
@@ -685,6 +700,20 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
             "command" => "/skill:ensemble-fix-issue --foreman",
             "index" => 1,
             "phase_id" => "phase-#{run_id}-1"
+          },
+          %{
+            "name" => "coderabbit-review",
+            "action" => "prompt",
+            "prompt" => "review-coderabbit.md",
+            "index" => 2,
+            "phase_id" => "phase-#{run_id}-2"
+          },
+          %{
+            "name" => "repo-rules-review",
+            "action" => "prompt",
+            "prompt" => "review-repo-rules.md",
+            "index" => 3,
+            "phase_id" => "phase-#{run_id}-3"
           }
         ]
       }
@@ -698,11 +727,29 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       {:ok, state} = RunExecutor.init({run_id, task_projection})
 
-      # Verify single phase_spec
-      assert length(state.phase_specs) == 1,
-             "fix workflow should have exactly one phase_spec"
+      # Verify phase_specs: fix + the two appended review phases, in order.
+      assert length(state.phase_specs) == 3,
+             "fix workflow should have the fix phase plus two review phases"
 
-      [phase_spec] = state.phase_specs
+      [phase_spec, coderabbit_spec, repo_rules_spec] = state.phase_specs
+
+      assert coderabbit_spec[:name] == "coderabbit-review",
+             "second phase_spec should be the CodeRabbit review phase"
+
+      assert coderabbit_spec[:action] == :prompt,
+             "coderabbit-review phase_spec should have action :prompt"
+
+      assert coderabbit_spec[:prompt] == "review-coderabbit.md",
+             "coderabbit-review phase_spec should carry its prompt filename"
+
+      assert repo_rules_spec[:name] == "repo-rules-review",
+             "third phase_spec should be the repository-rules review phase"
+
+      assert repo_rules_spec[:action] == :prompt,
+             "repo-rules-review phase_spec should have action :prompt"
+
+      assert repo_rules_spec[:prompt] == "review-repo-rules.md",
+             "repo-rules-review phase_spec should carry its prompt filename"
 
       # Verify skill name and --foreman flag
       assert phase_spec[:command] =~ "ensemble-fix-issue",
