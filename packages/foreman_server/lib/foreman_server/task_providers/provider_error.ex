@@ -23,6 +23,7 @@ defmodule ForemanServer.TaskProviders.ProviderError do
   @derive Jason.Encoder
   defstruct [:code, :message, :hint, :retryable?, context: %{}]
 
+  @doc "Builds a typed `ProviderError`, validating `context` keys against the allowed whitelist."
   def new(code, message, opts \\ []) when is_binary(code) and is_binary(message) do
     %__MODULE__{
       code: code,

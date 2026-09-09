@@ -3,6 +3,7 @@ defmodule ForemanServer.Agents.LitellmUnavailableHandler do
 
   require Logger
 
+  @doc "Logs and returns a :blocked result for the given LiteLLM unavailability reason."
   def handle(reason) do
     Logger.error("LiteLLM unavailable: #{inspect(reason)}; marking task blocked")
     {:blocked, %{reason: :litellm_unavailable, detail: reason}}

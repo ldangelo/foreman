@@ -10,6 +10,7 @@ defmodule ForemanServer.Workflow.ErrorReporter do
   """
   require Logger
 
+  @doc "Logs and returns a human-readable message for a workflow validation error reason."
   def report(reason) do
     Logger.error("Workflow error: #{format(reason)}")
     format(reason)

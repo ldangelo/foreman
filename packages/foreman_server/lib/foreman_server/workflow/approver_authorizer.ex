@@ -5,8 +5,10 @@ defmodule ForemanServer.Workflow.ApproverAuthorizer do
   """
   @default_authorized ["github:ldangelo"]
 
+  @doc "Returns true if `identity` is in the authorized approver list."
   def authorized?(identity, allowed \\ @default_authorized), do: identity in allowed
 
+  @doc "Returns `:ok` for an authorized approver identity, `{:error, :unauthorized_approver}` otherwise."
   def authorize(identity, allowed \\ @default_authorized) do
     if authorized?(identity, allowed), do: :ok, else: {:error, :unauthorized_approver}
   end

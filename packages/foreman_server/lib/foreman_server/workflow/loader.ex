@@ -5,6 +5,7 @@ defmodule ForemanServer.Workflow.Loader do
 
   @workflow_dir "priv/workflows"
 
+  @doc "Loads every workflow file from `@workflow_dir`, skipping unrecognized extensions."
   def load_all do
     case File.ls(@workflow_dir) do
       {:ok, files} ->
@@ -18,6 +19,7 @@ defmodule ForemanServer.Workflow.Loader do
     end
   end
 
+  @doc "Loads a single workflow file by its extension (`.yaml`/`.yml` or `.ex`)."
   def load_file(filename) do
     path = Path.join(@workflow_dir, filename)
 
