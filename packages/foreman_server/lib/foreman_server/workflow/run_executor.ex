@@ -2479,6 +2479,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
       |> put_plan_env(state, worktree_record)
+      |> maybe_put_base_branch_env(state)
       |> maybe_put_shell_session_env(state)
 
     case Map.get(plan_context, "beads_database_path") do
@@ -2521,6 +2522,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
       |> put_plan_env(state, worktree_record)
+      |> maybe_put_base_branch_env(state)
       |> maybe_put_foreman_model(model)
       |> maybe_put_shell_session_env(state)
 
@@ -2687,6 +2689,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # The branch the run's work was cut from. `FOREMAN_SOURCE_REVISION` cannot
+  # serve this role: it is the phase's own `base_ref`, refreshed to the shared
+  # checkout's HEAD at each phase start, so diffing against it on a later phase
+  # returns nothing. Absent when no phase has started yet (AGENTS.md 5.4b: never
+  # insert nil for an absent key) — the review prompts STOP rather than
+  # reviewing the wrong range.
+  defp maybe_put_base_branch_env(env, state) do
+    case run_base_branch(state) do
+      {:ok, branch} -> Map.put(env, "FOREMAN_BASE_BRANCH", branch)
+      {:error, _reason} -> env
+    end
+  end
+
   # Per TRD Decision 10, `TRD_SCOPE` is exported alongside `BEADS_DB`. The
   # value is computed at provisioning by `create_phase_worktree/4` and
   # stamped on the worktree record; see `compute_trd_scope/2` for the
@@ -2822,6 +2837,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
+
+  @doc false
+  def __foreman_env_for_test__(state, worktree_record, artifact_path, model),
+    do: foreman_env(state, worktree_record, artifact_path, model)
 
   @doc false
   def __fetch_project_id_for_test__(task), do: fetch_project_id(%{task: task})

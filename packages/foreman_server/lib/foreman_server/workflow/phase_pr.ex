@@ -186,7 +186,8 @@ defmodule ForemanServer.Workflow.PhasePR do
 
     body =
       "Foreman run `#{request.run_id}` phase `#{request.phase_name}` complete.\n" <>
-        if(request.artifact_path, do: "\nArtifact: #{request.artifact_path}\n", else: "")
+        if(request.artifact_path, do: "\nArtifact: #{request.artifact_path}\n", else: "") <>
+        findings_section(request.artifact_path)
 
     args = [
       "pr",
@@ -331,4 +332,11 @@ defmodule ForemanServer.Workflow.PhasePR do
   defp pr_number_from_url(_url), do: nil
 
   defp blank?(value), do: not is_binary(value) or value == ""
+
+  defp findings_section(artifact_path) do
+    case ForemanServer.Workflow.ReviewFindings.extract(artifact_path) do
+      {:ok, block} -> "\n## Unresolved review findings\n\n" <> block <> "\n"
+      :none -> ""
+    end
+  end
 end

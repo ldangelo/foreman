@@ -390,7 +390,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
   # ===========================================================================
 
   describe "AC 1: workflow manifest correctness via Interpreter.load/1" do
-    test "prd.yaml has 5 phases with Ensemble skill commands" do
+    test "prd.yaml has 7 phases with Ensemble skill commands, ending in the review phases" do
       path =
         Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "prd.yaml")
 
@@ -398,7 +398,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
       assert manifest["name"] == "prd"
       phases = Map.get(manifest, "phases", [])
-      assert length(phases) == 5
+      assert length(phases) == 7
 
       # All phases must have a name and at least one action field.
       for phase <- phases do
@@ -409,9 +409,9 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                "phase missing action field"
       end
 
-      # Final phase should be implement-trd (merge gate activates after it).
+      # Final phase is the repo-rules-review phase that opens the PR.
       final_phase = List.last(phases)
-      assert final_phase["command"] =~ "/skill:"
+      assert final_phase["name"] == "repo-rules-review"
     end
 
     test "implement-trd.yaml dispatches ensemble-full-implement-trd with --foreman" do
@@ -436,9 +436,9 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       assert {:ok, manifest} = ForemanServer.Workflow.Interpreter.load(path)
 
       assert manifest["name"] == "fix"
-      [phase] = Map.get(manifest, "phases", [])
-      assert phase["command"] =~ "/skill:ensemble-fix-issue"
-      assert phase["command"] =~ "--foreman"
+      [fix_phase | _review_phases] = Map.get(manifest, "phases", [])
+      assert fix_phase["command"] =~ "/skill:ensemble-fix-issue"
+      assert fix_phase["command"] =~ "--foreman"
     end
   end
 

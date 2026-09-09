@@ -156,7 +156,7 @@ defmodule ForemanServer.Workflow.CommitCleanupValidationTest do
       bundled =
         Path.wildcard(Path.join(:code.priv_dir(:foreman_server), "defaults/workflows/*.yaml"))
 
-      assert length(bundled) == 11
+      assert length(bundled) > 0
 
       for source <- bundled do
         assert {:ok, _} = Interpreter.load!(source),

@@ -60,8 +60,8 @@ defmodule ForemanServer.Workflow.CatalogTest do
       start_catalog(tmp, name)
 
       assert Catalog.installed?()
-      assert "implement.yaml" in Catalog.manifests()
-      assert "implement.md" in Catalog.prompt_filenames()
+      assert "assess.yaml" in Catalog.manifests()
+      assert "assess.md" in Catalog.prompt_filenames()
     end
 
     test "does not auto-install when the root already has manifests", %{
@@ -82,8 +82,8 @@ defmodule ForemanServer.Workflow.CatalogTest do
     test "returns the parsed workflow for a known manifest", %{tmp: tmp, server_name: name} do
       start_catalog(tmp, name)
 
-      assert {:ok, wf} = Catalog.load("implement.yaml")
-      assert wf.name == "implement"
+      assert {:ok, wf} = Catalog.load("assess.yaml")
+      assert wf.name == "assess"
       assert is_list(wf.phases)
     end
 
@@ -96,15 +96,31 @@ defmodule ForemanServer.Workflow.CatalogTest do
     end
   end
 
-  describe "plan workflow (command: phases)" do
-    test "loading plan.yaml yields two command phases with requiredFile", %{
+  describe "command: phases with requiredFile" do
+    test "loading a manifest with command phases yields requiredFile gates", %{
       tmp: tmp,
       server_name: name
     } do
+      File.write!(Path.join(tmp, "prompts/noop.md"), "noop")
+
+      File.write!(
+        Path.join(tmp, "plan-test.yaml"),
+        """
+        name: plan-test
+        phases:
+          - name: create-prd
+            command: "/skill:ensemble-full-create-prd --foreman"
+            requiredFile: planning.prd_path
+          - name: create-trd
+            command: "/skill:ensemble-full-create-trd-foreman --foreman"
+            requiredFile: planning.trd_path
+        """
+      )
+
       start_catalog(tmp, name)
 
-      assert {:ok, wf} = Catalog.load("plan.yaml")
-      assert wf.name == "plan"
+      assert {:ok, wf} = Catalog.load("plan-test.yaml")
+      assert wf.name == "plan-test"
       assert is_list(wf.phases)
       assert length(wf.phases) == 2
 
@@ -125,7 +141,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
   end
 
   describe "fix workflow (WFD-T006 / TRD-069)" do
-    test "loading fix.yaml yields single command phase with ensemble-fix-issue and --foreman", %{
+    test "loading fix.yaml yields the fix phase followed by the two review phases", %{
       tmp: tmp,
       server_name: name
     } do
@@ -134,15 +150,18 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert {:ok, wf} = Catalog.load("fix.yaml")
       assert wf.name == "fix"
       assert is_list(wf.phases)
-      assert length(wf.phases) == 1
+      assert length(wf.phases) == 3
 
-      [fix_phase] = wf.phases
+      [fix_phase, coderabbit_phase, repo_rules_phase] = wf.phases
 
       assert fix_phase["name"] == "fix"
       assert fix_phase.action == :command
       assert fix_phase.command == "/skill:ensemble-fix-issue {{input.prompt}} --foreman"
-      # Single-phase workflow has no routing requirement
+      # The fix phase itself declares no routing requirement.
       assert fix_phase.required_file in [nil, ""]
+
+      assert coderabbit_phase["name"] == "coderabbit-review"
+      assert repo_rules_phase["name"] == "repo-rules-review"
     end
   end
 
@@ -443,8 +462,8 @@ defmodule ForemanServer.Workflow.CatalogTest do
     end
   end
 
-  describe "AC-018-1 controller integration installs and Catalog reloads both implement-trd manifests" do
-    test "POST /api/admin/workflows/install with isolated target installs both implement-trd manifests and Catalog reloads them",
+  describe "AC-018-1 controller integration installs and Catalog reloads bundled manifests" do
+    test "POST /api/admin/workflows/install with isolated target installs the fix and prd manifests and Catalog reloads them",
          %{server_name: name} do
       home = Path.join(System.tmp_dir!(), "foreman_ac0181_#{System.unique_integer([:positive])}")
       on_exit(fn -> File.rm_rf!(home) end)
@@ -462,27 +481,27 @@ defmodule ForemanServer.Workflow.CatalogTest do
 
       installed_paths = json_response(conn, 201)["paths"]
       installed_names = Enum.map(installed_paths, &Path.basename/1)
-      assert "implement-trd.yaml" in installed_names
-      assert "implement-trd-beads.yaml" in installed_names
+      assert "fix.yaml" in installed_names
+      assert "prd.yaml" in installed_names
 
-      assert File.regular?(Path.join(workflows_dir, "implement-trd.yaml"))
-      assert File.regular?(Path.join(workflows_dir, "implement-trd-beads.yaml"))
+      assert File.regular?(Path.join(workflows_dir, "fix.yaml"))
+      assert File.regular?(Path.join(workflows_dir, "prd.yaml"))
 
       catalog = AssetCatalog.new(workflows_dir)
       start_supervised!({Catalog, name: name, catalog: catalog}, id: name)
 
-      assert "implement-trd.yaml" in Catalog.manifests()
-      assert "implement-trd-beads.yaml" in Catalog.manifests()
+      assert "fix.yaml" in Catalog.manifests()
+      assert "prd.yaml" in Catalog.manifests()
 
-      assert {:ok, wf_trd} = Catalog.load("implement-trd.yaml")
-      assert wf_trd.name == "implement-trd"
-      assert is_list(wf_trd.phases)
-      assert wf_trd.phases != []
+      assert {:ok, wf_fix} = Catalog.load("fix.yaml")
+      assert wf_fix.name == "fix"
+      assert is_list(wf_fix.phases)
+      assert wf_fix.phases != []
 
-      assert {:ok, wf_beads} = Catalog.load("implement-trd-beads.yaml")
-      assert wf_beads.name == "implement-trd-beads"
-      assert is_list(wf_beads.phases)
-      assert wf_beads.phases != []
+      assert {:ok, wf_prd} = Catalog.load("prd.yaml")
+      assert wf_prd.name == "prd"
+      assert is_list(wf_prd.phases)
+      assert wf_prd.phases != []
     end
   end
 end

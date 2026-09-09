@@ -1,10 +1,20 @@
 defmodule ForemanServer.WorkflowTemplate.InstallerTest do
   use ExUnit.Case, async: false
 
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release)
-  @template_files Enum.map(@template_names, &"#{&1}.yaml")
-  @prompt_names ~w(create-pr discover assess implement verify release)
-  @prompt_files Enum.map(@prompt_names, &"#{&1}.md")
+  # Discovered from the real bundled directory rather than hand-maintained —
+  # a hardcoded list here would silently drift from `priv/defaults/workflows`
+  # exactly like the production defect this file's sibling module fixed
+  # (`ForemanServer.WorkflowTemplate.Installer` §5.5).
+  @bundled_source_dir Path.join([__DIR__, "..", "..", "..", "priv", "defaults", "workflows"])
+  @template_files @bundled_source_dir
+                  |> File.ls!()
+                  |> Enum.filter(&String.ends_with?(&1, ".yaml"))
+                  |> Enum.sort()
+  @template_names Enum.map(@template_files, &Path.basename(&1, ".yaml"))
+  @prompt_files @bundled_source_dir
+                |> Path.join("prompts")
+                |> File.ls!()
+                |> Enum.sort()
 
   test "install/1 copies bundled templates into the workflows directory" do
     home_dir = make_temp_dir!("workflow-installer-home")
@@ -169,26 +179,13 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
   end
 
   defp remote_template_body(template_name) do
-    phase_name =
-      case template_name do
-        "discover" -> "scope-and-explore"
-        "assess" -> "impact-analysis"
-        "plan" -> "design-and-decompose"
-        "implement" -> "code-generation"
-        "implement-trd" -> "implement-trd"
-        "implement-trd-beads" -> "implement-trd-beads"
-        "fix" -> "fix-issue"
-        "verify" -> "test-and-validate"
-        "release" -> "finalize-and-release"
-      end
-
-    report_name = String.upcase(template_name)
+    report_name = template_name |> String.replace("-", "_") |> String.upcase()
 
     """
     name: #{template_name}
     description: Remote #{template_name} workflow template
     phases:
-      - name: #{phase_name}
+      - name: run-workflow
         prompt: #{template_name}.md
         models:
           default: MiniMax

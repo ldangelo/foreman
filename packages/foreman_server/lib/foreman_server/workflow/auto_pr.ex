@@ -196,7 +196,8 @@ defmodule ForemanServer.Workflow.AutoPR do
 
     body =
       "Foreman run `#{run_id}` complete.\n" <>
-        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "")
+        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
+        findings_section(artifact_path)
 
     cmd =
       @gh_args ++
@@ -226,6 +227,13 @@ defmodule ForemanServer.Workflow.AutoPR do
     case Regex.run(~r"https://github\.com/[^\s]+", output) do
       [url | _] -> String.trim(url)
       nil -> nil
+    end
+  end
+
+  defp findings_section(artifact_path) do
+    case ForemanServer.Workflow.ReviewFindings.extract(artifact_path) do
+      {:ok, block} -> "\n## Unresolved review findings\n\n" <> block <> "\n"
+      :none -> ""
     end
   end
 end

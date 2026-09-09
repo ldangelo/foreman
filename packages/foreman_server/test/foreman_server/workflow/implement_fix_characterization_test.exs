@@ -582,7 +582,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
              "Command should include --foreman flag"
     end
 
-    test "single phase workflow structure",
+    test "workflow structure: fix phase followed by the two review phases",
          %{project_id: project_id} do
       task_id = unique_id("task")
 
@@ -611,15 +611,21 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       snapshot = payload["workflow_snapshot"]
 
-      # Verify single phase
-      assert length(snapshot["phases"]) == 1,
-             "Fix workflow should have exactly one phase"
+      # Verify phase count: fix + the two appended review phases.
+      assert length(snapshot["phases"]) == 3,
+             "Fix workflow should have the fix phase plus two review phases"
 
-      # Verify phase name
-      phase = hd(snapshot["phases"])
+      # Verify phase names and order
+      [fix_phase, coderabbit_phase, repo_rules_phase] = snapshot["phases"]
 
-      assert phase["name"] == "fix",
-             "Phase should be named 'fix'"
+      assert fix_phase["name"] == "fix",
+             "First phase should be named 'fix'"
+
+      assert coderabbit_phase["name"] == "coderabbit-review",
+             "Second phase should be the CodeRabbit review phase"
+
+      assert repo_rules_phase["name"] == "repo-rules-review",
+             "Third phase should be the repository-rules review phase"
     end
 
     test "fix workflow does not require implementation context",

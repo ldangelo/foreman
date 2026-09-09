@@ -2,14 +2,51 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @moduledoc """
   Installs workflow templates into a Foreman workflows directory.
   """
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release prd trd)
-  @template_files Enum.map(@template_names, &"#{&1}.yaml")
 
   # Legacy workflows removed by remove_all/1 — discover, assess, implement, verify,
   # release.  plan.yaml remains (active as of this phase).  Curated workflows
   # (implement-trd, implement-trd-beads) are also preserved.
   @legacy_workflow_names ~w(discover assess implement verify release)
   @legacy_workflow_files Enum.map(@legacy_workflow_names, &"#{&1}.yaml")
+
+  # The bundled manifest filenames, discovered from the actual source
+  # directory at compile time rather than hand-maintained — a hardcoded list
+  # silently disagreed with the bundled directory the moment a workflow was
+  # added or removed, which is exactly what blocked `foreman init --force`
+  # after commit 04ba2383 removed several manifests this list still named
+  # (AGENTS.md §5.5). Used only by `download_templates/2`, the remote-fetch
+  # fallback exercised when no local bundled directory exists at all; the
+  # local-copy path (`bundled_templates_available?/1`, `copy_manifests/2`)
+  # lists its `source_dir` argument at runtime instead, since that argument
+  # need not be the bundled directory (e.g. tests).
+  @bundled_workflows_glob Path.join([
+                            __DIR__,
+                            "..",
+                            "..",
+                            "..",
+                            "priv",
+                            "defaults",
+                            "workflows",
+                            "*.yaml"
+                          ])
+  @bundled_template_sources @bundled_workflows_glob |> Path.wildcard() |> Enum.sort()
+
+  for source <- @bundled_template_sources do
+    @external_resource source
+  end
+
+  @bundled_template_files Enum.map(@bundled_template_sources, &Path.basename/1)
+  @bundled_template_sources_fingerprint :erlang.md5(Enum.join(@bundled_template_sources, "\n"))
+
+  # `@external_resource` only forces a recompile when a file already in the
+  # list changes. A brand-new (or removed) manifest is not reflected until
+  # this module recompiles; `__mix_recompile__?/0` is Mix's supported escape
+  # hatch for compile-time state derived from a glob (mirrors `EventCodec`).
+  @doc false
+  def __mix_recompile__? do
+    current = @bundled_workflows_glob |> Path.wildcard() |> Enum.sort()
+    :erlang.md5(Enum.join(current, "\n")) != @bundled_template_sources_fingerprint
+  end
 
   @default_retry_attempts 3
   @default_retry_delay_ms 250
@@ -102,11 +139,20 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     Application.app_dir(:foreman_server, "priv/defaults/workflows")
   end
 
+  # Discovered from the source directory rather than a hand-maintained list:
+  # a hardcoded set of `.yaml` names silently disagrees with the bundled
+  # directory the moment a workflow is added or removed (AGENTS.md §5.5), and
+  # `Enum.all?/2` over a stale list blocked `foreman init --force` outright
+  # once commit 04ba2383 removed several bundled manifests it still named.
+  defp manifest_filenames(source_dir) do
+    source_dir
+    |> File.ls!()
+    |> Enum.filter(&String.ends_with?(&1, ".yaml"))
+    |> Enum.sort()
+  end
+
   defp bundled_templates_available?(source_dir) do
-    File.dir?(source_dir) and
-      Enum.all?(@template_files, fn filename ->
-        File.regular?(Path.join(source_dir, filename))
-      end)
+    File.dir?(source_dir) and manifest_filenames(source_dir) != []
   end
 
   defp copy_bundled_templates(source_dir, destination_dir) do
@@ -118,7 +164,8 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   end
 
   defp copy_manifests(source_dir, destination_dir) do
-    @template_files
+    source_dir
+    |> manifest_filenames()
     |> Enum.reduce_while({:ok, []}, fn filename, {:ok, paths} ->
       source_path = Path.join(source_dir, filename)
       destination_path = Path.join(destination_dir, filename)
@@ -175,7 +222,7 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     attempts = Keyword.get(opts, :retry_attempts, @default_retry_attempts)
     delay_ms = Keyword.get(opts, :retry_delay_ms, @default_retry_delay_ms)
 
-    @template_files
+    @bundled_template_files
     |> Enum.reduce_while({:ok, []}, fn filename, {:ok, downloads} ->
       case download_template(
              remote_template_url(remote_url, filename),

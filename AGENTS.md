@@ -1151,6 +1151,7 @@ Bundled workflows live in `packages/foreman_server/priv/defaults/workflows/`:
 | `plan` | `--workflow-type plan` | Run the plan workflow (create-prd → create-trd). |
 | `prd` | `--workflow-type prd` | Full ensemble chain: create-prd, refine-prd, create-trd, refine-trd, implement-trd. |
 | `release` | `--workflow-type release` | Finalize outputs, publish deliverables, and complete release steps. |
+| `review` | `--workflow-type review` | Review the run's work with the CodeRabbit CLI and this repository's rules, then open the pull request. |
 | `trd` | `--workflow-type trd` | Create a TRD from a PRD and implement it via the ensemble chain. |
 | `verify` | `--workflow-type verify` | Run validation, testing, and quality checks for the completed work. |
 
