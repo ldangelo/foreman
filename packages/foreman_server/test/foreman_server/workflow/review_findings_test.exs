@@ -34,7 +34,7 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
       assert ReviewFindings.extract_from(contents) == :none
     end
 
-    test "returns :none when the end marker is absent" do
+    test "returns {:error, :unterminated_block} when the end marker is absent" do
       contents = """
       # Report
 
@@ -42,7 +42,7 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
       - `lib/foo.ex:12` Major — unchecked nil
       """
 
-      assert ReviewFindings.extract_from(contents) == :none
+      assert ReviewFindings.extract_from(contents) == {:error, :unterminated_block}
     end
 
     test "returns :none when the block trims to an empty string" do
@@ -63,6 +63,19 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
           long_block <> "\n<!-- FOREMAN_REVIEW_FINDINGS_END -->"
 
       assert {:ok, block} = ReviewFindings.extract_from(contents)
+      assert byte_size(block) <= 4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
+      assert block =~ "… truncated; see the phase artifact for the full list."
+    end
+
+    test "truncates a multi-byte block on a codepoint boundary, never splitting a character" do
+      long_block = String.duplicate("—", 3000)
+
+      contents =
+        "<!-- FOREMAN_REVIEW_FINDINGS_START -->\n" <>
+          long_block <> "\n<!-- FOREMAN_REVIEW_FINDINGS_END -->"
+
+      assert {:ok, block} = ReviewFindings.extract_from(contents)
+      assert String.valid?(block)
       assert byte_size(block) <= 4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
       assert block =~ "… truncated; see the phase artifact for the full list."
     end

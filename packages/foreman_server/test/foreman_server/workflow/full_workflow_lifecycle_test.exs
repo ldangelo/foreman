@@ -409,8 +409,10 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                "phase missing action field"
       end
 
-      # Final phase is the repo-rules-review phase that opens the PR.
-      final_phase = List.last(phases)
+      # Last two phases are the review phases, in order: coderabbit-review
+      # runs first, then repo-rules-review, which opens the PR.
+      [second_to_last_phase, final_phase] = Enum.take(phases, -2)
+      assert second_to_last_phase["name"] == "coderabbit-review"
       assert final_phase["name"] == "repo-rules-review"
     end
 

@@ -36,16 +36,46 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   end
 
   @bundled_template_files Enum.map(@bundled_template_sources, &Path.basename/1)
-  @bundled_template_sources_fingerprint :erlang.md5(Enum.join(@bundled_template_sources, "\n"))
+
+  # Same discovery, for bundled prompt files. `fetch_remote/1`'s
+  # remote-fallback path previously downloaded only `.yaml` manifests, never
+  # `prompts/*.md` — real for every prompt, not just the ones this PR adds,
+  # but only surfaced once a manifest referenced a prompt that a remote
+  # fallback install could never have fetched.
+  @bundled_prompts_glob Path.join([
+                           __DIR__,
+                           "..",
+                           "..",
+                           "..",
+                           "priv",
+                           "defaults",
+                           "workflows",
+                           "prompts",
+                           "*.md"
+                         ])
+  @bundled_prompt_sources @bundled_prompts_glob |> Path.wildcard() |> Enum.sort()
+
+  for source <- @bundled_prompt_sources do
+    @external_resource source
+  end
+
+  @bundled_prompt_files Enum.map(@bundled_prompt_sources, &Path.basename/1)
+
+  @bundled_sources_fingerprint :erlang.md5(
+                                  Enum.join(@bundled_template_sources ++ @bundled_prompt_sources, "\n")
+                                )
 
   # `@external_resource` only forces a recompile when a file already in the
-  # list changes. A brand-new (or removed) manifest is not reflected until
-  # this module recompiles; `__mix_recompile__?/0` is Mix's supported escape
-  # hatch for compile-time state derived from a glob (mirrors `EventCodec`).
+  # list changes. A brand-new (or removed) manifest or prompt is not
+  # reflected until this module recompiles; `__mix_recompile__?/0` is Mix's
+  # supported escape hatch for compile-time state derived from a glob
+  # (mirrors `EventCodec`).
   @doc false
   def __mix_recompile__? do
-    current = @bundled_workflows_glob |> Path.wildcard() |> Enum.sort()
-    :erlang.md5(Enum.join(current, "\n")) != @bundled_template_sources_fingerprint
+    current =
+      (@bundled_workflows_glob |> Path.wildcard()) ++ (@bundled_prompts_glob |> Path.wildcard())
+
+    :erlang.md5(Enum.join(Enum.sort(current), "\n")) != @bundled_sources_fingerprint
   end
 
   @default_retry_attempts 3
@@ -129,11 +159,15 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @spec fetch_remote([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def fetch_remote(opts) when is_list(opts) do
     with {:ok, remote_url} <- remote_url(opts),
-         {:ok, downloads} <- download_templates(remote_url, opts),
-         {:ok, installed_paths} <- write_downloads(target_dir(opts), downloads) do
+         {:ok, manifest_downloads} <- download_templates(remote_url, @bundled_template_files, opts),
+         {:ok, prompt_downloads} <- download_templates(remote_url, prompt_relative_paths(), opts),
+         {:ok, installed_paths} <-
+           write_downloads(target_dir(opts), manifest_downloads ++ prompt_downloads) do
       {:ok, installed_paths}
     end
   end
+
+  defp prompt_relative_paths, do: Enum.map(@bundled_prompt_files, &Path.join("prompts", &1))
 
   defp bundled_source_dir do
     Application.app_dir(:foreman_server, "priv/defaults/workflows")
@@ -218,19 +252,19 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     end
   end
 
-  defp download_templates(remote_url, opts) do
+  defp download_templates(remote_url, relative_paths, opts) do
     attempts = Keyword.get(opts, :retry_attempts, @default_retry_attempts)
     delay_ms = Keyword.get(opts, :retry_delay_ms, @default_retry_delay_ms)
 
-    @bundled_template_files
-    |> Enum.reduce_while({:ok, []}, fn filename, {:ok, downloads} ->
+    relative_paths
+    |> Enum.reduce_while({:ok, []}, fn relative_path, {:ok, downloads} ->
       case download_template(
-             remote_template_url(remote_url, filename),
-             filename,
+             remote_template_url(remote_url, relative_path),
+             relative_path,
              attempts,
              delay_ms
            ) do
-        {:ok, body} -> {:cont, {:ok, [{filename, body} | downloads]}}
+        {:ok, body} -> {:cont, {:ok, [{relative_path, body} | downloads]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -272,11 +306,13 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   defp write_downloads(destination_dir, downloads) do
     with :ok <- File.mkdir_p(destination_dir) do
       downloads
-      |> Enum.reduce_while({:ok, []}, fn {filename, body}, {:ok, paths} ->
-        destination_path = Path.join(destination_dir, filename)
+      |> Enum.reduce_while({:ok, []}, fn {relative_path, body}, {:ok, paths} ->
+        destination_path = Path.join(destination_dir, relative_path)
 
-        case File.write(destination_path, body) do
-          :ok -> {:cont, {:ok, [destination_path | paths]}}
+        with :ok <- File.mkdir_p(Path.dirname(destination_path)),
+             :ok <- File.write(destination_path, body) do
+          {:cont, {:ok, [destination_path | paths]}}
+        else
           {:error, reason} -> {:halt, {:error, {:write_failed, destination_path, reason}}}
         end
       end)

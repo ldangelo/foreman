@@ -282,6 +282,17 @@ defmodule ForemanServer.Workflow.AutoPR do
     case ForemanServer.Workflow.ReviewFindings.extract(artifact_path) do
       {:ok, block} -> "\n## Unresolved review findings\n\n" <> block <> "\n"
       :none -> ""
+      {:error, :unterminated_block} -> unterminated_findings_section(artifact_path)
     end
+  end
+
+  defp unterminated_findings_section(artifact_path) do
+    Logger.warning(
+      "AutoPR could not read unresolved review findings: unterminated block in #{artifact_path}"
+    )
+
+    "\n## Unresolved review findings\n\n" <>
+      "The review phase left an unterminated findings block in `#{artifact_path}`; " <>
+      "its content could not be extracted. Check that artifact directly.\n"
   end
 end
