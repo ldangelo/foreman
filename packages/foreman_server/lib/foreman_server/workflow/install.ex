@@ -61,9 +61,18 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
 
   @bundled_prompt_files Enum.map(@bundled_prompt_sources, &Path.basename/1)
 
+  # Sorted as one combined list, not `sort(a) ++ sort(b)` — the two are not
+  # equivalent once workflow and prompt paths interleave (e.g. `prompts/*`
+  # sorts between `prd.yaml` and `review.yaml`), and `__mix_recompile__?/0`
+  # below compares against a single sort of the combined wildcard results.
+  # A mismatched order here would make it report a spurious recompile need
+  # on every compile even with no file changes (CodeRabbit finding,
+  # install.ex:65-69).
   @bundled_sources_fingerprint :erlang.md5(
                                  Enum.join(
-                                   @bundled_template_sources ++ @bundled_prompt_sources,
+                                   Enum.sort(
+                                     @bundled_template_sources ++ @bundled_prompt_sources
+                                   ),
                                    "\n"
                                  )
                                )
