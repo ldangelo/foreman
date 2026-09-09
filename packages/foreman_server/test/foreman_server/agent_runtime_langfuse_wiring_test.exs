@@ -49,7 +49,7 @@ defmodule ForemanServer.AgentRuntimeLangfuseWiringTest do
         42
       )
 
-      assert_received {:langfuse_emit, "hello", "hi", "openai:gpt-4o-mini", 0.0, _latency_ms,
+      assert_received {:langfuse_emit, "hello", "hi", "openai:gpt-4o-mini", +0.0, _latency_ms,
                        opts}
 
       assert opts[:routed_to] == "openai:gpt-4o-mini"

@@ -290,14 +290,14 @@ defmodule ForemanServer.RunAdmissionTest do
 
     @tag :trd_006
     test "slot gate is outermost — :slot_queued bypasses lease gate and run.start" do
-      project_id = unique_id("project-slot-outermost")
+      _project_id = unique_id("project-slot-outermost")
       run_id = unique_id("run")
       task_id = unique_id("task")
 
       # The payload has NO beads_database_path, so without the slot gate
       # the lease gate would return :proceed and run.start would execute.
       # With :slot_queued, we get {:ok, :slot_queued} without run.start.
-      payload = %{
+      _payload = %{
         run_id: run_id,
         task_id: task_id,
         workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]}

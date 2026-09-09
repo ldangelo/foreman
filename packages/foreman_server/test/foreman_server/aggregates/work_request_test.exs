@@ -63,7 +63,7 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
         submitted_at: System.monotonic_time(:microsecond)
       }
 
-      result = WorkRequest.apply_event(state, %WorkCancelled{work_id: "work-1"})
+      _result = WorkRequest.apply_event(state, %WorkCancelled{work_id: "work-1"})
     end
   end
 
@@ -75,7 +75,7 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
         submitted_at: System.monotonic_time(:microsecond)
       }
 
-      result =
+      _result =
         WorkRequest.apply_event(state, %WorkExecutionCompleted{
           work_id: "work-1",
           run_id: "run-1"
@@ -91,7 +91,7 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
         submitted_at: System.monotonic_time(:microsecond)
       }
 
-      result =
+      _result =
         WorkRequest.apply_event(state, %WorkExecutionFailed{
           work_id: "work-1",
           run_id: "run-1"

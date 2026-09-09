@@ -46,9 +46,9 @@ defmodule ForemanServer.Inbox.PollerTest do
   describe "attach_handler/3 + dispatch" do
     test "attaches a handler and dispatches InboxItemStarted to the calling pid" do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
-      [{TestSource, {:stub_handler, _pid}}] = Poller.handlers()
+      assert Enum.any?(Poller.handlers(), &match?({TestSource, {:stub_handler, _}}, &1))
 
-      assert {:ok, :started, %InboxItemStarted{} = item} =
+      assert {:ok, :started, %InboxItemStarted{} = _item} =
                SharedInbox.ingest(TestSource, %{
                  "id" => "poller-test-#{System.unique_integer([:positive])}"
                })

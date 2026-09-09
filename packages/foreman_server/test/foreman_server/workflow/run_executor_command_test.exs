@@ -596,8 +596,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
 
-    # A non-plan workflow carries no planning context, so no task subject
-    # reaches the env — yet this manifest gates on a discovered document.
+    # Neither plan context nor the task projection carries a title in this
+    # test (blanked below), so no task subject reaches the env — yet this
+    # manifest gates on a discovered document.
     workflow_snapshot = %{
       run_id: run_id,
       workflow_name: "feature",
@@ -639,7 +640,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       claim_payload_json(task_id)
     end)
 
-    task = ProjectionStore.task_projection(task_id)
+    task = ProjectionStore.task_projection(task_id) |> Map.put(:title, "")
 
     run_pid =
       start_supervised!(%{
@@ -806,11 +807,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     assert context["trd_path"] == trd_path
 
-    # Non-plan run: no planning context, so no plan variable is exported at
-    # all — absent rather than blank (AGENTS.md 5.3).
+    # Non-plan run: no planning context, so the exported title now falls
+    # back to the task projection's own title (AGENTS.md 5.3 / 1.5).
     assert_receive {:adapter_env, env}, @poll_timeout_ms
-    refute Map.has_key?(env, "FOREMAN_TASK_TITLE")
-    refute Map.has_key?(env, "FOREMAN_TASK_DESCRIPTION")
+    assert env["FOREMAN_TASK_TITLE"] == "Feature #{task_id}"
+    assert env["FOREMAN_TASK_DESCRIPTION"] == "Feature task description for #{task_id}"
     refute Map.has_key?(env, "FOREMAN_SOURCE_PRD_PATH")
 
     phase_id = Identity.phase_id(run_id, 1)
@@ -959,11 +960,12 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     # worktree BEFORE returning, which is what a real agent would do.
     assert File.regular?(Path.join(working_directory, relative_trd))
 
-    # Non-plan run, this time with an active worktree: still no planning
-    # context, so still no plan variables.
+    # Non-plan run, this time with an active worktree: no planning context,
+    # but the exported title now falls back to the task projection's own
+    # title (AGENTS.md 5.3 / 1.5).
     assert_receive {:adapter_env, env}, @poll_timeout_ms
     assert env["FOREMAN_WORKTREE_PATH"] == working_directory
-    refute Map.has_key?(env, "FOREMAN_TASK_TITLE")
+    assert env["FOREMAN_TASK_TITLE"] == "Feature #{task_id}"
     refute Map.has_key?(env, "FOREMAN_SOURCE_PRD_PATH")
 
     phase_id = Identity.phase_id(run_id, 1)
@@ -1149,13 +1151,6 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   end
 
   ### Setup helpers
-
-  defp start_schema_cache! do
-    case Process.whereis(@cache_name) do
-      nil -> start_supervised!({JsonSchemaCache, name: @cache_name})
-      _pid -> :ok
-    end
-  end
 
   defp stop_schema_cache do
     case Process.whereis(@cache_name) do
@@ -1408,7 +1403,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
          run_id,
          workflow_snapshot,
          database_path,
-         project_path \\ System.tmp_dir!()
+         project_path
        ) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,

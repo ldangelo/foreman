@@ -2,7 +2,7 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
   use ExUnit.Case, async: true
 
   alias ForemanServer.Aggregates.RunSlots
-  alias ForemanServer.Aggregates.RunSlots.{State, Waiter}
+  alias ForemanServer.Aggregates.RunSlots.Waiter
   alias ForemanServer.EventCodec
 
   alias ForemanServer.Events.{

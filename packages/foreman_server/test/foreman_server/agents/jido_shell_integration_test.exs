@@ -329,7 +329,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
   # Helper
   # ---------------------------------------------------------------------------
 
-  defp assert_eventually(fun, attempts \\ 20)
+  defp assert_eventually(fun, attempts)
 
   defp assert_eventually(_fun, 0) do
     flunk("assert_eventually: assertion never passed within #{20} attempts")

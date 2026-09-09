@@ -50,7 +50,7 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
     test "route/2 reflects model change when :foreman_server :litellm :model env is updated" do
       # Store original value
       original = Application.get_env(:foreman_server, :litellm) || []
-      original_model = Keyword.get(original, :model, "auto")
+      _original_model = Keyword.get(original, :model, "auto")
 
       on_exit(fn ->
         Application.put_env(:foreman_server, :litellm, original)
@@ -79,7 +79,7 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
     @tag :litellm_routing_config
     test "route/2 reflects endpoint change when :foreman_server :litellm :endpoint env is updated" do
       original = Application.get_env(:foreman_server, :litellm) || []
-      original_endpoint = Keyword.get(original, :endpoint, "http://localhost:4000")
+      _original_endpoint = Keyword.get(original, :endpoint, "http://localhost:4000")
 
       on_exit(fn ->
         Application.put_env(:foreman_server, :litellm, original)

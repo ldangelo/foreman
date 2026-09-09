@@ -3,7 +3,7 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
   # produces the same output for all bundled manifests with command: phases.
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Workflow.{Catalog, AssetCatalog}
+  alias ForemanServer.Workflow.Catalog
 
   @fixture_path Path.join([
                   __DIR__,

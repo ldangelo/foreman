@@ -42,7 +42,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
   # false-negative timeouts under load that don't reproduce in isolation.
   @poll_timeout_ms 30_000
 
-  defp poll_until(fun, message \\ "condition") do
+  defp poll_until(fun, message) do
     deadline = System.monotonic_time(:millisecond) + @poll_timeout_ms
 
     poll_loop(fun, deadline, message)
@@ -161,7 +161,31 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     # test's admission silently queues instead of reserving a slot — see
     # foreman-test-isolation root causes #2/#3.
     RunSlotsReset.reset!()
+
+    # Root cause: `ForemanServer.TestSupport.ProjectionStoreReset.reset!/1`
+    # defaults to clobbering ProjectionStore's subscribers map (root cause
+    # #4). Any earlier async: false test in the same `mix test` process
+    # that calls the bare `reset!()` (no `keep_subscribers: true`)
+    # permanently drops the Dispatcher's subscription for the rest of the
+    # run — `RunSlotsReset.reset!()`'s own `keep_subscribers: true` can
+    # only preserve a subscription that still exists; it cannot restore
+    # one an earlier test already wiped. Force the live Dispatcher to
+    # resubscribe unconditionally so this test does not depend on test
+    # execution order to see a reacting Dispatcher.
+    ensure_dispatcher_subscribed()
     %{before: dump()}
+  end
+
+  defp ensure_dispatcher_subscribed do
+    case Process.whereis(ForemanServer.Workflow.Dispatcher) do
+      pid when is_pid(pid) ->
+        :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
+          %{state | subscribers: Map.put(state.subscribers, pid, true)}
+        end)
+
+      nil ->
+        :ok
+    end
   end
 
   # ===========================================================================
@@ -187,6 +211,16 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                    path: System.tmp_dir!()
                  }
                })
+
+      poll_until(
+        fn ->
+          case ProjectionStore.project_projection(project_id) do
+            nil -> :pending
+            project -> {:ok, project}
+          end
+        end,
+        "project projection visible"
+      )
 
       # 2. Create task.
       assert {:ok, _} =
@@ -286,7 +320,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     end
 
     test "RunFailed transitions run to status=failed and TaskRunTerminated records failure",
-         %{before: before} do
+         %{before: _before} do
       project_id = unique_id("proj")
       task_id = unique_id("task")
 
@@ -297,6 +331,16 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                  type: "project.register",
                  payload: %{project_id: project_id, name: "Fail Test", path: System.tmp_dir!()}
                })
+
+      poll_until(
+        fn ->
+          case ProjectionStore.project_projection(project_id) do
+            nil -> :pending
+            project -> {:ok, project}
+          end
+        end,
+        "project projection visible"
+      )
 
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{
@@ -449,6 +493,16 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                  type: "project.register",
                  payload: %{project_id: project_id, name: "Slot Test", path: System.tmp_dir!()}
                })
+
+      poll_until(
+        fn ->
+          case ProjectionStore.project_projection(project_id) do
+            nil -> :pending
+            project -> {:ok, project}
+          end
+        end,
+        "project projection visible"
+      )
 
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{

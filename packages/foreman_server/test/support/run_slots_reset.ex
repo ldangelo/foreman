@@ -24,12 +24,7 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
   def reset! do
     stream = "run_slots:global"
 
-    case ForemanServer.EventStore.delete_stream(stream, :any_version, :hard) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, :stream_not_found} -> :ok
-      {:error, :not_supported} -> :ok
-    end
+    hard_delete_with_retry(stream, 3)
 
     case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
       [{pid, _}] when is_pid(pid) ->
@@ -47,5 +42,32 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
 
     ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
     :ok
+  end
+
+  # `EventStore.delete_stream/3` normally returns `:ok | {:ok, _} |
+  # {:error, :stream_not_found} | {:error, :not_supported}`. Under full-suite
+  # concurrent load a background writer (e.g. `RunLifecycleReconciler` or
+  # another test's in-flight `run_slots.release` dispatch) can still be
+  # inserting `stream_events` rows for this same stream at the exact moment
+  # the hard delete runs, which Postgres reports as a
+  # `stream_events_stream_id_fkey` foreign-key violation rather than any of
+  # the shapes above. That is a transient race, not a real error: retry a
+  # bounded number of times with a short backoff so the concurrent writer's
+  # transaction has time to settle, then give up quietly (the next test's
+  # own reset — or this same reset on the next attempt — gets another
+  # chance; raising here would crash the test's `setup` instead of the
+  # test itself).
+  defp hard_delete_with_retry(_stream, 0), do: :ok
+
+  defp hard_delete_with_retry(stream, attempts_left) do
+    case ForemanServer.EventStore.delete_stream(stream, :any_version, :hard) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, :stream_not_found} -> :ok
+      {:error, :not_supported} -> :ok
+      {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}} ->
+        Process.sleep(20)
+        hard_delete_with_retry(stream, attempts_left - 1)
+    end
   end
 end

@@ -53,12 +53,13 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
     {:ok, signal} = Jido.Signal.new(payload)
     {:ok, [_recorded]} = Jido.Signal.Bus.publish(:foreman_jido_signal_bus, [signal])
 
-    # Stage 2: adapter normalizes to ExternalTriggerCommand envelope.
-    # The adapter is allowed to be a no-op / dispatcher-stub;
-    # a `{:error, :not_implemented}` would indicate the integration
-    # point is unwired, which would fail this test.
-    assert SignalToCommandAdapter.handle_signal(topic, payload) !=
-             {:error, :not_implemented}
+    # Stage 2: adapter normalizes to ExternalTriggerCommand envelope and
+    # dispatches it. `handle_signal/3`'s contract (see its @spec) always
+    # returns :ok — failures are logged, never raised or returned as an
+    # error tuple — so the meaningful assertion is that dispatching the
+    # actual CloudEvent payload through the adapter completes cleanly
+    # rather than raising, proving the integration point is wired.
+    assert SignalToCommandAdapter.handle_signal(payload) == :ok
 
     # Stage 3 (smoke): projectors must be configured — if the
     # application config lacks `:projectors`, the projection

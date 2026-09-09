@@ -135,6 +135,8 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         """
       )
 
+      :ok = Catalog.reload()
+
       # Create a real git repo with a TRD file for ImplementationContext.build validation
       project_root = tmp_dir() |> Path.join("git_repo")
       File.mkdir_p!(project_root)

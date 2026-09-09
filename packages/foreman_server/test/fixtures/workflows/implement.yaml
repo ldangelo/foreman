@@ -1,0 +1,6 @@
+name: implement
+description: Minimal test fixture workflow used by tests that resolve workflow_type "implement" through the ambient catalog.
+phases:
+  - name: implement
+    command: "/skill:ensemble-full-implement-trd --foreman"
+    commit: true

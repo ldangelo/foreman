@@ -90,9 +90,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  def claim(project_id, task_id, actor),
-    do: claim(project_id, task_id, actor, nil)
-
   @spec claim(String.t(), String.t(), String.t() | nil, String.t() | nil) ::
           {:ok, term()} | {:error, term()}
   def claim(project_id, task_id, actor, run_id)
@@ -2639,8 +2636,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # here", it is deleted, and reusing the name for "read here" would leave
   # two contradictory meanings in circulation.
   #
-  # Every key is omitted when its value is missing or empty — absent, never
-  # blank — so a non-plan run exports none of them.
+  # Every key is still omitted when its value is missing or empty — absent, never
+  # blank — but plan_subject_env/1 falls back to state.task, so
+  # FOREMAN_TASK_TITLE/FOREMAN_TASK_DESCRIPTION are exported for every workflow,
+  # not only plan runs.
   defp maybe_put_driver_model(opts, model) when is_binary(model) and model != "" do
     Keyword.put(opts, :model, model)
   end

@@ -2,7 +2,6 @@ defmodule ForemanServer.ProjectionStoreWorkTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   setup do
     ForemanServer.TestSupport.ProjectionStoreReset.reset!()

@@ -7,7 +7,7 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
 
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{ProjectStore, ProjectionStore}
+  alias ForemanServer.ProjectStore
   alias ForemanServerWeb.Endpoint
 
   @token "projects-smoke-test-token"

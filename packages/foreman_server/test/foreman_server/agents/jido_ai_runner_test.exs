@@ -8,6 +8,7 @@ defmodule ForemanServer.Agents.JidoAiRunnerTest do
   use ExUnit.Case, async: true
 
   @moduletag :integration
+  @moduletag :external_llm
 
   alias ForemanServer.Agents.JidoAiRunner
 

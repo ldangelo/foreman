@@ -11,7 +11,7 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
       catalog_name = :"AdapterCatalog.Test.#{unique}"
       invocation_name = :"InvocationSupervisor.Test.#{unique}"
 
-      InvocationSupervisorHelpers.schedule_erase()
+      InvocationSupervisorHelpers.schedule_preserve()
 
       pid =
         start_supervised!(
@@ -38,7 +38,7 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
       catalog_name = :"AdapterCatalog.Test.#{unique}"
       invocation_name = :"InvocationSupervisor.Test.#{unique}"
 
-      InvocationSupervisorHelpers.schedule_erase()
+      InvocationSupervisorHelpers.schedule_preserve()
 
       pid =
         start_supervised!(
@@ -62,7 +62,7 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
       catalog_name = :"AdapterCatalog.Test.#{unique}"
       invocation_name = :"InvocationSupervisor.Test.#{unique}"
 
-      InvocationSupervisorHelpers.schedule_erase()
+      InvocationSupervisorHelpers.schedule_preserve()
 
       _pid =
         start_supervised!(

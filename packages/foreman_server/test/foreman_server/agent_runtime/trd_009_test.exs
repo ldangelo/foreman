@@ -27,7 +27,6 @@ defmodule ForemanServer.AgentRuntime.TRD009Test do
   alias ForemanServer.AgentRuntime.{
     AdapterCatalog,
     BackendAdapter,
-    InvocationSupervisor,
     Supervisor
   }
 
@@ -120,12 +119,12 @@ defmodule ForemanServer.AgentRuntime.TRD009Test do
       adapters: []
     ]
 
-    InvocationSupervisorHelpers.schedule_erase()
+    InvocationSupervisorHelpers.schedule_preserve()
     start_supervised!({Supervisor, sup_opts}, id: sup_id)
     {catalog_name, invocation_name}
   end
 
-  defp gen_sentinel(prefix \\ "sentinel") do
+  defp gen_sentinel(prefix) do
     "#{prefix}_#{:erlang.unique_integer([:positive])}_#{System.unique_integer([:positive])}"
   end
 

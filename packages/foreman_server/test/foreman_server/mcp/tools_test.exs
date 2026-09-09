@@ -194,6 +194,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                :current_phase,
                :failure_reason,
                :last_event_at_ms,
+               :latest_stall,
                :project_id,
                :run_id,
                :started_at_ms,

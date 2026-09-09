@@ -48,11 +48,11 @@ defmodule ForemanServer.TaskProvider.RegistryRouteTest do
     def set_priority(_id, _priority, _project_config), do: :ok
 
     @impl true
-    @impl true
     def create(_project_id, _attrs) do
       {:error, ProviderError.new("test", "unavailable")}
     end
 
+    @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
   end
 
@@ -96,11 +96,11 @@ defmodule ForemanServer.TaskProvider.RegistryRouteTest do
     def set_priority(_id, _priority, _project_config), do: :ok
 
     @impl true
-    @impl true
     def create(_project_id, _attrs) do
       {:error, ProviderError.new("test", "unavailable")}
     end
 
+    @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
   end
 

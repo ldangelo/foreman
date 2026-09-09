@@ -1,7 +1,7 @@
 defmodule ForemanServerWeb.CommandControllerTest do
   use ExUnit.Case, async: false
 
-  use Phoenix.ConnTest
+  import Phoenix.ConnTest
 
   @moduletag :controller
 
@@ -35,17 +35,6 @@ defmodule ForemanServerWeb.CommandControllerTest do
       payload: %{
         project_id: unique_id("proj"),
         path: "/tmp/proj"
-      }
-    }
-  end
-
-  defp task_payload do
-    %{
-      type: "task.create",
-      payload: %{
-        task_id: unique_id("task"),
-        project_id: unique_id("proj"),
-        title: "demo"
       }
     }
   end

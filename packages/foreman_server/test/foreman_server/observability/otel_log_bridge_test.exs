@@ -74,7 +74,45 @@ defmodule ForemanServer.Observability.OtelLogBridgeTest do
     [resource_logs] = payload.resource_logs
     [scope_logs] = resource_logs.scope_logs
     assert [_record] = scope_logs.log_records
-    refute_receive {:foreman_signoz_log, _duplicate}, 100
+
+    # The installed handler observes every log emitted by the whole VM, not
+    # just this test's own record — a concurrent, unrelated log (e.g. a
+    # HeartbeatLease expiry from another test) trips a blanket
+    # `refute_receive`. Drain the mailbox for the refute window and only
+    # fail on a genuine duplicate of THIS test's own marker.
+    duplicates = drain_signoz_logs("foreman signoz capture", 100)
+    assert duplicates == []
+  end
+
+  defp drain_signoz_logs(marker, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    drain_signoz_logs(marker, deadline, [])
+  end
+
+  defp drain_signoz_logs(marker, deadline, acc) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      acc
+    else
+      receive do
+        {:foreman_signoz_log, payload} ->
+          if signoz_payload_matches?(payload, marker) do
+            drain_signoz_logs(marker, deadline, [payload | acc])
+          else
+            drain_signoz_logs(marker, deadline, acc)
+          end
+      after
+        remaining -> acc
+      end
+    end
+  end
+
+  defp signoz_payload_matches?(payload, marker) do
+    payload.resource_logs
+    |> Enum.flat_map(& &1.scope_logs)
+    |> Enum.flat_map(& &1.log_records)
+    |> Enum.any?(fn record -> record.body.string_value =~ marker end)
   end
 
   test "rejects an unrecognized FOREMAN_SIGNOZ_LOG_LEVEL-style value instead of defaulting to :info" do

@@ -623,8 +623,8 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       stream = BeadsDbLease.stream_id(db_path)
       holder_run = unique_id("holder-run")
       holder_task = unique_id("holder-task")
-      live_task = unique_id("live-task")
-      live_run = unique_id("live-run")
+      _live_task = unique_id("live-task")
+      _live_run = unique_id("live-run")
       orphan_waiter_run = unique_id("orphan-waiter-run")
       orphan_waiter_task = unique_id("orphan-waiter-task")
 

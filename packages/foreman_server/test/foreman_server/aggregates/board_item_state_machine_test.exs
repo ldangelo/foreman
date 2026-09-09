@@ -3,7 +3,7 @@ defmodule ForemanServer.BoardItemStateMachineTest do
 
   alias ForemanServer.Aggregates.BoardItemStateMachine
 
-  defp created_state(id \\ "bi-1", status \\ "backlog") do
+  defp created_state(id, status) do
     %BoardItemStateMachine.State{
       exists?: true,
       board_item_id: id,
@@ -71,7 +71,7 @@ defmodule ForemanServer.BoardItemStateMachineTest do
     end
 
     test "rejects when board_item already exists" do
-      state = created_state("bi-1")
+      state = created_state("bi-1", "backlog")
 
       assert {:error, {:already_exists, "bi-1"}} =
                BoardItemStateMachine.handle_command(state, %{

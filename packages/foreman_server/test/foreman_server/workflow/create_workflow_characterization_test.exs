@@ -48,7 +48,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
   # Exact copy of merge_gate_characterization_test.exs helper.
   # ===========================================================================
 
-  defp run_state(run_id, task_id \\ "task-1", project_id \\ "project-test") do
+  defp run_state(run_id, task_id, project_id) do
     {:ok, event_spec} =
       Run.handle_command(Run.initial_state(), %{
         type: "run.start",

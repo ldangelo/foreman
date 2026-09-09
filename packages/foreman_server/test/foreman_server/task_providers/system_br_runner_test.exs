@@ -491,7 +491,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
          %{temp_dir: temp_dir} do
       # Strategy: call 1 sleeps and times out (SIGTERM kill). Call 2 succeeds immediately.
       # If the lock is held by call 1, call 2 blocks indefinitely on :global.trans.
-      marker = Path.join(temp_dir, "timeout.flag")
+      _marker = Path.join(temp_dir, "timeout.flag")
       success_log = Path.join(temp_dir, "success.log")
       # Both calls write to success_log so we can verify both ran.
       fake_br_body =

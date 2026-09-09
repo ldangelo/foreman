@@ -168,7 +168,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
 
       boot_pid = Process.whereis(BootReconciliation)
 
-      log =
+      _log =
         ExUnit.CaptureLog.capture_log(fn ->
           # Without the try/catch rescue in release_run_slot/2 this scan
           # propagates `(EXIT) killed` up through handle_info and terminates

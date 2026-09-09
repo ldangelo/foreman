@@ -4,21 +4,9 @@ defmodule ForemanServer.TelemetryTest do
   alias ForemanServer.{CommandRouter, Overwatch, Telemetry}
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.TestSupport.BlockCommand
+  alias ForemanServer.TelemetryTest.Handler
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
-
-  defmodule Handler do
-    def attach_event_handlers(pid, events) do
-      ref = make_ref()
-      handler_id = {:telemetry_test, ref}
-      :ok = :telemetry.attach_many(handler_id, events, &__MODULE__.handle_event/4, {pid, ref})
-      {handler_id, ref}
-    end
-
-    def handle_event(event, measurements, metadata, {pid, ref}) do
-      send(pid, {event, ref, measurements, metadata})
-    end
-  end
 
   defp aggregate_pid(aggregate_id) do
     [{pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id)

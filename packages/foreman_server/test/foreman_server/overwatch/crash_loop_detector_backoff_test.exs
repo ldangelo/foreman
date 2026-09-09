@@ -31,7 +31,6 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
   # Real backoff delays (ms) for reference:
   # attempt 1 → 1000, attempt 2 → 2000, attempt 3 → 4000,
   # attempt 4 → 8000, attempt 5 → 16000, attempt 6 → blocked
-  @backoff_delays [1000, 2000, 4000, 8000, 16_000]
 
   setup do
     RunSlotsReset.reset!()
@@ -40,7 +39,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
-  defp start_tracker_and_detector(opts \\ []) do
+  defp start_tracker_and_detector(opts) do
     window_ms = Keyword.get(opts, :window_ms, 5 * 60 * 1000)
     threshold = Keyword.get(opts, :threshold, 5)
 

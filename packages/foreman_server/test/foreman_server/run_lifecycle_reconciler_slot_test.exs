@@ -3,7 +3,7 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
 
   alias EventStore.RecordedEvent
   alias ForemanServer.Aggregates.{Project, Run}
-  alias ForemanServer.{Identity, RunLifecycleReconciler}
+  alias ForemanServer.RunLifecycleReconciler
 
   @terminal_release [:foreman_server, :reconciler, :terminal_release]
   @orphan_retry [:foreman_server, :reconciler, :orphan_retry]

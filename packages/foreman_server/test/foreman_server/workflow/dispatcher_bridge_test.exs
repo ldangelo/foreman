@@ -30,7 +30,7 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
   # false-negative timeouts under load that don't reproduce in isolation.
   @poll_timeout_ms 30_000
 
-  defp poll_until(fun, message \\ "condition") do
+  defp poll_until(fun, message) do
     deadline = System.monotonic_time(:millisecond) + @poll_timeout_ms
     do_poll(fun, deadline, message)
   end
@@ -89,7 +89,31 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     # test's admission silently queues instead of reserving a slot — see
     # foreman-test-isolation root causes #2/#3.
     RunSlotsReset.reset!()
+
+    # Root cause: `ForemanServer.TestSupport.ProjectionStoreReset.reset!/1`
+    # defaults to clobbering ProjectionStore's subscribers map (root cause
+    # #4). Any earlier async: false test in the same `mix test` process
+    # that calls the bare `reset!()` (no `keep_subscribers: true`)
+    # permanently drops the Dispatcher's subscription for the rest of the
+    # run — `RunSlotsReset.reset!()`'s own `keep_subscribers: true` can
+    # only preserve a subscription that still exists; it cannot restore
+    # one an earlier test already wiped. Force the live Dispatcher to
+    # resubscribe unconditionally so this test does not depend on test
+    # execution order to see a reacting Dispatcher.
+    ensure_dispatcher_subscribed()
     :ok
+  end
+
+  defp ensure_dispatcher_subscribed do
+    case Process.whereis(ForemanServer.Workflow.Dispatcher) do
+      pid when is_pid(pid) ->
+        :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
+          %{state | subscribers: Map.put(state.subscribers, pid, true)}
+        end)
+
+      nil ->
+        :ok
+    end
   end
 
   defp terminate_run_supervisor_children do

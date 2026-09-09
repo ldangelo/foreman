@@ -67,7 +67,7 @@ defmodule ForemanServer.Agents.CmdLoopTest do
       name: "spawn_action",
       schema: [module: [type: :atom, required: true], tag: [type: :string, default: "child"]]
 
-    def run(%{module: mod, tag: tag}, _ctx) do
+    def run(%{module: _mod, tag: tag}, _ctx) do
       child_spec = {Agent, []}
       {:ok, %{spawning: tag}, [%Directive.Spawn{child_spec: child_spec, tag: tag}]}
     end

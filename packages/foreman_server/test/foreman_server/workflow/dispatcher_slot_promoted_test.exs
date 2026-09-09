@@ -12,8 +12,6 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
   use ExUnit.Case, async: false
 
-  alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.Dispatcher
 
   setup_all do

@@ -14,8 +14,6 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
 
   alias ForemanServer.Identity
 
-  defp uuid, do: EventStore.UUID.uuid4()
-
   describe "handle_command/2 — work.submit" do
     test "emits WorkSubmitted with all required fields from empty state" do
       state = %State{}

@@ -417,7 +417,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
   end
 
   test "multi-document stdout with a different task_id does not collapse to :already_terminal",
-       %{temp_dir: temp_dir} do
+       %{temp_dir: _temp_dir} do
     start_schema_cache!()
 
     cached_database_path = "/abs/complete/multi-doc-other.db"

@@ -41,7 +41,7 @@ defmodule ForemanServer.AgentRuntime.AutomaticTelemetryTest do
       adapters: []
     ]
 
-    InvocationSupervisorHelpers.schedule_erase()
+    InvocationSupervisorHelpers.schedule_preserve()
 
     start_supervised!({Supervisor, sup_opts}, id: sup_id)
 

@@ -41,8 +41,8 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     test "Bump returns 1, 2, 3, 4, 5 across successive updates" do
       run_id = unique_id("counter-bump")
 
-      for n <- 1..5 do
-        assert n = :ets.update_counter(@attempts_table, run_id, 1, {run_id, 0})
+      for _n <- 1..5 do
+        assert _n = :ets.update_counter(@attempts_table, run_id, 1, {run_id, 0})
       end
 
       assert 5 == :ets.lookup(@attempts_table, run_id) |> List.first() |> elem(1)

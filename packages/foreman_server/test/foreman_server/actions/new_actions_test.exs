@@ -56,7 +56,7 @@ defmodule ForemanServer.Actions.NewActionsTest do
       assert diff =~ "+second line"
     end
 
-    test "returns :not_a_git_repo when :path is not inside a git working tree", %{tmp: tmp} do
+    test "returns :not_a_git_repo when :path is not inside a git working tree", %{tmp: _tmp} do
       non_repo = Path.join(System.tmp_dir!(), "non-repo-#{System.unique_integer([:positive])}")
       File.mkdir_p!(non_repo)
       on_exit(fn -> File.rm_rf!(non_repo) end)

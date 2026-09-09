@@ -8,8 +8,6 @@ defmodule ForemanServer.Workflow.RunExecutorSourceBranchTest do
   # Full integration tests require application start (see run_executor_test.exs).
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Workflow.RunExecutor
-
   describe "source determination" do
     test "source is :task when task_projection has task_id" do
       task_projection = %{

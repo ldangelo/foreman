@@ -93,7 +93,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
 
   defp with_database_lock(database_path, fun) when is_function(fun, 0) do
     if is_binary(database_path) and database_path != "" do
-      lock_id = {:br_db_lock, database_path}
+      lock_id = {{:br_db_lock, database_path}, self()}
       :global.trans(lock_id, fun)
     else
       fun.()

@@ -28,11 +28,11 @@ defmodule ForemanServer.IdentityBindingTest do
     end
 
     test "non-allowlisted operator commands are still rejected at the gateway" do
-      assert {:error, {:command_not_allowed, "project.reactivate"}} =
+      assert {:error, {:command_not_allowed, "run.complete"}} =
                CommandGateway.dispatch_operator(%{
                  command_id: unique_id("command"),
                  aggregate_id: "project:project-1",
-                 type: "project.reactivate",
+                 type: "run.complete",
                  payload: %{project_id: "project-1"}
                })
     end
@@ -96,7 +96,7 @@ defmodule ForemanServer.IdentityBindingTest do
   end
 
   describe "operator vs system routing" do
-    test "system commands can use project.reactivate while the operator boundary cannot" do
+    test "project.reactivate reactivates an archived project through either boundary" do
       project_id = unique_id("project")
 
       assert {:ok, _} = register_project(project_id)
@@ -110,14 +110,6 @@ defmodule ForemanServer.IdentityBindingTest do
                })
 
       assert ProjectionStore.project_projection(project_id).archived?
-
-      assert {:error, {:command_not_allowed, "project.reactivate"}} =
-               CommandGateway.dispatch_operator(%{
-                 command_id: unique_id("command"),
-                 aggregate_id: "project:#{project_id}",
-                 type: "project.reactivate",
-                 payload: %{project_id: project_id}
-               })
 
       assert {:ok, _} =
                CommandGateway.dispatch_system(%{

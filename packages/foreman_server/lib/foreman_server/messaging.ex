@@ -1,7 +1,7 @@
 defmodule ForemanServer.Messaging do
   @moduledoc "Fast outbound notification enqueue boundary."
 
-  alias ForemanServer.{CommandRouter, Messaging.ConfigResolver, Messaging.Notification}
+  alias ForemanServer.{CommandGateway, Messaging.ConfigResolver, Messaging.Notification}
 
   @enqueue_timeout_ms 250
 
@@ -18,7 +18,7 @@ defmodule ForemanServer.Messaging do
           now_ms: Keyword.get(opts, :now_ms, System.system_time(:millisecond))
         })
 
-      case CommandRouter.dispatch(
+      case CommandGateway.dispatch_system(
              %{
                aggregate_id: "notification:#{notification.correlation_id}",
                type: "notification.enqueue",
