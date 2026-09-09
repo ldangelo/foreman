@@ -735,8 +735,20 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       assert coderabbit_spec[:name] == "coderabbit-review",
              "second phase_spec should be the CodeRabbit review phase"
 
+      assert coderabbit_spec[:action] == :prompt,
+             "coderabbit-review phase_spec should have action :prompt"
+
+      assert coderabbit_spec[:prompt] == "review-coderabbit.md",
+             "coderabbit-review phase_spec should carry its prompt filename"
+
       assert repo_rules_spec[:name] == "repo-rules-review",
              "third phase_spec should be the repository-rules review phase"
+
+      assert repo_rules_spec[:action] == :prompt,
+             "repo-rules-review phase_spec should have action :prompt"
+
+      assert repo_rules_spec[:prompt] == "review-repo-rules.md",
+             "repo-rules-review phase_spec should carry its prompt filename"
 
       # Verify skill name and --foreman flag
       assert phase_spec[:command] =~ "ensemble-fix-issue",
