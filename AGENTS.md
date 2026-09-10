@@ -1907,6 +1907,25 @@ as complete without the application ever being started against it.
 
 ## Known Issues
 
+### Test Failures Are Never Acceptable
+
+**A failing test is a failed build, full stop.** There is no category of
+"acceptable" or "expected" test failure — not a documented flakiness
+pattern, not a pre-existing known issue, not a singleton-pollution artifact.
+If `mix test` reports any failure, the build is red and the work is not
+done. This applies equally to a PR's own changes and to a failure observed
+on `main` after merging: a red run on `main` is a regression to fix
+immediately, not a baseline to accept and move past.
+
+The "38-43 failures on identical `--seed 1234` runs" entry directly below is
+**a bug to fix, not a threshold to tolerate.** Citing it to justify ignoring
+or waving off a new failure is a misuse of this section — it exists to
+document a known root-cause investigation in progress, not to license
+shipping with failing tests. When a failure's signature plausibly matches
+that investigation (shared singleton/projection state leaking across
+tests), that is grounds to prioritize fixing the isolation bug, not grounds
+to close the loop without a passing suite.
+
 ### Elixir Test Suite Non-Determinism (2026-09-02)
 
 `mix test` produces 38-43 failures on identical `--seed 1234` runs. **Hypothesis:**
