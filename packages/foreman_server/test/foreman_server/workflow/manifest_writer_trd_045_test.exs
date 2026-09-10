@@ -286,7 +286,7 @@ defmodule ForemanServer.Workflow.ManifestWriterTRD045Test do
           %{
             "name" => "plan",
             "prompt" => "plan.md",
-            "models" => %{"default" => "MiniMax", "coder" => "Claude"},
+            "models" => %{"default" => "MiniMax"},
             "mail" => %{"onStart" => true, "onComplete" => false},
             "maxTurns" => 50,
             "artifact" => "{task.projectReportsDir}/report.md"
@@ -324,7 +324,7 @@ defmodule ForemanServer.Workflow.ManifestWriterTRD045Test do
       p1 = Enum.at(loaded["phases"], 0)
       assert p1["name"] == "plan"
       assert p1["prompt"] == "plan.md"
-      assert p1["models"] == %{"default" => "MiniMax", "coder" => "Claude"}
+      assert p1["models"] == %{"default" => "MiniMax"}
       assert p1["mail"] == %{"onStart" => true, "onComplete" => false}
       assert p1["maxTurns"] == 50
       assert p1["artifact"] == "{task.projectReportsDir}/report.md"

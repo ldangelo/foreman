@@ -26,6 +26,39 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end)
   end
 
+  test "load!/1: every bundled phase declaring models.default also declares provider: pi" do
+    # This PR added explicit `provider: pi` beside `models.default` on 7
+    # phases across assess/fix/prd/review, specifically so the provider is
+    # never left to be inferred from the model string. Pin it so a future
+    # edit that drops `provider:` from one of those phases (leaving the YAML
+    # syntactically valid and every other test green) fails loudly here
+    # instead of silently reintroducing the inference this PR removed.
+    phases_with_models =
+      Enum.flat_map(@template_names, fn template_name ->
+        path =
+          Application.app_dir(:foreman_server, "priv/defaults/workflows/#{template_name}.yaml")
+
+        assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+        workflow["phases"]
+        |> Enum.filter(&Map.has_key?(&1, "models"))
+        |> Enum.map(&{template_name, &1})
+      end)
+
+    # Guards against the vacuous pass a bare `Enum.each` would allow: if a
+    # future edit stripped every `models:` declaration from the bundled
+    # workflows, the loop below would execute zero assertions and this test
+    # would still report green. 7 is the exact current count (assess: 1,
+    # fix: 2, prd: 2, review: 2).
+    assert length(phases_with_models) == 7
+
+    Enum.each(phases_with_models, fn {template_name, phase} ->
+      assert phase["provider"] == "pi",
+             "#{template_name}.yaml phase #{inspect(phase["name"])} declares " <>
+               "models.default but no (or a non-pi) provider: #{inspect(phase["provider"])}"
+    end)
+  end
+
   test "load!/1 raises when phases are missing" do
     path = write_temp_yaml!("name: broken\ndescription: phases missing\n")
 
@@ -692,6 +725,96 @@ defmodule ForemanServer.Workflow.InterpreterTest do
         ])
 
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+  end
+
+  describe "provider validation" do
+    test "accepts pi and claude" do
+      path = commit_manifest([{"a", "    provider: pi\n"}, {"b", "    provider: claude\n"}])
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "rejects an unsupported provider" do
+      path = commit_manifest([{"a", "    provider: minimax\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"provider\" must be one of/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "a declared provider survives normalization for the executor to read" do
+      path = commit_manifest([{"a", "    provider: claude\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+      spec = ForemanServer.Workflow.PhaseSpec.normalize(hd(workflow["phases"]))
+      assert spec[:provider] == "claude"
+    end
+
+    test "rejects a non-string provider" do
+      path = commit_manifest([{"a", "    provider:\n      nested: true\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"provider\" must be a string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+  end
+
+  describe "models validation" do
+    test "accepts a non-empty default" do
+      path = commit_manifest([{"a", "    models:\n      default: minimax/MiniMax-M2.7\n"}])
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "rejects models without a default" do
+      path = commit_manifest([{"a", "    models:\n      other: x\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a blank models key with the mapping error, not the default error" do
+      path = commit_manifest([{"a", "    models:\n    maxTurns: 9\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models\" must be a mapping with a \"default\" key/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a non-mapping models value" do
+      path = commit_manifest([{"a", "    models: minimax/MiniMax-M2.7\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models\" must be a mapping with a \"default\" key/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects an unexpected key alongside default" do
+      path =
+        commit_manifest([
+          {"a", "    models:\n      default: minimax/MiniMax-M2.7\n      coder: claude\n"}
+        ])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models\" must only declare \"default\"/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects an empty string default" do
+      path = commit_manifest([{"a", "    models:\n      default: \"\"\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a non-string default" do
+      path = commit_manifest([{"a", "    models:\n      default: 123\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
     end
   end
 

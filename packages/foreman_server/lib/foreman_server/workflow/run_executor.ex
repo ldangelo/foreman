@@ -29,6 +29,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.JidoHarness
+  alias ForemanServer.AgentRuntime.JidoHarness.{ModelCatalog, ReadinessCheck}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Idempotency.HeartbeatLease
@@ -230,63 +231,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
         finalize_terminal_and_stop(state, {:plan_context_error, reason})
 
       :ok ->
-        case maybe_claim_task(state) do
-          :ok ->
-            case start_phase_at_index(state, 0) do
-              {:ok, next_state} ->
-                {:noreply, next_state}
-
-              {:noop, next_state} ->
-                {:noreply, next_state}
-
-              {:error, reason} ->
-                # `start_phase_at_index/2` already attempted
-                # → `emit_phase_failure/4` → `emit_run_failure/2` → `run.fail`
-                # before returning this error. If the run is still
-                # non-terminal here it means the very first terminal
-                # dispatch was rejected (transport, aggregate reject,
-                # …) — re-route through the bounded retry helper so
-                # the reason is not dropped on the floor.
-                Logger.error(
-                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
-                  run_id: state.run_id,
-                  task_id: task_id(state),
-                  phase_index: 0,
-                  operation: "run_executor.phase_start",
-                  outcome: "error",
-                  reason: inspect(reason)
-                )
-
-                finalize_terminal_and_stop(state, {:initialization_failed, reason})
-
-              # The phase provisioned a worktree and then failed. Finalize with
-              # THAT state, not the pre-phase one, or `cleanup_run_worktree/2`
-              # cannot see the checkout it is supposed to reclaim.
-              {:error, reason, phase_state} ->
-                Logger.error(
-                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
-                  run_id: state.run_id,
-                  task_id: task_id(state),
-                  phase_index: 0,
-                  operation: "run_executor.phase_start",
-                  outcome: "error",
-                  reason: inspect(reason)
-                )
-
-                finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
-            end
-
-          {:error, reason} ->
-            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+        case preflight_providers_and_models(state) do
+          {:error, failures} ->
+            Logger.warning(
+              "RunExecutor provider/model preflight for #{state.run_id} rejected: #{inspect(failures)}",
               run_id: state.run_id,
               task_id: task_id(state),
-              operation: "run_executor.task_claim",
+              operation: "run_executor.provider_model_preflight",
               outcome: "error",
-              reason: inspect(reason)
+              reason: inspect(failures)
             )
 
-            _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
-            finalize_terminal_and_stop(state, {:claim_failure, reason})
+            _ = dispatch_execution_fail(state, {:provider_model_preflight_failed, failures})
+            finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
+
+          :ok ->
+            handle_kickoff_ready(state)
         end
     end
   end
@@ -396,6 +356,170 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       phase_spec ->
         run_single_phase(state, phase_spec, index)
+    end
+  end
+
+  defp handle_kickoff_ready(state) do
+    case maybe_claim_task(state) do
+      :ok ->
+        case start_phase_at_index(state, 0) do
+          {:ok, next_state} ->
+            {:noreply, next_state}
+
+          {:noop, next_state} ->
+            {:noreply, next_state}
+
+          {:error, reason} ->
+            # `start_phase_at_index/2` already attempted
+            # → `emit_phase_failure/4` → `emit_run_failure/2` → `run.fail`
+            # before returning this error. If the run is still
+            # non-terminal here it means the very first terminal
+            # dispatch was rejected (transport, aggregate reject,
+            # …) — re-route through the bounded retry helper so
+            # the reason is not dropped on the floor.
+            Logger.error(
+              "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              phase_index: 0,
+              operation: "run_executor.phase_start",
+              outcome: "error",
+              reason: inspect(reason)
+            )
+
+            finalize_terminal_and_stop(state, {:initialization_failed, reason})
+
+          # The phase provisioned a worktree and then failed. Finalize with
+          # THAT state, not the pre-phase one, or `cleanup_run_worktree/2`
+          # cannot see the checkout it is supposed to reclaim.
+          {:error, reason, phase_state} ->
+            Logger.error(
+              "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              phase_index: 0,
+              operation: "run_executor.phase_start",
+              outcome: "error",
+              reason: inspect(reason)
+            )
+
+            finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
+        end
+
+      {:error, reason} ->
+        Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.task_claim",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
+        finalize_terminal_and_stop(state, {:claim_failure, reason})
+    end
+  end
+
+  # Skips entirely when a phase declares neither `provider:` nor `models:` —
+  # unmodified phases keep today's behavior exactly (readiness is still
+  # checked later, per-phase, by JidoHarnessAdapter.execute/2 as it always
+  # has been). Only phases that opt into an explicit provider or model pay
+  # for the upfront check, and a run with ANY invalid phase fails once,
+  # before phase 1, naming every bad phase — not one at a time, deep into
+  # the run.
+  defp preflight_providers_and_models(state) do
+    {reversed_failures, _cache} =
+      Enum.reduce(state.phase_specs, {[], %{}}, fn phase_spec, {failures, cache} ->
+        case phase_provider_and_model_check(phase_spec, cache) do
+          {:ok, cache} -> {failures, cache}
+          {{:error, reason}, cache} -> {[reason | failures], cache}
+        end
+      end)
+
+    failures = Enum.reverse(reversed_failures)
+    if failures == [], do: :ok, else: {:error, failures}
+  end
+
+  # `dispatch_task_execution_fail/2` assumes a task-provider-tracked run.
+  # A `:work_request` (non-task) run has no task to fail — it must route
+  # through `dispatch_work_execution_fail/2` instead, exactly like the
+  # existing source-aware branch in `maybe_fail_task/4` (used at in-flight
+  # phase failure) already does for that class of dispatch. The preflight
+  # runs before any phase or task-claim exists, so it needs this same
+  # source check at its own call site rather than reusing `maybe_fail_task/4`,
+  # which expects a phase_spec/phase_index that do not exist yet here.
+  #
+  # The two other unconditional `dispatch_task_execution_fail/2` call sites in
+  # `handle_info(:kickoff, state)` — `:plan_context_error` and `:claim_failure`
+  # — look like the same bug at a glance, but are NOT: both are structurally
+  # unreachable for `:work_request` runs, so they need no equivalent fix.
+  # `maybe_claim_task/1` returns `:ok` immediately when `state.source ==
+  # :work_request`, so `:claim_failure` can never fire for that source.
+  # `plan_context_error/1` only surfaces a `{:error, reason}` that
+  # `plan_context_for/1` stored from `PlanContext.build/1`'s own `{:error,
+  # _}` clause; `fetch_plan_base/1` maps `PlanContext.build/1`'s
+  # `:not_applicable` result (returned for every `work.submit`/work_request
+  # task_projection) to `{:ok, %{}}`, and `merge_implementation_context/2`
+  # has no `{:error, _}` clause at all — it always returns `{:ok, _}`. So
+  # `:plan_context_error` is reachable only through a real `PlanContext.build/1`
+  # failure, which by definition only happens on the task-provider-tracked
+  # path. Preflight (this function) has no such structural exemption: every
+  # run, `:work_request` included, has phase_specs with provider/model
+  # declarations, so it needed the fix; the other two did not.
+  defp dispatch_execution_fail(state, reason) do
+    if state.source == :work_request do
+      dispatch_work_execution_fail(state, reason)
+    else
+      dispatch_task_execution_fail(state, reason)
+    end
+  end
+
+  defp phase_provider_and_model_check(phase_spec, cache) do
+    declared_provider = Map.get(phase_spec, :provider)
+    model = phase_model(phase_spec)
+
+    if is_nil(declared_provider) and is_nil(model) do
+      {:ok, cache}
+    else
+      name = phase_spec_name(phase_spec)
+      provider = JidoHarness.request_provider(%{context: %{"provider" => declared_provider}})
+
+      cond do
+        provider not in JidoHarness.providers() ->
+          {{:error, {:phase_provider_unsupported, name, provider}}, cache}
+
+        not ReadinessCheck.installed?(provider) ->
+          {{:error, {:phase_provider_not_installed, name, provider}}, cache}
+
+        true ->
+          {result, cache} = cached_model_check(cache, provider, model)
+
+          case result do
+            :ok ->
+              {:ok, cache}
+
+            :unchecked ->
+              {:ok, cache}
+
+            {:error, reason} ->
+              {{:error, {:phase_model_invalid, name, provider, model, reason}}, cache}
+          end
+      end
+    end
+  end
+
+  # Model catalog checks are real I/O — `ModelCatalog.check/2` shells to `pi`
+  # and is bounded at up to 5s. Two phases declaring the same {provider,
+  # model} pair (e.g. review.yaml's two review phases) must not pay for that
+  # subprocess twice on the run's kickoff path.
+  defp cached_model_check(cache, provider, model) do
+    case Map.fetch(cache, {provider, model}) do
+      {:ok, result} ->
+        {result, cache}
+
+      :error ->
+        result = ModelCatalog.check(provider, model)
+        {result, Map.put(cache, {provider, model}, result)}
     end
   end
 
@@ -682,24 +806,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       provider = JidoHarness.request_provider(request)
       cwd = working_directory_for(state, worktree_record)
 
-      model =
-        case Map.get(phase_spec, :models) do
-          nil ->
-            nil
-
-          %{"default" => m} when is_binary(m) ->
-            m
-
-          %{default: m} when is_binary(m) ->
-            m
-
-          %{} = models ->
-            v = Map.get(models, :default) || Map.get(models, "default")
-            if is_binary(v), do: v, else: nil
-
-          _ ->
-            nil
-        end
+      model = phase_model(phase_spec)
 
       env =
         foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
@@ -1599,6 +1706,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> Map.merge(state.plan_context || %{})
     |> Map.merge(Map.get(phase_spec, :context) || %{})
     |> map_from_models(phase_spec)
+    |> map_from_provider(phase_spec)
     |> override_working_directory(worktree_record)
   end
 
@@ -1617,23 +1725,46 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # phase_spec.models is %{"default" => "MiniMax"} from YAML,
   # normalized to atom-keyed map by PhaseSpec.normalize/1.
   defp map_from_models(context, spec) do
-    case Map.get(spec, :models) do
+    case phase_model(spec) do
+      nil -> context
+      model -> Map.put(context, :model, model)
+    end
+  end
+
+  # Injects the declared `PhaseSpec.provider` into context AFTER the raw
+  # `context:` merge earlier in this pipe, so an explicit `provider:` field
+  # always wins over anything a phase's free-form `context:` block happens to
+  # also set. `JidoHarness.request_provider/1` reads this same `context.provider`
+  # key either way — this does not change that contract, it adds the
+  # documented, validated path to it.
+  defp map_from_provider(context, spec) do
+    case Map.get(spec, :provider) do
+      value when is_binary(value) and value != "" -> Map.put(context, :provider, value)
+      _ -> context
+    end
+  end
+
+  # Shared by `dispatch_agent/5` (the actual model passed to the driver) and
+  # `preflight_providers_and_models/1` (the live catalog check before phase 1
+  # dispatches) — one extraction, not two hand-written copies of the same
+  # `models.default` lookup.
+  defp phase_model(phase_spec) do
+    case Map.get(phase_spec, :models) do
       nil ->
-        context
+        nil
 
-      %{"default" => model} when is_binary(model) ->
-        Map.put(context, :model, model)
+      %{"default" => m} when is_binary(m) ->
+        m
 
-      %{default: model} when is_binary(model) ->
-        Map.put(context, :model, model)
+      %{default: m} when is_binary(m) ->
+        m
 
       %{} = models ->
-        # Could be string or atom keys; find the default
-        model = Map.get(models, "default") || Map.get(models, :default)
-        if is_binary(model), do: Map.put(context, :model, model), else: context
+        v = Map.get(models, :default) || Map.get(models, "default")
+        if is_binary(v), do: v, else: nil
 
       _ ->
-        context
+        nil
     end
   end
 
