@@ -26,9 +26,18 @@ defmodule ForemanServer.Messaging do
              },
              Keyword.get(opts, :timeout, @enqueue_timeout_ms)
            ) do
-        {:ok, %{"payload" => %{"notification_id" => notification_id}}} -> {:ok, notification_id}
-        {:ok, nil} -> {:error, :not_persisted}
-        {:error, reason} -> {:error, reason}
+        {:ok, %{"payload" => %{"notification_id" => notification_id}}}
+        when is_binary(notification_id) and notification_id != "" ->
+          {:ok, notification_id}
+
+        {:ok, %{"payload" => %{"notification_id" => malformed}}} ->
+          {:error, {:malformed_notification_id, malformed}}
+
+        {:ok, nil} ->
+          {:error, :not_persisted}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
