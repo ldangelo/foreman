@@ -448,6 +448,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # runs before any phase or task-claim exists, so it needs this same
   # source check at its own call site rather than reusing `maybe_fail_task/4`,
   # which expects a phase_spec/phase_index that do not exist yet here.
+  #
+  # The two other unconditional `dispatch_task_execution_fail/2` call sites in
+  # `handle_info(:kickoff, state)` — `:plan_context_error` and `:claim_failure`
+  # — look like the same bug at a glance, but are NOT: both are structurally
+  # unreachable for `:work_request` runs, so they need no equivalent fix.
+  # `maybe_claim_task/1` returns `:ok` immediately when `state.source ==
+  # :work_request`, so `:claim_failure` can never fire for that source.
+  # `plan_context_error/1` only surfaces a `{:error, reason}` that
+  # `plan_context_for/1` stored from `PlanContext.build/1`'s own `{:error,
+  # _}` clause; `fetch_plan_base/1` maps `PlanContext.build/1`'s
+  # `:not_applicable` result (returned for every `work.submit`/work_request
+  # task_projection) to `{:ok, %{}}`, and `merge_implementation_context/2`
+  # has no `{:error, _}` clause at all — it always returns `{:ok, _}`. So
+  # `:plan_context_error` is reachable only through a real `PlanContext.build/1`
+  # failure, which by definition only happens on the task-provider-tracked
+  # path. Preflight (this function) has no such structural exemption: every
+  # run, `:work_request` included, has phase_specs with provider/model
+  # declarations, so it needed the fix; the other two did not.
   defp dispatch_execution_fail(state, reason) do
     if state.source == :work_request do
       dispatch_work_execution_fail(state, reason)

@@ -27,7 +27,7 @@ defmodule ForemanServer.Workflow.InterpreterTest do
   end
 
   test "load!/1: every bundled phase declaring models.default also declares provider: pi" do
-    # This PR added explicit `provider: pi` beside `models.default` on 8
+    # This PR added explicit `provider: pi` beside `models.default` on 7
     # phases across assess/fix/prd/review, specifically so the provider is
     # never left to be inferred from the model string. Pin it so a future
     # edit that drops `provider:` from one of those phases (leaving the YAML
