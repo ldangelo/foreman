@@ -26,6 +26,27 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end)
   end
 
+  test "load!/1: every bundled phase declaring models.default also declares provider: pi" do
+    # This PR added explicit `provider: pi` beside `models.default` on 8
+    # phases across assess/fix/prd/review, specifically so the provider is
+    # never left to be inferred from the model string. Pin it so a future
+    # edit that drops `provider:` from one of those phases (leaving the YAML
+    # syntactically valid and every other test green) fails loudly here
+    # instead of silently reintroducing the inference this PR removed.
+    Enum.each(@template_names, fn template_name ->
+      path = Application.app_dir(:foreman_server, "priv/defaults/workflows/#{template_name}.yaml")
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+      Enum.each(workflow["phases"], fn phase ->
+        if Map.has_key?(phase, "models") do
+          assert phase["provider"] == "pi",
+                 "#{template_name}.yaml phase #{inspect(phase["name"])} declares " <>
+                   "models.default but no (or a non-pi) provider: #{inspect(phase["provider"])}"
+        end
+      end)
+    end)
+  end
+
   test "load!/1 raises when phases are missing" do
     path = write_temp_yaml!("name: broken\ndescription: phases missing\n")
 
