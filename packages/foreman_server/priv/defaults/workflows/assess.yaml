@@ -4,7 +4,7 @@ phases:
   - name: impact-analysis
     prompt: assess.md
     models:
-      default: MiniMax
+      default: minimax/MiniMax-M2.7
     maxTurns: 45
     artifact: "{task.projectReportsDir}/ASSESS_REPORT.md"
     mail:

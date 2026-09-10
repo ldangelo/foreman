@@ -83,6 +83,37 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
+  # Deterministic stand-in for `Jido.Harness.Adapters.Claude` — reports
+  # `installed: false` regardless of the real environment, so the
+  # provider/model preflight's `not ReadinessCheck.installed?(provider)`
+  # branch (`phase_provider_not_installed`) is exercised without depending
+  # on whether `claude` happens to be on PATH in whatever environment the
+  # suite runs in. Mirrors the `PiStub`/`ClaudeStub` shape already used in
+  # test/foreman_server_web/mcp/tools/doctor_test.exs.
+  defmodule ClaudeNotInstalledStub do
+    @behaviour Jido.Harness.Adapter
+
+    @impl true
+    def spec do
+      %Jido.Harness.AdapterSpec{
+        provider: :claude,
+        name: "not-installed claude stub",
+        executable: "claude",
+        capabilities: %Jido.Harness.Capabilities{streaming?: true, resume?: true},
+        normalized_options: [],
+        provider_options: []
+      }
+    end
+
+    @impl true
+    def status(_config) do
+      {:ok, %Jido.Harness.ProviderStatus{provider: :claude, installed: false, compatible: false}}
+    end
+
+    @impl true
+    def run(_request, _context), do: {:error, :not_implemented}
+  end
+
   defmodule TestAdapter do
     @behaviour ForemanServer.AgentRuntime.BackendAdapter
 
@@ -2424,6 +2455,150 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert run.status == "failed"
     assert run.terminal? == true
+  end
+
+  # --------------------------------------------------------------------
+  # Provider/model preflight (run-start gate)
+  # A phase declaring an unsupported `provider:` must fail the WHOLE run
+  # before phase 1 ever dispatches — never reach `maybe_claim_task` or
+  # `start_phase_at_index/2`. "kimi" is deterministic regardless of which
+  # providers happen to be installed in the test environment: it is not in
+  # `JidoHarness.providers/0`, so `phase_provider_and_model_check/1` fails on
+  # the `provider not in JidoHarness.providers()` branch alone, before ever
+  # calling `ReadinessCheck.installed?/1`.
+  # --------------------------------------------------------------------
+
+  test "an unsupported declared provider fails the run before any phase dispatches, naming the phase" do
+    start_schema_cache!()
+    project_id = unique_id("preflight-project")
+    task_id = unique_id("preflight-task")
+    run_id = unique_id("preflight-run")
+    script_key = unique_id("preflight-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("preflight-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    bad_phase = Map.put(phase_spec(script_key, artifact_dir), :provider, "kimi")
+    workflow_snapshot = snapshot([bad_phase])
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    # No BrRunnerMock expectation: the preflight rejects the run before
+    # `maybe_claim_task/1` ever runs, so `br update --claim` is never called.
+    # A stray claim call would fail the test via Mox's unexpected-call error.
+    start_run_executor!(run_id, task_id)
+
+    task =
+      poll_until(
+        fn ->
+          case ProjectionStore.task_projection(task_id) do
+            %{} = t -> if t.status == "failed", do: {:ok, t}, else: nil
+            _ -> nil
+          end
+        end,
+        "task projection to reach failed"
+      )
+
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{} = r -> if r.status == "failed", do: {:ok, r}, else: nil
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed"
+      )
+
+    assert task.status == "failed"
+    assert is_binary(task.failure_reason)
+    assert task.failure_reason =~ ":provider_model_preflight_failed"
+    assert task.failure_reason =~ ":phase_provider_unsupported"
+
+    assert run.status == "failed"
+    assert run.terminal? == true
+
+    # No phase-dispatch side effect: the phase's artifact was never written,
+    # proving the run stopped before `start_phase_at_index/2` ran phase 0.
+    refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
+  end
+
+  test "a declared provider that is not installed fails the run before any phase dispatches" do
+    start_schema_cache!()
+    original_providers = Application.get_env(:jido_harness, :providers)
+    Application.put_env(:jido_harness, :providers, %{claude: ClaudeNotInstalledStub})
+
+    on_exit(fn ->
+      case original_providers do
+        nil -> Application.delete_env(:jido_harness, :providers)
+        providers -> Application.put_env(:jido_harness, :providers, providers)
+      end
+    end)
+
+    project_id = unique_id("preflight-ni-project")
+    task_id = unique_id("preflight-ni-task")
+    run_id = unique_id("preflight-ni-run")
+    script_key = unique_id("preflight-ni-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("preflight-ni-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    bad_phase = Map.put(phase_spec(script_key, artifact_dir), :provider, "claude")
+    workflow_snapshot = snapshot([bad_phase])
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    # No BrRunnerMock expectation: the preflight rejects the run before
+    # `maybe_claim_task/1` ever runs.
+    start_run_executor!(run_id, task_id)
+
+    task =
+      poll_until(
+        fn ->
+          case ProjectionStore.task_projection(task_id) do
+            %{} = t -> if t.status == "failed", do: {:ok, t}, else: nil
+            _ -> nil
+          end
+        end,
+        "task projection to reach failed"
+      )
+
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{} = r -> if r.status == "failed", do: {:ok, r}, else: nil
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed"
+      )
+
+    assert task.status == "failed"
+    assert is_binary(task.failure_reason)
+    assert task.failure_reason =~ ":provider_model_preflight_failed"
+    assert task.failure_reason =~ ":phase_provider_not_installed"
+
+    assert run.status == "failed"
+    assert run.terminal? == true
+
+    refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
   end
 
   test "provider-facing lifecycle calls use the task's external_id, not the Foreman task_id" do

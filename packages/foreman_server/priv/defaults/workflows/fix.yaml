@@ -31,7 +31,7 @@ phases:
   - name: coderabbit-review
     prompt: review-coderabbit.md
     models:
-      default: MiniMax
+      default: minimax/MiniMax-M2.7
     maxTurns: 80
     timeout_minutes: 25
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
@@ -44,7 +44,7 @@ phases:
   - name: repo-rules-review
     prompt: review-repo-rules.md
     models:
-      default: MiniMax
+      default: minimax/MiniMax-M2.7
     maxTurns: 80
     timeout_minutes: 25
     artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"

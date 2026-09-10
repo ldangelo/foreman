@@ -27,6 +27,7 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     :name,
     :prompt,
     :prompt_path,
+    :provider,
     :required_file,
     :stack_pr,
     :timeout_minutes
@@ -100,6 +101,7 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         "requiredFile" => "planning.prd_path",
         "index" => 3,
         "models" => ["m"],
+        "provider" => "pi",
         "maxTurns" => 9,
         "timeout_minutes" => 11,
         "mail" => %{"to" => "x"},
@@ -139,6 +141,12 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
       assert PhaseSpec.normalize(%{"name" => "x", "stack_pr" => true})[:stack_pr] == true
       assert PhaseSpec.normalize(%{"name" => "x", "stack_pr" => false})[:stack_pr] == false
       refute Map.has_key?(PhaseSpec.normalize(%{"name" => "x"}), :stack_pr)
+    end
+
+    test "provider normalizes from both key conventions and stays absent when undeclared" do
+      assert PhaseSpec.normalize(%{"name" => "x", "provider" => "claude"})[:provider] == "claude"
+      assert PhaseSpec.normalize(%{"name" => "x", :provider => "pi"})[:provider] == "pi"
+      refute Map.has_key?(PhaseSpec.normalize(%{"name" => "x"}), :provider)
     end
 
     test "normalize_all preserves phase order" do

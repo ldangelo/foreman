@@ -10,6 +10,7 @@ defmodule ForemanServer.Workflow.Interpreter do
   # Shared with `RunExecutor`, deliberately: the loader's refusal and the
   # executor's run-terminal reporting MUST agree on what "pending" means, and
   # they can only do that by reading one predicate.
+  alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.PhaseSpec
   @required_top_level_keys ~w(name phases)
@@ -47,6 +48,8 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
     validate_phase_prs!(workflow, path)
+    validate_phase_providers!(workflow, path)
+    validate_phase_models!(workflow, path)
     validate_phase_timeouts!(workflow, path)
     validate_commits!(workflow, path)
     {:ok, workflow}
@@ -431,6 +434,64 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_stack_pr_value!(_phase, _index, _path), do: :ok
+
+  defp validate_phase_providers!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_phase_provider_value!(phase, index, path) end)
+  end
+
+  defp validate_phase_provider_value!(phase, index, path) when is_map(phase) do
+    case Map.get(phase, "provider") do
+      nil ->
+        :ok
+
+      value when is_binary(value) ->
+        known = Enum.map(JidoHarness.providers(), &Atom.to_string/1)
+
+        unless value in known do
+          raise Workflow.MissingRequiredPhaseError,
+            message:
+              "workflow template #{path} phase #{index} \"provider\" must be one of #{Enum.join(known, ", ")} (got #{inspect(value)})"
+        end
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message: "workflow template #{path} phase #{index} \"provider\" must be a string"
+    end
+  end
+
+  defp validate_phase_provider_value!(_phase, _index, _path), do: :ok
+
+  defp validate_phase_models!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_phase_models_value!(phase, index, path) end)
+  end
+
+  defp validate_phase_models_value!(phase, index, path) when is_map(phase) do
+    case Map.get(phase, "models") do
+      nil ->
+        :ok
+
+      %{"default" => default} when is_binary(default) and default != "" ->
+        :ok
+
+      %{} = models ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"models.default\" must be a non-empty string (got #{inspect(Map.get(models, "default"))})"
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"models\" must be a mapping with a \"default\" key"
+    end
+  end
+
+  defp validate_phase_models_value!(_phase, _index, _path), do: :ok
 
   # `timeout_minutes:` is PHASE-level and intentionally expressed in minutes,
   # not milliseconds, so workflow authors do not encode runtime internals in

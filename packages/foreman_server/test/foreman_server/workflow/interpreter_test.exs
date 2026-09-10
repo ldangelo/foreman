@@ -695,6 +695,52 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end
   end
 
+  describe "provider validation" do
+    test "accepts pi and claude" do
+      path = commit_manifest([{"a", "    provider: pi\n"}, {"b", "    provider: claude\n"}])
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "rejects an unsupported provider" do
+      path = commit_manifest([{"a", "    provider: minimax\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"provider\" must be one of/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a non-string provider" do
+      path = commit_manifest([{"a", "    provider:\n      nested: true\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"provider\" must be a string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+  end
+
+  describe "models validation" do
+    test "accepts a non-empty default" do
+      path = commit_manifest([{"a", "    models:\n      default: minimax/MiniMax-M2.7\n"}])
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "rejects models without a default" do
+      path = commit_manifest([{"a", "    models:\n      other: x\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a non-mapping models value" do
+      path = commit_manifest([{"a", "    models: minimax/MiniMax-M2.7\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models\" must be a mapping with a \"default\" key/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+  end
+
   defp write_temp_yaml!(contents) do
     directory =
       Path.join(System.tmp_dir!(), "workflow-interpreter-#{System.unique_integer([:positive])}")

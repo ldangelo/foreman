@@ -30,6 +30,7 @@ defmodule ForemanServer.Telemetry do
     :failure
   ]
   @provider_check [:foreman, :dispatch, :provider, :check]
+  @model_check [:foreman, :dispatch, :model, :check]
   @run_stop [:foreman, :dispatch, :run, :stop]
   @mcp_tool_call [:foreman_server, :mcp, :tool, :call]
   @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
@@ -292,6 +293,20 @@ defmodule ForemanServer.Telemetry do
       provider: provider,
       installed: installed,
       install_hint: install_hint
+    })
+  end
+
+  @doc """
+  Emits `[:foreman, :dispatch, :model, :check]`.
+  Metadata whitelist: `provider`, `model`, `valid`.
+  """
+  @spec dispatch_model_check(atom(), String.t(), boolean()) :: :ok
+  def dispatch_model_check(provider, model, valid)
+      when is_atom(provider) and is_binary(model) and is_boolean(valid) do
+    execute(@model_check, %{}, %{
+      provider: provider,
+      model: model,
+      valid: valid
     })
   end
 

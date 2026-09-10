@@ -33,6 +33,7 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     {:required_file, [:required_file, "required_file", "requiredFile"]},
     {:index, [:index, "index"]},
     {:models, [:models, "models"]},
+    {:provider, [:provider, "provider"]},
     {:max_turns, [:max_turns, "max_turns", "maxTurns"]},
     {:timeout_minutes, [:timeout_minutes, "timeout_minutes", "timeoutMinutes"]},
     {:mail, [:mail, "mail"]},
