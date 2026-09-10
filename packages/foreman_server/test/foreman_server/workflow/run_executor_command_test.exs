@@ -640,7 +640,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       claim_payload_json(task_id)
     end)
 
-    task = ProjectionStore.task_projection(task_id) |> Map.put(:title, "")
+    task =
+      ProjectionStore.task_projection(task_id) |> Map.merge(%{title: "", description: ""})
 
     run_pid =
       start_supervised!(%{

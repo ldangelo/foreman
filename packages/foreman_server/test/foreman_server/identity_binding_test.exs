@@ -120,6 +120,30 @@ defmodule ForemanServer.IdentityBindingTest do
                })
 
       refute ProjectionStore.project_projection(project_id).archived?
+
+      operator_project_id = unique_id("project")
+
+      assert {:ok, _} = register_project(operator_project_id)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{operator_project_id}",
+                 type: "project.archive",
+                 payload: %{project_id: operator_project_id}
+               })
+
+      assert ProjectionStore.project_projection(operator_project_id).archived?
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{operator_project_id}",
+                 type: "project.reactivate",
+                 payload: %{project_id: operator_project_id}
+               })
+
+      refute ProjectionStore.project_projection(operator_project_id).archived?
     end
   end
 

@@ -48,13 +48,14 @@ defmodule ForemanServer.Inbox.PollerTest do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
       assert Enum.any?(Poller.handlers(), &match?({TestSource, {:stub_handler, _}}, &1))
 
-      assert {:ok, :started, %InboxItemStarted{} = _item} =
-               SharedInbox.ingest(TestSource, %{
-                 "id" => "poller-test-#{System.unique_integer([:positive])}"
-               })
+      id = "poller-test-#{System.unique_integer([:positive])}"
+
+      assert {:ok, :started, %InboxItemStarted{} = item} =
+               SharedInbox.ingest(TestSource, %{"id" => id})
 
       stats = Poller.synchronize()
       assert stats.started >= 1
+      assert_receive {:inbox_item_started, :stub_handler, ^item}
     end
 
     test "unmatched source does not crash" do
