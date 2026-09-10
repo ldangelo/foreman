@@ -268,8 +268,12 @@ without a TRD is out of scope.
 
 `ForemanServer.Workflow.Catalog` is the supervised GenServer that owns
 every parsed workflow manifest and prompt body in memory and keeps
-them in sync with the on-disk root (`~/.foreman/workflows`,
-hardcoded by `AssetCatalog.default/0`). Phase specs normalize `commit:` and
+them in sync with the on-disk root (`~/.foreman/workflows` by default,
+overridable via `config :foreman_server, :workflow_root` —
+`AssetCatalog.default/0` reads that key before falling back to
+`~/.foreman/workflows`; the test suite points it at a repo-local
+fixture catalog so it never depends on an operator's real directory).
+Phase specs normalize `commit:` and
 `stack_pr:` as boolean phase fields and `timeout_minutes:` (or camelCase `timeoutMinutes:`) as an optional
 positive-integer phase execution timeout in minutes. `stack_pr: true` records a
 phase PR from the single run branch to the recorded run base branch and keeps it
