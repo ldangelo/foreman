@@ -80,5 +80,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
     test "returns {:error, {:catalog_query_failed, _}} on a non-zero exit" do
       assert {:error, {:catalog_query_failed, "boom"}} = ModelCatalog.check(:pi, "broken")
     end
+
+    @tag timeout: 10_000
+    test "returns {:error, {:catalog_query_failed, :timeout}} when the catalog query hangs" do
+      assert {:error, {:catalog_query_failed, :timeout}} = ModelCatalog.check(:pi, "timeout-me")
+    end
   end
 end

@@ -64,6 +64,7 @@ defmodule ForemanServer.Telemetry do
     @task_provider_beads_create_skipped_watcher_import,
     @task_provider_beads_create_failure,
     @provider_check,
+    @model_check,
     @run_stop,
     @mcp_tool_call,
     @mcp_policy_refused,
@@ -298,15 +299,25 @@ defmodule ForemanServer.Telemetry do
 
   @doc """
   Emits `[:foreman, :dispatch, :model, :check]`.
-  Metadata whitelist: `provider`, `model`, `valid`.
+  Metadata whitelist: `provider`, `model`, `valid`, `reason`. `reason` is
+  `nil` on success, otherwise the failure class (e.g. `:model_not_found`,
+  `:catalog_query_failed`) — distinct from `valid: false` so a reporter can
+  tell a bad manifest apart from a broken or timed-out `pi` install.
   """
-  @spec dispatch_model_check(atom(), String.t(), boolean()) :: :ok
-  def dispatch_model_check(provider, model, valid)
-      when is_atom(provider) and is_binary(model) and is_boolean(valid) do
+  @spec dispatch_model_check(atom(), String.t(), :ok | {:error, term()}) :: :ok
+  def dispatch_model_check(provider, model, result)
+      when is_atom(provider) and is_binary(model) do
+    {valid, reason} =
+      case result do
+        :ok -> {true, nil}
+        {:error, error_reason} -> {false, reason_class(error_reason)}
+      end
+
     execute(@model_check, %{}, %{
       provider: provider,
       model: model,
-      valid: valid
+      valid: valid,
+      reason: reason
     })
   end
 

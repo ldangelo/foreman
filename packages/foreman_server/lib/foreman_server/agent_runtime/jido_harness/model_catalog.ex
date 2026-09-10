@@ -38,7 +38,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
         nil -> {:error, {:catalog_query_failed, :timeout}}
       end
 
-    Telemetry.dispatch_model_check(:pi, model, match?(:ok, result))
+    Telemetry.dispatch_model_check(:pi, model, result)
     result
   end
 

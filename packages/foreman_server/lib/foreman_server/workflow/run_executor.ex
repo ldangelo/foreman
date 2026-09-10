@@ -428,38 +428,64 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # before phase 1, naming every bad phase — not one at a time, deep into
   # the run.
   defp preflight_providers_and_models(state) do
-    failures =
-      state.phase_specs
-      |> Enum.map(&phase_provider_and_model_check/1)
-      |> Enum.reject(&(&1 == :ok))
+    {reversed_failures, _cache} =
+      Enum.reduce(state.phase_specs, {[], %{}}, fn phase_spec, {failures, cache} ->
+        case phase_provider_and_model_check(phase_spec, cache) do
+          {:ok, cache} -> {failures, cache}
+          {{:error, reason}, cache} -> {[reason | failures], cache}
+        end
+      end)
 
+    failures = Enum.reverse(reversed_failures)
     if failures == [], do: :ok, else: {:error, failures}
   end
 
-  defp phase_provider_and_model_check(phase_spec) do
+  defp phase_provider_and_model_check(phase_spec, cache) do
     declared_provider = Map.get(phase_spec, :provider)
     model = phase_model(phase_spec)
 
     if is_nil(declared_provider) and is_nil(model) do
-      :ok
+      {:ok, cache}
     else
       name = phase_spec_name(phase_spec)
       provider = JidoHarness.request_provider(%{context: %{"provider" => declared_provider}})
 
       cond do
         provider not in JidoHarness.providers() ->
-          {:error, {:phase_provider_unsupported, name, provider}}
+          {{:error, {:phase_provider_unsupported, name, provider}}, cache}
 
         not ReadinessCheck.installed?(provider) ->
-          {:error, {:phase_provider_not_installed, name, provider}}
+          {{:error, {:phase_provider_not_installed, name, provider}}, cache}
 
         true ->
-          case ModelCatalog.check(provider, model) do
-            :ok -> :ok
-            :unchecked -> :ok
-            {:error, reason} -> {:error, {:phase_model_invalid, name, provider, model, reason}}
+          {result, cache} = cached_model_check(cache, provider, model)
+
+          case result do
+            :ok ->
+              {:ok, cache}
+
+            :unchecked ->
+              {:ok, cache}
+
+            {:error, reason} ->
+              {{:error, {:phase_model_invalid, name, provider, model, reason}}, cache}
           end
       end
+    end
+  end
+
+  # Model catalog checks are real I/O — `ModelCatalog.check/2` shells to `pi`
+  # and is bounded at up to 5s. Two phases declaring the same {provider,
+  # model} pair (e.g. review.yaml's two review phases) must not pay for that
+  # subprocess twice on the run's kickoff path.
+  defp cached_model_check(cache, provider, model) do
+    case Map.fetch(cache, {provider, model}) do
+      {:ok, result} ->
+        {result, cache}
+
+      :error ->
+        result = ModelCatalog.check(provider, model)
+        {result, Map.put(cache, {provider, model}, result)}
     end
   end
 
@@ -1665,23 +1691,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # phase_spec.models is %{"default" => "MiniMax"} from YAML,
   # normalized to atom-keyed map by PhaseSpec.normalize/1.
   defp map_from_models(context, spec) do
-    case Map.get(spec, :models) do
-      nil ->
-        context
-
-      %{"default" => model} when is_binary(model) ->
-        Map.put(context, :model, model)
-
-      %{default: model} when is_binary(model) ->
-        Map.put(context, :model, model)
-
-      %{} = models ->
-        # Could be string or atom keys; find the default
-        model = Map.get(models, "default") || Map.get(models, :default)
-        if is_binary(model), do: Map.put(context, :model, model), else: context
-
-      _ ->
-        context
+    case phase_model(spec) do
+      nil -> context
+      model -> Map.put(context, :model, model)
     end
   end
 

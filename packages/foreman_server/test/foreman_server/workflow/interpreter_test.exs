@@ -709,6 +709,15 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
+    test "a declared provider survives normalization for the executor to read" do
+      path = commit_manifest([{"a", "    provider: claude\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+      spec = ForemanServer.Workflow.PhaseSpec.normalize(hd(workflow["phases"]))
+      assert spec[:provider] == "claude"
+    end
+
     test "rejects a non-string provider" do
       path = commit_manifest([{"a", "    provider:\n      nested: true\n"}])
 
@@ -729,6 +738,14 @@ defmodule ForemanServer.Workflow.InterpreterTest do
 
       assert_raise Workflow.MissingRequiredPhaseError,
                    ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a blank models key with the mapping error, not the default error" do
+      path = commit_manifest([{"a", "    models:\n    maxTurns: 9\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models\" must be a mapping with a \"default\" key/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
 

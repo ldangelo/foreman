@@ -479,6 +479,11 @@ defmodule ForemanServer.Workflow.Interpreter do
       %{"default" => default} when is_binary(default) and default != "" ->
         :ok
 
+      %{} = models when map_size(models) == 0 ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"models\" must be a mapping with a \"default\" key"
+
       %{} = models ->
         raise Workflow.MissingRequiredPhaseError,
           message:

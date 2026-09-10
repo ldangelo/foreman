@@ -2494,6 +2494,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # No BrRunnerMock expectation: the preflight rejects the run before
     # `maybe_claim_task/1` ever runs, so `br update --claim` is never called.
     # A stray claim call would fail the test via Mox's unexpected-call error.
+    LifecycleStore.put(script_key, %{test_pid: self()})
     start_run_executor!(run_id, task_id)
 
     task =
@@ -2529,6 +2530,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # No phase-dispatch side effect: the phase's artifact was never written,
     # proving the run stopped before `start_phase_at_index/2` ran phase 0.
     refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
+
+    # Directly proves no worker was dispatched, not just that its
+    # side effects (claim, artifact) are absent.
+    refute_received {:adapter_execute, _, _}
   end
 
   test "a declared provider that is not installed fails the run before any phase dispatches" do
@@ -2566,6 +2571,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     # No BrRunnerMock expectation: the preflight rejects the run before
     # `maybe_claim_task/1` ever runs.
+    LifecycleStore.put(script_key, %{test_pid: self()})
     start_run_executor!(run_id, task_id)
 
     task =
@@ -2599,6 +2605,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert run.terminal? == true
 
     refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
+
+    refute_received {:adapter_execute, _, _}
   end
 
   test "provider-facing lifecycle calls use the task's external_id, not the Foreman task_id" do
