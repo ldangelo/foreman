@@ -26,7 +26,7 @@ defmodule ForemanServer.Messaging do
              },
              Keyword.get(opts, :timeout, @enqueue_timeout_ms)
            ) do
-        {:ok, %{payload: %{notification_id: notification_id}}} -> {:ok, notification_id}
+        {:ok, %{"payload" => %{"notification_id" => notification_id}}} -> {:ok, notification_id}
         {:ok, nil} -> {:error, :not_persisted}
         {:error, reason} -> {:error, reason}
       end
