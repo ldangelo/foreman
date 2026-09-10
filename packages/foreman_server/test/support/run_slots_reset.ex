@@ -1,6 +1,5 @@
 defmodule ForemanServer.TestSupport.RunSlotsReset do
   @moduledoc false
-  require Logger
   # The `run_slots:global` aggregate is a process-wide singleton (its
   # `aggregate_id` is hardcoded in `RunAdmission.acquire_slot/2` and the
   # dispatcher/release paths). Tests that exercise `RunAdmission.start/3`
@@ -54,23 +53,19 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
   # `stream_events_stream_id_fkey` foreign-key violation rather than any of
   # the shapes above. That is a transient race, not a real error: retry a
   # bounded number of times with a short backoff so the concurrent writer's
-  # transaction has time to settle. Retry exhaustion still returns `:ok`
-  # (raising here would crash the test's `setup` instead of the test
-  # itself), but it is logged loudly: silently continuing with retained
-  # stream events is exactly the kind of latent cross-test contamination
-  # this reset exists to prevent, and a warning at least makes it visible
-  # instead of surfacing later as an unrelated test's mysterious failure.
+  # transaction has time to settle. Retry exhaustion raises: this helper
+  # only ever runs inside a test's own `setup`, where ExUnit catches the
+  # exception and fails that one test with a clear reason — it does not
+  # crash the suite — so there is no reason to prefer silently continuing
+  # with retained `run_slots:global` events, which is exactly the kind of
+  # latent cross-test contamination this reset exists to prevent.
   #
   # `:not_supported` is not transient — it means `enable_hard_deletes` is
   # off, so every reset would forever no-op. That is a config defect, not
   # a race, and raises immediately rather than joining the retry path.
-  defp hard_delete_with_retry(_stream, 0) do
-    Logger.warning(
-      "RunSlotsReset.reset!/0: hard delete of run_slots:global did not complete " <>
-        "after retrying foreign-key conflicts; stream events may remain"
-    )
-
-    :ok
+  defp hard_delete_with_retry(stream, 0) do
+    raise "RunSlotsReset.reset!/0: hard delete of #{stream} did not complete " <>
+            "after retrying foreign-key conflicts; refusing to continue with retained events"
   end
 
   defp hard_delete_with_retry(stream, attempts_left) do

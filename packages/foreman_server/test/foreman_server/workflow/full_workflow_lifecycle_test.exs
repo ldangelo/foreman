@@ -184,7 +184,9 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
         end)
 
       nil ->
-        :ok
+        flunk(
+          "ForemanServer.Workflow.Dispatcher is not running; cannot ensure ProjectionStore subscription"
+        )
     end
   end
 
