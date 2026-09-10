@@ -35,7 +35,8 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
 
   # The `run_slots_backstop_sweep/1` step of `handle_info(:scheduled, state)`
   # reads the real, process-wide `"run_slots:global"` aggregate directly
-  # (not this test's `list_active_runs_fun`/`run_loader_fun` mocks) and
+  # (not this test's `list_active_runs_fun` mock; it still calls
+  # `run_loader_fun` while checking each holder) and
   # dispatches a release through *this test's* `dispatch_fun`/mailbox for
   # every stale holder it finds there. Without the reset above, a holder
   # left behind by an unrelated concurrently-run test (e.g. a `"run-B-*"`
