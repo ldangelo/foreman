@@ -33,17 +33,29 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     # edit that drops `provider:` from one of those phases (leaving the YAML
     # syntactically valid and every other test green) fails loudly here
     # instead of silently reintroducing the inference this PR removed.
-    Enum.each(@template_names, fn template_name ->
-      path = Application.app_dir(:foreman_server, "priv/defaults/workflows/#{template_name}.yaml")
-      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+    phases_with_models =
+      Enum.flat_map(@template_names, fn template_name ->
+        path =
+          Application.app_dir(:foreman_server, "priv/defaults/workflows/#{template_name}.yaml")
 
-      Enum.each(workflow["phases"], fn phase ->
-        if Map.has_key?(phase, "models") do
-          assert phase["provider"] == "pi",
-                 "#{template_name}.yaml phase #{inspect(phase["name"])} declares " <>
-                   "models.default but no (or a non-pi) provider: #{inspect(phase["provider"])}"
-        end
+        assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+        workflow["phases"]
+        |> Enum.filter(&Map.has_key?(&1, "models"))
+        |> Enum.map(&{template_name, &1})
       end)
+
+    # Guards against the vacuous pass a bare `Enum.each` would allow: if a
+    # future edit stripped every `models:` declaration from the bundled
+    # workflows, the loop below would execute zero assertions and this test
+    # would still report green. 7 is the exact current count (assess: 1,
+    # fix: 2, prd: 2, review: 2).
+    assert length(phases_with_models) == 7
+
+    Enum.each(phases_with_models, fn {template_name, phase} ->
+      assert phase["provider"] == "pi",
+             "#{template_name}.yaml phase #{inspect(phase["name"])} declares " <>
+               "models.default but no (or a non-pi) provider: #{inspect(phase["provider"])}"
     end)
   end
 
