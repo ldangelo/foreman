@@ -70,18 +70,17 @@ defmodule ForemanServer.Observability.OtelLogBridgeTest do
 
     Logger.info("foreman signoz capture", run_id: "run-capture", operation: "test")
 
-    assert_receive {:foreman_signoz_log, payload}, 500
+    # The installed handler observes every log emitted by the whole VM, not
+    # just this test's own record, so a blanket `assert_receive` could bind
+    # `payload` to an unrelated concurrent log (e.g. a HeartbeatLease expiry
+    # from another test) instead of this test's own record — and then this
+    # test's own record, still sitting in the mailbox, would misreport as a
+    # "duplicate". Drain the mailbox for the whole window and require
+    # exactly one payload matching this test's own marker.
+    assert [payload] = drain_signoz_logs("foreman signoz capture", 500)
     [resource_logs] = payload.resource_logs
     [scope_logs] = resource_logs.scope_logs
     assert [_record] = scope_logs.log_records
-
-    # The installed handler observes every log emitted by the whole VM, not
-    # just this test's own record — a concurrent, unrelated log (e.g. a
-    # HeartbeatLease expiry from another test) trips a blanket
-    # `refute_receive`. Drain the mailbox for the refute window and only
-    # fail on a genuine duplicate of THIS test's own marker.
-    duplicates = drain_signoz_logs("foreman signoz capture", 100)
-    assert duplicates == []
   end
 
   defp drain_signoz_logs(marker, timeout_ms) do

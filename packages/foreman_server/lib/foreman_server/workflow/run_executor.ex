@@ -90,10 +90,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  @spec claim(String.t(), String.t(), String.t() | nil, String.t() | nil) ::
+  @spec claim(String.t(), String.t(), String.t() | nil, String.t()) ::
           {:ok, term()} | {:error, term()}
   def claim(project_id, task_id, actor, run_id)
-      when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" do
+      when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
+             is_binary(run_id) and run_id != "" do
     with {:ok, provider_module, project_config} <- resolve_provider(project_id, :claim, run_id),
          result <- provider_module.claim(task_id, actor, project_config) do
       maybe_retry_lost_claim(result, provider_module, project_config, task_id)

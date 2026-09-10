@@ -290,18 +290,40 @@ defmodule ForemanServer.RunAdmissionTest do
 
     @tag :trd_006
     test "slot gate is outermost — :slot_queued bypasses lease gate and run.start" do
-      _project_id = unique_id("project-slot-outermost")
+      project_id = unique_id("project-slot-outermost")
       run_id = unique_id("run")
       task_id = unique_id("task")
 
       # The payload has NO beads_database_path, so without the slot gate
       # the lease gate would return :proceed and run.start would execute.
       # With :slot_queued, we get {:ok, :slot_queued} without run.start.
-      _payload = %{
+      payload = %{
         run_id: run_id,
         task_id: task_id,
         workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]}
       }
+
+      # Setup already holds one slot (init_run_id) at capacity 100, but
+      # RunAdmission.start/2 dispatches its own acquire at
+      # RunSlots.Config.max_concurrent_runs() (50 in test config) — fill
+      # every remaining slot at that same capacity so the real admission
+      # call below genuinely finds none free.
+      capacity = ForemanServer.RunSlots.Config.max_concurrent_runs()
+
+      for i <- 1..(capacity - 1) do
+        filler_run_id = unique_id("filler-run-#{i}")
+
+        assert {:ok, _} =
+                 ForemanServer.CommandGateway.dispatch_system(%{
+                   type: "run_slots.acquire",
+                   command_id: "test:fill:#{filler_run_id}",
+                   aggregate_id: "run_slots:global",
+                   payload: %{run_id: filler_run_id, capacity: capacity}
+                 })
+      end
+
+      assert {:ok, :slot_queued} = RunAdmission.start(project_id, payload)
+      assert ProjectionStore.run(run_id) == nil
     end
 
     @tag :trd_006
