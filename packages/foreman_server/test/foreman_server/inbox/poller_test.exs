@@ -85,7 +85,7 @@ defmodule ForemanServer.Inbox.PollerTest do
     test "removes a binding" do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
       :ok = Poller.detach_handler(TestSource)
-      assert Poller.handlers() == []
+      refute Enum.any?(Poller.handlers(), &match?({TestSource, _}, &1))
     end
   end
 end

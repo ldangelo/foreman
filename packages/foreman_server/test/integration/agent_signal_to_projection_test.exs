@@ -28,7 +28,7 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
   end
 
   test "agent signal -> adapter normalizes -> dispatches ExternalTriggerCommand" do
-    topic = "foreman/commands"
+    topic = "com.foreman.command.task_create"
     trigger_id = "trigger-#{System.unique_integer([:positive])}"
     test_pid = self()
 
@@ -40,15 +40,24 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
       "type" => topic,
       "source" => "test-agent",
       "id" => "evt-#{System.unique_integer([:positive])}",
-      # `trigger_id` is required by SignalToCommandAdapter.normalize/1's
-      # dedupe contract (see `require_trigger_id/1`) — without it,
-      # normalization fails before the adapter ever dispatches anything,
-      # and `handle_signal/3` still returns `:ok` per its logged-not-raised
-      # contract for normalization failures. That is what made the
-      # previous version of this test pass even though the payload was
-      # never actually normalized or dispatched.
-      "trigger_id" => trigger_id,
       "data" => %{
+        # `trigger_id` must live under `data`, not as a top-level
+        # CloudEvents attribute: `Jido.Signal.new/1` treats any
+        # unrecognized top-level attribute as an "extension" and nests
+        # it under `signal.extensions` (logged as "Unknown extension
+        # namespace=trigger_id preserved_as=opaque"), and
+        # `SignalToCommandAdapter.to_map/1` — used on the `%Jido.Signal{}`
+        # a real bus subscriber receives — does `Map.from_struct/1`
+        # without flattening `extensions` back to top level. So
+        # `trigger_id_of/1`'s top-level check
+        # (`ce["trigger_id"] || ...`) never finds it once a signal has
+        # round-tripped through the real bus, even though it does find
+        # it on a raw, never-wrapped payload map — which is what made an
+        # earlier version of this test pass while calling
+        # `handle_signal/2` directly on the raw map instead of going
+        # through the bus. `trigger_id_of/1`'s `data` fallback is
+        # unaffected, since `data` is a genuine top-level `Signal` field.
+        "trigger_id" => trigger_id,
         "command" => "task.create",
         "args" => %{
           "workflow_id" => "wf-test",
@@ -57,18 +66,21 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
       }
     }
 
-    # Stage 1: agent publishes signal to the jido_signal Bus.
-    # `Bus.publish/2` takes `(bus, signals)` where `signals` is a list of
-    # `Jido.Signal` structs — build one from the CloudEvent-shaped map.
-    {:ok, signal} = Jido.Signal.new(payload)
-    {:ok, [_recorded]} = Jido.Signal.Bus.publish(:foreman_jido_signal_bus, [signal])
+    capturing_dispatcher = fn envelope ->
+      send(test_pid, {:dispatched_envelope, envelope})
+      {:ok, %{}}
+    end
 
-    # Stage 2: adapter normalizes to an ExternalTriggerCommand envelope
-    # and dispatches it. `handle_signal/3` accepts an injectable
-    # `dispatcher` for exactly this purpose (see its moduledoc): capture
-    # what was actually dispatched instead of asserting only `:ok`, which
-    # `handle_signal/3` returns for a dropped/malformed CloudEvent too and
-    # so proves nothing about dispatch on its own.
+    # Stage 2: subscribe a SignalToCommandAdapter instance to the same
+    # bus/topic a production adapter would use, with an injectable
+    # `dispatcher` (see the module's moduledoc: "Tests can pass a
+    # `:dispatcher` option ... without touching the real gateway").
+    # This exercises the adapter's actual bus subscription and topic
+    # routing (`handle_info({:signal, signal}, state)`), not just its
+    # pure `handle_signal/3` entry point, and captures what was actually
+    # dispatched instead of asserting only `:ok` on a direct call, which
+    # `handle_signal/3` also returns for a dropped/malformed CloudEvent
+    # and so proves nothing about dispatch on its own.
     #
     # This intentionally does not exercise the real default dispatcher
     # (`CommandGateway.dispatch_system/1`): `CommandRouter.aggregate_module_for/1`
@@ -78,12 +90,19 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
     # is a pre-existing defect in `CommandRouter`'s aggregate routing
     # table, unrelated to this adapter or this test, and out of scope
     # here.
-    capturing_dispatcher = fn envelope ->
-      send(test_pid, {:dispatched_envelope, envelope})
-      {:ok, %{}}
-    end
+    adapter_name = :"signal_adapter_#{System.unique_integer([:positive])}"
 
-    assert SignalToCommandAdapter.handle_signal(payload, capturing_dispatcher) == :ok
+    start_supervised!(
+      {SignalToCommandAdapter, [name: adapter_name, dispatcher: capturing_dispatcher]}
+    )
+
+    :ok = SignalToCommandAdapter.subscribe(:foreman_jido_signal_bus, name: adapter_name)
+
+    # Stage 1: agent publishes signal to the jido_signal Bus.
+    # `Bus.publish/2` takes `(bus, signals)` where `signals` is a list of
+    # `Jido.Signal` structs — build one from the CloudEvent-shaped map.
+    {:ok, signal} = Jido.Signal.new(payload)
+    {:ok, [_recorded]} = Jido.Signal.Bus.publish(:foreman_jido_signal_bus, [signal])
 
     assert_receive {:dispatched_envelope, envelope}
     assert envelope.type == "external.trigger"
