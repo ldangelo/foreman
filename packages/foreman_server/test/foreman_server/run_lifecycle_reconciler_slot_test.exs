@@ -31,9 +31,20 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
     :ok
   end
 
-  def handle_telemetry(event, measurements, metadata, pid) do
+  # `:telemetry` handlers are keyed process-wide by event name, not by the
+  # emitting process. Under full-suite load, an unrelated concurrently
+  # running test that dispatches real reconciler-adjacent commands for its
+  # own run ids (e.g. `br_bv_lease_concurrency_test.exs`'s "run-A-*" ids)
+  # can still be settling when this file's tests start, and its telemetry
+  # lands in this handler too, shifting the expected `assert_receive`
+  # sequence out of order. Every test in this file exclusively exercises
+  # `run_id: "run-1"`, so drop anything else at the source instead of
+  # forwarding it into the mailbox.
+  def handle_telemetry(event, measurements, %{run_id: "run-1"} = metadata, pid) do
     send(pid, {:telemetry, event, measurements, metadata})
   end
+
+  def handle_telemetry(_event, _measurements, _metadata, _pid), do: :ok
 
   describe "slot release from terminal event subscription" do
     test "terminal event triggers slot release alongside lease release" do
