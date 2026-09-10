@@ -310,9 +310,9 @@ defmodule ForemanServer.RunAdmissionTest do
       # call below genuinely finds none free.
       capacity = ForemanServer.RunSlots.Config.max_concurrent_runs()
 
-      for i <- 1..(capacity - 1) do
-        filler_run_id = unique_id("filler-run-#{i}")
+      filler_run_ids = for i <- 1..(capacity - 1), do: unique_id("filler-run-#{i}")
 
+      for filler_run_id <- filler_run_ids do
         assert {:ok, _} =
                  ForemanServer.CommandGateway.dispatch_system(%{
                    type: "run_slots.acquire",
@@ -321,6 +321,21 @@ defmodule ForemanServer.RunAdmissionTest do
                    payload: %{run_id: filler_run_id, capacity: capacity}
                  })
       end
+
+      on_exit(fn ->
+        for filler_run_id <- filler_run_ids do
+          try do
+            ForemanServer.CommandGateway.dispatch_system(%{
+              type: "run_slots.release",
+              command_id: "test:fill-cleanup:#{filler_run_id}",
+              aggregate_id: "run_slots:global",
+              payload: %{run_id: filler_run_id}
+            })
+          rescue
+            _ -> :ok
+          end
+        end
+      end)
 
       assert {:ok, :slot_queued} = RunAdmission.start(project_id, payload)
       assert ProjectionStore.run(run_id) == nil
