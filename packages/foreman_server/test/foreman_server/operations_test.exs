@@ -10,7 +10,7 @@ defmodule ForemanServer.OperationsTest do
     end
 
     test "accepts binary run_id" do
-      assert {:error, :not_found} = Operations.inspect_run("run-1")
+      assert {:error, :not_found} = Operations.inspect_run("nonexistent-run-id-binary-check")
     end
   end
 
