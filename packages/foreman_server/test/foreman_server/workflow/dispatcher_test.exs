@@ -19,7 +19,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.Workflow.BootReconciliation
   alias ForemanServer.Workflow.Dispatcher
 
   setup_all do

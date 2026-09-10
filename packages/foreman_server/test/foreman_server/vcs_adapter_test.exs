@@ -15,6 +15,12 @@ defmodule ForemanServer.VcsAdapterTest do
     @impl true
     def create_pr(_path, _opts),
       do: {:ok, %{url: "https://github.com/foo/bar/pull/1", number: 1}}
+
+    @impl true
+    def create_worktree(_repo_path, _worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def clean_worktree(_worktree_path, _opts), do: raise("not used")
   end
 
   defmodule StubTransient do
@@ -35,6 +41,12 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def create_pr(_path, _opts), do: raise("not used")
+
+    @impl true
+    def create_worktree(_repo_path, _worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def clean_worktree(_worktree_path, _opts), do: raise("not used")
   end
 
   defmodule StubAuth do
@@ -55,6 +67,12 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def create_pr(_path, _opts), do: raise("not used")
+
+    @impl true
+    def create_worktree(_repo_path, _worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def clean_worktree(_worktree_path, _opts), do: raise("not used")
   end
 
   defmodule StubSucceedAfterTwo do
@@ -80,6 +98,12 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def create_pr(_path, _opts), do: raise("not used")
+
+    @impl true
+    def create_worktree(_repo_path, _worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def clean_worktree(_worktree_path, _opts), do: raise("not used")
   end
 
   setup do

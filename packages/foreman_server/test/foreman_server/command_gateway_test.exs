@@ -380,7 +380,7 @@ defmodule ForemanServer.CommandGatewayTest do
 
     test "no aggregate_id / no task_id resolves issue id via provider and enriches aggregate_id + payload",
          %{project_id: project_id} do
-      bead_id = "bead-#{:rand.uniform(99999)}"
+      bead_id = "bead-#{System.unique_integer([:positive])}"
 
       expect(BrRunnerMock, :cmd, 1, fn
         {:create, %{title: title, priority: 2, type: "task"}}, _cfg, _opts
@@ -517,7 +517,7 @@ defmodule ForemanServer.CommandGatewayTest do
       File.mkdir_p!(Path.join(project_root, ".beads"))
       File.write!(Path.join([project_root, ".beads", "config.json"]), Jason.encode!(%{}))
 
-      for {args, label} <- [
+      for {args, _label} <- [
             {["init", "-q", "-b", "main"], "init"},
             {["config", "user.email", "test@example.com"], "email"},
             {["config", "user.name", "Test"], "name"},

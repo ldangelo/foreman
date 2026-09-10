@@ -26,7 +26,6 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessIntegrationTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.AgentRuntime
-  alias ForemanServer.AgentRuntime.AdapterCatalog
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck
   alias ForemanServer.AgentRuntime.Supervisor, as: AgentRuntimeSupervisor
@@ -173,7 +172,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessIntegrationTest do
     File.write!(Path.join(bin_dir, "claude"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(bin_dir, "claude"), 0o755)
 
-    InvocationSupervisorHelpers.schedule_erase()
+    InvocationSupervisorHelpers.schedule_preserve()
 
     start_supervised!(
       {AgentRuntimeSupervisor,

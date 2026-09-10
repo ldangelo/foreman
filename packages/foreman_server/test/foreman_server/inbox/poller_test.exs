@@ -46,15 +46,16 @@ defmodule ForemanServer.Inbox.PollerTest do
   describe "attach_handler/3 + dispatch" do
     test "attaches a handler and dispatches InboxItemStarted to the calling pid" do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
-      [{TestSource, {:stub_handler, _pid}}] = Poller.handlers()
+      assert Enum.any?(Poller.handlers(), &match?({TestSource, {:stub_handler, _}}, &1))
+
+      id = "poller-test-#{System.unique_integer([:positive])}"
 
       assert {:ok, :started, %InboxItemStarted{} = item} =
-               SharedInbox.ingest(TestSource, %{
-                 "id" => "poller-test-#{System.unique_integer([:positive])}"
-               })
+               SharedInbox.ingest(TestSource, %{"id" => id})
 
       stats = Poller.synchronize()
       assert stats.started >= 1
+      assert_receive {:inbox_item_started, :stub_handler, ^item}
     end
 
     test "unmatched source does not crash" do
@@ -82,9 +83,12 @@ defmodule ForemanServer.Inbox.PollerTest do
 
   describe "detach_handler/1" do
     test "removes a binding" do
+      :ok = Poller.attach_handler(OtherSource, :other_handler, self())
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
       :ok = Poller.detach_handler(TestSource)
-      assert Poller.handlers() == []
+
+      refute Enum.any?(Poller.handlers(), &match?({TestSource, _}, &1))
+      assert Enum.any?(Poller.handlers(), &match?({OtherSource, {:other_handler, _}}, &1))
     end
   end
 end

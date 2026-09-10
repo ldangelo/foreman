@@ -28,6 +28,7 @@ jobs:
           --health-retries 5
     env:
       MIX_ENV: test
+      SHELL: /bin/bash
       POSTGRES_HOST: localhost
       POSTGRES_PORT: 55432
       POSTGRES_USER: postgres
@@ -72,7 +73,7 @@ jobs:
       - name: Setup database
         run: cd packages/foreman_server && MIX_ENV="test" mix ecto.create && MIX_ENV="test" mix ecto.migrate && MIX_ENV="test" mix event_store.init
       - name: Run tests with coverage
-        run: cd packages/foreman_server && mix test --cover
+        run: cd packages/foreman_server && mix test --cover --warnings-as-errors
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

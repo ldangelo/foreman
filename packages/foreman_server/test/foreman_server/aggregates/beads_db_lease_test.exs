@@ -5,14 +5,6 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseTest do
   alias ForemanServer.Aggregates.BeadsDbLease.{Holder, State, Waiter}
   alias ForemanServer.EventCodec
 
-  alias ForemanServer.Events.{
-    BeadsDbLeaseAcquired,
-    BeadsDbLeaseReleased,
-    BeadsDbLeaseTransferred,
-    BeadsDbLeaseWaiterRegistered,
-    BeadsDbLeaseWaiterRemoved
-  }
-
   describe "initial_state/0" do
     test "returns a non-existent state with no holder and no waiters" do
       state = BeadsDbLease.initial_state()

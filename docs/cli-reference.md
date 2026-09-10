@@ -1327,6 +1327,10 @@ foreman task create --title "Fix login timeout" --description "Session expires t
 | `--trd-path <path>` | — | Project-relative TRD path; required for `--workflow-type implement-trd*` |
 | `--workflow-type <name>` | — | Workflow manifest name (e.g. `fix`, `implement-trd`) |
 
+Manifests resolve against the server's workflow catalog root —
+`~/.foreman/workflows` by default, overridable via
+`config :foreman_server, :workflow_root` — not a client-side allowlist.
+
 ### `foreman task list`
 
 List tasks, optionally filtered by project and status.

@@ -1442,7 +1442,9 @@ adapter dispatch functions. Module declarations (`defmodule … do; use EventSto
 
 `ForemanServer.Workflow.Catalog` is a supervised GenServer that owns every
 parsed workflow manifest and prompt body in memory and keeps them in sync
-with the on-disk root.
+with the on-disk root — `~/.foreman/workflows` by default, overridable via
+`config :foreman_server, :workflow_root` (`AssetCatalog.default/0` reads
+that key first).
 
 - **Auto-install** — `init/1` calls
   `ForemanServer.WorkflowTemplate.Installer` only when the configured root

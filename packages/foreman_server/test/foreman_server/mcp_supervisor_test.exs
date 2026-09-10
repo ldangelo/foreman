@@ -3,7 +3,10 @@ defmodule ForemanServer.MCPSupervisorTest do
 
   describe "MCP config" do
     test "has expected keys with correct defaults" do
-      mcp_config = Application.get_env(:foreman_server, :mcp)
+      opts =
+        Config.Reader.read!(Path.join([__DIR__, "..", "..", "config", "config.exs"]), env: :test)
+
+      mcp_config = opts |> Keyword.fetch!(:foreman_server) |> Keyword.fetch!(:mcp)
 
       assert mcp_config[:enabled] == false
       assert mcp_config[:mount] == "/mcp"
@@ -12,7 +15,10 @@ defmodule ForemanServer.MCPSupervisorTest do
     end
 
     test "config is a keyword list" do
-      mcp_config = Application.get_env(:foreman_server, :mcp)
+      opts =
+        Config.Reader.read!(Path.join([__DIR__, "..", "..", "config", "config.exs"]), env: :test)
+
+      mcp_config = opts |> Keyword.fetch!(:foreman_server) |> Keyword.fetch!(:mcp)
       assert is_list(mcp_config)
     end
   end

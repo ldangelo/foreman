@@ -1,13 +1,12 @@
 defmodule ForemanServer.Workflow.CatalogTest do
   use ExUnit.Case, async: false
 
-  use Phoenix.ConnTest
+  import Phoenix.ConnTest
 
   @endpoint ForemanServerWeb.Endpoint
 
   alias ForemanServer.Workflow.AssetCatalog
   alias ForemanServer.Workflow.Catalog
-  alias ForemanServer.WorkflowTemplate.Installer
 
   setup do
     {:ok, _} = Application.ensure_all_started(:telemetry)

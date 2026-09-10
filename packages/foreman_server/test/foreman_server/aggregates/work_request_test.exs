@@ -64,6 +64,7 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
       }
 
       result = WorkRequest.apply_event(state, %WorkCancelled{work_id: "work-1"})
+      assert result.status == :cancelled
     end
   end
 
@@ -80,6 +81,8 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
           work_id: "work-1",
           run_id: "run-1"
         })
+
+      assert result.status == :succeeded
     end
   end
 
@@ -96,6 +99,8 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
           work_id: "work-1",
           run_id: "run-1"
         })
+
+      assert result.status == :failed
     end
   end
 

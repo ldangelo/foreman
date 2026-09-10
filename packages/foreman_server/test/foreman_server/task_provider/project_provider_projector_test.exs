@@ -47,11 +47,11 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
     def set_priority(_id, _priority, _project_config), do: :ok
 
     @impl true
-    @impl true
     def create(_project_id, _attrs) do
       {:error, ProviderError.new("test", "unavailable")}
     end
 
+    @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     def preflight_database(_database_path, _opts), do: :ok
@@ -97,11 +97,11 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
     def set_priority(_id, _priority, _project_config), do: :ok
 
     @impl true
-    @impl true
     def create(_project_id, _attrs) do
       {:error, ProviderError.new("test", "unavailable")}
     end
 
+    @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     def preflight_database(_database_path, _opts), do: :ok

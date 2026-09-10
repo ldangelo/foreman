@@ -74,6 +74,46 @@ defmodule ForemanServer.Aggregates.RunStallReportedTest do
              })
   end
 
+  test "a malformed field on a duplicate idempotency key is rejected, not silently no-op'd" do
+    state =
+      Run.initial_state()
+      |> Run.apply_event(%{
+        event_type: "RunStarted",
+        payload: %{run_id: "run-1", project_id: "project-1"}
+      })
+      |> Run.apply_event(%{
+        event_type: "RunStallReported",
+        payload: %{
+          run_id: "run-1",
+          phase_id: "phase-1",
+          stall_kind: "messaging_no_progress",
+          policy: "attention",
+          status_effect: "blocked",
+          threshold_ms: 1,
+          idle_ms: 1,
+          detected_at_ms: 1,
+          idempotency_key: "same",
+          reason: "no progress"
+        }
+      })
+
+    assert {:error, {:invalid_stall_kind, "totally_bogus_kind"}} =
+             Run.handle_command(state, %{
+               type: "run.report_stall",
+               payload: %{
+                 run_id: "run-1",
+                 phase_id: "phase-1",
+                 stall_kind: "totally_bogus_kind",
+                 policy: "attention",
+                 threshold_ms: 1,
+                 idle_ms: 1,
+                 detected_at_ms: 1,
+                 idempotency_key: "same",
+                 reason: "no progress"
+               }
+             })
+  end
+
   test "EventCodec registers RunStallReported and rejects unknown fields" do
     payload = %{
       run_id: "run-1",

@@ -1,7 +1,8 @@
 defmodule ForemanServerWeb.MCPRouterTest do
   use ExUnit.Case, async: false
 
-  use Phoenix.ConnTest
+  import Plug.Conn
+  import Phoenix.ConnTest
 
   @endpoint ForemanServerWeb.Endpoint
   @token "mcp-router-test-token"

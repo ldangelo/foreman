@@ -302,6 +302,43 @@ defmodule ForemanServer.RunAdmissionTest do
         task_id: task_id,
         workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]}
       }
+
+      # Setup already holds one slot (init_run_id) at capacity 100, but
+      # RunAdmission.start/2 dispatches its own acquire at
+      # RunSlots.Config.max_concurrent_runs() (50 in test config) — fill
+      # every remaining slot at that same capacity so the real admission
+      # call below genuinely finds none free.
+      capacity = ForemanServer.RunSlots.Config.max_concurrent_runs()
+
+      filler_run_ids = for i <- 1..(capacity - 1), do: unique_id("filler-run-#{i}")
+
+      for filler_run_id <- filler_run_ids do
+        assert {:ok, _} =
+                 ForemanServer.CommandGateway.dispatch_system(%{
+                   type: "run_slots.acquire",
+                   command_id: "test:fill:#{filler_run_id}",
+                   aggregate_id: "run_slots:global",
+                   payload: %{run_id: filler_run_id, capacity: capacity}
+                 })
+      end
+
+      on_exit(fn ->
+        for filler_run_id <- filler_run_ids do
+          try do
+            ForemanServer.CommandGateway.dispatch_system(%{
+              type: "run_slots.release",
+              command_id: "test:fill-cleanup:#{filler_run_id}",
+              aggregate_id: "run_slots:global",
+              payload: %{run_id: filler_run_id}
+            })
+          rescue
+            _ -> :ok
+          end
+        end
+      end)
+
+      assert {:ok, :slot_queued} = RunAdmission.start(project_id, payload)
+      assert ProjectionStore.run(run_id) == nil
     end
 
     @tag :trd_006

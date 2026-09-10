@@ -24,12 +24,7 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
   def reset! do
     stream = "run_slots:global"
 
-    case ForemanServer.EventStore.delete_stream(stream, :any_version, :hard) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, :stream_not_found} -> :ok
-      {:error, :not_supported} -> :ok
-    end
+    hard_delete_with_retry(stream, 3)
 
     case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
       [{pid, _}] when is_pid(pid) ->
@@ -47,5 +42,49 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
 
     ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
     :ok
+  end
+
+  # `EventStore.delete_stream/3` normally returns `:ok | {:ok, _} |
+  # {:error, :stream_not_found} | {:error, :not_supported}`. Under full-suite
+  # concurrent load a background writer (e.g. `RunLifecycleReconciler` or
+  # another test's in-flight `run_slots.release` dispatch) can still be
+  # inserting `stream_events` rows for this same stream at the exact moment
+  # the hard delete runs, which Postgres reports as a
+  # `stream_events_stream_id_fkey` foreign-key violation rather than any of
+  # the shapes above. That is a transient race, not a real error: retry a
+  # bounded number of times with a short backoff so the concurrent writer's
+  # transaction has time to settle. Retry exhaustion raises: this helper
+  # only ever runs inside a test's own `setup`, where ExUnit catches the
+  # exception and fails that one test with a clear reason — it does not
+  # crash the suite — so there is no reason to prefer silently continuing
+  # with retained `run_slots:global` events, which is exactly the kind of
+  # latent cross-test contamination this reset exists to prevent.
+  #
+  # `:not_supported` is not transient — it means `enable_hard_deletes` is
+  # off, so every reset would forever no-op. That is a config defect, not
+  # a race, and raises immediately rather than joining the retry path.
+  defp hard_delete_with_retry(stream, 0) do
+    raise "RunSlotsReset.reset!/0: hard delete of #{stream} did not complete " <>
+            "after retrying foreign-key conflicts; refusing to continue with retained events"
+  end
+
+  defp hard_delete_with_retry(stream, attempts_left) do
+    case ForemanServer.EventStore.delete_stream(stream, :any_version, :hard) do
+      :ok ->
+        :ok
+
+      {:ok, _} ->
+        :ok
+
+      {:error, :stream_not_found} ->
+        :ok
+
+      {:error, :not_supported} ->
+        raise "hard deletes are not enabled for #{stream}"
+
+      {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}} ->
+        Process.sleep(20)
+        hard_delete_with_retry(stream, attempts_left - 1)
+    end
   end
 end

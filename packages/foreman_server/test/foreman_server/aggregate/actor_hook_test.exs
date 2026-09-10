@@ -27,9 +27,8 @@ defmodule ForemanServer.ActorHookTest do
 
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{Aggregate, CommandRouter, TaskProvider}
+  alias ForemanServer.{CommandRouter, TaskProvider}
   alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TestSupport.TestApplication
@@ -116,10 +115,6 @@ defmodule ForemanServer.ActorHookTest do
     end)
   end
 
-  defp extract_event_data({:append, _agg_id, [event_data], _expected_version, _ref, _sender}) do
-    event_data
-  end
-
   defp read_task_created_event(task_id) do
     stream = stream_id_for_task(task_id)
 
@@ -132,7 +127,7 @@ defmodule ForemanServer.ActorHookTest do
     end
   end
 
-  defp issue(id, title \\ "stub task") do
+  defp issue(id, title) do
     %Issue{
       id: id,
       title: title,
@@ -760,9 +755,7 @@ defmodule ForemanServer.ActorHookTest.StubProvider do
   def reopen(_project_id, _task_id, _opts), do: :ok
   @impl true
   def set_priority(_project_id, _task_id, _priority), do: :ok
-  @impl true
   def annotate(_project_id, _task_id, _note), do: :ok
-  @impl true
   def set_assignee(_project_id, _task_id, _assignee), do: :ok
   @impl true
   def add_dependency(_project_id, _task_id, _depends_on), do: :ok

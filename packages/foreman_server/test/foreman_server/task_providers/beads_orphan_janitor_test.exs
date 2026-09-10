@@ -17,7 +17,8 @@ end
 
 defmodule ForemanServer.TaskProviders.FakeJanitor.Adapter do
   @moduledoc false
-  def complete(bead_id, %{transition_comment: tc}, _project_config) do
+  def complete(bead_id, %{transition_comment: tc}, run_id, _project_config)
+      when is_binary(run_id) and run_id != "" do
     send(self(), {:complete_called, bead_id, tc})
     {:ok, %{id: bead_id, status: "closed"}}
   end
@@ -25,7 +26,7 @@ end
 
 defmodule ForemanServer.TaskProviders.FakeJanitor.FailingAdapter do
   @moduledoc false
-  def complete(_bead_id, _payload, _project_config) do
+  def complete(_bead_id, _payload, _run_id, _project_config) do
     {:error, %{retryable?: true, message: "synthetic close failure"}}
   end
 end

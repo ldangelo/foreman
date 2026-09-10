@@ -107,8 +107,7 @@ defmodule ForemanServer.RunExecutorLivenessTest do
 
       # An intruder (some other PID) tries to clear. It must not
       # touch the entry because the owner check fails.
-      intruder = spawn(fn -> :ok end)
-      ref = Process.monitor(intruder)
+      {intruder, ref} = spawn_monitor(fn -> :ok end)
       assert_receive {:DOWN, ^ref, :process, ^intruder, :normal}, 1_000
 
       # The intruder is now dead; clear/2 with its PID must still be

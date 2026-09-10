@@ -1,7 +1,7 @@
 defmodule ForemanServer.Inbox.AttachBridgeAdapterTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Inbox.{AttachBridgeAdapter, InboxItemStarted, SharedInbox}
+  alias ForemanServer.Inbox.{AttachBridgeAdapter, InboxItemStarted}
 
   defmodule FakeSource do
     @behaviour ForemanServer.Inbox.InboxItemCorrelationId

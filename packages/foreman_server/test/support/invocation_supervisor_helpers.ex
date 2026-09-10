@@ -62,10 +62,6 @@ defmodule ForemanServer.TestSupport.InvocationSupervisorHelpers do
     :ok
   end
 
-  # Backwards-compatible alias used in earlier edits.
-  @deprecated "Use schedule_preserve/1 instead"
-  def schedule_erase(opts \\ []), do: schedule_preserve(opts)
-
   defp read_persistent_term do
     case :persistent_term.get(@registry_key, :__not_set__) do
       :__not_set__ -> :__not_set__

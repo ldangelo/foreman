@@ -23,10 +23,16 @@ defmodule ForemanServer.Workflow.AssetCatalog do
     }
   end
 
-  @doc "Default install root: `~/.foreman/workflows`."
+  @doc "Default install root: `~/.foreman/workflows`, overridable via `:foreman_server, :workflow_root`."
   @spec default() :: t()
   def default do
-    new(Path.join([System.user_home!(), ".foreman", "workflows"]))
+    new(
+      Application.get_env(
+        :foreman_server,
+        :workflow_root,
+        Path.join([System.user_home!(), ".foreman", "workflows"])
+      )
+    )
   end
 
   @doc "List every installed workflow manifest path (sorted for determinism)."

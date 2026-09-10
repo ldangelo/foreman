@@ -205,7 +205,7 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
     })
   end
 
-  defp append_run_slot_waiter!(run_id, version, position) do
+  defp append_run_slot_waiter!(run_id, version, _position) do
     ForemanServer.CommandGateway.dispatch_system(%{
       type: "run_slots.acquire",
       aggregate_id: @run_slots_stream,

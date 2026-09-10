@@ -1,7 +1,8 @@
 defmodule ForemanServerWeb.ProjectControllerTest do
   use ExUnit.Case, async: false
 
-  use Phoenix.ConnTest
+  import Plug.Conn
+  import Phoenix.ConnTest
 
   alias EventStore.EventData
   alias ForemanServer.EventStore, as: Store

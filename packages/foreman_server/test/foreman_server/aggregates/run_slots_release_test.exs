@@ -2,9 +2,9 @@ defmodule ForemanServer.Aggregates.RunSlotsReleaseTest do
   use ExUnit.Case, async: true
 
   alias ForemanServer.Aggregates.RunSlots
-  alias ForemanServer.Aggregates.RunSlots.{State, Waiter}
+  alias ForemanServer.Aggregates.RunSlots.Waiter
 
-  alias ForemanServer.Commands.{RunSlotsAcquire, RunSlotsRelease, RunSlotsRemoveWaiter}
+  alias ForemanServer.Commands.{RunSlotsRelease, RunSlotsRemoveWaiter}
 
   alias ForemanServer.Events.{
     RunSlotAcquired,

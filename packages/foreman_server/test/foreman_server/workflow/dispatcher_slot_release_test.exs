@@ -1,14 +1,7 @@
 defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
   use ExUnit.Case, async: false
 
-  alias EventStore.RecordedEvent
-  alias ForemanServer.Aggregates.BeadsDbLease
-  alias ForemanServer.CommandGateway
-  alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.ProjectionStore
-  alias ForemanServer.Workflow.BootReconciliation
   alias ForemanServer.Workflow.Dispatcher
-  alias ForemanServer.TestSupport.RunSlotsReset
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:telemetry)

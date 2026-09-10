@@ -1,7 +1,7 @@
 defmodule ForemanServer.Messaging do
   @moduledoc "Fast outbound notification enqueue boundary."
 
-  alias ForemanServer.{CommandRouter, Messaging.ConfigResolver, Messaging.Notification}
+  alias ForemanServer.{CommandGateway, Messaging.ConfigResolver, Messaging.Notification}
 
   @enqueue_timeout_ms 250
 
@@ -18,7 +18,7 @@ defmodule ForemanServer.Messaging do
           now_ms: Keyword.get(opts, :now_ms, System.system_time(:millisecond))
         })
 
-      case CommandRouter.dispatch(
+      case CommandGateway.dispatch_system(
              %{
                aggregate_id: "notification:#{notification.correlation_id}",
                type: "notification.enqueue",
@@ -26,10 +26,18 @@ defmodule ForemanServer.Messaging do
              },
              Keyword.get(opts, :timeout, @enqueue_timeout_ms)
            ) do
-        {:ok, %{payload: %{notification_id: notification_id}}} -> {:ok, notification_id}
-        {:ok, %{payload: %{"notification_id" => notification_id}}} -> {:ok, notification_id}
-        {:ok, nil} -> {:error, :not_persisted}
-        {:error, reason} -> {:error, reason}
+        {:ok, %{"payload" => %{"notification_id" => notification_id}}}
+        when is_binary(notification_id) and notification_id != "" ->
+          {:ok, notification_id}
+
+        {:ok, %{"payload" => %{"notification_id" => malformed}}} ->
+          {:error, {:malformed_notification_id, malformed}}
+
+        {:ok, nil} ->
+          {:error, :not_persisted}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end

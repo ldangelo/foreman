@@ -91,7 +91,7 @@ defmodule ForemanServer.Workflow.CatalogWriterTest do
                CatalogWriter.write_manifest("test.yaml", manifest)
     end
 
-    test "overwrites existing manifest", %{tmp: tmp} do
+    test "overwrites existing manifest", %{tmp: _tmp} do
       manifest_v1 = %{
         "name" => "test-workflow",
         "description" => "v1",

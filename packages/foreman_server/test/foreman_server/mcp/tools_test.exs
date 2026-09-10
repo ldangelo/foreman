@@ -145,6 +145,23 @@ defmodule ForemanServer.MCP.ToolsTest do
 
   describe "foreman_run_status" do
     test "returns bounded DTO for an active run with current in-progress phase" do
+      latest_stall = %{
+        run_id: "run-1",
+        task_id: "task-1",
+        phase_id: "phase-2",
+        phase_index: 2,
+        phase_name: "build",
+        stall_kind: "idle_timeout",
+        policy: "warn",
+        status_effect: nil,
+        threshold_ms: 60_000,
+        idle_ms: 65_000,
+        activity_at_ms: 25,
+        detected_at_ms: 90,
+        idempotency_key: "run-1:phase-2:stall-1",
+        reason: "no activity"
+      }
+
       run = %{
         run_id: "run-1",
         status: "in_progress",
@@ -155,6 +172,7 @@ defmodule ForemanServer.MCP.ToolsTest do
         started_at_ms: 10,
         last_event_at_ms: 30,
         failure_reason: nil,
+        latest_stall: latest_stall,
         secret: "not-in-status"
       }
 
@@ -189,11 +207,13 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert dto.task_id == "task-1"
       assert dto.workflow_name == "implement"
       assert dto.current_phase.phase_id == "phase-2"
+      assert dto.latest_stall == latest_stall
 
       assert dto |> Map.from_struct() |> Map.keys() |> Enum.sort() == [
                :current_phase,
                :failure_reason,
                :last_event_at_ms,
+               :latest_stall,
                :project_id,
                :run_id,
                :started_at_ms,

@@ -212,7 +212,7 @@ defmodule ForemanServer.OverwatchTest do
     end
 
     test "threads the project's env map into the adapter's start_link args" do
-      alias ForemanServer.{CommandRouter, WorkerEnvironment}
+      alias ForemanServer.CommandRouter
 
       start_overwatch()
       project_id = "project-env-thread-#{uuid()}"

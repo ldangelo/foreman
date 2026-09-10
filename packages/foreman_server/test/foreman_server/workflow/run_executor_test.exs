@@ -17,6 +17,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
   alias ForemanServer.Workflow.RunExecutor
+  alias ForemanServer.Workflow.{AssetCatalog, Catalog}
 
   @cache_name :foreman_server_json_schema_cache
   @route_ok_event [:foreman_server, :task_provider, :registry, :route, :ok]
@@ -40,6 +41,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     def test_pid(script_key) do
       Agent.get(__MODULE__, &get_in(&1, [script_key, :test_pid]))
+    end
+
+    def probe_driver_opts?(script_key) do
+      Agent.get(__MODULE__, &get_in(&1, [script_key, :probe_driver_opts])) == true
     end
 
     def take(script_key, field, default) do
@@ -216,7 +221,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
           send(pid, {:adapter_env, env})
         end
 
-        send(pid, {:adapter_driver_opts, Keyword.get(state, :driver_opts, [])})
+        if LifecycleStore.probe_driver_opts?(script_key) do
+          send(pid, {:adapter_driver_opts, Keyword.get(state, :driver_opts, [])})
+        end
       end
 
       result = LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
@@ -421,7 +428,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     phase = Map.put(phase_spec(script_key, artifact_dir), :timeout_minutes, 1)
     workflow_snapshot = snapshot([phase])
 
-    LifecycleStore.put(script_key, %{test_pid: test_pid})
+    LifecycleStore.put(script_key, %{test_pid: test_pid, probe_driver_opts: true})
 
     seed_project_task_and_run!(
       project_id,
@@ -1082,12 +1089,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute Regex.match?(~r/\.\s*reopen\(/, source)
   end
 
-  test "RunExecutor.claim/3 resolves BeadsAdapter via Registry.route for short-name providers" do
+  test "RunExecutor.claim/4 resolves BeadsAdapter via Registry.route for short-name providers" do
     start_schema_cache!()
 
     test_pid = self()
     project_id = unique_id("project")
     task_id = unique_id("task")
+    run_id = unique_id("run")
     database_path = unique_database_path(unique_id("db"))
 
     seed_project!(project_id, project_task_provider(database_path))
@@ -1114,7 +1122,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
        }}
     end)
 
-    result = RunExecutor.claim(project_id, task_id, "foreman-runner")
+    result = RunExecutor.claim(project_id, task_id, "foreman-runner", run_id)
 
     refute match?({:error, :task_provider_not_configured}, result)
     assert {:ok, %Issue{status: "in_progress", id: ^task_id}} = result
@@ -1630,7 +1638,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                fn ->
                  case ProjectionStore.task_projection(task_id) do
                    %{status: "failed"} = task -> {:ok, task}
-                   other -> :retry
+                   _other -> :retry
                  end
                end,
                "task failed after provisioning refused (bad implementation_key)"
@@ -1739,7 +1747,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                fn ->
                  case ProjectionStore.task_projection(task_id) do
                    %{status: "failed"} = task -> {:ok, task}
-                   other -> :retry
+                   _other -> :retry
                  end
                end,
                "task failed after provisioning refused (missing trd_path)"
@@ -1987,40 +1995,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         [%{adapter: module} | _] -> module
         _ -> nil
       end
-  end
-
-  defp current_backend_name do
-    configured =
-      Application.get_env(:foreman_server, :agent_runtime, [])
-      |> Keyword.get(:adapters, [])
-      |> Enum.find_value(fn
-        adapter when is_atom(adapter) ->
-          name = adapter.name()
-
-          case AdapterCatalog.lookup(name) do
-            {:ok, ^adapter} ->
-              if adapter.available?(), do: name, else: nil
-
-            _ ->
-              nil
-          end
-
-        _ ->
-          nil
-      end)
-
-    configured ||
-      AdapterCatalog.routing_snapshot()
-      |> Enum.find_value(fn
-        %{name: name, adapter: adapter, available: true} ->
-          case AdapterCatalog.lookup(name) do
-            {:ok, ^adapter} -> name
-            _ -> nil
-          end
-
-        _ ->
-          nil
-      end)
   end
 
   defp start_telemetry_collector(events) do
@@ -2556,7 +2530,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                fn ->
                  case ProjectionStore.task_projection(task_id) do
                    %{status: "closed"} = t -> {:ok, t}
-                   other -> :retry
+                   _other -> :retry
                  end
                end,
                "task projection to reach closed"
@@ -2824,6 +2798,44 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         test_pid: self(),
         adapter_results: [{:ok, "ok", %{}}]
       })
+
+      # This test asserts on the actual rendered content of the bundled
+      # `implement.md` prompt, so — unlike the ambient-catalog tests that
+      # only exercise dispatch and never assert on workflow content — it
+      # needs its own isolated Catalog carrying that real prompt, rather
+      # than reading through the shared `implement.yaml`-only fixture root.
+      prompts_root = Path.join(temp_dir, "isolated_prompt_catalog")
+      File.mkdir_p!(Path.join(prompts_root, "prompts"))
+
+      File.cp!(
+        Path.join([
+          File.cwd!(),
+          "priv",
+          "defaults",
+          "workflows",
+          "prompts",
+          "implement.md"
+        ]),
+        Path.join([prompts_root, "prompts", "implement.md"])
+      )
+
+      prev_catalog = Application.get_env(:foreman_server, :workflow_catalog)
+      catalog_name = :"run_executor_test_catalog_#{System.unique_integer([:positive])}"
+      Application.put_env(:foreman_server, :workflow_catalog, catalog_name)
+
+      on_exit(fn ->
+        if prev_catalog,
+          do: Application.put_env(:foreman_server, :workflow_catalog, prev_catalog),
+          else: Application.delete_env(:foreman_server, :workflow_catalog)
+      end)
+
+      {:ok, _pid} =
+        start_supervised(
+          {Catalog, name: catalog_name, catalog: AssetCatalog.new(prompts_root)},
+          id: catalog_name
+        )
+
+      :ok = Catalog.reload()
 
       projection = %{
         task_id: "task-template",

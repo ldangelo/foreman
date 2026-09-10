@@ -11,7 +11,6 @@ defmodule ForemanServer.Workflow.WorktreeCleanForRunTest do
   use ExUnit.Case, async: false
 
   alias EventStore.EventData
-  alias ForemanServer.EventStore
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.Worktree
 

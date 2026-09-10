@@ -1,5 +1,5 @@
 defmodule ForemanServer.ConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   @config_path Path.join([__DIR__, "..", "..", "config"])
 
@@ -14,6 +14,15 @@ defmodule ForemanServer.ConfigTest do
 
   describe "test env (TRD-023)" do
     test "EventStore url targets the test database" do
+      original = System.get_env("DATABASE_URL")
+      System.delete_env("DATABASE_URL")
+
+      on_exit(fn ->
+        if original,
+          do: System.put_env("DATABASE_URL", original),
+          else: System.delete_env("DATABASE_URL")
+      end)
+
       opts = read_env!(:test)
       es_cfg = Keyword.get(foreman_env(opts), ForemanServer.EventStore)
       assert is_list(es_cfg)
@@ -24,6 +33,15 @@ defmodule ForemanServer.ConfigTest do
     end
 
     test "Repo url targets the test database" do
+      original = System.get_env("DATABASE_URL")
+      System.delete_env("DATABASE_URL")
+
+      on_exit(fn ->
+        if original,
+          do: System.put_env("DATABASE_URL", original),
+          else: System.delete_env("DATABASE_URL")
+      end)
+
       opts = read_env!(:test)
       repo = Keyword.get(foreman_env(opts), ForemanServer.Repo)
       assert is_list(repo)

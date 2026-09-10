@@ -17,7 +17,7 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
 
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}
+  alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.Workflow.BootReconciliation
 
   @ambiguous_event [:foreman_server, :workflow, :boot_reconciliation, :ambiguous_reconciled]

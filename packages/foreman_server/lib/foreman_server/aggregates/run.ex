@@ -436,18 +436,18 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(state, %{type: "run.report_stall", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
-         :ok <- reject_terminal_mutation(state),
          {:ok, phase_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
          {:ok, idempotency_key} <-
            Aggregate.required_binary(Aggregate.get(payload, :idempotency_key), :idempotency_key),
-         :ok <- reject_duplicate_stall(state, idempotency_key),
          {:ok, stall_kind} <- require_known_stall_kind(Aggregate.get(payload, :stall_kind)),
          {:ok, policy} <- require_known_stall_policy(Aggregate.get(payload, :policy)),
          {:ok, threshold_ms} <- require_non_negative_integer(payload, :threshold_ms, true),
          {:ok, idle_ms} <- require_non_negative_integer(payload, :idle_ms, false),
          {:ok, detected_at_ms} <- require_non_negative_integer(payload, :detected_at_ms, false),
-         {:ok, reason} <- Aggregate.required_binary(Aggregate.get(payload, :reason), :reason) do
+         {:ok, reason} <- Aggregate.required_binary(Aggregate.get(payload, :reason), :reason),
+         :ok <- reject_duplicate_stall(state, idempotency_key),
+         :ok <- reject_terminal_mutation(state) do
       status_effect = status_effect_for(policy)
 
       {:ok,

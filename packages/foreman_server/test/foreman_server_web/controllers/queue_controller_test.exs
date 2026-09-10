@@ -1,7 +1,8 @@
 defmodule ForemanServerWeb.QueueControllerTest do
   use ExUnit.Case, async: false
 
-  use Phoenix.ConnTest
+  import Plug.Conn
+  import Phoenix.ConnTest
 
   alias ForemanServer.ProjectionStore
 

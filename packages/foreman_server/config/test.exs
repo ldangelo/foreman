@@ -114,3 +114,9 @@ config :foreman_server, :mcp,
 # (see otel_log_bridge_test.exs), which bypasses this application-env gate
 # entirely.
 config :foreman_server, :signoz_logs, enabled: false
+
+# The suite must never read the operator's ~/.foreman/workflows: it exists on a
+# developer box and not on a CI runner, which is why implement.yaml resolved
+# locally and 404'd in CI. Tests that need their own manifests still override
+# :workflow_catalog with an isolated Catalog rooted at a tmp dir.
+config :foreman_server, :workflow_root, Path.expand("../test/fixtures/workflows", __DIR__)
