@@ -3,6 +3,7 @@ description: Analyze impact, constraints, and risks before implementation begins
 phases:
   - name: impact-analysis
     prompt: assess.md
+    provider: pi
     models:
       default: minimax/MiniMax-M2.7
     maxTurns: 45

@@ -63,6 +63,7 @@ phases:
     commit: true
   - name: coderabbit-review
     prompt: review-coderabbit.md
+    provider: pi
     models:
       default: minimax/MiniMax-M2.7
     maxTurns: 80
@@ -76,6 +77,7 @@ phases:
   # suppresses the final AutoPR, so exactly one PR is opened per run.
   - name: repo-rules-review
     prompt: review-repo-rules.md
+    provider: pi
     models:
       default: minimax/MiniMax-M2.7
     maxTurns: 80

@@ -28,13 +28,25 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
   def check(_provider, _model), do: :unchecked
 
   defp pi_model_exists?(model) do
+    # `Task.async/1` LINKS the caller — a raw `System.cmd` :enoent (no `pi`
+    # on PATH) or any other exception inside the task crashes RunExecutor
+    # itself instead of returning a clean {:error, ...}. Confirmed live:
+    # pointing PATH at nowhere and calling this directly terminates the
+    # calling process. Catch inside the task so it always returns a value.
     task =
-      Task.async(fn -> System.cmd("pi", ["--list-models", model], stderr_to_stdout: true) end)
+      Task.async(fn ->
+        try do
+          {:ok, System.cmd("pi", ["--list-models", model], stderr_to_stdout: true)}
+        rescue
+          e -> {:error, Exception.message(e)}
+        end
+      end)
 
     result =
       case Task.yield(task, @query_timeout_ms) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {output, 0}} -> parse_result(output, model)
-        {:ok, {output, _nonzero}} -> {:error, {:catalog_query_failed, String.trim(output)}}
+        {:ok, {:ok, {output, 0}}} -> parse_result(output, model)
+        {:ok, {:ok, {output, _nonzero}}} -> {:error, {:catalog_query_failed, String.trim(output)}}
+        {:ok, {:error, reason}} -> {:error, {:catalog_query_failed, reason}}
         nil -> {:error, {:catalog_query_failed, :timeout}}
       end
 

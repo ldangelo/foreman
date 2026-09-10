@@ -756,6 +756,33 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                    ~r/\"models\" must be a mapping with a \"default\" key/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
+
+    test "rejects an unexpected key alongside default" do
+      path =
+        commit_manifest([
+          {"a", "    models:\n      default: minimax/MiniMax-M2.7\n      coder: claude\n"}
+        ])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models\" must only declare \"default\"/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects an empty string default" do
+      path = commit_manifest([{"a", "    models:\n      default: \"\"\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a non-string default" do
+      path = commit_manifest([{"a", "    models:\n      default: 123\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"models.default\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
   end
 
   defp write_temp_yaml!(contents) do

@@ -242,7 +242,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               reason: inspect(failures)
             )
 
-            _ = dispatch_task_execution_fail(state, {:provider_model_preflight_failed, failures})
+            _ = dispatch_execution_fail(state, {:provider_model_preflight_failed, failures})
             finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
 
           :ok ->
@@ -438,6 +438,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     failures = Enum.reverse(reversed_failures)
     if failures == [], do: :ok, else: {:error, failures}
+  end
+
+  # `dispatch_task_execution_fail/2` assumes a task-provider-tracked run.
+  # A `:work_request` (non-task) run has no task to fail — it must route
+  # through `dispatch_work_execution_fail/2` instead, exactly like the
+  # existing source-aware branch in `maybe_fail_task/4` (used at in-flight
+  # phase failure) already does for that class of dispatch. The preflight
+  # runs before any phase or task-claim exists, so it needs this same
+  # source check at its own call site rather than reusing `maybe_fail_task/4`,
+  # which expects a phase_spec/phase_index that do not exist yet here.
+  defp dispatch_execution_fail(state, reason) do
+    if state.source == :work_request do
+      dispatch_work_execution_fail(state, reason)
+    else
+      dispatch_task_execution_fail(state, reason)
+    end
   end
 
   defp phase_provider_and_model_check(phase_spec, cache) do

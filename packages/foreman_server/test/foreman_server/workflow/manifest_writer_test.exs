@@ -36,7 +36,7 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
           %{
             "name" => "plan",
             "prompt" => "plan.md",
-            "models" => %{"default" => "MiniMax", "coder" => "Claude"},
+            "models" => %{"default" => "MiniMax"},
             "mail" => %{"onStart" => true, "onComplete" => false},
             "maxTurns" => 50,
             "artifact" => "{task.projectReportsDir}/report.md"
@@ -50,7 +50,7 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
       assert loaded["name"] == "full-workflow"
 
       phase = hd(loaded["phases"])
-      assert phase["models"] == %{"default" => "MiniMax", "coder" => "Claude"}
+      assert phase["models"] == %{"default" => "MiniMax"}
       assert phase["mail"] == %{"onStart" => true, "onComplete" => false}
     end
 

@@ -476,8 +476,16 @@ defmodule ForemanServer.Workflow.Interpreter do
       nil ->
         :ok
 
-      %{"default" => default} when is_binary(default) and default != "" ->
-        :ok
+      %{"default" => default} = models when is_binary(default) and default != "" ->
+        case Map.keys(models) -- ["default"] do
+          [] ->
+            :ok
+
+          extra_keys ->
+            raise Workflow.MissingRequiredPhaseError,
+              message:
+                "workflow template #{path} phase #{index} \"models\" must only declare \"default\" (got unexpected key(s): #{Enum.join(extra_keys, ", ")})"
+        end
 
       %{} = models when map_size(models) == 0 ->
         raise Workflow.MissingRequiredPhaseError,

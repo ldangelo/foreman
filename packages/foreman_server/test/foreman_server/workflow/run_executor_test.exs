@@ -2534,6 +2534,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # Directly proves no worker was dispatched, not just that its
     # side effects (claim, artifact) are absent.
     refute_received {:adapter_execute, _, _}
+
+    # Proves the phase never even reached PhaseStarted, not merely that
+    # no adapter message arrived on this process's mailbox.
+    assert {:error, :stream_not_found} =
+             EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
   end
 
   test "a declared provider that is not installed fails the run before any phase dispatches" do
@@ -2607,6 +2612,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
 
     refute_received {:adapter_execute, _, _}
+
+    assert {:error, :stream_not_found} =
+             EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
   end
 
   test "provider-facing lifecycle calls use the task's external_id, not the Foreman task_id" do
