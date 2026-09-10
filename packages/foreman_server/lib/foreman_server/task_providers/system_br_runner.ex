@@ -54,7 +54,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
         port = open_port(build_shell_command(argv, temp_files))
 
         try do
-          os_pid = get_os_pid!(port)
+          os_pid = get_os_pid(port)
           monitor_ref = :erlang.monitor(:port, port)
 
           try do
@@ -470,10 +470,17 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     Port.open({:spawn_executable, "/bin/sh"}, [:binary, :exit_status, args: ["-c", shell_command]])
   end
 
-  defp get_os_pid!(port) do
+  defp get_os_pid(port) do
     case Port.info(port, :os_pid) do
       {:os_pid, os_pid} when is_integer(os_pid) -> os_pid
-      nil -> raise "failed to capture OS PID from port"
+      # A very short-lived command can exit before this immediately-following
+      # call runs — under CPU contention the scheduler may not reach here
+      # until the port has already closed, at which point `Port.info/2`
+      # reports the port as gone rather than reporting a missing os_pid.
+      # That is not a resource failure: nothing needs killing for a port
+      # that has already exited, so `terminate_os_process/1` tolerates
+      # `nil` the same way it already tolerates a not-found os_pid.
+      nil -> nil
     end
   end
 
@@ -512,6 +519,11 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       {:timeout, stdout_after_kill} -> stdout_after_kill
     end
   end
+
+  # No os_pid was ever captured (the port had already closed before
+  # `get_os_pid/1` ran) — there is nothing to send a signal to; the
+  # process this port spawned is already gone.
+  defp terminate_os_process(nil), do: nil
 
   defp terminate_os_process(os_pid) when is_integer(os_pid) do
     if process_exists?(os_pid) do
