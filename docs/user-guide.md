@@ -49,6 +49,8 @@ workflow YAML defines. Bundled workflow manifests live in
 `implement-trd-beads`, `plan`, `prd`, `release`, `trd`, `verify`. A
 workflow name is a server-side manifest selector, validated by
 `Catalog.load/1` at dispatch time — there is no client-side allowlist.
+The catalog root defaults to `~/.foreman/workflows` and is overridable
+via `config :foreman_server, :workflow_root`.
 PR creation is not phase-driven; see
 [AutoPR](#pr-creation-and-merge-reconciliation) below.
 
