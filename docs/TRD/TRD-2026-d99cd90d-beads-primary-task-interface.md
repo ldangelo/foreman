@@ -8,6 +8,10 @@ version: 1.2.0
 status: Final
 date: 2026-09-12
 design_readiness_score: 4.5
+ensemble_implement_trd_beads:
+  branch_name: feature/trd-2026-d99cd90d-beads-primary-task-interface
+  use_proposed: false
+  stacked_prs: false
 ---
 
 # TRD: Beads as the Primary Task Interface — Master Task List
