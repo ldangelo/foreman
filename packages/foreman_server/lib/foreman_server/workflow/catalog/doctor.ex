@@ -106,6 +106,14 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
     "#{percent}%"
   end
 
+  # `get_actual_issue_types/1` enumerates only what `list_ready/2` (`br
+  # ready`) returns: open, unblocked, non-deferred issues. An unmapped
+  # `issue_type` that exists solely on an `in_progress`, `blocked`, or
+  # `deferred` bead is invisible here, so `covered: true` can be reported
+  # while such an issue exists. Fixing this needs a new TaskProvider
+  # operation to enumerate all non-closed issues (not just ready ones) —
+  # a behaviour-contract addition affecting every adapter, disproportionate
+  # to this diagnostic tool. Known limitation, not silently unconsidered.
   @spec get_actual_issue_types(String.t()) :: {:ok, MapSet.t(String.t())} | {:error, term()}
   defp get_actual_issue_types(project_id) do
     # Query all non-closed beads for their issue_types, routed through the
@@ -136,16 +144,16 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
   # `issue_type` field — `id`/`title`/`status`/`priority`/`dependencies`/
   # `dependents`/`assignee`/`description`/`notes`/`design`/`labels`/
   # `metadata` are the only fields it declares. `BeadsAdapter` writes the
-  # bead's type into `metadata["issue_type"]` at create time
-  # (`build_issue_from_create_payload/2`), so that is where a real issue's
-  # type lives. Matching the bare struct here would silently match nothing
-  # for every production issue, making `get_actual_issue_types/1` always
-  # return an empty set.
-  defp extract_issue_type(%Issue{metadata: metadata}) when is_map(metadata) do
-    Map.get(metadata, "issue_type") || Map.get(metadata, :issue_type)
-  end
-
+  # bead's type into `metadata["issue_type"]` (string key, always — see
+  # `build_issue_from_create_payload/2`) at create time, so that is where
+  # a real issue's type lives; there is no `:issue_type` atom-keyed
+  # producer, so matching a second atom-key clause here would be dead
+  # code hedging against a shape that never occurs (`AGENTS.md` §5.4).
+  # Matching the bare struct here would silently match nothing for every
+  # production issue, making `get_actual_issue_types/1` always return an
+  # empty set.
+  defp extract_issue_type(%Issue{metadata: %{"issue_type" => type}}), do: type
+  defp extract_issue_type(%Issue{metadata: metadata}) when is_map(metadata), do: nil
   defp extract_issue_type(%{"issue_type" => type}), do: type
-  defp extract_issue_type(%{issue_type: type}), do: type
   defp extract_issue_type(_), do: nil
 end
