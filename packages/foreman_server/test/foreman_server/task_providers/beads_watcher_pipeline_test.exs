@@ -429,6 +429,56 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     end
   end
 
+  # --- Status gate (TRD-004-TEST, AC-003-1, AC-003-3) --------------------
+
+  describe "status gate rejects non-open status, accepts open directly" do
+    test "draft status is rejected: no task created, no blocking entry recorded" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-draft","title":"x","status":"draft"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "blocked status is rejected: no task created" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-blocked","title":"x","status":"blocked"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "closed status is rejected: no task created" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-closed","title":"x","status":"closed"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "open status is accepted directly, with no draft intermediate required" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-direct-open","title":"x","status":"open"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      assert new_state.read_offset == byte_size(line) + 1
+
+      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      assert cmd.payload.external_id == "bead-direct-open"
+    end
+  end
+
   # --- Helpers --------------------------------------------------------
 
   defp unique_handler(label) do
