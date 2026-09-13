@@ -67,11 +67,11 @@ every task, zero orphaned annotations):
 
 | REQ | Priority | Satisfying task(s) | Status |
 |---|---|---|---|
-| REQ-001 | Must | TRD-001, TRD-001-TEST | closed |
-| REQ-002 | Must | TRD-002, TRD-002-TEST, TRD-003, TRD-003-TEST | closed |
-| REQ-003 | Must | TRD-004, TRD-004-TEST, TRD-007, TRD-007-TEST, TRD-008, TRD-008-TEST | closed |
-| REQ-004 | Must | TRD-005, TRD-005-TEST | closed |
-| REQ-005 | Must | TRD-006, TRD-006-TEST, TRD-013, TRD-013-TEST, TRD-014, TRD-014-TEST, TRD-015, TRD-015-TEST, TRD-016, TRD-016-TEST | closed |
+| REQ-001 | Must | TRD-001, TRD-001-TEST, TRD-002, TRD-002-TEST, TRD-005, TRD-005-TEST | closed |
+| REQ-002 | Must | TRD-003, TRD-003-TEST | closed |
+| REQ-003 | Must | TRD-004, TRD-004-TEST, TRD-007, TRD-007-TEST, TRD-011, TRD-011-TEST, TRD-012 | closed |
+| REQ-004 | Must | TRD-008, TRD-008-TEST, TRD-009, TRD-009-TEST, TRD-010, TRD-010-TEST | closed |
+| REQ-005 | Must | TRD-013, TRD-013-TEST, TRD-014, TRD-014-TEST, TRD-015, TRD-015-TEST, TRD-016, TRD-016-TEST | closed |
 | REQ-006 | Must | TRD-018, TRD-018-TEST | closed |
 | REQ-007 | Must | TRD-006, TRD-006-TEST | closed |
 | REQ-008 | Must | TRD-019, TRD-019-TEST | closed |
