@@ -500,6 +500,65 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     end
   end
 
+  # --- Workflow selection (TRD-005-TEST, REQ-001) -------------------------
+
+  describe "workflow selection holds transient on unmapped type" do
+    test "unmapped issue_type holds transient, emits telemetry, and never dispatches" do
+      FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
+
+      handler_id = unique_handler("unmapped")
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :watcher, :workflow_unmapped],
+        fn _event, _measurements, metadata, _config ->
+          send(self(), {:telemetry, ref, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      state = %BeadsWatcher{project_id: "proj-unmapped", read_offset: 55, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-unmapped","title":"x","status":"open","issue_type":"custom_research"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :transient
+      assert new_state.read_offset == 55
+      assert new_state.partial_line == line
+      assert FakeCommandGateway.calls() == []
+
+      assert_receive {:telemetry, ^ref, metadata}, 200
+      assert metadata[:bead_id] == "bead-unmapped"
+      assert metadata[:issue_type] == "custom_research"
+    end
+
+    test "mapped issue_type flows the resolved workflow_type into the task.create payload" do
+      FakeWorkflowCatalog.stub_response({:ok, "foreman_implement_trd"})
+
+      state = %BeadsWatcher{project_id: "proj-mapped", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-mapped","title":"x","status":"open","issue_type":"implement_trd"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      assert cmd.payload.workflow_type == "foreman_implement_trd"
+    end
+  end
+
   # --- Helpers --------------------------------------------------------
 
   defp unique_handler(label) do
