@@ -16,9 +16,16 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       `process_line/2`: parse JSON → check `agent_context.foreman`
       (suppress + `:skipped` per AC-022-3) → check
       `ProjectionStore.get_task(external_id: bead.id)`
-      (dedupe + `:reconciled` per AC-022-2) → otherwise synthesize a
-      deterministic `task.create` envelope and dispatch via
-      `CommandGateway.dispatch_system/2` (`:imported` per AC-022-1).
+      (dedupe + `:reconciled` per AC-022-2) → status gate (TRD-004:
+      only `status: "open"` proceeds; others are `:skipped`) →
+      workflow selection (TRD-005: `Catalog.type_to_workflow/1`; an
+      unmapped `issue_type` holds `:transient`) → `trd_path` check
+      (TRD-006: required for `implement-trd`/`implement-trd-beads`;
+      missing/empty moves the bead to `blocked` and returns
+      `:skipped`) → otherwise synthesize a deterministic `task.create`
+      envelope, dispatch via `CommandGateway.dispatch_system/2`, and
+      auto-approve with a matching `task.approve` on success (TRD-007;
+      `:imported` per AC-022-1 / AC-003-2).
 
   ## 3-way cursor priority (TRD §2.2.6 item 6)
 
@@ -44,10 +51,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   The watcher does NOT maintain a durable offset. On every boot, the
   watcher reads the JSONL from offset 0 to current EOF, applies the
-  parse + dedupe + suppress + dispatch pipeline, then captures the
-  boot-completion cursor and enters tail mode. The `ProjectionStore`
-  dedupe check is the cross-restart safety net — operator beads that
-  arrived during downtime are recovered on the next boot's replay.
+  full status-gated parse + dedupe + suppress + status-gate +
+  workflow-selection + trd_path-check + dispatch-and-approve pipeline
+  (`process_line/2`), then captures the boot-completion cursor and
+  enters tail mode. The `ProjectionStore` dedupe check is the
+  cross-restart safety net — beads that transitioned to `open` while
+  the watcher was offline are recovered, created, and approved on the
+  next boot's replay exactly as they would have been had the watcher
+  been running continuously (TRD-004..TRD-007 requirement REQ-004).
 
   ## Opt-in supervision (TRD §2.2.6 item 9)
 
@@ -529,8 +540,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   @doc """
-  Apply the parse + dedupe + suppress + dispatch pipeline to one
-  complete JSONL line.
+  Apply the full status-gated parse + dedupe + suppress + select +
+  dispatch-and-approve pipeline to one complete JSONL line.
 
   Steps (in order):
 
@@ -548,15 +559,36 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        `:reconciled` (terminal advance; the bead has already been
        imported and the dedupe hit is the safety net for cross-restart
        recovery and operator-vs-watcher races).
-    4. Otherwise, synthesize the deterministic `task.create` envelope
-       (per TRD §3 TRD-012-TASK spec, lines 453–) and dispatch via
-       `CommandGateway.dispatch_system/2` (the trusted system path).
-       On a terminal return, emit `[:watcher, :imported]` and return
-       `:imported`. On any other return, emit `[:watcher, :error]`
-       and return `:transient` (so the cursor holds and the line is
+    4. Status gate (AC-003-1, AC-003-3). Accept only `status: "open"`;
+       any other value (including `draft`, `blocked`, `closed`) emits
+       the status-gate-skipped telemetry and returns `:skipped`
+       (terminal advance — no task, no bead mutation).
+    5. Workflow selection (REQ-001). Resolve `issue_type` via
+       `Catalog.type_to_workflow/1`. An unmapped type emits
+       `[:watcher, :workflow_unmapped]` and returns `:transient` (the
+       cursor holds; the operator updates the workflow manifests and
+       the next poll retries).
+    6. `trd_path` check (REQ-007, AC-007-1, AC-007-2). Workflows that
+       provision an `ImplementationContext` (`implement-trd`,
+       `implement-trd-beads`) require a non-empty
+       `agent_context.trd_path`. When required but missing/empty, the
+       bead is moved to `blocked` with the architecture §8.4 transition
+       comment, `[:watcher, :trd_path_missing]` is emitted, and the
+       line returns `:skipped` (terminal advance; no task created).
+       Otherwise the resolved `trd_path` (or `nil` when not required)
+       flows into the `task.create` payload.
+    7. Otherwise, synthesize the deterministic `task.create` envelope
+       and dispatch via `CommandGateway.dispatch_system/2` (the
+       trusted system path). On a terminal return, immediately
+       dispatch the matching `task.approve` (AC-003-2 — a single
+       effective create-and-approve step, no separate operator
+       action), emit `[:watcher, :imported]`, and return `:imported`.
+       On any other create return, emit `[:watcher, :error]` and
+       return `:transient` (so the cursor holds and the line is
        retried on the next poll).
 
-  Returns one of `:imported | :skipped | :reconciled | :malformed | :transient`.
+  Returns one of
+  `:imported | :skipped | :reconciled | :malformed | :transient`.
   """
   @spec process_line(t(), binary()) :: atom()
   def process_line(state, line) when is_binary(line) do
