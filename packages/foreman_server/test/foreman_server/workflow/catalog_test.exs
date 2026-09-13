@@ -632,4 +632,25 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert "multi" == Catalog.type_to_workflow("type_c")
     end
   end
+
+  describe "TRD-003: Catalog.doctor type coverage report" do
+    test "doctor returns coverage report with type_to_workflow map", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      File.write!(Path.join(tmp, "prompts/p.md"), "prompt")
+
+      File.write!(
+        Path.join(tmp, "w1.yaml"),
+        "name: w1\ntask_types: [type_a, type_b]\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      start_catalog(tmp, name)
+
+      # Verify type_to_workflow_map works
+      type_map = Catalog.type_to_workflow_map()
+      assert type_map["type_a"] == "w1"
+      assert type_map["type_b"] == "w1"
+    end
+  end
 end
