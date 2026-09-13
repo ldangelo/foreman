@@ -8,10 +8,16 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       implementation (`@runner`, default `SystemBrRunner`, test override
       `BrRunnerMock`), opens the file with `:file.open/2`, runs
       `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority),
-      then schedules the first tail-mode `:read_more` via
-      `Process.send_after/3`.
-    * In tail mode, polls the JSONL on a fixed cadence
-      (`Process.send_after(self(), :read_more, poll_ms)`).
+      subscribes to a `file_system` watch on the JSONL's parent
+      directory (TRD-011), then schedules the first tail-mode
+      `:read_more` poll via `Process.send_after/3`.
+    * In tail mode, a `{:file_event, pid, {path, events}}` for the
+      exact `jsonl_path` is the primary (<1s) trigger: it schedules a
+      single `:debounced_read_more` `@debounce_ms` (100ms) out,
+      coalescing any further events in that window into the same read.
+      The fixed-cadence `:read_more` poll (`@default_poll_ms`, 30s)
+      remains as an eventual-consistency backstop for a missed watch
+      event.
     * For each complete line, applies the full pipeline via
       `process_line/2`: parse JSON → check `agent_context.foreman`
       (suppress + `:skipped` per AC-022-3) → check
@@ -116,7 +122,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           file_handle: :file.io_device(),
           read_offset: non_neg_integer(),
           partial_line: binary(),
-          poll_ms: pos_integer()
+          poll_ms: pos_integer(),
+          fs_watcher_pid: pid() | nil,
+          debounce_timer: reference() | nil
         }
 
   defstruct [
@@ -126,7 +134,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     :file_handle,
     :read_offset,
     :partial_line,
-    :poll_ms
+    :poll_ms,
+    :fs_watcher_pid,
+    :debounce_timer
   ]
 
   # Replay counters — TRD §3 Risk-Mitigation (line 607) calls for
@@ -145,7 +155,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   @type counters :: %Counters{}
 
-  @default_poll_ms 1_000
+  @default_poll_ms 30_000
+  @debounce_ms 100
   @preflight_timeout_ms 30_000
   @read_chunk_bytes 64 * 1024
 
@@ -250,6 +261,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         }
 
         state = boot_replay(initial)
+        state = start_fs_watcher(state)
         schedule_read_more(state.poll_ms)
         {:ok, state}
       rescue
@@ -313,12 +325,63 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, read_offset: state.read_offset}
     )
 
-    {state, _counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
+    state = perform_read_more(state)
     schedule_read_more(state.poll_ms)
     {:noreply, state}
   end
 
+  # Fires `@debounce_ms` after the first matching `:file_event` in a
+  # burst (see the `debounce_timer: nil` guard below) — coalescing any
+  # further events in that window into this single read, since
+  # `read_more/2` always reads from `read_offset` to current EOF.
+  def handle_info(:debounced_read_more, state) do
+    state = perform_read_more(%{state | debounce_timer: nil})
+    {:noreply, state}
+  end
+
+  # Primary (<1s) trigger (TRD-011): a `file_system` change from OUR
+  # subscribed watcher (`fs_watcher_pid` match). Compared by basename,
+  # NOT full path equality — on macOS, FSEvents (the `fs_mac` backend)
+  # reports its own canonicalized, symlink-resolved path
+  # (`/private/var/...`), which never string-equals a `jsonl_path`
+  # rooted at the OS's un-resolved `/var/...` (or `/tmp/...`) alias —
+  # even though it is the exact same file. This watcher only monitors
+  # `jsonl_path`'s own parent directory, and the `fs_watcher_pid`
+  # match already scopes the event to that one directory, so a
+  # basename match against a file in it is unambiguous.
+  def handle_info(
+        {:file_event, pid, {path, _events}},
+        %__MODULE__{fs_watcher_pid: pid} = state
+      ) do
+    if Path.basename(path) == Path.basename(state.jsonl_path) do
+      schedule_debounced_read(state)
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # No debounce timer pending — start one. A second matching event
+  # arriving while one is already pending is a no-op: it will be
+  # picked up by that same upcoming read.
+  defp schedule_debounced_read(%__MODULE__{debounce_timer: nil} = state) do
+    timer_ref = Process.send_after(self(), :debounced_read_more, @debounce_ms)
+    {:noreply, %{state | debounce_timer: timer_ref}}
+  end
+
+  defp schedule_debounced_read(state) do
+    {:noreply, state}
+  end
+
+  # Shared by the poll-driven `:read_more` handler and the
+  # fs-watch-driven `:debounced_read_more` handler — the lease-guarded
+  # read+dispatch pass is identical either way; only the trigger
+  # differs (fixed-cadence poll vs. debounced file_event).
+  defp perform_read_more(state) do
+    {state, _counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
+    state
+  end
 
   @impl true
   def terminate(_reason, state) do
@@ -414,6 +477,34 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         )
 
         {state, %Counters{}}
+    end
+  end
+
+  # ----- FS watch subscription (architectural risk 3, TRD-011) -----------
+
+  # Starts a `file_system` watcher on the JSONL's parent directory and
+  # subscribes the current process — called from `init/1` after
+  # `boot_replay/1` completes, so `handle_info/2` starts receiving
+  # `{:file_event, pid, {path, events}}` only once the initial
+  # replay's own reads are done. This is the primary (<1s) trigger;
+  # the periodic `:read_more` poll (`@default_poll_ms`) remains as an
+  # eventual-consistency backstop in case a watch event is missed
+  # (architecture §7.5 risk 3). A watcher start failure degrades to
+  # poll-only rather than crashing boot.
+  defp start_fs_watcher(%__MODULE__{jsonl_path: jsonl_path} = state) do
+    case FileSystem.start_link(dirs: [Path.dirname(jsonl_path)]) do
+      {:ok, pid} ->
+        FileSystem.subscribe(pid)
+        %{state | fs_watcher_pid: pid}
+
+      {:error, reason} ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, stage: :fs_watcher_start, reason: inspect(reason)}
+        )
+
+        state
     end
   end
 

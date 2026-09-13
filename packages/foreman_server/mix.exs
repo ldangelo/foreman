@@ -45,6 +45,13 @@ defmodule ForemanServer.MixProject do
       # JSON serialization for EventStore
       {:jason, "~> 1.4"},
 
+      # Filesystem watch for BeadsWatcher's primary (<1s) JSONL-change
+      # detection (TRD-011). Resolved transitively via credo's
+      # dev/test-only dependency graph already; declared explicitly
+      # here so it is present at runtime in every environment,
+      # including prod releases.
+      {:file_system, "~> 1.0"},
+
       # OpenTelemetry OTLP/HTTP exporter (TRD-2026-4212be7e / JOT-T001).
       # Pairs with :opentelemetry 1.7.0; without this dep, the SDK's batch
       # processor logs `OTLP exporter module opentelemetry_exporter not found`
