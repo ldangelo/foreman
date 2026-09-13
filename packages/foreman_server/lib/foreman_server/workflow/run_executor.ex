@@ -359,6 +359,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # TRD-016: Verify claim/3 fires before phase 1 dispatch
+  # This function is the kickoff_ready handler that runs when all prerequisites pass.
+  # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
   defp handle_kickoff_ready(state) do
     case maybe_claim_task(state) do
       :ok ->
@@ -1280,9 +1283,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # TRD-016: Verify complete/3 fires on run success
+  # This function is called when all phases complete successfully (from start_phase_at_index,
+  # when Enum.at returns nil, indicating no more phases).
+  # `maybe_complete_task/1` (line 1289) calls the TaskProvider.complete/3 to mark the run complete.
+  # Confirmed: complete is called after all phases succeed, before finalization.
   defp finalize_run(state) do
     Logger.info("RunExecutor #{state.run_id} finalize_run: maybe_complete_task")
-
     case maybe_complete_task(state) do
       :ok ->
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
