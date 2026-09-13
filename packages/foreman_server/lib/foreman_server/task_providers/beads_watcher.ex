@@ -71,6 +71,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   use GenServer
 
+  alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   @runner Application.compile_env(
@@ -312,7 +313,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, read_offset: state.read_offset}
     )
 
-    {state, _counters} = read_more(state, %Counters{})
+    {state, _counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
     schedule_read_more(state.poll_ms)
     {:noreply, state}
   end
@@ -352,7 +353,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, jsonl_path: state.jsonl_path}
     )
 
-    {state, counters} = read_more(state, %Counters{})
+    {state, counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
 
     completed_at_ms = System.monotonic_time(:millisecond)
 
@@ -376,6 +377,44 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     )
 
     state
+  end
+
+  # ----- BeadsDbLease acquisition (REQ-004, architectural risk 2) --------
+
+  # Serializes the read/dispatch pass against a concurrent `br update`
+  # (e.g. a RunExecutor-dispatched mutation via `BeadsAdapter`) racing
+  # the same `.beads/` database file — both boot-time full-replay and
+  # every periodic catch-up tail acquire the same lease `beads_adapter.ex`
+  # already wraps every `br` write in, so the two never interleave reads
+  # and writes against the SQLite file. A synthetic `run_id`/`task_id`
+  # pair (unique per pass) lets the watcher hold the lease without an
+  # actual Foreman task — mirrors `BeadsAdapter.create/2`'s
+  # `synthetic_run_id` pattern for the same reason (dedupe calls that
+  # need to serialize through the lease without a real task-bound run).
+  #
+  # On lease failure (acquisition timeout, dispatch error), the pass is
+  # skipped for this cycle — the next poll retries — rather than
+  # crashing the watcher.
+  defp with_beads_lease(%__MODULE__{database_path: database_path} = state, fun)
+       when is_binary(database_path) and database_path != "" and is_function(fun, 0) do
+    synthetic_run_id =
+      "watcher:" <> state.project_id <> ":" <> to_string(System.system_time(:nanosecond))
+
+    case BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
+           {:ok, fun.()}
+         end) do
+      {:ok, result} ->
+        result
+
+      {:error, reason} ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, stage: :lease_acquire, reason: inspect(reason)}
+        )
+
+        {state, %Counters{}}
+    end
   end
 
   # ---------------------------------------------------------------------
