@@ -157,6 +157,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     :skipped
   ]
   @workflow_unmapped_event [:foreman_server, :task_provider, :beads, :watcher, :workflow_unmapped]
+  @trd_path_missing_event [:foreman_server, :task_provider, :beads, :watcher, :trd_path_missing]
   # ---------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------
@@ -562,8 +563,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
          :ok <- check_foreman_tag(state, parsed),
          :ok <- check_dedupe(state, parsed),
          :ok <- check_status(state, parsed),
-         {:ok, workflow_type} <- select_workflow(state, parsed) do
-      dispatch_new_bead(state, parsed, workflow_type)
+         {:ok, workflow_type} <- select_workflow(state, parsed),
+         {:ok, trd_path} <- check_trd_path(state, parsed, workflow_type) do
+      dispatch_new_bead(state, parsed, workflow_type, trd_path)
     else
       :skip_foreman ->
         :skipped
@@ -573,6 +575,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       {:error, :unmapped_type} ->
         :transient
+
+      {:error, :missing_trd_path} ->
+        :skipped
 
       :reconcile ->
         :reconciled
@@ -689,13 +694,95 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
+  # ----- trd_path extraction (REQ-007, AC-007-1, AC-007-2) ----------------
+
+  # Workflows that provision an ImplementationContext require `trd_path` —
+  # matches the `name:` field in implement-trd.yaml / implement-trd-beads.yaml.
+  @trd_path_required_workflows ~w(implement-trd implement-trd-beads)
+
+  defp check_trd_path(state, parsed, workflow_type) when is_map(parsed) do
+    if workflow_type in @trd_path_required_workflows do
+      case extract_trd_path(parsed) do
+        trd_path when is_binary(trd_path) and trd_path != "" ->
+          {:ok, trd_path}
+
+        _empty_or_missing ->
+          bead_id = Map.get(parsed, "id")
+          block_missing_trd_path(state, bead_id)
+          {:error, :missing_trd_path}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp extract_trd_path(parsed) do
+    case Map.get(parsed, "agent_context") do
+      agent_context when is_map(agent_context) -> Map.get(agent_context, "trd_path")
+      _other -> nil
+    end
+  end
+
+  # Architecture §8.4 resolved design question 4 — exact operator-visible
+  # transition comment text. `bead_id` is substituted in place of the
+  # doc's `<id>` placeholder so the re-run command is copy-paste ready;
+  # the trd_path JSON shape stays illustrative since only the operator
+  # knows the real path to supply.
+  defp block_missing_trd_path(state, bead_id) when is_binary(bead_id) and bead_id != "" do
+    comment =
+      "Blocked: workflow requires trd_path in agent_context. Re-run: br update #{bead_id} --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
+
+    request =
+      {:update, %{flags: [bead_id, "--status", "blocked", "--transition-comment", comment]}}
+
+    project_config = %{database_path: state.database_path}
+
+    case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, reason} ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            stage: :block_missing_trd_path,
+            bead_id: bead_id,
+            reason: inspect(reason)
+          }
+        )
+    end
+
+    TaskProviderTelemetry.emit(
+      @trd_path_missing_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: bead_id}
+    )
+
+    :ok
+  end
+
+  defp block_missing_trd_path(state, _bead_id) do
+    # No `id` to target with `br update` — nothing to block. Still emit
+    # telemetry so the missing-trd_path outcome is observable; the line
+    # advances via :skipped either way (this bead cannot be acted on).
+    TaskProviderTelemetry.emit(
+      @trd_path_missing_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: nil}
+    )
+
+    :ok
+  end
+
   # ----- Dispatch new bead (AC-022-1) -------------------------------------
 
-  defp dispatch_new_bead(state, parsed, workflow_type) when is_map(parsed) do
+  defp dispatch_new_bead(state, parsed, workflow_type, trd_path) when is_map(parsed) do
     bead_id = Map.get(parsed, "id")
 
     if is_binary(bead_id) and bead_id != "" do
-      envelope = synthesize_task_create_envelope(state, parsed, bead_id, workflow_type)
+      envelope = synthesize_task_create_envelope(state, parsed, bead_id, workflow_type, trd_path)
       # Dispatch is unconditional — every shape (incl. {:exit, _} and
       # retryable ProviderError) reaches classify_dispatch_result/3, which
       # routes anything non-terminal to :transient and holds the cursor.
@@ -708,7 +795,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  defp synthesize_task_create_envelope(state, parsed, bead_id, workflow_type) do
+  defp synthesize_task_create_envelope(state, parsed, bead_id, workflow_type, trd_path) do
     task_id = "beads:" <> state.project_id <> ":" <> bead_id
 
     %{
@@ -723,6 +810,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         priority: Map.get(parsed, "priority", 2),
         task_type: Map.get(parsed, "issue_type", "task"),
         workflow_type: workflow_type,
+        trd_path: trd_path,
         project_id: state.project_id
       }
     }
