@@ -16,8 +16,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
   """
   use ExUnit.Case, async: false
 
+  import Mox
+
   alias ForemanServer.TaskProviders.BeadsWatcher
+  alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.ProviderError
+
+  setup :verify_on_exit!
 
   # --- Fake side-effect modules -----------------------------------------
   #
@@ -556,6 +561,102 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert outcome == :imported
       [{cmd, _timeout}] = FakeCommandGateway.calls()
       assert cmd.payload.workflow_type == "foreman_implement_trd"
+    end
+  end
+
+  # --- trd_path extraction and blocked transition (TRD-006-TEST) ---------
+
+  describe "trd_path extraction and blocked transition (AC-007-1, AC-007-2)" do
+    test "missing trd_path blocks the bead with the exact comment text and creates no task" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd"})
+
+      expect(BrRunnerMock, :cmd, fn request, _project_config, _opts ->
+        assert {:update,
+                %{
+                  flags: [
+                    "bead-missing-trd",
+                    "--status",
+                    "blocked",
+                    "--transition-comment",
+                    comment
+                  ]
+                }} = request
+
+        assert comment ==
+                 "Blocked: workflow requires trd_path in agent_context. Re-run: " <>
+                   "br update bead-missing-trd --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
+
+        {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+      end)
+
+      state = %BeadsWatcher{
+        project_id: "proj-trd",
+        database_path: "/tmp/proj-trd.db",
+        read_offset: 0,
+        partial_line: ""
+      }
+
+      line =
+        ~s({"id":"bead-missing-trd","title":"x","status":"open","issue_type":"implement_trd"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "empty trd_path string is treated the same as missing" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd-beads"})
+
+      expect(BrRunnerMock, :cmd, fn _request, _project_config, _opts ->
+        {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+      end)
+
+      state = %BeadsWatcher{
+        project_id: "proj-trd",
+        database_path: "/tmp/proj-trd.db",
+        read_offset: 0,
+        partial_line: ""
+      }
+
+      line =
+        ~s({"id":"bead-empty-trd","title":"x","status":"open","issue_type":"implement_trd_beads",) <>
+          ~s("agent_context":{"trd_path":""}})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "present trd_path flows into the task.create payload with no CLI mutation" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd"})
+
+      state = %BeadsWatcher{project_id: "proj-trd", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-with-trd","title":"x","status":"open","issue_type":"implement_trd",) <>
+          ~s("agent_context":{"trd_path":"docs/TRD/TRD-123-example.md"}})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      assert cmd.payload.trd_path == "docs/TRD/TRD-123-example.md"
+    end
+
+    test "workflow that does not require trd_path ignores agent_context entirely" do
+      FakeWorkflowCatalog.stub_response({:ok, "generic"})
+
+      state = %BeadsWatcher{project_id: "proj-trd", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-no-trd-needed","title":"x","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      assert cmd.payload.trd_path == nil
     end
   end
 
