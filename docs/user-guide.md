@@ -199,12 +199,21 @@ description, a `task_type` (legacy classification field) and/or
 `workflow_type` (the workflow manifest selector), and — for ad-hoc
 work — a free-text `prompt`.
 
+`foreman task create`/`approve`/`get`/`retry` are REMOVED (TRD-018,
+2026-09-13) — invoking any of them now produces the CLI's standard
+"unknown command" error. Task creation is driven by Beads instead of
+an operator-invoked CLI verb:
+
 ```bash
-foreman task create --project foreman --title "Fix flaky retry" --workflow-type fix
-foreman task approve --id <task-id>
-foreman task get <task-id>
-foreman task retry --id <task-id> --reason "safe to rerun"
+br create --title "Fix flaky retry" --type fix
 ```
+
+BeadsWatcher observes the bead (or its later transition to `status:
+open`) and dispatches the internal `task.create` + `task.approve`
+commands automatically — no separate approval step is needed. Use
+`foreman run get <run-id>` / `foreman run list` (see "Runs" below) to
+monitor the resulting run, and re-open the bead (`br update <id>
+--status=open`) to retry once its bound run is terminal.
 
 `--workflow-type implement-trd` / `implement-trd-beads` require
 `--trd-path <project-relative-path>` — the server's
@@ -234,7 +243,7 @@ foreman run reset --id <run-id>
 
 ### Agent command assets
 
-`foreman commands` generates agent-native Foreman shortcuts for Claude Code plus copyable generate-only assets for Pi/OMP, Codex, and OpenCode. The assets are thin shell wrappers over `foreman task create`, `foreman run submit`, `foreman run list`, `foreman run get`, and `foreman task get`; they inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN` instead of embedding secrets.
+`foreman commands` generates agent-native Foreman shortcuts for Claude Code plus copyable generate-only assets for Pi/OMP, Codex, and OpenCode. The assets were thin shell wrappers over `foreman task create`, `foreman run submit`, `foreman run list`, `foreman run get`, and `foreman task get`; the `task create`/`task get` wrappers are REMOVED (TRD-018, 2026-09-13) along with the CLI verbs they wrapped, so those two generated shortcuts now fail with an "unknown command" error until the generator is updated. The `run submit`/`run list`/`run get` wrappers are unaffected. Generated files inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN` instead of embedding secrets.
 
 Common commands:
 
@@ -408,13 +417,26 @@ CLI-accepted values until (if ever) a provider adapter is added for
 them.
 
 For arbitrary server workflow manifests (e.g. `implement-trd`,
-`implement-trd-beads`), use `foreman task create --workflow-type ...`
-followed by `foreman task approve` instead — those need a `--trd-path`,
-which `run submit` does not accept.
+`implement-trd-beads`), `run submit` cannot help — those need a
+`--trd-path`, which it does not accept. `foreman task create
+--workflow-type ...` followed by `foreman task approve` used to be
+the way to run them, but both verbs are REMOVED (TRD-018,
+2026-09-13). Create a bead instead, with `--agent-context
+'{"trd_path":"<project-relative-path>"}'` and a `--type` that maps to
+the target workflow, then transition it to `status: open`;
+BeadsWatcher reads `agent_context.trd_path` and dispatches the
+internal `task.create` + `task.approve` pair automatically (a bead
+missing a required `trd_path` is instead moved to `blocked` with an
+explanatory comment).
 
 ### Task dependencies at approval
 
-A task may carry a `dependencies` list of other task ids. `foreman task approve`
+`foreman task approve` is REMOVED (TRD-018, 2026-09-13). The guard
+behavior below still describes the internal `task.approve` command,
+exercised automatically by BeadsWatcher's auto-approval — not a CLI
+verb an operator can invoke directly.
+
+A task may carry a `dependencies` list of other task ids. The internal `task.approve` command
 refuses while any of them is not `closed`, reporting
 `{:task_dependencies_unsatisfied, [{id, reason}]}` with **every** unsatisfied
 dependency in declaration order — a status string, `:not_found` for an id with no
@@ -433,9 +455,13 @@ A malformed value stored before that validation existed refuses the approval as
 `{:task_dependencies_malformed, value}` rather than being silently read as "no
 dependencies".
 
-This is a guard, not a scheduler. Nothing dispatches the task automatically when
-its last dependency closes — re-run `foreman task approve` yourself. There is
-also no ordering or cycle detection.
+This is a guard, not a scheduler. Nothing dispatches the task
+automatically when its last dependency closes. `foreman task approve`
+is REMOVED (TRD-018, 2026-09-13); BeadsWatcher dispatches
+`task.approve` only once, at bead import (TRD-007), so there is
+currently no operator-invocable path to retry approval after a
+dependency later closes — the same category of gap as `task.retry`
+below. There is also no ordering or cycle detection.
 
 The Go CLI has no `--dependencies` flag, so the field is settable only through a
 raw `POST /api/commands` `task.create` payload, the same as `priority`. And
@@ -446,7 +472,14 @@ Before this guard existed the list was accepted, stored, and written onto
 `TaskCreated` while nothing read it, so a task with unmet dependencies
 dispatched immediately.
 
-### `foreman task retry --id <task-id> [--reason <text>]`
+### `foreman task retry` — REMOVED (TRD-018)
+
+`foreman task retry --id <task-id> [--reason <text>]` no longer
+exists: TRD-018 (2026-09-13) deleted it along with `task create`/
+`approve`/`get`. Invoking it now produces the CLI's standard "unknown
+command" error, and no CLI replacement exists for retrying the
+internal `task.retry` command — it remains internal-only. The guard
+behavior it exposed is unchanged:
 
 Use `task.retry` only for a task whose bound run is already terminal.
 `CommandGateway` reads the task projection, verifies the bound run
@@ -704,9 +737,10 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
 - **Atomic `task.create`.** For a project with a configured `:create`
   provider, `task.create` mints the Bead and emits `TaskCreated`
   together (`ForemanServer.Aggregate.Actor`'s four-stage pipeline); the
-  Bead id comes back as `external_id` and `foreman task create` prints
-  it. A project without a `:create` provider takes the no-op path: no
-  Bead, no `external_id`.
+  Bead id comes back as `external_id`. `foreman task create` is
+  REMOVED (TRD-018, 2026-09-13); recover the Bead id via `GET
+  /api/tasks/:id` instead of CLI stdout output. A project without a
+  `:create` provider takes the no-op path: no Bead, no `external_id`.
 - **Inbound sync.** Set `config :foreman_server, :start_beads_watcher?,
   true` to run one `BeadsWatcher` per registered project, tailing its
   JSONL and dispatching `task.create` for Beads Foreman doesn't yet own.
@@ -723,9 +757,10 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   `foreman doctor task_provider` does not run today despite being
   referenced elsewhere; invoke the Elixir module directly (e.g. from
   an `iex -S mix` session) until that wiring exists.
-- **Remediation.** Once a task's bound run is terminal, use `foreman
-  task retry` (§4) — never mutate the provider issue by hand while
-  Foreman still owns it.
+- **Remediation.** `foreman task retry` is REMOVED (TRD-018,
+  2026-09-13); see §4 for what's unchanged internally and what isn't.
+  Never mutate the provider issue by hand while Foreman still owns
+  it.
 
 ## Day-to-day workflow
 
@@ -747,11 +782,15 @@ foreman project create --id my-project --path /path/to/repo --task-provider bead
 
 ### 3. Create and approve a task
 
+`foreman task create` and `foreman task approve` are REMOVED
+(TRD-018, 2026-09-13). Create a bead instead — BeadsWatcher dispatches
+the internal `task.create` + `task.approve` pair automatically the
+moment it transitions to `status: open`:
+
 ```bash
-foreman task create --project my-project --title "Add cooldown retry for transient CLI failures" \
+br create --title "Add cooldown retry for transient CLI failures" \
   --description "When a provider reports a transient rate limit, retry after cooldown instead of terminal failure." \
-  --workflow-type fix
-foreman task approve --id <task-id>
+  --type fix
 ```
 
 — or dispatch ad-hoc work in one call:
@@ -766,8 +805,11 @@ foreman run submit --project-id my-project --workflow fix \
 ```bash
 foreman run list --project-id my-project --status in_progress
 foreman run get <run-id>
-foreman task get <task-id>
 ```
+
+`foreman task get <task-id>` is REMOVED (TRD-018, 2026-09-13); read
+the task projection directly via `GET /api/tasks/:id` (`curl` or an
+MCP tool) instead.
 
 Foreman has no TUI/cockpit today — monitoring is projection reads via
 the CLI or `GET /api/*`. For live event/heartbeat detail during a run,
@@ -776,11 +818,15 @@ or the `/debug/*` LiveView dashboards in a dev environment.
 
 ### 5. Recover a wedged or failed run
 
+`foreman task retry` is REMOVED (TRD-018, 2026-09-13); re-opening the
+bead (`br update <id> --status=open`) is the closest replacement once
+the run below is terminal, though it goes through the same bead-import
+path as creating a new task rather than a dedicated retry command.
+
 ```bash
 foreman run get <run-id>                 # inspect status first
 foreman run reset --id <run-id>          # failed/stuck only; clears projection for resubmission
 foreman run remove --id <run-id>         # terminate + release slot/lease + best-effort cleanup
-foreman task retry --id <task-id>        # only once the bound run is terminal
 ```
 
 There is no interactive "kill-switch" or phase-resume primitive; a

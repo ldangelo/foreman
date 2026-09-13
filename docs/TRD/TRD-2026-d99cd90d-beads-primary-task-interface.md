@@ -4,9 +4,9 @@ label: trd-beads-primary-interface
 kind: trd
 prd_reference: docs/PRD/PRD-2026-d99cd90d-beads-primary-task-interface.md
 architecture_reference: docs/TRD/TRD-2026-d99cd90d-beads-primary-task-interface-ARCHITECTURE.md
-version: 1.2.0
+version: 1.3.0
 status: Final
-date: 2026-09-12
+date: 2026-09-13
 design_readiness_score: 4.5
 ensemble_implement_trd_beads:
   branch_name: feature/trd-2026-d99cd90d-beads-primary-task-interface
@@ -24,7 +24,7 @@ ensemble_implement_trd_beads:
 | Label | trd-beads-primary-interface |
 | PRD Reference | docs/PRD/PRD-2026-d99cd90d-beads-primary-task-interface.md |
 | Architecture Reference | docs/TRD/TRD-2026-d99cd90d-beads-primary-task-interface-ARCHITECTURE.md (v1.6.0, Final) |
-| Version | 1.2.0 |
+| Version | 1.3.0 |
 | Status | Final |
 | Correlation ID | d99cd90d (shared with source PRD) |
 | Design Readiness Score | 4.5 (PASS) |
@@ -47,12 +47,12 @@ values have no mapped workflow, in both human-readable and `--json`
 form. No watcher behavior changes yet — this PR is purely additive
 catalog/doctor capability.
 
-- [ ] **TRD-001**: Add `task_types:` field to workflow YAML parser; fail closed on collision between two workflows declaring the same type [satisfies REQ-001] (2h)
-- [ ] **TRD-001-TEST**: Test collision detection (two workflows, same type) and omitted-field non-triggering [satisfies REQ-001] [verifies TRD-001] Validates PRD ACs: AC-001-1, AC-001-2 (1h) [depends: TRD-001]
-- [ ] **TRD-002**: Build `Catalog.type_to_workflow/1` reverse map in GenServer state; rebuild on every manifest file change (hot-reload) [satisfies REQ-001] (2h) [depends: TRD-001]
-- [ ] **TRD-002-TEST**: Test hot-reload rebuilds the map on file change; multiple types mapping to one workflow [satisfies REQ-001] [verifies TRD-002] Validates PRD ACs: AC-001-3 (1h) [depends: TRD-002]
-- [ ] **TRD-003**: Implement `Workflow.Catalog.Doctor` type coverage report: query non-closed issue_types via `BeadsAdapter`, diff against `type_to_workflow`, ASCII tree default output, `--json` flag [satisfies REQ-002] (3h) [depends: TRD-002]
-- [ ] **TRD-003-TEST**: Test doctor reports unmapped types by name in both ASCII and JSON; reports full coverage when none unmapped [satisfies REQ-002] [verifies TRD-003] Validates PRD ACs: AC-002-1, AC-002-2 (1h) [depends: TRD-003]
+- [x] **TRD-001**: Add `task_types:` field to workflow YAML parser; fail closed on collision between two workflows declaring the same type [satisfies REQ-001] (2h)
+- [x] **TRD-001-TEST**: Test collision detection (two workflows, same type) and omitted-field non-triggering [satisfies REQ-001] [verifies TRD-001] Validates PRD ACs: AC-001-1, AC-001-2 (1h) [depends: TRD-001]
+- [x] **TRD-002**: Build `Catalog.type_to_workflow/1` reverse map in GenServer state; rebuild on every manifest file change (hot-reload) [satisfies REQ-001] (2h) [depends: TRD-001]
+- [x] **TRD-002-TEST**: Test hot-reload rebuilds the map on file change; multiple types mapping to one workflow [satisfies REQ-001] [verifies TRD-002] Validates PRD ACs: AC-001-3 (1h) [depends: TRD-002]
+- [x] **TRD-003**: Implement `Workflow.Catalog.Doctor` type coverage report: query non-closed issue_types via `BeadsAdapter`, diff against `type_to_workflow`, ASCII tree default output, `--json` flag [satisfies REQ-002] (3h) [depends: TRD-002]
+- [x] **TRD-003-TEST**: Test doctor reports unmapped types by name in both ASCII and JSON; reports full coverage when none unmapped [satisfies REQ-002] [verifies TRD-003] Validates PRD ACs: AC-002-1, AC-002-2 (1h) [depends: TRD-003]
 
 **PR 1 subtotal: 10h**
 
@@ -66,23 +66,23 @@ export instead of silently importing a fraction of the backlog; and
 new `open` beads are picked up within ~1 second instead of waiting
 for the next poll cycle.
 
-- [ ] **TRD-004**: Add status gate to `BeadsWatcher.process_line/2` (new `check_status/1`): accept only `status: "open"`, emit `[:watcher, :status_gate, :skipped]` for others [satisfies REQ-003] (3h) [depends: TRD-002]
-- [ ] **TRD-004-TEST**: Test gate rejects `draft`/`blocked`/`closed`, accepts `open` directly (no `draft` intermediate required) [satisfies REQ-003] [verifies TRD-004] Validates PRD ACs: AC-003-1, AC-003-3 (1h) [depends: TRD-004]
-- [ ] **TRD-005**: Wire workflow selection into `BeadsWatcher`: query `Catalog.type_to_workflow(issue_type)`, emit `:unmapped_type` and hold (transient) when no mapping exists [satisfies REQ-001] (2h) [depends: TRD-004]
-- [ ] **TRD-005-TEST**: Test unmapped type holds transient and emits telemetry rather than creating a task [satisfies REQ-001] [verifies TRD-005] (1h) [depends: TRD-005]
-- [ ] **TRD-006**: Implement `trd_path` extraction from `agent_context`; missing/empty when required moves the bead to `blocked` + transition comment (exact text per architecture §8.4) [satisfies REQ-007] (3h) [depends: TRD-005]
-- [ ] **TRD-006-TEST**: Test missing `trd_path` blocks the bead with the exact comment text and creates no task; present `trd_path` flows into `task.create` [satisfies REQ-007] [verifies TRD-006] Validates PRD ACs: AC-007-1, AC-007-2 (1h) [depends: TRD-006]
-- [ ] **TRD-007**: Implement auto-approval: dispatch `task.create` + `task.approve` as one effective step in `dispatch_new_bead/2` [satisfies REQ-003] (2h) [depends: TRD-006]
-- [ ] **TRD-007-TEST**: Test a bead transitioning to `open` results in a created-and-approved task with no separate operator action [satisfies REQ-003] [verifies TRD-007] Validates PRD ACs: AC-003-2 (1h) [depends: TRD-007]
-- [ ] **TRD-008**: Regression test target: full-replay-on-boot (existing, reused from TRD-81315f37) still creates+approves tasks for beads that transitioned while the watcher was offline, layered under the new status gate [satisfies REQ-004] (1h) [depends: TRD-007]
-- [ ] **TRD-008-TEST**: Test watcher restart replays and imports a bead that went `draft -> open` while stopped [satisfies REQ-004] [verifies TRD-008] Validates PRD ACs: AC-004-1 (1h) [depends: TRD-008]
-- [ ] **TRD-009**: Implement coverage-drift detection at watcher boot: call `br sync --status --json` before entering the tail loop; refuse to start and alert the operator with exact counts if `coverage_drift == true` [satisfies REQ-004] (2h) [depends: TRD-004]
-- [ ] **TRD-009-TEST**: Test watcher refuses to start when `coverage_drift == true` (with counts logged) and resumes normally once `false` [satisfies REQ-004] [verifies TRD-009] (1h) [depends: TRD-009]
-- [ ] **TRD-010**: Acquire `BeadsDbLease` during boot-time full-replay and each periodic catch-up tail [satisfies REQ-004] (2h) [depends: TRD-009]
-- [ ] **TRD-010-TEST**: Test watcher and a concurrent `RunExecutor`-dispatched `br update` serialize through the lease (no interleaved reads/writes) [satisfies REQ-004] [verifies TRD-010] (2h) [depends: TRD-010]
-- [ ] **TRD-011**: Implement filesystem watch (primary, <1s) on `.beads/issues.jsonl` with 30s periodic poll backstop, 100ms debounce [satisfies REQ-003] (3h) [depends: TRD-007]
-- [ ] **TRD-011-TEST**: Test filesystem-watch-triggered read fires within ~1s of a JSONL write; poll backstop catches a missed watch event within 35s [satisfies REQ-003] [verifies TRD-011] (2h) [depends: TRD-011]
-- [ ] **TRD-012**: Add fine-grained telemetry buckets per skip reason (`:unmapped_type`, `:missing_trd_path`, `:draft_status`) replacing the single coarse `:skipped` event [satisfies REQ-003] (1h) [depends: TRD-004] [depends: TRD-005] [depends: TRD-006]
+- [x] **TRD-004**: Add status gate to `BeadsWatcher.process_line/2` (new `check_status/1`): accept only `status: "open"`, emit `[:watcher, :status_gate, :skipped]` for others [satisfies REQ-003] (3h) [depends: TRD-002]
+- [x] **TRD-004-TEST**: Test gate rejects `draft`/`blocked`/`closed`, accepts `open` directly (no `draft` intermediate required) [satisfies REQ-003] [verifies TRD-004] Validates PRD ACs: AC-003-1, AC-003-3 (1h) [depends: TRD-004]
+- [x] **TRD-005**: Wire workflow selection into `BeadsWatcher`: query `Catalog.type_to_workflow(issue_type)`, emit `:unmapped_type` and hold (transient) when no mapping exists [satisfies REQ-001] (2h) [depends: TRD-004]
+- [x] **TRD-005-TEST**: Test unmapped type holds transient and emits telemetry rather than creating a task [satisfies REQ-001] [verifies TRD-005] (1h) [depends: TRD-005]
+- [x] **TRD-006**: Implement `trd_path` extraction from `agent_context`; missing/empty when required moves the bead to `blocked` + transition comment (exact text per architecture §8.4) [satisfies REQ-007] (3h) [depends: TRD-005]
+- [x] **TRD-006-TEST**: Test missing `trd_path` blocks the bead with the exact comment text and creates no task; present `trd_path` flows into `task.create` [satisfies REQ-007] [verifies TRD-006] Validates PRD ACs: AC-007-1, AC-007-2 (1h) [depends: TRD-006]
+- [x] **TRD-007**: Implement auto-approval: dispatch `task.create` + `task.approve` as one effective step in `dispatch_new_bead/2` [satisfies REQ-003] (2h) [depends: TRD-006]
+- [x] **TRD-007-TEST**: Test a bead transitioning to `open` results in a created-and-approved task with no separate operator action [satisfies REQ-003] [verifies TRD-007] Validates PRD ACs: AC-003-2 (1h) [depends: TRD-007]
+- [x] **TRD-008**: Regression test target: full-replay-on-boot (existing, reused from TRD-81315f37) still creates+approves tasks for beads that transitioned while the watcher was offline, layered under the new status gate [satisfies REQ-004] (1h) [depends: TRD-007]
+- [x] **TRD-008-TEST**: Test watcher restart replays and imports a bead that went `draft -> open` while stopped [satisfies REQ-004] [verifies TRD-008] Validates PRD ACs: AC-004-1 (1h) [depends: TRD-008]
+- [x] **TRD-009**: Implement coverage-drift detection at watcher boot: call `br sync --status --json` before entering the tail loop; refuse to start and alert the operator with exact counts if `coverage_drift == true` [satisfies REQ-004] (2h) [depends: TRD-004]
+- [x] **TRD-009-TEST**: Test watcher refuses to start when `coverage_drift == true` (with counts logged) and resumes normally once `false` [satisfies REQ-004] [verifies TRD-009] (1h) [depends: TRD-009]
+- [x] **TRD-010**: Acquire `BeadsDbLease` during boot-time full-replay and each periodic catch-up tail [satisfies REQ-004] (2h) [depends: TRD-009]
+- [x] **TRD-010-TEST**: Test watcher and a concurrent `RunExecutor`-dispatched `br update` serialize through the lease (no interleaved reads/writes) [satisfies REQ-004] [verifies TRD-010] (2h) [depends: TRD-010]
+- [x] **TRD-011**: Implement filesystem watch (primary, <1s) on `.beads/issues.jsonl` with 30s periodic poll backstop, 100ms debounce [satisfies REQ-003] (3h) [depends: TRD-007]
+- [x] **TRD-011-TEST**: Test filesystem-watch-triggered read fires within ~1s of a JSONL write; poll backstop catches a missed watch event within 35s [satisfies REQ-003] [verifies TRD-011] (2h) [depends: TRD-011]
+- [x] **TRD-012**: Add fine-grained telemetry buckets per skip reason (`:unmapped_type`, `:missing_trd_path`, `:draft_status`) replacing the single coarse `:skipped` event [satisfies REQ-003] (1h) [depends: TRD-004] [depends: TRD-005] [depends: TRD-006]
 
 **PR 2 subtotal: 29h**
 
@@ -93,14 +93,14 @@ for the next poll cycle.
 with a reason on unrecoverable or retry-exhausted failure — fully
 automatically, with no operator action required for the common case.
 
-- [ ] **TRD-013**: Fix `BeadsAdapter.fail/3` hardcoded `--status open` (2 literals, request map + argv) to `--status blocked` [satisfies REQ-005] (1h)
-- [ ] **TRD-013-TEST**: Test `fail/3` moves the bead to `blocked` (not `open`) with the transition comment [satisfies REQ-005] [verifies TRD-013] Validates PRD ACs: AC-005-4 (1h) [depends: TRD-013]
-- [ ] **TRD-014**: Create `ForemanServer.Workflow.FailureClassifier.classify/1`: pattern-match transient (`:model_unreachable`, `:provider_unavailable`, `:database_unavailable`, `:network_error`, `:worker_dispatch_error`) vs. permanent (`:validation_error`, `:workflow_definition_error`, `:agent_error`, `:phase_terminal`); default permanent [satisfies REQ-005] (2h)
-- [ ] **TRD-014-TEST**: Parametrized test over every documented error pattern; unknown error defaults to permanent [satisfies REQ-005] [verifies TRD-014] (2h) [depends: TRD-014]
-- [ ] **TRD-015**: Wrap `RunExecutor`'s existing dispatch call (the code path preceding the existing `fail/3` call site at `run_executor.ex:129`) in a transient retry loop: 3 attempts max, waits of 1s (before attempt 2), 5s (before attempt 3), 15s (settle wait before escalating on the 3rd failure — not a 4th attempt). No new call sites; the existing `fail/3` call is only reached once permanent or transient-exhausted [satisfies REQ-005] (3h) [depends: TRD-014]
-- [ ] **TRD-015-TEST**: Test retry timing matches the 1s/5s/15s schedule exactly; 3rd transient failure escalates and invokes the existing `fail/3` call site after the 15s wait, with no 4th dispatch attempt; a permanent-classified failure skips retry and invokes `fail/3` immediately [satisfies REQ-005] [verifies TRD-015] Validates PRD ACs: AC-005-3 (2h) [depends: TRD-015]
-- [ ] **TRD-016**: Verify (and fix if needed) that the existing `claim/3` call site (`run_executor.ex:100`) fires before phase 1 dispatch, and the existing `complete/3` call site (line 113) fires on run success — no new wiring expected, this is a confirmation task per the corrected architecture §2.4 [satisfies REQ-005] (1h) [depends: TRD-013]
-- [ ] **TRD-016-TEST**: End-to-end test: run start → `in_progress` (via existing `claim/3`), run success → `closed` (via existing `complete/3`), run terminal failure → `blocked` with reason (via fixed `fail/3`) [satisfies REQ-005] [verifies TRD-016] Validates PRD ACs: AC-005-1, AC-005-2 (2h) [depends: TRD-016] [depends: TRD-015]
+- [x] **TRD-013**: Fix `BeadsAdapter.fail/3` hardcoded `--status open` (2 literals, request map + argv) to `--status blocked` [satisfies REQ-005] (1h)
+- [x] **TRD-013-TEST**: Test `fail/3` moves the bead to `blocked` (not `open`) with the transition comment [satisfies REQ-005] [verifies TRD-013] Validates PRD ACs: AC-005-4 (1h) [depends: TRD-013]
+- [x] **TRD-014**: Create `ForemanServer.Workflow.FailureClassifier.classify/1`: pattern-match transient (`:model_unreachable`, `:provider_unavailable`, `:database_unavailable`, `:network_error`, `:worker_dispatch_error`) vs. permanent (`:validation_error`, `:workflow_definition_error`, `:agent_error`, `:phase_terminal`); default permanent [satisfies REQ-005] (2h)
+- [x] **TRD-014-TEST**: Parametrized test over every documented error pattern; unknown error defaults to permanent [satisfies REQ-005] [verifies TRD-014] (2h) [depends: TRD-014]
+- [x] **TRD-015**: Wrap `RunExecutor`'s existing dispatch call (the code path preceding the existing `fail/3` call site at `run_executor.ex:129`) in a transient retry loop: 3 attempts max, waits of 1s (before attempt 2), 5s (before attempt 3), 15s (settle wait before escalating on the 3rd failure — not a 4th attempt). No new call sites; the existing `fail/3` call is only reached once permanent or transient-exhausted [satisfies REQ-005] (3h) [depends: TRD-014]
+- [x] **TRD-015-TEST**: Test retry timing matches the 1s/5s/15s schedule exactly; 3rd transient failure escalates and invokes the existing `fail/3` call site after the 15s wait, with no 4th dispatch attempt; a permanent-classified failure skips retry and invokes `fail/3` immediately [satisfies REQ-005] [verifies TRD-015] Validates PRD ACs: AC-005-3 (2h) [depends: TRD-015]
+- [x] **TRD-016**: Verify (and fix if needed) that the existing `claim/3` call site (`run_executor.ex:100`) fires before phase 1 dispatch, and the existing `complete/3` call site (line 113) fires on run success — no new wiring expected, this is a confirmation task per the corrected architecture §2.4 [satisfies REQ-005] (1h) [depends: TRD-013]
+- [x] **TRD-016-TEST**: End-to-end test: run start → `in_progress` (via existing `claim/3`), run success → `closed` (via existing `complete/3`), run terminal failure → `blocked` with reason (via fixed `fail/3`) [satisfies REQ-005] [verifies TRD-016] Validates PRD ACs: AC-005-1, AC-005-2 (2h) [depends: TRD-016] [depends: TRD-015]
 
 **PR 3 subtotal: 14h**
 
@@ -113,10 +113,10 @@ task-creation interface. The two previously-deleted TRD-implementing
 workflow manifests are available again and route correctly through
 the new `task_types:` mapping.
 
-- [ ] **TRD-018**: Delete `task create`/`task approve`/`task retry`/`task get` CLI subcommands entirely; no custom error handling [satisfies REQ-006] (1h)
-- [ ] **TRD-018-TEST**: Test invoking any removed `task.*` command produces the CLI's standard "unknown command" error with no task-lifecycle side effect; `run.*` commands unaffected [satisfies REQ-006] [verifies TRD-018] Validates PRD ACs: AC-006-1, AC-006-2 (1h) [depends: TRD-018]
-- [ ] **TRD-019**: Restore `implement-trd.yaml` and `implement-trd-beads.yaml` workflow manifests with `task_types:` declared [satisfies REQ-008] (1h) [depends: TRD-002]
-- [ ] **TRD-019-TEST**: Test both manifests load without error, pass REQ-002's conflict validation, and route via `Catalog.type_to_workflow` [satisfies REQ-008] [verifies TRD-019] Validates PRD ACs: AC-008-1 (1h) [depends: TRD-019]
+- [x] **TRD-018**: Delete `task create`/`task approve`/`task retry`/`task get` CLI subcommands entirely; no custom error handling [satisfies REQ-006] (1h)
+- [x] **TRD-018-TEST**: Test invoking any removed `task.*` command produces the CLI's standard "unknown command" error with no task-lifecycle side effect; `run.*` commands unaffected [satisfies REQ-006] [verifies TRD-018] Validates PRD ACs: AC-006-1, AC-006-2 (1h) [depends: TRD-018]
+- [x] **TRD-019**: Restore `implement-trd.yaml` and `implement-trd-beads.yaml` workflow manifests with `task_types:` declared [satisfies REQ-008] (1h) [depends: TRD-002]
+- [x] **TRD-019-TEST**: Test both manifests load without error, pass REQ-002's conflict validation, and route via `Catalog.type_to_workflow` [satisfies REQ-008] [verifies TRD-019] Validates PRD ACs: AC-008-1 (1h) [depends: TRD-019]
 
 **PR 4 subtotal: 4h**
 
@@ -188,6 +188,14 @@ gates the next stage's input in the same function.
 | **Average** | **4.5** | **PASS** |
 
 ## Changelog
+
+- **1.3.0** — 2026-09-13 — Implementation complete. All 35 tasks (18
+  impl + 17 test) closed via beads; epic `foreman-31jm` closed.
+  Independent completion-verification run: full test suite green
+  (2872 tests, 0 failures attributable to this work) after fixing
+  several genuine regressions the implementation surfaced (see
+  `docs/reports/trd-2026-d99cd90d-beads-primary-task-interface-completion-2026-09-13.md`
+  for the full report). Checkboxes flipped to reflect closure.
 
 - **1.2.0** — 2026-09-12 — Converted the Master Task List from markdown
   tables to the checklist format (`- [ ] **TRD-NNN**: ... [annotations]`)
