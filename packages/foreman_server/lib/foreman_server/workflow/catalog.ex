@@ -40,6 +40,7 @@ defmodule ForemanServer.Workflow.Catalog do
   use GenServer
 
   alias ForemanServer.Workflow.AssetCatalog
+  alias ForemanServer.Workflow.Catalog.Doctor
   alias ForemanServer.Workflow.Interpreter
   alias ForemanServer.WorkflowTemplate.Installer
 
@@ -122,6 +123,21 @@ defmodule ForemanServer.Workflow.Catalog do
   @spec reload() :: :ok
   def reload, do: GenServer.call(server(), :reload)
 
+  @doc "Get the full type-to-workflow mapping."
+  @spec type_to_workflow_map() :: %{String.t() => String.t()}
+  def type_to_workflow_map, do: GenServer.call(server(), :type_to_workflow_map)
+
+  @doc "Generate a type coverage report for a project's beads against declared workflows."
+  @spec doctor(String.t()) :: {:ok, map()} | {:error, term()}
+  def doctor(project_id) when is_binary(project_id) do
+    case GenServer.call(server(), :type_to_workflow_map) do
+      type_map when is_map(type_map) ->
+        {:ok, Doctor.coverage_report(project_id, type_map)}
+      error ->
+        error
+    end
+  end
+
   ## GenServer
 
   @impl true
@@ -183,6 +199,10 @@ defmodule ForemanServer.Workflow.Catalog do
 
   def handle_call(:reload, _from, state) do
     {:reply, :ok, scan(state)}
+  end
+
+  def handle_call(:type_to_workflow_map, _from, state) do
+    {:reply, state.type_to_workflow, state}
   end
 
   @impl true
