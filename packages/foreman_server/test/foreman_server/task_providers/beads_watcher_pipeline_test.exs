@@ -660,6 +660,64 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     end
   end
 
+  # --- Auto-approval (TRD-007-TEST, AC-003-2) -----------------------------
+
+  describe "auto-approval on open transition" do
+    test "bead transitioning to open results in a created-and-approved task with no separate operator action" do
+      state = %BeadsWatcher{project_id: "proj-auto", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-auto","title":"x","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+
+      [{create_cmd, _timeout}, {approve_cmd, _approve_timeout}] = FakeCommandGateway.calls()
+
+      assert create_cmd.type == "task.create"
+      assert create_cmd.payload.task_id == "beads:proj-auto:bead-auto"
+
+      assert approve_cmd.type == "task.approve"
+      assert approve_cmd.aggregate_id == create_cmd.aggregate_id
+      assert approve_cmd.payload.task_id == create_cmd.payload.task_id
+      assert approve_cmd.command_id == create_cmd.command_id <> ":auto-approve"
+
+      # Neither step is a separate operator action — both are trusted
+      # system dispatches, so no operator path was ever exercised.
+      assert FakeCommandGateway.operator_calls() == []
+    end
+
+    test "[:watcher, :dispatch_and_approve] telemetry carries the bead_id and task_id" do
+      handler_id = unique_handler("auto-approve")
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :watcher, :dispatch_and_approve],
+        fn _event, _measurements, metadata, _config ->
+          send(self(), {:telemetry, ref, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      state = %BeadsWatcher{project_id: "proj-auto-tel", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-auto-tel","title":"x","status":"open"})
+
+      {_new_state, _outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert_receive {:telemetry, ^ref, metadata}, 200
+      assert metadata[:bead_id] == "bead-auto-tel"
+      assert metadata[:task_id] == "beads:proj-auto-tel:bead-auto-tel"
+    end
+  end
+
   # --- Helpers --------------------------------------------------------
 
   defp unique_handler(label) do
