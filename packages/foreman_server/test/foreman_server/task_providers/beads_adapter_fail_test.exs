@@ -62,7 +62,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
     {:ok, temp_dir: temp_dir}
   end
 
-  test "happy path returns {:ok, %Issue{status: \"open\"}} and emits success telemetry", %{
+  test "happy path returns {:ok, %Issue{status: \"blocked\"}} and emits success telemetry", %{
     temp_dir: temp_dir
   } do
     start_schema_cache!()
@@ -93,11 +93,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                   flags: [
                     "bead-901",
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     "operator-comment"
                   ],
-                  database_path: cached_database_path
                 }}
 
       assert runner_project_config == %{database_path: cached_database_path}
@@ -113,7 +112,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
           cached_database_path,
           "bead-901",
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           "operator-comment",
           "--json"
@@ -130,7 +129,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                Map.put(project_config, "run_id", "run-901")
              )
 
-    assert issue.status == "open"
+    assert issue.status == "blocked"
     assert issue.id == "bead-901"
     assert issue.title == "Reopen after failure"
 
@@ -143,7 +142,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
              redacted_database_path(cached_database_path),
              "bead-901",
              "--status",
-             "open",
+             "blocked",
              "--transition-comment",
              "operator-comment",
              "--json"
@@ -167,11 +166,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                   flags: [
                     "bead-902",
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     fabricated_comment
                   ],
-                  database_path: cached_database_path
                 }}
 
       assert runner_project_config == %{database_path: cached_database_path}
@@ -187,7 +185,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
           cached_database_path,
           "bead-902",
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           fabricated_comment,
           "--json"
@@ -207,7 +205,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
        }}
     end)
 
-    assert {:ok, %Issue{id: "bead-902", status: "open", title: "bead-902", dependents: []}} =
+    assert {:ok, %Issue{id: "bead-902", status: "blocked", title: "bead-902", dependents: []}} =
              BeadsAdapter.fail(
                "bead-902",
                %{transition_comment: nil, run_id: "run-902", artifact_path: artifact_path},
@@ -247,7 +245,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                   flags: [
                     "bead-903",
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     fabricated_comment
                   ],

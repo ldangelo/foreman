@@ -1161,7 +1161,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
        %Issue{
          id: id,
          title: title,
-         status: "open",
+         status: "blocked",
          priority: priority,
          dependencies: dependencies,
          dependents: [],

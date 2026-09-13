@@ -326,16 +326,12 @@ func extractAllowedCLIFlags() (map[string]map[string]bool, error) {
 	return extractCLIFlagsFromSource()
 }
 
-// extractCLIFlagsFromSource parses packages/foreman_cli/cmd/foreman/task.go and run.go
+// extractCLIFlagsFromSource parses packages/foreman_cli/cmd/foreman/run.go
 // using go/parser and go/ast, extracting flag names from FlagSet method calls.
 // This ensures validateAgentCommandSpecs validates against the real CLI contract.
 // Returns error if source cannot be found.
 func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	allowed := map[string]map[string]bool{
-		"task create": {},
-		"task get":    {},
-		"task list":   {},
-		"task update": {},
 		"run submit":  {},
 		"run list":    {},
 		"run get":     {},
@@ -345,19 +341,7 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("findCLIRoot: %w", err)
 	}
-
-	taskPath := filepath.Join(cliRoot, "cmd", "foreman", "task.go")
 	runPath := filepath.Join(cliRoot, "cmd", "foreman", "run.go")
-	if err := extractFlagsFromAST(taskPath, "taskCreate", allowed["task create"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromAST task.go (taskCreate): %w", err)
-	}
-	if err := extractFlagsFromAST(taskPath, "taskList", allowed["task list"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromAST task.go (taskList): %w", err)
-	}
-	if err := extractFlagsFromAST(taskPath, "taskUpdate", allowed["task update"]); err != nil {
-		return nil, fmt.Errorf("extractFlagsFromAST task.go (taskUpdate): %w", err)
-	}
-
 	// run submit and run list flags
 	if err := extractFlagsFromAST(runPath, "runSubmit", allowed["run submit"]); err != nil {
 		return nil, fmt.Errorf("extractFlagsFromAST run.go (runSubmit): %w", err)
