@@ -59,19 +59,19 @@ Ran `mix test` from the repo root (via `devbox run`) five times across this veri
 2. **Second run**: 27 failures. Root-caused and fixed 6 independent defects (not test wording — real bugs the Wave 1/2 tracks introduced): `Catalog.resolve_workflow/3` silently dropping `task_types` from every manifest (making `type_to_workflow` permanently empty); `Doctor.format_ascii/1` discarding its computed branch via an unbound `if/else`; a direct `BeadsAdapter` alias in `Doctor` violating the TaskProviders architecture boundary; `ManifestWriter` unconditionally rejecting the new `task_types` top-level list field; and a `run_executor.ex` alias edit that silently deleted the `StepSequencer` alias fix AGENTS.md documents as previously having crashed every multi-phase run.
 3. **Third through fifth runs**: progressively fixed stale test assertions that predated or were introduced alongside the above (pre-existing `beads_adapter_fail_test.exs`/`side_channel_capture_test.exs`/`run_executor_test.exs` tests still asserting the `fail/3` `"open"` status literal TRD-013 deliberately changed to `"blocked"`; `beads_supervisors_test.exs`'s mock missing TRD-009's new `:sync_status` boot call; `catalog_test.exs` asserting a bare-string `type_to_workflow` contract against the real `{:ok,_}`/`{:error,_}` tuple contract; and `task_state_transitions_test.exs` calling `claim/3`/`complete/3` instead of the real `claim/4`/`complete/4`, never seeding the real project projection `RunExecutor.resolve_provider/3` requires, asserting fabricated request shapes, and asserting telemetry events `claim`/`complete` never emit).
 
-**Final run**: `3 properties, 2872 tests, 2 failures, 11 excluded`.
+**Final run**: `3 properties, 2872 tests, 2 failures, 11 excluded` (2870/2872 passing).
 
-The 2 remaining failures — `DispatcherBridgeTest` ("approval → dispatch → run.start bridge") and `RecoveryTest` ("do_detect/1 emits a run.recovery_event for stale non-terminal runs") — were independently investigated:
+The 2 remaining failures — `DispatcherBridgeTest` ("approval → dispatch → run.start bridge") and `RecoveryTest` ("do_detect/1 emits a run.recovery_event for stale non-terminal runs") — were independently investigated, not eliminated:
 
 - Neither test file has any diff against `main` on this branch (`git diff $(git merge-base HEAD main) -- <file>` is empty for both).
 - Both pass cleanly and reproducibly in isolation: 3/3 seeded runs (`--seed 1`, `--seed 2`, `--seed 3`) with zero failures when run together in isolation, and individually within the isolated `run_executor_test.exs`/`recovery_test.exs` files.
 - They surface only under the full 36-`max_cases`-parallel suite, consistent with the pre-existing, already-documented non-determinism in `AGENTS.md` ("Elixir Test Suite Non-Determinism (2026-09-02)": shared singleton/projection state leaking across async/sync test boundaries, 38-43 failures on identical seed prior to any of this branch's work).
 
-These 2 failures are pre-existing infrastructure flakiness, not attributable to this branch, and are out of scope for TRD-2026 (a separate, already-tracked investigation per AGENTS.md).
+Per this skill's gate algorithm, a nonzero suite exit code is a GAP regardless of attribution, and the calling agent MUST NOT declare completion without an explicit user override. That override was requested and obtained: the user was presented with this exact evidence (isolation reproduction, empty diff, non-determinism precedent) via an explicit choice among "accept as pre-existing", "investigate further", or "block merge until green", and selected **"Accept as pre-existing, proceed."**
 
 ## Gap Summary
 
 - Total gaps found: **0** attributable to this branch's implementation.
-- Test-suite gap: 2 intermittent, full-suite-load-only failures in files untouched by this branch, verified pre-existing via isolation reproduction and empty git diff against `main`. Documented above rather than silently ignored, per this skill's own instruction to record findings rather than re-running to get a clean number.
+- Test-suite gap: 2 intermittent, full-suite-load-only failures in files untouched by this branch, verified pre-existing via isolation reproduction and empty git diff against `main`, NOT eliminated. Accepted via explicit user override per the completion-verification gate, not self-certified.
 
-## VERDICT: COMPLETE
+## VERDICT: COMPLETE (INCOMPLETE overridden by explicit user decision — see Gap Summary)
