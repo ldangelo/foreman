@@ -176,6 +176,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     :watcher,
     :dispatch_and_approve
   ]
+  @coverage_drift_event [:foreman_server, :task_provider, :beads, :watcher, :coverage_drift]
   # ---------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------
@@ -233,7 +234,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: project_id}
     )
 
-    with {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
+    with :ok <- check_coverage_drift(project_id, database_path),
+         {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
          {:ok, file_handle} <- :file.open(jsonl_path, [:read, :binary, :raw]) do
       try do
         initial = %__MODULE__{
@@ -258,6 +260,21 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           reraise e, __STACKTRACE__
       end
     else
+      {:error, {:coverage_drift, status}} ->
+        TaskProviderTelemetry.emit(
+          @coverage_drift_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: project_id,
+            coverage_drift: true,
+            db_exportable_issues: get_in(status, ["coverage", "db_exportable_issues"]),
+            jsonl_unique_ids: get_in(status, ["coverage", "jsonl_unique_ids"]),
+            dirty_count: Map.get(status, "dirty_count")
+          }
+        )
+
+        {:stop, {:coverage_drift, status}}
+
       {:error, {:preflight_failed, _project_id, reason}} ->
         TaskProviderTelemetry.emit(
           @error_event,
@@ -978,6 +995,35 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       {:error, _reason} ->
         {:error, {:jsonl_path_decode_failed, project_id, stdout}}
+    end
+  end
+
+  # Refuse to start the boot-time full-replay over a partial/corrupted
+  # snapshot (TRD §7 architectural risk 1). `br sync --status --json`
+  # reports `coverage_drift` — true when the SQLite DB and the JSONL
+  # export have diverged (e.g. an interrupted `br sync`, a hand-edited
+  # JSONL, or a stale export). Returns `:ok` to proceed on `false` OR
+  # when the check itself cannot be completed (a missing/erroring `br`
+  # binary is a pre-existing operational problem, not a new failure
+  # mode this gate should introduce) — only an explicit
+  # `coverage_drift: true` refuses the start.
+  defp check_coverage_drift(project_id, database_path)
+       when is_binary(project_id) and is_binary(database_path) do
+    request = {:sync_status, %{flags: ["--status"]}}
+    project_config = %{database_path: database_path}
+
+    case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+      {:ok, %{stdout: stdout}} ->
+        case Jason.decode(stdout) do
+          {:ok, %{"coverage_drift" => true} = status} ->
+            {:error, {:coverage_drift, status}}
+
+          _decoded_or_not ->
+            :ok
+        end
+
+      {:error, _reason} ->
+        :ok
     end
   end
 

@@ -19,7 +19,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     coordination_status: "coordination",
     close: "close",
     where: "where",
-    schema: "schema"
+    schema: "schema",
+    sync_status: "sync"
   }
   @default_timeout_ms 60_000
   @max_kill_wait_ms 5_000
