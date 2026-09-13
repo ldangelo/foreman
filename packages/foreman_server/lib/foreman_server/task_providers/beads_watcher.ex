@@ -92,13 +92,22 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @type t :: %__MODULE__{
           project_id: String.t(),
           jsonl_path: String.t(),
+          database_path: String.t(),
           file_handle: :file.io_device(),
           read_offset: non_neg_integer(),
           partial_line: binary(),
           poll_ms: pos_integer()
         }
 
-  defstruct [:project_id, :jsonl_path, :file_handle, :read_offset, :partial_line, :poll_ms]
+  defstruct [
+    :project_id,
+    :jsonl_path,
+    :database_path,
+    :file_handle,
+    :read_offset,
+    :partial_line,
+    :poll_ms
+  ]
 
   # Replay counters — TRD §3 Risk-Mitigation (line 607) calls for
   # `lines_processed / lines_imported / lines_suppressed / lines_reconciled`
@@ -131,6 +140,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @imported_event [:foreman_server, :task_provider, :beads, :watcher, :imported]
   @malformed_event [:foreman_server, :task_provider, :beads, :watcher, :malformed]
   @error_event [:foreman_server, :task_provider, :beads, :watcher, :error]
+  @status_gate_skipped_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :status_gate,
+    :skipped
+  ]
   # ---------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------
@@ -194,6 +211,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         initial = %__MODULE__{
           project_id: project_id,
           jsonl_path: jsonl_path,
+          database_path: database_path,
           file_handle: file_handle,
           read_offset: 0,
           partial_line: "",
@@ -533,10 +551,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     with {:ok, parsed} <- decode_line(line),
          :ok <- check_foreman_tag(state, parsed),
-         :ok <- check_dedupe(state, parsed) do
+         :ok <- check_dedupe(state, parsed),
+         :ok <- check_status(state, parsed) do
       dispatch_new_bead(state, parsed)
     else
       :skip_foreman ->
+        :skipped
+
+      :skip_status ->
         :skipped
 
       :reconcile ->
@@ -553,7 +575,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  # ----- Step 1: JSON parse --------------------------------------------
+  # ----- JSON parse -----------------------------------------------------
 
   defp decode_line(line) when is_binary(line) do
     case Jason.decode(line) do
@@ -563,7 +585,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  # ----- Step 2: Foreman-tag suppression (AC-022-3) --------------------
+  # ----- Foreman-tag suppression (AC-022-3) ------------------------------
 
   defp check_foreman_tag(state, parsed) when is_map(parsed) do
     case foreman_tag?(parsed) do
@@ -588,7 +610,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     is_map(agent_context) and Map.has_key?(agent_context, "foreman")
   end
 
-  # ----- Step 3: ProjectionStore dedupe (AC-022-2) ---------------------
+  # ----- ProjectionStore dedupe (AC-022-2) --------------------------------
 
   defp check_dedupe(state, parsed) when is_map(parsed) do
     case Map.get(parsed, "id") do
@@ -612,7 +634,27 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  # ----- Step 4: Dispatch new bead (AC-022-1) -------------------------
+  # ----- Status gate (AC-003-1, AC-003-2, AC-003-3) -----------------------
+
+  defp check_status(state, parsed) when is_map(parsed) do
+    case Map.get(parsed, "status") do
+      "open" ->
+        :ok
+
+      _other ->
+        bead_id = Map.get(parsed, "id")
+
+        TaskProviderTelemetry.emit(
+          @status_gate_skipped_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id}
+        )
+
+        :skip_status
+    end
+  end
+
+  # ----- Dispatch new bead (AC-022-1) -------------------------------------
 
   defp dispatch_new_bead(state, parsed) when is_map(parsed) do
     bead_id = Map.get(parsed, "id")

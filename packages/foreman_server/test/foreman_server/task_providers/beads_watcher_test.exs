@@ -113,7 +113,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "imported advances read_offset by line_bytes + 1", %{state: state} do
       FakeCommandGateway.stub_response({:ok, nil})
-      line = ~s({"id":"bead-1","title":"hello"})
+      line = ~s({"id":"bead-1","title":"hello","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
@@ -160,7 +160,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "transient holds read_offset and stores the partial line" do
       FakeCommandGateway.stub_response({:error, :down})
       state = %BeadsWatcher{project_id: "proj-1", read_offset: 100, partial_line: ""}
-      line = ~s({"id":"bead-3","title":"will retry"})
+      line = ~s({"id":"bead-3","title":"will retry","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
@@ -175,7 +175,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       )
 
       state = %BeadsWatcher{project_id: "proj-1", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-4","title":"duplicate"})
+      line = ~s({"id":"bead-4","title":"duplicate","status":"open"})
 
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
@@ -185,7 +185,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "{:exit, :killed} shape holds cursor (transient, not a crash)" do
       FakeCommandGateway.stub_response({:exit, :killed})
       state = %BeadsWatcher{project_id: "proj-1", read_offset: 250, partial_line: ""}
-      line = ~s({"id":"bead-exit","title":"x"})
+      line = ~s({"id":"bead-exit","title":"x","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
@@ -199,7 +199,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "command_id encodes project_id + bead_id (deterministic across retries)" do
       FakeCommandGateway.stub_response({:error, :down})
       state = %BeadsWatcher{project_id: "proj-det", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-det","title":"x","priority":1,"issue_type":"task"})
+      line = ~s({"id":"bead-det","title":"x","priority":1,"issue_type":"task","status":"open"})
 
       {state_after_1, _} = BeadsWatcher.advance_one_line(state, line)
       {state_after_2, _} = BeadsWatcher.advance_one_line(state_after_1, line)
@@ -225,7 +225,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "dispatches with explicit timeout argument (boundary drift guard)" do
       FakeCommandGateway.stub_response({:ok, nil})
       state = %BeadsWatcher{project_id: "proj-x", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-x","title":"x"})
+      line = ~s({"id":"bead-x","title":"x","status":"open"})
 
       BeadsWatcher.advance_one_line(state, line)
 
@@ -257,6 +257,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       %BeadsWatcher{
         project_id: "proj-r",
         jsonl_path: path,
+        database_path: Path.join(tmp, "beads.db"),
         file_handle: handle,
         read_offset: 0,
         partial_line: "",
@@ -266,11 +267,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "processes all complete lines and leaves partial_line empty", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
-      state = open_state(tmp, ~s({"id":"a","title":"a"}\n{"id":"b","title":"b"}\n))
+      state = open_state(tmp, ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n))
       {new_state, counters} = BeadsWatcher.read_more(state)
 
       assert new_state.read_offset ==
-               byte_size(~s({"id":"a","title":"a"}\n{"id":"b","title":"b"}\n))
+               byte_size(~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n))
 
       assert new_state.partial_line == ""
       assert counters.lines_processed == 2
@@ -280,7 +281,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "preserves trailing fragment in partial_line when last line is unterminated", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
-      body = ~s({"id":"a","title":"a"}\n{"id":"b","title":"b-frag)
+      body = ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b-frag)
       state = open_state(tmp, body)
       {new_state, counters} = BeadsWatcher.read_more(state)
 
@@ -291,13 +292,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "subsequent read_more completes the fragment and dispatches the second bead", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
-      body = ~s({"id":"a","title":"a"}\n{"id":"b","title":"b-frag)
+      body = ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b-frag)
       state = open_state(tmp, body)
 
       {state, _} = BeadsWatcher.read_more(state)
 
       # Append the rest of line b + a terminator
-      File.write!(state.jsonl_path, ~s("}\n), [:append])
+      File.write!(state.jsonl_path, ~s(","status":"open"}\n), [:append])
       {state2, counters2} = BeadsWatcher.read_more(state)
 
       assert state2.partial_line == ""
@@ -310,14 +311,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "transient on line N holds read_offset at line N start, line N+1 re-read on next poll",
          %{tmp: tmp} do
       FakeCommandGateway.stub_response({:error, :down})
-      body = ~s({"id":"transient","title":"t"}\n{"id":"later","title":"l"}\n)
+      body = ~s({"id":"transient","title":"t","status":"open"}\n{"id":"later","title":"l","status":"open"}\n)
       state = open_state(tmp, body)
 
       {state, counters} = BeadsWatcher.read_more(state)
 
-      _transient_line_bytes = byte_size(~s({"id":"transient","title":"t"}\n))
+      _transient_line_bytes = byte_size(~s({"id":"transient","title":"t","status":"open"}\n))
       assert state.read_offset == 0
-      assert state.partial_line == ~s({"id":"transient","title":"t"})
+      assert state.partial_line == ~s({"id":"transient","title":"t","status":"open"})
       assert counters.lines_transient == 1
       assert counters.lines_processed == 1
       # line "later" was NOT consumed
@@ -329,7 +330,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:ok, nil})
 
       body =
-        ~s({"id":"a","title":"a"}\n{"id":"b","title":"b"}\n{"id":"c","title":"c","agent_context":{"foreman":{"task_id":"t"}}}\n)
+        ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n{"id":"c","title":"c","agent_context":{"foreman":{"task_id":"t"}}}\n)
 
       state = open_state(tmp, body)
 
@@ -354,7 +355,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "boot_replay starts state at offset 0 with empty partial_line", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
-      body = ~s({"id":"a","title":"a"}\n)
+      body = ~s({"id":"a","title":"a","status":"open"}\n)
       state = open_state(tmp, body)
 
       replayed = BeadsWatcher.boot_replay(state)
@@ -445,7 +446,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "bead with no id field returns :malformed (terminal advance)" do
       state = %BeadsWatcher{project_id: "proj-n", read_offset: 0, partial_line: ""}
-      line = ~s({"title":"no-id"})
+      line = ~s({"title":"no-id","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
