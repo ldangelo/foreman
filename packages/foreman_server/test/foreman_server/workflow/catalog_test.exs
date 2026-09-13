@@ -579,4 +579,57 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert wf.name == "empty_types"
     end
   end
+
+  describe "AC-001-3: Hot-reload and fan-in for task_types" do
+    test "hot-reload rebuilds type_to_workflow map when manifest changes", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      File.write!(Path.join(tmp, "prompts/p.md"), "prompt")
+
+      # Create workflow with one type
+      File.write!(
+        Path.join(tmp, "dynamic.yaml"),
+        "name: dynamic\ntask_types: [type_v1]\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      start_catalog(tmp, name)
+
+      # Verify initial mapping
+      assert "dynamic" == Catalog.type_to_workflow("type_v1")
+
+      # Modify the manifest to change the type
+      File.write!(
+        Path.join(tmp, "dynamic.yaml"),
+        "name: dynamic\ntask_types: [type_v2]\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      # Trigger reload
+      Catalog.reload()
+
+      # Old type should no longer map
+      assert nil == Catalog.type_to_workflow("type_v1")
+      # New type should map
+      assert "dynamic" == Catalog.type_to_workflow("type_v2")
+    end
+
+    test "multiple types in one workflow all map to that workflow (fan-in)", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      File.write!(Path.join(tmp, "prompts/p.md"), "prompt")
+
+      File.write!(
+        Path.join(tmp, "multi.yaml"),
+        "name: multi\ntask_types: [type_a, type_b, type_c]\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      start_catalog(tmp, name)
+
+      # All three types should map to the same workflow
+      assert "multi" == Catalog.type_to_workflow("type_a")
+      assert "multi" == Catalog.type_to_workflow("type_b")
+      assert "multi" == Catalog.type_to_workflow("type_c")
+    end
+  end
 end
