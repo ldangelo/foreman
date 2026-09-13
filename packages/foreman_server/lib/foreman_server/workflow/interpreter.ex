@@ -45,6 +45,7 @@ defmodule ForemanServer.Workflow.Interpreter do
       |> parse_yaml!(path)
 
     validate_required_fields!(workflow, path)
+    validate_task_types!(workflow, path)
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
     validate_phase_prs!(workflow, path)
@@ -734,10 +735,28 @@ defmodule ForemanServer.Workflow.Interpreter do
   # typed, which is what makes `Interpreter.validate_commit_value!/3` able to
   # tell a boolean from a string that looks like one.
   defp parse_scalar(value) do
-    case classify_scalar(value) do
-      {:quoted, inner} -> inner
-      {:plain, plain} -> cast_scalar(plain)
+    cond do
+      String.starts_with?(value, "[") and String.ends_with?(value, "]") ->
+        parse_array(value)
+      true ->
+        case classify_scalar(value) do
+          {:quoted, inner} -> inner
+          {:plain, plain} -> cast_scalar(plain)
+        end
     end
+  end
+
+  defp parse_array(value) do
+    inner = String.slice(value, 1, String.length(value) - 2)
+    inner
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.map(fn item ->
+      case classify_scalar(item) do
+        {:quoted, quoted_inner} -> quoted_inner
+        {:plain, plain} -> plain
+      end
+    end)
   end
 
   defp classify_scalar(value) do
@@ -757,6 +776,22 @@ defmodule ForemanServer.Workflow.Interpreter do
     case Integer.parse(value) do
       {integer, ""} -> integer
       _other -> value
+    end
+  end
+  defp validate_task_types!(workflow, path) do
+    case Map.get(workflow, "task_types") do
+      nil -> :ok
+      "" -> :ok
+      value when is_list(value) ->
+        Enum.each(value, fn item ->
+          unless is_binary(item) do
+            raise ArgumentError,
+              "workflow #{path}: task_types must be an array of strings, got #{inspect(item)}"
+          end
+        end)
+      _other ->
+        raise ArgumentError,
+          "workflow #{path}: task_types must be an array of strings, got #{inspect(_other)}"
     end
   end
 
