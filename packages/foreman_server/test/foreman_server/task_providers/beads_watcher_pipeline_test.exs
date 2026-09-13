@@ -516,7 +516,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       :telemetry.attach(
         handler_id,
-        [:foreman_server, :task_provider, :beads, :watcher, :workflow_unmapped],
+        [:foreman_server, :task_provider, :beads, :watcher, :status_gate, :skipped, :unmapped_type],
         fn _event, _measurements, metadata, _config ->
           send(self(), {:telemetry, ref, metadata})
         end,

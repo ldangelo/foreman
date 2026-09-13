@@ -171,16 +171,33 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @imported_event [:foreman_server, :task_provider, :beads, :watcher, :imported]
   @malformed_event [:foreman_server, :task_provider, :beads, :watcher, :malformed]
   @error_event [:foreman_server, :task_provider, :beads, :watcher, :error]
-  @status_gate_skipped_event [
+  @status_gate_skipped_draft_status_event [
     :foreman_server,
     :task_provider,
     :beads,
     :watcher,
     :status_gate,
-    :skipped
+    :skipped,
+    :draft_status
   ]
-  @workflow_unmapped_event [:foreman_server, :task_provider, :beads, :watcher, :workflow_unmapped]
-  @trd_path_missing_event [:foreman_server, :task_provider, :beads, :watcher, :trd_path_missing]
+  @status_gate_skipped_unmapped_type_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :status_gate,
+    :skipped,
+    :unmapped_type
+  ]
+  @status_gate_skipped_missing_trd_path_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :status_gate,
+    :skipped,
+    :missing_trd_path
+  ]
   @dispatch_and_approve_event [
     :foreman_server,
     :task_provider,
@@ -708,20 +725,21 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        recovery and operator-vs-watcher races).
     4. Status gate (AC-003-1, AC-003-3). Accept only `status: "open"`;
        any other value (including `draft`, `blocked`, `closed`) emits
-       the status-gate-skipped telemetry and returns `:skipped`
-       (terminal advance — no task, no bead mutation).
+       `[:watcher, :status_gate, :skipped, :draft_status]` and returns
+       `:skipped` (terminal advance — no task, no bead mutation).
     5. Workflow selection (REQ-001). Resolve `issue_type` via
        `Catalog.type_to_workflow/1`. An unmapped type emits
-       `[:watcher, :workflow_unmapped]` and returns `:transient` (the
-       cursor holds; the operator updates the workflow manifests and
-       the next poll retries).
+       `[:watcher, :status_gate, :skipped, :unmapped_type]` and
+       returns `:transient` (the cursor holds; the operator updates
+       the workflow manifests and the next poll retries).
     6. `trd_path` check (REQ-007, AC-007-1, AC-007-2). Workflows that
        provision an `ImplementationContext` (`implement-trd`,
        `implement-trd-beads`) require a non-empty
        `agent_context.trd_path`. When required but missing/empty, the
        bead is moved to `blocked` with the architecture §8.4 transition
-       comment, `[:watcher, :trd_path_missing]` is emitted, and the
-       line returns `:skipped` (terminal advance; no task created).
+       comment, `[:watcher, :status_gate, :skipped, :missing_trd_path]`
+       is emitted, and the line returns `:skipped` (terminal advance;
+       no task created).
        Otherwise the resolved `trd_path` (or `nil` when not required)
        flows into the `task.create` payload.
     7. Otherwise, synthesize the deterministic `task.create` envelope
@@ -849,7 +867,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         bead_id = Map.get(parsed, "id")
 
         TaskProviderTelemetry.emit(
-          @status_gate_skipped_event,
+          @status_gate_skipped_draft_status_event,
           %{system_time: System.system_time()},
           %{project_id: state.project_id, bead_id: bead_id}
         )
@@ -871,7 +889,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         bead_id = Map.get(parsed, "id")
 
         TaskProviderTelemetry.emit(
-          @workflow_unmapped_event,
+          @status_gate_skipped_unmapped_type_event,
           %{system_time: System.system_time()},
           %{project_id: state.project_id, bead_id: bead_id, issue_type: issue_type}
         )
@@ -941,7 +959,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
 
     TaskProviderTelemetry.emit(
-      @trd_path_missing_event,
+      @status_gate_skipped_missing_trd_path_event,
       %{system_time: System.system_time()},
       %{project_id: state.project_id, bead_id: bead_id}
     )
@@ -954,7 +972,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     # telemetry so the missing-trd_path outcome is observable; the line
     # advances via :skipped either way (this bead cannot be acted on).
     TaskProviderTelemetry.emit(
-      @trd_path_missing_event,
+      @status_gate_skipped_missing_trd_path_event,
       %{system_time: System.system_time()},
       %{project_id: state.project_id, bead_id: nil}
     )
