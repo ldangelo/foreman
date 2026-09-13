@@ -1943,7 +1943,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         request =
           {:update,
            %{
-             flags: [task_id, "--status", "open", "--transition-comment", transition_comment],
+           flags: [task_id, "--status", "blocked", "--transition-comment", transition_comment],
              database_path: database_path
            }}
 
@@ -1953,7 +1953,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
           database_path,
           task_id,
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           transition_comment,
           "--json"
