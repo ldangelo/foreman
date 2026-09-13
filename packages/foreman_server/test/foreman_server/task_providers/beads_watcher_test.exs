@@ -375,6 +375,34 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
              ] in events
     end
 
+    test "boot replay imports and approves a bead that transitioned draft -> open while stopped",
+         %{tmp: tmp} do
+      FakeCommandGateway.stub_response({:ok, nil})
+
+      # The bead was created while the watcher was offline (draft — no
+      # dispatch), then transitioned to open — also while offline. Both
+      # JSONL lines exist by the time the watcher (re)starts and replays
+      # from offset 0.
+      body =
+        ~s({"id":"bead-restart","title":"x","status":"draft"}\n) <>
+          ~s({"id":"bead-restart","title":"x","status":"open"}\n)
+
+      state = open_state(tmp, body)
+
+      replayed = BeadsWatcher.boot_replay(state)
+
+      assert replayed.read_offset == byte_size(body)
+      assert replayed.partial_line == ""
+
+      # draft line: status-gate skip, no dispatch. open line: not
+      # deduped (the draft line never created a task) -> create+approve.
+      [{create_cmd, _timeout}, {approve_cmd, _approve_timeout}] = FakeCommandGateway.calls()
+      assert create_cmd.type == "task.create"
+      assert create_cmd.payload.external_id == "bead-restart"
+      assert approve_cmd.type == "task.approve"
+      assert approve_cmd.aggregate_id == create_cmd.aggregate_id
+    end
+
     test "boot_replay starts state at offset 0 with empty partial_line", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
       body = ~s({"id":"a","title":"a","status":"open"}\n)
