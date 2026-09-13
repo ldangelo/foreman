@@ -49,6 +49,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # instead of advancing. Compile emitted the warning; nothing failed on it.
   alias ForemanServer.Workflow.StepSequencer
   alias ForemanServer.Workflow.FailureClassifier
+  alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
@@ -164,7 +165,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         dispatch_task_execution_fail(state, reason)
 
       {:error, error_reason} ->
-        case FailureClassifier.classify(error_reason) do
+        case classify_fail_reason(error_reason) do
           :permanent ->
             {:error, error_reason}
 
@@ -172,7 +173,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
             Task.start(fn ->
               case fail_retry_loop(project_id, task_id, run_id, failure_reason, 2) do
                 {:ok, _issue} ->
-                  _ = dispatch_task_execution_fail(state, reason)
+                  report_retry_dispatch_result(dispatch_task_execution_fail(state, reason), run_id)
 
                 {:error, final_reason} ->
                   Logger.error(
@@ -185,6 +186,33 @@ defmodule ForemanServer.Workflow.RunExecutor do
             :ok
         end
     end
+  end
+
+  # `fail/4`'s real implementation (`BeadsAdapter.fail/3`) returns
+  # `{:error, %ProviderError{}}`, never a bare atom — `retryable?` on that
+  # struct is Beads's own signal for whether the failure is worth retrying
+  # (per-code mapping in `BeadsAdapterCodeMap`). `FailureClassifier.classify/1`
+  # only recognizes specific atoms and defaults everything else, structs
+  # included, to `:permanent`; called directly on a `%ProviderError{}` it
+  # would silently make this retry mechanism dead code against the
+  # production adapter. Normalize the struct's own signal first, and fall
+  # back to `FailureClassifier` only for the bare-atom reasons this
+  # module's own preflight/claim paths still produce.
+  defp classify_fail_reason(%ProviderError{retryable?: true}), do: :transient
+  defp classify_fail_reason(%ProviderError{retryable?: false}), do: :permanent
+  defp classify_fail_reason(reason), do: FailureClassifier.classify(reason)
+
+  # The detached retry task has no caller left to propagate a failed
+  # dispatch to — log it instead of silently discarding, matching the
+  # visibility the synchronous path already gets via `emit_phase_failure/4`'s
+  # `with`/`else` logging for the same dispatch call.
+  defp report_retry_dispatch_result(:ok, _run_id), do: :ok
+
+  defp report_retry_dispatch_result({:error, reason}, run_id) do
+    Logger.error(
+      "RunExecutor #{run_id} task.execution_fail dispatch failed after successful retry: " <>
+        inspect(reason)
+    )
   end
 
   # Attempts 2 and 3 of the fail/4 retry schedule (attempt 1 already ran
@@ -205,7 +233,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:ok, result}
 
       {:error, error_reason} ->
-        case FailureClassifier.classify(error_reason) do
+        case classify_fail_reason(error_reason) do
           :permanent ->
             {:error, error_reason}
 

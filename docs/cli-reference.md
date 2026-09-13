@@ -41,10 +41,13 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman workflow remove   --all
 >
 > `foreman task create`, `foreman task approve`, `foreman task
-> retry`, and `foreman task get` are REMOVED (TRD-018, 2026-09-13) —
-> `packages/foreman_cli/cmd/foreman/task.go` was deleted; invoking
-> any of them now produces the CLI's standard "unknown command"
-> error.
+> retry`, `foreman task get`, `foreman task list`, and `foreman task
+> update` are REMOVED (TRD-018, 2026-09-13) — the `task` dispatch
+> case and its handler functions were deleted from
+> `packages/foreman_cli/cmd/foreman/task.go` (51 lines remain: shared
+> HTTP envelope/JSON helpers used by other command files, not
+> task-verb handlers); invoking any of them now produces the CLI's
+> standard "unknown command" error.
 >
 > Every verb except `init` REQUIRES a subcommand: bare `foreman run`,
 > `foreman task`, `foreman project` or `foreman workflow` returns
@@ -71,12 +74,13 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > Note also that this file is *incomplete* about what is real: it has no section
 > for `run get`, `run cancel`, `run reset`, `workflow install` or `workflow
-> remove`, all of which exist. `foreman task approve`, `task get`, and `task
-> retry` used to round out that list; TRD-018 (2026-09-13) deleted them — along
-> with `task create`, which did have a section below — from the Go CLI (see the
-> corrected inventory above). The block above is authoritative; AGENTS.md's
-> Operator Reference (Task Lifecycle / Go CLI Commands) reflects the same
-> TRD-018 removal and remains accurate against the Go source.
+> remove`, all of which exist. `foreman task approve`, `task get`, `task
+> retry`, `task list`, and `task update` used to round out that list; TRD-018
+> (2026-09-13) deleted them — along with `task create`, which did have a
+> section below — from the Go CLI (see the corrected inventory above). The
+> block above is authoritative; AGENTS.md's Operator Reference (Task
+> Lifecycle / Go CLI Commands) reflects the same TRD-018 removal and remains
+> accurate against the Go source.
 
 ## Global Usage
 
@@ -334,6 +338,15 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > [`docs/user-guide.md`](../docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse)).
 
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
+
+> **NOT A REAL INVOCATION.** The bare `foreman run [flags]` example block and
+> flag table immediately below predate `foreman run`'s dispatch-verb
+> requirement (see the `NOT IMPLEMENTED as described` note above) and are
+> kept only as a record of the intended design, per this file's annotation
+> convention. `foreman run --watch` in the paragraph after it is likewise
+> not a real invocation. Today: `foreman run submit` for one-step ad-hoc
+> execution, or let BeadsWatcher auto-dispatch via `br create`/`br update
+> --status=open`.
 
 Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation; Elixir Overwatch rejects Graphify tools so worker discovery does not create slow generated worktree artifacts. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
@@ -793,6 +806,12 @@ foreman reset foreman-abc12 --keep-worktree
 > **NOT IMPLEMENTED.** `foreman retry` is not dispatched, and neither is `foreman task retry` any more — TRD-018 (2026-09-13) removed it too (see the note at the top of this file). The internal `task.retry` command it used to invoke is unchanged, but there is no CLI verb left to call it; there is no `--dispatch`, `--model`, or positional-id form either way.
 
 Reset a task and optionally re-dispatch it immediately.
+
+> The example block and option table below are historical — a record of the
+> command as originally designed, per this file's annotation convention —
+> not a currently-runnable command. None of `bd-abc1` as a positional id,
+> nor `--dispatch`/`--model`/`--dry-run`/`--project`, exist on any CLI verb
+> today.
 
 ```bash
 foreman retry bd-abc1             # Reset task to ready
@@ -1315,8 +1334,10 @@ foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
 ### `foreman task create`
 
 > **REMOVED (TRD-018).** `foreman task create` is gone as of
-> 2026-09-13: TRD-018 deleted
-> `packages/foreman_cli/cmd/foreman/task.go` entirely (see the
+> 2026-09-13: TRD-018 deleted the `task` dispatch case and its
+> handlers from
+> `packages/foreman_cli/cmd/foreman/task.go` (which still exists for
+> shared HTTP helpers used by other command files; see the
 > authoritative verb list at the top of this file). Invoking it now
 > produces the CLI's standard "unknown command" error. Task creation
 > today is driven by Beads — `br create`, or transitioning an

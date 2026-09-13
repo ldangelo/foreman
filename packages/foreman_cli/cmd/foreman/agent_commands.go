@@ -245,40 +245,30 @@ func commandsValidate(args []string) error {
 	return nil
 }
 
-func buildAgentCommandInventory(workflows []string) []agentCommandSpec {
-	selectors := append([]string(nil), workflows...)
-	sort.Strings(selectors)
-	specs := make([]agentCommandSpec, 0, len(selectors)+5)
-	for _, workflow := range selectors {
-		args := []agentCommandArg{
-			{Name: "project", Flag: "--project", Required: true, Description: "Foreman project ID"},
-			{Name: "title", Flag: "--title", Required: true, Description: "Task title"},
-			{Name: "description", Flag: "--description", Description: "Optional task description"},
-			{Name: "id", Flag: "--id", Description: "Optional task ID"},
-		}
-		if workflow == "implement-trd" || workflow == "implement-trd-beads" {
-			args = append(args, agentCommandArg{Name: "trd-path", Flag: "--trd-path", Required: true, Description: "Project-relative TRD path"})
-		}
-		specs = append(specs, agentCommandSpec{
-			ID:          "foreman-task-" + workflow,
-			DisplayName: "Foreman task: " + workflow,
-			Description: "Create a Foreman task for the " + workflow + " workflow. Task creation requires later approval.",
-			Kind:        "task",
-			Workflow:    workflow,
-			Args:        args,
-			CLI:         []string{"foreman", "task", "create", "--project", "$PROJECT", "--title", "$TITLE", "--workflow-type", workflow},
-			Tags:        []string{"foreman", "task", workflow},
-		})
+// TRD-018 (2026-09-13) removed `foreman task create`/`get`/`list`/`update`
+// entirely — there is no Foreman CLI replacement (Beads is the sole task-
+// creation interface; see AGENTS.md's Task Lifecycle / docs/user-guide.md's
+// "Tasks" section). This generator used to emit one `foreman-task-<workflow>`
+// shortcut per selected task-type workflow plus static `foreman-task-get`/
+// `list`/`update` shortcuts, all invoking `foreman task <verb>` — every one
+// of those CLI invocations is now dead. They are REMOVED here rather than
+// retargeted at `br create`/`br update`: `validateAgentCommandSpecs` and
+// `extractAllowedCLIFlags` are hard-wired to this module's own
+// `task.go`/`run.go` source (`spec.CLI[0] != "foreman"` is a validation
+// error, and the flag extractor only parses Go source in this repo) — `br`
+// is a separate external binary with no Go source here to introspect for
+// its flag surface. Supporting a `br`-backed shortcut is real, distinctly
+// scoped feature work (a hardcoded flag allowlist or a `br --help`-parsing
+// validator), not a rename of this function.
+//
+// `workflows` is accepted for backward call-site compatibility but no
+// longer produces task-type shortcuts.
+func buildAgentCommandInventory(_ []string) []agentCommandSpec {
+	return []agentCommandSpec{
+		{ID: "foreman-run-submit", DisplayName: "Foreman run submit", Description: "Submit an ad-hoc Foreman run in one step. Backend is a client-side selector; pi is default, codex/opencode acceptance does not prove runtime provider readiness.", Kind: "run", Args: []agentCommandArg{{Name: "project-id", Flag: "--project-id", Required: true, Description: "Foreman project ID"}, {Name: "workflow", Flag: "--workflow", Required: true, Description: "Workflow selector"}, {Name: "prompt", Flag: "--prompt", Required: true, Description: "Run prompt"}, {Name: "work-id", Flag: "--work-id", Description: "Optional caller supplied work/task ID"}, {Name: "backend", Flag: "--backend", Description: "pi, claude, codex, or opencode; runtime readiness is server/provider-confirmed, not proven by CLI acceptance"}}, CLI: []string{"foreman", "run", "submit", "--project-id", "$PROJECT_ID", "--workflow", "$WORKFLOW", "--prompt", "$PROMPT"}, Tags: []string{"foreman", "run"}},
+		{ID: "foreman-run-list", DisplayName: "Foreman run list", Description: "List Foreman runs, optionally filtered by status, project ID, or limit.", Kind: "run", Args: []agentCommandArg{{Name: "status", Flag: "--status", Description: "Optional run status"}, {Name: "project-id", Flag: "--project-id", Description: "Optional project ID"}, {Name: "limit", Flag: "--limit", Description: "Optional max result count"}}, CLI: []string{"foreman", "run", "list"}, Tags: []string{"foreman", "run"}},
+		{ID: "foreman-run-get", DisplayName: "Foreman run detail", Description: "Fetch one Foreman run projection by run ID.", Kind: "run", Args: []agentCommandArg{{Name: "run-id", Required: true, Description: "Run ID positional argument"}}, CLI: []string{"foreman", "run", "get", "$RUN_ID"}, Tags: []string{"foreman", "run"}},
 	}
-	specs = append(specs,
-		agentCommandSpec{ID: "foreman-run-submit", DisplayName: "Foreman run submit", Description: "Submit an ad-hoc Foreman run in one step. Backend is a client-side selector; pi is default, codex/opencode acceptance does not prove runtime provider readiness.", Kind: "run", Args: []agentCommandArg{{Name: "project-id", Flag: "--project-id", Required: true, Description: "Foreman project ID"}, {Name: "workflow", Flag: "--workflow", Required: true, Description: "Workflow selector"}, {Name: "prompt", Flag: "--prompt", Required: true, Description: "Run prompt"}, {Name: "work-id", Flag: "--work-id", Description: "Optional caller supplied work/task ID"}, {Name: "backend", Flag: "--backend", Description: "pi, claude, codex, or opencode; runtime readiness is server/provider dependent"}, {Name: "base-branch", Flag: "--base-branch", Description: "Optional base branch passthrough"}}, CLI: []string{"foreman", "run", "submit", "--workflow", "$WORKFLOW", "--prompt", "$PROMPT", "--project-id", "$PROJECT_ID"}, Tags: []string{"foreman", "run"}},
-		agentCommandSpec{ID: "foreman-run-list", DisplayName: "Foreman run list", Description: "List Foreman runs, optionally filtered by status, project ID, or limit.", Kind: "run", Args: []agentCommandArg{{Name: "status", Flag: "--status", Description: "Optional run status"}, {Name: "project-id", Flag: "--project-id", Description: "Optional project ID"}, {Name: "limit", Flag: "--limit", Description: "Optional max result count"}}, CLI: []string{"foreman", "run", "list"}, Tags: []string{"foreman", "run"}},
-		agentCommandSpec{ID: "foreman-run-get", DisplayName: "Foreman run detail", Description: "Fetch one Foreman run projection by run ID.", Kind: "run", Args: []agentCommandArg{{Name: "run-id", Required: true, Description: "Run ID positional argument"}}, CLI: []string{"foreman", "run", "get", "$RUN_ID"}, Tags: []string{"foreman", "run"}},
-		agentCommandSpec{ID: "foreman-task-get", DisplayName: "Foreman task detail", Description: "Fetch one Foreman task projection by task ID.", Kind: "task", Args: []agentCommandArg{{Name: "task-id", Required: true, Description: "Task ID positional argument"}}, CLI: []string{"foreman", "task", "get", "$TASK_ID"}, Tags: []string{"foreman", "task"}},
-		agentCommandSpec{ID: "foreman-task-list", DisplayName: "Foreman task list", Description: "List Foreman tasks, optionally filtered by project and status.", Kind: "task", Args: []agentCommandArg{{Name: "project", Flag: "--project", Description: "Filter by project ID"}, {Name: "status", Flag: "--status", Description: "Filter by status"}}, CLI: []string{"foreman", "task", "list"}, Tags: []string{"foreman", "task"}},
-		agentCommandSpec{ID: "foreman-task-update", DisplayName: "Foreman task update", Description: "Update task fields: title, description, priority, status.", Kind: "task", Args: []agentCommandArg{{Name: "id", Flag: "--id", Required: true, Description: "Task ID"}, {Name: "title", Flag: "--title", Description: "New task title"}, {Name: "description", Flag: "--description", Description: "New task description"}, {Name: "priority", Flag: "--priority", Description: "Priority 0-4"}, {Name: "status", Flag: "--status", Description: "New status"}}, CLI: []string{"foreman", "task", "update"}, Tags: []string{"foreman", "task"}},
-	)
-	return specs
 }
 
 func validateAgentCommandSpecs(specs []agentCommandSpec) error {
@@ -529,20 +519,18 @@ func shellBodyForSpec(spec agentCommandSpec) string {
 		fmt.Fprintln(&b, "[ -n \"${LIMIT:-}\" ] && args+=(--limit \"$LIMIT\")")
 	case "foreman-run-get":
 		fmt.Fprintln(&b, "args=(foreman run get \"$RUN_ID\")")
-	case "foreman-task-get":
-		fmt.Fprintln(&b, "args=(foreman task get \"$TASK_ID\")")
 	case "foreman-run-submit":
 		fmt.Fprintln(&b, "args=(foreman run submit --workflow \"$WORKFLOW\" --prompt \"$PROMPT\" --project-id \"$PROJECT_ID\")")
 		fmt.Fprintln(&b, "[ -n \"${WORK_ID:-}\" ] && args+=(--work-id \"$WORK_ID\")")
 		fmt.Fprintln(&b, "[ -n \"${BACKEND:-}\" ] && args+=(--backend \"$BACKEND\")")
 		fmt.Fprintln(&b, "[ -n \"${BASE_BRANCH:-}\" ] && args+=(--base-branch \"$BASE_BRANCH\")")
 	default:
-		fmt.Fprintf(&b, "args=(foreman task create --project \"$PROJECT\" --title \"$TITLE\" --workflow-type %q)\n", spec.Workflow)
-		fmt.Fprintln(&b, "[ -n \"${DESCRIPTION:-}\" ] && args+=(--description \"$DESCRIPTION\")")
-		fmt.Fprintln(&b, "[ -n \"${ID:-}\" ] && args+=(--id \"$ID\")")
-		if spec.Workflow == "implement-trd" || spec.Workflow == "implement-trd-beads" {
-			fmt.Fprintln(&b, "args+=(--trd-path \"$TRD_PATH\")")
-		}
+		// `buildAgentCommandInventory` only ever produces the three IDs
+		// above (TRD-018 removed the `foreman task create` shortcuts this
+		// case used to render). Reaching here means a new spec ID was
+		// added without a matching case — panic rather than silently
+		// emitting a shell body for a CLI command that does not exist.
+		panic(fmt.Sprintf("shellBodyForSpec: no shell body defined for spec id %q", spec.ID))
 	}
 	fmt.Fprintln(&b, "exec \"${args[@]}\"")
 	return b.String()

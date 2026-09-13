@@ -7,18 +7,21 @@ defmodule ForemanServer.Workflow.RunExecutorRetryTest do
   alias ForemanServer.Workflow.FailureClassifier
 
   @moduledoc """
-  Tests for TRD-015: Transient retry logic in RunExecutor.fail_with_retry/4.
+  Contract tests for `ForemanServer.Workflow.FailureClassifier`, the
+  transient/permanent classification `RunExecutor.fail_with_retry/6` and
+  `fail_retry_loop/5` consult before retrying a failed `fail/4` dispatch.
 
-  Tests verify:
-  1. Retry timing matches 1s/5s/15s schedule exactly
-  2. 3rd transient failure escalates after 15s settle wait with no 4th attempt
-  3. Permanent-classified failure skips retry and invokes fail/3 immediately
+  This file exercises ONLY `FailureClassifier.classify/1` in isolation — it
+  never starts a `RunExecutor` and never calls `fail_with_retry/6`, so it
+  cannot detect a removed retry attempt, a changed backoff delay, or a
+  broken escalation path in the real retry loop. That end-to-end coverage
+  (a real `RunExecutor` run, a `BrRunnerMock`-backed `fail/4` failing
+  transiently then succeeding on retry, asserting both calls happen and the
+  run still reaches `TaskExecutionFailed`) lives in
+  `run_executor_test.exs`'s "failure path retries a transient fail/4 error
+  before dispatching TaskExecutionFailed" test instead, since it needs the
+  full provider/event-store harness already set up there.
   """
-
-  # We test the private function indirectly through RunExecutor's public interface,
-  # or we can use the :erlang.apply approach to test private functions.
-  # For simplicity, we'll test the behavior through the public API if possible,
-  # or document the expected behavior based on the code structure.
 
   describe "fail_with_retry/4 — permanent failures (no retry)" do
     test "permanent failure skips retry and returns immediately" do

@@ -930,6 +930,145 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert Enum.any?(transitions, &(&1 in [:reopen, :fail]))
   end
 
+  test "failure path retries a transient fail/4 error before dispatching TaskExecutionFailed",
+       %{
+         temp_dir: temp_dir
+       } do
+    # TRD-015 regression: `fail_with_retry/6` must actually retry a
+    # transient-classified `fail/4` error against the real BeadsAdapter/
+    # BrRunnerMock path, not just against `FailureClassifier.classify/1`
+    # in isolation (which `run_executor_retry_test.exs` covers). This test
+    # forces the *first* `br update --status blocked` call to fail with a
+    # retryable provider error (an unrecognized `br.code` with its own
+    # envelope `"retryable?": true`, exactly as
+    # `beads_adapter_fail_test.exs`'s "unknown br.code fallback" case
+    # produces) and the *second* call to succeed, then asserts BOTH calls
+    # actually happened and the run still reaches `TaskExecutionFailed`.
+    start_schema_cache!()
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
+    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
+    expected_comment = "foreman-run:#{run_id}:#{artifact_path}"
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid, adapter_results: [{:error, :boom}]})
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      send(test_pid, {:runner_cmd, :claim, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    fail_request = fn ->
+      {:update,
+       %{
+         flags: [task_id, "--status", "blocked", "--transition-comment", expected_comment],
+         database_path: database_path
+       }}
+    end
+
+    # Attempt 1: a retryable provider error. `retryable?: true` on the raw
+    # envelope is preserved verbatim through `ProviderErrorInput.from_br_envelope/1`
+    # for an unrecognized `br.code`, exactly as the existing
+    # `beads_adapter_fail_test.exs` "unknown br.code fallback" case proves.
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == fail_request.()
+      assert_database_path(runner_project_config, database_path)
+
+      send(test_pid, {:runner_cmd, :fail_attempt_1, request, runner_project_config, opts})
+
+      envelope =
+        Jason.encode!(%{
+          "code" => "TRANSIENT_TEST_CODE",
+          "message" => "simulated transient failure",
+          "retryable?" => true
+        })
+
+      {:error, %{stdout: "", stderr: envelope, exit_code: 7}}
+    end)
+
+    # Attempt 2 (the retry, run off-process per this session's fix — see
+    # `RunExecutor.fail_retry_loop/5`): succeeds.
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == fail_request.()
+      assert_database_path(runner_project_config, database_path)
+
+      send(test_pid, {:runner_cmd, :fail_attempt_2, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "blocked", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    assert is_pid(start_run_executor!(run_id, task_id))
+
+    assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
+             receive_message()
+
+    assert {:adapter_execute, "Run phase implement", _context} = receive_message()
+    assert {:adapter_env, _env} = receive_message()
+
+    assert {:runner_cmd, :fail_attempt_1, _, _, _} = receive_message()
+    # The retry sleeps 1s off-process (`fail_retry_loop/5`, attempt 2) before
+    # calling `fail/4` again — the whole point of this session's fix is that
+    # this wait does NOT block the RunExecutor GenServer itself, so nothing
+    # about this assertion depends on that timing beyond a generous receive
+    # window.
+    assert {:runner_cmd, :fail_attempt_2, _, _, _} = receive_message(5_000)
+
+    assert %{status: "failed"} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "failed"} = task -> {:ok, task}
+                   other -> {:error, other}
+                 end
+               end,
+               "task failed after transient fail/4 retry"
+             )
+
+    assert count_task_events(task_id, "TaskExecutionFailed") == 1
+  end
+
   test "complete/4 is idempotent when the provider reports ALREADY_CLOSED" do
     start_schema_cache!()
 

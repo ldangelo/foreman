@@ -215,10 +215,14 @@ commands automatically — no separate approval step is needed. Use
 monitor the resulting run, and re-open the bead (`br update <id>
 --status=open`) to retry once its bound run is terminal.
 
-`--workflow-type implement-trd` / `implement-trd-beads` require
-`--trd-path <project-relative-path>` — the server's
-`ImplementationContext` needs a committed TRD blob to freeze at approval
-time.
+Select the workflow via the bead's type (mapped through a manifest's
+`task_types:` declaration — see `foreman doctor`), not a CLI flag. Workflows
+requiring `ImplementationContext` (`implement-trd`, `implement-trd-beads`)
+read the TRD path from the bead's own `agent_context.trd_path` field, set on
+the bead directly (`br update <id> --agent-context '{"trd_path":"docs/TRD/..."}'`)
+— there is no `--trd-path` CLI flag any more, and no separate approval step:
+BeadsWatcher creates and auto-approves the task in one action when the bead
+transitions to `open`.
 
 ### Runs
 
@@ -254,7 +258,12 @@ foreman commands install --agent claude --scope project
 foreman commands validate
 ```
 
-Workflow task shortcuts create tasks that still require later approval. Use `foreman run submit` or the generated `foreman-run-submit` asset for one-step ad-hoc execution. `implement-trd` and `implement-trd-beads` task shortcuts require `--trd-path`.
+The `task create`/`task get` agent-command shortcuts above are removed
+along with the CLI verbs they wrapped (TRD-018) — there is no longer a
+generated task-creation shortcut, "later approval" step, or `--trd-path`
+flag. Use `foreman run submit` or the generated `foreman-run-submit` asset
+for one-step ad-hoc execution; drive `implement-trd`/`implement-trd-beads`
+work through Beads as described above instead.
 
 Support states:
 

@@ -998,11 +998,13 @@ Or use `Ctrl+C` in the terminal running the server.
 
 Tasks go through: `open` → `ready` → `in_progress` → `completed`/`failed`.
 
-**TRD-018 (2026-09-13) deleted `foreman task create`/`approve`/`retry`/`get`
-entirely from the Go CLI** (`packages/foreman_cli/cmd/foreman/task.go` was
-removed; invoking any of them now produces the CLI's standard "unknown
-command" error, indistinguishable from a typo). `foreman run list/get/cancel/
-remove/reset` are unaffected. This does NOT remove the underlying `task.create`
+**TRD-018 (2026-09-13) deleted `foreman task create`/`approve`/`retry`/`get`/
+`list`/`update` entirely from the Go CLI** (the `task` dispatch case and its
+handlers were removed from `packages/foreman_cli/cmd/foreman/task.go`, which
+still exists for shared HTTP helpers used by other command files; invoking
+any of the removed verbs now produces the CLI's standard "unknown
+command" error, indistinguishable from a typo). `foreman run
+list/get/cancel/remove/reset` are unaffected. This does NOT remove the underlying `task.create`
 / `task.approve` / `task.retry` domain command types dispatched through
 `CommandGateway`/`CommandRouter` — those still exist and are the mechanism
 BeadsWatcher's TRD-007 auto-approval (`dispatch_new_bead/2`) uses internally
@@ -1151,9 +1153,12 @@ foreman run reset --id <run-id>
 
 ### Go CLI Commands
 
-`task create`/`approve`/`retry`/`get` are REMOVED (TRD-018, 2026-09-13) —
-`packages/foreman_cli/cmd/foreman/task.go` was deleted; invoking any of them
-produces the CLI's standard "unknown command" error. The remaining surface:
+`task create`/`approve`/`retry`/`get`/`list`/`update` are REMOVED (TRD-018, 2026-09-13) —
+the `task` dispatch case and its handler functions were deleted from
+`packages/foreman_cli/cmd/foreman/task.go` (51 lines remain: shared HTTP
+envelope/JSON helpers used by other command files, not task-verb handlers);
+invoking any of them produces the CLI's standard "unknown command" error.
+The remaining surface:
 
 ```bash
 foreman run list             # List run projections
@@ -1779,8 +1784,10 @@ This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) 
 BeadsWatcher's status gate (TRD-004), workflow-selection wiring (TRD-005), and
 auto-approval (TRD-007) dispatch the internal `task.create` + `task.approve`
 commands automatically; no CLI call is needed or possible. `foreman task
-create`/`approve`/`retry`/`get` were deleted from the Go CLI (TRD-018,
-`packages/foreman_cli/cmd/foreman/task.go` removed) — invoking any of them
+create`/`approve`/`retry`/`get`/`list`/`update` were deleted from the Go CLI
+(TRD-018, the `task` dispatch case and its handlers were removed from
+`packages/foreman_cli/cmd/foreman/task.go`, which still exists for shared
+HTTP helpers used by other command files) — invoking any of them
 produces the CLI's standard "unknown command" error. `foreman run
 list/get/cancel/remove/reset` are unaffected and remain the way to inspect or
 control a dispatched run.

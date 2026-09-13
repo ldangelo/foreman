@@ -7,7 +7,12 @@ import (
 	"testing"
 )
 
-func TestAgentCommandInventoryContainsWorkflowAndStatusCommands(t *testing.T) {
+func TestAgentCommandInventoryContainsRunCommandsOnly(t *testing.T) {
+	// TRD-018 (2026-09-13) removed `foreman task create`/`get`/`list`/`update`
+	// entirely, with no Foreman CLI replacement. `buildAgentCommandInventory`
+	// no longer produces any `foreman-task-*` shortcut — this test asserts
+	// their absence, not their presence, and that the surviving run-based
+	// shortcuts still validate and pass their expected tags.
 	specs := buildAgentCommandInventory([]string{"fix", "implement-trd"})
 	if err := validateAgentCommandSpecs(specs); err != nil {
 		t.Fatalf("validate specs: %v", err)
@@ -24,13 +29,18 @@ func TestAgentCommandInventoryContainsWorkflowAndStatusCommands(t *testing.T) {
 		}
 	}
 
-	if _, ok := byID["foreman-task-fix"]; !ok {
-		t.Fatalf("missing workflow task command")
+	for _, removedID := range []string{
+		"foreman-task-fix",
+		"foreman-task-implement-trd",
+		"foreman-task-get",
+		"foreman-task-list",
+		"foreman-task-update",
+	} {
+		if _, ok := byID[removedID]; ok {
+			t.Fatalf("%s should not be generated: TRD-018 removed its backing CLI command", removedID)
+		}
 	}
-	trd := byID["foreman-task-implement-trd"]
-	if !argRequired(trd, "trd-path") {
-		t.Fatalf("implement-trd command must require trd-path: %#v", trd.Args)
-	}
+
 	if _, ok := byID["foreman-run-submit"]; !ok {
 		t.Fatalf("missing run submit command")
 	}
@@ -39,9 +49,6 @@ func TestAgentCommandInventoryContainsWorkflowAndStatusCommands(t *testing.T) {
 	}
 	if _, ok := byID["foreman-run-get"]; !ok {
 		t.Fatalf("missing run get command")
-	}
-	if _, ok := byID["foreman-task-get"]; !ok {
-		t.Fatalf("missing task get command")
 	}
 }
 
@@ -87,17 +94,20 @@ func TestRenderCommandMarkdownValidatesInputsAndPreservesExec(t *testing.T) {
 	specs := buildAgentCommandInventory([]string{"implement-trd"})
 	var spec agentCommandSpec
 	for _, candidate := range specs {
-		if candidate.ID == "foreman-task-implement-trd" {
+		if candidate.ID == "foreman-run-submit" {
 			spec = candidate
 		}
 	}
+	if spec.ID == "" {
+		t.Fatalf("foreman-run-submit spec not found")
+	}
 	body := renderCommandMarkdown("claude", spec)
 	for _, want := range []string{
-		"missing required project",
-		"missing required title",
-		"missing required trd-path",
-		"foreman task create",
-		"--workflow-type \"implement-trd\"",
+		"missing required project-id",
+		"missing required workflow",
+		"missing required prompt",
+		"foreman run submit",
+		"--workflow \"$WORKFLOW\"",
 		"exec \"${args[@]}\"",
 		"FOREMAN_API_TOKEN; no secrets are embedded",
 	} {
@@ -179,10 +189,14 @@ func argRequired(spec agentCommandSpec, name string) bool {
 }
 
 func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
-	// Verify that extractCLIFlagsFromSource correctly derives flags from the actual
-	// task.go and run.go source files. This test acts as a regression detector:
-	// if task.go or run.go adds/removes/renames flags, this test will catch it
-	// and prevent validateAgentCommandSpecs from using stale flag maps.
+	// Verify that extractCLIFlagsFromSource correctly derives flags from the
+	// actual run.go source file. This test acts as a regression detector: if
+	// run.go adds/removes/renames flags, this test will catch it and prevent
+	// validateAgentCommandSpecs from using stale flag maps. `task.go` no
+	// longer exists (TRD-018 deleted the entire `task` CLI case) — the
+	// extractor's `allowed` map is seeded with only `run submit`/`run list`/
+	// `run get`, so this test no longer asserts anything about `task`
+	// commands (CodeRabbit review: those assertions could never pass again).
 
 	flags, err := extractCLIFlagsFromSource()
 	if err != nil {
@@ -190,7 +204,7 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 	}
 
 	// Verify the expected commands are present
-	expectedCommands := []string{"task create", "run submit", "run list", "run get", "task get"}
+	expectedCommands := []string{"run submit", "run list", "run get"}
 	for _, cmd := range expectedCommands {
 		if _, ok := flags[cmd]; !ok {
 			t.Errorf("expected command %q not found in extracted flags", cmd)
@@ -199,9 +213,8 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 
 	// Spot-check known flags for each command
 	tests := map[string][]string{
-		"task create": {"--project", "--title", "--workflow-type", "--trd-path"},
-		"run submit":  {"--project-id", "--workflow", "--prompt"},
-		"run list":    {"--status", "--project-id", "--limit"},
+		"run submit": {"--project-id", "--workflow", "--prompt"},
+		"run list":   {"--status", "--project-id", "--limit"},
 	}
 
 	for cmd, expectedFlags := range tests {
@@ -213,10 +226,7 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 		}
 	}
 
-	// Assert task get and run get have no flags (they take positional IDs only)
-	if len(flags["task get"]) != 0 {
-		t.Errorf("task get should have no flags, got: %v", flags["task get"])
-	}
+	// Assert run get has no flags (it takes a positional ID only)
 	if len(flags["run get"]) != 0 {
 		t.Errorf("run get should have no flags, got: %v", flags["run get"])
 	}

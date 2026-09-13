@@ -368,6 +368,14 @@ watcher-equivalents for those backends is out of scope here.
   (only its intent is restored, via REQ-001's manifest-declared mapping).
 - Changing shipped `BeadsAdapter.fail/3` behavior; transient retries are
   handled internally by `RunExecutor`, not at the TaskProvider boundary.
+  **Superseded** by REQ-005/AC-005-4 (§ above) and TRD-013: `fail/3`'s
+  hardcoded `--status open` on terminal failure *did* change, to
+  `--status blocked`, because REQ-003's `open`-triggers-dispatch rule made
+  the old behavior an immediate re-dispatch loop (see line 85-88 above).
+  This bullet is preserved verbatim as historical intent — the scope
+  boundary it drew (no *new* TaskProvider-boundary retry mechanics beyond
+  the one hardcoded status flip) held; only the literal claim that `fail/3`
+  itself would be untouched did not (CodeRabbit review).
 
 ## Appendix: Evidence Index
 

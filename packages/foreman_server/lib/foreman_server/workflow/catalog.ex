@@ -128,10 +128,10 @@ defmodule ForemanServer.Workflow.Catalog do
   def type_to_workflow_map, do: GenServer.call(server(), :type_to_workflow_map)
 
   @doc "Generate a type coverage report for a project's beads against declared workflows."
-  @spec doctor(String.t()) :: {:ok, map()}
+  @spec doctor(String.t()) :: {:ok, Doctor.t()} | {:error, term()}
   def doctor(project_id) when is_binary(project_id) do
     type_map = GenServer.call(server(), :type_to_workflow_map)
-    {:ok, Doctor.coverage_report(project_id, type_map)}
+    Doctor.coverage_report(project_id, type_map)
   end
 
   ## GenServer
@@ -428,9 +428,14 @@ defmodule ForemanServer.Workflow.Catalog do
         name: workflow["name"],
         description: workflow["description"],
         phases: resolved_phases,
-        manifest_path: path,
-        task_types: workflow["task_types"]
+        manifest_path: path
       }
+
+      base =
+        case workflow["task_types"] do
+          nil -> base
+          task_types -> Map.put(base, :task_types, task_types)
+        end
 
       # The `worktree:` block is carried VERBATIM at the workflow level.
       #

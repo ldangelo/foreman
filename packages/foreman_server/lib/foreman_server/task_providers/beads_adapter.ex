@@ -1157,6 +1157,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         %{argv: argv}
       )
 
+      # NOT hardcoded blindly: `br update --status blocked --json`'s response
+      # (confirmed by every fixture in beads_adapter_fail_test.exs) does not
+      # echo a "status" field back at all — unlike `br show`'s full-record
+      # response, which `populate_issue_from_payload/2` above validates via
+      # `fetch_required_string(payload, :status)` because that response DOES
+      # carry one. `exit_code: 0` on the `--status blocked` request is this
+      # command's own success contract; there is no status field in this
+      # payload to cross-check it against (CodeRabbit review considered and
+      # declined — see PR discussion for the fixture evidence).
       {:ok,
        %Issue{
          id: id,

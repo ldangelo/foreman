@@ -49,7 +49,43 @@
 
 ## Requirement Coverage Cross-Check
 
-`docs/PRD/PRD-2026-d99cd90d-beads-primary-task-interface.md` declares REQ-001 through REQ-010 using the `# REQ-NNN: Title` heading convention (em/en-dash separator) rather than the `**Priority:** Must|Should|Could|Won't` line convention the extractor recognizes. Per the completion-verification skill's documented limitation, every REQ therefore resolves to `priority: null` and is treated as informational-only — no REQ meets the Must/Should gating bar, so this step yields zero gaps by the skill's own contract. (Traceability itself — `[Satisfies REQ-NNN]` annotations on every task — was independently validated in an earlier phase with zero orphaned annotations.)
+`docs/PRD/PRD-2026-d99cd90d-beads-primary-task-interface.md` declares REQ-001
+through REQ-010 using the `# REQ-NNN: Title` heading convention (em/en-dash
+separator) rather than the `**Priority:** Must|Should|Could|Won't` line
+convention the completion-verification skill's automated extractor
+recognizes. That automated pass resolved every REQ to `priority: null` and
+treated the step as informational-only — an extractor/PRD-format mismatch,
+not evidence of anything (CodeRabbit review, corrected here rather than left
+standing as the reported evidence).
+
+The PRD's own Acceptance Criteria Summary table (lines 33-44) states
+priorities explicitly: REQ-001 through REQ-008 are **Must**, REQ-009 is
+**Should**, REQ-010 is **Won't (this release)** and out of scope. Checked
+manually against the Task Inventory above and the traceability validation
+already performed in an earlier phase (`[Satisfies REQ-NNN]` annotations on
+every task, zero orphaned annotations):
+
+| REQ | Priority | Satisfying task(s) | Status |
+|---|---|---|---|
+| REQ-001 | Must | TRD-001, TRD-001-TEST | closed |
+| REQ-002 | Must | TRD-002, TRD-002-TEST, TRD-003, TRD-003-TEST | closed |
+| REQ-003 | Must | TRD-004, TRD-004-TEST, TRD-007, TRD-007-TEST, TRD-008, TRD-008-TEST | closed |
+| REQ-004 | Must | TRD-005, TRD-005-TEST | closed |
+| REQ-005 | Must | TRD-006, TRD-006-TEST, TRD-013, TRD-013-TEST, TRD-014, TRD-014-TEST, TRD-015, TRD-015-TEST, TRD-016, TRD-016-TEST | closed |
+| REQ-006 | Must | TRD-018, TRD-018-TEST | closed |
+| REQ-007 | Must | TRD-006, TRD-006-TEST | closed |
+| REQ-008 | Must | TRD-019, TRD-019-TEST | closed |
+| REQ-009 | Should | — (no new task required; already satisfied by the existing `TaskProvider` contract, per the TRD's own traceability note) | n/a |
+| REQ-010 | Won't (this release) | — (explicitly out of scope) | n/a |
+
+Every Must requirement (REQ-001 through REQ-008) has at least one satisfying
+task, and every satisfying task is closed. REQ-009 (Should) required no new
+task by design — the TRD's own traceability note states it was already
+satisfied by the existing `TaskProvider` contract — so its coverage evidence
+is that design statement, not a closed-task list. This manual check is the
+actual requirement-coverage evidence for this report; the automated
+extractor's `priority: null` result above is noted for transparency but is
+not being cited as the gating evidence it initially was.
 
 ## Independent Full Test-Suite Execution
 
