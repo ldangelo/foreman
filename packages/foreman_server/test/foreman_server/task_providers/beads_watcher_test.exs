@@ -48,6 +48,16 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     end
   end
 
+  defmodule FakeWorkflowCatalog do
+    @moduledoc false
+    def reset, do: :persistent_term.put({__MODULE__, :response}, {:ok, "generic"})
+    def stub_response(response), do: :persistent_term.put({__MODULE__, :response}, response)
+
+    def type_to_workflow(_issue_type) do
+      :persistent_term.get({__MODULE__, :response}, {:ok, "generic"})
+    end
+  end
+
   setup do
     original_cg =
       Application.get_env(:foreman_server, :command_gateway_module, ForemanServer.CommandGateway)
@@ -59,17 +69,28 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
         ForemanServer.ProjectionStore
       )
 
+    original_wc =
+      Application.get_env(
+        :foreman_server,
+        :workflow_catalog_module,
+        ForemanServer.Workflow.Catalog
+      )
+
     Application.put_env(:foreman_server, :command_gateway_module, FakeCommandGateway)
     Application.put_env(:foreman_server, :projection_store_module, FakeProjectionStore)
+    Application.put_env(:foreman_server, :workflow_catalog_module, FakeWorkflowCatalog)
     FakeCommandGateway.reset()
     FakeCommandGateway.stub_response({:ok, nil})
     FakeProjectionStore.reset()
+    FakeWorkflowCatalog.reset()
 
     on_exit(fn ->
       Application.put_env(:foreman_server, :command_gateway_module, original_cg)
       Application.put_env(:foreman_server, :projection_store_module, original_ps)
+      Application.put_env(:foreman_server, :workflow_catalog_module, original_wc)
       FakeCommandGateway.reset()
       FakeProjectionStore.reset()
+      FakeWorkflowCatalog.reset()
     end)
 
     :ok

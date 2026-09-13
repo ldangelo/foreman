@@ -89,6 +89,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     )
   end
 
+  defp workflow_catalog do
+    Application.get_env(
+      :foreman_server,
+      :workflow_catalog_module,
+      ForemanServer.Workflow.Catalog
+    )
+  end
+
   @type t :: %__MODULE__{
           project_id: String.t(),
           jsonl_path: String.t(),
@@ -148,6 +156,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     :status_gate,
     :skipped
   ]
+  @workflow_unmapped_event [:foreman_server, :task_provider, :beads, :watcher, :workflow_unmapped]
   # ---------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------
@@ -552,14 +561,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     with {:ok, parsed} <- decode_line(line),
          :ok <- check_foreman_tag(state, parsed),
          :ok <- check_dedupe(state, parsed),
-         :ok <- check_status(state, parsed) do
-      dispatch_new_bead(state, parsed)
+         :ok <- check_status(state, parsed),
+         {:ok, workflow_type} <- select_workflow(state, parsed) do
+      dispatch_new_bead(state, parsed, workflow_type)
     else
       :skip_foreman ->
         :skipped
 
       :skip_status ->
         :skipped
+
+      {:error, :unmapped_type} ->
+        :transient
 
       :reconcile ->
         :reconciled
@@ -654,13 +667,35 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
+  # ----- Workflow selection (REQ-001) -------------------------------------
+
+  defp select_workflow(state, parsed) when is_map(parsed) do
+    issue_type = Map.get(parsed, "issue_type", "task")
+
+    case workflow_catalog().type_to_workflow(issue_type) do
+      {:ok, workflow_type} ->
+        {:ok, workflow_type}
+
+      {:error, :unmapped_type} ->
+        bead_id = Map.get(parsed, "id")
+
+        TaskProviderTelemetry.emit(
+          @workflow_unmapped_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id, issue_type: issue_type}
+        )
+
+        {:error, :unmapped_type}
+    end
+  end
+
   # ----- Dispatch new bead (AC-022-1) -------------------------------------
 
-  defp dispatch_new_bead(state, parsed) when is_map(parsed) do
+  defp dispatch_new_bead(state, parsed, workflow_type) when is_map(parsed) do
     bead_id = Map.get(parsed, "id")
 
     if is_binary(bead_id) and bead_id != "" do
-      envelope = synthesize_task_create_envelope(state, parsed, bead_id)
+      envelope = synthesize_task_create_envelope(state, parsed, bead_id, workflow_type)
       # Dispatch is unconditional — every shape (incl. {:exit, _} and
       # retryable ProviderError) reaches classify_dispatch_result/3, which
       # routes anything non-terminal to :transient and holds the cursor.
@@ -673,7 +708,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  defp synthesize_task_create_envelope(state, parsed, bead_id) do
+  defp synthesize_task_create_envelope(state, parsed, bead_id, workflow_type) do
     task_id = "beads:" <> state.project_id <> ":" <> bead_id
 
     %{
@@ -687,6 +722,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         description: Map.get(parsed, "description"),
         priority: Map.get(parsed, "priority", 2),
         task_type: Map.get(parsed, "issue_type", "task"),
+        workflow_type: workflow_type,
         project_id: state.project_id
       }
     }
