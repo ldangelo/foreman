@@ -250,7 +250,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       BeadsWatcher.advance_one_line(state, line)
 
-      [{_cmd, timeout}] = FakeCommandGateway.calls()
+      [{_cmd, timeout}, _approve_call] = FakeCommandGateway.calls()
       assert is_integer(timeout) and timeout > 0
     end
   end
@@ -325,8 +325,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       assert state2.partial_line == ""
       assert counters2.lines_imported == 1
       assert counters2.lines_processed == 1
-      # Two dispatch calls total across the two reads
-      assert length(FakeCommandGateway.calls()) == 2
+      # Two beads imported across the two reads, each create+approve
+      # pair producing two dispatch_system/2 calls.
+      assert length(FakeCommandGateway.calls()) == 4
     end
 
     test "transient on line N holds read_offset at line N start, line N+1 re-read on next poll",

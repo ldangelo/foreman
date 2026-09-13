@@ -243,7 +243,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert outcome == :imported
       assert new_state.read_offset == byte_size(line) + 1
 
-      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
 
       assert cmd.command_id == "beads-cmd:proj-imp-pipe:bead-imp-pipe"
       assert cmd.aggregate_id == "task:beads:proj-imp-pipe:bead-imp-pipe"
@@ -500,7 +500,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert outcome == :imported
       assert new_state.read_offset == byte_size(line) + 1
 
-      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.external_id == "bead-direct-open"
     end
   end
@@ -559,7 +559,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
       assert outcome == :imported
-      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.workflow_type == "foreman_implement_trd"
     end
   end
@@ -642,7 +642,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
       assert outcome == :imported
-      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.trd_path == "docs/TRD/TRD-123-example.md"
     end
 
@@ -655,7 +655,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
       assert outcome == :imported
-      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.trd_path == nil
     end
   end

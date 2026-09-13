@@ -158,6 +158,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   ]
   @workflow_unmapped_event [:foreman_server, :task_provider, :beads, :watcher, :workflow_unmapped]
   @trd_path_missing_event [:foreman_server, :task_provider, :beads, :watcher, :trd_path_missing]
+  @dispatch_and_approve_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :dispatch_and_approve
+  ]
   # ---------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------
@@ -818,6 +825,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   defp classify_dispatch_result(state, bead_id, result) do
     if terminal_dispatch?(result) do
+      auto_approve_bead(state, bead_id)
+
       TaskProviderTelemetry.emit(
         @imported_event,
         %{system_time: System.system_time()},
@@ -838,6 +847,50 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       )
 
       :transient
+    end
+  end
+
+  # ----- Auto-approval (REQ-003, AC-003-2) --------------------------------
+
+  # Dispatches the matching `task.approve` immediately after a successful
+  # `task.create`, via the same trusted `dispatch_system/2` path (never
+  # `dispatch_operator/2` — the watcher is system automation, not an
+  # operator). From the operator's perspective this is a single effective
+  # create-and-approve step: no separate approval action is ever required.
+  defp auto_approve_bead(state, bead_id) do
+    task_id = "beads:" <> state.project_id <> ":" <> bead_id
+
+    approve_command = %{
+      command_id: "beads-cmd:" <> state.project_id <> ":" <> bead_id <> ":auto-approve",
+      type: "task.approve",
+      aggregate_id: "task:" <> task_id,
+      payload: %{task_id: task_id, approved_by: "beads_watcher"}
+    }
+
+    case command_gateway().dispatch_system(approve_command, 5_000) do
+      {:ok, _result} = ok ->
+        TaskProviderTelemetry.emit(
+          @dispatch_and_approve_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id, task_id: task_id}
+        )
+
+        ok
+
+      other ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            stage: :auto_approve,
+            bead_id: bead_id,
+            task_id: task_id,
+            result: other
+          }
+        )
+
+        other
     end
   end
 
