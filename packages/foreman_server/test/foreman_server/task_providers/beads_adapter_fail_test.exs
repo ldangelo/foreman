@@ -97,6 +97,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                     "--transition-comment",
                     "operator-comment"
                   ],
+                  database_path: cached_database_path
                 }}
 
       assert runner_project_config == %{database_path: cached_database_path}
@@ -170,6 +171,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
                     "--transition-comment",
                     fabricated_comment
                   ],
+                  database_path: cached_database_path
                 }}
 
       assert runner_project_config == %{database_path: cached_database_path}
@@ -265,7 +267,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
           cached_database_path,
           "bead-903",
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           fabricated_comment,
           "--json"
@@ -305,7 +307,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
              redacted_database_path(cached_database_path),
              "bead-903",
              "--status",
-             "open",
+             "blocked",
              "--transition-comment",
              "<redacted:64>",
              "--json"
@@ -347,7 +349,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
           cached_database_path,
           "bead-904",
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           "schema-check",
           "--json"
@@ -411,7 +413,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
           cached_database_path,
           "bead-905",
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           "cached-path",
           "--json"

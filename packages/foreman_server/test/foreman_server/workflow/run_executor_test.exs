@@ -836,7 +836,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                   flags: [
                     task_id,
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     expected_comment
                   ],
@@ -856,7 +856,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
           database_path,
           task_id,
           "--status",
-          "open",
+          "blocked",
           "--transition-comment",
           expected_comment,
           "--json"
@@ -869,7 +869,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
        %{
          stdout:
            Jason.encode!(
-             issue_payload(task_id, "open", %{
+             issue_payload(task_id, "blocked", %{
                "metadata" => %{"provider_id" => "beads", "source" => "br update"}
              })
            ),
@@ -892,7 +892,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                flags: [
                  ^task_id,
                  "--status",
-                 "open",
+                 "blocked",
                  "--transition-comment",
                  ^expected_comment
                ]
@@ -1620,7 +1620,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                   flags: [
                     task_id,
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     expected_comment
                   ],
@@ -1636,7 +1636,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
        %{
          stdout:
            Jason.encode!(
-             issue_payload(task_id, "open", %{
+             issue_payload(task_id, "blocked", %{
                "metadata" => %{"provider_id" => "beads", "source" => "br update"}
              })
            ),
@@ -1728,7 +1728,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                   flags: [
                     task_id,
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     expected_comment
                   ],
@@ -1744,7 +1744,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
        %{
          stdout:
            Jason.encode!(
-             issue_payload(task_id, "open", %{
+             issue_payload(task_id, "blocked", %{
                "metadata" => %{"provider_id" => "beads", "source" => "br update"}
              })
            ),

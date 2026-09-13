@@ -47,6 +47,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # non-existent top-level module and every multi-phase run — `plan.yaml`
   # included — crashed the executor on the phase 1 -> phase 2 transition
   # instead of advancing. Compile emitted the warning; nothing failed on it.
+  alias ForemanServer.Workflow.StepSequencer
   alias ForemanServer.Workflow.FailureClassifier
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation

@@ -5,7 +5,7 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
   Reports unmapped issue_types and coverage status.
   """
 
-  alias ForemanServer.TaskProviders.BeadsAdapter
+  alias ForemanServer.TaskProvider.Registry
 
   @type unmapped_type :: String.t()
   @type coverage_report :: %{
@@ -45,18 +45,19 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
 
     lines = lines ++ format_coverage_status(report)
 
-    if Enum.empty?(report.unmapped_types) do
-      lines ++ [
-        "",
-        "✓ All issue_types are mapped to workflows"
-      ]
-    else
-      lines ++ [
-        "",
-        "⚠ Unmapped issue_types:",
-        "─ " <> String.duplicate("─", 18)
-      ] ++ Enum.map(report.unmapped_types, &("  • " <> &1))
-    end
+    lines =
+      if Enum.empty?(report.unmapped_types) do
+        lines ++ [
+          "",
+          "✓ All issue_types are mapped to workflows"
+        ]
+      else
+        lines ++ [
+          "",
+          "⚠ Unmapped issue_types:",
+          "─ " <> String.duplicate("─", 18)
+        ] ++ Enum.map(report.unmapped_types, &("  • " <> &1))
+      end
 
     Enum.join(lines, "\n")
   end
@@ -86,24 +87,26 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
     ]
   end
 
-  defp coverage_percent(mapped, total) when total == 0, do: "100%"
+  defp coverage_percent(_mapped, total) when total == 0, do: "100%"
   defp coverage_percent(mapped, total) do
     percent = div(mapped * 100, total)
     "#{percent}%"
   end
 
   defp get_actual_issue_types(project_id) do
-    # Query all non-closed beads for their issue_types
-    case BeadsAdapter.list_ready(%{database_path: project_id}, []) do
-      {:ok, beads} when is_list(beads) ->
-        beads
-        |> Enum.map(&extract_issue_type/1)
-        |> Enum.reject(&is_nil/1)
-        |> Enum.uniq()
-        |> MapSet.new()
-
-      {:error, _} ->
-        MapSet.new()
+    # Query all non-closed beads for their issue_types, routed through the
+    # TaskProvider abstraction rather than a direct adapter alias (adapter
+    # aliases are confined to lib/foreman_server/task_providers).
+    with {:ok, %{provider_module: provider_module, config: config}} <-
+           Registry.project_config(project_id),
+         {:ok, beads} when is_list(beads) <- provider_module.list_ready(config, []) do
+      beads
+      |> Enum.map(&extract_issue_type/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> MapSet.new()
+    else
+      _ -> MapSet.new()
     end
   end
 

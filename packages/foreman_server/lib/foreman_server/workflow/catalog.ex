@@ -432,7 +432,8 @@ defmodule ForemanServer.Workflow.Catalog do
         name: workflow["name"],
         description: workflow["description"],
         phases: resolved_phases,
-        manifest_path: path
+        manifest_path: path,
+        task_types: workflow["task_types"]
       }
 
       # The `worktree:` block is carried VERBATIM at the workflow level.
@@ -561,7 +562,7 @@ defmodule ForemanServer.Workflow.Catalog do
   defp rebuild_type_to_workflow(state) do
     type_to_workflow =
       Enum.reduce(state.manifests, %{}, fn {_filename, %{workflow: workflow}}, acc ->
-        case Map.get(workflow, "task_types") do
+        case Map.get(workflow, :task_types) do
           nil -> acc
           [] -> acc
           "" -> acc
@@ -569,11 +570,11 @@ defmodule ForemanServer.Workflow.Catalog do
             Enum.reduce(types, acc, fn task_type, type_acc ->
               if Map.has_key?(type_acc, task_type) do
                 existing_workflow = type_acc[task_type]
-                workflow_name = Map.get(workflow, "name", "unknown")
+                workflow_name = Map.get(workflow, :name, "unknown")
                 raise ArgumentError,
                   "workflow collision: both #{existing_workflow} and #{workflow_name} declare task_type '#{task_type}'"
               else
-                Map.put(type_acc, task_type, Map.get(workflow, "name", "unknown"))
+                Map.put(type_acc, task_type, Map.get(workflow, :name, "unknown"))
               end
             end)
           _other -> acc

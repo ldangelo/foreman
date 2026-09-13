@@ -58,7 +58,11 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
 
     File.mkdir_p!(tmp_root)
 
-    stub(BrRunnerMock, :cmd, fn {:where, config}, _project_config, _opts ->
+    stub(BrRunnerMock, :cmd, fn
+      {:sync_status, _flags}, _project_config, _opts ->
+        {:ok, %{stdout: Jason.encode!(%{"coverage_drift" => false})}}
+
+      {:where, config}, _project_config, _opts ->
       # Every jsonl the supervisor's children observe must live under
       # tmp_root so on_exit's File.rm_rf!/1 cleans up unconditionally.
       # Use the caller-supplied database_path basename (strips any absolute

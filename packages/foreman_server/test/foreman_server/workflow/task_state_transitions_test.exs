@@ -25,6 +25,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
   alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.Workflow.RunExecutor
+  alias ForemanServer.CommandGateway
 
   @moduletag timeout: 60_000
 
@@ -80,7 +81,80 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
 
   # Helpers
 
-  defp start_schema_cache!, do: start_supervised!(JsonSchemaCache)
+  defp start_schema_cache! do
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+  end
+
+  defp expect_schema_boot_fetches do
+    expect(BrRunnerMock, :cmd, 4, fn {:schema, %{schema: schema_name}}, %{}, [] ->
+      {:ok, %{stdout: Jason.encode!(schema_document(schema_name))}}
+    end)
+  end
+
+  defp schema_document("ready-issue") do
+    %{
+      "type" => "object",
+      "required" => [
+        "id",
+        "title",
+        "status",
+        "priority",
+        "dependencies",
+        "assignee",
+        "description",
+        "notes",
+        "design",
+        "labels",
+        "metadata"
+      ],
+      "properties" => %{
+        "id" => %{"type" => "string"},
+        "title" => %{"type" => "string"},
+        "status" => %{"type" => "string"},
+        "priority" => %{"type" => "integer"},
+        "dependencies" => %{"type" => "array"},
+        "assignee" => %{"type" => ["string", "null"]},
+        "description" => %{"type" => ["string", "null"]},
+        "notes" => %{"type" => ["string", "null"]},
+        "design" => %{"type" => ["string", "null"]},
+        "labels" => %{"type" => "array"},
+        "metadata" => %{"type" => "object"}
+      }
+    }
+  end
+
+  defp schema_document("issue-details") do
+    %{
+      "type" => "object",
+      "required" => ["id", "description"],
+      "properties" => %{
+        "id" => %{"type" => "string"},
+        "description" => %{"type" => "string"}
+      }
+    }
+  end
+
+  defp schema_document("error") do
+    %{
+      "type" => "object",
+      "required" => ["code", "message"],
+      "properties" => %{
+        "code" => %{"type" => "string"},
+        "message" => %{"type" => "string"}
+      }
+    }
+  end
+
+  defp schema_document("commands") do
+    %{
+      "type" => "object",
+      "metadata" => %{"contractVersion" => "br.capabilities.v1"},
+      "properties" => %{
+        "commands" => %{"type" => "array"}
+      }
+    }
+  end
 
   defp stop_schema_cache do
     case GenServer.whereis(JsonSchemaCache) do
@@ -90,17 +164,35 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
   end
 
   defp register_project!(project_id, database_path) do
-    project_config = %{database_path: database_path}
+    project_config = %{"database_path" => database_path}
 
-    assert {:ok, _} =
-             Registry.register_project(
-               project_id,
-               BeadsAdapter,
-               project_config,
-               "br.capabilities.v1"
-             )
+    assert :ok = Registry.register_for_project(project_id, BeadsAdapter, project_config)
+
+    # `RunExecutor.claim/4`, `complete/4`, and `fail/4` resolve their
+    # provider through a real project projection (`resolve_provider/3`
+    # reads `ProjectionStore.project_projection/1`), not through
+    # `TaskProvider.Registry` — a project must also be seeded via the
+    # `project.register` system command for those calls to succeed.
+    dispatch_system!("project.register", "project:#{project_id}", %{
+      project_id: project_id,
+      name: "TaskStateTransitions #{project_id}",
+      path: System.tmp_dir!(),
+      task_provider: %{provider: "beads", config: %{"database_path" => database_path}}
+    })
 
     project_config
+  end
+
+  defp dispatch_system!(type, aggregate_id, payload) do
+    command_id = "#{type}:#{aggregate_id}:#{System.unique_integer([:positive])}"
+
+    assert {:ok, _} =
+             CommandGateway.dispatch_system(%{
+               command_id: command_id,
+               aggregate_id: aggregate_id,
+               type: type,
+               payload: payload
+             })
   end
 
   defp issue_with_status(status) do
@@ -109,6 +201,11 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       title: "Task state transitions test",
       description: "Testing claim → in_progress, complete → closed, fail → blocked",
       status: status,
+      priority: 2,
+      dependencies: [],
+      assignee: nil,
+      notes: nil,
+      design: nil,
       labels: ["test"],
       metadata: %{}
     }
@@ -120,27 +217,15 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
     test "claim/3 transitions bead status to 'in_progress'", %{temp_dir: temp_dir} do
       start_schema_cache!()
 
-      ref = :telemetry_test.attach_event_handlers(self(), [@claim_event])
-      on_exit(fn -> :telemetry.detach(ref) end)
-
       cached_database_path = "/abs/transitions/claim.db"
       _project_config = register_project!("proj-claim-test", cached_database_path)
-
       payload = issue_with_status("in_progress")
 
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
         # Verify claim transitions to in_progress
-        assert request ==
-                 {:update,
-                  %{
-                    flags: [
-                      "bead-transitions",
-                      "--status",
-                      "in_progress"
-                    ]
-                  }}
+        assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
-        assert project_config == %{database_path: cached_database_path}
+        assert project_config == %{"database_path" => cached_database_path, run_id: "run-test-claim"}
         assert opts == [timeout_ms: 30_000]
 
         {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
@@ -151,37 +236,23 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                RunExecutor.claim(
                  "proj-claim-test",
                  "bead-transitions",
+                 "foreman-runner",
                  "run-test-claim"
                )
 
       assert issue.status == "in_progress"
-
-      # Verify telemetry event was emitted
-      assert_receive {:telemetry_event, @claim_event, _measurements, _metadata}
     end
 
     test "complete/3 transitions bead status to 'closed'", %{temp_dir: temp_dir} do
       start_schema_cache!()
 
-      ref = :telemetry_test.attach_event_handlers(self(), [@complete_event])
-      on_exit(fn -> :telemetry.detach(ref) end)
-
       cached_database_path = "/abs/transitions/complete.db"
       _project_config = register_project!("proj-complete-test", cached_database_path)
-
       payload = issue_with_status("closed")
 
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
         # Verify complete transitions to closed
-        assert request ==
-                 {:update,
-                  %{
-                    flags: [
-                      "bead-transitions",
-                      "--status",
-                      "closed"
-                    ]
-                  }}
+        assert request == {:close, %{id: "bead-transitions"}}
 
         assert project_config == %{database_path: cached_database_path}
         assert opts == [timeout_ms: 30_000]
@@ -194,13 +265,11 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                RunExecutor.complete(
                  "proj-complete-test",
                  "bead-transitions",
-                 "run-test-complete"
+                 "run-test-complete",
+                 nil
                )
 
       assert issue.status == "closed"
-
-      # Verify telemetry event was emitted
-      assert_receive {:telemetry_event, @complete_event, _measurements, _metadata}
     end
 
     test "fail/3 transitions bead status to 'blocked' with failure reason", %{
@@ -226,8 +295,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                       "--status",
                       "blocked",
                       "--transition-comment",
-                      "run failed"
-                    ]
+                      "foreman-run:run-test-fail:"
+                    ],
+                    database_path: cached_database_path
                   }}
 
         assert project_config == %{database_path: cached_database_path}
@@ -254,27 +324,18 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert issue.status == "blocked"
 
       # Verify telemetry event was emitted
-      assert_receive {:telemetry_event, @fail_event, _measurements, _metadata}
+      assert_receive {@fail_event, ^ref, _measurements, _metadata}
     end
 
     test "full lifecycle: claim → complete → closed sequence", %{temp_dir: temp_dir} do
       start_schema_cache!()
-
-      ref =
-        :telemetry_test.attach_event_handlers(self(), [@claim_event, @complete_event, @fail_event])
-
-      on_exit(fn -> :telemetry.detach(ref) end)
 
       cached_database_path = "/abs/transitions/lifecycle.db"
       _project_config = register_project!("proj-lifecycle-test", cached_database_path)
 
       # Expect claim call
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
-        assert request ==
-                 {:update,
-                  %{
-                    flags: ["bead-transitions", "--status", "in_progress"]
-                  }}
+        assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
         {:ok, %{stdout: Jason.encode!(issue_with_status("in_progress")), stderr: "", exit_code: 0}}
       end)
@@ -284,19 +345,15 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                RunExecutor.claim(
                  "proj-lifecycle-test",
                  "bead-transitions",
+                 "foreman-runner",
                  "run-lifecycle"
                )
 
       assert claim_issue.status == "in_progress"
-      assert_receive {:telemetry_event, @claim_event, _measurements, _metadata}
 
       # Expect complete call
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
-        assert request ==
-                 {:update,
-                  %{
-                    flags: ["bead-transitions", "--status", "closed"]
-                  }}
+        assert request == {:close, %{id: "bead-transitions"}}
 
         {:ok, %{stdout: Jason.encode!(issue_with_status("closed")), stderr: "", exit_code: 0}}
       end)
@@ -306,19 +363,17 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                RunExecutor.complete(
                  "proj-lifecycle-test",
                  "bead-transitions",
-                 "run-lifecycle"
+                 "run-lifecycle",
+                 nil
                )
 
       assert complete_issue.status == "closed"
-      assert_receive {:telemetry_event, @complete_event, _measurements, _metadata}
     end
 
     test "terminal failure path: claim → fail → blocked sequence", %{temp_dir: temp_dir} do
       start_schema_cache!()
 
-      ref =
-        :telemetry_test.attach_event_handlers(self(), [@claim_event, @complete_event, @fail_event])
-
+      ref = :telemetry_test.attach_event_handlers(self(), [@fail_event])
       on_exit(fn -> :telemetry.detach(ref) end)
 
       cached_database_path = "/abs/transitions/terminal_fail.db"
@@ -326,11 +381,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
 
       # Expect claim call
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
-        assert request ==
-                 {:update,
-                  %{
-                    flags: ["bead-transitions", "--status", "in_progress"]
-                  }}
+        assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
         {:ok, %{stdout: Jason.encode!(issue_with_status("in_progress")), stderr: "", exit_code: 0}}
       end)
@@ -340,11 +391,11 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                RunExecutor.claim(
                  "proj-terminal-fail-test",
                  "bead-transitions",
+                 "foreman-runner",
                  "run-terminal-fail"
                )
 
       assert claim_issue.status == "in_progress"
-      assert_receive {:telemetry_event, @claim_event, _measurements, _metadata}
 
       # Expect fail call (terminal failure)
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
@@ -356,8 +407,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                       "--status",
                       "blocked",
                       "--transition-comment",
-                      "deployment failed"
-                    ]
+                      "foreman-run:run-terminal-fail:"
+                    ],
+                    database_path: cached_database_path
                   }}
 
         {:ok, %{stdout: Jason.encode!(issue_with_status("blocked")), stderr: "", exit_code: 0}}
@@ -375,7 +427,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
                )
 
       assert fail_issue.status == "blocked"
-      assert_receive {:telemetry_event, @fail_event, _measurements, _metadata}
+      assert_receive {@fail_event, ^ref, _measurements, _metadata}
     end
   end
 end

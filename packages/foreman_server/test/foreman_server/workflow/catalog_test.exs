@@ -526,8 +526,12 @@ defmodule ForemanServer.Workflow.CatalogTest do
         "name: workflow2\ntask_types: [foreman_type_a]\nphases:\n  - name: p1\n    prompt: p.md\n"
       )
 
-      # Starting the catalog should raise an error due to collision
-      assert_raise(ArgumentError, ~r/workflow collision.*foreman_type_a/, fn ->
+      # `start_supervised!/2` wraps an `init/1` crash as `RuntimeError`
+      # ("failed to start child ... Reason: an exception was raised: **
+      # (ArgumentError) ..."), so the raw `ArgumentError` never propagates
+      # to the caller — assert on the wrapper, matching the underlying
+      # message via the regex.
+      assert_raise(RuntimeError, ~r/workflow collision.*foreman_type_a/, fn ->
         start_catalog(tmp, name)
       end)
     end
@@ -596,7 +600,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
       start_catalog(tmp, name)
 
       # Verify initial mapping
-      assert "dynamic" == Catalog.type_to_workflow("type_v1")
+      assert {:ok, "dynamic"} == Catalog.type_to_workflow("type_v1")
 
       # Modify the manifest to change the type
       File.write!(
@@ -608,9 +612,9 @@ defmodule ForemanServer.Workflow.CatalogTest do
       Catalog.reload()
 
       # Old type should no longer map
-      assert nil == Catalog.type_to_workflow("type_v1")
+      assert {:error, :unmapped_type} == Catalog.type_to_workflow("type_v1")
       # New type should map
-      assert "dynamic" == Catalog.type_to_workflow("type_v2")
+      assert {:ok, "dynamic"} == Catalog.type_to_workflow("type_v2")
     end
 
     test "multiple types in one workflow all map to that workflow (fan-in)", %{
@@ -627,9 +631,9 @@ defmodule ForemanServer.Workflow.CatalogTest do
       start_catalog(tmp, name)
 
       # All three types should map to the same workflow
-      assert "multi" == Catalog.type_to_workflow("type_a")
-      assert "multi" == Catalog.type_to_workflow("type_b")
-      assert "multi" == Catalog.type_to_workflow("type_c")
+      assert {:ok, "multi"} == Catalog.type_to_workflow("type_a")
+      assert {:ok, "multi"} == Catalog.type_to_workflow("type_b")
+      assert {:ok, "multi"} == Catalog.type_to_workflow("type_c")
     end
   end
 
