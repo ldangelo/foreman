@@ -503,4 +503,80 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert wf_prd.phases != []
     end
   end
+
+  describe "AC-001-1: Collision detection for task_types" do
+    test "raises ArgumentError when two workflows declare the same task_type", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      # Create first workflow with task_type
+      File.write!(
+        Path.join(tmp, "prompts/p.md"),
+        "prompt"
+      )
+
+      File.write!(
+        Path.join(tmp, "workflow1.yaml"),
+        "name: workflow1\ntask_types: [foreman_type_a]\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      # Create second workflow with same task_type
+      File.write!(
+        Path.join(tmp, "workflow2.yaml"),
+        "name: workflow2\ntask_types: [foreman_type_a]\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      # Starting the catalog should raise an error due to collision
+      assert_raise(ArgumentError, ~r/workflow collision.*foreman_type_a/, fn ->
+        start_catalog(tmp, name)
+      end)
+    end
+  end
+
+  describe "AC-001-2: Omitted task_types field handling" do
+    test "workflow without task_types field loads without error", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      # Create workflow without task_types
+      File.write!(
+        Path.join(tmp, "prompts/p.md"),
+        "prompt"
+      )
+
+      File.write!(
+        Path.join(tmp, "no_types.yaml"),
+        "name: no_types\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      # This should start without errors
+      start_catalog(tmp, name)
+
+      # Verify it loaded
+      assert "no_types.yaml" in Catalog.manifests()
+      assert {:ok, wf} = Catalog.load("no_types.yaml")
+      assert wf.name == "no_types"
+    end
+
+    test "workflow with empty task_types array loads without error", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      File.write!(
+        Path.join(tmp, "prompts/p.md"),
+        "prompt"
+      )
+
+      File.write!(
+        Path.join(tmp, "empty_types.yaml"),
+        "name: empty_types\ntask_types: []\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      start_catalog(tmp, name)
+
+      assert "empty_types.yaml" in Catalog.manifests()
+      assert {:ok, wf} = Catalog.load("empty_types.yaml")
+      assert wf.name == "empty_types"
+    end
+  end
 end
