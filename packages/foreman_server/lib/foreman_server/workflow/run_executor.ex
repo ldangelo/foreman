@@ -47,7 +47,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # non-existent top-level module and every multi-phase run — `plan.yaml`
   # included — crashed the executor on the phase 1 -> phase 2 transition
   # instead of advancing. Compile emitted the warning; nothing failed on it.
-  alias ForemanServer.Workflow.StepSequencer
+  alias ForemanServer.Workflow.FailureClassifier
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
@@ -131,6 +131,35 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   def fail(_project_id, _task_id, _run_id, _reason), do: {:error, :invalid_failure}
+  # TRD-015: Transient retry helper for fail/4 dispatch
+  # Retries on transient errors (3 attempts max) with exponential backoff: 1s, 5s, 15s settle
+  # Returns on permanent errors or after transient exhaustion.
+  defp fail_with_retry(project_id, task_id, run_id, reason, attempt \\ 1) do
+    case fail(project_id, task_id, run_id, reason) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, error_reason} ->
+        case FailureClassifier.classify(error_reason) do
+          :permanent ->
+            {:error, error_reason}
+
+          :transient when attempt < 3 ->
+            wait_time_ms = case attempt do
+              1 -> 1_000  # 1s wait before attempt 2
+              2 -> 5_000  # 5s wait before attempt 3
+            end
+            Process.sleep(wait_time_ms)
+            fail_with_retry(project_id, task_id, run_id, reason, attempt + 1)
+
+          :transient ->
+            # 3rd attempt failed (transient-exhausted) — wait 15s settle before escalating
+            Process.sleep(15_000)
+            {:error, {:transient_exhausted, error_reason}}
+        end
+    end
+  end
+
 
   defp via_tuple(run_id) do
     {:via, Registry, {ForemanServer.RunExecutorRegistry, run_id}}
@@ -3226,7 +3255,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               artifact_path: ArtifactTemplate.path(state, phase_spec, index)
             })
 
-          case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
+          case fail_with_retry(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
             {:ok, _issue} -> dispatch_task_execution_fail(state, reason)
             {:error, failure_reason} -> {:error, failure_reason}
           end
