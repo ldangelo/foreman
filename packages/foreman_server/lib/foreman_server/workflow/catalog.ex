@@ -128,14 +128,10 @@ defmodule ForemanServer.Workflow.Catalog do
   def type_to_workflow_map, do: GenServer.call(server(), :type_to_workflow_map)
 
   @doc "Generate a type coverage report for a project's beads against declared workflows."
-  @spec doctor(String.t()) :: {:ok, map()} | {:error, term()}
+  @spec doctor(String.t()) :: {:ok, map()}
   def doctor(project_id) when is_binary(project_id) do
-    case GenServer.call(server(), :type_to_workflow_map) do
-      type_map when is_map(type_map) ->
-        {:ok, Doctor.coverage_report(project_id, type_map)}
-      error ->
-        error
-    end
+    type_map = GenServer.call(server(), :type_to_workflow_map)
+    {:ok, Doctor.coverage_report(project_id, type_map)}
   end
 
   ## GenServer
@@ -580,7 +576,7 @@ defmodule ForemanServer.Workflow.Catalog do
           _other -> acc
         end
       end)
-    
+
     Map.put(state, :type_to_workflow, type_to_workflow)
   end
 end

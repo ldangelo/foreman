@@ -132,10 +132,74 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   def fail(_project_id, _task_id, _run_id, _reason), do: {:error, :invalid_failure}
-  # TRD-015: Transient retry helper for fail/4 dispatch
-  # Retries on transient errors (3 attempts max) with exponential backoff: 1s, 5s, 15s settle
-  # Returns on permanent errors or after transient exhaustion.
-  defp fail_with_retry(project_id, task_id, run_id, reason, attempt \\ 1) do
+  # TRD-015: Retry helper for fail/4 dispatch on transient errors.
+  #
+  # Foreman's `run.fail` has ALREADY been dispatched by the time
+  # `maybe_fail_task/4` reaches this helper (see the dispatch-order comment
+  # on `emit_phase_failure/4`), so this task-provider notification (e.g.
+  # Beads `--status blocked`) is best-effort relative to run termination —
+  # its outcome must never gate whether the run is terminal.
+  #
+  # `maybe_fail_task/4` is called synchronously from this GenServer's
+  # `handle_cast`/`handle_info` path, and `finalize_terminal_and_stop/2`
+  # normally runs immediately after it returns. The full retry schedule
+  # (1s, 5s, 15s-settle backoff — up to ~21s) previously ran inline via
+  # `Process.sleep`, which blocked this run's entire mailbox (heartbeats,
+  # cancellation, status queries) for that duration and risked tripping
+  # stall/crash-loop detection for a process that was merely backing off.
+  # A `Process.send_after/3`-based retry does not fix this: the process
+  # frequently stops (`{:stop, :normal, ...}`) moments later, and the
+  # scheduled message is silently dropped. So only the first, synchronous
+  # attempt can influence the caller's return value; a transient failure on
+  # that attempt hands off retries 2 and 3 to a detached `Task.start/1` —
+  # the same off-process pattern `Overwatch.WorkerSupervisor.stop_worker/2`
+  # uses above for the identical "must not block this callback, and does
+  # not need to outlive as a live GenServer" reason — and returns `:ok`
+  # immediately. The eventual outcome is reported via
+  # `dispatch_task_execution_fail/2` (success) or `Logger.error/1`
+  # (retries exhausted) from inside that task.
+  defp fail_with_retry(state, project_id, task_id, run_id, reason, failure_reason) do
+    case fail(project_id, task_id, run_id, failure_reason) do
+      {:ok, _issue} ->
+        dispatch_task_execution_fail(state, reason)
+
+      {:error, error_reason} ->
+        case FailureClassifier.classify(error_reason) do
+          :permanent ->
+            {:error, error_reason}
+
+          :transient ->
+            Task.start(fn ->
+              case fail_retry_loop(project_id, task_id, run_id, failure_reason, 2) do
+                {:ok, _issue} ->
+                  _ = dispatch_task_execution_fail(state, reason)
+
+                {:error, final_reason} ->
+                  Logger.error(
+                    "RunExecutor #{run_id} task-provider fail notification exhausted retries: " <>
+                      inspect(final_reason)
+                  )
+              end
+            end)
+
+            :ok
+        end
+    end
+  end
+
+  # Attempts 2 and 3 of the fail/4 retry schedule (attempt 1 already ran
+  # synchronously in `fail_with_retry/6`). Runs only inside the detached
+  # task started there, so `Process.sleep` here never touches the
+  # RunExecutor GenServer's mailbox.
+  defp fail_retry_loop(project_id, task_id, run_id, reason, attempt) do
+    wait_time_ms =
+      case attempt do
+        2 -> 1_000
+        3 -> 5_000
+      end
+
+    Process.sleep(wait_time_ms)
+
     case fail(project_id, task_id, run_id, reason) do
       {:ok, result} ->
         {:ok, result}
@@ -146,21 +210,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
             {:error, error_reason}
 
           :transient when attempt < 3 ->
-            wait_time_ms = case attempt do
-              1 -> 1_000  # 1s wait before attempt 2
-              2 -> 5_000  # 5s wait before attempt 3
-            end
-            Process.sleep(wait_time_ms)
-            fail_with_retry(project_id, task_id, run_id, reason, attempt + 1)
+            fail_retry_loop(project_id, task_id, run_id, reason, attempt + 1)
 
           :transient ->
-            # 3rd attempt failed (transient-exhausted) — wait 15s settle before escalating
             Process.sleep(15_000)
             {:error, {:transient_exhausted, error_reason}}
         end
     end
   end
-
 
   defp via_tuple(run_id) do
     {:via, Registry, {ForemanServer.RunExecutorRegistry, run_id}}
@@ -3256,10 +3313,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               artifact_path: ArtifactTemplate.path(state, phase_spec, index)
             })
 
-          case fail_with_retry(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
-            {:ok, _issue} -> dispatch_task_execution_fail(state, reason)
-            {:error, failure_reason} -> {:error, failure_reason}
-          end
+          fail_with_retry(state, project_id(state), provider_task_id(state), state.run_id, reason, failure_reason)
 
         false ->
           dispatch_task_execution_fail(state, reason)

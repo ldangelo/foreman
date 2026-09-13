@@ -789,9 +789,9 @@ defmodule ForemanServer.Workflow.Interpreter do
               "workflow #{path}: task_types must be an array of strings, got #{inspect(item)}"
           end
         end)
-      _other ->
+      other ->
         raise ArgumentError,
-          "workflow #{path}: task_types must be an array of strings, got #{inspect(_other)}"
+          "workflow #{path}: task_types must be an array of strings, got #{inspect(other)}"
     end
   end
 

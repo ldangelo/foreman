@@ -55,6 +55,7 @@
 /packages/foreman_cli/foreman
 # Repo-root foreman binary
 /foreman
+/bin/foreman
 /tmp/
 
 # Local env (secrets, must never be tracked)
