@@ -3,7 +3,7 @@ defmodule ForemanServer.RecoveryTest do
 
   alias ForemanServer.Recovery
   alias ForemanServer.TestSupport.{ProjectionStoreReset, RunSlotsReset}
-  alias ForemanServer.{CommandRouter, ProjectionStore, RunAdmission}
+  alias ForemanServer.ProjectionStore
 
   setup do
     RunSlotsReset.reset!()
@@ -152,28 +152,35 @@ defmodule ForemanServer.RecoveryTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
+  # `RunAdmission.start/2` routes through the shared, capacity-limited
+  # `run_slots:global` singleton (default capacity 3, contended by every
+  # concurrently-running test file — see `skill://foreman-test-isolation`).
+  # A concurrent test can exhaust that capacity in the narrow window
+  # between this test's own `RunSlotsReset.reset!()` (in `setup`) and this
+  # call, making admission return `{:ok, :queued}`/`{:ok, :slot_queued}`
+  # with NO run projection ever created — `do_detect` then sees 0 runs
+  # and `assert count >= 1` fails, nondeterministically, under full-suite
+  # load only. This test exists to verify `Recovery.do_detect`'s own
+  # filtering logic, not the run-admission slot gate, so it seeds the run
+  # projection directly via `ProjectionStore.apply_events/1` (the same
+  # pattern `boot_reconciliation_dispatch_backoff_test.exs` uses),
+  # bypassing `RunAdmission`/`run_slots` entirely.
   defp start_run(run_id) do
     project_id = "project-#{run_id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        aggregate_id: "project:#{project_id}",
-        command_id: "project.register:#{project_id}",
-        type: "project.register",
-        payload: %{
-          project_id: project_id,
-          name: "Recovery #{project_id}",
-          path: System.tmp_dir!()
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "RunStarted",
+          payload: %{
+            run_id: run_id,
+            task_id: "task-#{run_id}",
+            project_id: project_id,
+            workflow_snapshot: %{},
+            sequence: 0
+          }
         }
-      })
-
-    {:ok, _} =
-      RunAdmission.start(project_id, %{
-        run_id: run_id,
-        task_id: "task-#{run_id}",
-        workflow_snapshot: %{phases: []},
-        phase_specs: []
-      })
+      ])
 
     :ok
   end
