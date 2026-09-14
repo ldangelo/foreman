@@ -160,6 +160,17 @@ defmodule ForemanServer.Workflow.Catalog.DoctorTest do
 
       assert {:error, _reason} = Doctor.coverage_report(project_id, %{"type_a" => "workflow_a"})
     end
+
+    test "coverage_report returns a malformed-provider error for a non-string issue_type" do
+      project_id = "doctor-malformed-#{System.unique_integer([:positive])}"
+
+      register_project(project_id, [
+        %Issue{issue("bead-1", "type_a") | metadata: %{"issue_type" => 123}}
+      ])
+
+      assert {:error, {:malformed_issue_type, 123}} =
+               Doctor.coverage_report(project_id, %{"type_a" => "workflow_a"})
+    end
   end
 
   describe "Format output helpers" do

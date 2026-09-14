@@ -129,14 +129,22 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
     with {:ok, %{provider_module: provider_module, config: config}} <-
            Registry.project_config(project_id),
          {:ok, beads} when is_list(beads) <- provider_module.list_ready(config, []) do
-      types =
-        beads
-        |> Enum.map(&extract_issue_type/1)
-        |> Enum.reject(&is_nil/1)
-        |> Enum.uniq()
-        |> MapSet.new()
+      extracted = Enum.map(beads, &extract_issue_type/1)
 
-      {:ok, types}
+      case Enum.find(extracted, &match?({:error, _}, &1)) do
+        {:error, malformed} ->
+          {:error, {:malformed_issue_type, malformed}}
+
+        nil ->
+          types =
+            extracted
+            |> Enum.filter(&match?({:ok, _}, &1))
+            |> Enum.map(fn {:ok, type} -> type end)
+            |> Enum.uniq()
+            |> MapSet.new()
+
+          {:ok, types}
+      end
     else
       {:error, reason} -> {:error, reason}
       other -> {:error, {:unexpected_list_ready_result, other}}
@@ -152,11 +160,20 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
   # a real issue's type lives; there is no `:issue_type` atom-keyed
   # producer, so matching a second atom-key clause here would be dead
   # code hedging against a shape that never occurs (`AGENTS.md` §5.4).
-  # Matching the bare struct here would silently match nothing for every
-  # production issue, making `get_actual_issue_types/1` always return an
-  # empty set.
-  defp extract_issue_type(%Issue{metadata: %{"issue_type" => type}}), do: type
-  defp extract_issue_type(%Issue{metadata: metadata}) when is_map(metadata), do: nil
-  defp extract_issue_type(%{"issue_type" => type}), do: type
-  defp extract_issue_type(_), do: nil
+  #
+  # A present-but-non-string value (or an explicit `nil`) is malformed
+  # provider data, not "absent": returning it as-is would let it flow
+  # into `format_ascii/1`'s `"  • " <> type` concatenation and crash
+  # with `ArgumentError` on the first non-binary. Absent (`:absent`) and
+  # malformed (`{:error, _}`) get distinct outcomes so a caller can
+  # propagate a clear `{:error, {:malformed_issue_type, _}}` instead of
+  # either silently dropping bad data or crashing downstream on it.
+  defp extract_issue_type(%Issue{metadata: %{"issue_type" => type}}) when is_binary(type),
+    do: {:ok, type}
+
+  defp extract_issue_type(%Issue{metadata: %{"issue_type" => other}}), do: {:error, other}
+  defp extract_issue_type(%Issue{metadata: metadata}) when is_map(metadata), do: :absent
+  defp extract_issue_type(%{"issue_type" => type}) when is_binary(type), do: {:ok, type}
+  defp extract_issue_type(%{"issue_type" => other}), do: {:error, other}
+  defp extract_issue_type(_), do: :absent
 end
