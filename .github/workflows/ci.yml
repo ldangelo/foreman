@@ -42,6 +42,8 @@ jobs:
           otp-version: '27.3'
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
+      - name: Install inotify-tools
+        run: sudo apt-get update && sudo apt-get install -y inotify-tools
       - name: Install br (Beads CLI)
         env:
           BR_INSTALLER_SHA: 6c8283c43773212ad1509c2caa4f400674674a50
