@@ -295,8 +295,16 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   # which reported the same defect from a less useful place.
   defp build_top_level(key, value, lines) do
     case value do
+      # `task_types` is validated above (`task_types_not_strings`) to be
+      # the only top-level list-type key that reaches this branch, and
+      # every element is a string. Writing bare (`[true, 123]`) would
+      # make `Interpreter.parse_array/1`'s `cast_scalar/1` coerce a task
+      # type literally named "true" or "123" into a boolean or integer on
+      # the next read — quoting keeps `classify_scalar/1` on the `:quoted`
+      # path, which is the only path `cast_scalar/1` is never applied to.
       v when is_list(v) ->
-        append(lines, 0, "#{key}: [#{Enum.join(v, ", ")}]")
+        rendered = Enum.map_join(v, ", ", &"\"#{&1}\"")
+        append(lines, 0, "#{key}: [#{rendered}]")
 
       v when is_binary(v) or is_integer(v) or is_boolean(v) ->
         append(lines, 0, "#{key}: #{scalar(v)}")

@@ -511,6 +511,27 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
     end
   end
 
+  describe "write/1 task_types round-trip" do
+    test "quotes elements so reserved-word-looking task types survive as strings" do
+      # `Interpreter.parse_array/1` runs each unquoted array element through
+      # `cast_scalar/1`, which turns the bare words "true"/"false" into
+      # booleans and any all-digit word into an integer. A task type
+      # literally named "true" or "123" must round-trip as the STRING it
+      # was declared as, not silently change type.
+      manifest = %{
+        "name" => "wf",
+        "task_types" => ["true", "123", "normal"],
+        "phases" => [%{"name" => "p", "prompt" => "p.md"}]
+      }
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ ~S(task_types: ["true", "123", "normal"])
+
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(write_temp_yaml!(yaml))
+      assert loaded["task_types"] == ["true", "123", "normal"]
+    end
+  end
+
   defp write_temp_yaml!(contents) do
     directory =
       Path.join(System.tmp_dir!(), "manifest-writer-#{System.unique_integer([:positive])}")
