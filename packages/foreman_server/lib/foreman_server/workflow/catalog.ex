@@ -177,6 +177,7 @@ defmodule ForemanServer.Workflow.Catalog do
         {:reply, {:error, :prompt_not_tracked}, state}
     end
   end
+
   def handle_call(:manifests, _from, state) do
     {:reply, state.manifests |> Map.keys() |> Enum.sort(), state}
   end
@@ -564,25 +565,33 @@ defmodule ForemanServer.Workflow.Catalog do
     type_to_workflow =
       Enum.reduce(state.manifests, %{}, fn {_filename, %{workflow: workflow}}, acc ->
         case Map.get(workflow, :task_types) do
-          nil -> acc
-          [] -> acc
-          "" -> acc
+          nil ->
+            acc
+
+          [] ->
+            acc
+
+          "" ->
+            acc
+
           types when is_list(types) ->
             Enum.reduce(types, acc, fn task_type, type_acc ->
               if Map.has_key?(type_acc, task_type) do
                 existing_workflow = type_acc[task_type]
                 workflow_name = Map.get(workflow, :name, "unknown")
+
                 raise ArgumentError,
-                  "workflow collision: both #{existing_workflow} and #{workflow_name} declare task_type '#{task_type}'"
+                      "workflow collision: both #{existing_workflow} and #{workflow_name} declare task_type '#{task_type}'"
               else
                 Map.put(type_acc, task_type, Map.get(workflow, :name, "unknown"))
               end
             end)
-          _other -> acc
+
+          _other ->
+            acc
         end
       end)
 
     Map.put(state, :type_to_workflow, type_to_workflow)
   end
 end
-

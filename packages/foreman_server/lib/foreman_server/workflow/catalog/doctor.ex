@@ -59,16 +59,18 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
 
     lines =
       if Enum.empty?(report.unmapped_types) do
-        lines ++ [
-          "",
-          "✓ All issue_types are mapped to workflows"
-        ]
+        lines ++
+          [
+            "",
+            "✓ All issue_types are mapped to workflows"
+          ]
       else
-        lines ++ [
-          "",
-          "⚠ Unmapped issue_types:",
-          "─ " <> String.duplicate("─", 18)
-        ] ++ Enum.map(report.unmapped_types, &("  • " <> &1))
+        lines ++
+          [
+            "",
+            "⚠ Unmapped issue_types:",
+            "─ " <> String.duplicate("─", 18)
+          ] ++ Enum.map(report.unmapped_types, &("  • " <> &1))
       end
 
     Enum.join(lines, "\n")
@@ -101,6 +103,7 @@ defmodule ForemanServer.Workflow.Catalog.Doctor do
   end
 
   defp coverage_percent(_mapped, total) when total == 0, do: "100%"
+
   defp coverage_percent(mapped, total) do
     percent = div(mapped * 100, total)
     "#{percent}%"

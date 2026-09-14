@@ -38,8 +38,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherBootTest do
   end
 
   defp where_response(jsonl_path) do
-    {:ok,
-     %{stdout: Jason.encode!(%{"jsonl_path" => jsonl_path}), stderr: "", exit_code: 0}}
+    {:ok, %{stdout: Jason.encode!(%{"jsonl_path" => jsonl_path}), stderr: "", exit_code: 0}}
   end
 
   describe "coverage-drift preflight gate (TRD-009-TEST)" do
@@ -47,8 +46,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherBootTest do
       tmp_dir: tmp_dir
     } do
       expect(BrRunnerMock, :cmd, fn {:sync_status, %{flags: ["--status"]}},
-                                     _project_config,
-                                     _opts ->
+                                    _project_config,
+                                    _opts ->
         sync_status_response(true,
           db_exportable_issues: 42,
           jsonl_unique_ids: 37,
@@ -99,13 +98,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherBootTest do
       File.write!(jsonl_path, "")
 
       expect(BrRunnerMock, :cmd, fn {:sync_status, %{flags: ["--status"]}},
-                                     _project_config,
-                                     _opts ->
+                                    _project_config,
+                                    _opts ->
         sync_status_response(false)
       end)
 
       expect(BrRunnerMock, :cmd, fn {:where, %{database_path: db_path}}, _project_config, _opts
-                                     when db_path == tmp_dir ->
+                                    when db_path == tmp_dir ->
         where_response(jsonl_path)
       end)
 

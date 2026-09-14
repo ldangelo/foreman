@@ -50,12 +50,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
   # (coverage-drift check, then jsonl_path resolution) — mirrors
   # `beads_watcher_boot_test.exs`'s "resumes normally" setup.
   defp boot_watcher(project_id, tmp_dir, jsonl_path, extra_opts) do
-    expect(BrRunnerMock, :cmd, fn {:sync_status, %{flags: ["--status"]}}, _project_config, _opts ->
+    expect(BrRunnerMock, :cmd, fn {:sync_status, %{flags: ["--status"]}},
+                                  _project_config,
+                                  _opts ->
       sync_status_response(false)
     end)
 
     expect(BrRunnerMock, :cmd, fn {:where, %{database_path: db_path}}, _project_config, _opts
-                                    when db_path == tmp_dir ->
+                                  when db_path == tmp_dir ->
       where_response(jsonl_path)
     end)
 
@@ -75,7 +77,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
     :telemetry.attach(
       handler_id,
       [:foreman_server, :task_provider, :beads, :watcher, :malformed],
-      fn _event, _measurements, metadata, _config -> send(test_pid, {:telemetry, ref, metadata}) end,
+      fn _event, _measurements, metadata, _config ->
+        send(test_pid, {:telemetry, ref, metadata})
+      end,
       nil
     )
 

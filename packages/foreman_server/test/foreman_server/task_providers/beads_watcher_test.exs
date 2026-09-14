@@ -288,11 +288,19 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "processes all complete lines and leaves partial_line empty", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
-      state = open_state(tmp, ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n))
+
+      state =
+        open_state(
+          tmp,
+          ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n)
+        )
+
       {new_state, counters} = BeadsWatcher.read_more(state)
 
       assert new_state.read_offset ==
-               byte_size(~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n))
+               byte_size(
+                 ~s({"id":"a","title":"a","status":"open"}\n{"id":"b","title":"b","status":"open"}\n)
+               )
 
       assert new_state.partial_line == ""
       assert counters.lines_processed == 2
@@ -333,7 +341,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "transient on line N holds read_offset at line N start, line N+1 re-read on next poll",
          %{tmp: tmp} do
       FakeCommandGateway.stub_response({:error, :down})
-      body = ~s({"id":"transient","title":"t","status":"open"}\n{"id":"later","title":"l","status":"open"}\n)
+
+      body =
+        ~s({"id":"transient","title":"t","status":"open"}\n{"id":"later","title":"l","status":"open"}\n)
+
       state = open_state(tmp, body)
 
       {state, counters} = BeadsWatcher.read_more(state)

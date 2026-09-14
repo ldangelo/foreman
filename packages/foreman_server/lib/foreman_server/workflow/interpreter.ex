@@ -738,6 +738,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     cond do
       String.starts_with?(value, "[") and String.ends_with?(value, "]") ->
         parse_array(value)
+
       true ->
         case classify_scalar(value) do
           {:quoted, inner} -> inner
@@ -748,6 +749,7 @@ defmodule ForemanServer.Workflow.Interpreter do
 
   defp parse_array(value) do
     inner = String.slice(value, 1, String.length(value) - 2)
+
     inner
     |> String.split(",")
     |> Enum.map(&String.trim/1)
@@ -778,20 +780,26 @@ defmodule ForemanServer.Workflow.Interpreter do
       _other -> value
     end
   end
+
   defp validate_task_types!(workflow, path) do
     case Map.get(workflow, "task_types") do
-      nil -> :ok
-      "" -> :ok
+      nil ->
+        :ok
+
+      "" ->
+        :ok
+
       value when is_list(value) ->
         Enum.each(value, fn item ->
           unless is_binary(item) do
             raise ArgumentError,
-              "workflow #{path}: task_types must be an array of strings, got #{inspect(item)}"
+                  "workflow #{path}: task_types must be an array of strings, got #{inspect(item)}"
           end
         end)
+
       other ->
         raise ArgumentError,
-          "workflow #{path}: task_types must be an array of strings, got #{inspect(other)}"
+              "workflow #{path}: task_types must be an array of strings, got #{inspect(other)}"
     end
   end
 

@@ -173,7 +173,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
             Task.start(fn ->
               case fail_retry_loop(project_id, task_id, run_id, failure_reason, 2) do
                 {:ok, _issue} ->
-                  report_retry_dispatch_result(dispatch_task_execution_fail(state, reason), run_id)
+                  report_retry_dispatch_result(
+                    dispatch_task_execution_fail(state, reason),
+                    run_id
+                  )
 
                 {:error, final_reason} ->
                   Logger.error(
@@ -1405,6 +1408,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # Confirmed: complete is called after all phases succeed, before finalization.
   defp finalize_run(state) do
     Logger.info("RunExecutor #{state.run_id} finalize_run: maybe_complete_task")
+
     case maybe_complete_task(state) do
       :ok ->
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
@@ -3341,7 +3345,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
               artifact_path: ArtifactTemplate.path(state, phase_spec, index)
             })
 
-          fail_with_retry(state, project_id(state), provider_task_id(state), state.run_id, reason, failure_reason)
+          fail_with_retry(
+            state,
+            project_id(state),
+            provider_task_id(state),
+            state.run_id,
+            reason,
+            failure_reason
+          )
 
         false ->
           dispatch_task_execution_fail(state, reason)

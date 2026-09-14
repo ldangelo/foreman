@@ -59,9 +59,12 @@ defmodule ForemanServer.Workflow.RunExecutorRetryTest do
       # - Verifying the exact sequence of retries
 
       # For now, we document the contract:
-      wait_before_attempt_2 = 1_000  # ms
-      wait_before_attempt_3 = 5_000  # ms
-      wait_before_escalation = 15_000  # ms
+      # ms
+      wait_before_attempt_2 = 1_000
+      # ms
+      wait_before_attempt_3 = 5_000
+      # ms
+      wait_before_escalation = 15_000
 
       total_wait_ms = wait_before_attempt_2 + wait_before_attempt_3 + wait_before_escalation
       assert total_wait_ms == 21_000

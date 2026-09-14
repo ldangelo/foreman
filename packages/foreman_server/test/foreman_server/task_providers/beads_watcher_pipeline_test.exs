@@ -284,15 +284,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       FakeCommandGateway.stub_response({:ok, nil})
       {_, _} = BeadsWatcher.advance_one_line(state, foreman_line)
-      {_, _} = BeadsWatcher.advance_one_line(recon_state, ~s({"id":"bead-b2","title":"r","status":"open"}))
+
+      {_, _} =
+        BeadsWatcher.advance_one_line(
+          recon_state,
+          ~s({"id":"bead-b2","title":"r","status":"open"})
+        )
+
       {_, _} = BeadsWatcher.advance_one_line(state, imported_line)
 
       FakeCommandGateway.stub_response({:error, {:invalid_task_status, "closed"}})
 
-      {_, _} = BeadsWatcher.advance_one_line(state, ~s({"id":"bead-b4","title":"t","status":"open"}))
+      {_, _} =
+        BeadsWatcher.advance_one_line(state, ~s({"id":"bead-b4","title":"t","status":"open"}))
 
       FakeCommandGateway.stub_response({:error, :down})
-      {_, _} = BeadsWatcher.advance_one_line(state, ~s({"id":"bead-b5","title":"t","status":"open"}))
+
+      {_, _} =
+        BeadsWatcher.advance_one_line(state, ~s({"id":"bead-b5","title":"t","status":"open"}))
 
       assert FakeCommandGateway.operator_calls() == [],
              "watcher MUST NOT route through dispatch_operator/2 — " <>
@@ -516,7 +525,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       :telemetry.attach(
         handler_id,
-        [:foreman_server, :task_provider, :beads, :watcher, :status_gate, :skipped, :unmapped_type],
+        [
+          :foreman_server,
+          :task_provider,
+          :beads,
+          :watcher,
+          :status_gate,
+          :skipped,
+          :unmapped_type
+        ],
         fn _event, _measurements, metadata, _config ->
           send(self(), {:telemetry, ref, metadata})
         end,

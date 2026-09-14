@@ -63,23 +63,23 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
         {:ok, %{stdout: Jason.encode!(%{"coverage_drift" => false})}}
 
       {:where, config}, _project_config, _opts ->
-      # Every jsonl the supervisor's children observe must live under
-      # tmp_root so on_exit's File.rm_rf!/1 cleans up unconditionally.
-      # Use the caller-supplied database_path basename (strips any absolute
-      # prefix or directory injection) and place it inside tmp_root.
-      caller_db =
-        case Map.get(config, :database_path) do
-          nil -> nil
-          path when is_binary(path) -> Path.basename(path)
-        end
+        # Every jsonl the supervisor's children observe must live under
+        # tmp_root so on_exit's File.rm_rf!/1 cleans up unconditionally.
+        # Use the caller-supplied database_path basename (strips any absolute
+        # prefix or directory injection) and place it inside tmp_root.
+        caller_db =
+          case Map.get(config, :database_path) do
+            nil -> nil
+            path when is_binary(path) -> Path.basename(path)
+          end
 
-      basename =
-        caller_db || "unknown-#{System.unique_integer([:positive])}.db"
+        basename =
+          caller_db || "unknown-#{System.unique_integer([:positive])}.db"
 
-      jsonl_path = Path.join(tmp_root, basename <> ".jsonl")
-      File.write!(jsonl_path, "")
-      stdout = ~s({"jsonl_path":"#{jsonl_path}"})
-      {:ok, %{stdout: stdout}}
+        jsonl_path = Path.join(tmp_root, basename <> ".jsonl")
+        File.write!(jsonl_path, "")
+        stdout = ~s({"jsonl_path":"#{jsonl_path}"})
+        {:ok, %{stdout: stdout}}
     end)
 
     on_exit(fn ->

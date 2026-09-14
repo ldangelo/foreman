@@ -225,7 +225,11 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
         # Verify claim transitions to in_progress
         assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
-        assert project_config == %{"database_path" => cached_database_path, run_id: "run-test-claim"}
+        assert project_config == %{
+                 "database_path" => cached_database_path,
+                 run_id: "run-test-claim"
+               }
+
         assert opts == [timeout_ms: 30_000]
 
         {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
@@ -337,7 +341,8 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
         assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
-        {:ok, %{stdout: Jason.encode!(issue_with_status("in_progress")), stderr: "", exit_code: 0}}
+        {:ok,
+         %{stdout: Jason.encode!(issue_with_status("in_progress")), stderr: "", exit_code: 0}}
       end)
 
       # Execute claim
@@ -383,7 +388,8 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
         assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
-        {:ok, %{stdout: Jason.encode!(issue_with_status("in_progress")), stderr: "", exit_code: 0}}
+        {:ok,
+         %{stdout: Jason.encode!(issue_with_status("in_progress")), stderr: "", exit_code: 0}}
       end)
 
       # Execute claim
