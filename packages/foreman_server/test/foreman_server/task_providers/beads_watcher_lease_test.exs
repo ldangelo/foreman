@@ -78,7 +78,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
       Path.join(tmp_dir, "lease-test-#{System.unique_integer([:positive, :monotonic])}.db")
 
     jsonl_path = Path.join(tmp_dir, "issues.jsonl")
-    File.write!(jsonl_path, ~s({"id":"bead-lease","title":"x","issue_type":"task","status":"open"}\n))
+
+    File.write!(
+      jsonl_path,
+      ~s({"id":"bead-lease","title":"x","issue_type":"task","status":"open"}\n)
+    )
 
     state = %BeadsWatcher{
       project_id: "proj-lease",
