@@ -165,7 +165,7 @@ defmodule ForemanServer.Workflow.Catalog.DoctorTest do
       project_id = "doctor-malformed-#{System.unique_integer([:positive])}"
 
       register_project(project_id, [
-        %Issue{issue("bead-1", "type_a") | metadata: %{"issue_type" => 123}}
+        issue("bead-1", 123)
       ])
 
       assert {:error, {:malformed_issue_type, 123}} =
