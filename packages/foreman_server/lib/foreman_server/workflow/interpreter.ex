@@ -750,15 +750,21 @@ defmodule ForemanServer.Workflow.Interpreter do
   defp parse_array(value) do
     inner = String.slice(value, 1, String.length(value) - 2)
 
-    inner
-    |> String.split(",")
-    |> Enum.map(&String.trim/1)
-    |> Enum.map(fn item ->
-      case classify_scalar(item) do
-        {:quoted, quoted_inner} -> quoted_inner
-        {:plain, plain} -> plain
-      end
-    end)
+    case String.trim(inner) do
+      "" ->
+        []
+
+      trimmed ->
+        trimmed
+        |> String.split(",")
+        |> Enum.map(&String.trim/1)
+        |> Enum.map(fn item ->
+          case classify_scalar(item) do
+            {:quoted, quoted_inner} -> quoted_inner
+            {:plain, plain} -> plain
+          end
+        end)
+    end
   end
 
   defp classify_scalar(value) do

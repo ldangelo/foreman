@@ -581,6 +581,39 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert "empty_types.yaml" in Catalog.manifests()
       assert {:ok, wf} = Catalog.load("empty_types.yaml")
       assert wf.name == "empty_types"
+      assert wf.task_types == []
+    end
+
+    test "two workflows both declaring an empty task_types array do not collide", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      # `Interpreter.parse_array/1` previously decoded `[]` as `[""]`
+      # rather than `[]`. `Catalog.rebuild_type_to_workflow/1` guards
+      # `nil`/`[]`/`""` explicitly but not `[""]`, so two workflows both
+      # declaring `task_types: []` would fan-in on the empty string and
+      # `Catalog.init/1` would raise a workflow-collision error instead
+      # of starting.
+      File.write!(Path.join(tmp, "prompts/p.md"), "prompt")
+
+      File.write!(
+        Path.join(tmp, "empty_types_a.yaml"),
+        "name: empty_types_a\ntask_types: []\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      File.write!(
+        Path.join(tmp, "empty_types_b.yaml"),
+        "name: empty_types_b\ntask_types: []\nphases:\n  - name: p1\n    prompt: p.md\n"
+      )
+
+      start_catalog(tmp, name)
+
+      assert "empty_types_a.yaml" in Catalog.manifests()
+      assert "empty_types_b.yaml" in Catalog.manifests()
+      assert {:ok, wf_a} = Catalog.load("empty_types_a.yaml")
+      assert {:ok, wf_b} = Catalog.load("empty_types_b.yaml")
+      assert wf_a.task_types == []
+      assert wf_b.task_types == []
     end
   end
 

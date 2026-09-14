@@ -10,9 +10,12 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     (4) Boundary invariant — `dispatch_operator/2` MUST NOT be invoked
     (5) Transient (`ProviderError{retryable?: true}`; `{:error, {:wrong_expected_version, _, _}}`;
         `{:exit, :killed}`) holds `read_offset`; retries reuse the same `command_id`
-    (6) Terminal (`{:ok, _}`; `{:error, {:already_exists, :task, _}}`;
-        `{:error, {:invalid_task_status, _}}`; `{:error, {:project_archived, _}}`;
-        `{:error, :project_id_required}`) advances `read_offset`
+    (6) Terminal-imported (`{:ok, _}`; `{:error, {:already_exists, :task, _}}`)
+        advances `read_offset` and returns `:imported`
+    (7) Terminal-rejected (`{:error, {:invalid_task_status, _}}`;
+        `{:error, {:project_archived, _}}`; `{:error, :project_id_required}`)
+        advances `read_offset` but returns `:rejected` — no task was
+        created, so this must never be counted as an import
   """
   use ExUnit.Case, async: false
 
@@ -427,7 +430,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert new_state.read_offset == byte_size(line) + 1
     end
 
-    test "{:error, {:invalid_task_status, _}} advances read_offset" do
+    test "{:error, {:invalid_task_status, _}} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, {:invalid_task_status, "closed"}})
 
       state = %BeadsWatcher{project_id: "proj-its", read_offset: 0, partial_line: ""}
@@ -435,11 +438,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
+      assert outcome == :rejected
       assert new_state.read_offset == byte_size(line) + 1
     end
 
-    test "{:error, {:project_archived, _}} advances read_offset" do
+    test "{:error, {:project_archived, _}} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, {:project_archived, "archived since 2026-08-01"}})
 
       state = %BeadsWatcher{project_id: "proj-pa", read_offset: 0, partial_line: ""}
@@ -447,11 +450,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
+      assert outcome == :rejected
       assert new_state.read_offset == byte_size(line) + 1
     end
 
-    test "{:error, :project_id_required} advances read_offset" do
+    test "{:error, :project_id_required} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, :project_id_required})
 
       state = %BeadsWatcher{project_id: "proj-pir", read_offset: 0, partial_line: ""}
@@ -459,7 +462,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
+      assert outcome == :rejected
       assert new_state.read_offset == byte_size(line) + 1
     end
   end

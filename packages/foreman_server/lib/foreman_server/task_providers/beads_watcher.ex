@@ -171,6 +171,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @imported_event [:foreman_server, :task_provider, :beads, :watcher, :imported]
   @malformed_event [:foreman_server, :task_provider, :beads, :watcher, :malformed]
   @error_event [:foreman_server, :task_provider, :beads, :watcher, :error]
+  @rejected_event [:foreman_server, :task_provider, :beads, :watcher, :rejected]
   @status_gate_skipped_draft_status_event [
     :foreman_server,
     :task_provider,
@@ -686,8 +687,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   Returns `{new_state, outcome}` where `outcome` is one of:
 
-    * `:imported` / `:skipped` / `:reconciled` — terminal advance
-      (`read_offset` moves past `byte_size(line) + 1`).
+    * `:imported` / `:skipped` / `:reconciled` / `:rejected` — terminal
+      advance (`read_offset` moves past `byte_size(line) + 1`).
     * `:malformed` — terminal advance (the line was structurally
       unrecoverable; advancing past it prevents an infinite loop on
       the same byte offset).
@@ -711,6 +712,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       :reconciled ->
         {%{state | read_offset: state.read_offset + line_byte_size + 1}, :reconciled}
+
+      :rejected ->
+        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :rejected}
 
       :malformed ->
         {%{state | read_offset: state.read_offset + line_byte_size + 1}, :malformed}
@@ -761,16 +765,23 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        flows into the `task.create` payload.
     7. Otherwise, synthesize the deterministic `task.create` envelope
        and dispatch via `CommandGateway.dispatch_system/2` (the
-       trusted system path). On a terminal return, immediately
-       dispatch the matching `task.approve` (AC-003-2 — a single
-       effective create-and-approve step, no separate operator
-       action), emit `[:watcher, :imported]`, and return `:imported`.
-       On any other create return, emit `[:watcher, :error]` and
-       return `:transient` (so the cursor holds and the line is
-       retried on the next poll).
+       trusted system path). A return meaning a task now exists
+       (`{:ok, _}` or `{:error, {:already_exists, :task, _}}`)
+       immediately dispatches the matching `task.approve` (AC-003-2 — a
+       single effective create-and-approve step, no separate operator
+       action), emits `[:watcher, :imported]`, and returns `:imported`.
+       A return meaning the aggregate rejected creation outright before
+       any task existed (`{:error, {:invalid_task_status, _}}`,
+       `{:error, {:project_archived, _}}`, or
+       `{:error, :project_id_required}`) emits `[:watcher, :rejected]`
+       and returns `:rejected` (terminal advance — no task was created,
+       so there is nothing to approve, and retrying will not change an
+       archived project or a rejected status). Any other create return
+       emits `[:watcher, :error]` and returns `:transient` (so the
+       cursor holds and the line is retried on the next poll).
 
   Returns one of
-  `:imported | :skipped | :reconciled | :malformed | :transient`.
+  `:imported | :skipped | :reconciled | :rejected | :malformed | :transient`.
   """
   @spec process_line(t(), binary()) :: atom()
   def process_line(state, line) when is_binary(line) do
@@ -1050,43 +1061,82 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   defp classify_dispatch_result(state, bead_id, result) do
-    if terminal_dispatch?(result) do
-      approve_result = auto_approve_bead(state, bead_id)
+    cond do
+      task_created_or_existing?(result) ->
+        approve_result = auto_approve_bead(state, bead_id)
 
-      # `auto_approve_bead/2`'s own result was previously discarded here,
-      # so a failed auto-approval (task created but left `open`, never
-      # `ready`) was reported identically to a fully successful
-      # create-and-approve. `task.create` succeeding is genuinely
-      # `:imported` either way (the task exists), but the telemetry must
-      # say which half actually worked so an operator can find a
-      # created-but-unapproved task instead of trusting a false `:ok`.
-      TaskProviderTelemetry.emit(
-        @imported_event,
-        %{system_time: System.system_time()},
-        %{
-          project_id: state.project_id,
-          bead_id: bead_id,
-          result: :ok,
-          approve_result: approve_result
-        }
-      )
+        # `auto_approve_bead/2`'s own result was previously discarded here,
+        # so a failed auto-approval (task created but left `open`, never
+        # `ready`) was reported identically to a fully successful
+        # create-and-approve. `task.create` succeeding is genuinely
+        # `:imported` either way (the task exists), but the telemetry must
+        # say which half actually worked so an operator can find a
+        # created-but-unapproved task instead of trusting a false `:ok`.
+        TaskProviderTelemetry.emit(
+          @imported_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            bead_id: bead_id,
+            result: :ok,
+            approve_result: approve_result
+          }
+        )
 
-      :imported
-    else
-      TaskProviderTelemetry.emit(
-        @error_event,
-        %{system_time: System.system_time()},
-        %{
-          project_id: state.project_id,
-          stage: :dispatch,
-          bead_id: bead_id,
-          result: result
-        }
-      )
+        :imported
 
-      :transient
+      terminal_rejection?(result) ->
+        # No task was created — `validate_status/1`, `validate_project_allows_tasks/1`,
+        # and their command-gateway equivalents reject BEFORE any event is
+        # appended. Approving a task that does not exist would itself fail,
+        # and reporting `:imported` here would tell an operator a bead was
+        # brought in when it never was. The line is still terminal (retrying
+        # an archived project or an invalid status will not change the
+        # outcome), so the cursor still advances — just under a distinct
+        # outcome that is never counted as an import.
+        TaskProviderTelemetry.emit(
+          @rejected_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            bead_id: bead_id,
+            result: result
+          }
+        )
+
+        :rejected
+
+      true ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            stage: :dispatch,
+            bead_id: bead_id,
+            result: result
+          }
+        )
+
+        :transient
     end
   end
+
+  # A real task now exists under this bead's external_id — either freshly
+  # created or already present from a prior attempt — so approving it is
+  # meaningful and reporting `:imported` is accurate.
+  defp task_created_or_existing?({:ok, _result}), do: true
+  defp task_created_or_existing?({:error, {:already_exists, :task, _id}}), do: true
+  defp task_created_or_existing?(_other), do: false
+
+  # Terminal (non-retryable) but no task was created. Distinct from
+  # `task_created_or_existing?/1` so `classify_dispatch_result/3` never
+  # attempts to approve, and never reports `:imported`, a task.create the
+  # aggregate refused outright.
+  defp terminal_rejection?({:error, {:invalid_task_status, _reason}}), do: true
+  defp terminal_rejection?({:error, {:project_archived, _reason}}), do: true
+  defp terminal_rejection?({:error, :project_id_required}), do: true
+  defp terminal_rejection?(_other), do: false
 
   # ----- Auto-approval (REQ-003, AC-003-2) --------------------------------
 
@@ -1131,16 +1181,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         other
     end
   end
-
-  # TRD §2.2.6 item 7 — EXHAUSTIVE terminal set.
-  @spec terminal_dispatch?(term()) :: boolean()
-  defp terminal_dispatch?({:ok, _result}), do: true
-
-  defp terminal_dispatch?({:error, {:already_exists, :task, _id}}), do: true
-  defp terminal_dispatch?({:error, {:invalid_task_status, _reason}}), do: true
-  defp terminal_dispatch?({:error, {:project_archived, _reason}}), do: true
-  defp terminal_dispatch?({:error, :project_id_required}), do: true
-  defp terminal_dispatch?(_other), do: false
 
   # ---------------------------------------------------------------------
   # Helpers
