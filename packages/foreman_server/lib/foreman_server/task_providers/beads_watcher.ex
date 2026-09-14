@@ -514,6 +514,23 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         FileSystem.subscribe(pid)
         %{state | fs_watcher_pid: pid}
 
+      :ignore ->
+        # `GenServer.on_start()` (FileSystem.start_link/1's own declared
+        # spec) includes `:ignore` alongside `{:ok, pid}`/`{:error, _}` —
+        # the underlying OS file-watch backend can decline to start
+        # without it being an error (e.g. no inotify support/permission
+        # in a restricted container). Observed on Linux CI runners; not
+        # reproduced on macOS dev environments. Matches the same
+        # degrade-to-poll-only contract as the {:error, reason} clause
+        # below, just without a reason to report.
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, stage: :fs_watcher_start, reason: "ignore"}
+        )
+
+        state
+
       {:error, reason} ->
         TaskProviderTelemetry.emit(
           @error_event,
