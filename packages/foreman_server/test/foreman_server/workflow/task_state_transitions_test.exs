@@ -17,7 +17,6 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
   use ExUnit.Case, async: false
 
   import Mox
-  import ExUnit.CaptureLog
 
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry
@@ -29,8 +28,6 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
 
   @moduletag timeout: 60_000
 
-  @claim_event [:foreman_server, :task_provider, :beads_adapter, :claim, :success]
-  @complete_event [:foreman_server, :task_provider, :beads_adapter, :complete, :success]
   @fail_event [:foreman_server, :task_provider, :beads_adapter, :fail, :success]
 
   setup_all do
@@ -214,7 +211,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
   # Tests
 
   describe "task state transitions" do
-    test "claim/3 transitions bead status to 'in_progress'", %{temp_dir: temp_dir} do
+    test "claim/3 transitions bead status to 'in_progress'" do
       start_schema_cache!()
 
       cached_database_path = "/abs/transitions/claim.db"
@@ -247,7 +244,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert issue.status == "in_progress"
     end
 
-    test "complete/3 transitions bead status to 'closed'", %{temp_dir: temp_dir} do
+    test "complete/3 transitions bead status to 'closed'" do
       start_schema_cache!()
 
       cached_database_path = "/abs/transitions/complete.db"
@@ -276,9 +273,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert issue.status == "closed"
     end
 
-    test "fail/3 transitions bead status to 'blocked' with failure reason", %{
-      temp_dir: temp_dir
-    } do
+    test "fail/3 transitions bead status to 'blocked' with failure reason" do
       start_schema_cache!()
 
       ref = :telemetry_test.attach_event_handlers(self(), [@fail_event])
@@ -331,14 +326,14 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert_receive {@fail_event, ^ref, _measurements, _metadata}
     end
 
-    test "full lifecycle: claim → complete → closed sequence", %{temp_dir: temp_dir} do
+    test "full lifecycle: claim → complete → closed sequence" do
       start_schema_cache!()
 
       cached_database_path = "/abs/transitions/lifecycle.db"
       _project_config = register_project!("proj-lifecycle-test", cached_database_path)
 
       # Expect claim call
-      expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
+      expect(BrRunnerMock, :cmd, 1, fn request, _project_config, _opts ->
         assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
         {:ok,
@@ -357,7 +352,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert claim_issue.status == "in_progress"
 
       # Expect complete call
-      expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
+      expect(BrRunnerMock, :cmd, 1, fn request, _project_config, _opts ->
         assert request == {:close, %{id: "bead-transitions"}}
 
         {:ok, %{stdout: Jason.encode!(issue_with_status("closed")), stderr: "", exit_code: 0}}
@@ -375,7 +370,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert complete_issue.status == "closed"
     end
 
-    test "terminal failure path: claim → fail → blocked sequence", %{temp_dir: temp_dir} do
+    test "terminal failure path: claim → fail → blocked sequence" do
       start_schema_cache!()
 
       ref = :telemetry_test.attach_event_handlers(self(), [@fail_event])
@@ -385,7 +380,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       _project_config = register_project!("proj-terminal-fail-test", cached_database_path)
 
       # Expect claim call
-      expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
+      expect(BrRunnerMock, :cmd, 1, fn request, _project_config, _opts ->
         assert request == {:update, %{flags: ["--claim", "bead-transitions"]}}
 
         {:ok,
@@ -404,7 +399,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       assert claim_issue.status == "in_progress"
 
       # Expect fail call (terminal failure)
-      expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
+      expect(BrRunnerMock, :cmd, 1, fn request, _project_config, _opts ->
         assert request ==
                  {:update,
                   %{

@@ -930,10 +930,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert Enum.any?(transitions, &(&1 in [:reopen, :fail]))
   end
 
-  test "failure path retries a transient fail/4 error before dispatching TaskExecutionFailed",
-       %{
-         temp_dir: temp_dir
-       } do
+  test "failure path retries a transient fail/4 error before dispatching TaskExecutionFailed" do
     # TRD-015 regression: `fail_with_retry/6` must actually retry a
     # transient-classified `fail/4` error against the real BeadsAdapter/
     # BrRunnerMock path, not just against `FailureClassifier.classify/1`

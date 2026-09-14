@@ -1,9 +1,6 @@
 defmodule ForemanServer.Workflow.RunExecutorRetryTest do
   use ExUnit.Case, async: false
 
-  import Mox
-
-  alias ForemanServer.Workflow.RunExecutor
   alias ForemanServer.Workflow.FailureClassifier
 
   @moduledoc """

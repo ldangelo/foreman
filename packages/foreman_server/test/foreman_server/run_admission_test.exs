@@ -195,9 +195,18 @@ defmodule ForemanServer.RunAdmissionTest do
         Module.concat(__MODULE__, :"ExternalDoDispatchProbe#{System.unique_integer([:positive])}")
 
       previous_ignore_module_conflict = Code.compiler_options()[:ignore_module_conflict]
+      previous_no_warn_undefined = Code.compiler_options()[:no_warn_undefined]
 
       try do
-        Code.compiler_options(ignore_module_conflict: true)
+        Code.compiler_options(
+          ignore_module_conflict: true,
+          # This probe deliberately calls a function that does not exist
+          # (that's the whole point of the test), so the compiler's
+          # "undefined or private" warning is expected, not a defect.
+          # `mix test --warnings-as-errors` treats it as fatal like any
+          # other warning otherwise.
+          no_warn_undefined: [{ForemanServer.CommandRouter, :do_dispatch, 2}]
+        )
 
         {_definition_result, _binding} =
           Code.eval_string("""
@@ -212,7 +221,10 @@ defmodule ForemanServer.RunAdmissionTest do
           probe_module.call(%{aggregate_id: "project:test"}, 0)
         end
       after
-        Code.compiler_options(ignore_module_conflict: previous_ignore_module_conflict)
+        Code.compiler_options(
+          ignore_module_conflict: previous_ignore_module_conflict,
+          no_warn_undefined: previous_no_warn_undefined || []
+        )
       end
     end
   end
