@@ -907,8 +907,16 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # ----- Workflow selection (REQ-001) -------------------------------------
 
   defp select_workflow(state, parsed) when is_map(parsed) do
-    issue_type = Map.get(parsed, "issue_type", "task")
+    case Map.get(parsed, "issue_type") do
+      issue_type when is_binary(issue_type) and issue_type != "" ->
+        resolve_workflow_type(state, parsed, issue_type)
 
+      _missing_or_invalid ->
+        :malformed
+    end
+  end
+
+  defp resolve_workflow_type(state, parsed, issue_type) do
     case workflow_catalog().type_to_workflow(issue_type) do
       {:ok, workflow_type} ->
         {:ok, workflow_type}
