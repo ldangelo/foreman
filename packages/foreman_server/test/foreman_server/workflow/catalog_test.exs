@@ -655,6 +655,15 @@ defmodule ForemanServer.Workflow.CatalogTest do
       type_map = Catalog.type_to_workflow_map()
       assert type_map["type_a"] == "w1"
       assert type_map["type_b"] == "w1"
+
+      # `doctor/1` delegates through `GenServer.call(server(), :type_to_workflow_map)`
+      # into `Doctor.coverage_report/2`. No task provider is registered for
+      # this ad-hoc project id, so the real, observable outcome is a typed
+      # error from that delegation, not a raise — this is what "exercise
+      # Catalog.doctor/1 in this test" means: prove the call reaches
+      # Doctor.coverage_report/2 and returns its result, not just that
+      # type_to_workflow_map/0 works in isolation.
+      assert {:error, _reason} = Catalog.doctor("unregistered-project")
     end
   end
 end

@@ -958,30 +958,42 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     project_config = %{database_path: state.database_path}
 
-    case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
-      {:ok, _result} ->
-        :ok
+    update_result =
+      case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+        {:ok, _result} ->
+          :ok
 
-      {:error, reason} ->
-        TaskProviderTelemetry.emit(
-          @error_event,
-          %{system_time: System.system_time()},
-          %{
-            project_id: state.project_id,
-            stage: :block_missing_trd_path,
-            bead_id: bead_id,
-            reason: inspect(reason)
-          }
-        )
-    end
+        {:error, reason} ->
+          TaskProviderTelemetry.emit(
+            @error_event,
+            %{system_time: System.system_time()},
+            %{
+              project_id: state.project_id,
+              stage: :block_missing_trd_path,
+              bead_id: bead_id,
+              reason: inspect(reason)
+            }
+          )
 
+          {:error, reason}
+      end
+
+    # `check_trd_path/3` (the sole caller) always advances with
+    # `{:error, :missing_trd_path}` regardless of this outcome — a bead
+    # with no trd_path is never dispatchable either way, so a failed `br
+    # update` doesn't change Foreman's own next action here. It DOES mean
+    # the bead's status in Beads itself may still read as its old status
+    # rather than "blocked" — `@error_event` above is the observable
+    # signal for that divergence; the return value is kept honest rather
+    # than hardcoded to `:ok` so a future caller can't be misled about
+    # whether the transition actually took effect.
     TaskProviderTelemetry.emit(
       @status_gate_skipped_missing_trd_path_event,
       %{system_time: System.system_time()},
       %{project_id: state.project_id, bead_id: bead_id}
     )
 
-    :ok
+    update_result
   end
 
   defp block_missing_trd_path(state, _bead_id) do
@@ -1039,12 +1051,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   defp classify_dispatch_result(state, bead_id, result) do
     if terminal_dispatch?(result) do
-      auto_approve_bead(state, bead_id)
+      approve_result = auto_approve_bead(state, bead_id)
 
+      # `auto_approve_bead/2`'s own result was previously discarded here,
+      # so a failed auto-approval (task created but left `open`, never
+      # `ready`) was reported identically to a fully successful
+      # create-and-approve. `task.create` succeeding is genuinely
+      # `:imported` either way (the task exists), but the telemetry must
+      # say which half actually worked so an operator can find a
+      # created-but-unapproved task instead of trusting a false `:ok`.
       TaskProviderTelemetry.emit(
         @imported_event,
         %{system_time: System.system_time()},
-        %{project_id: state.project_id, bead_id: bead_id, result: :ok}
+        %{
+          project_id: state.project_id,
+          bead_id: bead_id,
+          result: :ok,
+          approve_result: approve_result
+        }
       )
 
       :imported
@@ -1183,6 +1207,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           {:ok, %{"coverage_drift" => true} = status} ->
             {:error, {:coverage_drift, status}}
 
+          # Covers `coverage_drift: false`, a missing `coverage_drift` key,
+          # and undecodable `stdout` alike — all three are "the check
+          # itself cannot be completed to a definite true" per the policy
+          # documented above, not just the outer `{:error, _reason}` case.
           _decoded_or_not ->
             :ok
         end
