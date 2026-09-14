@@ -588,6 +588,28 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.workflow_type == "foreman_implement_trd"
     end
+
+    test "missing issue_type is malformed, not transient, and advances read_offset" do
+      state = %BeadsWatcher{project_id: "proj-no-type", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-no-type","title":"x","status":"open"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "non-string issue_type is malformed, not transient, and advances read_offset" do
+      state = %BeadsWatcher{project_id: "proj-bad-type", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-bad-type","title":"x","status":"open","issue_type":42})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
   end
 
   # --- trd_path extraction and blocked transition (TRD-006-TEST) ---------

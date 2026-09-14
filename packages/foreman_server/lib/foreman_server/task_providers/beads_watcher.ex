@@ -24,7 +24,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       `ProjectionStore.get_task(external_id: bead.id)`
       (dedupe + `:reconciled` per AC-022-2) → status gate (TRD-004:
       only `status: "open"` proceeds; others are `:skipped`) →
-      workflow selection (TRD-005: `Catalog.type_to_workflow/1`; an
+      workflow selection (TRD-005: `Catalog.type_to_workflow/1`; a
+      missing or non-string `issue_type` is `:malformed`; a present but
       unmapped `issue_type` holds `:transient`) → `trd_path` check
       (TRD-006: required for `implement-trd`/`implement-trd-beads`;
       missing/empty moves the bead to `blocked` and returns
