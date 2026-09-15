@@ -1791,6 +1791,31 @@ HTTP helpers used by other command files) — invoking any of them
 produces the CLI's standard "unknown command" error. `foreman run
 list/get/cancel/remove/reset` are unaffected and remain the way to inspect or
 control a dispatched run.
+
+**Workflow-selection (TRD-005) coverage is currently narrow — most issue
+types are inert under BeadsWatcher.** `Catalog.type_to_workflow/1` resolves
+an `issue_type` to a workflow only via a manifest's own `task_types:`
+declaration; as of this writing only three bundled workflows declare one:
+`implement-trd.yaml` (`task_types: [implement_trd]`),
+`implement-trd-beads.yaml` (`task_types: [implement_trd_beads]`), and
+`fix.yaml` (`task_types: [bug]`). A bead whose `issue_type` is anything else
+— including `task`, `feature`, `epic`, or any other bundled workflow's own
+name (`assess.yaml`, `discover.yaml`, `implement.yaml`, `plan.yaml`,
+`prd.yaml`, `release.yaml`, `review.yaml`, `trd.yaml`, `verify.yaml` declare
+no `task_types:` at all) — resolves to `{:error, :unmapped_type}` and the
+watcher holds the bead at `:transient`, retrying every poll indefinitely
+rather than ever creating a task. This is not a bug: it is the intended
+fail-closed behavior (TRD-005 REQ), but it means adding a new issue type to
+the auto-dispatch surface requires an explicit `task_types:` entry in the
+target workflow's manifest (and a matching `foreman init --force` to refresh
+the installed runtime copy) — the mapping does not grow automatically as
+workflows are added.
+
+**BeadsWatcher itself is opt-in, off by default** (`config :foreman_server,
+:start_beads_watcher?, false`) — set it to `true` (dev-only; do not commit a
+default flip to `main`'s `config/dev.exs`) to run one watcher per registered
+project, tailing its JSONL and auto-dispatching per the mapping above. See
+`docs/user-guide.md`'s "Inbound sync" note for the config key.
 ### Using bv as an AI sidecar
 
 bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
