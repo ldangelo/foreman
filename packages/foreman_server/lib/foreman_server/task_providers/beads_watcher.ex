@@ -785,6 +785,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     7. Otherwise, synthesize the deterministic `task.create` envelope
        and dispatch via `CommandGateway.dispatch_system/2` (the
        trusted system path). A return meaning a task now exists
+       (`{:ok, _}` or `{:error, {:already_exists, :task, _}}`)
        immediately dispatches the matching `task.approve` (AC-003-2 — a
        single effective create-and-approve step, no separate operator
        action). `:imported` (with `[:watcher, :imported]`) is reported
