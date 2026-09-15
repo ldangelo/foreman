@@ -43,6 +43,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
           :persistent_term.get({__MODULE__, :response}, {:ok, nil})
       end
     end
+
+    def dispatch_system_approval(command, timeout), do: dispatch_system(command, timeout)
   end
 
   defmodule FakeProjectionStore do

@@ -1241,7 +1241,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       payload: %{task_id: task_id, approved_by: "beads_watcher"}
     }
 
-    case command_gateway().dispatch_system(approve_command, 5_000) do
+    case command_gateway().dispatch_system_approval(approve_command, 5_000) do
       {:ok, _result} = ok ->
         TaskProviderTelemetry.emit(
           @dispatch_and_approve_event,
