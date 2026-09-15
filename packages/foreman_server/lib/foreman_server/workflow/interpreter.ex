@@ -756,7 +756,7 @@ defmodule ForemanServer.Workflow.Interpreter do
 
       trimmed ->
         trimmed
-        |> String.split(",")
+        |> split_array_elements()
         |> Enum.map(&String.trim/1)
         |> Enum.map(fn item ->
           case classify_scalar(item) do
@@ -765,6 +765,30 @@ defmodule ForemanServer.Workflow.Interpreter do
           end
         end)
     end
+  end
+
+  # Splits on "," only outside quotes, so a comma inside a quoted element
+  # (e.g. `"a,b"`, written by `ManifestWriter.build_top_level/3` for exactly
+  # this reason) does not fragment that element into two malformed values.
+  defp split_array_elements(trimmed) do
+    {parts, current, _quote_char} =
+      trimmed
+      |> String.graphemes()
+      |> Enum.reduce({[], "", nil}, fn
+        ch, {parts, current, nil} when ch in ["\"", "'"] ->
+          {parts, current <> ch, ch}
+
+        ch, {parts, current, quote_char} when ch == quote_char ->
+          {parts, current <> ch, nil}
+
+        ",", {parts, current, nil} ->
+          {[current | parts], "", nil}
+
+        ch, {parts, current, quote_char} ->
+          {parts, current <> ch, quote_char}
+      end)
+
+    Enum.reverse([current | parts])
   end
 
   defp classify_scalar(value) do

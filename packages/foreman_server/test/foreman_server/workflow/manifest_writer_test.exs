@@ -530,6 +530,18 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
       assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(write_temp_yaml!(yaml))
       assert loaded["task_types"] == ["true", "123", "normal"]
     end
+
+    test "a comma inside a quoted task type survives round-trip as one element" do
+      manifest = %{
+        "name" => "wf",
+        "task_types" => ["a,b", "normal"],
+        "phases" => [%{"name" => "p", "prompt" => "p.md"}]
+      }
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert {:ok, loaded} = ForemanServer.Workflow.Interpreter.load(write_temp_yaml!(yaml))
+      assert loaded["task_types"] == ["a,b", "normal"]
+    end
   end
 
   defp write_temp_yaml!(contents) do
