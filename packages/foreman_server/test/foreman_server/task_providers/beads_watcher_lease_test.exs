@@ -29,6 +29,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
       Process.sleep(150)
       {:ok, nil}
     end
+
+    def dispatch_system_approval(command, timeout), do: dispatch_system(command, timeout)
   end
 
   defmodule NilProjectionStore do

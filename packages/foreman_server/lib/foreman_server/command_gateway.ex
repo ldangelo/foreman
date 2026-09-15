@@ -80,10 +80,49 @@ defmodule ForemanServer.CommandGateway do
   The router contract remains `{:ok, event_spec | nil} | {:error, _}`.
   Every new workflow command MUST carry a deterministic `command_id`
   so the actor can deduplicate retries by event UUID.
+
+  No enrichment is applied — the caller's payload is dispatched as-is.
+  `task.approve` dispatched here MUST already carry a valid
+  `approval_id` (and any other fields the `Task` aggregate's guards
+  require) or it fails `{:missing_or_invalid, :approval_id, nil}`; see
+  `dispatch_system_approval/2` for the one caller (`BeadsWatcher`'s
+  TRD-007 auto-approval) that needs the operator path's enrichment
+  applied to an as-yet-unapproved payload.
   """
   @spec dispatch_system(map(), integer()) :: dispatch_result()
   def dispatch_system(command, timeout \\ 5_000) when is_map(command) do
     dispatch_and_emit_project_telemetry(command, timeout)
+  end
+
+  @doc """
+  Dispatch a `task.approve` command with the same enrichment
+  (`approval_id`, `approved_at`, `run_id`, `workflow_snapshot`,
+  `workflow_name`, `workflow_digest`) the operator path applies via
+  `enrich_operator_command/1`, without routing through
+  `dispatch_operator/2` — deliberately scoped to a dedicated function
+  rather than folded into `dispatch_system/2` itself: some trusted
+  system callers (test harnesses seeding state directly, e.g.
+  `RunExecutorCommandTest.dispatch_system!/3`) dispatch
+  `task.approve`-shaped commands through `dispatch_system/2` with
+  their OWN already-complete payload (including a pre-supplied
+  `approval_id`) and never want this enrichment re-derived — it would
+  override the caller's `workflow_type`/`task_type` and can fail
+  outright if `Approval.prepare/2` tries to load a workflow manifest
+  the caller's `task_type` was never meant to name. `BeadsWatcher`'s
+  TRD-007 auto-approval is the sole caller: it dispatches `task.approve`
+  via this function rather than `dispatch_operator/2` because the
+  watcher is system automation, not an operator (see the watcher's own
+  moduledoc and `beads_watcher_pipeline_test.exs`'s
+  `operator_calls() == []` assertion), and its payload genuinely has no
+  `approval_id` yet — enrichment here is what makes that dispatch
+  succeed without also duplicating `enrich_approval_via_workflow/2`'s
+  logic (AGENTS.md §5.7).
+  """
+  @spec dispatch_system_approval(map(), integer()) :: dispatch_result()
+  def dispatch_system_approval(%{type: "task.approve"} = command, timeout \\ 5_000) do
+    with {:ok, enriched} <- enrich_operator_command(command) do
+      dispatch_and_emit_project_telemetry(enriched, timeout)
+    end
   end
 
   # ---------------------------------------------------------------------------

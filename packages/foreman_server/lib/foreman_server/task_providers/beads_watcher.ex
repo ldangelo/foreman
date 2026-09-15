@@ -6,11 +6,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     * On `init/1`, resolves the JSONL path via the configured `BrRunner`
       implementation (`@runner`, default `SystemBrRunner`, test override
-      `BrRunnerMock`), opens the file with `:file.open/2`, runs
-      `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority),
-      subscribes to a `file_system` watch on the JSONL's parent
-      directory (TRD-011), then schedules the first tail-mode
-      `:read_more` poll via `Process.send_after/3`.
+      `BrRunnerMock`), opens the file with `:file.open/2`, then returns
+      via `{:continue, :boot_replay}`. `handle_continue/2` runs
+      `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority)
+      only once `CommandRouter` is registered — checked via
+      `command_router_ready?/0` and retried every `@boot_replay_retry_ms`
+      otherwise, so a watcher that starts (opt-in, before `CommandRouter`
+      in the application's children list) before the router does cannot
+      crash-loop on the lease-acquisition dispatch `boot_replay/1`
+      performs. Once ready, replay subscribes to a `file_system` watch
+      on the JSONL's parent directory (TRD-011), then schedules the
+      first tail-mode `:read_more` poll via `Process.send_after/3`.
     * In tail mode, a `{:file_event, pid, {path, events}}` for the
       exact `jsonl_path` is the primary (<1s) trigger: it schedules a
       single `:debounced_read_more` `@debounce_ms` (100ms) out,
@@ -90,6 +96,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   use GenServer
 
   alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.CommandRouter
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   @runner Application.compile_env(
@@ -171,6 +178,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @debounce_ms 100
   @preflight_timeout_ms 30_000
   @read_chunk_bytes 64 * 1024
+  @boot_replay_retry_ms 50
 
   # Telemetry event paths
   @start_event [:foreman_server, :task_provider, :beads, :watcher, :start]
@@ -279,28 +287,50 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     with :ok <- check_coverage_drift(project_id, database_path),
          {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
          {:ok, file_handle} <- :file.open(jsonl_path, [:read, :binary, :raw]) do
-      try do
-        initial = %__MODULE__{
-          project_id: project_id,
-          jsonl_path: jsonl_path,
-          database_path: database_path,
-          file_handle: file_handle,
-          read_offset: 0,
-          partial_line: "",
-          poll_ms: poll_ms
-        }
+      initial = %__MODULE__{
+        project_id: project_id,
+        jsonl_path: jsonl_path,
+        database_path: database_path,
+        file_handle: file_handle,
+        read_offset: 0,
+        partial_line: "",
+        poll_ms: poll_ms
+      }
 
-        state = boot_replay(initial)
-        state = start_fs_watcher(state)
-        schedule_read_more(state.poll_ms)
-        {:ok, state}
-      rescue
-        e ->
-          # Close the file handle on any boot-replay failure so we don't
-          # leak an OS file descriptor. terminate/2 is NOT called when
-          # init raises, so the rescue branch owns the cleanup.
-          :file.close(file_handle)
-          reraise e, __STACKTRACE__
+      if command_router_ready?() do
+        try do
+          state = boot_replay(initial)
+          state = start_fs_watcher(state)
+          schedule_read_more(state.poll_ms)
+          {:ok, state}
+        rescue
+          e ->
+            # Close the file handle on any boot-replay failure so we don't
+            # leak an OS file descriptor. terminate/2 is NOT called when
+            # init raises, so the rescue branch owns the cleanup.
+            :file.close(file_handle)
+            reraise e, __STACKTRACE__
+        end
+      else
+        # `CommandRouter` starts after this (opt-in) watcher in the
+        # application's children list (`maybe_beads_watcher_child/0` is
+        # called before `ForemanServer.CommandRouter` in
+        # `Application.start/2`), so running `boot_replay/1`
+        # synchronously here would deterministically crash on any
+        # project with at least one open bead at boot:
+        # `with_beads_lease/2`'s `BeadsDbLease.with_lease/4` call
+        # dispatches through `CommandGateway`/`CommandRouter`, which
+        # raises `ArgumentError` (`:erlang.send/2` to an unregistered
+        # name) rather than returning an error tuple when the router
+        # isn't registered yet. Deferring via `{:continue, :boot_replay}`
+        # and retrying until the router is up (`handle_continue/2`
+        # below) mirrors `BootReconciliation`'s established
+        # `command_router_ready?/0` guard for the identical hazard.
+        # Only reached during the real production boot race — every
+        # test and every normal steady-state restart finds the router
+        # already registered and takes the synchronous branch above,
+        # so this adds no timing change to the common case.
+        {:ok, initial, {:continue, :boot_replay}}
       end
     else
       {:error, {:coverage_drift, status}} ->
@@ -348,6 +378,26 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   @impl true
+  def handle_continue(:boot_replay, state) do
+    if command_router_ready?() do
+      state = boot_replay(state)
+      state = start_fs_watcher(state)
+      schedule_read_more(state.poll_ms)
+      {:noreply, state}
+    else
+      schedule_boot_replay_retry()
+      {:noreply, state}
+    end
+  end
+
+  # Retry of the `:boot_replay` continue, scheduled by
+  # `schedule_boot_replay_retry/0` while `CommandRouter` was not yet
+  # registered.
+  def handle_info(:boot_replay_retry, state) do
+    {:noreply, state, {:continue, :boot_replay}}
+  end
+
+  @impl true
   def handle_info(:read_more, state) do
     TaskProviderTelemetry.emit(
       @read_more_event,
@@ -391,6 +441,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp command_router_ready? do
+    is_pid(Process.whereis(CommandRouter))
+  end
+
+  defp schedule_boot_replay_retry do
+    Process.send_after(self(), :boot_replay_retry, @boot_replay_retry_ms)
+  end
 
   # No debounce timer pending — start one. A second matching event
   # arriving while one is already pending is a no-op: it will be
@@ -1183,7 +1241,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       payload: %{task_id: task_id, approved_by: "beads_watcher"}
     }
 
-    case command_gateway().dispatch_system(approve_command, 5_000) do
+    case command_gateway().dispatch_system_approval(approve_command, 5_000) do
       {:ok, _result} = ok ->
         TaskProviderTelemetry.emit(
           @dispatch_and_approve_event,

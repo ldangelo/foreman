@@ -1,5 +1,6 @@
 name: fix
 description: Fix an issue via the ensemble fix workflow.
+task_types: [bug]
 # Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
 # `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
 operator_timeout_ms: 300000

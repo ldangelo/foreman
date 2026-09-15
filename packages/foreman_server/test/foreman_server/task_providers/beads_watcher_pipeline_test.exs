@@ -68,6 +68,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       end
     end
 
+    def dispatch_system_approval(command, timeout), do: dispatch_system(command, timeout)
+
     def dispatch_operator(_command, _timeout) do
       prev = :persistent_term.get({__MODULE__, :operator_calls}, [])
       :persistent_term.put({__MODULE__, :operator_calls}, prev ++ [:invoked])
