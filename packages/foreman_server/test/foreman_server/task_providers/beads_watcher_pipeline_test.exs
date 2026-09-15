@@ -40,16 +40,32 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       :persistent_term.put({__MODULE__, :calls}, [])
       :persistent_term.put({__MODULE__, :operator_calls}, [])
       :persistent_term.put({__MODULE__, :response}, {:ok, nil})
+      :persistent_term.put({__MODULE__, :sequence}, [])
     end
 
     def calls, do: :persistent_term.get({__MODULE__, :calls}, [])
     def operator_calls, do: :persistent_term.get({__MODULE__, :operator_calls}, [])
     def stub_response(response), do: :persistent_term.put({__MODULE__, :response}, response)
 
+    # Queues distinct responses for successive `dispatch_system/2` calls
+    # (e.g. `task.create` then its immediate auto-`task.approve`) — used
+    # when a test needs those two calls to disagree, unlike
+    # `stub_response/1`'s single fixed reply for every call.
+    def stub_response_sequence(responses) when is_list(responses),
+      do: :persistent_term.put({__MODULE__, :sequence}, responses)
+
     def dispatch_system(command, timeout) do
       prev = :persistent_term.get({__MODULE__, :calls}, [])
       :persistent_term.put({__MODULE__, :calls}, prev ++ [{command, timeout}])
-      :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+
+      case :persistent_term.get({__MODULE__, :sequence}, []) do
+        [next | rest] ->
+          :persistent_term.put({__MODULE__, :sequence}, rest)
+          next
+
+        [] ->
+          :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+      end
     end
 
     def dispatch_operator(_command, _timeout) do
@@ -423,9 +439,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     end
 
     test "{:error, {:already_exists, :task, _}} advances read_offset" do
-      FakeCommandGateway.stub_response(
-        {:error, {:already_exists, :task, "task:beads:proj-ae:bead-ae"}}
-      )
+      FakeCommandGateway.stub_response_sequence([
+        {:error, {:already_exists, :task, "task:beads:proj-ae:bead-ae"}},
+        {:ok, nil}
+      ])
 
       state = %BeadsWatcher{project_id: "proj-ae", read_offset: 0, partial_line: ""}
       line = ~s({"id":"bead-ae","title":"x","issue_type":"task","status":"open"})

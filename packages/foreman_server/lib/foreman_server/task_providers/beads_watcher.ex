@@ -21,18 +21,29 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     * For each complete line, applies the full pipeline via
       `process_line/2`: parse JSON → check `agent_context.foreman`
       (suppress + `:skipped` per AC-022-3) → check
-      `ProjectionStore.get_task(external_id: bead.id)`
-      (dedupe + `:reconciled` per AC-022-2) → status gate (TRD-004:
-      only `status: "open"` proceeds; others are `:skipped`) →
-      workflow selection (TRD-005: `Catalog.type_to_workflow/1`; a
-      missing or non-string `issue_type` is `:malformed`; a present but
-      unmapped `issue_type` holds `:transient`) → `trd_path` check
-      (TRD-006: required for `implement-trd`/`implement-trd-beads`;
-      missing/empty moves the bead to `blocked` and returns
-      `:skipped`) → otherwise synthesize a deterministic `task.create`
-      envelope, dispatch via `CommandGateway.dispatch_system/2`, and
-      auto-approve with a matching `task.approve` on success (TRD-007;
-      `:imported` per AC-022-1 / AC-003-2).
+      `ProjectionStore.get_task(external_id: bead.id)`. No existing task
+      → proceed. An existing task still `status: "open"` (created but
+      never approved, e.g. a prior `task.approve` attempt failed) →
+      retry approval directly, without a new `task.create` dispatch
+      (`:imported` on success, `:transient` on failure so the next poll
+      retries again — see the auto-approval paragraph below). An
+      existing task already past `"open"` → dedupe (`:reconciled` per
+      AC-022-2) → status gate (TRD-004: only `status: "open"` proceeds;
+      others are `:skipped`) → workflow selection (TRD-005:
+      `Catalog.type_to_workflow/1`; a missing or non-string
+      `issue_type` is `:malformed`; a present but unmapped `issue_type`
+      holds `:transient`) → `trd_path` check (TRD-006: required for
+      `implement-trd`/`implement-trd-beads`; missing/empty moves the
+      bead to `blocked` and returns `:skipped`) → otherwise synthesize
+      a deterministic `task.create` envelope, dispatch via
+      `CommandGateway.dispatch_system/2`, and auto-approve with a
+      matching `task.approve` on success (TRD-007). `:imported` per
+      AC-022-1 / AC-003-2 is reported only once BOTH `task.create` (or
+      an idempotent `{:error, {:already_exists, :task, _}}` retry) AND
+      the following `task.approve` succeed; a `task.create` success
+      with a failed `task.approve` returns `:transient` instead of a
+      misleading `:imported`, and is retried via the dedupe branch
+      above on the next poll.
 
   ## 3-way cursor priority (TRD §2.2.6 item 6)
 
@@ -740,11 +751,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        the bead is owned by Foreman and will be reconciled by the
        orphan janitor or downstream workflow).
     3. Check `ProjectionStore.get_task(external_id: bead.id)`
-       (AC-022-2). If a task is already projected with this
-       `external_id`, emit `[:watcher, :reconciled]` and return
-       `:reconciled` (terminal advance; the bead has already been
-       imported and the dedupe hit is the safety net for cross-restart
-       recovery and operator-vs-watcher races).
+       (AC-022-2). No projected task → proceed. A projected task still
+       `status: "open"` (a prior `task.create` succeeded, or was
+       already idempotently present, but the matching `task.approve`
+       previously failed) → retry approval directly, without a new
+       `task.create` dispatch (see step 7's `:imported`/`:transient`
+       rule below — nothing else in the system retries `task.approve`,
+       so treating this as `:reconciled` would strand the task
+       forever). A projected task past `"open"` → emit
+       `[:watcher, :reconciled]` and return `:reconciled` (terminal
+       advance; the bead has already been imported and approved, and
+       the dedupe hit is the safety net for cross-restart recovery and
+       operator-vs-watcher races).
     4. Status gate (AC-003-1, AC-003-3). Accept only `status: "open"`;
        any other value (including `draft`, `blocked`, `closed`) emits
        `[:watcher, :status_gate, :skipped, :draft_status]` and returns
@@ -767,10 +785,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     7. Otherwise, synthesize the deterministic `task.create` envelope
        and dispatch via `CommandGateway.dispatch_system/2` (the
        trusted system path). A return meaning a task now exists
-       (`{:ok, _}` or `{:error, {:already_exists, :task, _}}`)
        immediately dispatches the matching `task.approve` (AC-003-2 — a
        single effective create-and-approve step, no separate operator
-       action), emits `[:watcher, :imported]`, and returns `:imported`.
+       action). `:imported` (with `[:watcher, :imported]`) is reported
+       only once that `task.approve` also succeeds; a `task.create`
+       success followed by a failed `task.approve` instead returns
+       `:transient` — the cursor holds, and step 3's dedupe check
+       routes the next poll's replay of this line back into a fresh
+       approval attempt (the projected task still reads `status:
+       "open"`) rather than treating it as reconciled.
        A return meaning the aggregate rejected creation outright before
        any task existed (`{:error, {:invalid_task_status, _}}`,
        `{:error, {:project_archived, _}}`, or
@@ -814,6 +837,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       :reconcile ->
         :reconciled
+
+      {:retry_approval, bead_id} ->
+        finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
 
       :malformed ->
         TaskProviderTelemetry.emit(
@@ -869,6 +895,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         case projection_store().get_task(external_id: bead_id) do
           nil ->
             :ok
+
+          %{status: "open"} ->
+            # `task.create` previously succeeded (or was already
+            # idempotently present) for this bead, but the task was
+            # never approved — `TaskApproved` is the only event that
+            # advances a task's projected status past `"open"`. Nothing
+            # else in the system retries `task.approve`, so treating
+            # this as `:reconcile` here would strand the task forever:
+            # every later replay of this same line would hit this exact
+            # branch and dedupe it away without ever re-attempting
+            # approval. Retry the approval directly instead.
+            {:retry_approval, bead_id}
 
           _existing ->
             TaskProviderTelemetry.emit(
@@ -1072,27 +1110,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   defp classify_dispatch_result(state, bead_id, result) do
     cond do
       task_created_or_existing?(result) ->
-        approve_result = auto_approve_bead(state, bead_id)
-
-        # `auto_approve_bead/2`'s own result was previously discarded here,
-        # so a failed auto-approval (task created but left `open`, never
-        # `ready`) was reported identically to a fully successful
-        # create-and-approve. `task.create` succeeding is genuinely
-        # `:imported` either way (the task exists), but the telemetry must
-        # say which half actually worked so an operator can find a
-        # created-but-unapproved task instead of trusting a false `:ok`.
-        TaskProviderTelemetry.emit(
-          @imported_event,
-          %{system_time: System.system_time()},
-          %{
-            project_id: state.project_id,
-            bead_id: bead_id,
-            result: :ok,
-            approve_result: approve_result
-          }
-        )
-
-        :imported
+        finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
 
       terminal_rejection?(result) ->
         # No task was created — `validate_status/1`, `validate_project_allows_tasks/1`,
@@ -1190,6 +1208,38 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         other
     end
   end
+
+  # `task_created_or_existing?/1` covers both a freshly created task and
+  # one already present from a prior `task.create` attempt (idempotent
+  # retry) or a prior approval attempt (`check_dedupe/2` routing
+  # `{:retry_approval, bead_id}` straight to `finish_approval/3` with no
+  # new `task.create` dispatch). Reporting `:imported` is accurate only
+  # once approval actually succeeds — `:imported` before then would
+  # strand a created-but-unapproved task, since nothing else retries
+  # `task.approve` and a later replay's `check_dedupe/2` would otherwise
+  # treat "task exists" as fully reconciled (see the moduledoc's
+  # workflow-selection paragraph). On failure, hold the cursor with
+  # `:transient` instead: `check_dedupe/2` keeps seeing `status: "open"`
+  # on this task and routes the next poll's replay of the same line back
+  # into a fresh approval attempt rather than `:reconcile`.
+  # `auto_approve_bead/2` has already emitted `@error_event` for a
+  # failure.
+  defp finish_approval(state, bead_id, {:ok, _} = approve_result) do
+    TaskProviderTelemetry.emit(
+      @imported_event,
+      %{system_time: System.system_time()},
+      %{
+        project_id: state.project_id,
+        bead_id: bead_id,
+        result: :ok,
+        approve_result: approve_result
+      }
+    )
+
+    :imported
+  end
+
+  defp finish_approval(_state, _bead_id, _approve_result), do: :transient
 
   # ---------------------------------------------------------------------
   # Helpers

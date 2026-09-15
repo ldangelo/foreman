@@ -14,15 +14,34 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
   defmodule FakeCommandGateway do
     @moduledoc false
-    def reset, do: :persistent_term.put({__MODULE__, :calls}, [])
+    def reset do
+      :persistent_term.put({__MODULE__, :calls}, [])
+      :persistent_term.put({__MODULE__, :sequence}, [])
+    end
+
     def calls, do: :persistent_term.get({__MODULE__, :calls}, [])
     def stub_response(response), do: :persistent_term.put({__MODULE__, :response}, response)
     def stubbed_response, do: :persistent_term.get({__MODULE__, :response}, {:ok, nil})
 
+    # Queues distinct responses for successive `dispatch_system/2` calls
+    # (e.g. `task.create` then its immediate auto-`task.approve`) — used
+    # when a test needs those two calls to disagree, unlike
+    # `stub_response/1`'s single fixed reply for every call.
+    def stub_response_sequence(responses) when is_list(responses),
+      do: :persistent_term.put({__MODULE__, :sequence}, responses)
+
     def dispatch_system(command, timeout) do
       prev = :persistent_term.get({__MODULE__, :calls}, [])
       :persistent_term.put({__MODULE__, :calls}, prev ++ [{command, timeout}])
-      :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+
+      case :persistent_term.get({__MODULE__, :sequence}, []) do
+        [next | rest] ->
+          :persistent_term.put({__MODULE__, :sequence}, rest)
+          next
+
+        [] ->
+          :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+      end
     end
   end
 
@@ -191,9 +210,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     end
 
     test "terminal_dispatch? {:error, {:already_exists, :task, _}} is :imported" do
-      FakeCommandGateway.stub_response(
-        {:error, {:already_exists, :task, "task:beads:proj-1:bead-4"}}
-      )
+      FakeCommandGateway.stub_response_sequence([
+        {:error, {:already_exists, :task, "task:beads:proj-1:bead-4"}},
+        {:ok, nil}
+      ])
 
       state = %BeadsWatcher{project_id: "proj-1", read_offset: 0, partial_line: ""}
       line = ~s({"id":"bead-4","title":"duplicate","issue_type":"task","status":"open"})
@@ -467,6 +487,49 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       events = collected(table)
       assert [:foreman_server, :task_provider, :beads, :watcher, :reconciled] in events
+    end
+
+    test "task exists but status is still open retries approval directly, without a new task.create" do
+      FakeProjectionStore.stub_external_id("bead-pending", %{
+        id: "task:beads:proj-pending:bead-pending",
+        status: "open"
+      })
+
+      FakeCommandGateway.stub_response({:ok, %{}})
+
+      state = %BeadsWatcher{project_id: "proj-pending", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-pending","title":"stuck","issue_type":"task","status":"open"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      assert new_state.read_offset == byte_size(line) + 1
+
+      # Only the retried `task.approve` dispatches — no new `task.create`,
+      # since the task already exists.
+      assert [{cmd, _timeout}] = FakeCommandGateway.calls()
+      assert cmd.type == "task.approve"
+    end
+
+    test "task exists but status is still open holds the cursor as transient when retried approval also fails" do
+      FakeProjectionStore.stub_external_id("bead-stuck", %{
+        id: "task:beads:proj-stuck:bead-stuck",
+        status: "open"
+      })
+
+      FakeCommandGateway.stub_response({:error, :down})
+
+      state = %BeadsWatcher{project_id: "proj-stuck", read_offset: 100, partial_line: ""}
+      line = ~s({"id":"bead-stuck","title":"stuck","issue_type":"task","status":"open"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :transient
+      assert new_state.read_offset == 100
+      assert new_state.partial_line == line
+
+      assert [{cmd, _timeout}] = FakeCommandGateway.calls()
+      assert cmd.type == "task.approve"
     end
   end
 
