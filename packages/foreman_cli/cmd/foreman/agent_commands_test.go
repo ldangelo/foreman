@@ -119,12 +119,18 @@ func TestRenderCommandMarkdownValidatesInputsAndPreservesExec(t *testing.T) {
 
 func TestRenderAgentSupportStates(t *testing.T) {
 	specs := buildAgentCommandInventory([]string{"fix"})
-	claude := renderAgentCommands("claude", specs)
-	if !claude.NativeInstallSupported || claude.RecommendedProjectDir != ".claude/commands/foreman" {
-		t.Fatalf("claude support state wrong: %#v", claude)
+
+	for _, agent := range []string{"claude", "pi", "omp"} {
+		result := renderAgentCommands(agent, specs)
+		if !result.NativeInstallSupported {
+			t.Fatalf("%s should support native install: %#v", agent, result)
+		}
+		if result.RecommendedProjectDir == "" {
+			t.Fatalf("%s missing recommended project dir", agent)
+		}
 	}
 
-	for _, agent := range []string{"pi", "omp", "codex", "opencode"} {
+	for _, agent := range []string{"codex", "opencode"} {
 		result := renderAgentCommands(agent, specs)
 		if result.NativeInstallSupported {
 			t.Fatalf("%s should be generate-only until native contract is verified", agent)
@@ -137,7 +143,11 @@ func TestRenderAgentSupportStates(t *testing.T) {
 
 func TestCommandsInstallRefusesExistingWithoutForce(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "foreman-run-list.md")
+	existingDir := filepath.Join(dir, "foreman-run-list")
+	if err := os.MkdirAll(existingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(existingDir, "SKILL.md")
 	if err := os.WriteFile(path, []byte("existing"), 0o644); err != nil {
 		t.Fatal(err)
 	}
