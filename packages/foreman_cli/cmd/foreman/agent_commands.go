@@ -322,9 +322,9 @@ func extractAllowedCLIFlags() (map[string]map[string]bool, error) {
 // Returns error if source cannot be found.
 func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	allowed := map[string]map[string]bool{
-		"run submit":  {},
-		"run list":    {},
-		"run get":     {},
+		"run submit": {},
+		"run list":   {},
+		"run get":    {},
 	}
 
 	cliRoot, err := findCLIRoot()

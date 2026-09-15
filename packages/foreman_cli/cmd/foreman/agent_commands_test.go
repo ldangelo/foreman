@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -239,5 +240,124 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 	// Assert run get has no flags (it takes a positional ID only)
 	if len(flags["run get"]) != 0 {
 		t.Errorf("run get should have no flags, got: %v", flags["run get"])
+	}
+}
+
+func TestRunCommandsRequiresSubcommand(t *testing.T) {
+	if err := runCommands(nil); err == nil || !strings.Contains(err.Error(), "missing subcommand") {
+		t.Fatalf("expected missing-subcommand error, got %v", err)
+	}
+}
+
+func TestRunCommandsRejectsUnknownSubcommand(t *testing.T) {
+	err := runCommands([]string{"bogus"})
+	if err == nil || !strings.Contains(err.Error(), `unknown subcommand "bogus"`) {
+		t.Fatalf("expected unknown-subcommand error, got %v", err)
+	}
+}
+
+func TestRunCommandsDispatchesToInventory(t *testing.T) {
+	stdout := captureStdout(t, func() {
+		if err := runCommands([]string{"inventory", "--json"}); err != nil {
+			t.Fatalf("runCommands inventory: %v", err)
+		}
+	})
+	if !strings.Contains(stdout, `"id"`) {
+		t.Fatalf("expected JSON inventory output, got %q", stdout)
+	}
+}
+
+func TestCommandsInventoryRejectsPositionalArgs(t *testing.T) {
+	if err := commandsInventory([]string{"extra"}); err == nil || !strings.Contains(err.Error(), "expected no positional arguments") {
+		t.Fatalf("expected positional-argument error, got %v", err)
+	}
+}
+
+func TestCommandsInventoryPrintsTabDelimitedText(t *testing.T) {
+	stdout := captureStdout(t, func() {
+		if err := commandsInventory(nil); err != nil {
+			t.Fatalf("commandsInventory: %v", err)
+		}
+	})
+	if !strings.Contains(stdout, "foreman-run-submit\t") {
+		t.Fatalf("expected tab-delimited inventory line, got %q", stdout)
+	}
+}
+
+func TestCommandsInventoryPrintsJSON(t *testing.T) {
+	stdout := captureStdout(t, func() {
+		if err := commandsInventory([]string{"--json"}); err != nil {
+			t.Fatalf("commandsInventory --json: %v", err)
+		}
+	})
+	var specs []agentCommandSpec
+	if err := json.Unmarshal([]byte(stdout), &specs); err != nil {
+		t.Fatalf("expected valid JSON inventory, got %q: %v", stdout, err)
+	}
+	if len(specs) == 0 {
+		t.Fatal("expected at least one inventory spec")
+	}
+}
+
+func TestCommandsGenerateRequiresAgent(t *testing.T) {
+	if err := commandsGenerate(nil); err == nil || !strings.Contains(err.Error(), "--agent is required") {
+		t.Fatalf("expected required-agent error, got %v", err)
+	}
+}
+
+func TestCommandsGenerateRejectsPositionalArgs(t *testing.T) {
+	if err := commandsGenerate([]string{"extra", "--agent", "claude"}); err == nil {
+		t.Fatal("expected positional-argument rejection before flag parsing consumes it")
+	}
+}
+
+func TestCommandsGeneratePropagatesUnsupportedAgentError(t *testing.T) {
+	if err := commandsGenerate([]string{"--agent", "not-a-real-agent"}); err == nil {
+		t.Fatal("expected an error for an unsupported agent")
+	}
+}
+
+func TestCommandsGeneratePrintsJSONWithoutOutput(t *testing.T) {
+	stdout := captureStdout(t, func() {
+		if err := commandsGenerate([]string{"--agent", "claude"}); err != nil {
+			t.Fatalf("commandsGenerate: %v", err)
+		}
+	})
+	var results []agentRenderResult
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("expected valid JSON render results, got %q: %v", stdout, err)
+	}
+	if len(results) != 1 || results[0].Agent != "claude" {
+		t.Fatalf("expected one claude render result, got %#v", results)
+	}
+}
+
+func TestCommandsGenerateWritesFilesUnderOutput(t *testing.T) {
+	dir := t.TempDir()
+	stdout := captureStdout(t, func() {
+		if err := commandsGenerate([]string{"--agent", "claude", "--output", dir}); err != nil {
+			t.Fatalf("commandsGenerate: %v", err)
+		}
+	})
+	if !strings.Contains(stdout, "Generated Foreman command assets under "+dir) {
+		t.Fatalf("expected generation confirmation, got %q", stdout)
+	}
+	path := filepath.Join(dir, "claude", "foreman-run-submit", "SKILL.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected generated file at %s: %v", path, err)
+	}
+}
+
+func TestMarshalJSONPrettyPrintsValue(t *testing.T) {
+	got := marshalJSON(map[string]string{"key": "value"})
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("expected valid JSON, got %q: %v", got, err)
+	}
+	if decoded["key"] != "value" {
+		t.Fatalf("expected round-tripped value, got %#v", decoded)
+	}
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("expected indented (multi-line) output, got %q", got)
 	}
 }

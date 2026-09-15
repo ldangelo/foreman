@@ -114,3 +114,27 @@ jobs:
         run: cd packages/jido_harness && mix quality
       - name: Run tests
         run: cd packages/jido_harness && mix test
+
+  foreman-cli:
+    name: foreman_cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/foreman_cli/go.mod
+      - name: Format check
+        run: |
+          cd packages/foreman_cli
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            echo "Run gofmt -w on the files listed above."
+            exit 1
+          fi
+      - name: Vet
+        run: cd packages/foreman_cli && go vet ./...
+      - name: Build
+        run: cd packages/foreman_cli && go build ./...
+      - name: Run tests with coverage
+        run: cd packages/foreman_cli && go test ./... -cover

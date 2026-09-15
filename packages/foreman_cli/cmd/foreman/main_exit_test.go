@@ -86,8 +86,6 @@ func TestProjectListHelpMentionsDefaultColumnsAndFlags(t *testing.T) {
 	}
 }
 
-
-
 func TestExitWithErrorMapsDocumentedCodes(t *testing.T) {
 	cases := []struct {
 		name     string
