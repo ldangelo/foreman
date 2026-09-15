@@ -10,14 +10,22 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     (4) Boundary invariant — `dispatch_operator/2` MUST NOT be invoked
     (5) Transient (`ProviderError{retryable?: true}`; `{:error, {:wrong_expected_version, _, _}}`;
         `{:exit, :killed}`) holds `read_offset`; retries reuse the same `command_id`
-    (6) Terminal (`{:ok, _}`; `{:error, {:already_exists, :task, _}}`;
-        `{:error, {:invalid_task_status, _}}`; `{:error, {:project_archived, _}}`;
-        `{:error, :project_id_required}`) advances `read_offset`
+    (6) Terminal-imported (`{:ok, _}`; `{:error, {:already_exists, :task, _}}`)
+        advances `read_offset` and returns `:imported`
+    (7) Terminal-rejected (`{:error, {:invalid_task_status, _}}`;
+        `{:error, {:project_archived, _}}`; `{:error, :project_id_required}`)
+        advances `read_offset` but returns `:rejected` — no task was
+        created, so this must never be counted as an import
   """
   use ExUnit.Case, async: false
 
+  import Mox
+
   alias ForemanServer.TaskProviders.BeadsWatcher
+  alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.ProviderError
+
+  setup :verify_on_exit!
 
   # --- Fake side-effect modules -----------------------------------------
   #
@@ -32,16 +40,32 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       :persistent_term.put({__MODULE__, :calls}, [])
       :persistent_term.put({__MODULE__, :operator_calls}, [])
       :persistent_term.put({__MODULE__, :response}, {:ok, nil})
+      :persistent_term.put({__MODULE__, :sequence}, [])
     end
 
     def calls, do: :persistent_term.get({__MODULE__, :calls}, [])
     def operator_calls, do: :persistent_term.get({__MODULE__, :operator_calls}, [])
     def stub_response(response), do: :persistent_term.put({__MODULE__, :response}, response)
 
+    # Queues distinct responses for successive `dispatch_system/2` calls
+    # (e.g. `task.create` then its immediate auto-`task.approve`) — used
+    # when a test needs those two calls to disagree, unlike
+    # `stub_response/1`'s single fixed reply for every call.
+    def stub_response_sequence(responses) when is_list(responses),
+      do: :persistent_term.put({__MODULE__, :sequence}, responses)
+
     def dispatch_system(command, timeout) do
       prev = :persistent_term.get({__MODULE__, :calls}, [])
       :persistent_term.put({__MODULE__, :calls}, prev ++ [{command, timeout}])
-      :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+
+      case :persistent_term.get({__MODULE__, :sequence}, []) do
+        [next | rest] ->
+          :persistent_term.put({__MODULE__, :sequence}, rest)
+          next
+
+        [] ->
+          :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+      end
     end
 
     def dispatch_operator(_command, _timeout) do
@@ -73,6 +97,16 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     end
   end
 
+  defmodule FakeWorkflowCatalog do
+    @moduledoc false
+    def reset, do: :persistent_term.put({__MODULE__, :response}, {:ok, "generic"})
+    def stub_response(response), do: :persistent_term.put({__MODULE__, :response}, response)
+
+    def type_to_workflow(_issue_type) do
+      :persistent_term.get({__MODULE__, :response}, {:ok, "generic"})
+    end
+  end
+
   setup do
     original_cg =
       Application.get_env(:foreman_server, :command_gateway_module, ForemanServer.CommandGateway)
@@ -84,16 +118,27 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
         ForemanServer.ProjectionStore
       )
 
+    original_wc =
+      Application.get_env(
+        :foreman_server,
+        :workflow_catalog_module,
+        ForemanServer.Workflow.Catalog
+      )
+
     Application.put_env(:foreman_server, :command_gateway_module, FakeCommandGateway)
     Application.put_env(:foreman_server, :projection_store_module, FakeProjectionStore)
+    Application.put_env(:foreman_server, :workflow_catalog_module, FakeWorkflowCatalog)
     FakeCommandGateway.reset()
     FakeProjectionStore.reset()
+    FakeWorkflowCatalog.reset()
 
     on_exit(fn ->
       Application.put_env(:foreman_server, :command_gateway_module, original_cg)
       Application.put_env(:foreman_server, :projection_store_module, original_ps)
+      Application.put_env(:foreman_server, :workflow_catalog_module, original_wc)
       FakeCommandGateway.reset()
       FakeProjectionStore.reset()
+      FakeWorkflowCatalog.reset()
     end)
 
     :ok
@@ -210,14 +255,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-imp-pipe", read_offset: 0, partial_line: ""}
 
       line =
-        ~s({"id":"bead-imp-pipe","title":"hello","priority":2,"issue_type":"task"})
+        ~s({"id":"bead-imp-pipe","title":"hello","priority":2,"issue_type":"task","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
       assert outcome == :imported
       assert new_state.read_offset == byte_size(line) + 1
 
-      [{cmd, _timeout}] = FakeCommandGateway.calls()
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
 
       assert cmd.command_id == "beads-cmd:proj-imp-pipe:bead-imp-pipe"
       assert cmd.aggregate_id == "task:beads:proj-imp-pipe:bead-imp-pipe"
@@ -254,19 +299,34 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
         %{id: "task:beads:proj-boundary:bead-b2"}
       )
 
-      imported_line = ~s({"id":"bead-b3","title":"new"})
+      imported_line = ~s({"id":"bead-b3","title":"new","issue_type":"task","status":"open"})
 
       FakeCommandGateway.stub_response({:ok, nil})
       {_, _} = BeadsWatcher.advance_one_line(state, foreman_line)
-      {_, _} = BeadsWatcher.advance_one_line(recon_state, ~s({"id":"bead-b2","title":"r"}))
+
+      {_, _} =
+        BeadsWatcher.advance_one_line(
+          recon_state,
+          ~s({"id":"bead-b2","title":"r","issue_type":"task","status":"open"})
+        )
+
       {_, _} = BeadsWatcher.advance_one_line(state, imported_line)
 
       FakeCommandGateway.stub_response({:error, {:invalid_task_status, "closed"}})
 
-      {_, _} = BeadsWatcher.advance_one_line(state, ~s({"id":"bead-b4","title":"t"}))
+      {_, _} =
+        BeadsWatcher.advance_one_line(
+          state,
+          ~s({"id":"bead-b4","title":"t","issue_type":"task","status":"open"})
+        )
 
       FakeCommandGateway.stub_response({:error, :down})
-      {_, _} = BeadsWatcher.advance_one_line(state, ~s({"id":"bead-b5","title":"t"}))
+
+      {_, _} =
+        BeadsWatcher.advance_one_line(
+          state,
+          ~s({"id":"bead-b5","title":"t","issue_type":"task","status":"open"})
+        )
 
       assert FakeCommandGateway.operator_calls() == [],
              "watcher MUST NOT route through dispatch_operator/2 — " <>
@@ -295,7 +355,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
         partial_line: ""
       }
 
-      line = ~s({"id":"bead-prov","title":"x"})
+      line = ~s({"id":"bead-prov","title":"x","issue_type":"task","status":"open"})
 
       {state_after_1, outcome_1} = BeadsWatcher.advance_one_line(state, line)
       {state_after_2, outcome_2} = BeadsWatcher.advance_one_line(state_after_1, line)
@@ -322,7 +382,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       state = %BeadsWatcher{project_id: "proj-wver", read_offset: 100, partial_line: ""}
 
-      line = ~s({"id":"bead-wver","title":"x"})
+      line = ~s({"id":"bead-wver","title":"x","issue_type":"task","status":"open"})
 
       {state_after_1, outcome_1} = BeadsWatcher.advance_one_line(state, line)
       {state_after_2, outcome_2} = BeadsWatcher.advance_one_line(state_after_1, line)
@@ -348,7 +408,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       state = %BeadsWatcher{project_id: "proj-exit", read_offset: 7, partial_line: ""}
 
-      line = ~s({"id":"bead-exit","title":"x"})
+      line = ~s({"id":"bead-exit","title":"x","issue_type":"task","status":"open"})
 
       {state_after_1, _} = BeadsWatcher.advance_one_line(state, line)
       {state_after_2, _} = BeadsWatcher.advance_one_line(state_after_1, line)
@@ -370,7 +430,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:ok, :imported_ok})
 
       state = %BeadsWatcher{project_id: "proj-tok", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-tok","title":"x"})
+      line = ~s({"id":"bead-tok","title":"x","issue_type":"task","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
@@ -379,12 +439,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     end
 
     test "{:error, {:already_exists, :task, _}} advances read_offset" do
-      FakeCommandGateway.stub_response(
-        {:error, {:already_exists, :task, "task:beads:proj-ae:bead-ae"}}
-      )
+      FakeCommandGateway.stub_response_sequence([
+        {:error, {:already_exists, :task, "task:beads:proj-ae:bead-ae"}},
+        {:ok, nil}
+      ])
 
       state = %BeadsWatcher{project_id: "proj-ae", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-ae","title":"x"})
+      line = ~s({"id":"bead-ae","title":"x","issue_type":"task","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
@@ -392,40 +453,333 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert new_state.read_offset == byte_size(line) + 1
     end
 
-    test "{:error, {:invalid_task_status, _}} advances read_offset" do
+    test "{:error, {:invalid_task_status, _}} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, {:invalid_task_status, "closed"}})
 
       state = %BeadsWatcher{project_id: "proj-its", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-its","title":"x"})
+      line = ~s({"id":"bead-its","title":"x","issue_type":"task","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
+      assert outcome == :rejected
       assert new_state.read_offset == byte_size(line) + 1
     end
 
-    test "{:error, {:project_archived, _}} advances read_offset" do
+    test "{:error, {:project_archived, _}} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, {:project_archived, "archived since 2026-08-01"}})
 
       state = %BeadsWatcher{project_id: "proj-pa", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-pa","title":"x"})
+      line = ~s({"id":"bead-pa","title":"x","issue_type":"task","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
+      assert outcome == :rejected
       assert new_state.read_offset == byte_size(line) + 1
     end
 
-    test "{:error, :project_id_required} advances read_offset" do
+    test "{:error, :project_id_required} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, :project_id_required})
 
       state = %BeadsWatcher{project_id: "proj-pir", read_offset: 0, partial_line: ""}
-      line = ~s({"id":"bead-pir","title":"x"})
+      line = ~s({"id":"bead-pir","title":"x","issue_type":"task","status":"open"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :rejected
+      assert new_state.read_offset == byte_size(line) + 1
+    end
+  end
+
+  # --- Status gate (TRD-004-TEST, AC-003-1, AC-003-3) --------------------
+
+  describe "status gate rejects non-open status, accepts open directly" do
+    test "draft status is rejected: no task created, no blocking entry recorded" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-draft","title":"x","status":"draft"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "blocked status is rejected: no task created" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-blocked","title":"x","status":"blocked"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "closed status is rejected: no task created" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-closed","title":"x","status":"closed"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "open status is accepted directly, with no draft intermediate required" do
+      state = %BeadsWatcher{project_id: "proj-status", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-direct-open","title":"x","issue_type":"task","status":"open"})
 
       {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
       assert outcome == :imported
       assert new_state.read_offset == byte_size(line) + 1
+
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.external_id == "bead-direct-open"
+    end
+  end
+
+  # --- Workflow selection (TRD-005-TEST, REQ-001) -------------------------
+
+  describe "workflow selection holds transient on unmapped type" do
+    test "unmapped issue_type holds transient, emits telemetry, and never dispatches" do
+      FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
+
+      handler_id = unique_handler("unmapped")
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler_id,
+        [
+          :foreman_server,
+          :task_provider,
+          :beads,
+          :watcher,
+          :status_gate,
+          :skipped,
+          :unmapped_type
+        ],
+        fn _event, _measurements, metadata, _config ->
+          send(self(), {:telemetry, ref, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      state = %BeadsWatcher{project_id: "proj-unmapped", read_offset: 55, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-unmapped","title":"x","status":"open","issue_type":"custom_research"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :transient
+      assert new_state.read_offset == 55
+      assert new_state.partial_line == line
+      assert FakeCommandGateway.calls() == []
+
+      assert_receive {:telemetry, ^ref, metadata}, 200
+      assert metadata[:bead_id] == "bead-unmapped"
+      assert metadata[:issue_type] == "custom_research"
+    end
+
+    test "mapped issue_type flows the resolved workflow_type into the task.create payload" do
+      FakeWorkflowCatalog.stub_response({:ok, "foreman_implement_trd"})
+
+      state = %BeadsWatcher{project_id: "proj-mapped", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-mapped","title":"x","status":"open","issue_type":"implement_trd"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.workflow_type == "foreman_implement_trd"
+    end
+
+    test "missing issue_type is malformed, not transient, and advances read_offset" do
+      state = %BeadsWatcher{project_id: "proj-no-type", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-no-type","title":"x","status":"open"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "non-string issue_type is malformed, not transient, and advances read_offset" do
+      state = %BeadsWatcher{project_id: "proj-bad-type", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-bad-type","title":"x","status":"open","issue_type":42})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+  end
+
+  # --- trd_path extraction and blocked transition (TRD-006-TEST) ---------
+
+  describe "trd_path extraction and blocked transition (AC-007-1, AC-007-2)" do
+    test "missing trd_path blocks the bead with the exact comment text and creates no task" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd"})
+
+      expect(BrRunnerMock, :cmd, fn request, _project_config, _opts ->
+        assert {:update,
+                %{
+                  flags: [
+                    "bead-missing-trd",
+                    "--status",
+                    "blocked",
+                    "--transition-comment",
+                    comment
+                  ]
+                }} = request
+
+        assert comment ==
+                 "Blocked: workflow requires trd_path in agent_context. Re-run: " <>
+                   "br update bead-missing-trd --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
+
+        {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+      end)
+
+      state = %BeadsWatcher{
+        project_id: "proj-trd",
+        database_path: "/tmp/proj-trd.db",
+        read_offset: 0,
+        partial_line: ""
+      }
+
+      line =
+        ~s({"id":"bead-missing-trd","title":"x","status":"open","issue_type":"implement_trd"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "empty trd_path string is treated the same as missing" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd-beads"})
+
+      expect(BrRunnerMock, :cmd, fn _request, _project_config, _opts ->
+        {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+      end)
+
+      state = %BeadsWatcher{
+        project_id: "proj-trd",
+        database_path: "/tmp/proj-trd.db",
+        read_offset: 0,
+        partial_line: ""
+      }
+
+      line =
+        ~s({"id":"bead-empty-trd","title":"x","status":"open","issue_type":"implement_trd_beads",) <>
+          ~s("agent_context":{"trd_path":""}})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "present trd_path flows into the task.create payload with no CLI mutation" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd"})
+
+      state = %BeadsWatcher{project_id: "proj-trd", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-with-trd","title":"x","status":"open","issue_type":"implement_trd",) <>
+          ~s("agent_context":{"trd_path":"docs/TRD/TRD-123-example.md"}})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.trd_path == "docs/TRD/TRD-123-example.md"
+    end
+
+    test "workflow that does not require trd_path ignores agent_context entirely" do
+      FakeWorkflowCatalog.stub_response({:ok, "generic"})
+
+      state = %BeadsWatcher{project_id: "proj-trd", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-no-trd-needed","title":"x","issue_type":"task","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.trd_path == nil
+    end
+  end
+
+  # --- Auto-approval (TRD-007-TEST, AC-003-2) -----------------------------
+
+  describe "auto-approval on open transition" do
+    test "bead transitioning to open results in a created-and-approved task with no separate operator action" do
+      state = %BeadsWatcher{project_id: "proj-auto", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-auto","title":"x","issue_type":"task","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+
+      [{create_cmd, _timeout}, {approve_cmd, _approve_timeout}] = FakeCommandGateway.calls()
+
+      assert create_cmd.type == "task.create"
+      assert create_cmd.payload.task_id == "beads:proj-auto:bead-auto"
+
+      assert approve_cmd.type == "task.approve"
+      assert approve_cmd.aggregate_id == create_cmd.aggregate_id
+      assert approve_cmd.payload.task_id == create_cmd.payload.task_id
+      assert approve_cmd.command_id == create_cmd.command_id <> ":auto-approve"
+
+      # Neither step is a separate operator action — both are trusted
+      # system dispatches, so no operator path was ever exercised.
+      assert FakeCommandGateway.operator_calls() == []
+    end
+
+    test "[:watcher, :dispatch_and_approve] telemetry carries the bead_id and task_id" do
+      handler_id = unique_handler("auto-approve")
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :watcher, :dispatch_and_approve],
+        fn _event, _measurements, metadata, _config ->
+          send(self(), {:telemetry, ref, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      state = %BeadsWatcher{project_id: "proj-auto-tel", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-auto-tel","title":"x","issue_type":"task","status":"open"})
+
+      {_new_state, _outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert_receive {:telemetry, ^ref, metadata}, 200
+      assert metadata[:bead_id] == "bead-auto-tel"
+      assert metadata[:task_id] == "beads:proj-auto-tel:bead-auto-tel"
     end
   end
 

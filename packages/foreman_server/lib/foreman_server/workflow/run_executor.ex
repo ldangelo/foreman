@@ -48,6 +48,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # included — crashed the executor on the phase 1 -> phase 2 transition
   # instead of advancing. Compile emitted the warning; nothing failed on it.
   alias ForemanServer.Workflow.StepSequencer
+  alias ForemanServer.Workflow.FailureClassifier
+  alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
@@ -131,6 +133,122 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   def fail(_project_id, _task_id, _run_id, _reason), do: {:error, :invalid_failure}
+  # TRD-015: Retry helper for fail/4 dispatch on transient errors.
+  #
+  # Foreman's `run.fail` has ALREADY been dispatched by the time
+  # `maybe_fail_task/4` reaches this helper (see the dispatch-order comment
+  # on `emit_phase_failure/4`), so this task-provider notification (e.g.
+  # Beads `--status blocked`) is best-effort relative to run termination —
+  # its outcome must never gate whether the run is terminal.
+  #
+  # `maybe_fail_task/4` is called synchronously from this GenServer's
+  # `handle_cast`/`handle_info` path, and `finalize_terminal_and_stop/2`
+  # normally runs immediately after it returns. The full retry schedule
+  # (1s, 5s, 15s-settle backoff — up to ~21s) previously ran inline via
+  # `Process.sleep`, which blocked this run's entire mailbox (heartbeats,
+  # cancellation, status queries) for that duration and risked tripping
+  # stall/crash-loop detection for a process that was merely backing off.
+  # A `Process.send_after/3`-based retry does not fix this: the process
+  # frequently stops (`{:stop, :normal, ...}`) moments later, and the
+  # scheduled message is silently dropped. So only the first, synchronous
+  # attempt can influence the caller's return value; a transient failure on
+  # that attempt hands off retries 2 and 3 to a detached `Task.start/1` —
+  # the same off-process pattern `Overwatch.WorkerSupervisor.stop_worker/2`
+  # uses above for the identical "must not block this callback, and does
+  # not need to outlive as a live GenServer" reason — and returns `:ok`
+  # immediately. The eventual outcome is reported via
+  # `dispatch_task_execution_fail/2` (success) or `Logger.error/1`
+  # (retries exhausted) from inside that task.
+  defp fail_with_retry(state, project_id, task_id, run_id, reason, failure_reason) do
+    case fail(project_id, task_id, run_id, failure_reason) do
+      {:ok, _issue} ->
+        dispatch_task_execution_fail(state, reason)
+
+      {:error, error_reason} ->
+        case classify_fail_reason(error_reason) do
+          :permanent ->
+            {:error, error_reason}
+
+          :transient ->
+            Task.start(fn ->
+              case fail_retry_loop(project_id, task_id, run_id, failure_reason, 2) do
+                {:ok, _issue} ->
+                  report_retry_dispatch_result(
+                    dispatch_task_execution_fail(state, reason),
+                    run_id
+                  )
+
+                {:error, final_reason} ->
+                  Logger.error(
+                    "RunExecutor #{run_id} task-provider fail notification exhausted retries: " <>
+                      inspect(final_reason)
+                  )
+              end
+            end)
+
+            :ok
+        end
+    end
+  end
+
+  # `fail/4`'s real implementation (`BeadsAdapter.fail/3`) returns
+  # `{:error, %ProviderError{}}`, never a bare atom — `retryable?` on that
+  # struct is Beads's own signal for whether the failure is worth retrying
+  # (per-code mapping in `BeadsAdapterCodeMap`). `FailureClassifier.classify/1`
+  # only recognizes specific atoms and defaults everything else, structs
+  # included, to `:permanent`; called directly on a `%ProviderError{}` it
+  # would silently make this retry mechanism dead code against the
+  # production adapter. Normalize the struct's own signal first, and fall
+  # back to `FailureClassifier` only for the bare-atom reasons this
+  # module's own preflight/claim paths still produce.
+  defp classify_fail_reason(%ProviderError{retryable?: true}), do: :transient
+  defp classify_fail_reason(%ProviderError{retryable?: false}), do: :permanent
+  defp classify_fail_reason(reason), do: FailureClassifier.classify(reason)
+
+  # The detached retry task has no caller left to propagate a failed
+  # dispatch to — log it instead of silently discarding, matching the
+  # visibility the synchronous path already gets via `emit_phase_failure/4`'s
+  # `with`/`else` logging for the same dispatch call.
+  defp report_retry_dispatch_result(:ok, _run_id), do: :ok
+
+  defp report_retry_dispatch_result({:error, reason}, run_id) do
+    Logger.error(
+      "RunExecutor #{run_id} task.execution_fail dispatch failed after successful retry: " <>
+        inspect(reason)
+    )
+  end
+
+  # Attempts 2 and 3 of the fail/4 retry schedule (attempt 1 already ran
+  # synchronously in `fail_with_retry/6`). Runs only inside the detached
+  # task started there, so `Process.sleep` here never touches the
+  # RunExecutor GenServer's mailbox.
+  defp fail_retry_loop(project_id, task_id, run_id, reason, attempt) do
+    wait_time_ms =
+      case attempt do
+        2 -> 1_000
+        3 -> 5_000
+      end
+
+    Process.sleep(wait_time_ms)
+
+    case fail(project_id, task_id, run_id, reason) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, error_reason} ->
+        case classify_fail_reason(error_reason) do
+          :permanent ->
+            {:error, error_reason}
+
+          :transient when attempt < 3 ->
+            fail_retry_loop(project_id, task_id, run_id, reason, attempt + 1)
+
+          :transient ->
+            Process.sleep(15_000)
+            {:error, {:transient_exhausted, error_reason}}
+        end
+    end
+  end
 
   defp via_tuple(run_id) do
     {:via, Registry, {ForemanServer.RunExecutorRegistry, run_id}}
@@ -359,6 +477,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # TRD-016: Verify claim/3 fires before phase 1 dispatch
+  # This function is the kickoff_ready handler that runs when all prerequisites pass.
+  # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
   defp handle_kickoff_ready(state) do
     case maybe_claim_task(state) do
       :ok ->
@@ -1280,6 +1401,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # TRD-016: Verify complete/3 fires on run success
+  # This function is called when all phases complete successfully (from start_phase_at_index,
+  # when Enum.at returns nil, indicating no more phases).
+  # `maybe_complete_task/1` (line 1289) calls the TaskProvider.complete/3 to mark the run complete.
+  # Confirmed: complete is called after all phases succeed, before finalization.
   defp finalize_run(state) do
     Logger.info("RunExecutor #{state.run_id} finalize_run: maybe_complete_task")
 
@@ -3219,10 +3345,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
               artifact_path: ArtifactTemplate.path(state, phase_spec, index)
             })
 
-          case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
-            {:ok, _issue} -> dispatch_task_execution_fail(state, reason)
-            {:error, failure_reason} -> {:error, failure_reason}
-          end
+          fail_with_retry(
+            state,
+            project_id(state),
+            provider_task_id(state),
+            state.run_id,
+            reason,
+            failure_reason
+          )
 
         false ->
           dispatch_task_execution_fail(state, reason)

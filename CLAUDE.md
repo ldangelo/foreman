@@ -428,8 +428,11 @@ these invariants. Drift without a tracked TRD is a regression.
   `CommandController.serialize/1` returns `%{events: 1}` for
   `{:ok, _events}` and does not enrich the response with the
   persisted event's fields. Operators retrieve the bead linkage by
-  reading the task projection (`GET /api/tasks/:id`,
-  surfaced via `foreman task get`), whose `external_id` field is
+  reading the task projection (`GET /api/tasks/:id`).
+  `foreman task get` is REMOVED (TRD-018, 2026-09-13) — the
+  projection is still readable via that HTTP endpoint directly
+  (`curl`, or an MCP tool), just not through this CLI command.
+  Its `external_id` field is
   populated on the persisted `TaskCreated` event when the
   project's `task_provider` capabilities advertised `:create`.
   Provider failure aborts the command entirely (no event, no

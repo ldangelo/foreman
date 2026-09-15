@@ -8,17 +8,42 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       implementation (`@runner`, default `SystemBrRunner`, test override
       `BrRunnerMock`), opens the file with `:file.open/2`, runs
       `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority),
-      then schedules the first tail-mode `:read_more` via
-      `Process.send_after/3`.
-    * In tail mode, polls the JSONL on a fixed cadence
-      (`Process.send_after(self(), :read_more, poll_ms)`).
+      subscribes to a `file_system` watch on the JSONL's parent
+      directory (TRD-011), then schedules the first tail-mode
+      `:read_more` poll via `Process.send_after/3`.
+    * In tail mode, a `{:file_event, pid, {path, events}}` for the
+      exact `jsonl_path` is the primary (<1s) trigger: it schedules a
+      single `:debounced_read_more` `@debounce_ms` (100ms) out,
+      coalescing any further events in that window into the same read.
+      The fixed-cadence `:read_more` poll (`@default_poll_ms`, 30s)
+      remains as an eventual-consistency backstop for a missed watch
+      event.
     * For each complete line, applies the full pipeline via
       `process_line/2`: parse JSON → check `agent_context.foreman`
       (suppress + `:skipped` per AC-022-3) → check
-      `ProjectionStore.get_task(external_id: bead.id)`
-      (dedupe + `:reconciled` per AC-022-2) → otherwise synthesize a
-      deterministic `task.create` envelope and dispatch via
-      `CommandGateway.dispatch_system/2` (`:imported` per AC-022-1).
+      `ProjectionStore.get_task(external_id: bead.id)`. No existing task
+      → proceed. An existing task still `status: "open"` (created but
+      never approved, e.g. a prior `task.approve` attempt failed) →
+      retry approval directly, without a new `task.create` dispatch
+      (`:imported` on success, `:transient` on failure so the next poll
+      retries again — see the auto-approval paragraph below). An
+      existing task already past `"open"` → dedupe (`:reconciled` per
+      AC-022-2) → status gate (TRD-004: only `status: "open"` proceeds;
+      others are `:skipped`) → workflow selection (TRD-005:
+      `Catalog.type_to_workflow/1`; a missing or non-string
+      `issue_type` is `:malformed`; a present but unmapped `issue_type`
+      holds `:transient`) → `trd_path` check (TRD-006: required for
+      `implement-trd`/`implement-trd-beads`; missing/empty moves the
+      bead to `blocked` and returns `:skipped`) → otherwise synthesize
+      a deterministic `task.create` envelope, dispatch via
+      `CommandGateway.dispatch_system/2`, and auto-approve with a
+      matching `task.approve` on success (TRD-007). `:imported` per
+      AC-022-1 / AC-003-2 is reported only once BOTH `task.create` (or
+      an idempotent `{:error, {:already_exists, :task, _}}` retry) AND
+      the following `task.approve` succeed; a `task.create` success
+      with a failed `task.approve` returns `:transient` instead of a
+      misleading `:imported`, and is retried via the dedupe branch
+      above on the next poll.
 
   ## 3-way cursor priority (TRD §2.2.6 item 6)
 
@@ -44,10 +69,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   The watcher does NOT maintain a durable offset. On every boot, the
   watcher reads the JSONL from offset 0 to current EOF, applies the
-  parse + dedupe + suppress + dispatch pipeline, then captures the
-  boot-completion cursor and enters tail mode. The `ProjectionStore`
-  dedupe check is the cross-restart safety net — operator beads that
-  arrived during downtime are recovered on the next boot's replay.
+  full status-gated parse + dedupe + suppress + status-gate +
+  workflow-selection + trd_path-check + dispatch-and-approve pipeline
+  (`process_line/2`), then captures the boot-completion cursor and
+  enters tail mode. The `ProjectionStore` dedupe check is the
+  cross-restart safety net — beads that transitioned to `open` while
+  the watcher was offline are recovered, created, and approved on the
+  next boot's replay exactly as they would have been had the watcher
+  been running continuously (TRD-004..TRD-007 requirement REQ-004).
 
   ## Opt-in supervision (TRD §2.2.6 item 9)
 
@@ -60,6 +89,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   use GenServer
 
+  alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   @runner Application.compile_env(
@@ -89,16 +119,37 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     )
   end
 
+  defp workflow_catalog do
+    Application.get_env(
+      :foreman_server,
+      :workflow_catalog_module,
+      ForemanServer.Workflow.Catalog
+    )
+  end
+
   @type t :: %__MODULE__{
           project_id: String.t(),
           jsonl_path: String.t(),
+          database_path: String.t(),
           file_handle: :file.io_device(),
           read_offset: non_neg_integer(),
           partial_line: binary(),
-          poll_ms: pos_integer()
+          poll_ms: pos_integer(),
+          fs_watcher_pid: pid() | nil,
+          debounce_timer: reference() | nil
         }
 
-  defstruct [:project_id, :jsonl_path, :file_handle, :read_offset, :partial_line, :poll_ms]
+  defstruct [
+    :project_id,
+    :jsonl_path,
+    :database_path,
+    :file_handle,
+    :read_offset,
+    :partial_line,
+    :poll_ms,
+    :fs_watcher_pid,
+    :debounce_timer
+  ]
 
   # Replay counters — TRD §3 Risk-Mitigation (line 607) calls for
   # `lines_processed / lines_imported / lines_suppressed / lines_reconciled`
@@ -116,7 +167,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   @type counters :: %Counters{}
 
-  @default_poll_ms 1_000
+  @default_poll_ms 30_000
+  @debounce_ms 100
   @preflight_timeout_ms 30_000
   @read_chunk_bytes 64 * 1024
 
@@ -131,6 +183,42 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @imported_event [:foreman_server, :task_provider, :beads, :watcher, :imported]
   @malformed_event [:foreman_server, :task_provider, :beads, :watcher, :malformed]
   @error_event [:foreman_server, :task_provider, :beads, :watcher, :error]
+  @rejected_event [:foreman_server, :task_provider, :beads, :watcher, :rejected]
+  @status_gate_skipped_draft_status_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :status_gate,
+    :skipped,
+    :draft_status
+  ]
+  @status_gate_skipped_unmapped_type_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :status_gate,
+    :skipped,
+    :unmapped_type
+  ]
+  @status_gate_skipped_missing_trd_path_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :status_gate,
+    :skipped,
+    :missing_trd_path
+  ]
+  @dispatch_and_approve_event [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :watcher,
+    :dispatch_and_approve
+  ]
+  @coverage_drift_event [:foreman_server, :task_provider, :beads, :watcher, :coverage_drift]
   # ---------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------
@@ -188,12 +276,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: project_id}
     )
 
-    with {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
+    with :ok <- check_coverage_drift(project_id, database_path),
+         {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
          {:ok, file_handle} <- :file.open(jsonl_path, [:read, :binary, :raw]) do
       try do
         initial = %__MODULE__{
           project_id: project_id,
           jsonl_path: jsonl_path,
+          database_path: database_path,
           file_handle: file_handle,
           read_offset: 0,
           partial_line: "",
@@ -201,6 +291,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         }
 
         state = boot_replay(initial)
+        state = start_fs_watcher(state)
         schedule_read_more(state.poll_ms)
         {:ok, state}
       rescue
@@ -212,6 +303,21 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           reraise e, __STACKTRACE__
       end
     else
+      {:error, {:coverage_drift, status}} ->
+        TaskProviderTelemetry.emit(
+          @coverage_drift_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: project_id,
+            coverage_drift: true,
+            db_exportable_issues: get_in(status, ["coverage", "db_exportable_issues"]),
+            jsonl_unique_ids: get_in(status, ["coverage", "jsonl_unique_ids"]),
+            dirty_count: Map.get(status, "dirty_count")
+          }
+        )
+
+        {:stop, {:coverage_drift, status}}
+
       {:error, {:preflight_failed, _project_id, reason}} ->
         TaskProviderTelemetry.emit(
           @error_event,
@@ -249,12 +355,63 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, read_offset: state.read_offset}
     )
 
-    {state, _counters} = read_more(state, %Counters{})
+    state = perform_read_more(state)
     schedule_read_more(state.poll_ms)
     {:noreply, state}
   end
 
+  # Fires `@debounce_ms` after the first matching `:file_event` in a
+  # burst (see the `debounce_timer: nil` guard below) — coalescing any
+  # further events in that window into this single read, since
+  # `read_more/2` always reads from `read_offset` to current EOF.
+  def handle_info(:debounced_read_more, state) do
+    state = perform_read_more(%{state | debounce_timer: nil})
+    {:noreply, state}
+  end
+
+  # Primary (<1s) trigger (TRD-011): a `file_system` change from OUR
+  # subscribed watcher (`fs_watcher_pid` match). Compared by basename,
+  # NOT full path equality — on macOS, FSEvents (the `fs_mac` backend)
+  # reports its own canonicalized, symlink-resolved path
+  # (`/private/var/...`), which never string-equals a `jsonl_path`
+  # rooted at the OS's un-resolved `/var/...` (or `/tmp/...`) alias —
+  # even though it is the exact same file. This watcher only monitors
+  # `jsonl_path`'s own parent directory, and the `fs_watcher_pid`
+  # match already scopes the event to that one directory, so a
+  # basename match against a file in it is unambiguous.
+  def handle_info(
+        {:file_event, pid, {path, _events}},
+        %__MODULE__{fs_watcher_pid: pid} = state
+      ) do
+    if Path.basename(path) == Path.basename(state.jsonl_path) do
+      schedule_debounced_read(state)
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # No debounce timer pending — start one. A second matching event
+  # arriving while one is already pending is a no-op: it will be
+  # picked up by that same upcoming read.
+  defp schedule_debounced_read(%__MODULE__{debounce_timer: nil} = state) do
+    timer_ref = Process.send_after(self(), :debounced_read_more, @debounce_ms)
+    {:noreply, %{state | debounce_timer: timer_ref}}
+  end
+
+  defp schedule_debounced_read(state) do
+    {:noreply, state}
+  end
+
+  # Shared by the poll-driven `:read_more` handler and the
+  # fs-watch-driven `:debounced_read_more` handler — the lease-guarded
+  # read+dispatch pass is identical either way; only the trigger
+  # differs (fixed-cadence poll vs. debounced file_event).
+  defp perform_read_more(state) do
+    {state, _counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
+    state
+  end
 
   @impl true
   def terminate(_reason, state) do
@@ -289,7 +446,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, jsonl_path: state.jsonl_path}
     )
 
-    {state, counters} = read_more(state, %Counters{})
+    {state, counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
 
     completed_at_ms = System.monotonic_time(:millisecond)
 
@@ -313,6 +470,89 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     )
 
     state
+  end
+
+  # ----- BeadsDbLease acquisition (REQ-004, architectural risk 2) --------
+
+  # Serializes the read/dispatch pass against a concurrent `br update`
+  # (e.g. a RunExecutor-dispatched mutation via `BeadsAdapter`) racing
+  # the same `.beads/` database file — both boot-time full-replay and
+  # every periodic catch-up tail acquire the same lease `beads_adapter.ex`
+  # already wraps every `br` write in, so the two never interleave reads
+  # and writes against the SQLite file. A synthetic `run_id`/`task_id`
+  # pair (unique per pass) lets the watcher hold the lease without an
+  # actual Foreman task — mirrors `BeadsAdapter.create/2`'s
+  # `synthetic_run_id` pattern for the same reason (dedupe calls that
+  # need to serialize through the lease without a real task-bound run).
+  #
+  # On lease failure (acquisition timeout, dispatch error), the pass is
+  # skipped for this cycle — the next poll retries — rather than
+  # crashing the watcher.
+  defp with_beads_lease(%__MODULE__{database_path: database_path} = state, fun)
+       when is_binary(database_path) and database_path != "" and is_function(fun, 0) do
+    synthetic_run_id =
+      "watcher:" <> state.project_id <> ":" <> to_string(System.system_time(:nanosecond))
+
+    case BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
+           {:ok, fun.()}
+         end) do
+      {:ok, result} ->
+        result
+
+      {:error, reason} ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, stage: :lease_acquire, reason: inspect(reason)}
+        )
+
+        {state, %Counters{}}
+    end
+  end
+
+  # ----- FS watch subscription (architectural risk 3, TRD-011) -----------
+
+  # Starts a `file_system` watcher on the JSONL's parent directory and
+  # subscribes the current process — called from `init/1` after
+  # `boot_replay/1` completes, so `handle_info/2` starts receiving
+  # `{:file_event, pid, {path, events}}` only once the initial
+  # replay's own reads are done. This is the primary (<1s) trigger;
+  # the periodic `:read_more` poll (`@default_poll_ms`) remains as an
+  # eventual-consistency backstop in case a watch event is missed
+  # (architecture §7.5 risk 3). A watcher start failure degrades to
+  # poll-only rather than crashing boot.
+  defp start_fs_watcher(%__MODULE__{jsonl_path: jsonl_path} = state) do
+    case FileSystem.start_link(dirs: [Path.dirname(jsonl_path)]) do
+      {:ok, pid} ->
+        FileSystem.subscribe(pid)
+        %{state | fs_watcher_pid: pid}
+
+      :ignore ->
+        # `GenServer.on_start()` (FileSystem.start_link/1's own declared
+        # spec) includes `:ignore` alongside `{:ok, pid}`/`{:error, _}` —
+        # the underlying OS file-watch backend can decline to start
+        # without it being an error (e.g. no inotify support/permission
+        # in a restricted container). Observed on Linux CI runners; not
+        # reproduced on macOS dev environments. Matches the same
+        # degrade-to-poll-only contract as the {:error, reason} clause
+        # below, just without a reason to report.
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, stage: :fs_watcher_start, reason: "ignore"}
+        )
+
+        state
+
+      {:error, reason} ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, stage: :fs_watcher_start, reason: inspect(reason)}
+        )
+
+        state
+    end
   end
 
   # ---------------------------------------------------------------------
@@ -459,8 +699,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   Returns `{new_state, outcome}` where `outcome` is one of:
 
-    * `:imported` / `:skipped` / `:reconciled` — terminal advance
-      (`read_offset` moves past `byte_size(line) + 1`).
+    * `:imported` / `:skipped` / `:reconciled` / `:rejected` — terminal
+      advance (`read_offset` moves past `byte_size(line) + 1`).
     * `:malformed` — terminal advance (the line was structurally
       unrecoverable; advancing past it prevents an infinite loop on
       the same byte offset).
@@ -485,6 +725,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       :reconciled ->
         {%{state | read_offset: state.read_offset + line_byte_size + 1}, :reconciled}
 
+      :rejected ->
+        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :rejected}
+
       :malformed ->
         {%{state | read_offset: state.read_offset + line_byte_size + 1}, :malformed}
 
@@ -494,8 +737,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   @doc """
-  Apply the parse + dedupe + suppress + dispatch pipeline to one
-  complete JSONL line.
+  Apply the full status-gated parse + dedupe + suppress + select +
+  dispatch-and-approve pipeline to one complete JSONL line.
 
   Steps (in order):
 
@@ -508,20 +751,62 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        the bead is owned by Foreman and will be reconciled by the
        orphan janitor or downstream workflow).
     3. Check `ProjectionStore.get_task(external_id: bead.id)`
-       (AC-022-2). If a task is already projected with this
-       `external_id`, emit `[:watcher, :reconciled]` and return
-       `:reconciled` (terminal advance; the bead has already been
-       imported and the dedupe hit is the safety net for cross-restart
-       recovery and operator-vs-watcher races).
-    4. Otherwise, synthesize the deterministic `task.create` envelope
-       (per TRD §3 TRD-012-TASK spec, lines 453–) and dispatch via
-       `CommandGateway.dispatch_system/2` (the trusted system path).
-       On a terminal return, emit `[:watcher, :imported]` and return
-       `:imported`. On any other return, emit `[:watcher, :error]`
-       and return `:transient` (so the cursor holds and the line is
-       retried on the next poll).
+       (AC-022-2). No projected task → proceed. A projected task still
+       `status: "open"` (a prior `task.create` succeeded, or was
+       already idempotently present, but the matching `task.approve`
+       previously failed) → retry approval directly, without a new
+       `task.create` dispatch (see step 7's `:imported`/`:transient`
+       rule below — nothing else in the system retries `task.approve`,
+       so treating this as `:reconciled` would strand the task
+       forever). A projected task past `"open"` → emit
+       `[:watcher, :reconciled]` and return `:reconciled` (terminal
+       advance; the bead has already been imported and approved, and
+       the dedupe hit is the safety net for cross-restart recovery and
+       operator-vs-watcher races).
+    4. Status gate (AC-003-1, AC-003-3). Accept only `status: "open"`;
+       any other value (including `draft`, `blocked`, `closed`) emits
+       `[:watcher, :status_gate, :skipped, :draft_status]` and returns
+       `:skipped` (terminal advance — no task, no bead mutation).
+    5. Workflow selection (REQ-001). Resolve `issue_type` via
+       `Catalog.type_to_workflow/1`. An unmapped type emits
+       `[:watcher, :status_gate, :skipped, :unmapped_type]` and
+       returns `:transient` (the cursor holds; the operator updates
+       the workflow manifests and the next poll retries).
+    6. `trd_path` check (REQ-007, AC-007-1, AC-007-2). Workflows that
+       provision an `ImplementationContext` (`implement-trd`,
+       `implement-trd-beads`) require a non-empty
+       `agent_context.trd_path`. When required but missing/empty, the
+       bead is moved to `blocked` with the architecture §8.4 transition
+       comment, `[:watcher, :status_gate, :skipped, :missing_trd_path]`
+       is emitted, and the line returns `:skipped` (terminal advance;
+       no task created).
+       Otherwise the resolved `trd_path` (or `nil` when not required)
+       flows into the `task.create` payload.
+    7. Otherwise, synthesize the deterministic `task.create` envelope
+       and dispatch via `CommandGateway.dispatch_system/2` (the
+       trusted system path). A return meaning a task now exists
+       (`{:ok, _}` or `{:error, {:already_exists, :task, _}}`)
+       immediately dispatches the matching `task.approve` (AC-003-2 — a
+       single effective create-and-approve step, no separate operator
+       action). `:imported` (with `[:watcher, :imported]`) is reported
+       only once that `task.approve` also succeeds; a `task.create`
+       success followed by a failed `task.approve` instead returns
+       `:transient` — the cursor holds, and step 3's dedupe check
+       routes the next poll's replay of this line back into a fresh
+       approval attempt (the projected task still reads `status:
+       "open"`) rather than treating it as reconciled.
+       A return meaning the aggregate rejected creation outright before
+       any task existed (`{:error, {:invalid_task_status, _}}`,
+       `{:error, {:project_archived, _}}`, or
+       `{:error, :project_id_required}`) emits `[:watcher, :rejected]`
+       and returns `:rejected` (terminal advance — no task was created,
+       so there is nothing to approve, and retrying will not change an
+       archived project or a rejected status). Any other create return
+       emits `[:watcher, :error]` and returns `:transient` (so the
+       cursor holds and the line is retried on the next poll).
 
-  Returns one of `:imported | :skipped | :reconciled | :malformed | :transient`.
+  Returns one of
+  `:imported | :skipped | :reconciled | :rejected | :malformed | :transient`.
   """
   @spec process_line(t(), binary()) :: atom()
   def process_line(state, line) when is_binary(line) do
@@ -533,14 +818,29 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     with {:ok, parsed} <- decode_line(line),
          :ok <- check_foreman_tag(state, parsed),
-         :ok <- check_dedupe(state, parsed) do
-      dispatch_new_bead(state, parsed)
+         :ok <- check_dedupe(state, parsed),
+         :ok <- check_status(state, parsed),
+         {:ok, workflow_type} <- select_workflow(state, parsed),
+         {:ok, trd_path} <- check_trd_path(state, parsed, workflow_type) do
+      dispatch_new_bead(state, parsed, workflow_type, trd_path)
     else
       :skip_foreman ->
         :skipped
 
+      :skip_status ->
+        :skipped
+
+      {:error, :unmapped_type} ->
+        :transient
+
+      {:error, :missing_trd_path} ->
+        :skipped
+
       :reconcile ->
         :reconciled
+
+      {:retry_approval, bead_id} ->
+        finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
 
       :malformed ->
         TaskProviderTelemetry.emit(
@@ -553,7 +853,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  # ----- Step 1: JSON parse --------------------------------------------
+  # ----- JSON parse -----------------------------------------------------
 
   defp decode_line(line) when is_binary(line) do
     case Jason.decode(line) do
@@ -563,7 +863,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  # ----- Step 2: Foreman-tag suppression (AC-022-3) --------------------
+  # ----- Foreman-tag suppression (AC-022-3) ------------------------------
 
   defp check_foreman_tag(state, parsed) when is_map(parsed) do
     case foreman_tag?(parsed) do
@@ -588,7 +888,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     is_map(agent_context) and Map.has_key?(agent_context, "foreman")
   end
 
-  # ----- Step 3: ProjectionStore dedupe (AC-022-2) ---------------------
+  # ----- ProjectionStore dedupe (AC-022-2) --------------------------------
 
   defp check_dedupe(state, parsed) when is_map(parsed) do
     case Map.get(parsed, "id") do
@@ -596,6 +896,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         case projection_store().get_task(external_id: bead_id) do
           nil ->
             :ok
+
+          %{status: "open"} ->
+            # `task.create` previously succeeded (or was already
+            # idempotently present) for this bead, but the task was
+            # never approved — `TaskApproved` is the only event that
+            # advances a task's projected status past `"open"`. Nothing
+            # else in the system retries `task.approve`, so treating
+            # this as `:reconcile` here would strand the task forever:
+            # every later replay of this same line would hit this exact
+            # branch and dedupe it away without ever re-attempting
+            # approval. Retry the approval directly instead.
+            {:retry_approval, bead_id}
 
           _existing ->
             TaskProviderTelemetry.emit(
@@ -612,13 +924,157 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  # ----- Step 4: Dispatch new bead (AC-022-1) -------------------------
+  # ----- Status gate (AC-003-1, AC-003-2, AC-003-3) -----------------------
 
-  defp dispatch_new_bead(state, parsed) when is_map(parsed) do
+  defp check_status(state, parsed) when is_map(parsed) do
+    case Map.get(parsed, "status") do
+      "open" ->
+        :ok
+
+      _other ->
+        bead_id = Map.get(parsed, "id")
+
+        TaskProviderTelemetry.emit(
+          @status_gate_skipped_draft_status_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id}
+        )
+
+        :skip_status
+    end
+  end
+
+  # ----- Workflow selection (REQ-001) -------------------------------------
+
+  defp select_workflow(state, parsed) when is_map(parsed) do
+    case Map.get(parsed, "issue_type") do
+      issue_type when is_binary(issue_type) and issue_type != "" ->
+        resolve_workflow_type(state, parsed, issue_type)
+
+      _missing_or_invalid ->
+        :malformed
+    end
+  end
+
+  defp resolve_workflow_type(state, parsed, issue_type) do
+    case workflow_catalog().type_to_workflow(issue_type) do
+      {:ok, workflow_type} ->
+        {:ok, workflow_type}
+
+      {:error, :unmapped_type} ->
+        bead_id = Map.get(parsed, "id")
+
+        TaskProviderTelemetry.emit(
+          @status_gate_skipped_unmapped_type_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id, issue_type: issue_type}
+        )
+
+        {:error, :unmapped_type}
+    end
+  end
+
+  # ----- trd_path extraction (REQ-007, AC-007-1, AC-007-2) ----------------
+
+  # Workflows that provision an ImplementationContext require `trd_path` —
+  # matches the `name:` field in implement-trd.yaml / implement-trd-beads.yaml.
+  @trd_path_required_workflows ~w(implement-trd implement-trd-beads)
+
+  defp check_trd_path(state, parsed, workflow_type) when is_map(parsed) do
+    if workflow_type in @trd_path_required_workflows do
+      case extract_trd_path(parsed) do
+        trd_path when is_binary(trd_path) and trd_path != "" ->
+          {:ok, trd_path}
+
+        _empty_or_missing ->
+          bead_id = Map.get(parsed, "id")
+          block_missing_trd_path(state, bead_id)
+          {:error, :missing_trd_path}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp extract_trd_path(parsed) do
+    case Map.get(parsed, "agent_context") do
+      agent_context when is_map(agent_context) -> Map.get(agent_context, "trd_path")
+      _other -> nil
+    end
+  end
+
+  # Architecture §8.4 resolved design question 4 — exact operator-visible
+  # transition comment text. `bead_id` is substituted in place of the
+  # doc's `<id>` placeholder so the re-run command is copy-paste ready;
+  # the trd_path JSON shape stays illustrative since only the operator
+  # knows the real path to supply.
+  defp block_missing_trd_path(state, bead_id) when is_binary(bead_id) and bead_id != "" do
+    comment =
+      "Blocked: workflow requires trd_path in agent_context. Re-run: br update #{bead_id} --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
+
+    request =
+      {:update, %{flags: [bead_id, "--status", "blocked", "--transition-comment", comment]}}
+
+    project_config = %{database_path: state.database_path}
+
+    update_result =
+      case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+        {:ok, _result} ->
+          :ok
+
+        {:error, reason} ->
+          TaskProviderTelemetry.emit(
+            @error_event,
+            %{system_time: System.system_time()},
+            %{
+              project_id: state.project_id,
+              stage: :block_missing_trd_path,
+              bead_id: bead_id,
+              reason: inspect(reason)
+            }
+          )
+
+          {:error, reason}
+      end
+
+    # `check_trd_path/3` (the sole caller) always advances with
+    # `{:error, :missing_trd_path}` regardless of this outcome — a bead
+    # with no trd_path is never dispatchable either way, so a failed `br
+    # update` doesn't change Foreman's own next action here. It DOES mean
+    # the bead's status in Beads itself may still read as its old status
+    # rather than "blocked" — `@error_event` above is the observable
+    # signal for that divergence; the return value is kept honest rather
+    # than hardcoded to `:ok` so a future caller can't be misled about
+    # whether the transition actually took effect.
+    TaskProviderTelemetry.emit(
+      @status_gate_skipped_missing_trd_path_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: bead_id}
+    )
+
+    update_result
+  end
+
+  defp block_missing_trd_path(state, _bead_id) do
+    # No `id` to target with `br update` — nothing to block. Still emit
+    # telemetry so the missing-trd_path outcome is observable; the line
+    # advances via :skipped either way (this bead cannot be acted on).
+    TaskProviderTelemetry.emit(
+      @status_gate_skipped_missing_trd_path_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: nil}
+    )
+
+    :ok
+  end
+
+  # ----- Dispatch new bead (AC-022-1) -------------------------------------
+
+  defp dispatch_new_bead(state, parsed, workflow_type, trd_path) when is_map(parsed) do
     bead_id = Map.get(parsed, "id")
 
     if is_binary(bead_id) and bead_id != "" do
-      envelope = synthesize_task_create_envelope(state, parsed, bead_id)
+      envelope = synthesize_task_create_envelope(state, parsed, bead_id, workflow_type, trd_path)
       # Dispatch is unconditional — every shape (incl. {:exit, _} and
       # retryable ProviderError) reaches classify_dispatch_result/3, which
       # routes anything non-terminal to :transient and holds the cursor.
@@ -631,7 +1087,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  defp synthesize_task_create_envelope(state, parsed, bead_id) do
+  defp synthesize_task_create_envelope(state, parsed, bead_id, workflow_type, trd_path) do
     task_id = "beads:" <> state.project_id <> ":" <> bead_id
 
     %{
@@ -645,45 +1101,146 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         description: Map.get(parsed, "description"),
         priority: Map.get(parsed, "priority", 2),
         task_type: Map.get(parsed, "issue_type", "task"),
+        workflow_type: workflow_type,
+        trd_path: trd_path,
         project_id: state.project_id
       }
     }
   end
 
   defp classify_dispatch_result(state, bead_id, result) do
-    if terminal_dispatch?(result) do
-      TaskProviderTelemetry.emit(
-        @imported_event,
-        %{system_time: System.system_time()},
-        %{project_id: state.project_id, bead_id: bead_id, result: :ok}
-      )
+    cond do
+      task_created_or_existing?(result) ->
+        finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
 
-      :imported
-    else
-      TaskProviderTelemetry.emit(
-        @error_event,
-        %{system_time: System.system_time()},
-        %{
-          project_id: state.project_id,
-          stage: :dispatch,
-          bead_id: bead_id,
-          result: result
-        }
-      )
+      terminal_rejection?(result) ->
+        # No task was created — `validate_status/1`, `validate_project_allows_tasks/1`,
+        # and their command-gateway equivalents reject BEFORE any event is
+        # appended. Approving a task that does not exist would itself fail,
+        # and reporting `:imported` here would tell an operator a bead was
+        # brought in when it never was. The line is still terminal (retrying
+        # an archived project or an invalid status will not change the
+        # outcome), so the cursor still advances — just under a distinct
+        # outcome that is never counted as an import.
+        TaskProviderTelemetry.emit(
+          @rejected_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            bead_id: bead_id,
+            result: result
+          }
+        )
 
-      :transient
+        :rejected
+
+      true ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            stage: :dispatch,
+            bead_id: bead_id,
+            result: result
+          }
+        )
+
+        :transient
     end
   end
 
-  # TRD §2.2.6 item 7 — EXHAUSTIVE terminal set.
-  @spec terminal_dispatch?(term()) :: boolean()
-  defp terminal_dispatch?({:ok, _result}), do: true
+  # A real task now exists under this bead's external_id — either freshly
+  # created or already present from a prior attempt — so approving it is
+  # meaningful and reporting `:imported` is accurate.
+  defp task_created_or_existing?({:ok, _result}), do: true
+  defp task_created_or_existing?({:error, {:already_exists, :task, _id}}), do: true
+  defp task_created_or_existing?(_other), do: false
 
-  defp terminal_dispatch?({:error, {:already_exists, :task, _id}}), do: true
-  defp terminal_dispatch?({:error, {:invalid_task_status, _reason}}), do: true
-  defp terminal_dispatch?({:error, {:project_archived, _reason}}), do: true
-  defp terminal_dispatch?({:error, :project_id_required}), do: true
-  defp terminal_dispatch?(_other), do: false
+  # Terminal (non-retryable) but no task was created. Distinct from
+  # `task_created_or_existing?/1` so `classify_dispatch_result/3` never
+  # attempts to approve, and never reports `:imported`, a task.create the
+  # aggregate refused outright.
+  defp terminal_rejection?({:error, {:invalid_task_status, _reason}}), do: true
+  defp terminal_rejection?({:error, {:project_archived, _reason}}), do: true
+  defp terminal_rejection?({:error, :project_id_required}), do: true
+  defp terminal_rejection?(_other), do: false
+
+  # ----- Auto-approval (REQ-003, AC-003-2) --------------------------------
+
+  # Dispatches the matching `task.approve` immediately after a successful
+  # `task.create`, via the same trusted `dispatch_system/2` path (never
+  # `dispatch_operator/2` — the watcher is system automation, not an
+  # operator). From the operator's perspective this is a single effective
+  # create-and-approve step: no separate approval action is ever required.
+  defp auto_approve_bead(state, bead_id) do
+    task_id = "beads:" <> state.project_id <> ":" <> bead_id
+
+    approve_command = %{
+      command_id: "beads-cmd:" <> state.project_id <> ":" <> bead_id <> ":auto-approve",
+      type: "task.approve",
+      aggregate_id: "task:" <> task_id,
+      payload: %{task_id: task_id, approved_by: "beads_watcher"}
+    }
+
+    case command_gateway().dispatch_system(approve_command, 5_000) do
+      {:ok, _result} = ok ->
+        TaskProviderTelemetry.emit(
+          @dispatch_and_approve_event,
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id, task_id: task_id}
+        )
+
+        ok
+
+      other ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            stage: :auto_approve,
+            bead_id: bead_id,
+            task_id: task_id,
+            result: other
+          }
+        )
+
+        other
+    end
+  end
+
+  # `task_created_or_existing?/1` covers both a freshly created task and
+  # one already present from a prior `task.create` attempt (idempotent
+  # retry) or a prior approval attempt (`check_dedupe/2` routing
+  # `{:retry_approval, bead_id}` straight to `finish_approval/3` with no
+  # new `task.create` dispatch). Reporting `:imported` is accurate only
+  # once approval actually succeeds — `:imported` before then would
+  # strand a created-but-unapproved task, since nothing else retries
+  # `task.approve` and a later replay's `check_dedupe/2` would otherwise
+  # treat "task exists" as fully reconciled (see the moduledoc's
+  # workflow-selection paragraph). On failure, hold the cursor with
+  # `:transient` instead: `check_dedupe/2` keeps seeing `status: "open"`
+  # on this task and routes the next poll's replay of the same line back
+  # into a fresh approval attempt rather than `:reconcile`.
+  # `auto_approve_bead/2` has already emitted `@error_event` for a
+  # failure.
+  defp finish_approval(state, bead_id, {:ok, _} = approve_result) do
+    TaskProviderTelemetry.emit(
+      @imported_event,
+      %{system_time: System.system_time()},
+      %{
+        project_id: state.project_id,
+        bead_id: bead_id,
+        result: :ok,
+        approve_result: approve_result
+      }
+    )
+
+    :imported
+  end
+
+  defp finish_approval(_state, _bead_id, _approve_result), do: :transient
 
   # ---------------------------------------------------------------------
   # Helpers
@@ -727,6 +1284,39 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       {:error, _reason} ->
         {:error, {:jsonl_path_decode_failed, project_id, stdout}}
+    end
+  end
+
+  # Refuse to start the boot-time full-replay over a partial/corrupted
+  # snapshot (TRD §7 architectural risk 1). `br sync --status --json`
+  # reports `coverage_drift` — true when the SQLite DB and the JSONL
+  # export have diverged (e.g. an interrupted `br sync`, a hand-edited
+  # JSONL, or a stale export). Returns `:ok` to proceed on `false` OR
+  # when the check itself cannot be completed (a missing/erroring `br`
+  # binary is a pre-existing operational problem, not a new failure
+  # mode this gate should introduce) — only an explicit
+  # `coverage_drift: true` refuses the start.
+  defp check_coverage_drift(project_id, database_path)
+       when is_binary(project_id) and is_binary(database_path) do
+    request = {:sync_status, %{flags: ["--status"]}}
+    project_config = %{database_path: database_path}
+
+    case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+      {:ok, %{stdout: stdout}} ->
+        case Jason.decode(stdout) do
+          {:ok, %{"coverage_drift" => true} = status} ->
+            {:error, {:coverage_drift, status}}
+
+          # Covers `coverage_drift: false`, a missing `coverage_drift` key,
+          # and undecodable `stdout` alike — all three are "the check
+          # itself cannot be completed to a definite true" per the policy
+          # documented above, not just the outer `{:error, _reason}` case.
+          _decoded_or_not ->
+            :ok
+        end
+
+      {:error, _reason} ->
+        :ok
     end
   end
 

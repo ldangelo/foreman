@@ -974,7 +974,7 @@ The server listens on `http://127.0.0.1:4766` (configured in `config/dev.exs`).
 The Go CLI (`foreman`) defaults to `http://127.0.0.1:4766` — set `FOREMAN_API_URL` to override:
 
 ```bash
-FOREMAN_API_URL=http://127.0.0.1:4766 foreman task list
+FOREMAN_API_URL=http://127.0.0.1:4766 foreman run list
 ```
 
 ### Registering Beads-backed Projects
@@ -998,20 +998,32 @@ Or use `Ctrl+C` in the terminal running the server.
 
 Tasks go through: `open` → `ready` → `in_progress` → `completed`/`failed`.
 
-#### 1. Create a task
+**TRD-018 (2026-09-13) deleted `foreman task create`/`approve`/`retry`/`get`/
+`list`/`update` entirely from the Go CLI** (the `task` dispatch case and its
+handlers were removed from `packages/foreman_cli/cmd/foreman/task.go`, which
+still exists for shared HTTP helpers used by other command files; invoking
+any of the removed verbs now produces the CLI's standard "unknown
+command" error, indistinguishable from a typo). `foreman run
+list/get/cancel/remove/reset` are unaffected. This does NOT remove the underlying `task.create`
+/ `task.approve` / `task.retry` domain command types dispatched through
+`CommandGateway`/`CommandRouter` — those still exist and are the mechanism
+BeadsWatcher's TRD-007 auto-approval (`dispatch_new_bead/2`) uses internally
+the moment a bead transitions to `status: open`. What changed is the
+OPERATOR-FACING entry point: Beads (`br create`, or hand-editing a bead to
+`status: open`) is now the sole task creation interface, not a CLI verb. The
+step-by-step CLI examples below predate that change and are kept, annotated,
+because the aggregate-level prerequisites and guard behavior they describe
+(dependency checks, idempotent-retry exemption, archived-project checks) are
+unchanged and still apply to the internal command types — only the `foreman
+task <verb>` invocation syntax no longer works.
 
-`foreman task create` supports `--workflow-type` and `--trd-path` directly
-(`packages/foreman_cli/cmd/foreman/task.go:68-130`); prefer it over raw curl:
+#### 1. Create a task — REMOVED, see note above
 
-```bash
-FOREMAN_API_URL=http://127.0.0.1:4766 foreman task create \
-  --project foreman \
-  --title "<title>" \
-  --description "<description>" \
-  --task-type task \
-  --workflow-type implement-trd-beads \
-  --trd-path docs/TRD/<trd-file>.md
-```
+`foreman task create` no longer exists. A task is now created by a bead
+transitioning to `status: open`; BeadsWatcher's status gate (TRD-004) and
+workflow-selection wiring (TRD-005) dispatch the internal `task.create`
+command automatically. The flag/behavior notes below describe that internal
+command's semantics, not a CLI you can invoke:
 
 **Flags:** `--project` and `--title` are required; `--id` is optional
 (auto-generated via the task provider when omitted). `--workflow-type`
@@ -1026,13 +1038,13 @@ needed — Beads validates it as a Beads priority for
 `description` for `FOREMAN_TASK_DESCRIPTION`, passes `prompt` separately for
 `:prompt`-action phases, and defaults `auto_approve: true`.
 
-#### 2. Approve a task
+#### 2. Approve a task — REMOVED from the CLI, see TRD-018 note above
 
-Approval transitions `open` → `ready` and triggers workflow dispatch:
-
-```bash
-foreman task approve --id <task-id> --approved-by operator
-```
+Approval transitions `open` → `ready` and triggers workflow dispatch. Was
+invoked via `foreman task approve --id <task-id> --approved-by operator`;
+that CLI verb is gone. The prerequisites below describe the internal
+`task.approve` command's guard behavior, still exercised by BeadsWatcher's
+auto-approval dispatch, not a CLI you can invoke directly:
 
 **Prerequisites (verified against `aggregates/task.ex` and
 `command_gateway.ex`):**
@@ -1119,8 +1131,9 @@ foreman task approve --id <task-id> --approved-by operator
 
 #### 3. Monitor a task
 
+`foreman task get <task-id>` is REMOVED (TRD-018). Use:
+
 ```bash
-foreman task get <task-id>
 foreman run get <run-id>
 foreman run list
 ```
@@ -1129,20 +1142,25 @@ Task statuses: `open` (created), `ready` (approved, waiting for dispatch), `in_p
 
 #### 4. Cancel a task/run
 
+`foreman task retry` is REMOVED (TRD-018) — no CLI replacement exists for
+retrying the internal `task.retry` command; it remains internal-only.
+
 ```bash
 foreman run cancel --id <run-id> --reason "reason"
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
-foreman task retry --id <task-id> --reason "safe to rerun"  # once the bound run is terminal
 ```
 
 ### Go CLI Commands
 
+`task create`/`approve`/`retry`/`get`/`list`/`update` are REMOVED (TRD-018, 2026-09-13) —
+the `task` dispatch case and its handler functions were deleted from
+`packages/foreman_cli/cmd/foreman/task.go` (51 lines remain: shared HTTP
+envelope/JSON helpers used by other command files, not task-verb handlers);
+invoking any of them produces the CLI's standard "unknown command" error.
+The remaining surface:
+
 ```bash
-foreman task create --project <id> --title <title> [--workflow-type ...] [--trd-path ...]
-foreman task approve --id <task-id> [--approved-by <name>]
-foreman task retry --id <task-id> [--reason <text>]
-foreman task get <id>        # Fetch task projection
 foreman run list             # List run projections
 foreman run get <id>         # Fetch run projection
 foreman run cancel --id <id> --reason <text>
@@ -1761,10 +1779,18 @@ BootReconciliation drives orphan-reopen.
 ## Beads Workflow Integration
 
 This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported JSONL files, so agents should use `br`/`bv` commands instead of hard-coding a single filename.
-**Foreman owns this repo's task queue.** All task lifecycle — create, approve,
-retry, get, cancel — goes through `foreman task *` commands. Beads (`br`/`bv`)
-is triage/discovery only. **Never fall back to `br create` when `foreman task create`
-fails** — treat Beads corruption as a blocker to resolve, not a bypass signal.
+**Beads is now this repo's primary task creation interface (TRD-2026-d99cd90d,
+2026-09-13).** A bead transitioning to `status: open` is what creates a task —
+BeadsWatcher's status gate (TRD-004), workflow-selection wiring (TRD-005), and
+auto-approval (TRD-007) dispatch the internal `task.create` + `task.approve`
+commands automatically; no CLI call is needed or possible. `foreman task
+create`/`approve`/`retry`/`get`/`list`/`update` were deleted from the Go CLI
+(TRD-018, the `task` dispatch case and its handlers were removed from
+`packages/foreman_cli/cmd/foreman/task.go`, which still exists for shared
+HTTP helpers used by other command files) — invoking any of them
+produces the CLI's standard "unknown command" error. `foreman run
+list/get/cancel/remove/reset` are unaffected and remain the way to inspect or
+control a dispatched run.
 ### Using bv as an AI sidecar
 
 bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
@@ -1815,13 +1841,16 @@ bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blo
 bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
 ```
 
-### Task Lifecycle (Foreman)
+### Task Lifecycle (Beads-driven, TRD-2026-d99cd90d)
+
+Task creation is now driven by Beads, not a CLI verb — `foreman task create/
+approve/retry/get` were deleted (TRD-018, 2026-09-13). Create work with `br
+create` (or transition an existing bead to `status: open`); BeadsWatcher
+observes the transition and dispatches the internal `task.create` +
+`task.approve` command pair automatically. `foreman run *` remains the way to
+inspect or control the resulting dispatched run:
 
 ```bash
-foreman task create --project <id> --title <title> [--workflow-type ...] [--trd-path ...]
-foreman task approve --id <task-id> [--approved-by <name>]
-foreman task retry --id <task-id> [--reason <text>]
-foreman task get <id>        # Fetch task projection
 foreman run list             # List run projections
 foreman run get <id>         # Fetch run projection
 foreman run cancel --id <id> --reason <text>
@@ -1831,7 +1860,9 @@ foreman run reset --id <id>  # Clear failed/stuck run projection
 
 ### Triage & Discovery (br/bv)
 
-`br`/`bv` do NOT manage this repo's work queue. Use them only for triage and discovery.
+`br`/`bv` now manage this repo's work queue directly (superseding the older
+CLI-driven flow): `br create`/`br update --status=open` is how a task is
+created; `bv` is for triage and discovery only, never for mutating beads.
 
 ```bash
 bv --robot-triage              # Triage: ranked recommendations, blockers, quick wins
@@ -1852,9 +1883,9 @@ br sync --status --json       # VERIFY: `coverage_drift` must be false
 ### Workflow Pattern
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Create via `foreman task create --project <id> --title <title> --workflow-type <type>`
-3. **Dispatch**: Use `foreman task approve --id <task-id> --approved-by <name>`
-4. **Complete**: Task auto-closes when run completes; retry via `foreman task retry --id <id> --reason "..."` if run was cancelled
+2. **Claim**: Create via `br create` (or `br update <id> --status=open` on an existing draft bead) — BeadsWatcher dispatches `task.create` internally
+3. **Dispatch**: Auto-approval (TRD-007) dispatches `task.approve` internally the moment the task is created; no separate operator action
+4. **Complete**: Task auto-closes when run completes; re-open the bead (`br update <id> --status=open`) to retry if the run was cancelled
 5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
    (`set -euo pipefail`), not as separate steps — the coverage gate must run
    ONLY after a flush that actually succeeded, since a failed flush leaves an

@@ -12,9 +12,6 @@
 //	project delete <id> POST /api/commands with type=project.archive
 //	project list        GET /api/projects
 //	commands           Generate/install agent command assets
-//	task create         POST /api/commands with type=task.create
-//	task approve        POST /api/commands with type=task.approve
-//	task get <id>       Fetch a task projection
 //	run list            List run projections
 //	run get <id>        Fetch a run projection
 //	run remove          Remove a run and clean worktree/branch
@@ -53,12 +50,6 @@ Commands:
   project delete <id> Soft-delete (archive) a project
   project list        List project projections
   commands           Generate/install agent command assets
-  task create         Register a new task
-  task approve        Approve a task and bind it to a workflow
-  task get <id>      Fetch a task projection
-  task list          List task projections [--project <id>] [--status <status>]
-  task update        Update a task [--id <id>] [--title <title>] [--priority <0-4>] [--status <status>]
-  task retry         Retry a failed task [--id <id>] [--reason <text>]
   run list            List run projections
   run get <id>        Fetch a run projection
   run remove          Remove a run and clean worktree/branch
@@ -92,8 +83,6 @@ func main() {
 		err = runProject(c, args)
 	case "commands":
 		err = runCommands(args)
-	case "task":
-		err = runTask(c, args)
 	case "run":
 		err = runRun(c, args)
 	case "workflow":

@@ -40,6 +40,7 @@ defmodule ForemanServer.Workflow.Catalog do
   use GenServer
 
   alias ForemanServer.Workflow.AssetCatalog
+  alias ForemanServer.Workflow.Catalog.Doctor
   alias ForemanServer.Workflow.Interpreter
   alias ForemanServer.WorkflowTemplate.Installer
 
@@ -60,7 +61,8 @@ defmodule ForemanServer.Workflow.Catalog do
   @type state :: %{
           catalog: AssetCatalog.t(),
           manifests: %{String.t() => manifest_entry()},
-          prompts: %{String.t() => prompt_entry()}
+          prompts: %{String.t() => prompt_entry()},
+          type_to_workflow: %{String.t() => String.t()}
         }
 
   ## Public API
@@ -100,6 +102,15 @@ defmodule ForemanServer.Workflow.Catalog do
   @spec prompt_filenames() :: [String.t()]
   def prompt_filenames, do: GenServer.call(server(), :prompt_filenames)
 
+  @doc "Resolve a beads task_type to its mapped workflow name. Returns `{:ok, workflow_name}` or `{:error, :unmapped_type}`."
+  @spec type_to_workflow(String.t()) :: {:ok, String.t()} | {:error, :unmapped_type}
+  def type_to_workflow(task_type) when is_binary(task_type) do
+    case GenServer.call(server(), {:type_to_workflow, task_type}) do
+      nil -> {:error, :unmapped_type}
+      workflow -> {:ok, workflow}
+    end
+  end
+
   @doc "True when at least one manifest is loaded."
   @spec installed?() :: boolean()
   def installed?, do: GenServer.call(server(), :installed?)
@@ -112,6 +123,17 @@ defmodule ForemanServer.Workflow.Catalog do
   @spec reload() :: :ok
   def reload, do: GenServer.call(server(), :reload)
 
+  @doc "Get the full type-to-workflow mapping."
+  @spec type_to_workflow_map() :: %{String.t() => String.t()}
+  def type_to_workflow_map, do: GenServer.call(server(), :type_to_workflow_map)
+
+  @doc "Generate a type coverage report for a project's beads against declared workflows."
+  @spec doctor(String.t()) :: {:ok, Doctor.t()} | {:error, term()}
+  def doctor(project_id) when is_binary(project_id) do
+    type_map = GenServer.call(server(), :type_to_workflow_map)
+    Doctor.coverage_report(project_id, type_map)
+  end
+
   ## GenServer
 
   @impl true
@@ -122,7 +144,7 @@ defmodule ForemanServer.Workflow.Catalog do
         _ -> AssetCatalog.default()
       end
 
-    state = %{catalog: catalog, manifests: %{}, prompts: %{}}
+    state = %{catalog: catalog, manifests: %{}, prompts: %{}, type_to_workflow: %{}}
     state = ensure_installed(state)
     state = load_manifests(state)
     state = load_prompts(state)
@@ -139,6 +161,11 @@ defmodule ForemanServer.Workflow.Catalog do
       :error ->
         {:reply, {:error, {:workflow_not_loaded, filename}}, state}
     end
+  end
+
+  def handle_call({:type_to_workflow, task_type}, _from, state) do
+    result = Map.get(state.type_to_workflow, task_type)
+    {:reply, result, state}
   end
 
   def handle_call({:read_prompt, basename}, _from, state) do
@@ -169,6 +196,10 @@ defmodule ForemanServer.Workflow.Catalog do
 
   def handle_call(:reload, _from, state) do
     {:reply, :ok, scan(state)}
+  end
+
+  def handle_call(:type_to_workflow_map, _from, state) do
+    {:reply, state.type_to_workflow, state}
   end
 
   @impl true
@@ -215,7 +246,8 @@ defmodule ForemanServer.Workflow.Catalog do
 
   defp load_manifests(state) do
     paths = AssetCatalog.manifests(state.catalog)
-    Enum.reduce(paths, state, &load_one_manifest/2)
+    state = Enum.reduce(paths, state, &load_one_manifest/2)
+    rebuild_type_to_workflow(state)
   end
 
   defp load_prompts(state) do
@@ -225,7 +257,8 @@ defmodule ForemanServer.Workflow.Catalog do
 
   defp scan(state) do
     state = reconcile_manifests(state)
-    reconcile_prompts(state)
+    state = reconcile_prompts(state)
+    rebuild_type_to_workflow(state)
   end
 
   defp poll(state) do
@@ -399,6 +432,12 @@ defmodule ForemanServer.Workflow.Catalog do
         manifest_path: path
       }
 
+      base =
+        case workflow["task_types"] do
+          nil -> base
+          task_types -> Map.put(base, :task_types, task_types)
+        end
+
       # The `worktree:` block is carried VERBATIM at the workflow level.
       #
       # The catalog used to re-key and default it per phase in its own
@@ -520,5 +559,39 @@ defmodule ForemanServer.Workflow.Catalog do
       {:ok, %File.Stat{mtime: m}} -> m
       {:error, _} -> nil
     end
+  end
+
+  defp rebuild_type_to_workflow(state) do
+    type_to_workflow =
+      Enum.reduce(state.manifests, %{}, fn {_filename, %{workflow: workflow}}, acc ->
+        case Map.get(workflow, :task_types) do
+          nil ->
+            acc
+
+          [] ->
+            acc
+
+          "" ->
+            acc
+
+          types when is_list(types) ->
+            Enum.reduce(types, acc, fn task_type, type_acc ->
+              if Map.has_key?(type_acc, task_type) do
+                existing_workflow = type_acc[task_type]
+                workflow_name = Map.get(workflow, :name, "unknown")
+
+                raise ArgumentError,
+                      "workflow collision: both #{existing_workflow} and #{workflow_name} declare task_type '#{task_type}'"
+              else
+                Map.put(type_acc, task_type, Map.get(workflow, :name, "unknown"))
+              end
+            end)
+
+          _other ->
+            acc
+        end
+      end)
+
+    Map.put(state, :type_to_workflow, type_to_workflow)
   end
 end

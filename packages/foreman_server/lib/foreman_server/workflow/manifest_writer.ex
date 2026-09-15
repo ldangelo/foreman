@@ -33,6 +33,7 @@ defmodule ForemanServer.Workflow.ManifestWriter do
             | :float_value
             | :name_not_string
             | :phases_not_list
+            | :task_types_not_strings
             | :phase_name_not_string, term()}
 
   @typep error_reason :: {:unsupported_construct, error_detail()}
@@ -111,6 +112,17 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
         {_key, value} when is_binary(value) or is_integer(value) or is_boolean(value) ->
           false
+
+        # `task_types:` is a documented top-level list-of-strings field
+        # (the workflow-routing DSL). It round-trips as a flow-style
+        # inline array, matching `Interpreter.parse_array/1`'s reader.
+        # Every other top-level list construct remains unsupported.
+        {"task_types", value} when is_list(value) ->
+          if Enum.all?(value, &is_binary/1) do
+            false
+          else
+            {:error, {:unsupported_construct, {:task_types_not_strings, value}}}
+          end
 
         {key, value} when is_list(value) ->
           {:error, {:unsupported_construct, {:top_level_list, key}}}
@@ -283,6 +295,17 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   # which reported the same defect from a less useful place.
   defp build_top_level(key, value, lines) do
     case value do
+      # `task_types` is validated above (`task_types_not_strings`) to be
+      # the only top-level list-type key that reaches this branch, and
+      # every element is a string. Writing bare (`[true, 123]`) would
+      # make `Interpreter.parse_array/1`'s `cast_scalar/1` coerce a task
+      # type literally named "true" or "123" into a boolean or integer on
+      # the next read — quoting keeps `classify_scalar/1` on the `:quoted`
+      # path, which is the only path `cast_scalar/1` is never applied to.
+      v when is_list(v) ->
+        rendered = Enum.map_join(v, ", ", &"\"#{&1}\"")
+        append(lines, 0, "#{key}: [#{rendered}]")
+
       v when is_binary(v) or is_integer(v) or is_boolean(v) ->
         append(lines, 0, "#{key}: #{scalar(v)}")
 

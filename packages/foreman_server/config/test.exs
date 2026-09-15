@@ -80,7 +80,17 @@ config :logster,
 config :foreman_server, :jido_ecto, enabled: false
 
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
-  url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")
+  url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test"),
+  # This Repo shares one Postgres database with ForemanServer.EventStore in
+  # test (see EventStore config above) — dev/prod separate them into
+  # foreman_dev/foreman_eventstore_dev, but test.exs colocates both to avoid
+  # provisioning a second test database. The `eventstore` library creates its
+  # own "schema_migrations" table (major_version/minor_version/patch_version
+  # columns); Ecto's migrator expects a table by the same name with a
+  # different (version) column, so the two collide. Renaming Ecto's tracking
+  # table sidesteps the collision without touching the EventStore side, this
+  # Repo's actual data tables, or any query code.
+  migration_source: "ecto_schema_migrations"
 
 # JSH-T003: VFS isolation per worktree — allow /tmp for test worktrees.
 config :foreman_server, :jido_vfs,

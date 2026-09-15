@@ -32,9 +32,31 @@ defmodule ForemanServer.Overwatch.WorkerSupervisorTest do
               Registry.start_link(keys: :unique, name: registry_name)
 
             on_exit(fn ->
+              # `Process.exit(pid, :normal)` from a DIFFERENT process is a
+              # documented Erlang/OTP no-op against a process that isn't
+              # trapping exits (an external :normal exit signal is only
+              # fatal to the process that sends it to itself) — Registry
+              # does not trap exits, so this cleanup previously left the
+              # process (and its ForemanServer.Overwatch.WorkerRegistry
+              # global name) alive for the rest of the test run.
+              # `GenServer.stop/1` doesn't work either: `Registry.start_link/1`
+              # returns a Supervisor pid, not a GenServer, and calling
+              # `:sys.terminate/3` on it surfaces its child shutdown as a
+              # `:shutdown` exit that propagates back to this callback.
+              # `Process.exit(pid, :kill)` is unconditional and untrappable
+              # regardless of the target's behaviour; monitor + await :DOWN
+              # makes the termination synchronous before on_exit returns.
               case Process.whereis(registry_name) do
-                nil -> :ok
-                pid -> Process.exit(pid, :normal)
+                nil ->
+                  :ok
+
+                pid ->
+                  ref = Process.monitor(pid)
+                  Process.exit(pid, :kill)
+
+                  receive do
+                    {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+                  end
               end
             end)
 

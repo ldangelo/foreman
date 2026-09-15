@@ -89,6 +89,21 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                  end
   end
 
+  test "load!/1 decodes task_types: [] as an empty list, not [\"\"]" do
+    # `parse_array/1` used to compute `inner = \"\"` for `[]`, and
+    # `String.split(\"\", \",\")` returns `[\"\"]`, not `[]`. That single
+    # empty-string element passes `validate_task_types!/2` (it is a
+    # binary) and then reaches `Catalog.rebuild_type_to_workflow/1`, which
+    # only guards `nil`/`[]`/`\"\"` explicitly -- not `[\"\"]` -- so two
+    # workflows both declaring `task_types: []` would otherwise collide
+    # on the empty string and crash `Catalog.init/1`.
+    path =
+      write_temp_yaml!("name: wf\ntask_types: []\nphases:\n  - name: p1\n    prompt: p.md\n")
+
+    assert {:ok, loaded} = Workflow.Interpreter.load!(path)
+    assert loaded["task_types"] == []
+  end
+
   test "load!/1 raises when a phase defines two actions" do
     path =
       write_temp_yaml!("""

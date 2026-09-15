@@ -208,7 +208,7 @@ defmodule ForemanServer.TaskProviders.SideChannelCaptureTest do
     project_config =
       "side-channel-fail" |> register_project!() |> Map.put(:run_id, "run-fail-1")
 
-    raw_argv = reopen_argv(@database_path, "bead-fail-1", @transition_comment)
+    raw_argv = reopen_argv(@database_path, "bead-fail-1", @transition_comment, "blocked")
 
     stderr =
       Jason.encode!(%{
@@ -225,7 +225,7 @@ defmodule ForemanServer.TaskProviders.SideChannelCaptureTest do
                   flags: [
                     "bead-fail-1",
                     "--status",
-                    "open",
+                    "blocked",
                     "--transition-comment",
                     @transition_comment
                   ],
@@ -497,14 +497,14 @@ defmodule ForemanServer.TaskProviders.SideChannelCaptureTest do
 
   defp close_argv(database_path, task_id), do: ["close", "--db", database_path, task_id, "--json"]
 
-  defp reopen_argv(database_path, task_id, transition_comment) do
+  defp reopen_argv(database_path, task_id, transition_comment, status \\ "open") do
     [
       "update",
       "--db",
       database_path,
       task_id,
       "--status",
-      "open",
+      status,
       "--transition-comment",
       transition_comment,
       "--json"

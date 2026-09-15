@@ -1,0 +1,179 @@
+defmodule ForemanServer.Workflow.Catalog.Doctor do
+  @moduledoc """
+  Type coverage diagnostics for beads task_types mapping.
+
+  Reports unmapped issue_types and coverage status.
+  """
+
+  alias ForemanServer.TaskProvider.Registry
+  alias ForemanServer.TaskProvider.Issue
+
+  @enforce_keys [:unmapped_types, :covered, :total_issue_types, :mapped_types]
+  defstruct [:unmapped_types, :covered, :total_issue_types, :mapped_types]
+
+  @type t :: %__MODULE__{
+          unmapped_types: [String.t()],
+          covered: boolean(),
+          total_issue_types: non_neg_integer(),
+          mapped_types: non_neg_integer()
+        }
+
+  @doc """
+  Generate a coverage report comparing actual issue_types in beads to mapped types.
+
+  Returns `{:ok, %__MODULE__{}}`, or `{:error, reason}` when the project's
+  actual issue types could not be determined (missing registration or a
+  failed `list_ready/2` call) — a silent fallback to an empty set here would
+  report `covered: true` for input that was undeterminable, not input that
+  was actually clean.
+  """
+  @spec coverage_report(String.t(), %{String.t() => String.t()}) ::
+          {:ok, t()} | {:error, term()}
+  def coverage_report(project_id, mapped_types_map) when is_map(mapped_types_map) do
+    with {:ok, actual_types} <- get_actual_issue_types(project_id) do
+      mapped_types = MapSet.new(Map.keys(mapped_types_map))
+      covered_types = MapSet.intersection(actual_types, mapped_types)
+      unmapped = MapSet.difference(actual_types, mapped_types)
+
+      {:ok,
+       %__MODULE__{
+         unmapped_types: unmapped |> MapSet.to_list() |> Enum.sort(),
+         covered: Enum.empty?(unmapped),
+         total_issue_types: Enum.count(actual_types),
+         mapped_types: Enum.count(covered_types)
+       }}
+    end
+  end
+
+  @doc """
+  Format coverage report as ASCII tree output.
+  """
+  @spec format_ascii(t()) :: String.t()
+  def format_ascii(%__MODULE__{} = report) do
+    lines = [
+      "Workflow Type Coverage",
+      "═" <> String.duplicate("═", 20)
+    ]
+
+    lines = lines ++ format_coverage_status(report)
+
+    lines =
+      if Enum.empty?(report.unmapped_types) do
+        lines ++
+          [
+            "",
+            "✓ All issue_types are mapped to workflows"
+          ]
+      else
+        lines ++
+          [
+            "",
+            "⚠ Unmapped issue_types:",
+            "─ " <> String.duplicate("─", 18)
+          ] ++ Enum.map(report.unmapped_types, &("  • " <> &1))
+      end
+
+    Enum.join(lines, "\n")
+  end
+
+  @doc """
+  Format coverage report as JSON.
+  """
+  @spec format_json(t()) :: String.t()
+  def format_json(%__MODULE__{} = report) do
+    Jason.encode!(%{
+      covered: report.covered,
+      total_issue_types: report.total_issue_types,
+      mapped_types: report.mapped_types,
+      unmapped_types: report.unmapped_types
+    })
+  end
+
+  # Private helpers
+
+  defp format_coverage_status(report) do
+    total = report.total_issue_types
+    mapped = report.mapped_types
+
+    [
+      "Total issue_types: #{total}",
+      "Mapped workflows: #{mapped}",
+      "Coverage: #{coverage_percent(mapped, total)}"
+    ]
+  end
+
+  defp coverage_percent(_mapped, total) when total == 0, do: "100%"
+
+  defp coverage_percent(mapped, total) do
+    percent = div(mapped * 100, total)
+    "#{percent}%"
+  end
+
+  # `get_actual_issue_types/1` enumerates only what `list_ready/2` (`br
+  # ready`) returns: open, unblocked, non-deferred issues. An unmapped
+  # `issue_type` that exists solely on an `in_progress`, `blocked`, or
+  # `deferred` bead is invisible here, so `covered: true` can be reported
+  # while such an issue exists. Fixing this needs a new TaskProvider
+  # operation to enumerate all non-closed issues (not just ready ones) —
+  # a behaviour-contract addition affecting every adapter, disproportionate
+  # to this diagnostic tool. Known limitation, not silently unconsidered.
+  @spec get_actual_issue_types(String.t()) :: {:ok, MapSet.t(String.t())} | {:error, term()}
+  defp get_actual_issue_types(project_id) do
+    # Query all non-closed beads for their issue_types, routed through the
+    # TaskProvider abstraction rather than a direct adapter alias (adapter
+    # aliases are confined to lib/foreman_server/task_providers). A failed
+    # lookup here is propagated, never coerced to an empty set: an empty
+    # set is indistinguishable from "this project genuinely has zero
+    # issues", which would make `coverage_report/2` report `covered: true`
+    # for input it could not actually determine.
+    with {:ok, %{provider_module: provider_module, config: config}} <-
+           Registry.project_config(project_id),
+         {:ok, beads} when is_list(beads) <- provider_module.list_ready(config, []) do
+      extracted = Enum.map(beads, &extract_issue_type/1)
+
+      case Enum.find(extracted, &match?({:error, _}, &1)) do
+        {:error, malformed} ->
+          {:error, {:malformed_issue_type, malformed}}
+
+        nil ->
+          types =
+            extracted
+            |> Enum.filter(&match?({:ok, _}, &1))
+            |> Enum.map(fn {:ok, type} -> type end)
+            |> Enum.uniq()
+            |> MapSet.new()
+
+          {:ok, types}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_list_ready_result, other}}
+    end
+  end
+
+  # `Issue.t()` (the real shape `list_ready/2` returns) has no top-level
+  # `issue_type` field — `id`/`title`/`status`/`priority`/`dependencies`/
+  # `dependents`/`assignee`/`description`/`notes`/`design`/`labels`/
+  # `metadata` are the only fields it declares. `BeadsAdapter` writes the
+  # bead's type into `metadata["issue_type"]` (string key, always — see
+  # `build_issue_from_create_payload/2`) at create time, so that is where
+  # a real issue's type lives; there is no `:issue_type` atom-keyed
+  # producer, so matching a second atom-key clause here would be dead
+  # code hedging against a shape that never occurs (`AGENTS.md` §5.4).
+  #
+  # A present-but-non-string value (or an explicit `nil`) is malformed
+  # provider data, not "absent": returning it as-is would let it flow
+  # into `format_ascii/1`'s `"  • " <> type` concatenation and crash
+  # with `ArgumentError` on the first non-binary. Absent (`:absent`) and
+  # malformed (`{:error, _}`) get distinct outcomes so a caller can
+  # propagate a clear `{:error, {:malformed_issue_type, _}}` instead of
+  # either silently dropping bad data or crashing downstream on it.
+  defp extract_issue_type(%Issue{metadata: %{"issue_type" => type}}) when is_binary(type),
+    do: {:ok, type}
+
+  defp extract_issue_type(%Issue{metadata: %{"issue_type" => other}}), do: {:error, other}
+  defp extract_issue_type(%Issue{metadata: metadata}) when is_map(metadata), do: :absent
+  defp extract_issue_type(%{"issue_type" => type}) when is_binary(type), do: {:ok, type}
+  defp extract_issue_type(%{"issue_type" => other}), do: {:error, other}
+  defp extract_issue_type(_), do: :absent
+end

@@ -39,11 +39,16 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   emits a stage-1 `TaskCreated` event spec, the actor calls
   `provider.create/2` to mint a Bead, the actor re-decides with the
   Bead ID as `payload.external_id`, and `CommandRouter` appends the
-  committed event. The Bead ID is surfaced in the HTTP response, so
-  `foreman task create` prints the linked Bead ID on stdout. Projects
-  without a `:create` provider take the no-op path: no Bead is
-  minted, no `external_id` is surfaced, and the `task.create`
-  response carries only the Foreman `task_id`.
+  committed event. The Bead ID is surfaced in the HTTP response.
+  `foreman task create` is REMOVED (TRD-018, 2026-09-13) — that CLI
+  verb no longer prints it to stdout, but the linkage is unchanged:
+  task creation is now driven by Beads (`br create`, or transitioning
+  an existing bead to `status: open`), BeadsWatcher dispatches the
+  internal `task.create` command, and the Bead ID still lands as
+  `external_id` on the persisted event — read it via
+  `GET /api/tasks/:id`. Projects without a `:create` provider take
+  the no-op path: no Bead is minted, no `external_id` is surfaced,
+  and the `task.create` response carries only the Foreman `task_id`.
 - **Beads provider config.** Register Beads-backed projects with an
   absolute `task_provider.config.database_path`; the Go CLI requires
   `--task-provider-database-path` when `--task-provider=beads`.
@@ -65,9 +70,12 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   and `orphan_backlog` is `nil` until the first scan completes for a
   registered project. See §10 in `docs/user-guide.md` for how to
   invoke it today.
-- **Operator remediation.** `foreman task retry` is the remediation
-  path for tasks whose bound run is already terminal (see
-  `docs/user-guide.md` §4).
+- **Operator remediation.** `foreman task retry` is REMOVED (TRD-018,
+  2026-09-13) — the CLI verb is gone, though the internal
+  `task.retry` command it issued still exists and is exercised the
+  same way (only a task whose bound run is already terminal is
+  eligible). The current remediation path is re-opening the bead
+  (`br update <id> --status=open`); see `docs/user-guide.md` §4.
 
 Enablement, the per-project `task_provider` block, the doctor health
 check, and the orphan janitor's opt-in semantics are documented in

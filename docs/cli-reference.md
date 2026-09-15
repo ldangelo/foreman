@@ -23,12 +23,12 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project delete    --force --idempotency-key
 > foreman project list      --format --include-archived
 >
-> foreman task create       --description --id --project --status --task-type --title --trd-path --workflow-type
-> foreman task approve      --approved-by --command-id --id
-> foreman task retry        --id --reason
-> foreman task get          (no flags)
-> foreman task list        --project --status
-> foreman task update      --description --id --priority --status --title
+> foreman task create       --description --id --project --status --task-type --title --trd-path --workflow-type  # REMOVED (TRD-018)
+> foreman task approve      --approved-by --command-id --id  # REMOVED (TRD-018)
+> foreman task retry        --id --reason  # REMOVED (TRD-018)
+> foreman task get          (no flags)  # REMOVED (TRD-018)
+> foreman task list        --project --status  # REMOVED (TRD-018)
+> foreman task update      --description --id --priority --status --title  # REMOVED (TRD-018)
 >
 > foreman run list          --limit --project-id --status
 > foreman run get           (no flags)
@@ -39,6 +39,15 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
+>
+> `foreman task create`, `foreman task approve`, `foreman task
+> retry`, `foreman task get`, `foreman task list`, and `foreman task
+> update` are REMOVED (TRD-018, 2026-09-13) — the `task` dispatch
+> case and its handler functions were deleted from
+> `packages/foreman_cli/cmd/foreman/task.go` (51 lines remain: shared
+> HTTP envelope/JSON helpers used by other command files, not
+> task-verb handlers); invoking any of them now produces the CLI's
+> standard "unknown command" error.
 >
 > Every verb except `init` REQUIRES a subcommand: bare `foreman run`,
 > `foreman task`, `foreman project` or `foreman workflow` returns
@@ -64,10 +73,14 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > is the stale artifact.
 >
 > Note also that this file is *incomplete* about what is real: it has no section
-> for `foreman task approve`, `task get`, `task retry`, `run get`, `run cancel`,
-> `run reset`, `workflow install` or `workflow remove`, all of which exist. The
-> block above is authoritative; AGENTS.md's Operator Reference is accurate and
-> was verified against the Go source.
+> for `run get`, `run cancel`, `run reset`, `workflow install` or `workflow
+> remove`, all of which exist. `foreman task approve`, `task get`, `task
+> retry`, `task list`, and `task update` used to round out that list; TRD-018
+> (2026-09-13) deleted them — along with `task create`, which did have a
+> section below — from the Go CLI (see the corrected inventory above). The
+> block above is authoritative; AGENTS.md's Operator Reference (Task
+> Lifecycle / Go CLI Commands) reflects the same TRD-018 removal and remains
+> accurate against the Go source.
 
 ## Global Usage
 
@@ -244,7 +257,7 @@ foreman project list --include-archived
 
 ### `foreman commands`
 
-Generate, validate, or install agent command assets for Foreman operators. The generated assets are thin wrappers over real Go CLI commands: workflow-backed `foreman task create`, `foreman task list`, `foreman task update`, `foreman task get <task-id>`, ad-hoc `foreman run submit`, `foreman run list`, and `foreman run get <run-id>`. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
+Generate, validate, or install agent command assets for Foreman operators. The generated assets were thin wrappers over Go CLI commands: `foreman task create`, `foreman task get <task-id>`, `foreman task list`, and `foreman task update` are all REMOVED (TRD-018, 2026-09-13) — every generated shortcut wrapping the `task` verb group now fails with the CLI's "unknown command" error until the generator is updated. `foreman run submit`, `foreman run list`, and `foreman run get <run-id>` are unaffected and round out the wrapped set. They inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN`; generated files must not embed secret values.
 
 **Subcommands:**
 | Command | Description |
@@ -305,8 +318,16 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
 > `--max-agents`, `--stagger`, `--skip-explore`, `--skip-review`, `--no-pipeline`,
 > `--no-auto-dispatch`, `--runtime-mode`, `--telemetry`, `--project`,
-> `--project-path`, `--default-branch`, `--task`, `--foreman`. To start work, use
-> `foreman task create` + `foreman task approve`, or `foreman run submit`.
+> `--project-path`, `--default-branch`, `--task`, `--foreman`.
+>
+> **NOT IMPLEMENTED as of TRD-018.** This section used to say "To
+> start work, use `foreman task create` + `foreman task approve`, or
+> `foreman run submit`" — the first two verbs were deleted on
+> 2026-09-13 (see the note at the top of this file). Start work today
+> by creating or opening a bead (`br create`, or `br update <id>
+> --status=open`) — BeadsWatcher dispatches the internal
+> `task.create` + `task.approve` commands automatically — or use
+> `foreman run submit` for one-step ad-hoc execution.
 > Telemetry specifically is not a CLI flag on any command: Langfuse LLM
 > traces are controlled by `OTEL_EXPORTER_OTLP_ENDPOINT`,
 > `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`; SigNoz operational logs
@@ -317,6 +338,15 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > [`docs/user-guide.md`](../docs/user-guide.md#8-telemetry-otel-litellm-and-langfuse)).
 
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
+
+> **NOT A REAL INVOCATION.** The bare `foreman run [flags]` example block and
+> flag table immediately below predate `foreman run`'s dispatch-verb
+> requirement (see the `NOT IMPLEMENTED as described` note above) and are
+> kept only as a record of the intended design, per this file's annotation
+> convention. `foreman run --watch` in the paragraph after it is likewise
+> not a real invocation. Today: `foreman run submit` for one-step ad-hoc
+> execution, or let BeadsWatcher auto-dispatch via `br create`/`br update
+> --status=open`.
 
 Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation; Elixir Overwatch rejects Graphify tools so worker discovery does not create slow generated worktree artifacts. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
@@ -773,9 +803,15 @@ foreman reset foreman-abc12 --keep-worktree
 
 ### `foreman retry`
 
-> **NOT IMPLEMENTED.** `foreman retry` is not dispatched. The real command is `foreman task retry --id <task-id> [--reason <text>]`; there is no `--dispatch`, `--model`, or positional-id form.
+> **NOT IMPLEMENTED.** `foreman retry` is not dispatched, and neither is `foreman task retry` any more — TRD-018 (2026-09-13) removed it too (see the note at the top of this file). The internal `task.retry` command it used to invoke is unchanged, but there is no CLI verb left to call it; there is no `--dispatch`, `--model`, or positional-id form either way.
 
 Reset a task and optionally re-dispatch it immediately.
+
+> The example block and option table below are historical — a record of the
+> command as originally designed, per this file's annotation convention —
+> not a currently-runnable command. None of `bd-abc1` as a positional id,
+> nor `--dispatch`/`--model`/`--dry-run`/`--project`, exist on any CLI verb
+> today.
 
 ```bash
 foreman retry bd-abc1             # Reset task to ready
@@ -1241,7 +1277,7 @@ Use `agent-error` only for unrecoverable infrastructure/runtime failures. QA/pro
 
 ### `foreman plan`
 
-> **NOT IMPLEMENTED.** `foreman plan` is not dispatched. Planning runs are started as ordinary tasks: `foreman task create --workflow-type plan …`.
+> **NOT IMPLEMENTED.** `foreman plan` is not dispatched. Planning runs used to be started as ordinary tasks via `foreman task create --workflow-type plan …`, but that verb is REMOVED (TRD-018, 2026-09-13) too — see the note at the top of this file. Start one today via Beads instead: create a bead whose `--type` resolves to the `plan` workflow (e.g. `br create --type plan ...`), or transition an existing bead to `status: open`; BeadsWatcher dispatches the internal `task.create` command with that workflow automatically.
 
 Run the Ensemble PRD → TRD pipeline. Converts a product description into a Technical Requirements Document with decomposed tasks.
 
@@ -1270,7 +1306,7 @@ Server-backed `plan prd` / `plan trd` options: `--project <path>`, `--output-dir
 
 ### `foreman sling trd`
 
-> **NOT IMPLEMENTED.** `foreman sling trd` is not dispatched. Use `foreman task create --workflow-type implement-trd --trd-path <path>`.
+> **NOT IMPLEMENTED.** `foreman sling trd` is not dispatched. The suggested replacement, `foreman task create --workflow-type implement-trd --trd-path <path>`, is also REMOVED (TRD-018, 2026-09-13) — see the note at the top of this file. Start one today via Beads instead: create a bead with `--agent-context '{"trd_path":"<path>"}'` and a `--type` that resolves to the `implement-trd` (or `implement-trd-beads`) workflow, or set that `agent_context` on an existing bead and transition it to `status: open`; BeadsWatcher reads `agent_context.trd_path` and dispatches `task.create` + `task.approve` automatically (a bead missing a required `trd_path` is moved to `blocked` with a comment instead).
 
 Convert a Technical Requirements Document into a native task hierarchy with dependencies.
 
@@ -1297,17 +1333,31 @@ foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
 
 ### `foreman task create`
 
-> **PARTLY INCORRECT.** `foreman task create` is real, but eight flags shown
-> below do not exist: `--type` (the real flag is `--task-type`), `--priority`
-> (set it via a raw `task.create` envelope; see AGENTS.md), `--parent`,
-> `--model`, `--dry-run`, `--from-text`, `--no-llm`, `--project-path`. Passing
-> any of them is a flag parse error.
+> **REMOVED (TRD-018).** `foreman task create` is gone as of
+> 2026-09-13: TRD-018 deleted the `task` dispatch case and its
+> handlers from
+> `packages/foreman_cli/cmd/foreman/task.go` (which still exists for
+> shared HTTP helpers used by other command files; see the
+> authoritative verb list at the top of this file). Invoking it now
+> produces the CLI's standard "unknown command" error. Task creation
+> today is driven by Beads — `br create`, or transitioning an
+> existing bead to `status: open` — which BeadsWatcher observes to
+> dispatch the internal `task.create` command automatically; that
+> internal command's guard/payload semantics are unchanged, only the
+> CLI verb is gone.
 >
-> The real set is `--id --project --title --description --task-type
-> --workflow-type --trd-path --status`. Two corrections to note: `--command-id`
-> is a `task approve` flag, not a `task create` one, and `--status` — which the
-> options table below omits entirely — is real and defaults to **`open`**, not
-> the `backlog` status the sentence below claims.
+> The section below is kept as a historical record of the CLI verb's
+> shape immediately before removal, including a still-relevant
+> correction: eight flags shown in the examples/table below never
+> existed even then — `--type` (the real flag was `--task-type`),
+> `--priority` (settable only via a raw `task.create` envelope; see
+> AGENTS.md), `--parent`, `--model`, `--dry-run`, `--from-text`,
+> `--no-llm`, `--project-path`. The real set was `--id --project
+> --title --description --task-type --workflow-type --trd-path
+> --status`. Two corrections of note: `--command-id` was a `task
+> approve` flag, not a `task create` one, and `--status` — which the
+> options table below omits entirely — was real and defaulted to
+> **`open`**, not the `backlog` status the sentence below claims.
 
 Create a new structured task in backlog status. Natural-language task generation (`--from-text`) was removed after the Elixir backend cutover.
 
@@ -1333,6 +1383,13 @@ Manifests resolve against the server's workflow catalog root —
 
 ### `foreman task list`
 
+> **REMOVED (TRD-018).** TRD-018 deleted the entire `task` case from the
+> CLI's dispatch switch, not just `create`/`approve`/`retry`/`get` — `task
+> list` and `task update` are gone too, even though they were not named in
+> that bead's own commit message. Invoking either now produces the CLI's
+> standard "unknown command" error. There is no CLI replacement; list tasks
+> via `br list`/`br show <id>` or the HTTP API (`GET /api/tasks/:id`).
+
 List tasks, optionally filtered by project and status.
 
 ```bash
@@ -1345,6 +1402,10 @@ foreman task list --project foreman --status open
 | `--status <status>` | Filter by status: `open`, `ready`, `in_progress`, `blocked`, `closed`, `failed` |
 
 ### `foreman task update`
+
+> **REMOVED (TRD-018).** Same removal as `foreman task list` above — the
+> entire `task` case is gone from the CLI. Update fields via `br update
+> <id> --status=... --priority=...` instead.
 
 Update task fields (title, description, priority, status). At least one field must be provided.
 
