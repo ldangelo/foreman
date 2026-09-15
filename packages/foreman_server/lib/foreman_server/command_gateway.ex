@@ -80,9 +80,33 @@ defmodule ForemanServer.CommandGateway do
   The router contract remains `{:ok, event_spec | nil} | {:error, _}`.
   Every new workflow command MUST carry a deterministic `command_id`
   so the actor can deduplicate retries by event UUID.
+
+  `task.approve` is enriched exactly as the operator path enriches it
+  (`approval_id`, `approved_at`, `run_id`, `workflow_snapshot`,
+  `workflow_name`, `workflow_digest` via `enrich_operator_command/1` —
+  the same private helper `dispatch_operator/2` calls) before dispatch.
+  Every `task.approve` payload requires this enrichment to satisfy the
+  `Task` aggregate's `require_nonempty_string(:approval_id, ...)` guard
+  regardless of caller, so there is no legitimate un-enriched system
+  dispatch of this type. `BeadsWatcher`'s TRD-007 auto-approval is the
+  sole current caller — it dispatches `task.approve` here rather than
+  through `dispatch_operator/2` because the watcher is system
+  automation, not an operator (see the watcher's own moduledoc and
+  `beads_watcher_pipeline_test.exs`'s `operator_calls() == []`
+  assertion); this enrichment is what makes that possible without
+  also duplicating `enrich_approval_via_workflow/2`'s logic (AGENTS.md
+  §5.7).
   """
   @spec dispatch_system(map(), integer()) :: dispatch_result()
-  def dispatch_system(command, timeout \\ 5_000) when is_map(command) do
+  def dispatch_system(command, timeout \\ 5_000)
+
+  def dispatch_system(%{type: "task.approve"} = command, timeout) do
+    with {:ok, enriched} <- enrich_operator_command(command) do
+      dispatch_and_emit_project_telemetry(enriched, timeout)
+    end
+  end
+
+  def dispatch_system(command, timeout) when is_map(command) do
     dispatch_and_emit_project_telemetry(command, timeout)
   end
 

@@ -121,4 +121,94 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherBootTest do
       GenServer.stop(pid)
     end
   end
+
+  describe "boot resilience when CommandRouter is not registered (TRD-2026-d99cd90d regression)" do
+    test "does not crash on boot and completes boot_replay once CommandRouter comes up", %{
+      tmp_dir: tmp_dir
+    } do
+      jsonl_path = Path.join(tmp_dir, "issues.jsonl")
+      File.write!(jsonl_path, "")
+
+      expect(BrRunnerMock, :cmd, fn {:sync_status, %{flags: ["--status"]}},
+                                    _project_config,
+                                    _opts ->
+        sync_status_response(false)
+      end)
+
+      expect(BrRunnerMock, :cmd, fn {:where, %{database_path: db_path}}, _project_config, _opts
+                                    when db_path == tmp_dir ->
+        where_response(jsonl_path)
+      end)
+
+      app_sup = Process.whereis(ForemanServer.Application)
+      assert is_pid(app_sup)
+
+      :ok = Supervisor.terminate_child(app_sup, ForemanServer.CommandRouter)
+      assert is_nil(Process.whereis(ForemanServer.CommandRouter))
+
+      on_exit(fn ->
+        case Process.whereis(ForemanServer.CommandRouter) do
+          nil -> Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+          _pid -> :ok
+        end
+      end)
+
+      Process.flag(:trap_exit, true)
+
+      # Before the fix, `init/1` ran `boot_replay/1` synchronously and
+      # unconditionally, which raised `ArgumentError` the moment
+      # `with_beads_lease/2` tried to dispatch through the unregistered
+      # `CommandRouter` — crashing this `start_link/1` call outright
+      # (`{:ok, pid, {:continue, :boot_replay}}` was never reached).
+      assert {:ok, pid} =
+               BeadsWatcher.start_link(
+                 project_id:
+                   "proj-router-defer-#{System.unique_integer([:positive, :monotonic])}",
+                 database_path: tmp_dir,
+                 poll_ms: 60_000
+               )
+
+      assert Process.alive?(pid)
+      assert is_nil(:sys.get_state(pid).fs_watcher_pid)
+
+      {:ok, _} = Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+
+      fs_watcher_pid =
+        wait_until(
+          fn ->
+            case :sys.get_state(pid).fs_watcher_pid do
+              nil -> :retry
+              watcher_pid -> {:ok, watcher_pid}
+            end
+          end,
+          "boot_replay to complete once CommandRouter is registered",
+          2_000
+        )
+
+      assert {:ok, watcher_pid} = fs_watcher_pid
+      assert is_pid(watcher_pid)
+
+      GenServer.stop(pid)
+    end
+  end
+
+  defp wait_until(fun, _label, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    case fun.() do
+      :retry ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(10)
+          do_wait_until(fun, deadline)
+        else
+          :retry
+        end
+
+      result ->
+        result
+    end
+  end
 end
