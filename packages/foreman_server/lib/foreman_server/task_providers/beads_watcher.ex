@@ -683,26 +683,42 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        when is_binary(raw_bytes) and is_struct(counters, Counters) do
     {complete_lines, trailing_fragment} = split_complete_lines(raw_bytes)
 
-    {advanced_state, final_counters, stopped_at_transient?} =
-      Enum.reduce_while(complete_lines, {state, counters, false}, fn line,
-                                                                     {acc, acc_counters,
-                                                                      _stopped?} ->
+    {scanned_state, final_counters, first_transient} =
+      Enum.reduce(complete_lines, {state, counters, nil}, fn line, {acc, acc_counters, held} ->
         {acc2, outcome} = advance_one_line(acc, line)
         new_counters = bump_counters(acc_counters, outcome)
 
         case outcome do
           :transient ->
-            {:halt, {acc2, new_counters, true}}
+            # `advance_one_line/2` holds `read_offset` at this line's
+            # start byte on :transient (correct for a single line in
+            # isolation) but does NOT halt the pass anymore: a bead
+            # this project's workflow catalog cannot yet route (or
+            # whose dispatch transiently failed) must not permanently
+            # block every bead appended after it — one unresolved
+            # early bead blocking an entire project's auto-dispatch
+            # forever is the defect this replaces. Remember only the
+            # FIRST transient line's start byte (the correct retry
+            # position — TRD §2.2.6's "first not terminally dispatched
+            # line" definition), then keep scanning with a working
+            # copy whose `read_offset` is advanced manually past this
+            # line so later lines still compute correct dispatch state
+            # and get a fair, independent attempt this same pass.
+            held = held || {acc2.read_offset, line}
+            advanced = %{acc2 | read_offset: acc.read_offset + byte_size(line) + 1}
+            {advanced, new_counters, held}
 
           _ ->
-            {:cont, {acc2, new_counters, false}}
+            {acc2, new_counters, held}
         end
       end)
 
-    if stopped_at_transient? do
-      {advanced_state, final_counters}
-    else
-      {%{advanced_state | partial_line: trailing_fragment}, final_counters}
+    case first_transient do
+      nil ->
+        {%{scanned_state | partial_line: trailing_fragment}, final_counters}
+
+      {offset, line} ->
+        {%{scanned_state | read_offset: offset, partial_line: line}, final_counters}
     end
   end
 
@@ -1157,6 +1173,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         external_id: bead_id,
         title: Map.get(parsed, "title", ""),
         description: Map.get(parsed, "description"),
+        # `Task.prompt` is what `Approval.prepare/2`'s `maybe_put_prompt/2`
+        # copies into `workflow_snapshot["input"]["prompt"]`, which is the
+        # ONLY channel a `command:` phase has for its subject
+        # (`{{input.prompt}}` in the manifest's `command:` string — see
+        # `RunExecutor.input_prompt/1`). Without this, every bead
+        # auto-dispatched by BeadsWatcher to a command-phase workflow
+        # (e.g. `fix.yaml`'s `/skill:ensemble-fix-issue {{input.prompt}}
+        # --foreman`) renders with an EMPTY argument — the agent has no
+        # subject and immediately asks for one instead of doing any work.
+        # Falls back to the title alone when there's no description.
+        prompt: bead_prompt(parsed),
         priority: Map.get(parsed, "priority", 2),
         task_type: Map.get(parsed, "issue_type", "task"),
         workflow_type: workflow_type,
@@ -1164,6 +1191,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         project_id: state.project_id
       }
     }
+  end
+
+  defp bead_prompt(parsed) do
+    title = Map.get(parsed, "title", "")
+
+    case Map.get(parsed, "description") do
+      description when is_binary(description) and description != "" ->
+        title <> "\n\n" <> description
+
+      _ ->
+        title
+    end
   end
 
   defp classify_dispatch_result(state, bead_id, result) do

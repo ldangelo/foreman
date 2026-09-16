@@ -274,10 +274,55 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert cmd.payload.project_id == "proj-imp-pipe"
       assert cmd.payload.priority == 2
       assert cmd.payload.task_type == "task"
+      # Sole channel `RunExecutor.input_prompt/1` reads for a `command:`
+      # phase's `{{input.prompt}}` — without this every bead auto-dispatched
+      # here renders with an empty argument (regression: TRD-2026 follow-up).
+      assert cmd.payload.prompt == "hello"
 
       assert_receive {:telemetry, ^ref, metadata}, 200
       assert metadata[:bead_id] == "bead-imp-pipe"
       assert metadata[:project_id] == "proj-imp-pipe"
+    end
+
+    test "task.create payload's prompt combines title and description when both are present" do
+      state = %BeadsWatcher{project_id: "proj-prompt", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-prompt","title":"fix the thing","description":"it is broken because X","issue_type":"task","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.prompt == "fix the thing\n\nit is broken because X"
+    end
+
+    test "task.create payload's prompt falls back to title alone when description is absent" do
+      state = %BeadsWatcher{project_id: "proj-prompt-2", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-no-desc","title":"just the title","issue_type":"task","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.prompt == "just the title"
+    end
+
+    test "task.create payload's prompt is an empty string, not nil, when title and description are both absent" do
+      state = %BeadsWatcher{project_id: "proj-prompt-3", read_offset: 0, partial_line: ""}
+
+      line = ~s({"id":"bead-no-title","issue_type":"task","status":"open"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.prompt == ""
     end
   end
 
