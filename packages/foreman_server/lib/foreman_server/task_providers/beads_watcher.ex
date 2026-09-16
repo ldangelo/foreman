@@ -973,19 +973,19 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # ----- Prompt validation --------------------------------------------
   # `bead_prompt/1` (see `synthesize_task_create_envelope/5`) is the
   # ONLY channel a `command:` phase has for its subject
-  # (`{{input.prompt}}`). A bead with neither a usable `title` nor
-  # `description` would still pass `id`/`issue_type` validation and
-  # reach `task.create` with an empty prompt, silently producing a
-  # task no command-phase workflow can act on. Reject it here instead
-  # -- checked independently of `bead_prompt/1` itself, since that
-  # function assumes a binary `title` and would raise on e.g. a
-  # numeric one; a non-binary title is exactly as unusable as a blank
-  # one for this purpose.
+  # (`{{input.prompt}}`). A bead with no usable `title` would still
+  # pass `id`/`issue_type` validation and reach `task.create` with an
+  # unusable prompt, silently producing a task no command-phase
+  # workflow can act on. Reject it here instead.
   defp check_prompt(parsed) when is_map(parsed) do
     title = Map.get(parsed, "title")
     description = Map.get(parsed, "description")
 
-    if blank?(title) and blank?(description) do
+    # `title` is the primary subject; a non-binary or blank title is a
+    # data-integrity problem worth flagging outright rather than
+    # silently salvaging via `description` alone -- `bead_prompt/1`'s
+    # join order puts `title` first for the same reason.
+    if blank?(title) or (not is_nil(description) and blank?(description)) do
       :malformed
     else
       :ok

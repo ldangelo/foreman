@@ -696,8 +696,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert FakeCommandGateway.calls() == []
     end
 
-    test "non-binary title with a valid description is not malformed" do
-      FakeWorkflowCatalog.stub_response({:ok, "fix"})
+    test "non-binary title is malformed even with a valid description" do
       state = %BeadsWatcher{project_id: "proj-numeric-title", read_offset: 0, partial_line: ""}
 
       line =
@@ -706,9 +705,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
-      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
-      assert cmd.payload.prompt == "a real description"
+      assert outcome == :malformed
+      assert FakeCommandGateway.calls() == []
     end
 
     test "whitespace-only title and description is malformed" do
