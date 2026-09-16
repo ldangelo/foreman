@@ -68,6 +68,25 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
   @behaviour ForemanServer.Aggregate
 
+  defmodule ReleaseError do
+    @moduledoc """
+    Raised by `with_lease/4`'s cleanup step when the underlying
+    `lease.release` dispatch genuinely fails (not a domain no-op), so a
+    stuck lease can never masquerade as a successful `with_lease/4`
+    call. Callers that want to treat this as a retriable condition
+    (e.g. `BeadsWatcher.with_beads_lease/2`) rescue this specific
+    struct rather than a blanket exception, so an unrelated bug raised
+    from inside their own callback still propagates and crashes as
+    before.
+    """
+    defexception [:stream_id, :run_id, :reason]
+
+    @impl true
+    def message(%__MODULE__{stream_id: stream_id, run_id: run_id, reason: reason}) do
+      "BeadsDbLease.release failed for #{stream_id} run_id=#{run_id}: #{inspect(reason)}"
+    end
+  end
+
   defmodule Holder do
     @moduledoc "Single lease holder. At most one per lease stream."
     @enforce_keys [:run_id, :task_id, :acquired_at_ms]
@@ -304,17 +323,28 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
   Dispatches `lease.acquire`, polls aggregate state via Registry until
   `holder?(state, run_id)` is true, runs `callback.()` inside a
-  `try/after`, then releases. The release is guaranteed on a raised
-  exception or thrown value from the callback (not on a hard external
-  kill of the calling process), so a crashing `br` call cannot leave the
-  lease permanently held and starve every future claim against the DB.
+  `try/after`, then releases. The release is guaranteed to be attempted
+  on a raised exception or thrown value from the callback (not on a
+  hard external kill of the calling process), so a crashing `br` call
+  cannot leave the lease permanently held and starve every future claim
+  against the DB.
 
-  Returns `{:ok, result}` on success, `{:error, reason}` on failure
-  or timeout. Use this around every `br` call in BeadsAdapter to
-  serialize concurrent writes against the same DB file.
+  Returns `{:ok, result}` on success, `{:error, reason}` on an acquire
+  failure or timeout. Raises `ReleaseError` if the release dispatch
+  itself genuinely fails (actor timeout/crash, node down) -- this is
+  never swallowed to a lying `{:ok, _}`/`{:error, _}` return, since that
+  would hide that the lease is still held. A raised `ReleaseError`
+  replaces (does not chain with) an exception the callback itself
+  raised, per `try/after` semantics. Callers that must not crash on
+  this (e.g. `BeadsWatcher.with_beads_lease/2`) should `rescue
+  ReleaseError` specifically, not exceptions in general, so a genuine
+  bug in their own callback still propagates.
+
+  Use this around every `br` call in BeadsAdapter to serialize
+  concurrent writes against the same DB file.
   """
   @spec with_lease(String.t(), String.t(), String.t(), (-> {:ok, term()} | {:error, term()})) ::
-          {:ok, term()} | {:error, term()}
+          {:ok, term()} | {:error, term()} | no_return()
   def with_lease(db_path, run_id, task_id, callback)
       when is_binary(db_path) and db_path != "" and is_binary(run_id) and
              run_id != "" and is_binary(task_id) and is_function(callback, 0) do
@@ -385,7 +415,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         # (actor timeout/crash, node down), not a domain no-op. Raising
         # surfaces it loudly instead of letting `with_lease/4`'s `after`
         # block report success while the lease is still held.
-        raise "BeadsDbLease.release failed for #{stream_id} run_id=#{run_id}: #{inspect(reason)}"
+        raise ReleaseError, stream_id: stream_id, run_id: run_id, reason: reason
     end
   end
 

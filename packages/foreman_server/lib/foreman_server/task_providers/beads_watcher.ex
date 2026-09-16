@@ -545,23 +545,37 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   #
   # On lease failure (acquisition timeout, dispatch error), the pass is
   # skipped for this cycle — the next poll retries — rather than
-  # crashing the watcher.
+  # crashing the watcher. A genuine release-dispatch failure
+  # (`BeadsDbLease.ReleaseError`) is treated the same way: rescued
+  # specifically (not a blanket exception) so a real bug inside `fun`
+  # itself still propagates and crashes as before.
   defp with_beads_lease(%__MODULE__{database_path: database_path} = state, fun)
        when is_binary(database_path) and database_path != "" and is_function(fun, 0) do
     synthetic_run_id =
       "watcher:" <> state.project_id <> ":" <> to_string(System.system_time(:nanosecond))
 
-    case BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
-           {:ok, fun.()}
-         end) do
-      {:ok, result} ->
-        result
+    try do
+      case BeadsDbLease.with_lease(database_path, synthetic_run_id, synthetic_run_id, fn ->
+             {:ok, fun.()}
+           end) do
+        {:ok, result} ->
+          result
 
-      {:error, reason} ->
+        {:error, reason} ->
+          TaskProviderTelemetry.emit(
+            @error_event,
+            %{system_time: System.system_time()},
+            %{project_id: state.project_id, stage: :lease_acquire, reason: inspect(reason)}
+          )
+
+          {state, %Counters{}}
+      end
+    rescue
+      e in BeadsDbLease.ReleaseError ->
         TaskProviderTelemetry.emit(
           @error_event,
           %{system_time: System.system_time()},
-          %{project_id: state.project_id, stage: :lease_acquire, reason: inspect(reason)}
+          %{project_id: state.project_id, stage: :lease_release, reason: Exception.message(e)}
         )
 
         {state, %Counters{}}
