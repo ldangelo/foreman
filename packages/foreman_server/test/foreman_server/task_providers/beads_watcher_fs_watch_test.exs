@@ -12,11 +12,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
   (`handle_info/2`) are process-local mechanics that a hand-built
   state plus a pure function call cannot exercise.
 
-  Every write here is a malformed (non-JSON) line: `process_line/2`
-  emits `[:watcher, :malformed]` immediately off `decode_line/1`,
-  before any `ProjectionStore` / `Workflow.Catalog` / `CommandGateway`
-  call — so "a line got read and processed" is observable without
-  faking any of the operator-dispatch collaborators.
+  Malformed-line cases prove "a line got read and processed" without
+  faking dispatch collaborators; live-tail dispatch cases write valid
+  Beads lines and assert `task.create`/`task.approve` are dispatched by
+  the already-running watcher, without relying on boot replay or restart.
   """
 
   use ExUnit.Case, async: false
@@ -30,6 +29,64 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
 
   setup :set_mox_global
   setup :verify_on_exit!
+
+  defmodule FakeCommandGateway do
+    @moduledoc false
+
+    def reset, do: :persistent_term.put({__MODULE__, :calls}, [])
+    def calls, do: :persistent_term.get({__MODULE__, :calls}, [])
+
+    def dispatch_system(command, timeout) do
+      prev = :persistent_term.get({__MODULE__, :calls}, [])
+      :persistent_term.put({__MODULE__, :calls}, prev ++ [{command, timeout}])
+      {:ok, nil}
+    end
+
+    def dispatch_system_approval(command, timeout), do: dispatch_system(command, timeout)
+  end
+
+  defmodule FakeProjectionStore do
+    @moduledoc false
+    def get_task(external_id: bead_id) when is_binary(bead_id), do: nil
+  end
+
+  defmodule FakeWorkflowCatalog do
+    @moduledoc false
+    def type_to_workflow(_issue_type), do: {:ok, "generic"}
+  end
+
+  setup do
+    original_cg =
+      Application.get_env(:foreman_server, :command_gateway_module, ForemanServer.CommandGateway)
+
+    original_ps =
+      Application.get_env(
+        :foreman_server,
+        :projection_store_module,
+        ForemanServer.ProjectionStore
+      )
+
+    original_wc =
+      Application.get_env(
+        :foreman_server,
+        :workflow_catalog_module,
+        ForemanServer.Workflow.Catalog
+      )
+
+    Application.put_env(:foreman_server, :command_gateway_module, FakeCommandGateway)
+    Application.put_env(:foreman_server, :projection_store_module, FakeProjectionStore)
+    Application.put_env(:foreman_server, :workflow_catalog_module, FakeWorkflowCatalog)
+    FakeCommandGateway.reset()
+
+    on_exit(fn ->
+      Application.put_env(:foreman_server, :command_gateway_module, original_cg)
+      Application.put_env(:foreman_server, :projection_store_module, original_ps)
+      Application.put_env(:foreman_server, :workflow_catalog_module, original_wc)
+      FakeCommandGateway.reset()
+    end)
+
+    :ok
+  end
 
   defp sync_status_response(coverage_drift) do
     body = %{
@@ -148,6 +205,25 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
     end
   end
 
+  defp valid_bead_line(bead_id) do
+    Jason.encode!(%{
+      "id" => bead_id,
+      "title" => "live tail dispatch #{bead_id}",
+      "issue_type" => "task",
+      "status" => "open"
+    }) <> "\n"
+  end
+
+  defp await_dispatch_calls!(expected_count, timeout_ms \\ 3_000) do
+    wait_for(
+      fn ->
+        calls = FakeCommandGateway.calls()
+        if length(calls) >= expected_count, do: calls
+      end,
+      timeout_ms
+    ) || flunk("expected #{expected_count} dispatch calls from live tail")
+  end
+
   describe "filesystem watch is the primary (<1s) trigger" do
     test "a JSONL write is picked up without waiting for the poll cycle", %{tmp_dir: tmp_dir} do
       jsonl_path = Path.join(tmp_dir, "issues.jsonl")
@@ -174,6 +250,30 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
 
       assert_receive {:telemetry, ^ref, metadata}, 3_000
       assert metadata[:project_id] == project_id
+
+      GenServer.stop(pid)
+    end
+
+    test "a valid Beads line dispatches from the live fs-watch tail without restart", %{
+      tmp_dir: tmp_dir
+    } do
+      jsonl_path = Path.join(tmp_dir, "issues.jsonl")
+      File.write!(jsonl_path, "")
+
+      project_id = "proj-fswatch-dispatch-#{System.unique_integer([:positive, :monotonic])}"
+      pid = boot_watcher(project_id, tmp_dir, jsonl_path, poll_ms: 60_000)
+
+      await_fs_watch_write!(jsonl_path, "warmup")
+      FakeCommandGateway.reset()
+
+      File.write!(jsonl_path, valid_bead_line("bead-live-fs"), [:append])
+
+      [{create_cmd, 5_000}, {approve_cmd, 5_000}] = await_dispatch_calls!(2)
+      assert create_cmd.type == "task.create"
+      assert create_cmd.payload.external_id == "bead-live-fs"
+      assert create_cmd.payload.workflow_type == "generic"
+      assert approve_cmd.type == "task.approve"
+      assert approve_cmd.payload.task_id == "beads:#{project_id}:bead-live-fs"
 
       GenServer.stop(pid)
     end
@@ -248,6 +348,29 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
 
       assert_receive {:telemetry, ^ref, metadata}, 1_000
       assert metadata[:project_id] == project_id
+
+      GenServer.stop(pid)
+    end
+
+    test "poll dispatches a valid Beads line when the fs-watch notification is missed", %{
+      tmp_dir: tmp_dir
+    } do
+      jsonl_path = Path.join(tmp_dir, "issues.jsonl")
+      File.write!(jsonl_path, "")
+
+      project_id = "proj-poll-dispatch-#{System.unique_integer([:positive, :monotonic])}"
+      pid = boot_watcher(project_id, tmp_dir, jsonl_path, poll_ms: 200)
+
+      :sys.replace_state(pid, fn state -> %{state | fs_watcher_pid: :simulated_missed_watch} end)
+      FakeCommandGateway.reset()
+
+      File.write!(jsonl_path, valid_bead_line("bead-live-poll"), [:append])
+
+      [{create_cmd, 5_000}, {approve_cmd, 5_000}] = await_dispatch_calls!(2, 1_000)
+      assert create_cmd.type == "task.create"
+      assert create_cmd.payload.external_id == "bead-live-poll"
+      assert approve_cmd.type == "task.approve"
+      assert approve_cmd.payload.task_id == "beads:#{project_id}:bead-live-poll"
 
       GenServer.stop(pid)
     end
