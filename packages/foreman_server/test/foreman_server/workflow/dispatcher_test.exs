@@ -238,6 +238,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         run_id: run_id,
         project_id: project_id,
         approval_id: approval_id,
+        status: "in_progress",
         workflow_snapshot: workflow_snapshot,
         phase_specs: phase_specs
       }
@@ -316,6 +317,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         run_id: run_id,
         project_id: project_id,
         approval_id: approval_id,
+        status: "in_progress",
         workflow_snapshot: workflow_snapshot,
         phase_specs: phase_specs
       }
