@@ -202,10 +202,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
   defp apply_task_dispatch_handler(event_type, envelope, state) do
     dispatch_task_event(event_type, envelope, state)
   rescue
-    exception ->
+    # Scoped to the exception classes a malformed/incomplete historical
+    # projection shape actually raises (a missing required field failing a
+    # function head or struct/map pattern match) -- not a blanket rescue.
+    # A genuinely unexpected error class (e.g. an ArgumentError from a real
+    # logic bug) still propagates and crashes as before; only the proven,
+    # now-tested "historical data doesn't have the shape this handler
+    # expects" failure mode degrades to a logged skip.
+    e in [FunctionClauseError, MatchError, KeyError, BadMapError, BadStructError] ->
       Logger.error(
-        "ForemanServer.Workflow.Dispatcher: #{event_type} handling crashed: " <>
-          Exception.format(:error, exception, __STACKTRACE__)
+        "ForemanServer.Workflow.Dispatcher: #{event_type} handling hit a malformed projection shape: " <>
+          Exception.format(:error, e, __STACKTRACE__)
       )
 
       {:noreply, state}
