@@ -311,13 +311,12 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     defp open_state(tmp, content) do
       path = Path.join(tmp, "issues.jsonl")
       File.write!(path, content)
-      {:ok, handle} = :file.open(path, [:read, :binary, :raw])
 
       %BeadsWatcher{
         project_id: "proj-r",
         jsonl_path: path,
         database_path: Path.join(tmp, "beads.db"),
-        file_handle: handle,
+        file_handle: nil,
         read_offset: 0,
         partial_line: "",
         poll_ms: 1000
@@ -380,6 +379,36 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       # Two beads imported across the two reads, each create+approve
       # pair producing two dispatch_system/2 calls.
       assert length(FakeCommandGateway.calls()) == 4
+    end
+
+    test "subsequent read_more follows atomic JSONL rename instead of stale inode fd", %{tmp: tmp} do
+      FakeCommandGateway.stub_response({:ok, nil})
+
+      first = ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n)
+      second = ~s({"id":"b","title":"b","issue_type":"task","status":"open"}\n)
+
+      state = open_state(tmp, first)
+      {state, counters1} = BeadsWatcher.read_more(state)
+
+      assert counters1.lines_imported == 1
+      assert state.read_offset == byte_size(first)
+
+      {:ok, stale_handle} = :file.open(state.jsonl_path, [:read, :binary, :raw])
+      state = %{state | file_handle: stale_handle}
+
+      tmp_export = state.jsonl_path <> ".tmp"
+      File.write!(tmp_export, first <> second)
+      File.rename!(tmp_export, state.jsonl_path)
+
+      {state2, counters2} = BeadsWatcher.read_more(state)
+
+      assert state2.read_offset == byte_size(first <> second)
+      assert state2.partial_line == ""
+      assert counters2.lines_imported == 1
+      assert counters2.lines_processed == 1
+      assert length(FakeCommandGateway.calls()) == 4
+
+      :file.close(stale_handle)
     end
 
     test "a transient line holds the retry cursor at its own start but does not block later lines in the same pass",

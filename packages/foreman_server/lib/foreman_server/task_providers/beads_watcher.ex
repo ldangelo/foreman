@@ -6,9 +6,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     * On `init/1`, resolves the JSONL path via the configured `BrRunner`
       implementation (`@runner`, default `SystemBrRunner`, test override
-      `BrRunnerMock`), opens the file with `:file.open/2`, then returns
-      via `{:continue, :boot_replay}`. `handle_continue/2` runs
-      `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority)
+      `BrRunnerMock`), verifies the file can be opened, then returns
+      via `{:continue, :boot_replay}`. Each read pass re-opens the JSONL
+      path so atomic write-temp-then-rename exports are followed across
+      inode rotation instead of tailing a stale descriptor. `handle_continue/2`
+      runs `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority)
       only once `CommandRouter` is registered — checked via
       `command_router_ready?/0` and retried every `@boot_replay_retry_ms`
       otherwise, so a watcher that starts (opt-in, before `CommandRouter`
@@ -138,7 +140,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           project_id: String.t(),
           jsonl_path: String.t(),
           database_path: String.t(),
-          file_handle: :file.io_device(),
+          file_handle: :file.io_device() | nil,
           read_offset: non_neg_integer(),
           partial_line: binary(),
           poll_ms: pos_integer(),
@@ -286,31 +288,22 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     with :ok <- check_coverage_drift(project_id, database_path),
          {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
-         {:ok, file_handle} <- :file.open(jsonl_path, [:read, :binary, :raw]) do
+         :ok <- ensure_readable_jsonl(jsonl_path) do
       initial = %__MODULE__{
         project_id: project_id,
         jsonl_path: jsonl_path,
         database_path: database_path,
-        file_handle: file_handle,
+        file_handle: nil,
         read_offset: 0,
         partial_line: "",
         poll_ms: poll_ms
       }
 
       if command_router_ready?() do
-        try do
-          state = boot_replay(initial)
-          state = start_fs_watcher(state)
-          schedule_read_more(state.poll_ms)
-          {:ok, state}
-        rescue
-          e ->
-            # Close the file handle on any boot-replay failure so we don't
-            # leak an OS file descriptor. terminate/2 is NOT called when
-            # init raises, so the rescue branch owns the cleanup.
-            :file.close(file_handle)
-            reraise e, __STACKTRACE__
-        end
+        state = boot_replay(initial)
+        state = start_fs_watcher(state)
+        schedule_read_more(state.poll_ms)
+        {:ok, state}
       else
         # `CommandRouter` starts after this (opt-in) watcher in the
         # application's children list (`maybe_beads_watcher_child/0` is
@@ -685,10 +678,20 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  defp read_to_eof(%__MODULE__{file_handle: dev, read_offset: offset}) do
-    case :file.position(dev, offset) do
-      {:ok, ^offset} -> read_chunk_loop(dev, "")
-      {:error, reason} -> {:error, reason}
+  defp read_to_eof(%__MODULE__{jsonl_path: path, read_offset: offset}) do
+    case :file.open(path, [:read, :binary, :raw]) do
+      {:ok, dev} ->
+        try do
+          case :file.position(dev, offset) do
+            {:ok, ^offset} -> read_chunk_loop(dev, "")
+            {:error, reason} -> {:error, reason}
+          end
+        after
+          :file.close(dev)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1504,6 +1507,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
       {:error, _reason} ->
         :ok
+    end
+  end
+
+  defp ensure_readable_jsonl(path) when is_binary(path) do
+    case :file.open(path, [:read, :binary, :raw]) do
+      {:ok, dev} ->
+        :file.close(dev)
+        :ok
+
+      {:error, reason} ->
+        {:error, {:file_open_failed, reason}}
     end
   end
 
