@@ -127,12 +127,11 @@ devbox run env:list             # current env vars + endpoints
 ```
 
 The dev Phoenix server listens on `http://127.0.0.1:4766`
-(`packages/foreman_server/config/dev.exs`). The Go CLI defaults to
-`http://127.0.0.1:4000` — set `FOREMAN_API_URL` to point it at the dev
-server:
+(`packages/foreman_server/config/dev.exs`). The Go CLI also defaults to
+`http://127.0.0.1:4766`; set `FOREMAN_API_URL` only when you need to
+override that endpoint:
 
 ```bash
-export FOREMAN_API_URL=http://127.0.0.1:4766
 foreman project list
 ```
 
