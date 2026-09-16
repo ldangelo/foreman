@@ -1811,6 +1811,21 @@ target workflow's manifest (and a matching `foreman init --force` to refresh
 the installed runtime copy) — the mapping does not grow automatically as
 workflows are added.
 
+**A dispatched task's `prompt` comes from the bead's own title/description,
+not the operator.** `BeadsWatcher`'s `task.create` payload sets `prompt:`
+from the bead's `title` (plus `description` when present, joined with a
+blank line) — `synthesize_task_create_envelope/5` and `bead_prompt/1` in
+`beads_watcher.ex`. This is the ONLY channel a `command:`-type phase has
+for its subject: `CommandGateway.enrich_approval_via_workflow/2` carries
+`Task.prompt` from the task projection onto the `task.approve` command,
+and `Approval.prepare/2`'s `maybe_put_prompt/2` freezes it onto
+`workflow_snapshot["input"]["prompt"]`, which is what `{{input.prompt}}`
+substitutes into a manifest's `command:` string (e.g. `fix.yaml`'s
+`/skill:ensemble-fix-issue {{input.prompt}} --foreman`). A bead whose
+`title` and `description` are both blank (or non-string) is rejected as
+`:malformed` before `task.create` — a bead with no usable prompt can
+never produce a dispatchable command-phase argument.
+
 **BeadsWatcher itself is opt-in, off by default** (`config :foreman_server,
 :start_beads_watcher?, false`) — set it to `true` (dev-only; do not commit a
 default flip to `main`'s `config/dev.exs`) to run one watcher per registered

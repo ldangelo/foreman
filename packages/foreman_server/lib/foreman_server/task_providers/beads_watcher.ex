@@ -892,6 +892,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     with {:ok, parsed} <- decode_line(line),
          :ok <- check_foreman_tag(state, parsed),
+         :ok <- check_prompt(parsed),
          :ok <- check_dedupe(state, parsed),
          :ok <- check_status(state, parsed),
          {:ok, workflow_type} <- select_workflow(state, parsed),
@@ -961,6 +962,30 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     agent_context = Map.get(parsed, "agent_context", %{}) || %{}
     is_map(agent_context) and Map.has_key?(agent_context, "foreman")
   end
+
+  # ----- Prompt validation --------------------------------------------
+  # `bead_prompt/1` (see `synthesize_task_create_envelope/5`) is the
+  # ONLY channel a `command:` phase has for its subject
+  # (`{{input.prompt}}`). A bead with neither a usable `title` nor
+  # `description` would still pass `id`/`issue_type` validation and
+  # reach `task.create` with an empty prompt, silently producing a
+  # task no command-phase workflow can act on. Reject it here instead
+  # -- checked independently of `bead_prompt/1` itself, since that
+  # function assumes a binary `title` and would raise on e.g. a
+  # numeric one; a non-binary title is exactly as unusable as a blank
+  # one for this purpose.
+  defp check_prompt(parsed) when is_map(parsed) do
+    title = Map.get(parsed, "title")
+    description = Map.get(parsed, "description")
+
+    if blank?(title) and blank?(description) do
+      :malformed
+    else
+      :ok
+    end
+  end
+
+  defp blank?(value), do: not (is_binary(value) and value != "")
 
   # ----- ProjectionStore dedupe (AC-022-2) --------------------------------
 
@@ -1083,6 +1108,53 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # the trd_path JSON shape stays illustrative since only the operator
   # knows the real path to supply.
   defp block_missing_trd_path(state, bead_id) when is_binary(bead_id) and bead_id != "" do
+    # The cursor no longer halts on an earlier held :transient line
+    # (see `apply_3_way_cursor/3`), so this line can be re-scanned on a
+    # later poll while the earlier line is still unresolved. Without a
+    # fresh check, a bead already transitioned to "blocked" by a prior
+    # pass would be re-blocked with a duplicate `br update` transition
+    # comment on every subsequent poll. Confirm current status live
+    # before mutating; skip (no-op, :ok) if it's already moved off
+    # "open" — the file's own cached `status` field is exactly the
+    # stale value this check exists to not trust.
+    case current_bead_status(state, bead_id) do
+      {:ok, "open"} -> do_block_missing_trd_path(state, bead_id)
+      {:ok, _already_transitioned} -> :ok
+      {:error, _reason} -> do_block_missing_trd_path(state, bead_id)
+    end
+  end
+
+  defp block_missing_trd_path(state, _bead_id) do
+    # No `id` to target with `br update` — nothing to block. Still emit
+    # telemetry so the missing-trd_path outcome is observable; the line
+    # advances via :skipped either way (this bead cannot be acted on).
+    TaskProviderTelemetry.emit(
+      @status_gate_skipped_missing_trd_path_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: nil}
+    )
+
+    :ok
+  end
+
+  defp current_bead_status(state, bead_id) do
+    request = {:show, %{id: bead_id}}
+    project_config = %{database_path: state.database_path}
+
+    case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+      {:ok, %{stdout: stdout}} ->
+        case Jason.decode(stdout) do
+          {:ok, %{"status" => status}} when is_binary(status) -> {:ok, status}
+          {:ok, [%{"status" => status} | _]} when is_binary(status) -> {:ok, status}
+          _other -> {:error, :status_undecodable}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_block_missing_trd_path(state, bead_id) do
     comment =
       "Blocked: workflow requires trd_path in agent_context. Re-run: br update #{bead_id} --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
 
@@ -1127,19 +1199,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     )
 
     update_result
-  end
-
-  defp block_missing_trd_path(state, _bead_id) do
-    # No `id` to target with `br update` — nothing to block. Still emit
-    # telemetry so the missing-trd_path outcome is observable; the line
-    # advances via :skipped either way (this bead cannot be acted on).
-    TaskProviderTelemetry.emit(
-      @status_gate_skipped_missing_trd_path_event,
-      %{system_time: System.system_time()},
-      %{project_id: state.project_id, bead_id: nil}
-    )
-
-    :ok
   end
 
   # ----- Dispatch new bead (AC-022-1) -------------------------------------
@@ -1194,7 +1253,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   defp bead_prompt(parsed) do
-    title = Map.get(parsed, "title", "")
+    title =
+      case Map.get(parsed, "title") do
+        title when is_binary(title) -> title
+        _non_binary_or_absent -> ""
+      end
 
     case Map.get(parsed, "description") do
       description when is_binary(description) and description != "" ->

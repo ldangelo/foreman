@@ -312,17 +312,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert cmd.payload.prompt == "just the title"
     end
 
-    test "task.create payload's prompt is an empty string, not nil, when title and description are both absent" do
+    test "title and description both absent is malformed, not imported with an empty prompt" do
       state = %BeadsWatcher{project_id: "proj-prompt-3", read_offset: 0, partial_line: ""}
 
       line = ~s({"id":"bead-no-title","issue_type":"task","status":"open"})
 
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
-      assert outcome == :imported
-
-      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
-      assert cmd.payload.prompt == ""
+      assert outcome == :malformed
+      assert FakeCommandGateway.calls() == []
     end
   end
 
@@ -674,6 +672,44 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert new_state.read_offset == byte_size(line) + 1
       assert FakeCommandGateway.calls() == []
     end
+
+    test "empty title and description is malformed -- no task is created or approved" do
+      state = %BeadsWatcher{project_id: "proj-no-prompt", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-no-prompt","title":"","description":"","status":"open","issue_type":"bug"})
+
+      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert new_state.read_offset == byte_size(line) + 1
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "missing title and description entirely is malformed" do
+      state = %BeadsWatcher{project_id: "proj-no-prompt-2", read_offset: 0, partial_line: ""}
+      line = ~s({"id":"bead-no-fields","status":"open","issue_type":"bug"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "non-binary title with a valid description is not malformed" do
+      FakeWorkflowCatalog.stub_response({:ok, "fix"})
+      state = %BeadsWatcher{project_id: "proj-numeric-title", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-numeric-title","title":42,"description":"a real description",) <>
+          ~s("status":"open","issue_type":"bug"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.prompt == "\n\na real description"
+    end
   end
 
   # --- trd_path extraction and blocked transition (TRD-006-TEST) ---------
@@ -682,23 +718,23 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     test "missing trd_path blocks the bead with the exact comment text and creates no task" do
       FakeWorkflowCatalog.stub_response({:ok, "implement-trd"})
 
-      expect(BrRunnerMock, :cmd, fn request, _project_config, _opts ->
-        assert {:update,
-                %{
-                  flags: [
-                    "bead-missing-trd",
-                    "--status",
-                    "blocked",
-                    "--transition-comment",
-                    comment
-                  ]
-                }} = request
+      expect(BrRunnerMock, :cmd, 2, fn request, _project_config, _opts ->
+        case request do
+          {:show, %{id: "bead-missing-trd"}} ->
+            {:ok, %{stdout: ~s({"status":"open"}), stderr: "", exit_code: 0}}
 
-        assert comment ==
-                 "Blocked: workflow requires trd_path in agent_context. Re-run: " <>
-                   "br update bead-missing-trd --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
+          {:update, %{flags: flags}} ->
+            assert flags == [
+                     "bead-missing-trd",
+                     "--status",
+                     "blocked",
+                     "--transition-comment",
+                     "Blocked: workflow requires trd_path in agent_context. Re-run: " <>
+                       "br update bead-missing-trd --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
+                   ]
 
-        {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+            {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+        end
       end)
 
       state = %BeadsWatcher{
@@ -721,8 +757,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     test "empty trd_path string is treated the same as missing" do
       FakeWorkflowCatalog.stub_response({:ok, "implement-trd-beads"})
 
-      expect(BrRunnerMock, :cmd, fn _request, _project_config, _opts ->
-        {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+      expect(BrRunnerMock, :cmd, 2, fn request, _project_config, _opts ->
+        case request do
+          {:show, %{id: "bead-empty-trd"}} ->
+            {:ok, %{stdout: ~s({"status":"open"}), stderr: "", exit_code: 0}}
+
+          {:update, _flags} ->
+            {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+        end
       end)
 
       state = %BeadsWatcher{
@@ -735,6 +777,36 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       line =
         ~s({"id":"bead-empty-trd","title":"x","status":"open","issue_type":"implement_trd_beads",) <>
           ~s("agent_context":{"trd_path":""}})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :skipped
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "missing trd_path skips the br update when the bead is already blocked" do
+      FakeWorkflowCatalog.stub_response({:ok, "implement-trd"})
+
+      # Regression: apply_3_way_cursor/3 no longer halts on an earlier
+      # transient line, so this line can be re-scanned on a later poll
+      # while an earlier line is still unresolved. A stale re-scan must
+      # not re-issue `br update` once the bead has already transitioned
+      # off "open" -- confirmed live via a fresh :show, not the file's
+      # own cached (possibly stale) status field.
+      expect(BrRunnerMock, :cmd, fn request, _project_config, _opts ->
+        assert {:show, %{id: "bead-already-blocked"}} = request
+        {:ok, %{stdout: ~s({"status":"blocked"}), stderr: "", exit_code: 0}}
+      end)
+
+      state = %BeadsWatcher{
+        project_id: "proj-trd",
+        database_path: "/tmp/proj-trd.db",
+        read_offset: 0,
+        partial_line: ""
+      }
+
+      line =
+        ~s({"id":"bead-already-blocked","title":"x","status":"open","issue_type":"implement_trd"})
 
       {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
 
