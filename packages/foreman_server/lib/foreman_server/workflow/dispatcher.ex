@@ -53,7 +53,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def init(_init_arg) do
-    case ProjectionStore.subscribe(replay_existing: true) do
+    case safe_subscribe() do
       :ok ->
         {:ok, %{}}
 
@@ -66,13 +66,36 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def handle_info(:retry_subscribe, state) do
-    case ProjectionStore.subscribe(replay_existing: true) do
+    case safe_subscribe() do
       :ok ->
         {:noreply, %{state | subscriber: :subscribed}}
 
       _ ->
         Process.send_after(self(), :retry_subscribe, 50)
         {:noreply, state}
+    end
+  end
+
+  # Same rationale as safe_dispatch_system/1 below: replay_existing: true
+  # reads and replays the full committed event log inside ProjectionStore's
+  # own handle_call, which grows with the event log's lifetime. subscribe/1
+  # already raises its own GenServer.call timeout to 30s to make that
+  # unlikely in practice, but a sufficiently large log (or a genuinely
+  # wedged ProjectionStore) must still degrade into this module's existing
+  # retry loop rather than crash Dispatcher's boot -- an uncaught
+  # GenServer.call exit here is exactly the "sweep's own
+  # ProjectionStore.list_tasks() GenServer.call timed out under load and
+  # crashed Dispatcher itself" failure mode this bug's own history records.
+  defp safe_subscribe do
+    try do
+      ProjectionStore.subscribe(replay_existing: true)
+    catch
+      :exit, exit_reason ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: ProjectionStore.subscribe exited: #{inspect(exit_reason)}"
+        )
+
+        {:error, {:subscribe_exit, exit_reason}}
     end
   end
 
@@ -438,7 +461,6 @@ defmodule ForemanServer.Workflow.Dispatcher do
   defp task_ready_for_approval?(task_id, approval_id) do
     case ProjectionStore.task_projection(task_id) do
       %{status: "ready", approval_id: ^approval_id} -> true
-      %{"status" => "ready", "approval_id" => ^approval_id} -> true
       _ -> false
     end
   end

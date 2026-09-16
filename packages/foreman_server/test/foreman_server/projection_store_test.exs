@@ -37,6 +37,18 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert_replayed_project_registered(project_id)
   end
 
+  test "subscribe rejects unknown options, non-boolean replay_existing, and duplicate keys" do
+    assert_raise ArgumentError, fn -> ProjectionStore.subscribe(bogus: true) end
+    assert_raise ArgumentError, fn -> ProjectionStore.subscribe(replay_existing: "yes") end
+
+    assert_raise ArgumentError, fn ->
+      ProjectionStore.subscribe(replay_existing: true, replay_existing: false)
+    end
+
+    assert :ok = ProjectionStore.subscribe()
+    assert :ok = ProjectionStore.subscribe(replay_existing: false)
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 
