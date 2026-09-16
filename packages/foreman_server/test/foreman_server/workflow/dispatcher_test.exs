@@ -248,7 +248,10 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       :meck.new(ForemanServer.CommandRouter, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
-      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> task_proj
+        other -> :meck.passthrough([other])
+      end)
 
       :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload ->
         send(parent, {:run_admission_start, payload})
@@ -326,7 +329,10 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
-      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> task_proj
+        other -> :meck.passthrough([other])
+      end)
 
       :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, :slot_queued}
@@ -380,8 +386,9 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       # supervisor's restart budget (506 failures in one CI run).
       :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
 
-      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id ->
-        %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}
+        other -> :meck.passthrough([other])
       end)
 
       on_exit(fn ->
