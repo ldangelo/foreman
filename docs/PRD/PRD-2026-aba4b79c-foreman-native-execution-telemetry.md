@@ -76,7 +76,7 @@ The conclusion is not "Foreman lacks a telemetry model." It is "Foreman has a te
 
 ### 2.4 Live push exists but carries nothing
 
-`ProjectionStore.subscribe/0` is a plain `send/2` fan-out — the GenServer monitors subscriber pids and sends `{:projection_event, event}` with the full decoded event on every `apply_events` call. This is in-process only and is what `Workflow.Dispatcher` consumes.
+`ProjectionStore.subscribe/1` is a plain `send/2` fan-out — the GenServer monitors subscriber pids and sends `{:projection_event, event}` with the full decoded event on every `apply_events` call. With `replay_existing: true`, it replays the committed event log before returning. This is in-process only and is what `Workflow.Dispatcher` consumes.
 
 Separately, `Phoenix.PubSub` **is** configured and started in `application.ex`, and `CommandRouter.broadcast_debug_updates/1` runs after every successful command append, broadcasting to topics `runs`, `runs:<run_id>`, `phases`, `phases:<phase_id>`, `workers`, `workers:<worker_id>`. But the payload is a bare `{:debug_state_changed, topic}` — no event content. The four LiveViews (`DebugDashboardLive`, `RunDebugLive`, `PhaseDebugLive`, `WorkerDebugLive`) subscribe, ignore the message body entirely, and re-fetch aggregate state, with a one-minute poll as a fallback. They are gated by `if Mix.env() == :dev` in the router.
 
@@ -325,7 +325,7 @@ Total: 16 requirements, 48 acceptance criteria.
 | Worker event family exists | `lib/foreman_server/aggregates/worker.ex` |
 | Overwatch never invoked in production | `lib/foreman_server/overwatch.ex` — `start_phase/2`; enabled only in `config/dev.exs` |
 | `ToolCall`, `ArtifactReport`, `BoardItemStateMachine` have no dispatch sites | `lib/foreman_server/aggregates/{tool_call,artifact_report,board_item_state_machine}.ex` |
-| Projection fan-out is plain `send/2` | `lib/foreman_server/projection_store.ex` — `subscribe/0` |
+| Projection fan-out is plain `send/2` | `lib/foreman_server/projection_store.ex` — `subscribe/1` |
 | PubSub payload is content-free | `lib/foreman_server/command_router.ex` — `broadcast_debug_updates/1` |
 | LiveViews are dev-gated and re-fetch | `lib/foreman_server/debug_views.ex`; `lib/foreman_server_web/router.ex` |
 | Per-phase artifact is already durable | `lib/foreman_server/workflow/run_executor.ex` — `ArtifactTemplate.write/4`, `describe/1` |

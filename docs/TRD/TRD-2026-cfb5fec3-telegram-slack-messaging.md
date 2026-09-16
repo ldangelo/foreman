@@ -33,7 +33,7 @@ Refinement pass v1.0.1 source-verified the existing server/CLI surfaces, closed 
 - `ForemanServer.Recovery.do_detect/1` scans `ProjectionStore.list_runs/0`, filters non-terminal runs, reads `last_event_at`, and defaults `:run_stale_after_ms` to five minutes; messaging must observe/extend this path, not add a second stall detector.
 - `ForemanServer.Workflow.RunExecutor.emit_phase_failure/4` dispatches `phase.fail`, then delegates to `emit_run_failure/2`, which treats `{:run_terminal, _}` as idempotent success and propagates other dispatch failures. Failure notification hooks must preserve that total handling.
 - `ProjectionStore.run/1` and `ProjectionStore.phases_for_run/1` are bounded run-detail read surfaces. MCP `foreman_run_get` returns the raw run projection, and `foreman_run_status` builds a `RunStatus` DTO from those two reads; notification state must extend both read paths without weakening required identity/terminal checks.
-- `ProjectionStore.subscribe/0` broadcasts `{:projection_event, event}` after `apply_events/1`/rebuild. The dispatcher can subscribe to this live event stream, but tests must pin no duplicate sends during rebuild/replay.
+- `ProjectionStore.subscribe/1` broadcasts `{:projection_event, event}` after `apply_events/1`/rebuild. With `replay_existing: true`, it replays the committed event log before returning. The dispatcher can subscribe to this live event stream, but tests must pin no duplicate sends during rebuild/replay.
 - `EventCodec` derives its registry from `lib/foreman_server/events/*.ex`; adding event structs registers them, but replay tests must pin strict decoding and unknown-key rejection.
 - `ProjectUpdated` currently enforces only `project_id` and `task_provider`, while `ProjectionStore.apply_event_by_type/3` reads optional `:config` into the project projection. Messaging project config should use that config path and update the event struct plus aggregate tests if strict project-update commands persist config.
 - `PhaseSpec` whitelists known phase keys and drops unrecognized keys. Workflow-level `notifications:` settings must be normalized at the workflow snapshot/catalog boundary rather than hidden in arbitrary phase maps.
@@ -74,7 +74,7 @@ Foreman mode: auto-selected Option C (event-sourced notification pipeline with p
 | DTOs | `messaging/notification.ex`, `destination.ex`, `config.ex`, `delivery_result.ex` | Provider-neutral structs and validators. Unknown keys rejected. |
 | Aggregate | `aggregates/notification.ex` | Event-sourced dedupe/attempt lifecycle on `notification:<correlation_id>`. |
 | Events | `notification_enqueued/suppressed/delivery_attempted/delivery_succeeded/delivery_failed.ex` | Durable notification lifecycle source of truth. |
-| Dispatcher | `messaging/dispatcher.ex` | Supervised `ProjectionStore.subscribe/0` consumer for enqueue events; dispatches provider I/O after local enqueue and ignores replay/rebuild duplicates by notification id/attempt id. |
+| Dispatcher | `messaging/dispatcher.ex` | Supervised `ProjectionStore.subscribe/1` consumer for enqueue events; dispatches provider I/O after local enqueue and ignores replay/rebuild duplicates by notification id/attempt id. |
 | Providers | `messaging/provider.ex`, `providers/telegram.ex`, `providers/slack.ex` | Behavior plus HTTP adapters; no network in tests. |
 | Rendering | `messaging/renderer.ex`, `messaging/redactor.ex` | Safe-field rendering and secret/private URL redaction. |
 | Config | `messaging/config_resolver.ex` | Workflow `notifications:` → project config → `:foreman_server, :messaging`; disabled by default. |
@@ -85,7 +85,7 @@ Foreman mode: auto-selected Option C (event-sourced notification pipeline with p
 
 > **Note (2026-09-05):** `messaging/dispatcher.ex` is not part of this slice's
 > diff — this TRD row documents the target shape for whoever implements it.
-> `ProjectionStore.subscribe/0` only delivers live events to current
+> `ProjectionStore.subscribe/1` only delivers live events to current (use `replay_existing: true` for catch-up)
 > subscribers, so the dispatcher implementation MUST add durable recovery
 > (replay/catch-up keyed by notification id and attempt id, plus a
 > restart-recovery test) or a Foreman restart can leave notifications stuck
@@ -203,7 +203,7 @@ No foundational TRD capabilities were registered by `trd-graph-cli capabilities 
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-010-3
   - Implementation AC checklist:
     - Given a lifecycle event triggers messaging, when provider I/O is slow, then the lifecycle caller returns after local enqueue without waiting on HTTP.
-    - Given `ProjectionStore.subscribe/0` delivers live or rebuild projection events, when the dispatcher sees an already-attempted notification id, then no duplicate provider call occurs.
+    - Given `ProjectionStore.subscribe/1` delivers live or rebuild projection events, when the dispatcher sees an already-attempted notification id, then no duplicate provider call occurs.
     - Given provider delivery fails, when the run is otherwise healthy, then the run status does not become failed solely due to messaging.
 
 - [ ] **TRD-005-TEST** — Test dispatcher non-blocking behavior and failed-delivery isolation (4h) [verifies TRD-005] [satisfies REQ-010] [depends: TRD-005]
@@ -495,5 +495,5 @@ After review/approval:
 
 - Source-verified recovery, run failure, projection subscription, EventCodec, ProjectUpdated config, MCP run-status, and CLI run-get surfaces.
 - Added explicit AC-001-3 coverage for unsupported-provider behavior.
-- Tightened dispatcher requirements around `ProjectionStore.subscribe/0` rebuild/replay duplicate avoidance.
+- Tightened dispatcher requirements around `ProjectionStore.subscribe/1` rebuild/replay duplicate avoidance.
 - Raised readiness score from 4.5 to 4.6 without changing scope or task count.
