@@ -110,9 +110,18 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
-  @spec subscribe() :: :ok
-  def subscribe do
-    GenServer.call(__MODULE__, :subscribe)
+  @doc """
+  Subscribe the caller to projection events.
+
+  With `replay_existing: true`, the caller is registered first, then the
+  committed event log is replayed into its mailbox before this call returns.
+  That closes the startup gap for long-lived subscribers: events committed
+  before subscription are replayed, and events committed after subscription are
+  queued behind the subscription call and delivered by the normal broadcast path.
+  """
+  @spec subscribe(keyword()) :: :ok | {:error, term()}
+  def subscribe(opts \\ []) when is_list(opts) do
+    GenServer.call(__MODULE__, {:subscribe, opts})
   end
 
   @doc "Return the projected state for a task, or nil if not found."
@@ -536,10 +545,24 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call(:subscribe, {pid, _ref}, state) do
-    Process.put(:projection_subscribers, Map.put(state.subscribers, pid, true))
+  def handle_call({:subscribe, opts}, {pid, _ref}, state) do
+    subscribers = Map.put(state.subscribers, pid, true)
+    Process.put(:projection_subscribers, subscribers)
     Process.monitor(pid)
-    {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, true)}}
+    state = %{state | subscribers: subscribers}
+
+    if Keyword.get(opts, :replay_existing, false) do
+      case EventStore.read_all_streams_forward(0, 99_999_999) do
+        {:ok, events} ->
+          replay_events(pid, events)
+          {:reply, :ok, state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, %{state | subscribers: Map.delete(subscribers, pid)}}
+      end
+    else
+      {:reply, :ok, state}
+    end
   end
 
   @impl true
@@ -760,6 +783,10 @@ defmodule ForemanServer.ProjectionStore do
     end
 
     state
+  end
+
+  defp replay_events(pid, events) do
+    Enum.each(events, fn event -> send(pid, {:projection_event, event}) end)
   end
 
   # -------------------------------------------------------------------------

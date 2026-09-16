@@ -53,7 +53,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def init(_init_arg) do
-    case ProjectionStore.subscribe() do
+    case ProjectionStore.subscribe(replay_existing: true) do
       :ok ->
         {:ok, %{}}
 
@@ -66,7 +66,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def handle_info(:retry_subscribe, state) do
-    case ProjectionStore.subscribe() do
+    case ProjectionStore.subscribe(replay_existing: true) do
       :ok ->
         {:noreply, %{state | subscriber: :subscribed}}
 
@@ -344,7 +344,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
     task_id = payload["task_id"] || payload[:task_id]
     approval_id = payload["approval_id"] || payload[:approval_id]
 
-    if is_binary(task_id) and task_id != "" and is_binary(approval_id) and approval_id != "" do
+    if is_binary(task_id) and task_id != "" and is_binary(approval_id) and approval_id != "" and
+         task_ready_for_approval?(task_id, approval_id) do
       # Deterministic command_id keyed on (task_id, approval_id) so retries of
       # the same approval collapse through CommandRouter's idempotency path,
       # but a fresh approval for a re-approved task produces a new dispatch.
@@ -382,7 +383,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
       nil ->
         {:noreply, state}
 
-      task_proj ->
+      %{status: "in_progress"} = task_proj ->
         run_payload = RunPayload.from_task_projection(task_proj)
 
         # RunAdmission.start dispatches through several aggregate actors
@@ -428,6 +429,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
             Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
             {:noreply, state}
         end
+
+      _task_proj ->
+        {:noreply, state}
+    end
+  end
+
+  defp task_ready_for_approval?(task_id, approval_id) do
+    case ProjectionStore.task_projection(task_id) do
+      %{status: "ready", approval_id: ^approval_id} -> true
+      %{"status" => "ready", "approval_id" => ^approval_id} -> true
+      _ -> false
     end
   end
 
