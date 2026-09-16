@@ -303,7 +303,11 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   Block until this run holds the Beads DB lease, then execute the callback.
 
   Dispatches `lease.acquire`, polls aggregate state via Registry until
-  `holder?(state, run_id)` is true, runs `callback.()`, then releases.
+  `holder?(state, run_id)` is true, runs `callback.()` inside a
+  `try/after`, then releases. The release is guaranteed on a raised
+  exception or thrown value from the callback (not on a hard external
+  kill of the calling process), so a crashing `br` call cannot leave the
+  lease permanently held and starve every future claim against the DB.
 
   Returns `{:ok, result}` on success, `{:error, reason}` on failure
   or timeout. Use this around every `br` call in BeadsAdapter to
@@ -319,12 +323,12 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
     with :ok <- lease_acquire(stream_id, db_path, run_id, task_id, ms),
          :ok <- poll_until_holder(stream_id, run_id, 50, 100) do
-      result = callback.()
-
-      release_ms = System.system_time(:millisecond)
-      _ = lease_release(stream_id, db_path, run_id, release_ms)
-
-      result
+      try do
+        callback.()
+      after
+        release_ms = System.system_time(:millisecond)
+        _ = lease_release(stream_id, db_path, run_id, release_ms)
+      end
     else
       {:error, _reason} = err ->
         # Remove timed-out waiter so they don't block future writers.
