@@ -65,3 +65,7 @@ config :foreman_server, :mcp,
   # gate stays off in config.exs and test.exs.
   allow_workflow_writes: true,
   allow_insecure_local: true
+
+# BeadsWatcher auto-dispatch disabled (dev opt-in feature, TRD-005)
+config :foreman_server, :start_beads_watcher?, false
+
