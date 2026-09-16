@@ -708,7 +708,39 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       assert outcome == :imported
       [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
-      assert cmd.payload.prompt == "\n\na real description"
+      assert cmd.payload.prompt == "a real description"
+    end
+
+    test "whitespace-only title and description is malformed" do
+      state = %BeadsWatcher{
+        project_id: "proj-whitespace-prompt",
+        read_offset: 0,
+        partial_line: ""
+      }
+
+      line =
+        ~s({"id":"bead-whitespace","title":"   ","description":"\\n\\t ",) <>
+          ~s("status":"open","issue_type":"bug"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :malformed
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "surrounding whitespace on title and description is trimmed from the prompt" do
+      FakeWorkflowCatalog.stub_response({:ok, "fix"})
+      state = %BeadsWatcher{project_id: "proj-trim-prompt", read_offset: 0, partial_line: ""}
+
+      line =
+        ~s({"id":"bead-trim","title":"  padded title  ","description":"  padded desc  ",) <>
+          ~s("status":"open","issue_type":"bug"})
+
+      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
+
+      assert outcome == :imported
+      [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
+      assert cmd.payload.prompt == "padded title\n\npadded desc"
     end
   end
 

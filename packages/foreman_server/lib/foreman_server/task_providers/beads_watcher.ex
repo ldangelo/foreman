@@ -621,17 +621,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   Read from `read_offset` to EOF, split on `\n` (globally), and apply
   the 3-way cursor priority across each complete line.
 
-  Stops at the FIRST transient complete-line so subsequent lines in
-  this read are NOT processed (they will be re-read on the next poll
-  because the next poll seeks to the transient-line start byte and
-  re-reads from there).
+  Scans and reduces ALL complete lines in this read; it does NOT halt at
+  the first transient line. Only the FIRST transient complete-line's
+  start byte is remembered as the retry cursor (`state.read_offset`);
+  every later complete-line in the same read still gets an independent
+  terminal-or-transient attempt via `advance_one_line/2` (see
+  `apply_3_way_cursor/3`) — an earlier bead this project's workflow
+  catalog cannot yet route must not permanently block every bead
+  appended after it. On the next poll the read seeks back to that
+  retry cursor and re-reads from there, so terminally-processed later
+  lines ARE re-scanned; terminal side effects reached through them
+  must therefore be safe to repeat (see `current_bead_status/2`'s live
+  status check before `block_missing_trd_path/2` mutates).
 
   The trailing fragment (bytes after the last terminator) is preserved
-  in `state.partial_line` only when the loop reached EOF without
-  stopping at a transient — when the loop stopped at a transient,
-  the transient-line bytes (already stored by `advance_one_line/2`)
-  take precedence and the trailing fragment is discarded
-  (it will be re-read on the next poll).
+  in `state.partial_line` only when no line in this read held
+  transient — when one did, the held line's own bytes (already stored
+  by `advance_one_line/2` via the retry cursor) take precedence and the
+  trailing fragment is discarded (it will be re-read on the next poll).
 
   This is the loop body shared by boot replay (`boot_replay/1`) and
   tail mode (`handle_info(:read_more, ...)`); the TRD spec calls it
@@ -985,7 +992,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  defp blank?(value), do: not (is_binary(value) and value != "")
+  defp blank?(value), do: not (is_binary(value) and String.trim(value) != "")
 
   # ----- ProjectionStore dedupe (AC-022-2) --------------------------------
 
@@ -1120,6 +1127,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     case current_bead_status(state, bead_id) do
       {:ok, "open"} -> do_block_missing_trd_path(state, bead_id)
       {:ok, _already_transitioned} -> :ok
+      # A `:show` failure (transient runner/CLI error, or output this
+      # watcher cannot decode) does not mean the bead is already
+      # blocked — attempt the transition rather than silently skip it.
+      # `check_trd_path/3` (the sole caller) discards this function's
+      # return value and always advances the line as terminal
+      # (`:skipped`) regardless, so there is no `:transient` outcome to
+      # propagate here without also restructuring that caller; the
+      # worst case on a rare runner error is one redundant `br update`,
+      # not the every-poll spam this guard exists to prevent.
       {:error, _reason} -> do_block_missing_trd_path(state, bead_id)
     end
   end
@@ -1253,20 +1269,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   defp bead_prompt(parsed) do
-    title =
-      case Map.get(parsed, "title") do
-        title when is_binary(title) -> title
-        _non_binary_or_absent -> ""
-      end
+    fields =
+      ["title", "description"]
+      |> Enum.map(&Map.get(parsed, &1))
+      |> Enum.map(&normalize_prompt_field/1)
+      |> Enum.reject(&(&1 == ""))
 
-    case Map.get(parsed, "description") do
-      description when is_binary(description) and description != "" ->
-        title <> "\n\n" <> description
-
-      _ ->
-        title
-    end
+    Enum.join(fields, "\n\n")
   end
+
+  defp normalize_prompt_field(value) when is_binary(value), do: String.trim(value)
+  defp normalize_prompt_field(_non_binary_or_absent), do: ""
 
   defp classify_dispatch_result(state, bead_id, result) do
     cond do
