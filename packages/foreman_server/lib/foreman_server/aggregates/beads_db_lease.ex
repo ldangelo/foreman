@@ -327,7 +327,13 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         callback.()
       after
         release_ms = System.system_time(:millisecond)
-        _ = lease_release(stream_id, db_path, run_id, release_ms)
+        # Raises on a genuine dispatch failure (see lease_release/4) rather
+        # than discarding it -- swallowing it here would report the
+        # `with_lease/4` call as successful while the lease stayed held,
+        # recreating the exact stuck-lease failure mode this function
+        # exists to prevent, just via the release path instead of the
+        # callback path.
+        lease_release(stream_id, db_path, run_id, release_ms)
       end
     else
       {:error, _reason} = err ->
@@ -367,9 +373,19 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
              reason: "br_call_complete"
            }
          }) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, _} -> :ok
+      :ok ->
+        :ok
+
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        # lease.release is idempotent for a free or foreign-held lease (see
+        # module doc), so a rejection here is a genuine dispatch failure
+        # (actor timeout/crash, node down), not a domain no-op. Raising
+        # surfaces it loudly instead of letting `with_lease/4`'s `after`
+        # block report success while the lease is still held.
+        raise "BeadsDbLease.release failed for #{stream_id} run_id=#{run_id}: #{inspect(reason)}"
     end
   end
 
