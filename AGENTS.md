@@ -1821,10 +1821,12 @@ for its subject: `CommandGateway.enrich_approval_via_workflow/2` carries
 and `Approval.prepare/2`'s `maybe_put_prompt/2` freezes it onto
 `workflow_snapshot["input"]["prompt"]`, which is what `{{input.prompt}}`
 substitutes into a manifest's `command:` string (e.g. `fix.yaml`'s
-`/skill:ensemble-fix-issue {{input.prompt}} --foreman`). A bead whose
-`title` and `description` are both blank (or non-string) is rejected as
-`:malformed` before `task.create` — a bead with no usable prompt can
-never produce a dispatchable command-phase argument.
+`/skill:ensemble-fix-issue {{input.prompt}} --foreman`). `title` is
+required: a blank or non-string `title` is rejected as `:malformed`
+before `task.create` regardless of `description` — a non-string title
+is treated as a data-integrity problem, not something to silently
+salvage via `description` alone. A present-but-blank `description` is
+also `:malformed`; an absent `description` is fine (title-only prompt).
 
 **BeadsWatcher itself is opt-in, off by default** (`config :foreman_server,
 :start_beads_watcher?, false`) — set it to `true` (dev-only; do not commit a
