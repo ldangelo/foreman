@@ -365,6 +365,41 @@ defmodule ForemanServer.Workflow.DispatcherTest do
     end
   end
 
+  describe "TaskDispatched survives a malformed/partial task projection" do
+    test "does not crash when the projection is missing run_id/project_id/approval_id/workflow_snapshot" do
+      task_id = "task-malformed-#{System.unique_integer([:positive])}"
+
+      # Reproduces a live CI failure: with `replay_existing: true`, this
+      # handler now runs against the entire accumulated event history on
+      # every Dispatcher restart, so it can be handed a projection that
+      # never went through the normal TaskCreated/TaskApproved/
+      # TaskDispatched chain -- status alone, nothing else. Before the
+      # fix, this crashed Dispatcher with a FunctionClauseError in
+      # RunPayload.from_task_projection/1, which -- because a restart
+      # replays the SAME history again -- crash-looped and exhausted the
+      # supervisor's restart budget (506 failures in one CI run).
+      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
+
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id ->
+        %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}
+      end)
+
+      on_exit(fn ->
+        try do
+          :meck.unload(ForemanServer.ProjectionStore)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      assert {:noreply, %{}} =
+               Dispatcher.handle_info(
+                 {:projection_event, %{event_type: "TaskDispatched", data: %{task_id: task_id}}},
+                 %{}
+               )
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------

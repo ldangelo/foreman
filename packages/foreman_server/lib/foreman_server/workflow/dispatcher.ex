@@ -185,10 +185,36 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp apply_task_dispatch_handler("TaskApproved", envelope, state),
+  # `replay_existing: true` (init/1, handle_info(:retry_subscribe, ...))
+  # means this function now runs against the ENTIRE accumulated event
+  # history on every Dispatcher restart, not just live events -- an
+  # exposure that did not exist before that change. A malformed or
+  # partial projection shape anywhere in that history (verified live: a
+  # task_projection missing run_id/project_id/approval_id/
+  # workflow_snapshot reaching RunPayload.from_task_projection/1's
+  # required-field match) must degrade to a logged skip, not crash this
+  # always-on Dispatcher -- an uncaught crash here restarts Dispatcher,
+  # which replays the SAME historical event again on the next boot,
+  # which crashes again: an unbounded crash loop that exhausts the
+  # supervisor's restart budget and takes the whole application down.
+  # Reproduced in CI (506 failures, "no process ... possibly because its
+  # application isn't started" cascading from exactly this crash).
+  defp apply_task_dispatch_handler(event_type, envelope, state) do
+    dispatch_task_event(event_type, envelope, state)
+  rescue
+    exception ->
+      Logger.error(
+        "ForemanServer.Workflow.Dispatcher: #{event_type} handling crashed: " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      {:noreply, state}
+  end
+
+  defp dispatch_task_event("TaskApproved", envelope, state),
     do: handle_task_approved(envelope, state)
 
-  defp apply_task_dispatch_handler("TaskDispatched", envelope, state),
+  defp dispatch_task_event("TaskDispatched", envelope, state),
     do: handle_task_dispatched(envelope, state)
 
   defp handle_run_terminated(event_type, envelope, state) do
@@ -406,7 +432,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
       nil ->
         {:noreply, state}
 
-      %{status: "in_progress"} = task_proj ->
+      %{
+        status: "in_progress",
+        run_id: _,
+        task_id: _,
+        project_id: _,
+        approval_id: _,
+        workflow_snapshot: _
+      } = task_proj ->
         run_payload = RunPayload.from_task_projection(task_proj)
 
         # RunAdmission.start dispatches through several aggregate actors
