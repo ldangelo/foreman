@@ -79,6 +79,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     from inside their own callback still propagates and crashes as
     before.
     """
+    @enforce_keys [:stream_id, :run_id, :reason]
     defexception [:stream_id, :run_id, :reason]
 
     @impl true
