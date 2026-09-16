@@ -621,17 +621,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   Read from `read_offset` to EOF, split on `\n` (globally), and apply
   the 3-way cursor priority across each complete line.
 
-  Stops at the FIRST transient complete-line so subsequent lines in
-  this read are NOT processed (they will be re-read on the next poll
-  because the next poll seeks to the transient-line start byte and
-  re-reads from there).
+  Scans and reduces ALL complete lines in this read; it does NOT halt at
+  the first transient line. Only the FIRST transient complete-line's
+  start byte is remembered as the retry cursor (`state.read_offset`);
+  every later complete-line in the same read still gets an independent
+  terminal-or-transient attempt via `advance_one_line/2` (see
+  `apply_3_way_cursor/3`) — an earlier bead this project's workflow
+  catalog cannot yet route must not permanently block every bead
+  appended after it. On the next poll the read seeks back to that
+  retry cursor and re-reads from there, so terminally-processed later
+  lines ARE re-scanned; terminal side effects reached through them
+  must therefore be safe to repeat (see `current_bead_status/2`'s live
+  status check before `block_missing_trd_path/2` mutates).
 
   The trailing fragment (bytes after the last terminator) is preserved
-  in `state.partial_line` only when the loop reached EOF without
-  stopping at a transient — when the loop stopped at a transient,
-  the transient-line bytes (already stored by `advance_one_line/2`)
-  take precedence and the trailing fragment is discarded
-  (it will be re-read on the next poll).
+  in `state.partial_line` only when no line in this read held
+  transient — when one did, the held line's own bytes (already stored
+  by `advance_one_line/2` via the retry cursor) take precedence and the
+  trailing fragment is discarded (it will be re-read on the next poll).
 
   This is the loop body shared by boot replay (`boot_replay/1`) and
   tail mode (`handle_info(:read_more, ...)`); the TRD spec calls it
@@ -683,26 +690,42 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        when is_binary(raw_bytes) and is_struct(counters, Counters) do
     {complete_lines, trailing_fragment} = split_complete_lines(raw_bytes)
 
-    {advanced_state, final_counters, stopped_at_transient?} =
-      Enum.reduce_while(complete_lines, {state, counters, false}, fn line,
-                                                                     {acc, acc_counters,
-                                                                      _stopped?} ->
+    {scanned_state, final_counters, first_transient} =
+      Enum.reduce(complete_lines, {state, counters, nil}, fn line, {acc, acc_counters, held} ->
         {acc2, outcome} = advance_one_line(acc, line)
         new_counters = bump_counters(acc_counters, outcome)
 
         case outcome do
           :transient ->
-            {:halt, {acc2, new_counters, true}}
+            # `advance_one_line/2` holds `read_offset` at this line's
+            # start byte on :transient (correct for a single line in
+            # isolation) but does NOT halt the pass anymore: a bead
+            # this project's workflow catalog cannot yet route (or
+            # whose dispatch transiently failed) must not permanently
+            # block every bead appended after it — one unresolved
+            # early bead blocking an entire project's auto-dispatch
+            # forever is the defect this replaces. Remember only the
+            # FIRST transient line's start byte (the correct retry
+            # position — TRD §2.2.6's "first not terminally dispatched
+            # line" definition), then keep scanning with a working
+            # copy whose `read_offset` is advanced manually past this
+            # line so later lines still compute correct dispatch state
+            # and get a fair, independent attempt this same pass.
+            held = held || {acc2.read_offset, line}
+            advanced = %{acc2 | read_offset: acc.read_offset + byte_size(line) + 1}
+            {advanced, new_counters, held}
 
           _ ->
-            {:cont, {acc2, new_counters, false}}
+            {acc2, new_counters, held}
         end
       end)
 
-    if stopped_at_transient? do
-      {advanced_state, final_counters}
-    else
-      {%{advanced_state | partial_line: trailing_fragment}, final_counters}
+    case first_transient do
+      nil ->
+        {%{scanned_state | partial_line: trailing_fragment}, final_counters}
+
+      {offset, line} ->
+        {%{scanned_state | read_offset: offset, partial_line: line}, final_counters}
     end
   end
 
@@ -876,6 +899,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     with {:ok, parsed} <- decode_line(line),
          :ok <- check_foreman_tag(state, parsed),
+         :ok <- check_prompt(parsed),
          :ok <- check_dedupe(state, parsed),
          :ok <- check_status(state, parsed),
          {:ok, workflow_type} <- select_workflow(state, parsed),
@@ -945,6 +969,30 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     agent_context = Map.get(parsed, "agent_context", %{}) || %{}
     is_map(agent_context) and Map.has_key?(agent_context, "foreman")
   end
+
+  # ----- Prompt validation --------------------------------------------
+  # `bead_prompt/1` (see `synthesize_task_create_envelope/5`) is the
+  # ONLY channel a `command:` phase has for its subject
+  # (`{{input.prompt}}`). A bead with no usable `title` would still
+  # pass `id`/`issue_type` validation and reach `task.create` with an
+  # unusable prompt, silently producing a task no command-phase
+  # workflow can act on. Reject it here instead.
+  defp check_prompt(parsed) when is_map(parsed) do
+    title = Map.get(parsed, "title")
+    description = Map.get(parsed, "description")
+
+    # `title` is the primary subject; a non-binary or blank title is a
+    # data-integrity problem worth flagging outright rather than
+    # silently salvaging via `description` alone -- `bead_prompt/1`'s
+    # join order puts `title` first for the same reason.
+    if blank?(title) or (not is_nil(description) and blank?(description)) do
+      :malformed
+    else
+      :ok
+    end
+  end
+
+  defp blank?(value), do: not (is_binary(value) and String.trim(value) != "")
 
   # ----- ProjectionStore dedupe (AC-022-2) --------------------------------
 
@@ -1067,6 +1115,62 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # the trd_path JSON shape stays illustrative since only the operator
   # knows the real path to supply.
   defp block_missing_trd_path(state, bead_id) when is_binary(bead_id) and bead_id != "" do
+    # The cursor no longer halts on an earlier held :transient line
+    # (see `apply_3_way_cursor/3`), so this line can be re-scanned on a
+    # later poll while the earlier line is still unresolved. Without a
+    # fresh check, a bead already transitioned to "blocked" by a prior
+    # pass would be re-blocked with a duplicate `br update` transition
+    # comment on every subsequent poll. Confirm current status live
+    # before mutating; skip (no-op, :ok) if it's already moved off
+    # "open" — the file's own cached `status` field is exactly the
+    # stale value this check exists to not trust.
+    case current_bead_status(state, bead_id) do
+      {:ok, "open"} -> do_block_missing_trd_path(state, bead_id)
+      {:ok, _already_transitioned} -> :ok
+      # A `:show` failure (transient runner/CLI error, or output this
+      # watcher cannot decode) does not mean the bead is already
+      # blocked — attempt the transition rather than silently skip it.
+      # `check_trd_path/3` (the sole caller) discards this function's
+      # return value and always advances the line as terminal
+      # (`:skipped`) regardless, so there is no `:transient` outcome to
+      # propagate here without also restructuring that caller; the
+      # worst case on a rare runner error is one redundant `br update`,
+      # not the every-poll spam this guard exists to prevent.
+      {:error, _reason} -> do_block_missing_trd_path(state, bead_id)
+    end
+  end
+
+  defp block_missing_trd_path(state, _bead_id) do
+    # No `id` to target with `br update` — nothing to block. Still emit
+    # telemetry so the missing-trd_path outcome is observable; the line
+    # advances via :skipped either way (this bead cannot be acted on).
+    TaskProviderTelemetry.emit(
+      @status_gate_skipped_missing_trd_path_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: nil}
+    )
+
+    :ok
+  end
+
+  defp current_bead_status(state, bead_id) do
+    request = {:show, %{id: bead_id}}
+    project_config = %{database_path: state.database_path}
+
+    case @runner.cmd(request, project_config, timeout_ms: @preflight_timeout_ms) do
+      {:ok, %{stdout: stdout}} ->
+        case Jason.decode(stdout) do
+          {:ok, %{"status" => status}} when is_binary(status) -> {:ok, status}
+          {:ok, [%{"status" => status} | _]} when is_binary(status) -> {:ok, status}
+          _other -> {:error, :status_undecodable}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_block_missing_trd_path(state, bead_id) do
     comment =
       "Blocked: workflow requires trd_path in agent_context. Re-run: br update #{bead_id} --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
 
@@ -1113,19 +1217,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     update_result
   end
 
-  defp block_missing_trd_path(state, _bead_id) do
-    # No `id` to target with `br update` — nothing to block. Still emit
-    # telemetry so the missing-trd_path outcome is observable; the line
-    # advances via :skipped either way (this bead cannot be acted on).
-    TaskProviderTelemetry.emit(
-      @status_gate_skipped_missing_trd_path_event,
-      %{system_time: System.system_time()},
-      %{project_id: state.project_id, bead_id: nil}
-    )
-
-    :ok
-  end
-
   # ----- Dispatch new bead (AC-022-1) -------------------------------------
 
   defp dispatch_new_bead(state, parsed, workflow_type, trd_path) when is_map(parsed) do
@@ -1157,6 +1248,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         external_id: bead_id,
         title: Map.get(parsed, "title", ""),
         description: Map.get(parsed, "description"),
+        # `Task.prompt` is what `Approval.prepare/2`'s `maybe_put_prompt/2`
+        # copies into `workflow_snapshot["input"]["prompt"]`, which is the
+        # ONLY channel a `command:` phase has for its subject
+        # (`{{input.prompt}}` in the manifest's `command:` string — see
+        # `RunExecutor.input_prompt/1`). Without this, every bead
+        # auto-dispatched by BeadsWatcher to a command-phase workflow
+        # (e.g. `fix.yaml`'s `/skill:ensemble-fix-issue {{input.prompt}}
+        # --foreman`) renders with an EMPTY argument — the agent has no
+        # subject and immediately asks for one instead of doing any work.
+        # Falls back to the title alone when there's no description.
+        prompt: bead_prompt(parsed),
         priority: Map.get(parsed, "priority", 2),
         task_type: Map.get(parsed, "issue_type", "task"),
         workflow_type: workflow_type,
@@ -1165,6 +1267,19 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       }
     }
   end
+
+  defp bead_prompt(parsed) do
+    fields =
+      ["title", "description"]
+      |> Enum.map(&Map.get(parsed, &1))
+      |> Enum.map(&normalize_prompt_field/1)
+      |> Enum.reject(&(&1 == ""))
+
+    Enum.join(fields, "\n\n")
+  end
+
+  defp normalize_prompt_field(value) when is_binary(value), do: String.trim(value)
+  defp normalize_prompt_field(_non_binary_or_absent), do: ""
 
   defp classify_dispatch_result(state, bead_id, result) do
     cond do

@@ -71,11 +71,27 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
   defmodule FakeWorkflowCatalog do
     @moduledoc false
-    def reset, do: :persistent_term.put({__MODULE__, :response}, {:ok, "generic"})
+    def reset do
+      :persistent_term.put({__MODULE__, :response}, {:ok, "generic"})
+      :persistent_term.put({__MODULE__, :by_type}, %{})
+    end
+
     def stub_response(response), do: :persistent_term.put({__MODULE__, :response}, response)
 
-    def type_to_workflow(_issue_type) do
-      :persistent_term.get({__MODULE__, :response}, {:ok, "generic"})
+    # Per-`issue_type` override, checked before the blanket `stub_response/1`
+    # reply — lets one test mix a type that resolves with one that doesn't.
+    def stub_response_for_type(issue_type, response) do
+      by_type = :persistent_term.get({__MODULE__, :by_type}, %{})
+      :persistent_term.put({__MODULE__, :by_type}, Map.put(by_type, issue_type, response))
+    end
+
+    def type_to_workflow(issue_type) do
+      by_type = :persistent_term.get({__MODULE__, :by_type}, %{})
+
+      case Map.fetch(by_type, issue_type) do
+        {:ok, response} -> response
+        :error -> :persistent_term.get({__MODULE__, :response}, {:ok, "generic"})
+      end
     end
   end
 
@@ -366,7 +382,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       assert length(FakeCommandGateway.calls()) == 4
     end
 
-    test "transient on line N holds read_offset at line N start, line N+1 re-read on next poll",
+    test "a transient line holds the retry cursor at its own start but does not block later lines in the same pass",
          %{tmp: tmp} do
       FakeCommandGateway.stub_response({:error, :down})
 
@@ -377,18 +393,62 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       {state, counters} = BeadsWatcher.read_more(state)
 
-      _transient_line_bytes =
-        byte_size(~s({"id":"transient","title":"t","issue_type":"task","status":"open"}\n))
-
+      # Retry cursor holds at the FIRST transient line's start byte —
+      # unchanged from before: a permanently-stuck bead's retry
+      # position must still be exact so a fix to whatever is blocking
+      # it (a workflow-catalog mapping, a transient dispatch failure)
+      # is retried on the next poll. What changed: this no longer
+      # halts the whole pass — "later" is still visited and dispatched
+      # this same read (TRD-2026 follow-up: one permanently-unmapped
+      # or transiently-failing early bead must not block every bead
+      # appended after it forever).
       assert state.read_offset == 0
 
       assert state.partial_line ==
                ~s({"id":"transient","title":"t","issue_type":"task","status":"open"})
 
+      # Both lines hit the same stubbed dispatch failure, so both are
+      # independently transient this pass — proving "later" really was
+      # attempted, not skipped.
+      assert counters.lines_transient == 2
+      assert counters.lines_processed == 2
+      assert length(FakeCommandGateway.calls()) == 2
+    end
+
+    test "an unmapped early bead does not block a later bead whose type resolves to a real workflow",
+         %{tmp: tmp} do
+      FakeCommandGateway.stub_response({:ok, nil})
+
+      FakeWorkflowCatalog.stub_response_for_type(
+        "nonexistent_unmapped_type",
+        {:error, :unmapped_type}
+      )
+
+      body =
+        ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open"}\n{"id":"routable","title":"r","issue_type":"task","status":"open"}\n)
+
+      state = open_state(tmp, body)
+
+      {state, counters} = BeadsWatcher.read_more(state)
+
+      # "stuck" holds the retry cursor (its type never resolves to a
+      # workflow), but "routable" — appended AFTER it — still gets
+      # created and approved in the SAME pass. This is the exact
+      # scenario that motivated the fix: a single unmapped-type open
+      # bead anywhere in a project's history must not permanently
+      # block every bead behind it.
+      assert state.read_offset == 0
+
+      assert state.partial_line ==
+               ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open"})
+
       assert counters.lines_transient == 1
-      assert counters.lines_processed == 1
-      # line "later" was NOT consumed
-      assert length(FakeCommandGateway.calls()) == 1
+      assert counters.lines_imported == 1
+      assert counters.lines_processed == 2
+
+      calls = FakeCommandGateway.calls()
+      dispatched_ids = Enum.map(calls, fn {command, _timeout} -> command.aggregate_id end)
+      assert Enum.any?(dispatched_ids, &String.contains?(&1, "routable"))
     end
 
     test "replay counter placement: [:watcher, :replay_completed] carries all four required counters",
