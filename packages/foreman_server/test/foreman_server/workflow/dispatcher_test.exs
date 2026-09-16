@@ -301,6 +301,68 @@ defmodule ForemanServer.Workflow.DispatcherTest do
     end
   end
 
+  describe "TaskDispatched does not start the supervisor on a slot-queued admission" do
+    test "RunAdmission.start returning {:ok, :slot_queued} never calls RunSupervisor.start_run" do
+      parent = self()
+      task_id = "task-slot-queued-#{System.unique_integer([:positive])}"
+      run_id = "run-slot-queued-#{System.unique_integer([:positive])}"
+      project_id = "project-slot-queued-#{System.unique_integer([:positive])}"
+      approval_id = "approval-slot-queued-#{System.unique_integer([:positive])}"
+      workflow_snapshot = %{phases: [%{id: "phase-1", kind: "exec"}]}
+      phase_specs = [%{id: "phase-1", kind: "exec"}]
+
+      task_proj = %{
+        task_id: task_id,
+        run_id: run_id,
+        project_id: project_id,
+        approval_id: approval_id,
+        workflow_snapshot: workflow_snapshot,
+        phase_specs: phase_specs
+      }
+
+      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
+      :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
+      :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
+
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
+        {:ok, :slot_queued}
+      end)
+
+      :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _, _ ->
+        send(parent, :start_run_called)
+        {:ok, :started}
+      end)
+
+      on_exit(fn ->
+        for mod <-
+              [
+                ForemanServer.ProjectionStore,
+                ForemanServer.RunAdmission,
+                ForemanServer.Workflow.RunSupervisor
+              ] do
+          try do
+            :meck.unload(mod)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+      end)
+
+      send_envelope(%{event_type: "TaskDispatched", data: %{task_id: task_id}})
+
+      assert_eventually(fn ->
+        if :meck.called(ForemanServer.RunAdmission, :start, :_),
+          do: :ok,
+          else: {:still_waiting, nil}
+      end)
+
+      refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
+      refute_receive :start_run_called, 0
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------

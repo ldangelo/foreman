@@ -337,6 +337,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
           })
 
         case result do
+          {:ok, :slot_queued} ->
+            # RunAdmission decided this run must wait for a free run slot;
+            # do NOT start the supervisor. A RunSlotTransferred promotion
+            # will re-enter admission for this run via handle_slot_promoted.
+            {:noreply, state}
+
           {:ok, :queued} ->
             # RunAdmission decided this run is a Beads-DB waiter;
             # do NOT start the supervisor. The lease aggregate will
@@ -476,6 +482,9 @@ defmodule ForemanServer.Workflow.Dispatcher do
           })
 
         case result do
+          {:ok, :slot_queued} ->
+            {:noreply, state}
+
           {:ok, :queued} ->
             {:noreply, state}
 
