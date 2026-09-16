@@ -80,6 +80,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     before.
     """
     @enforce_keys [:stream_id, :run_id, :reason]
+    @type t :: %__MODULE__{stream_id: String.t(), run_id: String.t(), reason: term()}
     defexception [:stream_id, :run_id, :reason]
 
     @impl true
