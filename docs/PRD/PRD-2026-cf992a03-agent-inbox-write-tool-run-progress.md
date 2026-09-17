@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-cf992a03
 label: prd-agent-inbox-write-tool-run-progress
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-17
 scale_depth: STANDARD
 total_requirements: 15
 total_acceptance_criteria: 39
-readiness_score: 4.6
+readiness_score: 4.9
 ---
 
 # PRD: Agent-Facing Inbox Write Tool for Run Progress Visibility
@@ -29,8 +29,8 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **Add agent-facing inbox writ
 | Acceptance criteria coverage | 15/15 (100%) |
 | Risk flags | 9 |
 | Dependencies | 11 |
-| Open ambiguity markers | 4 |
-| TRD decisions required | 4 |
+| Open ambiguity markers | 0 |
+| TRD decisions required | 0 |
 
 ## Acceptance Criteria Summary
 
@@ -58,7 +58,7 @@ Foreman already has a per-run inbox read path: `InboxThread` handles `inbox.send
 
 This PRD requires a write-capable MCP tool, named `foreman_inbox_send` unless the TRD finds a better existing convention. The tool lets dispatched agents append concise progress messages to the run's operator inbox. It must route through the event-sourced domain path, obey MCP write policy, and be advertised in bundled workflow prompts so progress narration becomes normal workflow behavior rather than ad hoc stdout.
 
-Foreman mode auto-selected STANDARD depth. Clarifying interviews and adversarial issue confirmations were skipped under `--foreman`; unresolved product choices are marked inline with clarification markers.
+Foreman mode auto-selected STANDARD depth. This refinement resolves the prior inline clarification markers with conservative defaults so the TRD can implement without product-policy ambiguity.
 
 ## 2. Background and Evidence
 
@@ -96,10 +96,10 @@ Out of scope: implementation during this PRD phase; delivery-status write tool; 
 
 - Primary product name is **Add agent-facing inbox write tool for run progress visibility**.
 - First tool name should be `foreman_inbox_send`, matching `foreman_inbox_get`.
-- Existing `allow_workflow_writes` should gate this write in v1 because current MCP policy has one closed write-tool list. [NEEDS CLARIFICATION: Should inbox progress writes share `allow_workflow_writes`, or should they have a separate lower-risk `allow_inbox_writes` flag?]
+- Existing `allow_workflow_writes` gates `foreman_inbox_send` in v1 because current MCP policy has one closed write-tool list; a separate `allow_inbox_writes` flag is out of scope unless a later PRD introduces a broader policy split.
 - Messages are operator-facing status notes, not full logs or private scratchpads.
-- Agents should post coarse milestone updates, not per-step chatter. [NEEDS CLARIFICATION: What exact default cadence should bundled prompts require: phase start/end only, every major milestone, or time-based updates such as every 5 minutes?]
-- Metadata may include `phase_id`, `worker_id`, and `severity`, but runtime availability must be verified. [NEEDS CLARIFICATION: Which worker/run context fields are always available to MCP tool callers at runtime?]
+- Bundled prompts should ask agents to post at phase start, material milestone, blocker, and phase completion; long phases may add a concise interim note only when state or next action materially changes, not on a timer alone.
+- `run_id` is required as a tool argument. Optional metadata may include only schema-declared JSON-safe fields such as `phase_id`, `worker_id`, `session_id`, and `severity` when the runtime or prompt explicitly provides them; the tool must not invent unavailable context.
 
 ## 6. Requirements
 
@@ -111,7 +111,7 @@ Risk: Tool schemas can drift from handlers.
 
 MCP clients MUST be able to discover and call a write tool that appends one operator-inbox message to a run.
 
-- AC-001-1: Given MCP write policy permits the tool, when a client calls `tools/list`, then `foreman_inbox_send` is advertised with JSON Schema fields for `run_id`, `body`, optional `message_id`, and optional metadata.
+- AC-001-1: Given MCP write policy permits the tool, when a client calls `tools/list`, then `foreman_inbox_send` is advertised with JSON Schema fields for `run_id`, `body`, optional `message_id`, optional `command_id`, and optional metadata.
 - AC-001-2: Given valid arguments, when a client calls `foreman_inbox_send`, then an inbox message is appended to the run's `inbox:<run_id>` stream.
 - AC-001-3: Given the schema is advertised, when validated, then required fields, optional fields, types, and maximum lengths match the handler contract.
 
@@ -160,8 +160,8 @@ Risk: Retry behavior can duplicate progress notes or falsely report failure.
 The tool MUST handle `message_id` and `command_id` so retrying a status update is safe.
 
 - AC-005-1: Given a client supplies `message_id`, when the tool dispatches, then the payload uses that exact message ID after validation.
-- AC-005-2: Given a client omits `message_id`, when the tool dispatches, then Foreman generates a collision-resistant message ID and returns it.
-- AC-005-3: Given the same message is retried with the same `message_id`, when the aggregate reports an existing message, then the MCP response maps it to either idempotent success or a typed duplicate error, pinned by tests. [NEEDS CLARIFICATION: Should duplicate `message_id` be reported as success with the existing message ID, or as a typed `ALREADY_EXISTS` error?]
+- AC-005-2: Given a client omits `message_id`, when the tool dispatches, then Foreman generates a collision-resistant message ID, derives a deterministic command ID from `run_id` and `message_id` unless `command_id` was supplied, and returns the message ID.
+- AC-005-3: Given the same call is retried with the same deterministic `command_id`, when dispatch sees the command has already committed, then the response is idempotent success with the same `message_id`; given a different command reuses an existing `message_id`, then the MCP response is a typed `ALREADY_EXISTS` error.
 
 ### REQ-006: Return typed errors and safe success payloads
 
@@ -228,7 +228,7 @@ Complexity: Low
 Foreman MUST record operational telemetry for the new write tool without storing message bodies in telemetry metadata.
 
 - AC-011-1: Given `foreman_inbox_send` succeeds or fails, when telemetry is captured, then the tool name and outcome are recorded.
-- AC-011-2: Given telemetry metadata is inspected, then it does not include full `body`, prompt text, command output, or secrets.
+- AC-011-2: Given telemetry metadata is inspected, when `foreman_inbox_send` telemetry is reviewed, then it does not include full `body`, prompt text, command output, or secrets.
 
 ### REQ-012: Cover HTTP and stdio MCP parity
 
@@ -303,9 +303,9 @@ Requirement clusters: MCP contract (REQ-001 through REQ-007, REQ-011, REQ-012), 
 
 ## 9. Adversarial Review
 
-1. **Write policy may be too broad.** Reusing `allow_workflow_writes` may be too coarse. Resolution: require default-deny behavior now and mark separate-flag choice for clarification.
-2. **Duplicate retry semantics are ambiguous.** `InboxThread` rejects duplicate `message_id`, but retries may need idempotent success. Resolution: require deterministic IDs and a tested TRD decision.
-3. **Prompt instruction may not provide `run_id`.** Resolution: require TRD verification of runtime context availability and metadata shape.
+1. **Write policy may be too broad.** Reusing `allow_workflow_writes` is coarse but matches the current closed write-tool policy. Resolution: use `allow_workflow_writes` for v1, keep default-deny, and defer a separate inbox-only flag to a later policy-split PRD.
+2. **Duplicate retry semantics can be confused.** `InboxThread` rejects duplicate `message_id`, while command dispatch can dedupe identical `command_id` retries. Resolution: derive deterministic `command_id` from `run_id` and `message_id`, treat exact command retries as idempotent success, and map conflicting duplicate message IDs to typed `ALREADY_EXISTS`.
+3. **Prompt instruction may not provide context beyond `run_id`.** Resolution: require prompts/runtime to pass `run_id` explicitly and treat `phase_id`, `worker_id`, `session_id`, and `severity` as optional schema-declared metadata only when available.
 4. **Inbox spam could reduce visibility.** Resolution: require coarse milestone guidance and message length/safety constraints.
 5. **Logs/activity tools remain necessary.** Resolution: explicitly preserve existing run-detail tool behavior.
 
@@ -313,19 +313,37 @@ Requirement clusters: MCP contract (REQ-001 through REQ-007, REQ-011, REQ-012), 
 
 | Dimension | Score | Rationale |
 |---|---:|---|
-| Completeness | 4.6 | Covers tool surface, routing, policy, prompts, docs, tests, telemetry, and non-goals. |
-| Testability | 4.7 | All Must/Should requirements have concrete ACs; ambiguity markers become TRD decisions. |
-| Clarity | 4.4 | Main behavior is clear; policy flag, duplicate semantics, and runtime context need clarification. |
-| Feasibility | 4.7 | Reuses existing aggregate, projection, MCP, and gateway patterns. |
+| Completeness | 4.9 | Covers tool surface, routing, policy, prompts, docs, tests, telemetry, retry semantics, and non-goals. |
+| Testability | 4.9 | All Must/Should requirements have concrete ACs, with retry, duplicate, policy, and prompt-cadence behavior pinned. |
+| Clarity | 4.8 | Prior policy flag, duplicate semantics, cadence, and runtime-context ambiguities are resolved with conservative defaults. |
+| Feasibility | 4.8 | Reuses existing aggregate, projection, MCP, policy, and gateway patterns with a narrow allow-list addition. |
 
-Overall readiness score: **4.6 PASS**
+Overall readiness score: **4.9 PASS**
 
 Gate decision: **PASS — save the PRD.**
 
-Ambiguity scan complete: 4 items marked for clarification.
+Ambiguity scan complete: 0 open clarification markers; resolved items are captured in the refinement changelog.
 
-## 11. Suggested Next Step
+## 11. Refinement Decisions
+
+Foreman-mode auto-application resolved four findings:
+
+1. `foreman_inbox_send` shares `allow_workflow_writes` in v1 and remains default-denied.
+2. Bundled prompt cadence is event-based: phase start, material milestone, blocker, and phase completion; no mandatory timer-only chatter.
+3. `run_id` is required; `phase_id`, `worker_id`, `session_id`, and `severity` are optional metadata only when explicitly available.
+4. Retry semantics split exact command retries from conflicting duplicates: deterministic `command_id` retries are idempotent success, while reusing an existing `message_id` under a different command returns `ALREADY_EXISTS`.
+
+## 12. Suggested Next Step
 
 ```bash
 /ensemble-create-trd docs/PRD/PRD-2026-cf992a03-agent-inbox-write-tool-run-progress.md
 ```
+
+
+## Changelog
+
+### 2026-09-17 — v1.0.1
+
+- Resolved four Foreman-mode clarification markers for write-policy gating, prompt cadence, runtime metadata availability, and duplicate retry semantics.
+- Added explicit optional `command_id` schema/behavior expectations and deterministic retry handling.
+- Updated PRD Health summary and Implementation Readiness Gate score from 4.6 to 4.9.
