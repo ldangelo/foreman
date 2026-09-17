@@ -403,9 +403,11 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp validate_aggregate_id(%{type: "inbox.send", aggregate_id: aggregate_id, payload: payload}) do
-    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
-    message_id = get_value(payload, :message_id) || get_value(payload, "message_id")
-    body = get_value(payload, :body) || get_value(payload, "body")
+    # normalize_operator_envelope/1 normalizes envelope-level keys but leaves
+    # payload keys unconverted; after it runs the caller must pass atom keys.
+    run_id = Map.get(payload, :run_id)
+    message_id = Map.get(payload, :message_id)
+    body = Map.get(payload, :body)
 
     cond do
       not is_binary(run_id) or run_id == "" ->

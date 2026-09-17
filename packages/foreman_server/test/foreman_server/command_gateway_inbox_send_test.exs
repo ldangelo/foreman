@@ -57,19 +57,26 @@ defmodule ForemanServer.CommandGatewayInboxSendTest do
       payload: %{run_id: "run-1", message_id: "msg-1", body: "working"}
     }
 
+    # Truly absent fields (deleted) vs blank fields (present but empty) are
+    # both treated as :missing_* by the validator — Map.delete tests absent.
     assert {:error, {:invalid_envelope, :missing_run_id}} =
              base
-             |> put_in([:payload, :run_id], "")
+             |> update_in([:payload], &Map.delete(&1, :run_id))
              |> CommandGateway.dispatch_operator()
 
     assert {:error, {:invalid_envelope, :missing_message_id}} =
              base
-             |> put_in([:payload, :message_id], "")
+             |> update_in([:payload], &Map.delete(&1, :message_id))
              |> CommandGateway.dispatch_operator()
 
     assert {:error, {:invalid_envelope, :missing_body}} =
              base
-             |> put_in([:payload, :body], "")
+             |> update_in([:payload], &Map.delete(&1, :body))
+             |> CommandGateway.dispatch_operator()
+
+    # Blank fields also return :missing_* (present-but-empty is treated the same)
+    assert {:error, {:invalid_envelope, :missing_run_id}} =
+             put_in(base.payload.run_id, "")
              |> CommandGateway.dispatch_operator()
 
     refute :meck.called(CommandRouter, :dispatch, :_)

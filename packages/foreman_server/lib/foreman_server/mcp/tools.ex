@@ -73,6 +73,13 @@ defmodule ForemanServer.MCP.Tools do
     ]
   end
 
+  defmodule InboxSendResult do
+    @enforce_keys [:run_id, :message_id, :status]
+    @type t :: %__MODULE__{run_id: String.t(), message_id: String.t(), status: String.t()}
+    @derive Jason.Encoder
+    defstruct [:run_id, :message_id, :status]
+  end
+
   # String → atom map for backend names accepted by Router.manual/1.
   # TRD-2026-4212be7e JHA-T002: the production default is
   # :jido_harness (the JidoHarnessAdapter routes through the vendored
@@ -674,7 +681,7 @@ defmodule ForemanServer.MCP.Tools do
       Telemetry.mcp_tool_call(duration_us, "foreman_inbox_send", :ok)
 
       {:ok,
-       %{
+       %__MODULE__.InboxSendResult{
          run_id: command.payload.run_id,
          message_id: command.payload.message_id,
          status: "sent"
@@ -906,7 +913,11 @@ defmodule ForemanServer.MCP.Tools do
          :ok <- validate_inbox_body(body),
          {:ok, message_id} <- optional_nonblank(args, :message_id, &mint_inbox_message_id/0),
          {:ok, command_id} <-
-           optional_nonblank(args, :command_id, fn -> inbox_command_id(run_id, message_id) end),
+           optional_nonblank(args, :command_id, fn ->
+             if Map.get(args, :message_id) == nil,
+               do: derived_command_id(run_id),
+               else: inbox_command_id(run_id, message_id)
+           end),
          {:ok, metadata} <- normalize_inbox_metadata(Map.get(args, :metadata)) do
       {:ok,
        %{
@@ -989,32 +1000,83 @@ defmodule ForemanServer.MCP.Tools do
     "mcp:foreman_inbox_send:" <> Base.url_encode64(digest, padding: false)
   end
 
+  # When command_id is omitted but message_id was minted, derive a stable
+  # command_id from the run_id alone so retries always produce the same id.
+  defp derived_command_id(run_id) do
+    digest = :crypto.hash(:sha256, run_id)
+    "mcp:foreman_inbox_send:" <> Base.url_encode64(digest, padding: false)
+  end
+
   defp normalize_inbox_metadata(nil), do: {:ok, %{}}
 
-  defp normalize_inbox_metadata(metadata) when is_map(metadata) do
-    Enum.reduce_while(metadata, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      case normalize_inbox_metadata_key(key) do
-        {:ok, normalized_key} ->
-          if json_safe?(value) do
-            {:cont, {:ok, Map.put(acc, normalized_key, value)}}
-          else
-            {:halt,
-             {:error,
-              %ToolError{
-                code: "INVALID_PARAMS",
-                message: "metadata.#{normalized_key} must be JSON-safe"
-              }}}
-          end
+  @inbox_send_metadata_max_value_length 200
+  @inbox_send_severity_values ~w(info warn error critical)
 
-        {:error, %ToolError{}} = error ->
-          {:halt, error}
-      end
-    end)
+  defp normalize_inbox_metadata(metadata) when is_map(metadata) do
+    with :ok <- validate_metadata_key_count(metadata),
+         {:ok, validated} <-
+           Enum.reduce_while(metadata, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+             case normalize_inbox_metadata_key(key) do
+               {:ok, normalized_key} ->
+                 with :ok <- validate_metadata_value(normalized_key, value),
+                      :ok <- validate_metadata_value_size(normalized_key, value) do
+                   {:cont, {:ok, Map.put(acc, normalized_key, value)}}
+                 else
+                   {:error, %ToolError{}} = error -> {:halt, error}
+                 end
+
+               {:error, %ToolError{}} = error ->
+                 {:halt, error}
+             end
+           end) do
+      {:ok, validated}
+    else
+      {:error, %ToolError{}} = error -> error
+    end
   end
 
   defp normalize_inbox_metadata(_metadata) do
     {:error, %ToolError{code: "INVALID_PARAMS", message: "metadata must be an object"}}
   end
+
+  defp validate_metadata_key_count(metadata) do
+    if map_size(metadata) <= 8 do
+      :ok
+    else
+      {:error, %ToolError{code: "INVALID_PARAMS", message: "metadata must have at most 8 keys"}}
+    end
+  end
+
+  defp validate_metadata_value("severity", value) do
+    if Enum.member?(@inbox_send_severity_values, value) do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message:
+           "metadata.severity must be one of " <> Enum.join(@inbox_send_severity_values, ", ")
+       }}
+    end
+  end
+
+  defp validate_metadata_value(_key, _value), do: :ok
+
+  defp validate_metadata_value_size(_key, value) when is_binary(value) do
+    if byte_size(value) <= @inbox_send_metadata_max_value_length do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message:
+           "metadata value must be at most " <>
+             Integer.to_string(@inbox_send_metadata_max_value_length) <> " bytes"
+       }}
+    end
+  end
+
+  defp validate_metadata_value_size(_key, _value), do: :ok
 
   defp normalize_inbox_metadata_key(key) when is_atom(key),
     do: normalize_inbox_metadata_key(Atom.to_string(key))
@@ -1038,18 +1100,6 @@ defmodule ForemanServer.MCP.Tools do
        message: "Unknown metadata key: #{inspect(key)}"
      }}
   end
-
-  defp json_safe?(value)
-       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
-       do: true
-
-  defp json_safe?(value) when is_list(value), do: Enum.all?(value, &json_safe?/1)
-
-  defp json_safe?(value) when is_map(value) do
-    Enum.all?(value, fn {key, nested_value} -> is_binary(key) and json_safe?(nested_value) end)
-  end
-
-  defp json_safe?(_value), do: false
 
   defp inbox_send_tool_error(:run_not_found),
     do: %ToolError{code: "NOT_FOUND", message: "Run not found"}

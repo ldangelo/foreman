@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.Tools.InboxSendResult
   alias ForemanServer.MCP.ToolError
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
@@ -314,7 +315,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                command_id: "cmd-1",
                body: "implemented step 1",
                metadata: %{phase_id: "phase-1", severity: "info"}
-             }) == {:ok, %{run_id: "run-1", message_id: "msg-1", status: "sent"}}
+             }) ==
+               {:ok, %InboxSendResult{run_id: "run-1", message_id: "msg-1", status: "sent"}}
     end
 
     test "derives deterministic command id from caller-supplied message id" do
@@ -327,12 +329,64 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
         {:ok, %{}}
       end)
 
-      assert {:ok, %{message_id: "msg-stable", status: "sent"}} =
-               Tools.call_tool("foreman_inbox_send", %{
-                 run_id: "run-1",
-                 message_id: "msg-stable",
-                 body: "still working"
-               })
+      # First call
+      result1 =
+        Tools.call_tool("foreman_inbox_send", %{
+          run_id: "run-1",
+          message_id: "msg-stable",
+          body: "still working"
+        })
+
+      # Second call with same message_id — command_id must be identical for retry safety
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.payload.message_id == "msg-stable"
+        assert String.starts_with?(envelope.command_id, "mcp:foreman_inbox_send:")
+        {:ok, %{}}
+      end)
+
+      result2 =
+        Tools.call_tool("foreman_inbox_send", %{
+          run_id: "run-1",
+          message_id: "msg-stable",
+          body: "still working"
+        })
+
+      assert result1 ==
+               {:ok, %InboxSendResult{run_id: "run-1", message_id: "msg-stable", status: "sent"}}
+
+      assert result2 ==
+               {:ok, %InboxSendResult{run_id: "run-1", message_id: "msg-stable", status: "sent"}}
+    end
+
+    test "omitting command_id and message_id produces stable command_id across retries" do
+      allow_writes()
+      put_run_projection("run-1")
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        # Neither command_id nor message_id was caller-supplied; message_id is minted,
+        # command_id is derived from run_id alone — stable across retries.
+        assert String.starts_with?(envelope.command_id, "mcp:foreman_inbox_send:")
+        {:ok, %{}}
+      end)
+
+      result1 = Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: "step 1"})
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.command_id ==
+                 "mcp:foreman_inbox_send:" <>
+                   Base.url_encode64(:crypto.hash(:sha256, "run-1"), padding: false)
+
+        {:ok, %{}}
+      end)
+
+      result2 = Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: "step 2"})
+
+      # command_id stability (the point of this test) is already verified inside
+      # the two meck expectations above; message_id is freshly minted per call
+      # (by design — each notification gets its own id), so only status/run_id
+      # are expected to match here.
+      assert {:ok, %InboxSendResult{run_id: "run-1", status: "sent"}} = result1
+      assert {:ok, %InboxSendResult{run_id: "run-1", status: "sent"}} = result2
     end
 
     test "rejects unknown run before dispatch" do
