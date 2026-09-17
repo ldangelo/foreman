@@ -83,7 +83,10 @@ defmodule ForemanServer.Workflow.RunExecutorPrBaseBranchTest do
       # `CommandGateway.dispatch_system/2` is synchronous, so this has fully
       # landed — event committed and projected — by the time it returns.
       first_attempt = RunExecutor.__remember_run_base_branch_for_test__(state(repo, run_id))
-      assert RunExecutor.__run_base_branch_for_test__(first_attempt) == {:ok, "feat/original-work"}
+
+      assert RunExecutor.__run_base_branch_for_test__(first_attempt) ==
+               {:ok, "feat/original-work"}
+
       assert %{base_branch: "feat/original-work"} = ForemanServer.ProjectionStore.run(run_id)
 
       # The operator (or a later, unrelated dispatch) switches the registered

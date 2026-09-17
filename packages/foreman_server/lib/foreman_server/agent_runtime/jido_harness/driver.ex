@@ -22,7 +22,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.Driver do
   def await(run_id, timeout), do: Run.await(run_id, timeout)
 
   defp notify_on_start(nil, _harness_run_id), do: :ok
-  defp notify_on_start(on_start, harness_run_id) when is_function(on_start, 1), do: on_start.(harness_run_id)
+
+  defp notify_on_start(on_start, harness_run_id) when is_function(on_start, 1),
+    do: on_start.(harness_run_id)
 
   defp upstream_opts(opts) do
     opts = Keyword.drop(opts, [:on_start, :await_timeout])

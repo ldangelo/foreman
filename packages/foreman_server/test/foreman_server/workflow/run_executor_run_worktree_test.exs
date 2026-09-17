@@ -1008,7 +1008,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
     test "resume_from: 0 (explicitly passed) IS treated as resuming, unlike the absent-opt fresh-run default" do
       assert {:ok, state} =
-               RunExecutor.init({"run-resume-zero", %{task_id: "run-resume-zero"}, resume_from: 0})
+               RunExecutor.init(
+                 {"run-resume-zero", %{task_id: "run-resume-zero"}, resume_from: 0}
+               )
 
       assert state.resume_from == 0
       assert state.resuming? == true

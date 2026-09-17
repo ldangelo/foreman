@@ -7,7 +7,6 @@ config :foreman_server, ForemanServer.EventStore,
       "postgres://postgres:postgres@localhost:55432/foreman_eventstore_dev"
     )
 
-
 config :foreman_server, ForemanServer.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_dev")
 
@@ -33,10 +32,13 @@ config :foreman_server, :operator_timeout, enabled: true
 # under supervision. The wrapper module is safe to load even when
 # disabled (calls return {:error, :repo_not_configured}).
 config :foreman_server, :jido_ecto, enabled: false
+
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url:
-    System.get_env("JIDO_CHECKPOINT_DATABASE_URL",
-      "postgres://postgres:postgres@localhost:55432/foreman_dev")
+    System.get_env(
+      "JIDO_CHECKPOINT_DATABASE_URL",
+      "postgres://postgres:postgres@localhost:55432/foreman_dev"
+    )
 
 # TRD-036: MCP server (dev only)
 config :foreman_server, :mcp,
@@ -50,4 +52,3 @@ config :foreman_server, :mcp,
 
 # BeadsWatcher auto-dispatch enabled (dev opt-in feature, TRD-005)
 config :foreman_server, :start_beads_watcher?, true
-
