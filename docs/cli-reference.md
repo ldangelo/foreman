@@ -33,6 +33,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run list          --limit --project-id --status
 > foreman run get           (no flags)
 > foreman run cancel        --id --reason
+> foreman run pause         --id --reason
+> foreman run resume        --id
 > foreman run remove        --id
 > foreman run reset         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
@@ -73,14 +75,17 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > is the stale artifact.
 >
 > Note also that this file is *incomplete* about what is real: it has no section
-> for `run get`, `run cancel`, `run reset`, `workflow install` or `workflow
-> remove`, all of which exist. `foreman task approve`, `task get`, `task
-> retry`, `task list`, and `task update` used to round out that list; TRD-018
-> (2026-09-13) deleted them — along with `task create`, which did have a
-> section below — from the Go CLI (see the corrected inventory above). The
-> block above is authoritative; AGENTS.md's Operator Reference (Task
-> Lifecycle / Go CLI Commands) reflects the same TRD-018 removal and remains
-> accurate against the Go source.
+> for `run get`, `run cancel`, `run pause`, `run resume`, `run reset`, `workflow install` or `workflow
+> remove`, all of which exist. `run pause` and `run resume` are new
+> (unattended-run-control: no default phase timeout, real pause/resume/kill —
+> `run cancel` now also kills the dispatched agent's OS-level process via
+> `RunControl.cancel_agent/1`, not just the run projection). `foreman task
+> approve`, `task get`, `task retry`, `task list`, and `task update` used to
+> round out that list; TRD-018 (2026-09-13) deleted them — along with `task
+> create`, which did have a section below — from the Go CLI (see the
+> corrected inventory above). The block above is authoritative; AGENTS.md's
+> Operator Reference (Task Lifecycle / Go CLI Commands) reflects the same
+> TRD-018 removal and remains accurate against the Go source.
 
 ## Global Usage
 
@@ -852,7 +857,7 @@ Reset Foreman to a clean operator state by intentionally dropping stale/obsolete
 
 ### `foreman run kill-switch`
 
-> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `remove`, `reset`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>`.
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 
@@ -1165,8 +1170,9 @@ next_offset}` in task-id ascending order. `foreman_task_get` returns one full ta
 projection or `NOT_FOUND`.
 
 Write tools (`foreman_task_create`, `foreman_task_update`, `foreman_run_cancel`,
-`foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
-unadvertised and refused unless `allow_workflow_writes: true`.
+`foreman_run_pause`, `foreman_run_resume`, `foreman_workflow_put`,
+`foreman_workflow_delete`, `foreman_prompt_put`) are unadvertised and refused
+unless `allow_workflow_writes: true`.
 `foreman_task_create` requires `description` for `FOREMAN_TASK_DESCRIPTION`, passes
 `prompt` separately for `:prompt`-action phases, and defaults `auto_approve: true`.
 `foreman_task_update` requires `task_id` and at least one of `title`,

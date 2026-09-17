@@ -6,7 +6,6 @@ phases:
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 45
     artifact: "{task.projectReportsDir}/ASSESS_REPORT.md"
     mail:
       onStart: true

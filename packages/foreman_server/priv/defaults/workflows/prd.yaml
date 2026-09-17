@@ -43,25 +43,20 @@ worktree:
 # legitimate stage-for-review outcome rather than an error).
 phases:
   - name: create-prd
-    timeout_minutes: 30
     command: "/skill:ensemble-create-prd {{input.prompt}} --foreman"
     commit: true
   - name: refine-prd
-    timeout_minutes: 30
     command: "/skill:ensemble-refine-prd --foreman"
     commit: true
     stack_pr: true
   - name: create-trd
-    timeout_minutes: 30
     command: "/skill:ensemble-create-trd --foreman"
     commit: true
   - name: refine-trd
-    timeout_minutes: 30
     command: "/skill:ensemble-refine-trd-foreman --foreman"
     commit: true
     stack_pr: true
   - name: implement-trd
-    timeout_minutes: 360
     command: "/skill:ensemble-implement-trd --foreman"
     commit: true
     stack_pr: true
@@ -70,8 +65,6 @@ phases:
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 80
-    timeout_minutes: 60
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
     commit: true
   # `stack_pr: true` is what makes PR creation an explicit workflow step:
@@ -84,8 +77,6 @@ phases:
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 80
-    timeout_minutes: 60
     artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
     commit: true
     stack_pr: true

@@ -192,11 +192,11 @@ defmodule ForemanServer.AgentRuntime.FailurePolicyTest do
       end)
     end
 
-    test "config without :default_timeout_ms uses 60_000" do
+    test "config without :default_timeout_ms uses :infinity" do
       Application.put_env(:foreman_server, :agent_runtime, failure_policies: %{})
 
       try do
-        assert FailurePolicy.resolve(:task, []).timeout_ms == 60_000
+        assert FailurePolicy.resolve(:task, []).timeout_ms == :infinity
       after
         Application.put_env(:foreman_server, :agent_runtime, [])
       end

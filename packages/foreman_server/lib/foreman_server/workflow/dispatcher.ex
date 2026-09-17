@@ -583,8 +583,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   # 0-based index of the first non-completed phase. Phase projection
   # `:index` is 1-based (`PhaseStarted.index :: pos_integer()`), so the
-  # completed 0-based set is each completed phase's `index - 1`. An
-  # empty phase list resumes at 0.
+  # completed 0-based set is each completed phase's `index - 1`. An empty
+  # phase list resumes at 0. When every phase in range is already
+  # completed, the default must be `total` (out of range), not `0` —
+  # `handle_cast({:advance_to, ...})`'s finalize branch (`run_executor.ex`)
+  # only fires for an out-of-range `next_index`; falling back to `0` would
+  # instead re-run the first phase of an already-finished run.
   defp resume_from_index(run_id, phase_specs) do
     completed_0based =
       run_id
@@ -592,7 +596,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
       |> Enum.filter(&(&1.status == "completed"))
       |> MapSet.new(&(&1.index - 1))
 
-    Enum.find(0..(length(phase_specs) - 1), 0, &(&1 not in completed_0based))
+    total = length(phase_specs)
+    Enum.find(0..(total - 1)//1, total, &(&1 not in completed_0based))
   end
 
   # Re-acquires the run's admission gates (global slot, and the per-DB
@@ -613,6 +618,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
         {:error, {:run_admission_exit, exit_reason}}
     end
   end
+
+  @doc false
+  def __resume_from_index_for_test__(run_id, phase_specs),
+    do: resume_from_index(run_id, phase_specs)
 
   defp re_dispatch_promoted(task_id, run_id, state) do
     case ProjectionStore.task_projection(task_id) do

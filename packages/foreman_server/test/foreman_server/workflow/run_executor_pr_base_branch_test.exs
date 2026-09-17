@@ -50,6 +50,54 @@ defmodule ForemanServer.Workflow.RunExecutorPrBaseBranchTest do
       assert RunExecutor.__remember_run_base_branch_for_test__(recorded) == recorded
       assert RunExecutor.__run_base_branch_for_test__(recorded) == {:ok, "main"}
     end
+
+    # The scenario `RunBaseBranchRecorded` exists for: a PAUSED run's executor
+    # process is gone, so the in-memory latch above is gone with it. A resumed
+    # executor starts with fresh state — no `:run_base_branch` key — and must
+    # recover the ORIGINAL base branch from the durable projection, not
+    # re-derive it from whatever branch the registered checkout is on now.
+    test "a resumed run (fresh state, no in-memory latch) reads the persisted branch, not the current checkout branch",
+         %{repo: repo} do
+      run_id = "run-resume-#{System.unique_integer([:positive])}"
+      started_payload = %{run_id: run_id, project_id: "project-resume"}
+
+      # `run.record_base_branch` requires the Run aggregate to `exist?`, so
+      # seed a real `RunStarted` event in the event store (not just the
+      # projection) before dispatching against it — mirrors
+      # `boot_reconciliation_dispatch_backoff_test.exs`'s seeding pattern.
+      :ok =
+        ForemanServer.EventStore.append_to_stream("run:#{run_id}", 0, [
+          %EventStore.EventData{event_type: "RunStarted", data: started_payload, metadata: %{}}
+        ])
+
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{event_type: "RunStarted", payload: started_payload}
+        ])
+
+      git!(repo, ["checkout", "-b", "feat/original-work", "--quiet"])
+
+      # First attempt: no base branch recorded yet, so it resolves from the
+      # checkout and persists via `run.record_base_branch` (mirrors what
+      # phase 1 of the first attempt does before the run is later paused).
+      # `CommandGateway.dispatch_system/2` is synchronous, so this has fully
+      # landed — event committed and projected — by the time it returns.
+      first_attempt = RunExecutor.__remember_run_base_branch_for_test__(state(repo, run_id))
+      assert RunExecutor.__run_base_branch_for_test__(first_attempt) == {:ok, "feat/original-work"}
+      assert %{base_branch: "feat/original-work"} = ForemanServer.ProjectionStore.run(run_id)
+
+      # The operator (or a later, unrelated dispatch) switches the registered
+      # checkout between the pause and the resume.
+      git!(repo, ["checkout", "-b", "operator/unrelated-work", "--quiet"])
+
+      # Resume: a brand-new executor process, fresh state, no `:run_base_branch`
+      # key — exactly what `init/1` produces after `RunSupervisor.start_run/3`
+      # restarts the executor.
+      resumed = RunExecutor.__remember_run_base_branch_for_test__(state(repo, run_id))
+
+      assert RunExecutor.__run_base_branch_for_test__(resumed) == {:ok, "feat/original-work"},
+             "resume must read the ORIGINAL base branch from the projection, never the checkout's current branch"
+    end
   end
 
   describe "an undeterminable base is a typed failure, never a default" do
@@ -86,7 +134,8 @@ defmodule ForemanServer.Workflow.RunExecutorPrBaseBranchTest do
     |> RunExecutor.__run_base_branch_for_test__()
   end
 
-  defp state(repo), do: %{run_id: "run-x", plan_context: %{"project_root" => repo}}
+  defp state(repo), do: state(repo, "run-x")
+  defp state(repo, run_id), do: %{run_id: run_id, plan_context: %{"project_root" => repo}}
 
   defp git!(root, args) do
     {output, 0} = System.cmd("git", ["-C", root] ++ args, stderr_to_stdout: true)

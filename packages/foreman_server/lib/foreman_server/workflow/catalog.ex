@@ -412,7 +412,6 @@ defmodule ForemanServer.Workflow.Catalog do
             |> Map.put(:bash, phase["bash"])
             |> Map.put(:index, phase["index"])
             |> Map.put(:models, phase["models"])
-            |> Map.put(:max_turns, phase["maxTurns"])
             |> Map.put(:mail, phase["mail"])
 
           action =

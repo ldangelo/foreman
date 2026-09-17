@@ -13,10 +13,14 @@ defmodule ForemanServer.MCP.PolicyTest do
     test "tool not in enabled set is refused and absent from tools/list" do
       refute Policy.authorized?("foreman_task_create")
       refute Policy.authorized?("foreman_run_cancel")
+      refute Policy.authorized?("foreman_run_pause")
+      refute Policy.authorized?("foreman_run_resume")
 
       tools = [
         %{name: "foreman_task_create", description: "Create task"},
         %{name: "foreman_run_cancel", description: "Cancel run"},
+        %{name: "foreman_run_pause", description: "Pause run"},
+        %{name: "foreman_run_resume", description: "Resume run"},
         %{name: "foreman_work_get", description: "Get work"}
       ]
 

@@ -428,7 +428,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         "workflow_snapshot" => workflow_snapshot
       }
 
-      {:ok, state} = RunExecutor.init({run_id, task_projection})
+      {:ok, state} = RunExecutor.init({run_id, task_projection, []})
 
       # Verify phase_specs are correctly extracted (not [] or malformed)
       assert length(state.phase_specs) == 1,
@@ -477,7 +477,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         }
       }
 
-      {:ok, state} = RunExecutor.init({"run-empty", task_projection})
+      {:ok, state} = RunExecutor.init({"run-empty", task_projection, []})
 
       assert state.phase_specs == [],
              "empty phases list should result in empty phase_specs"
@@ -727,7 +727,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         "workflow_snapshot" => workflow_snapshot
       }
 
-      {:ok, state} = RunExecutor.init({run_id, task_projection})
+      {:ok, state} = RunExecutor.init({run_id, task_projection, []})
 
       # Verify phase_specs: fix + the two appended review phases, in order.
       assert length(state.phase_specs) == 3,
