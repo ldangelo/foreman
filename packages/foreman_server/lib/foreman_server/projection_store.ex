@@ -619,8 +619,14 @@ defmodule ForemanServer.ProjectionStore do
           {:reply, :ok, state}
 
         {:error, reason} ->
-          if newly_monitored?, do: Process.demonitor(ref, [:flush])
-          {:reply, {:error, reason}, %{state | subscribers: Map.delete(subscribers, pid)}}
+          if newly_monitored? do
+            Process.demonitor(ref, [:flush])
+            remaining = Map.delete(subscribers, pid)
+            Process.put(:projection_subscribers, remaining)
+            {:reply, {:error, reason}, %{state | subscribers: remaining}}
+          else
+            {:reply, {:error, reason}, state}
+          end
       end
     else
       {:reply, :ok, state}

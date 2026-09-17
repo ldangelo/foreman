@@ -391,9 +391,17 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         other -> :meck.passthrough([other])
       end)
 
+      :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
+
       on_exit(fn ->
         try do
           :meck.unload(ForemanServer.ProjectionStore)
+        catch
+          :exit, _ -> :ok
+        end
+
+        try do
+          :meck.unload(ForemanServer.RunAdmission)
         catch
           :exit, _ -> :ok
         end
@@ -404,6 +412,12 @@ defmodule ForemanServer.Workflow.DispatcherTest do
                  {:projection_event, %{event_type: "TaskDispatched", data: %{task_id: task_id}}},
                  %{}
                )
+
+      # A malformed projection must never reach admission dispatch: this is
+      # what distinguishes "gracefully skipped" from "produced the same
+      # {:noreply, %{}} result while silently starting a run on incomplete
+      # data" — the latter would pass an assertion on the result alone.
+      assert :meck.num_calls(ForemanServer.RunAdmission, :start, :_) == 0
     end
   end
 
