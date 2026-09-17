@@ -32,7 +32,8 @@ defmodule ForemanServer.MCP.ToolsTest do
       worktrees: %{},
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
-      works: %{}
+      works: %{},
+      inbox_threads: %{}
     }
 
     :sys.replace_state(ProjectionStore, fn _ -> Map.merge(base, overrides) end)
@@ -67,7 +68,8 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_run_get_logs",
                "foreman_run_get_events",
                "foreman_run_get_activity",
-               "foreman_inbox_get"
+               "foreman_inbox_get",
+               "foreman_inbox_send"
              ]
 
       Enum.each(tools, fn tool ->
@@ -110,6 +112,17 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert task_list.inputSchema.properties.limit.maximum == 500
       assert task_list.inputSchema.properties.offset.minimum == 0
       assert run_status.inputSchema.required == ["run_id"]
+    end
+
+    test "foreman_inbox_send advertises bounded progress-note schema" do
+      tool = Tools.list_tools() |> Enum.find(&(&1.name == "foreman_inbox_send"))
+
+      assert tool.inputSchema.required == ["run_id", "body"]
+      assert tool.inputSchema.properties["body"].maxLength == 2_000
+      assert Map.has_key?(tool.inputSchema.properties, "message_id")
+      assert Map.has_key?(tool.inputSchema.properties, "command_id")
+      assert Map.has_key?(tool.inputSchema.properties, "metadata")
+      refute Tools.list_tools() |> Enum.any?(&(&1.name == "foreman_inbox_delivery_update"))
     end
   end
 

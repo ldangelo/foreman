@@ -247,6 +247,7 @@ To run in production without authentication (not recommended), set `allow_insecu
 The MCP task tools expose `foreman_task_list`, `foreman_task_get`, and write-gated `foreman_task_update`. Task list supports `project_id`/canonical `status` filters plus `limit`/`offset` pagination and returns `{tasks, total, limit, offset, next_offset}`.
 
 The MCP `foreman_task_create` write tool accepts optional `task_type` and defaults it to `"task"` when omitted.
+The MCP `foreman_inbox_send` write tool appends concise run progress notes to the per-run operator inbox when `allow_workflow_writes: true`; it requires `run_id` and a 1-2,000 character `body`, accepts optional `message_id`/`command_id` plus safe metadata, and is default-hidden/refused like other write tools. Use it for phase starts, material milestones, blockers, and phase completion; use `foreman_inbox_get` to read the inbox and `foreman_run_get_logs` / `foreman_run_get_activity` for raw stdout/stderr and heartbeat evidence.
 
 `foreman_run_status` returns a bounded run-status DTO from run and phase projections: `run_id`, `status`, `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`, timestamps, and `failure_reason`.
 

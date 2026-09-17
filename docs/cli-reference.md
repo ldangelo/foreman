@@ -1143,7 +1143,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_work_get`, `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_task_list`, `foreman_task_get`.
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`.
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams
@@ -1158,6 +1158,11 @@ non-zero `omitted_entries` / `omitted_bytes` — a truncated read can never look
 complete. There is no store-unavailable error: the projection is server state,
 so for a known run the read always succeeds.
 
+`foreman_inbox_get` reads the per-run operator inbox projection. Inbox progress,
+logs, events, and activity are complementary: inbox messages are concise
+agent-authored progress notes, logs are raw stdout/stderr, events are durable
+system facts, and activity is heartbeat/liveness data.
+
 `foreman_run_status` returns a bounded projection DTO with `run_id`, `status`,
 `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`,
 `started_at_ms`, `last_event_at_ms`, and `failure_reason`; it does not scrape
@@ -1170,14 +1175,25 @@ next_offset}` in task-id ascending order. `foreman_task_get` returns one full ta
 projection or `NOT_FOUND`.
 
 Write tools (`foreman_task_create`, `foreman_task_update`, `foreman_run_cancel`,
-`foreman_run_pause`, `foreman_run_resume`, `foreman_workflow_put`,
-`foreman_workflow_delete`, `foreman_prompt_put`) are unadvertised and refused
-unless `allow_workflow_writes: true`.
+`foreman_run_pause`, `foreman_run_resume`, `foreman_inbox_send`,
+`foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
+unadvertised and refused unless `allow_workflow_writes: true`.
 `foreman_task_create` requires `description` for `FOREMAN_TASK_DESCRIPTION`, passes
 `prompt` separately for `:prompt`-action phases, and defaults `auto_approve: true`.
 `foreman_task_update` requires `task_id` and at least one of `title`,
 `description`, `priority`, or `status`; unsupported fields are dropped at the
 handler boundary and no-op updates return `INVALID_PARAMS` before dispatch.
+`foreman_inbox_send` dispatches the public `inbox.send` command to append a run
+progress note: required `run_id` and 1-2,000 character `body`, optional
+`message_id`/`command_id`, and JSON-safe metadata keys `phase_id`, `worker_id`,
+`session_id`, `severity`. It returns `{run_id, message_id, status: "sent"}`;
+unknown runs return `NOT_FOUND`, duplicate message IDs return `ALREADY_EXISTS`,
+and policy denial returns `POLICY_REFUSED`. Bundled prompts tell agents to post
+phase start, material milestone, blocker, and phase completion notes when the
+tool is available, but never secrets, prompts, large logs, or command output,
+and never block work if the tool is denied/unavailable/fails. After editing
+bundled prompts/workflows, run `npm run build` where applicable and
+`foreman init --force` to reinstall runtime copies.
 
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and
 behavior cannot diverge.
@@ -1186,7 +1202,8 @@ behavior cannot diverge.
 
 ## Agent Mail
 
-> **NOT IMPLEMENTED.** Neither `foreman inbox` nor `foreman inbox send` exists.
+> **GO CLI NOT IMPLEMENTED.** Neither `foreman inbox` nor `foreman inbox send` exists in the Go CLI.
+> MCP does expose `foreman_inbox_get` and the write-gated `foreman_inbox_send`.
 > The **Go CLI**'s command switch
 > (`packages/foreman_cli/cmd/foreman/main.go:85-98`) dispatches exactly
 > `project`, `task`, `run`, `workflow` and `init`; anything else returns

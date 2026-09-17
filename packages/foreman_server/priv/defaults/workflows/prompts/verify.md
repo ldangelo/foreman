@@ -6,6 +6,10 @@ Phase index: {{phase_index}}
 Task ID: {{task_id}}
 Run ID: {{run_id}}
 
+## Operator progress updates
+
+When `foreman_inbox_send` is available, send concise operator-facing progress notes at phase start, material milestones, blockers, and phase completion. Do not send timer-only chatter, secrets, prompts, credentials, large logs, or command output. If the inbox tool is denied, unavailable, or fails, continue the phase; mention the failed status update in the final artifact only when relevant.
+
 ## Mission
 
 Run validation, testing, and quality checks for the completed work.

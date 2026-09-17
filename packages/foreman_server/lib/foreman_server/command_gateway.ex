@@ -7,9 +7,9 @@ defmodule ForemanServer.CommandGateway do
     * `dispatch_operator/2` — public operator commands. Currently allows
       `project.register`, `project.update`, `project.archive`,
       `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
-      `run.cancel`, `run.pause`, `run.resume`, `run.remove`, and
-      `run.reset`. The command must carry `command_id`, `type`, and a
-      `payload` map.
+      `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
+      `run.reset`, and `inbox.send`. The command must carry `command_id`,
+      `type`, and a `payload` map.
       `aggregate_id` is required except for `task.create` in no-id mode
       (where both `aggregate_id` and `payload.task_id` are absent); in that
       case the gateway resolves the backend issue ID automatically.
@@ -46,7 +46,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
-  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset)
+  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset inbox.send)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -395,6 +395,34 @@ defmodule ForemanServer.CommandGateway do
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
       aggregate_id != stream_id("run", run_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{type: "inbox.send", aggregate_id: aggregate_id, payload: payload}) do
+    # normalize_operator_envelope/1 normalizes envelope-level keys but leaves
+    # payload keys unconverted; after it runs the caller must pass atom keys.
+    run_id = Map.get(payload, :run_id)
+    message_id = Map.get(payload, :message_id)
+    body = Map.get(payload, :body)
+
+    cond do
+      not is_binary(run_id) or String.trim(run_id) == "" ->
+        {:error, {:invalid_envelope, :missing_run_id}}
+
+      not is_binary(message_id) or String.trim(message_id) == "" ->
+        {:error, {:invalid_envelope, :missing_message_id}}
+
+      not is_binary(body) or String.trim(body) == "" ->
+        {:error, {:invalid_envelope, :missing_body}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("inbox", run_id) ->
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
       true ->

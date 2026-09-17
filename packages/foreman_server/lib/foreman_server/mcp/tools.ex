@@ -73,6 +73,13 @@ defmodule ForemanServer.MCP.Tools do
     ]
   end
 
+  defmodule InboxSendResult do
+    @enforce_keys [:run_id, :message_id, :status]
+    @type t :: %__MODULE__{run_id: String.t(), message_id: String.t(), status: String.t()}
+    @derive Jason.Encoder
+    defstruct [:run_id, :message_id, :status]
+  end
+
   # String → atom map for backend names accepted by Router.manual/1.
   # TRD-2026-4212be7e JHA-T002: the production default is
   # :jido_harness (the JidoHarnessAdapter routes through the vendored
@@ -454,6 +461,31 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_inbox_send %{
+    name: "foreman_inbox_send",
+    description:
+      "Append a concise operator-facing progress note to a run inbox. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      required: ["run_id", "body"],
+      properties: %{
+        "run_id" => %{type: "string", description: "The run_id."},
+        "body" => %{
+          type: "string",
+          maxLength: 2000,
+          description: "Concise progress note body (1-2000 UTF-8 characters)."
+        },
+        "message_id" => %{type: "string", description: "Optional caller-stable message ID."},
+        "command_id" => %{type: "string", description: "Optional caller-stable command ID."},
+        "metadata" => %{
+          type: "object",
+          description:
+            "Optional JSON-safe metadata. Allowed keys: phase_id, worker_id, session_id, severity."
+        }
+      }
+    }
+  }
+
   @tools [
     @schema_foreman_work_get,
     @schema_foreman_run_get,
@@ -479,7 +511,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_run_get_logs,
     @schema_foreman_run_get_events,
     @schema_foreman_run_get_activity,
-    @schema_foreman_inbox_get
+    @schema_foreman_inbox_get,
+    @schema_foreman_inbox_send
   ]
 
   def list_tools, do: @tools
@@ -635,6 +668,35 @@ defmodule ForemanServer.MCP.Tools do
     outcome = if result, do: :ok, else: :not_found
     Telemetry.mcp_tool_call(duration_us, "foreman_inbox_get", outcome)
     if result, do: {:ok, result}, else: {:ok, %{run_id: run_id, messages: []}}
+  end
+
+  defp tool_foreman_inbox_send(%{} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    with :ok <- authorize_write_tool("foreman_inbox_send"),
+         {:ok, command} <- build_inbox_send_command(args),
+         :ok <- require_run_exists(command.payload.run_id),
+         {:ok, _result} <- CommandGateway.dispatch_operator(command) do
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_inbox_send", :ok)
+
+      {:ok,
+       %__MODULE__.InboxSendResult{
+         run_id: command.payload.run_id,
+         message_id: command.payload.message_id,
+         status: "sent"
+       }}
+    else
+      {:error, %ToolError{}} = error ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_inbox_send", :error)
+        error
+
+      {:error, reason} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_inbox_send", :error)
+        {:error, inbox_send_tool_error(reason)}
+    end
   end
 
   # ProjectionStore run-detail reads return {:ok, data} | {:error, reason}.
@@ -823,6 +885,270 @@ defmodule ForemanServer.MCP.Tools do
          }}
     end
   end
+
+  @inbox_send_body_max 2_000
+  @inbox_send_metadata_keys ~w(phase_id worker_id session_id severity)
+  @inbox_send_metadata_max_value_length 200
+  @inbox_send_severity_values ~w(info warn error critical)
+  @inbox_send_args [:run_id, :body, :message_id, :command_id, :metadata]
+
+  defp authorize_write_tool(tool_name) do
+    if Policy.authorized?(tool_name) do
+      :ok
+    else
+      {:error, %ToolError{code: "POLICY_REFUSED", message: "Tool #{tool_name} is not permitted"}}
+    end
+  end
+
+  defp require_run_exists(run_id) do
+    if ProjectionStore.run(run_id) do
+      :ok
+    else
+      {:error, :run_not_found}
+    end
+  end
+
+  defp build_inbox_send_command(%{} = args) do
+    with :ok <- reject_unknown_inbox_send_args(args),
+         {:ok, run_id} <- required_nonblank(args, :run_id),
+         {:ok, body} <- required_nonblank(args, :body),
+         :ok <- validate_inbox_body(body),
+         :ok <- reject_command_id_without_message_id(args),
+         {:ok, message_id} <- optional_nonblank(args, :message_id, &mint_inbox_message_id/0),
+         {:ok, command_id} <-
+           optional_nonblank(args, :command_id, fn -> inbox_command_id(run_id, message_id) end),
+         {:ok, metadata} <- normalize_inbox_metadata(Map.get(args, :metadata)) do
+      {:ok,
+       %{
+         type: "inbox.send",
+         command_id: command_id,
+         aggregate_id: "inbox:" <> run_id,
+         payload: %{
+           run_id: run_id,
+           message_id: message_id,
+           body: body,
+           metadata: metadata
+         }
+       }}
+    end
+  end
+
+  # A caller-supplied command_id without a caller-supplied message_id
+  # would report a freshly-minted message_id back to the caller on every
+  # call (see mint_inbox_message_id/0 below), including a genuine retry --
+  # but CommandRouter dedupes by command_id, so only the FIRST call's
+  # message actually persists. A retry would then tell the caller a
+  # message_id that was never stored. Reject the combination outright
+  # rather than silently reporting a mismatched identifier.
+  defp reject_command_id_without_message_id(args) do
+    if Map.get(args, :command_id) != nil and Map.get(args, :message_id) == nil do
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "command_id requires message_id to also be supplied"
+       }}
+    else
+      :ok
+    end
+  end
+
+  defp reject_unknown_inbox_send_args(args) do
+    unknown = Map.keys(args) -- @inbox_send_args
+
+    if unknown == [] do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "Unknown arguments: " <> Enum.map_join(unknown, ", ", &to_string/1)
+       }}
+    end
+  end
+
+  defp required_nonblank(args, key) do
+    case Map.get(args, key) do
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} must be nonblank"}}
+        else
+          {:ok, value}
+        end
+
+      _ ->
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} must be a string"}}
+    end
+  end
+
+  defp optional_nonblank(args, key, default_fun) do
+    case Map.get(args, key) do
+      nil ->
+        {:ok, default_fun.()}
+
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} must be nonblank"}}
+        else
+          {:ok, value}
+        end
+
+      _ ->
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} must be a string"}}
+    end
+  end
+
+  defp validate_inbox_body(body) do
+    if String.length(body) <= @inbox_send_body_max do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "body must be at most #{@inbox_send_body_max} UTF-8 characters"
+       }}
+    end
+  end
+
+  defp mint_inbox_message_id do
+    "msg_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  end
+
+  defp inbox_command_id(run_id, message_id) do
+    digest = :crypto.hash(:sha256, run_id <> "\0" <> message_id)
+    "mcp:foreman_inbox_send:" <> Base.url_encode64(digest, padding: false)
+  end
+
+  defp normalize_inbox_metadata(nil), do: {:ok, %{}}
+
+  defp normalize_inbox_metadata(metadata) when is_map(metadata) do
+    with :ok <- validate_metadata_key_count(metadata),
+         {:ok, validated} <-
+           Enum.reduce_while(metadata, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+             case normalize_inbox_metadata_key(key) do
+               {:ok, normalized_key} ->
+                 with :ok <- reject_duplicate_metadata_key(acc, normalized_key),
+                      :ok <- validate_metadata_value(normalized_key, value),
+                      :ok <- validate_metadata_value_size(normalized_key, value) do
+                   {:cont, {:ok, Map.put(acc, normalized_key, value)}}
+                 else
+                   {:error, %ToolError{}} = error -> {:halt, error}
+                 end
+
+               {:error, %ToolError{}} = error ->
+                 {:halt, error}
+             end
+           end) do
+      {:ok, validated}
+    else
+      {:error, %ToolError{}} = error -> error
+    end
+  end
+
+  defp normalize_inbox_metadata(_metadata) do
+    {:error, %ToolError{code: "INVALID_PARAMS", message: "metadata must be an object"}}
+  end
+
+  defp validate_metadata_key_count(metadata) do
+    if map_size(metadata) <= 8 do
+      :ok
+    else
+      {:error, %ToolError{code: "INVALID_PARAMS", message: "metadata must have at most 8 keys"}}
+    end
+  end
+
+  defp reject_duplicate_metadata_key(acc, normalized_key) do
+    if Map.has_key?(acc, normalized_key) do
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "duplicate metadata key (atom/string collision): #{normalized_key}"
+       }}
+    else
+      :ok
+    end
+  end
+
+  defp validate_metadata_value("severity", value) do
+    if Enum.member?(@inbox_send_severity_values, value) do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message:
+           "metadata.severity must be one of " <> Enum.join(@inbox_send_severity_values, ", ")
+       }}
+    end
+  end
+
+  # Metadata keys are identifiers (phase_id/worker_id/session_id) or the
+  # whitelisted severity string -- never nested structures. Requiring a
+  # binary here, rather than accepting any term and only size-checking
+  # binaries below, is what keeps validate_metadata_value_size/2 a real
+  # bound: an arbitrarily large or deep map/list value would otherwise
+  # bypass the byte-size limit entirely (its non-binary clause is `:ok`).
+  defp validate_metadata_value(_key, value) when is_binary(value), do: :ok
+
+  defp validate_metadata_value(key, _value) do
+    {:error, %ToolError{code: "INVALID_PARAMS", message: "metadata.#{key} must be a string"}}
+  end
+
+  defp validate_metadata_value_size(_key, value) when is_binary(value) do
+    if byte_size(value) <= @inbox_send_metadata_max_value_length do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message:
+           "metadata value must be at most " <>
+             Integer.to_string(@inbox_send_metadata_max_value_length) <> " bytes"
+       }}
+    end
+  end
+
+  defp validate_metadata_value_size(_key, _value), do: :ok
+
+  defp normalize_inbox_metadata_key(key) when is_atom(key),
+    do: normalize_inbox_metadata_key(Atom.to_string(key))
+
+  defp normalize_inbox_metadata_key(key) when is_binary(key) do
+    if key in @inbox_send_metadata_keys do
+      {:ok, key}
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "Unknown metadata key: #{key}"
+       }}
+    end
+  end
+
+  defp normalize_inbox_metadata_key(key) do
+    {:error,
+     %ToolError{
+       code: "INVALID_PARAMS",
+       message: "Unknown metadata key: #{inspect(key)}"
+     }}
+  end
+
+  defp inbox_send_tool_error(:run_not_found),
+    do: %ToolError{code: "NOT_FOUND", message: "Run not found"}
+
+  defp inbox_send_tool_error({:invalid_envelope, reason}),
+    do: %ToolError{code: "INVALID_PARAMS", message: "Invalid inbox send envelope: #{reason}"}
+
+  defp inbox_send_tool_error({:command_not_allowed, _type}),
+    do: %ToolError{code: "POLICY_REFUSED", message: "Tool foreman_inbox_send is not permitted"}
+
+  defp inbox_send_tool_error({:already_exists, :message, message_id}),
+    do: %ToolError{code: "ALREADY_EXISTS", message: "Inbox message already exists: #{message_id}"}
+
+  defp inbox_send_tool_error({:not_found, :run, _run_id}),
+    do: %ToolError{code: "NOT_FOUND", message: "Run not found"}
+
+  defp inbox_send_tool_error(reason),
+    do: %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}
 
   defp tool_foreman_task_create(
          %{

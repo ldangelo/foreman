@@ -190,6 +190,7 @@ defmodule ForemanServer.MCP.TransportTest do
         "foreman_workflow_validate",
         "foreman_task_create",
         "foreman_run_cancel",
+        "foreman_inbox_send",
         "foreman_workflow_put",
         "foreman_workflow_delete"
       ]
