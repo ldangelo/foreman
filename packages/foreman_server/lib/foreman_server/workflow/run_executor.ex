@@ -3481,8 +3481,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)
 
   @doc false
-  def __handle_phase_body_error_for_test__(state, phase_spec, phase_index, worktree_record, reason) do
-    handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, {:error, reason})
+  def __handle_phase_body_error_for_test__(
+        state,
+        phase_spec,
+        phase_index,
+        worktree_record,
+        reason
+      ) do
+    handle_phase_body_error(
+      state,
+      phase_spec,
+      phase_index,
+      worktree_record,
+      reason,
+      {:error, reason}
+    )
   end
 
   @doc false
@@ -3495,7 +3508,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
-
 
   @doc false
   def __find_resumable_worktree_for_test__(run_id), do: find_resumable_worktree(run_id)

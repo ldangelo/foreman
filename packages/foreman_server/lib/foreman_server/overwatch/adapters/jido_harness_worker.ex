@@ -122,7 +122,9 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     task =
       Task.async(fn ->
-        {result, log_events} = run_agent(state.run_id, state.provider, state.prompt, state.driver_opts)
+        {result, log_events} =
+          run_agent(state.run_id, state.provider, state.prompt, state.driver_opts)
+
         send(parent_pid, {:agent_done, result, log_events})
       end)
 
