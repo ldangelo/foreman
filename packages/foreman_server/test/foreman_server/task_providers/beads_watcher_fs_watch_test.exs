@@ -56,22 +56,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
   end
 
   setup do
-    original_cg =
-      Application.get_env(:foreman_server, :command_gateway_module, ForemanServer.CommandGateway)
-
-    original_ps =
-      Application.get_env(
-        :foreman_server,
-        :projection_store_module,
-        ForemanServer.ProjectionStore
-      )
-
-    original_wc =
-      Application.get_env(
-        :foreman_server,
-        :workflow_catalog_module,
-        ForemanServer.Workflow.Catalog
-      )
+    original_cg = Application.fetch_env(:foreman_server, :command_gateway_module)
+    original_ps = Application.fetch_env(:foreman_server, :projection_store_module)
+    original_wc = Application.fetch_env(:foreman_server, :workflow_catalog_module)
 
     Application.put_env(:foreman_server, :command_gateway_module, FakeCommandGateway)
     Application.put_env(:foreman_server, :projection_store_module, FakeProjectionStore)
@@ -79,14 +66,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
     FakeCommandGateway.reset()
 
     on_exit(fn ->
-      Application.put_env(:foreman_server, :command_gateway_module, original_cg)
-      Application.put_env(:foreman_server, :projection_store_module, original_ps)
-      Application.put_env(:foreman_server, :workflow_catalog_module, original_wc)
+      restore_env(:command_gateway_module, original_cg)
+      restore_env(:projection_store_module, original_ps)
+      restore_env(:workflow_catalog_module, original_wc)
       FakeCommandGateway.reset()
     end)
 
     :ok
   end
+
+  defp restore_env(key, {:ok, value}), do: Application.put_env(:foreman_server, key, value)
+  defp restore_env(key, :error), do: Application.delete_env(:foreman_server, key)
 
   defp sync_status_response(coverage_drift) do
     body = %{
@@ -268,7 +258,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
 
       File.write!(jsonl_path, valid_bead_line("bead-live-fs"), [:append])
 
-      [{create_cmd, 5_000}, {approve_cmd, 5_000}] = await_dispatch_calls!(2)
+      [{create_cmd, 5_000}, {approve_cmd, 5_000}] = await_dispatch_calls!(2, 1_000)
       assert create_cmd.type == "task.create"
       assert create_cmd.payload.external_id == "bead-live-fs"
       assert create_cmd.payload.workflow_type == "generic"
