@@ -2,10 +2,10 @@
 document_id: TRD-2026-cf992a03
 label: trd-agent-inbox-write-tool-run-progress
 prd_reference: docs/PRD/PRD-2026-cf992a03-agent-inbox-write-tool-run-progress.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-17
-design_readiness_score: 4.6
+design_readiness_score: 4.8
 kind: trd
 ---
 
@@ -69,10 +69,11 @@ Implement `foreman_inbox_send` as a first-class MCP write tool that dispatches `
 2. **Policy:** add `foreman_inbox_send` to `MCP.Policy.@write_tools`; it remains hidden/refused by default and is enabled by existing `allow_workflow_writes` only.
 3. **Gateway:** add `inbox.send` to `CommandGateway` operator allowlist and add a dedicated aggregate-id validator requiring `aggregate_id == "inbox:#{run_id}"`. Do not allow `inbox.delivery.update`.
 4. **Retry identity:** require or mint `message_id`; derive default `command_id` deterministically from `run_id` and `message_id`. Exact command retry returns idempotent success; conflicting duplicate message id maps to `ALREADY_EXISTS`.
-5. **Input boundary:** accept only schema-declared top-level fields. Metadata is a JSON-safe object limited to declared keys (`phase_id`, `worker_id`, `session_id`, `severity`) and safe scalar/list/map values; no prompt/output/log bodies.
-6. **Body limit:** reject oversize body with `INVALID_PARAMS`. No truncation in v1.
-7. **Telemetry:** use `Telemetry.mcp_tool_call/3` with `tool` and `outcome` only; never include message body or metadata payload.
-8. **Prompts:** instruct agents to post phase start, material milestone, blocker, and phase completion updates when available, but to continue work if the tool is denied/unavailable/fails.
+5. **Input boundary:** accept only schema-declared top-level fields. Metadata is a JSON-safe object limited to declared keys (`phase_id`, `worker_id`, `session_id`, `severity`) and safe scalar/list/map values; unknown metadata keys are rejected with `INVALID_PARAMS` rather than dropped silently; no prompt/output/log bodies.
+6. **Body limit:** set the MCP schema and helper limit to 2,000 UTF-8 characters for `body`; reject oversize body with `INVALID_PARAMS`. No truncation in v1.
+7. **Operator command docs:** update `CommandGateway`'s operator allowlist/module documentation alongside `@allowed_operator_types` so the public mutation contract does not drift.
+8. **Telemetry:** use `Telemetry.mcp_tool_call/3` with `tool` and `outcome` only; never include message body or metadata payload.
+9. **Prompts:** instruct agents to post phase start, material milestone, blocker, and phase completion updates when available, but to continue work if the tool is denied/unavailable/fails.
 
 ## System Architecture Design
 
@@ -111,7 +112,7 @@ graph TD
 
 | Boundary | Protocol | Request | Response/Error |
 |---|---|---|---|
-| MCP schema | `foreman_inbox_send` | `{run_id, body, message_id?, command_id?, metadata?}` | `{run_id, message_id, status: "sent"}` |
+| MCP schema | `foreman_inbox_send` | `{run_id, body, message_id?, command_id?, metadata?}` where `body` is 1–2,000 UTF-8 chars and `metadata` keys are only `phase_id`, `worker_id`, `session_id`, `severity` | `{run_id, message_id, status: "sent"}` |
 | Gateway | `CommandGateway.dispatch_operator/2` | `%{type: "inbox.send", aggregate_id: "inbox:<run_id>", command_id, payload: %{run_id, message_id, body, metadata}}` | `{:ok, event_spec}` or typed error tuple |
 | Aggregate | `InboxThread.handle_command/2` | `inbox.send` payload | `%InboxMessageAppended{}` or `{:already_exists, :message, message_id}` |
 | Read verification | `foreman_inbox_get` | `{run_id}` | Existing inbox thread or `{run_id, messages: []}` |
@@ -128,6 +129,7 @@ graph TD
     - [ ] Given an operator `inbox.send` envelope has matching `aggregate_id` and payload `run_id`, when dispatched, then it reaches `InboxThread` through `CommandRouter`.
     - [ ] Given `aggregate_id` does not equal `inbox:<run_id>`, when dispatched, then `{:error, {:invalid_envelope, :aggregate_id_mismatch}}` is returned.
     - [ ] Given `inbox.delivery.update` is submitted through `dispatch_operator/2`, when the gateway checks the allowlist, then it returns `{:error, {:command_not_allowed, "inbox.delivery.update"}}`.
+    - [ ] Given `inbox.send` is added to `@allowed_operator_types`, when the change is made, then `CommandGateway` module documentation is updated in the same commit so the public operator-command contract stays accurate.
 - [ ] **TRD-001-TEST**: Add gateway tests for allowed `inbox.send`, aggregate mismatch, missing required fields, and disallowed delivery update [verifies TRD-001] [satisfies REQ-002, REQ-015] [depends: TRD-001] (2h)
 - [ ] **TRD-002**: Preserve idempotent command retry semantics for `inbox.send` without changing duplicate-message domain behavior [satisfies REQ-005, REQ-006] [depends: TRD-001] (2h)
   - Validates PRD ACs: AC-005-3, AC-006-2
@@ -140,8 +142,9 @@ graph TD
   - Implementation AC:
     - [ ] Given caller supplies `message_id`, when the helper builds the command, then the payload uses that exact validated ID.
     - [ ] Given caller omits `message_id`, when the helper builds the command, then it mints a collision-resistant ID and derives `command_id` from `run_id` and `message_id`.
-    - [ ] Given `body` exceeds the configured/static max length, when validation runs, then it returns `INVALID_PARAMS` before dispatch.
-- [ ] **TRD-003-TEST**: Unit-test ID derivation, caller-supplied IDs, body length rejection, blank field rejection, and payload shape [verifies TRD-003] [satisfies REQ-004, REQ-005, REQ-010] [depends: TRD-003] (2h)
+    - [ ] Given `body` exceeds 2,000 UTF-8 characters, when validation runs, then it returns `INVALID_PARAMS` before dispatch.
+    - [ ] Given metadata contains any key outside `phase_id`, `worker_id`, `session_id`, or `severity`, when validation runs, then it returns `INVALID_PARAMS` before dispatch instead of silently dropping or atomizing the key.
+- [ ] **TRD-003-TEST**: Unit-test ID derivation, caller-supplied IDs, body length rejection, blank field rejection, metadata whitelist rejection, and payload shape [verifies TRD-003] [satisfies REQ-004, REQ-005, REQ-010] [depends: TRD-003] (2h)
 
 ### PR 2: MCP exposes `foreman_inbox_send` with default-deny policy and transport parity
 
@@ -150,7 +153,7 @@ graph TD
 - [ ] **TRD-004**: Add `foreman_inbox_send` schema to `ForemanServer.MCP.Tools` with `run_id`, `body`, optional `message_id`, optional `command_id`, and optional `metadata` fields and matching generated `call_tool/2` handler [satisfies REQ-001, REQ-004, REQ-012] [depends: TRD-003] (3h)
   - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-2, AC-012-1
   - Implementation AC:
-    - [ ] Given writes are enabled, when `tools/list` is called, then `foreman_inbox_send` appears with schema fields matching handler-declared arguments.
+    - [ ] Given writes are enabled, when `tools/list` is called, then `foreman_inbox_send` appears with schema fields matching handler-declared arguments, including `maxLength: 2000` for `body`.
     - [ ] Given undeclared top-level keys arrive through MCP validation, when `Tools.call_tool/2` checks args, then no new atoms are created and unknown args are rejected.
 - [ ] **TRD-004-TEST**: Add tool schema tests and HTTP/stdio component parity checks for `foreman_inbox_send` [verifies TRD-004] [satisfies REQ-001, REQ-004, REQ-012] [depends: TRD-004] (2h)
 - [ ] **TRD-005**: Implement `tool_foreman_inbox_send/1` to authorize, validate run existence, dispatch via `CommandGateway.dispatch_operator/2`, and return `%{run_id, message_id, status: "sent"}` [satisfies REQ-001, REQ-002, REQ-006, REQ-007] [depends: TRD-004] (4h)
@@ -300,12 +303,12 @@ Traceability check: 15 requirements covered, 0 uncovered, 0 orphaned annotations
 
 | Dimension | Score | Rationale |
 |---|---:|---|
-| Architecture completeness | 4.5 | Components, boundaries, data flow, policy, and read verification defined; exact ID format left to implementation helper but bounded by tests. |
-| Task coverage | 4.8 | Every PRD requirement has implementation and test tasks; delivery-status non-goal is explicitly pinned. |
-| Dependency clarity | 4.5 | Dependencies are explicit and acyclic; critical path is moderate but sliced into shippable PRs. |
-| Estimate confidence | 4.4 | Estimates are granular and under 8h; MCP handler/error behavior has known complexity. |
+| Architecture completeness | 4.8 | Components, boundaries, data flow, policy, read verification, body bound, metadata whitelist, and gateway contract documentation are defined. |
+| Task coverage | 4.9 | Every PRD requirement has implementation and test tasks; delivery-status non-goal, metadata validation, body limits, and docs sync are explicitly pinned. |
+| Dependency clarity | 4.7 | Dependencies are explicit and acyclic; critical path is moderate but sliced into shippable PRs with no forward PR dependencies. |
+| Estimate confidence | 4.7 | Estimates are granular and under 8h; known MCP handler/error complexity is split across helper, policy, error mapping, and telemetry tasks. |
 
-Overall Design Readiness Score: **4.6 PASS**.
+Overall Design Readiness Score: **4.8 PASS**.
 
 ## MCP Enhancement
 
@@ -316,3 +319,7 @@ MCP enhancement: skipped (no `mcp__*` tools detected in this Pi session).
 1. `/ensemble-configure-team docs/TRD/TRD-2026-cf992a03-agent-inbox-write-tool-run-progress.md`
 2. `/ensemble-implement-trd-beads docs/TRD/TRD-2026-cf992a03-agent-inbox-write-tool-run-progress.md`
 3. Stop here until implementation is approved.
+
+## Changelog
+
+- 2026-09-17 — v1.0.1: Foreman-mode refinement; specified a concrete 2,000-character body limit, made metadata whitelist failures loud (`INVALID_PARAMS`), required `CommandGateway` operator-contract documentation to stay in sync with the allowlist, and updated the design readiness score.
