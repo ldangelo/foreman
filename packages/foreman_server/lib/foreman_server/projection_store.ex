@@ -110,9 +110,71 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
-  @spec subscribe() :: :ok
-  def subscribe do
-    GenServer.call(__MODULE__, :subscribe)
+  @doc """
+  Subscribe the caller to projection events.
+
+  `opts` accepts only `replay_existing: boolean()`; an empty list is also
+  valid. An unknown key, a duplicate `replay_existing` entry, or a
+  non-boolean value raises -- caller error, not a runtime condition to
+  degrade past.
+
+  With `replay_existing: true`, the caller is registered first, then the
+  committed event log is replayed into its mailbox before this call returns.
+  That closes the startup gap for long-lived subscribers: events committed
+  before subscription are replayed, and events committed after subscription are
+  queued behind the subscription call and delivered by the normal broadcast path.
+
+  **Delivery is at-least-once, not exactly-once.** The replay read
+  (`EventStore.read_all_streams_forward/2`) is a direct, out-of-band read of
+  the durable log; it can observe an event that this GenServer's own mailbox
+  has not yet processed and broadcast (the store-to-mailbox path has its own
+  latency independent of request ordering). A subscriber can therefore
+  receive the same event twice: once via replay, once via the normal live
+  broadcast that fires immediately after. Building exactly-once delivery here
+  (e.g. a per-subscriber replay cursor) was deliberately rejected in favor of
+  every consumer of this event stream being idempotent against its own
+  current projection state -- the simpler, standard at-least-once pattern.
+  `ForemanServer.Workflow.Dispatcher`, the only caller of `replay_existing:
+  true`, satisfies this: `TaskApproved`/`TaskDispatched` re-check live
+  projection status before acting (`task_ready_for_approval?/2`, the
+  `%{status: "in_progress"} = task_proj` match), and every terminal-event
+  side effect it dispatches (`lease.release`, `lease.remove_waiter`,
+  `run_slots.release`, `task.run_terminated`'s deterministic command_id,
+  worktree cleanup's explicit `{:ok, :already_cleaned}` case) is independently
+  idempotent. Do not add a new subscriber to this event stream without the
+  same property.
+  """
+  @spec subscribe(keyword()) :: :ok | {:error, term()}
+  def subscribe(opts \\ []) when is_list(opts) do
+    validated = validate_subscribe_opts!(opts)
+    GenServer.call(__MODULE__, {:subscribe, validated}, 30_000)
+  end
+
+  @subscribe_keys [:replay_existing]
+
+  defp validate_subscribe_opts!(opts) do
+    Enum.each(opts, fn
+      {:replay_existing, v} when is_boolean(v) ->
+        :ok
+
+      {:replay_existing, v} ->
+        raise ArgumentError, "replay_existing must be boolean, got: #{inspect(v)}"
+
+      {key, _} ->
+        raise ArgumentError, "unknown ProjectionStore.subscribe/1 option: #{inspect(key)}"
+    end)
+
+    seen_keys = Keyword.keys(opts)
+
+    if length(seen_keys) != length(Enum.uniq(seen_keys)) do
+      raise ArgumentError, "duplicate ProjectionStore.subscribe/1 option in #{inspect(opts)}"
+    end
+
+    unless MapSet.subset?(MapSet.new(seen_keys), MapSet.new(@subscribe_keys)) do
+      raise ArgumentError, "unknown ProjectionStore.subscribe/1 option in #{inspect(opts)}"
+    end
+
+    opts
   end
 
   @doc "Return the projected state for a task, or nil if not found."
@@ -536,10 +598,39 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call(:subscribe, {pid, _ref}, state) do
-    Process.put(:projection_subscribers, Map.put(state.subscribers, pid, true))
-    Process.monitor(pid)
-    {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, true)}}
+  def handle_call({:subscribe, opts}, {pid, _ref}, state) do
+    {ref, subscribers, newly_monitored?} =
+      case Map.fetch(state.subscribers, pid) do
+        {:ok, existing_ref} ->
+          {existing_ref, state.subscribers, false}
+
+        :error ->
+          ref = Process.monitor(pid)
+          {ref, Map.put(state.subscribers, pid, ref), true}
+      end
+
+    Process.put(:projection_subscribers, subscribers)
+    state = %{state | subscribers: subscribers}
+
+    if Keyword.get(opts, :replay_existing, false) do
+      case EventStore.read_all_streams_forward(0, 99_999_999) do
+        {:ok, events} ->
+          replay_events(pid, events)
+          {:reply, :ok, state}
+
+        {:error, reason} ->
+          if newly_monitored? do
+            Process.demonitor(ref, [:flush])
+            remaining = Map.delete(subscribers, pid)
+            Process.put(:projection_subscribers, remaining)
+            {:reply, {:error, reason}, %{state | subscribers: remaining}}
+          else
+            {:reply, {:error, reason}, state}
+          end
+      end
+    else
+      {:reply, :ok, state}
+    end
   end
 
   @impl true
@@ -760,6 +851,10 @@ defmodule ForemanServer.ProjectionStore do
     end
 
     state
+  end
+
+  defp replay_events(pid, events) do
+    Enum.each(events, fn event -> send(pid, {:projection_event, event}) end)
   end
 
   # -------------------------------------------------------------------------

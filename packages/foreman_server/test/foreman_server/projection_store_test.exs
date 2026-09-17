@@ -1,6 +1,8 @@
 defmodule ForemanServer.ProjectionStoreTest do
   use ExUnit.Case, async: false
 
+  alias EventStore.EventData
+  alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
 
   alias ForemanServer.TestSupport.ProjectionStoreReset
@@ -17,6 +19,34 @@ defmodule ForemanServer.ProjectionStoreTest do
     end)
 
     :ok
+  end
+
+  test "subscribe with replay_existing replays already-committed events" do
+    project_id = "project-subscribe-#{System.unique_integer([:positive])}"
+    stream_id = "project:#{project_id}"
+
+    event = %EventData{
+      event_type: "ProjectRegistered",
+      data: %{project_id: project_id, path: "/tmp/#{project_id}"},
+      metadata: %{}
+    }
+
+    assert :ok = Store.append_to_stream(stream_id, 0, [event])
+
+    assert :ok = ProjectionStore.subscribe(replay_existing: true)
+    assert_replayed_project_registered(project_id)
+  end
+
+  test "subscribe rejects unknown options, non-boolean replay_existing, and duplicate keys" do
+    assert_raise ArgumentError, fn -> ProjectionStore.subscribe(bogus: true) end
+    assert_raise ArgumentError, fn -> ProjectionStore.subscribe(replay_existing: "yes") end
+
+    assert_raise ArgumentError, fn ->
+      ProjectionStore.subscribe(replay_existing: true, replay_existing: false)
+    end
+
+    assert :ok = ProjectionStore.subscribe()
+    assert :ok = ProjectionStore.subscribe(replay_existing: false)
   end
 
   test "projects are registered and updated from state.projects" do
@@ -378,6 +408,25 @@ defmodule ForemanServer.ProjectionStoreTest do
       assert result.omitted_entries == 5
       assert hd(result.entries).content == "line-6"
       assert List.last(result.entries).content == "line-505"
+    end
+  end
+
+  defp assert_replayed_project_registered(project_id, deadline_ms \\ nil) do
+    deadline_ms = deadline_ms || System.monotonic_time(:millisecond) + 1_000
+
+    receive do
+      {:projection_event, %{event_type: "ProjectRegistered", data: data}} ->
+        if (Map.get(data, :project_id) || Map.get(data, "project_id")) == project_id do
+          :ok
+        else
+          assert_replayed_project_registered(project_id, deadline_ms)
+        end
+
+      {:projection_event, _event} ->
+        assert_replayed_project_registered(project_id, deadline_ms)
+    after
+      max(deadline_ms - System.monotonic_time(:millisecond), 0) ->
+        flunk("expected replayed ProjectRegistered for #{project_id}")
     end
   end
 end

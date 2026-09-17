@@ -422,7 +422,7 @@ Traceability check: 16 requirements covered, 0 uncovered, 0 orphaned annotations
 
 ### Architecture Issues
 
-1. **Live projection subscription alone can lose work on restart.** Resolution: dispatcher must have durable catch-up keyed by notification id/attempt id, not only `ProjectionStore.subscribe/0`.
+1. **Live projection subscription alone can lose work on restart.** Resolution: dispatcher must have durable catch-up keyed by notification id/attempt id, not only `ProjectionStore.subscribe/1`.
 2. **Stall source ambiguity can create duplicate alert policies.** Resolution: messaging observes existing recovery/stall facts and correlation-id dedupe; it does not add a new stall detector.
 3. **Provider failure notification can recurse.** Resolution: provider failures terminate as notification delivery state and never enqueue a second provider-error notification.
 

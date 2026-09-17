@@ -53,7 +53,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def init(_init_arg) do
-    case ProjectionStore.subscribe() do
+    case safe_subscribe() do
       :ok ->
         {:ok, %{}}
 
@@ -66,13 +66,36 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def handle_info(:retry_subscribe, state) do
-    case ProjectionStore.subscribe() do
+    case safe_subscribe() do
       :ok ->
         {:noreply, %{state | subscriber: :subscribed}}
 
       _ ->
         Process.send_after(self(), :retry_subscribe, 50)
         {:noreply, state}
+    end
+  end
+
+  # Same rationale as safe_dispatch_system/1 below: replay_existing: true
+  # reads and replays the full committed event log inside ProjectionStore's
+  # own handle_call, which grows with the event log's lifetime. subscribe/1
+  # already raises its own GenServer.call timeout to 30s to make that
+  # unlikely in practice, but a sufficiently large log (or a genuinely
+  # wedged ProjectionStore) must still degrade into this module's existing
+  # retry loop rather than crash Dispatcher's boot -- an uncaught
+  # GenServer.call exit here is exactly the "sweep's own
+  # ProjectionStore.list_tasks() GenServer.call timed out under load and
+  # crashed Dispatcher itself" failure mode this bug's own history records.
+  defp safe_subscribe do
+    try do
+      ProjectionStore.subscribe(replay_existing: true)
+    catch
+      :exit, exit_reason ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: ProjectionStore.subscribe exited: #{inspect(exit_reason)}"
+        )
+
+        {:error, {:subscribe_exit, exit_reason}}
     end
   end
 
@@ -162,10 +185,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp apply_task_dispatch_handler("TaskApproved", envelope, state),
+  defp apply_task_dispatch_handler(event_type, envelope, state) do
+    dispatch_task_event(event_type, envelope, state)
+  end
+
+  defp dispatch_task_event("TaskApproved", envelope, state),
     do: handle_task_approved(envelope, state)
 
-  defp apply_task_dispatch_handler("TaskDispatched", envelope, state),
+  defp dispatch_task_event("TaskDispatched", envelope, state),
     do: handle_task_dispatched(envelope, state)
 
   defp handle_run_terminated(event_type, envelope, state) do
@@ -344,7 +371,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
     task_id = payload["task_id"] || payload[:task_id]
     approval_id = payload["approval_id"] || payload[:approval_id]
 
-    if is_binary(task_id) and task_id != "" and is_binary(approval_id) and approval_id != "" do
+    if is_binary(task_id) and task_id != "" and is_binary(approval_id) and approval_id != "" and
+         task_ready_for_approval?(task_id, approval_id) do
       # Deterministic command_id keyed on (task_id, approval_id) so retries of
       # the same approval collapse through CommandRouter's idempotency path,
       # but a fresh approval for a re-approved task produces a new dispatch.
@@ -382,52 +410,112 @@ defmodule ForemanServer.Workflow.Dispatcher do
       nil ->
         {:noreply, state}
 
-      task_proj ->
-        run_payload = RunPayload.from_task_projection(task_proj)
+      %{
+        status: "in_progress",
+        run_id: _,
+        task_id: _,
+        project_id: _,
+        approval_id: _,
+        workflow_snapshot: _
+      } = task_proj ->
+        case safe_from_task_projection(task_proj) do
+          {:ok, run_payload} ->
+            dispatch_run_payload(run_payload, task_proj, task_id, state)
 
-        # RunAdmission.start dispatches through several aggregate actors
-        # (run_slots:global, the Beads lease, the run aggregate). Any of
-        # them can legitimately be mid-restart (crash, or a test's
-        # deliberate reset) when this fires; an uncaught exit here would
-        # crash this always-on Dispatcher, dropping its ProjectionStore
-        # subscription and losing every other event queued in its mailbox.
-        result =
-          safe_run_admission_start(run_payload.project_id, %{
-            run_id: run_payload.run_id,
-            task_id: run_payload.task_id,
-            project_id: run_payload.project_id,
-            approval_id: run_payload.approval_id,
-            workflow_snapshot: run_payload.workflow_snapshot,
-            phase_specs: run_payload.phase_specs
-          })
-
-        case result do
-          {:ok, :slot_queued} ->
-            # RunAdmission decided this run must wait for a free run slot;
-            # do NOT start the supervisor. A RunSlotTransferred promotion
-            # will re-enter admission for this run via handle_slot_promoted.
-            {:noreply, state}
-
-          {:ok, :queued} ->
-            # RunAdmission decided this run is a Beads-DB waiter;
-            # do NOT start the supervisor. The lease aggregate will
-            # emit BeadsDbLeaseTransferred when the holder releases
-            # and promotes this waiter; a re-dispatch at that point
-            # will succeed.
-            {:noreply, state}
-
-          {:ok, _} ->
-            ForemanServer.Workflow.RunSupervisor.start_run(run_payload.run_id, task_proj)
-            {:noreply, state}
-
-          {:error, reason} ->
-            Logger.warning(
-              "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
+          {:error, formatted} ->
+            Logger.error(
+              "ForemanServer.Workflow.Dispatcher: TaskDispatched handling hit a malformed projection shape: " <>
+                formatted
             )
 
-            Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
             {:noreply, state}
         end
+
+      _task_proj ->
+        {:noreply, state}
+    end
+  end
+
+  # Scoped narrowly to the projection-to-payload conversion, which is
+  # where a malformed/incomplete historical projection shape (a missing
+  # required field failing a function head or struct/map pattern match)
+  # actually raises. This function now runs against the ENTIRE
+  # accumulated event history on every Dispatcher restart, not just live
+  # events -- an exposure that did not exist before that change. A
+  # malformed or partial projection shape anywhere in that history
+  # (verified live: a task_projection missing run_id/project_id/
+  # approval_id/workflow_snapshot reaching RunPayload.from_task_projection/1's
+  # required-field match) must degrade to a logged skip, not crash this
+  # always-on Dispatcher -- an uncaught crash here restarts Dispatcher,
+  # which replays the SAME historical event again on the next boot,
+  # which crashes again: an unbounded crash loop that exhausts the
+  # supervisor's restart budget and takes the whole application down.
+  # Reproduced in CI (506 failures, "no process ... possibly because its
+  # application isn't started" cascading from exactly this crash).
+  #
+  # Deliberately scoped to ONLY this conversion, not the whole dispatch
+  # path below: RunAdmission.start/2 and RunSupervisor.start_run/2 have
+  # their own exit-shielding (safe_run_admission_start/2) for the
+  # mid-restart-actor case, but a genuine defect inside them (e.g. a
+  # KeyError from a real logic bug) must propagate and crash loudly, not
+  # be silently misattributed to "malformed historical projection data".
+  defp safe_from_task_projection(task_proj) do
+    {:ok, RunPayload.from_task_projection(task_proj)}
+  rescue
+    e in [FunctionClauseError, MatchError, KeyError, BadMapError, BadStructError] ->
+      {:error, Exception.format(:error, e, __STACKTRACE__)}
+  end
+
+  defp dispatch_run_payload(run_payload, task_proj, task_id, state) do
+    # RunAdmission.start dispatches through several aggregate actors
+    # (run_slots:global, the Beads lease, the run aggregate). Any of
+    # them can legitimately be mid-restart (crash, or a test's
+    # deliberate reset) when this fires; an uncaught exit here would
+    # crash this always-on Dispatcher, dropping its ProjectionStore
+    # subscription and losing every other event queued in its mailbox.
+    result =
+      safe_run_admission_start(run_payload.project_id, %{
+        run_id: run_payload.run_id,
+        task_id: run_payload.task_id,
+        project_id: run_payload.project_id,
+        approval_id: run_payload.approval_id,
+        workflow_snapshot: run_payload.workflow_snapshot,
+        phase_specs: run_payload.phase_specs
+      })
+
+    case result do
+      {:ok, :slot_queued} ->
+        # RunAdmission decided this run must wait for a free run slot;
+        # do NOT start the supervisor. A RunSlotTransferred promotion
+        # will re-enter admission for this run via handle_slot_promoted.
+        {:noreply, state}
+
+      {:ok, :queued} ->
+        # RunAdmission decided this run is a Beads-DB waiter;
+        # do NOT start the supervisor. The lease aggregate will
+        # emit BeadsDbLeaseTransferred when the holder releases
+        # and promotes this waiter; a re-dispatch at that point
+        # will succeed.
+        {:noreply, state}
+
+      {:ok, _} ->
+        ForemanServer.Workflow.RunSupervisor.start_run(run_payload.run_id, task_proj)
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
+        )
+
+        Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
+        {:noreply, state}
+    end
+  end
+
+  defp task_ready_for_approval?(task_id, approval_id) do
+    case ProjectionStore.task_projection(task_id) do
+      %{status: "ready", approval_id: ^approval_id} -> true
+      _ -> false
     end
   end
 

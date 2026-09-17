@@ -238,6 +238,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         run_id: run_id,
         project_id: project_id,
         approval_id: approval_id,
+        status: "in_progress",
         workflow_snapshot: workflow_snapshot,
         phase_specs: phase_specs
       }
@@ -247,7 +248,10 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       :meck.new(ForemanServer.CommandRouter, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
-      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> task_proj
+        other -> :meck.passthrough([other])
+      end)
 
       :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload ->
         send(parent, {:run_admission_start, payload})
@@ -316,6 +320,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         run_id: run_id,
         project_id: project_id,
         approval_id: approval_id,
+        status: "in_progress",
         workflow_snapshot: workflow_snapshot,
         phase_specs: phase_specs
       }
@@ -324,7 +329,10 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
-      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> task_proj
+        other -> :meck.passthrough([other])
+      end)
 
       :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, :slot_queued}
@@ -360,6 +368,56 @@ defmodule ForemanServer.Workflow.DispatcherTest do
 
       refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
       refute_receive :start_run_called, 0
+    end
+  end
+
+  describe "TaskDispatched survives a malformed/partial task projection" do
+    test "does not crash when the projection is missing run_id/project_id/approval_id/workflow_snapshot" do
+      task_id = "task-malformed-#{System.unique_integer([:positive])}"
+
+      # Reproduces a live CI failure: with `replay_existing: true`, this
+      # handler now runs against the entire accumulated event history on
+      # every Dispatcher restart, so it can be handed a projection that
+      # never went through the normal TaskCreated/TaskApproved/
+      # TaskDispatched chain -- status alone, nothing else. Before the
+      # fix, this crashed Dispatcher with a FunctionClauseError in
+      # RunPayload.from_task_projection/1, which -- because a restart
+      # replays the SAME history again -- crash-looped and exhausted the
+      # supervisor's restart budget (506 failures in one CI run).
+      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
+
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}
+        other -> :meck.passthrough([other])
+      end)
+
+      :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
+
+      on_exit(fn ->
+        try do
+          :meck.unload(ForemanServer.ProjectionStore)
+        catch
+          :exit, _ -> :ok
+        end
+
+        try do
+          :meck.unload(ForemanServer.RunAdmission)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      assert {:noreply, %{}} =
+               Dispatcher.handle_info(
+                 {:projection_event, %{event_type: "TaskDispatched", data: %{task_id: task_id}}},
+                 %{}
+               )
+
+      # A malformed projection must never reach admission dispatch: this is
+      # what distinguishes "gracefully skipped" from "produced the same
+      # {:noreply, %{}} result while silently starting a run on incomplete
+      # data" — the latter would pass an assertion on the result alone.
+      assert :meck.num_calls(ForemanServer.RunAdmission, :start, :_) == 0
     end
   end
 
