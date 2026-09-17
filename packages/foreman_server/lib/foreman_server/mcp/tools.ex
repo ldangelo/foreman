@@ -296,6 +296,31 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_run_pause %{
+    name: "foreman_run_pause",
+    description: "Pause a run",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        run_id: %{type: "string", description: "The run ID"},
+        reason: %{type: "string", description: "The pause reason"}
+      },
+      required: ["run_id"]
+    }
+  }
+
+  @schema_foreman_run_resume %{
+    name: "foreman_run_resume",
+    description: "Resume a paused run",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        run_id: %{type: "string", description: "The run ID"}
+      },
+      required: ["run_id"]
+    }
+  }
+
   @schema_foreman_workflow_put %{
     name: "foreman_workflow_put",
     description:
@@ -444,6 +469,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_task_get,
     @schema_foreman_task_update,
     @schema_foreman_run_cancel,
+    @schema_foreman_run_pause,
+    @schema_foreman_run_resume,
     @schema_foreman_workflow_put,
     @schema_foreman_workflow_delete,
     @schema_foreman_prompt_put,
@@ -1130,6 +1157,67 @@ defmodule ForemanServer.MCP.Tools do
       {:error, reason} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_run_cancel", :error)
+        {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
+    end
+  end
+
+  # Explicit "operator_pause" default (rather than omitting the key like
+  # `tool_foreman_run_cancel/1` does for `reason`): the `run.pause`
+  # command clause itself defaults an absent `reason` to "crash_loop"
+  # for its other caller (`Overwatch.CrashLoopDetector`), which would
+  # mislabel an operator-issued pause.
+  defp tool_foreman_run_pause(%{run_id: run_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+    command_id = "mcp:#{run_id}:#{System.unique_integer([:positive])}"
+    reason = Map.get(args, :reason)
+
+    payload =
+      if is_binary(reason) and reason != "" do
+        %{run_id: run_id, reason: reason}
+      else
+        %{run_id: run_id, reason: "operator_pause"}
+      end
+
+    envelope = %{
+      type: "run.pause",
+      command_id: command_id,
+      aggregate_id: "run:#{run_id}",
+      payload: payload
+    }
+
+    case CommandGateway.dispatch_operator(envelope) do
+      {:ok, result} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_run_pause", :ok)
+        {:ok, result}
+
+      {:error, reason} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_run_pause", :error)
+        {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
+    end
+  end
+
+  defp tool_foreman_run_resume(%{run_id: run_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    command_id = "mcp:#{run_id}:#{System.unique_integer([:positive])}"
+
+    envelope = %{
+      type: "run.resume",
+      command_id: command_id,
+      aggregate_id: "run:#{run_id}",
+      payload: %{run_id: run_id}
+    }
+
+    case CommandGateway.dispatch_operator(envelope) do
+      {:ok, result} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_run_resume", :ok)
+        {:ok, result}
+
+      {:error, reason} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_run_resume", :error)
         {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
     end
   end

@@ -1137,6 +1137,26 @@ defmodule ForemanServer.ProjectionStore do
     apply_terminal_run_event(state, payload, "cancelled")
   end
 
+  defp apply_event_by_type(state, "RunPaused", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.put(run, :status, "paused")
+    end)
+  end
+
+  defp apply_event_by_type(state, "RunResumed", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      run
+      |> Map.put(:status, "awaiting_worker")
+      |> Map.put(:terminal?, false)
+    end)
+  end
+
+  defp apply_event_by_type(state, "RunBaseBranchRecorded", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      maybe_put(run, :base_branch, get(payload, :base_branch))
+    end)
+  end
+
   defp apply_event_by_type(state, "PhaseStarted", payload) do
     case decode_for_projection("PhaseStarted", payload) do
       %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event

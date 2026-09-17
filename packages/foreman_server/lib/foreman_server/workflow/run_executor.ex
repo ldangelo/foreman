@@ -34,6 +34,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Idempotency.HeartbeatLease
   alias ForemanServer.RunExecutorLiveness
+  alias ForemanServer.RunControl
   alias ForemanServer.Identity
   alias ForemanServer.Overwatch
   alias ForemanServer.PrAssociate
@@ -66,16 +67,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
           phase_statuses: %{
             non_neg_integer() => :in_progress | :completed | :failed | :blocked | :skipped
           },
-          status: :ready | :in_progress | :completed | :failed | :blocked,
+          status: :ready | :in_progress | :completed | :failed | :blocked | :paused | :cancelled,
           artifact_base: String.t(),
           plan_context: map() | nil,
-          source: :task | :work_request | :unknown
+          source: :task | :work_request | :unknown,
+          resume_from: non_neg_integer(),
+          resuming?: boolean()
         }
-  @spec start_link(String.t(), map()) :: GenServer.on_start()
-  def start_link(run_id, task_projection) do
+  @spec start_link(String.t(), map(), keyword()) :: GenServer.on_start()
+  def start_link(run_id, task_projection, opts \\ []) do
     GenServer.start_link(
       __MODULE__,
-      {run_id, task_projection},
+      {run_id, task_projection, opts},
       name: via_tuple(run_id)
     )
   end
@@ -287,7 +290,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   @impl true
-  def init({run_id, task_projection}) do
+  def init({run_id, task_projection, opts}) do
     phase_specs = extract_phase_specs(task_projection)
 
     plan_context =
@@ -308,18 +311,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
           :unknown
       end
 
+    resume_from = Keyword.get(opts, :resume_from, 0)
+
     state = %{
       run_id: run_id,
       task: task_projection,
       phase_specs: phase_specs,
       worktree_spec: extract_worktree_spec(task_projection),
       current_phase: nil,
-      completed: [],
+      completed: if(resume_from > 0, do: Enum.to_list(0..(resume_from - 1)), else: []),
       phase_statuses: %{},
       status: :ready,
       artifact_base: default_artifact_base(),
       plan_context: plan_context,
-      source: source
+      source: source,
+      resume_from: resume_from,
+      resuming?: Keyword.get(opts, :resume_from) != nil
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -329,6 +336,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @impl true
   def terminate(_reason, state) do
     maybe_stop_shell_session(state)
+    RunControl.clear(state.run_id)
     :ok
   end
 
@@ -377,6 +385,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       {:noop, next_state} ->
         {:noreply, next_state}
+
+      {:stopped, next_state} ->
+        {:stop, :normal, next_state}
 
       {:error, reason} ->
         finalize_terminal_and_stop(state, {:phase_start_failed, index, reason})
@@ -481,64 +492,131 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # This function is the kickoff_ready handler that runs when all prerequisites pass.
   # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
   defp handle_kickoff_ready(state) do
-    case maybe_claim_task(state) do
-      :ok ->
-        case start_phase_at_index(state, 0) do
-          {:ok, next_state} ->
-            {:noreply, next_state}
-
-          {:noop, next_state} ->
-            {:noreply, next_state}
-
-          {:error, reason} ->
-            # `start_phase_at_index/2` already attempted
-            # → `emit_phase_failure/4` → `emit_run_failure/2` → `run.fail`
-            # before returning this error. If the run is still
-            # non-terminal here it means the very first terminal
-            # dispatch was rejected (transport, aggregate reject,
-            # …) — re-route through the bounded retry helper so
-            # the reason is not dropped on the floor.
-            Logger.error(
-              "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              phase_index: 0,
-              operation: "run_executor.phase_start",
-              outcome: "error",
-              reason: inspect(reason)
-            )
-
-            finalize_terminal_and_stop(state, {:initialization_failed, reason})
-
-          # The phase provisioned a worktree and then failed. Finalize with
-          # THAT state, not the pre-phase one, or `cleanup_run_worktree/2`
-          # cannot see the checkout it is supposed to reclaim.
-          {:error, reason, phase_state} ->
-            Logger.error(
-              "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              phase_index: 0,
-              operation: "run_executor.phase_start",
-              outcome: "error",
-              reason: inspect(reason)
-            )
-
-            finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
-        end
-
+    case rehydrate_resume_context(state) do
       {:error, reason} ->
-        Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+        Logger.error(
+          "RunExecutor #{state.run_id} resume context unresolvable: #{inspect(reason)}",
           run_id: state.run_id,
           task_id: task_id(state),
-          operation: "run_executor.task_claim",
+          operation: "run_executor.resume",
           outcome: "error",
           reason: inspect(reason)
         )
 
-        _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
-        finalize_terminal_and_stop(state, {:claim_failure, reason})
+        finalize_terminal_and_stop(state, {:resume_context_unresolvable, reason})
+
+      {:ok, state} ->
+        claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+
+        case claim_result do
+          :ok ->
+            case start_phase_at_index(state, state.resume_from) do
+              {:ok, next_state} ->
+                {:noreply, next_state}
+
+              {:noop, next_state} ->
+                {:noreply, next_state}
+
+              {:stopped, next_state} ->
+                {:stop, :normal, next_state}
+
+              {:error, reason} ->
+                # `start_phase_at_index/2` already attempted
+                # → `emit_phase_failure/4` → `emit_run_failure/2` → `run.fail`
+                # before returning this error. If the run is still
+                # non-terminal here it means the very first terminal
+                # dispatch was rejected (transport, aggregate reject,
+                # …) — re-route through the bounded retry helper so
+                # the reason is not dropped on the floor.
+                Logger.error(
+                  "RunExecutor #{state.run_id} start_phase_at_index(#{state.resume_from}) failed: #{inspect(reason)}",
+                  run_id: state.run_id,
+                  task_id: task_id(state),
+                  phase_index: state.resume_from,
+                  operation: "run_executor.phase_start",
+                  outcome: "error",
+                  reason: inspect(reason)
+                )
+
+                finalize_terminal_and_stop(state, {:initialization_failed, reason})
+
+              # The phase provisioned a worktree and then failed. Finalize with
+              # THAT state, not the pre-phase one, or `cleanup_run_worktree/2`
+              # cannot see the checkout it is supposed to reclaim.
+              {:error, reason, phase_state} ->
+                Logger.error(
+                  "RunExecutor #{state.run_id} start_phase_at_index(#{state.resume_from}) failed: #{inspect(reason)}",
+                  run_id: state.run_id,
+                  task_id: task_id(state),
+                  phase_index: state.resume_from,
+                  operation: "run_executor.phase_start",
+                  outcome: "error",
+                  reason: inspect(reason)
+                )
+
+                finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
+            end
+
+          {:error, reason} ->
+            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.task_claim",
+              outcome: "error",
+              reason: inspect(reason)
+            )
+
+            _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
+            finalize_terminal_and_stop(state, {:claim_failure, reason})
+        end
     end
+  end
+
+  # Resume re-entry: rehydrates `state.run_worktree` from the run's
+  # persisted worktree projection so `ensure_run_worktree/2` reuses the
+  # existing checkout (refreshing `base_ref` from HEAD) instead of trying
+  # to `git worktree add` a path that already exists. A no-op for a
+  # fresh (non-resuming) run.
+  defp rehydrate_resume_context(%{resuming?: false} = state), do: {:ok, state}
+
+  defp rehydrate_resume_context(%{resuming?: true} = state) do
+    case find_resumable_worktree(state.run_id) do
+      nil ->
+        Logger.warning(
+          "RunExecutor #{state.run_id} resume found no worktree entry for wt-#{state.run_id}; provisioning a fresh worktree",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume"
+        )
+
+        {:ok, state}
+
+      entry ->
+        case resolve_run_base(state, state.worktree_spec || %{}) do
+          {:ok, _project_root, _base_ref, implementation_key, trd_scope} ->
+            run_worktree = %{
+              operation_id: entry.operation_id,
+              worktree_path: entry.worktree_path,
+              branch: entry.branch,
+              base_ref: entry.base_ref,
+              project_root: entry.repo_path,
+              project_id: entry.project_id,
+              cleanup: entry.cleanup,
+              implementation_key: implementation_key,
+              trd_scope: trd_scope
+            }
+
+            {:ok, Map.put(state, :run_worktree, run_worktree)}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp find_resumable_worktree(run_id) do
+    operation_id = "wt-" <> run_id
+    Enum.find(ProjectionStore.worktrees_for_run(run_id), &(&1.operation_id == operation_id))
   end
 
   # Skips entirely when a phase declares neither `provider:` nor `models:` —
@@ -737,9 +815,44 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if Map.has_key?(state, :run_base_branch) do
       state
     else
-      Map.put(state, :run_base_branch, checkout_branch(vcs_working_directory(state)))
+      case persisted_run_base_branch(state.run_id) do
+        {:ok, branch} ->
+          Map.put(state, :run_base_branch, {:ok, branch})
+
+        :error ->
+          resolved = checkout_branch(vcs_working_directory(state))
+          dispatch_run_base_branch(state.run_id, resolved)
+          Map.put(state, :run_base_branch, resolved)
+      end
     end
   end
+
+  # Read-through cache: a resumed executor must see the SAME base branch a
+  # prior attempt resolved, not whatever branch the registered checkout
+  # happens to be on now (`checkout_branch/1` answers "what branch is HEAD
+  # on right now", which is wrong once an operator has switched branches
+  # between the pause and the resume).
+  defp persisted_run_base_branch(run_id) do
+    case ProjectionStore.run(run_id) do
+      %{base_branch: branch} when is_binary(branch) and branch != "" -> {:ok, branch}
+      _ -> :error
+    end
+  end
+
+  # Best-effort: persisting the base branch is what makes it resume-safe,
+  # but a dispatch failure here must not fail the run — the caller already
+  # stores the resolved value for THIS attempt regardless of whether the
+  # dispatch below lands.
+  defp dispatch_run_base_branch(run_id, {:ok, branch}) do
+    CommandGateway.dispatch_system(%{
+      type: "run.record_base_branch",
+      command_id: "run_executor:base-branch:" <> run_id,
+      aggregate_id: "run:#{run_id}",
+      payload: %{run_id: run_id, base_branch: branch}
+    })
+  end
+
+  defp dispatch_run_base_branch(_run_id, {:error, _reason}), do: :ok
 
   # `git symbolic-ref --quiet --short HEAD` names the checked-out branch and
   # exits non-zero on a detached HEAD. `rev-parse --abbrev-ref HEAD` would
@@ -769,6 +882,59 @@ defmodule ForemanServer.Workflow.RunExecutor do
         ok
 
       {:error, reason} = err ->
+        handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, err)
+    end
+  end
+
+  # `RunControl.intent/1` is how an operator's run.pause/run.cancel reaches
+  # this synchronous phase loop: the dispatcher cancels the in-flight
+  # harness run (unblocking `execute_agent/4` with an error), and this is
+  # where that error is folded — as a pause (commit partial work, stop
+  # clean), a cancel (stop clean, no commit), or — when no intent is
+  # recorded — the existing PhaseFailed/TaskExecutionFailed path. Total
+  # match over the three shapes `RunControl.intent/1` can return; no
+  # catch-all.
+  defp handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, err) do
+    case RunControl.intent(state.run_id) do
+      :pause ->
+        case commit_phase_worktree(state, phase_spec, phase_index, worktree_record) do
+          {:ok, _} ->
+            :ok
+
+          {:error, commit_reason} ->
+            Logger.warning(
+              "RunExecutor #{state.run_id} phase #{phase_index} pause commit failed: #{inspect(commit_reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              phase_index: phase_index,
+              operation: "run_executor.pause",
+              outcome: "error",
+              reason: inspect(commit_reason)
+            )
+        end
+
+        Logger.info(
+          "RunExecutor #{state.run_id} phase #{phase_index} paused mid-execution: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          phase_index: phase_index,
+          operation: "run_executor.pause"
+        )
+
+        {:stopped, %{state | status: :paused}}
+
+      :cancel ->
+        Logger.info(
+          "RunExecutor #{state.run_id} phase #{phase_index} cancelled mid-execution: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          phase_index: phase_index,
+          operation: "run_executor.cancel"
+        )
+
+        {:stopped, %{state | status: :cancelled}}
+
+      nil ->
         case emit_phase_failure(state, phase_spec, phase_index, reason) do
           :ok -> err
           {:error, lifecycle_reason} -> {:error, lifecycle_reason}

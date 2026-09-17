@@ -111,6 +111,51 @@ defmodule ForemanServer.RunAdmission do
   def start(project_id, _payload, _timeout),
     do: {:error, {:missing_or_invalid, :project_id, project_id}}
 
+  @doc """
+  Re-acquires the global run-slot and (if applicable) the per-DB Beads
+  lease for a run being resumed after a pause, WITHOUT dispatching
+  `run.start` — the Run aggregate already re-entered a live state via
+  `run.resume`/`RunResumed`, and a `run.start` against an existing run
+  is rejected by the aggregate's `require_absent/2` guard.
+
+  The slot re-acquisition uses a fresh, per-attempt command id (unlike
+  `start/2`'s run-id-only id) so a resumed run's re-acquire never
+  collapses into its own already-released original acquisition through
+  the aggregate actor's command-id idempotency cache — that cache keys
+  purely on `{aggregate_id, command_id}` and returns the ORIGINAL
+  `RunSlotAcquired` event verbatim on a match, without re-consulting the
+  slot aggregate's live holder/waiter state. Reusing `start/2`'s id here
+  would replay a stale "acquired" result for a slot this run no longer
+  holds (it was released when the run paused) and the live-state check
+  that follows would then report `:slot_state_unknown`.
+  """
+  @spec resume(map(), integer()) :: start_result()
+  def resume(payload, timeout \\ 5_000)
+
+  def resume(payload, timeout) when is_map(payload) do
+    case acquire_slot_for_resume(payload, timeout) do
+      {:error, _reason} = err ->
+        err
+
+      :slot_queued ->
+        {:ok, :slot_queued}
+
+      :slot_acquired ->
+        case acquire_beads_lease(payload, timeout) do
+          :proceed ->
+            {:ok, :resumed}
+
+          :queued ->
+            release_after_failed_slot(payload)
+            {:ok, :queued}
+
+          {:error, _reason} = err ->
+            release_after_failed_slot(payload)
+            err
+        end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Slot gate — global run-slot gate, outermost barrier.
   # ---------------------------------------------------------------------------
@@ -122,6 +167,34 @@ defmodule ForemanServer.RunAdmission do
     command = %{
       type: "run_slots.acquire",
       command_id: "workflow:run-admission:slot-acquire:#{run_id}",
+      aggregate_id: "run_slots:global",
+      payload: %{
+        run_id: run_id,
+        capacity: capacity
+      }
+    }
+
+    case CommandGateway.dispatch_system(command, timeout) do
+      {:error, reason} ->
+        {:error, {:slot_acquire_failed, reason}}
+
+      {:ok, _event_spec_or_nil} ->
+        case slot_decision(run_id, timeout) do
+          :slot_acquired -> :slot_acquired
+          :slot_queued -> :slot_queued
+          :unknown -> {:error, :slot_state_unknown}
+        end
+    end
+  end
+
+  defp acquire_slot_for_resume(payload, timeout) do
+    run_id = Map.get(payload, :run_id)
+    capacity = Config.max_concurrent_runs()
+
+    command = %{
+      type: "run_slots.acquire",
+      command_id:
+        "workflow:run-admission:slot-reacquire:#{run_id}:#{System.system_time(:millisecond)}",
       aggregate_id: "run_slots:global",
       payload: %{
         run_id: run_id,

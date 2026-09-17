@@ -18,10 +18,13 @@ defmodule ForemanServer.Workflow.RunSupervisor do
   end
 
   @spec start_run(String.t(), map()) :: DynamicSupervisor.on_start_child()
-  def start_run(run_id, task_projection) do
+  def start_run(run_id, task_projection), do: start_run(run_id, task_projection, [])
+
+  @spec start_run(String.t(), map(), keyword()) :: DynamicSupervisor.on_start_child()
+  def start_run(run_id, task_projection, opts) do
     child_spec = %{
       id: RunExecutor,
-      start: {RunExecutor, :start_link, [run_id, task_projection]},
+      start: {RunExecutor, :start_link, [run_id, task_projection, opts]},
       restart: :transient,
       shutdown: 5_000,
       type: :worker

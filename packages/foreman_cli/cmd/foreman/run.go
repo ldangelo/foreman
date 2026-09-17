@@ -20,11 +20,11 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (list, get, cancel, remove, reset, submit)",
+			"foreman run: missing subcommand (list, get, cancel, pause, resume, remove, reset, submit)",
 			usage,
 		)
 	}
@@ -36,6 +36,10 @@ func runRun(c *client.Client, args []string) error {
 		return runGet(c, args[1:])
 	case "cancel":
 		return runCancel(c, args[1:])
+	case "pause":
+		return runPause(c, args[1:])
+	case "resume":
+		return runResume(c, args[1:])
 	case "remove":
 		return runRemove(c, args[1:])
 	case "reset":
@@ -128,6 +132,40 @@ func runCancel(c *client.Client, args []string) error {
 	}
 
 	return postCommand(c, commandEnvelope{Type: "run.cancel", Payload: payload})
+}
+
+func runPause(c *client.Client, args []string) error {
+	fs := newFlagSet("run pause")
+	runID := fs.String("id", "", "Run ID (required)")
+	reason := fs.String("reason", "operator_pause", "Pause reason (default: operator_pause)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run pause: --id is required")
+	}
+
+	payload := map[string]any{
+		"run_id": *runID,
+		"reason": *reason,
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.pause", Payload: payload})
+}
+
+func runResume(c *client.Client, args []string) error {
+	fs := newFlagSet("run resume")
+	runID := fs.String("id", "", "Run ID (required)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run resume: --id is required")
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.resume", Payload: map[string]any{"run_id": *runID}})
 }
 
 func runRemove(c *client.Client, args []string) error {
