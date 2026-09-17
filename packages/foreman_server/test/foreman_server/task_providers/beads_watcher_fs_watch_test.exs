@@ -204,7 +204,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
     }) <> "\n"
   end
 
-  defp await_dispatch_calls!(expected_count, timeout_ms \\ 3_000) do
+  defp await_dispatch_calls!(expected_count, timeout_ms) do
     wait_for(
       fn ->
         calls = FakeCommandGateway.calls()
