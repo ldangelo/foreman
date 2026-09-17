@@ -17,7 +17,10 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
       assert body =~ "phase completion", "#{path} must mention phase completion progress"
       assert body =~ "Do not send timer-only chatter", "#{path} must avoid timer-only chatter"
       assert body =~ "secrets", "#{path} must prohibit secrets"
+      assert body =~ "prompts", "#{path} must prohibit prompts"
+      assert body =~ "credentials", "#{path} must prohibit credentials"
       assert body =~ "large logs", "#{path} must prohibit large logs"
+      assert body =~ "command output", "#{path} must prohibit command output"
       assert body =~ "continue the phase", "#{path} must be non-blocking on send failures"
     end
   end

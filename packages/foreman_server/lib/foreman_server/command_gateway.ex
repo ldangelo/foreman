@@ -410,13 +410,13 @@ defmodule ForemanServer.CommandGateway do
     body = Map.get(payload, :body)
 
     cond do
-      not is_binary(run_id) or run_id == "" ->
+      not is_binary(run_id) or String.trim(run_id) == "" ->
         {:error, {:invalid_envelope, :missing_run_id}}
 
-      not is_binary(message_id) or message_id == "" ->
+      not is_binary(message_id) or String.trim(message_id) == "" ->
         {:error, {:invalid_envelope, :missing_message_id}}
 
-      not is_binary(body) or body == "" ->
+      not is_binary(body) or String.trim(body) == "" ->
         {:error, {:invalid_envelope, :missing_body}}
 
       not is_binary(aggregate_id) or aggregate_id == "" ->

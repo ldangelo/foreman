@@ -358,33 +358,40 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                {:ok, %InboxSendResult{run_id: "run-1", message_id: "msg-stable", status: "sent"}}
     end
 
-    test "omitting command_id and message_id produces stable command_id across retries" do
+    test "omitting command_id and message_id produces a distinct command_id per call" do
       allow_writes()
       put_run_projection("run-1")
 
+      test_pid = self()
+
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
-        # Neither command_id nor message_id was caller-supplied; message_id is minted,
-        # command_id is derived from run_id alone — stable across retries.
+        # Neither command_id nor message_id was caller-supplied: message_id
+        # is freshly minted per call, and command_id derives from
+        # (run_id, message_id) -- not run_id alone -- so two distinct
+        # sends for the same run never collide and silently drop the
+        # second one through CommandRouter's idempotency dedupe.
         assert String.starts_with?(envelope.command_id, "mcp:foreman_inbox_send:")
+
+        assert envelope.command_id ==
+                 "mcp:foreman_inbox_send:" <>
+                   Base.url_encode64(
+                     :crypto.hash(:sha256, "run-1" <> "\0" <> envelope.payload.message_id),
+                     padding: false
+                   )
+
+        send(test_pid, {:dispatched, envelope.command_id, envelope.payload.message_id})
         {:ok, %{}}
       end)
 
       result1 = Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: "step 1"})
-
-      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
-        assert envelope.command_id ==
-                 "mcp:foreman_inbox_send:" <>
-                   Base.url_encode64(:crypto.hash(:sha256, "run-1"), padding: false)
-
-        {:ok, %{}}
-      end)
-
       result2 = Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: "step 2"})
 
-      # command_id stability (the point of this test) is already verified inside
-      # the two meck expectations above; message_id is freshly minted per call
-      # (by design — each notification gets its own id), so only status/run_id
-      # are expected to match here.
+      assert_received {:dispatched, command_id_1, message_id_1}
+      assert_received {:dispatched, command_id_2, message_id_2}
+
+      refute message_id_1 == message_id_2
+      refute command_id_1 == command_id_2
+
       assert {:ok, %InboxSendResult{run_id: "run-1", status: "sent"}} = result1
       assert {:ok, %InboxSendResult{run_id: "run-1", status: "sent"}} = result2
     end
@@ -421,6 +428,20 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                  run_id: "run-1",
                  body: "progress",
                  ignored_atom: "reject me"
+               })
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+               Tools.call_tool("foreman_inbox_send", %{
+                 run_id: "run-1",
+                 body: "progress",
+                 metadata: %{:phase_id => "phase-1", "phase_id" => "phase-2"}
+               })
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+               Tools.call_tool("foreman_inbox_send", %{
+                 run_id: "run-1",
+                 body: "progress",
+                 metadata: %{"phase_id" => %{"nested" => "not a string"}}
                })
 
       refute :meck.called(CommandGateway, :dispatch_operator, :_)

@@ -888,6 +888,8 @@ defmodule ForemanServer.MCP.Tools do
 
   @inbox_send_body_max 2_000
   @inbox_send_metadata_keys ~w(phase_id worker_id session_id severity)
+  @inbox_send_metadata_max_value_length 200
+  @inbox_send_severity_values ~w(info warn error critical)
   @inbox_send_args [:run_id, :body, :message_id, :command_id, :metadata]
 
   defp authorize_write_tool(tool_name) do
@@ -913,11 +915,7 @@ defmodule ForemanServer.MCP.Tools do
          :ok <- validate_inbox_body(body),
          {:ok, message_id} <- optional_nonblank(args, :message_id, &mint_inbox_message_id/0),
          {:ok, command_id} <-
-           optional_nonblank(args, :command_id, fn ->
-             if Map.get(args, :message_id) == nil,
-               do: derived_command_id(run_id),
-               else: inbox_command_id(run_id, message_id)
-           end),
+           optional_nonblank(args, :command_id, fn -> inbox_command_id(run_id, message_id) end),
          {:ok, metadata} <- normalize_inbox_metadata(Map.get(args, :metadata)) do
       {:ok,
        %{
@@ -996,21 +994,11 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp inbox_command_id(run_id, message_id) do
-    digest = :crypto.hash(:sha256, run_id <> <<0>> <> message_id)
-    "mcp:foreman_inbox_send:" <> Base.url_encode64(digest, padding: false)
-  end
-
-  # When command_id is omitted but message_id was minted, derive a stable
-  # command_id from the run_id alone so retries always produce the same id.
-  defp derived_command_id(run_id) do
-    digest = :crypto.hash(:sha256, run_id)
+    digest = :crypto.hash(:sha256, run_id <> "\0" <> message_id)
     "mcp:foreman_inbox_send:" <> Base.url_encode64(digest, padding: false)
   end
 
   defp normalize_inbox_metadata(nil), do: {:ok, %{}}
-
-  @inbox_send_metadata_max_value_length 200
-  @inbox_send_severity_values ~w(info warn error critical)
 
   defp normalize_inbox_metadata(metadata) when is_map(metadata) do
     with :ok <- validate_metadata_key_count(metadata),
@@ -1018,7 +1006,8 @@ defmodule ForemanServer.MCP.Tools do
            Enum.reduce_while(metadata, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
              case normalize_inbox_metadata_key(key) do
                {:ok, normalized_key} ->
-                 with :ok <- validate_metadata_value(normalized_key, value),
+                 with :ok <- reject_duplicate_metadata_key(acc, normalized_key),
+                      :ok <- validate_metadata_value(normalized_key, value),
                       :ok <- validate_metadata_value_size(normalized_key, value) do
                    {:cont, {:ok, Map.put(acc, normalized_key, value)}}
                  else
@@ -1047,6 +1036,18 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
+  defp reject_duplicate_metadata_key(acc, normalized_key) do
+    if Map.has_key?(acc, normalized_key) do
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "duplicate metadata key (atom/string collision): #{normalized_key}"
+       }}
+    else
+      :ok
+    end
+  end
+
   defp validate_metadata_value("severity", value) do
     if Enum.member?(@inbox_send_severity_values, value) do
       :ok
@@ -1060,7 +1061,17 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
-  defp validate_metadata_value(_key, _value), do: :ok
+  # Metadata keys are identifiers (phase_id/worker_id/session_id) or the
+  # whitelisted severity string -- never nested structures. Requiring a
+  # binary here, rather than accepting any term and only size-checking
+  # binaries below, is what keeps validate_metadata_value_size/2 a real
+  # bound: an arbitrarily large or deep map/list value would otherwise
+  # bypass the byte-size limit entirely (its non-binary clause is `:ok`).
+  defp validate_metadata_value(_key, value) when is_binary(value), do: :ok
+
+  defp validate_metadata_value(key, _value) do
+    {:error, %ToolError{code: "INVALID_PARAMS", message: "metadata.#{key} must be a string"}}
+  end
 
   defp validate_metadata_value_size(_key, value) when is_binary(value) do
     if byte_size(value) <= @inbox_send_metadata_max_value_length do
