@@ -725,9 +725,9 @@ indistinguishable from a client typo.
 - `CommandRouter.aggregate_module_for/1` has `"inbox:"` clause → routes to InboxThread
 - Event structs `InboxMessageAppended` / `InboxDeliveryUpdated` under `lib/foreman_server/events/`
 - `ProjectionStore` handles both events; exposes `inbox_thread/1` and `list_inbox_threads/0`
-- MCP tool `foreman_inbox_get` added (`foreman inbox get <run_id>`); `inbox.send` and `inbox.delivery.update` are internal command types dispatched via `dispatch_system`
+- MCP tools `foreman_inbox_get` and write-gated `foreman_inbox_send` exist; `foreman_inbox_send` dispatches public operator `inbox.send` through `CommandGateway`, while `inbox.delivery.update` remains system-only.
 
-The per-run operator inbox is now functional. `dispatch_system` has no allowlist restriction (trusted OTP), so internal callers use that path for `inbox.send` / `inbox.delivery.update`.
+The per-run operator inbox is functional. Public run-progress writes use MCP `foreman_inbox_send` only when `allow_workflow_writes: true`; trusted OTP automation may still use `dispatch_system` for internal `inbox.send` / `inbox.delivery.update`.
 
 `task.block` was in the same class: a handler existed in `task.ex` gated behind
 `require_blockable/1` which no operator path triggered; `CrashLoopDetector`

@@ -123,94 +123,94 @@ graph TD
 
 **Shippable State:** Operators and tests can append a run progress inbox message through the public operator command gateway and read it back through the existing inbox read model; no MCP write tool is advertised yet.
 
-- [ ] **TRD-001**: Add `inbox.send` to `CommandGateway` operator allowlist with a dedicated validator requiring nonblank `run_id`, `body`, and `message_id`, and `aggregate_id == "inbox:#{run_id}"` [satisfies REQ-002, REQ-015] (3h)
+- [x] **TRD-001**: Add `inbox.send` to `CommandGateway` operator allowlist with a dedicated validator requiring nonblank `run_id`, `body`, and `message_id`, and `aggregate_id == "inbox:#{run_id}"` [satisfies REQ-002, REQ-015] (3h)
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-015-1, AC-015-2
   - Implementation AC:
-    - [ ] Given an operator `inbox.send` envelope has matching `aggregate_id` and payload `run_id`, when dispatched, then it reaches `InboxThread` through `CommandRouter`.
-    - [ ] Given `aggregate_id` does not equal `inbox:<run_id>`, when dispatched, then `{:error, {:invalid_envelope, :aggregate_id_mismatch}}` is returned.
-    - [ ] Given `inbox.delivery.update` is submitted through `dispatch_operator/2`, when the gateway checks the allowlist, then it returns `{:error, {:command_not_allowed, "inbox.delivery.update"}}`.
-    - [ ] Given `inbox.send` is added to `@allowed_operator_types`, when the change is made, then `CommandGateway` module documentation is updated in the same commit so the public operator-command contract stays accurate.
-- [ ] **TRD-001-TEST**: Add gateway tests for allowed `inbox.send`, aggregate mismatch, missing required fields, and disallowed delivery update [verifies TRD-001] [satisfies REQ-002, REQ-015] [depends: TRD-001] (2h)
-- [ ] **TRD-002**: Preserve idempotent command retry semantics for `inbox.send` without changing duplicate-message domain behavior [satisfies REQ-005, REQ-006] [depends: TRD-001] (2h)
+    - [x] Given an operator `inbox.send` envelope has matching `aggregate_id` and payload `run_id`, when dispatched, then it reaches `InboxThread` through `CommandRouter`.
+    - [x] Given `aggregate_id` does not equal `inbox:<run_id>`, when dispatched, then `{:error, {:invalid_envelope, :aggregate_id_mismatch}}` is returned.
+    - [x] Given `inbox.delivery.update` is submitted through `dispatch_operator/2`, when the gateway checks the allowlist, then it returns `{:error, {:command_not_allowed, "inbox.delivery.update"}}`.
+    - [x] Given `inbox.send` is added to `@allowed_operator_types`, when the change is made, then `CommandGateway` module documentation is updated in the same commit so the public operator-command contract stays accurate.
+- [x] **TRD-001-TEST**: Add gateway tests for allowed `inbox.send`, aggregate mismatch, missing required fields, and disallowed delivery update [verifies TRD-001] [satisfies REQ-002, REQ-015] [depends: TRD-001] (2h)
+- [x] **TRD-002**: Preserve idempotent command retry semantics for `inbox.send` without changing duplicate-message domain behavior [satisfies REQ-005, REQ-006] [depends: TRD-001] (2h)
   - Validates PRD ACs: AC-005-3, AC-006-2
   - Implementation AC:
-    - [ ] Given the same `command_id` is dispatched twice after the first commit, when the second dispatch runs, then it returns the already-committed event result.
-    - [ ] Given a different command uses an existing `message_id`, when `InboxThread` rejects it, then the typed duplicate tuple remains distinguishable for MCP mapping.
-- [ ] **TRD-002-TEST**: Add command gateway/aggregate integration tests for same-command retry success and conflicting duplicate message failure [verifies TRD-002] [satisfies REQ-005, REQ-006] [depends: TRD-002] (2h)
-- [ ] **TRD-003**: Add or document a small inbox send command builder/helper used by the MCP handler for deterministic `message_id`, deterministic default `command_id`, and safe payload shape [satisfies REQ-004, REQ-005, REQ-010] [depends: TRD-001] (3h)
+    - [x] Given the same `command_id` is dispatched twice after the first commit, when the second dispatch runs, then it returns the already-committed event result.
+    - [x] Given a different command uses an existing `message_id`, when `InboxThread` rejects it, then the typed duplicate tuple remains distinguishable for MCP mapping.
+- [x] **TRD-002-TEST**: Add command gateway/aggregate integration tests for same-command retry success and conflicting duplicate message failure [verifies TRD-002] [satisfies REQ-005, REQ-006] [depends: TRD-002] (2h)
+- [x] **TRD-003**: Add or document a small inbox send command builder/helper used by the MCP handler for deterministic `message_id`, deterministic default `command_id`, and safe payload shape [satisfies REQ-004, REQ-005, REQ-010] [depends: TRD-001] (3h)
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-005-1, AC-005-2, AC-010-1
   - Implementation AC:
-    - [ ] Given caller supplies `message_id`, when the helper builds the command, then the payload uses that exact validated ID.
-    - [ ] Given caller omits `message_id`, when the helper builds the command, then it mints a collision-resistant ID and derives `command_id` from `run_id` and `message_id`.
-    - [ ] Given `body` exceeds 2,000 UTF-8 characters, when validation runs, then it returns `INVALID_PARAMS` before dispatch.
-    - [ ] Given metadata contains any key outside `phase_id`, `worker_id`, `session_id`, or `severity`, when validation runs, then it returns `INVALID_PARAMS` before dispatch instead of silently dropping or atomizing the key.
-- [ ] **TRD-003-TEST**: Unit-test ID derivation, caller-supplied IDs, body length rejection, blank field rejection, metadata whitelist rejection, and payload shape [verifies TRD-003] [satisfies REQ-004, REQ-005, REQ-010] [depends: TRD-003] (2h)
+    - [x] Given caller supplies `message_id`, when the helper builds the command, then the payload uses that exact validated ID.
+    - [x] Given caller omits `message_id`, when the helper builds the command, then it mints a collision-resistant ID and derives `command_id` from `run_id` and `message_id`.
+    - [x] Given `body` exceeds 2,000 UTF-8 characters, when validation runs, then it returns `INVALID_PARAMS` before dispatch.
+    - [x] Given metadata contains any key outside `phase_id`, `worker_id`, `session_id`, or `severity`, when validation runs, then it returns `INVALID_PARAMS` before dispatch instead of silently dropping or atomizing the key.
+- [x] **TRD-003-TEST**: Unit-test ID derivation, caller-supplied IDs, body length rejection, blank field rejection, metadata whitelist rejection, and payload shape [verifies TRD-003] [satisfies REQ-004, REQ-005, REQ-010] [depends: TRD-003] (2h)
 
 ### PR 2: MCP exposes `foreman_inbox_send` with default-deny policy and transport parity
 
 **Shippable State:** When MCP writes are enabled, agents can call `foreman_inbox_send` over HTTP or stdio, receive a bounded success/error DTO, and verify the message with `foreman_inbox_get`; when writes are disabled, the tool is hidden/refused.
 
-- [ ] **TRD-004**: Add `foreman_inbox_send` schema to `ForemanServer.MCP.Tools` with `run_id`, `body`, optional `message_id`, optional `command_id`, and optional `metadata` fields and matching generated `call_tool/2` handler [satisfies REQ-001, REQ-004, REQ-012] [depends: TRD-003] (3h)
+- [x] **TRD-004**: Add `foreman_inbox_send` schema to `ForemanServer.MCP.Tools` with `run_id`, `body`, optional `message_id`, optional `command_id`, and optional `metadata` fields and matching generated `call_tool/2` handler [satisfies REQ-001, REQ-004, REQ-012] [depends: TRD-003] (3h)
   - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-2, AC-012-1
   - Implementation AC:
-    - [ ] Given writes are enabled, when `tools/list` is called, then `foreman_inbox_send` appears with schema fields matching handler-declared arguments, including `maxLength: 2000` for `body`.
-    - [ ] Given undeclared top-level keys arrive through MCP validation, when `Tools.call_tool/2` checks args, then no new atoms are created and unknown args are rejected.
-- [ ] **TRD-004-TEST**: Add tool schema tests and HTTP/stdio component parity checks for `foreman_inbox_send` [verifies TRD-004] [satisfies REQ-001, REQ-004, REQ-012] [depends: TRD-004] (2h)
-- [ ] **TRD-005**: Implement `tool_foreman_inbox_send/1` to authorize, validate run existence, dispatch via `CommandGateway.dispatch_operator/2`, and return `%{run_id, message_id, status: "sent"}` [satisfies REQ-001, REQ-002, REQ-006, REQ-007] [depends: TRD-004] (4h)
+    - [x] Given writes are enabled, when `tools/list` is called, then `foreman_inbox_send` appears with schema fields matching handler-declared arguments, including `maxLength: 2000` for `body`.
+    - [x] Given undeclared top-level keys arrive through MCP validation, when `Tools.call_tool/2` checks args, then no new atoms are created and unknown args are rejected.
+- [x] **TRD-004-TEST**: Add tool schema tests and HTTP/stdio component parity checks for `foreman_inbox_send` [verifies TRD-004] [satisfies REQ-001, REQ-004, REQ-012] [depends: TRD-004] (2h)
+- [x] **TRD-005**: Implement `tool_foreman_inbox_send/1` to authorize, validate run existence, dispatch via `CommandGateway.dispatch_operator/2`, and return `%{run_id, message_id, status: "sent"}` [satisfies REQ-001, REQ-002, REQ-006, REQ-007] [depends: TRD-004] (4h)
   - Validates PRD ACs: AC-001-2, AC-002-1, AC-006-1, AC-006-2, AC-006-3, AC-007-1, AC-007-2
   - Implementation AC:
-    - [ ] Given a valid call for an existing run, when dispatched, then `CommandGateway.dispatch_operator/2` receives `type: "inbox.send"` and `aggregate_id: "inbox:<run_id>"`.
-    - [ ] Given the gateway succeeds, when the tool responds, then the JSON DTO contains only `run_id`, `message_id`, and `status: "sent"` plus any explicitly approved non-secret fields.
-    - [ ] Given `ProjectionStore.run(run_id)` is absent, when the tool is called, then it returns `NOT_FOUND` without dispatch.
-- [ ] **TRD-005-TEST**: Add MCP tool tests for success dispatch, read-back via `foreman_inbox_get`, unknown run, domain failures, and duplicate message mapping [verifies TRD-005] [satisfies REQ-001, REQ-002, REQ-006, REQ-007] [depends: TRD-005] (4h)
-- [ ] **TRD-006**: Add `foreman_inbox_send` to `MCP.Policy.@write_tools` so default config omits it from discovery and rejects direct calls before dispatch [satisfies REQ-003, REQ-012, REQ-015] [depends: TRD-004] (2h)
+    - [x] Given a valid call for an existing run, when dispatched, then `CommandGateway.dispatch_operator/2` receives `type: "inbox.send"` and `aggregate_id: "inbox:<run_id>"`.
+    - [x] Given the gateway succeeds, when the tool responds, then the JSON DTO contains only `run_id`, `message_id`, and `status: "sent"` plus any explicitly approved non-secret fields.
+    - [x] Given `ProjectionStore.run(run_id)` is absent, when the tool is called, then it returns `NOT_FOUND` without dispatch.
+- [x] **TRD-005-TEST**: Add MCP tool tests for success dispatch, read-back via `foreman_inbox_get`, unknown run, domain failures, and duplicate message mapping [verifies TRD-005] [satisfies REQ-001, REQ-002, REQ-006, REQ-007] [depends: TRD-005] (4h)
+- [x] **TRD-006**: Add `foreman_inbox_send` to `MCP.Policy.@write_tools` so default config omits it from discovery and rejects direct calls before dispatch [satisfies REQ-003, REQ-012, REQ-015] [depends: TRD-004] (2h)
   - Validates PRD ACs: AC-003-1, AC-003-2, AC-003-3, AC-012-1, AC-015-2
   - Implementation AC:
-    - [ ] Given `allow_workflow_writes: false`, when components are built, then `foreman_inbox_send` is not present.
-    - [ ] Given `allow_workflow_writes: false`, when `Dispatch.call/4` receives `foreman_inbox_send`, then it returns `POLICY_REFUSED` before `Tools.call_tool/2` or `CommandGateway`.
-    - [ ] Given writes are enabled, when HTTP and stdio components are compared, then both expose the same schema.
-- [ ] **TRD-006-TEST**: Add policy and transport tests for default hidden/refused behavior and enabled parity [verifies TRD-006] [satisfies REQ-003, REQ-012, REQ-015] [depends: TRD-006] (2h)
-- [ ] **TRD-007**: Map MCP errors with typed codes: `INVALID_PARAMS`, `NOT_FOUND`, `ALREADY_EXISTS`, `POLICY_REFUSED`, and `DOMAIN_ERROR` only when no narrower safe code exists [satisfies REQ-006, REQ-010] [depends: TRD-005] (2h)
+    - [x] Given `allow_workflow_writes: false`, when components are built, then `foreman_inbox_send` is not present.
+    - [x] Given `allow_workflow_writes: false`, when `Dispatch.call/4` receives `foreman_inbox_send`, then it returns `POLICY_REFUSED` before `Tools.call_tool/2` or `CommandGateway`.
+    - [x] Given writes are enabled, when HTTP and stdio components are compared, then both expose the same schema.
+- [x] **TRD-006-TEST**: Add policy and transport tests for default hidden/refused behavior and enabled parity [verifies TRD-006] [satisfies REQ-003, REQ-012, REQ-015] [depends: TRD-006] (2h)
+- [x] **TRD-007**: Map MCP errors with typed codes: `INVALID_PARAMS`, `NOT_FOUND`, `ALREADY_EXISTS`, `POLICY_REFUSED`, and `DOMAIN_ERROR` only when no narrower safe code exists [satisfies REQ-006, REQ-010] [depends: TRD-005] (2h)
   - Validates PRD ACs: AC-006-2, AC-010-1
   - Implementation AC:
-    - [ ] Given blank `run_id` or `body`, when called, then the tool returns `INVALID_PARAMS` and dispatches no command.
-    - [ ] Given `{:already_exists, :message, message_id}`, when mapped, then the tool returns code `ALREADY_EXISTS` with no body content in the error message.
-- [ ] **TRD-007-TEST**: Add focused typed error mapping tests for invalid params, unknown run, duplicate message, command-not-allowed, and unexpected domain error [verifies TRD-007] [satisfies REQ-006, REQ-010] [depends: TRD-007] (2h)
-- [ ] **TRD-008**: Verify MCP telemetry for `foreman_inbox_send` uses `Telemetry.mcp_tool_call/3` only and never emits body, metadata, prompt text, command output, or secrets [satisfies REQ-011, REQ-010] [depends: TRD-005] (2h)
+    - [x] Given blank `run_id` or `body`, when called, then the tool returns `INVALID_PARAMS` and dispatches no command.
+    - [x] Given `{:already_exists, :message, message_id}`, when mapped, then the tool returns code `ALREADY_EXISTS` with no body content in the error message.
+- [x] **TRD-007-TEST**: Add focused typed error mapping tests for invalid params, unknown run, duplicate message, command-not-allowed, and unexpected domain error [verifies TRD-007] [satisfies REQ-006, REQ-010] [depends: TRD-007] (2h)
+- [x] **TRD-008**: Verify MCP telemetry for `foreman_inbox_send` uses `Telemetry.mcp_tool_call/3` only and never emits body, metadata, prompt text, command output, or secrets [satisfies REQ-011, REQ-010] [depends: TRD-005] (2h)
   - Validates PRD ACs: AC-011-1, AC-011-2, AC-010-2
   - Implementation AC:
-    - [ ] Given a send succeeds or fails, when telemetry is captured, then metadata contains `tool: "foreman_inbox_send"` and `outcome` only.
-    - [ ] Given a secret-like body is supplied, when telemetry is captured, then the body text is absent from measurements and metadata.
-- [ ] **TRD-008-TEST**: Add telemetry redaction tests for success and failure outcomes [verifies TRD-008] [satisfies REQ-011, REQ-010] [depends: TRD-008] (2h)
+    - [x] Given a send succeeds or fails, when telemetry is captured, then metadata contains `tool: "foreman_inbox_send"` and `outcome` only.
+    - [x] Given a secret-like body is supplied, when telemetry is captured, then the body text is absent from measurements and metadata.
+- [x] **TRD-008-TEST**: Add telemetry redaction tests for success and failure outcomes [verifies TRD-008] [satisfies REQ-011, REQ-010] [depends: TRD-008] (2h)
 
 ### PR 3: Agents are prompted and operators are documented
 
 **Shippable State:** Standard bundled workflow agents know how to send concise non-blocking run progress notes, and operators can read docs that distinguish inbox progress from logs/activity without losing any existing inspection tool behavior.
 
-- [ ] **TRD-009**: Update bundled workflow prompts to instruct concise `foreman_inbox_send` progress at phase start, material milestone, blocker, and phase completion when the tool is available [satisfies REQ-008, REQ-009, REQ-010] [depends: TRD-006] (3h)
+- [x] **TRD-009**: Update bundled workflow prompts to instruct concise `foreman_inbox_send` progress at phase start, material milestone, blocker, and phase completion when the tool is available [satisfies REQ-008, REQ-009, REQ-010] [depends: TRD-006] (3h)
   - Validates PRD ACs: AC-008-1, AC-008-3, AC-009-1, AC-010-2, AC-010-3
   - Implementation AC:
-    - [ ] Given a standard phase prompt is installed, when read, then it tells agents to use `foreman_inbox_send` for operator-facing progress updates when available.
-    - [ ] Given no material progress event occurs, when a phase runs, then prompt guidance does not require timer-only chatter.
-    - [ ] Given a message would include secrets, prompts, or large logs, when prompt guidance is followed, then the agent is told not to send that content.
-- [ ] **TRD-009-TEST**: Add prompt/static tests that required bundled prompts include non-blocking inbox progress guidance and safety language [verifies TRD-009] [satisfies REQ-008, REQ-009, REQ-010] [depends: TRD-009] (2h)
-- [ ] **TRD-010**: Add prompt guidance for tool denial/unavailability/failure: continue work and mention failed status update in the final artifact only if relevant [satisfies REQ-008, REQ-009] [depends: TRD-009] (1h)
+    - [x] Given a standard phase prompt is installed, when read, then it tells agents to use `foreman_inbox_send` for operator-facing progress updates when available.
+    - [x] Given no material progress event occurs, when a phase runs, then prompt guidance does not require timer-only chatter.
+    - [x] Given a message would include secrets, prompts, or large logs, when prompt guidance is followed, then the agent is told not to send that content.
+- [x] **TRD-009-TEST**: Add prompt/static tests that required bundled prompts include non-blocking inbox progress guidance and safety language [verifies TRD-009] [satisfies REQ-008, REQ-009, REQ-010] [depends: TRD-009] (2h)
+- [x] **TRD-010**: Add prompt guidance for tool denial/unavailability/failure: continue work and mention failed status update in the final artifact only if relevant [satisfies REQ-008, REQ-009] [depends: TRD-009] (1h)
   - Validates PRD ACs: AC-008-3, AC-009-2
   - Implementation AC:
-    - [ ] Given the inbox write tool is denied or unavailable, when an agent reads the prompt, then it is told not to block the phase on progress reporting.
-- [ ] **TRD-010-TEST**: Add static prompt assertion for non-blocking failure guidance [verifies TRD-010] [satisfies REQ-008, REQ-009] [depends: TRD-010] (1h)
-- [ ] **TRD-011**: Update operator/developer docs for `foreman_inbox_send`, write policy, progress cadence, stale runtime prompt installation (`npm run build`, `foreman init --force`), and the distinction from logs/activity [satisfies REQ-008, REQ-013, REQ-014] [depends: TRD-005, TRD-009] (3h)
+    - [x] Given the inbox write tool is denied or unavailable, when an agent reads the prompt, then it is told not to block the phase on progress reporting.
+- [x] **TRD-010-TEST**: Add static prompt assertion for non-blocking failure guidance [verifies TRD-010] [satisfies REQ-008, REQ-009] [depends: TRD-010] (1h)
+- [x] **TRD-011**: Update operator/developer docs for `foreman_inbox_send`, write policy, progress cadence, stale runtime prompt installation (`npm run build`, `foreman init --force`), and the distinction from logs/activity [satisfies REQ-008, REQ-013, REQ-014] [depends: TRD-005, TRD-009] (3h)
   - Validates PRD ACs: AC-008-2, AC-013-1, AC-013-2, AC-014-2
   - Implementation AC:
-    - [ ] Given docs are reviewed, when `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `CLAUDE.md`, and `AGENTS.md` are considered, then each is updated or explicitly recorded as no-op with reason.
-    - [ ] Given an operator wants run visibility, when docs are read, then inbox progress, logs, events, and activity are described as complementary evidence.
-- [ ] **TRD-011-TEST**: Add docs/checklist validation or reviewer evidence that docs were updated/no-op recorded and stale prompt installation steps are covered [verifies TRD-011] [satisfies REQ-008, REQ-013, REQ-014] [depends: TRD-011] (1h)
-- [ ] **TRD-012**: Run regression verification for existing read/detail tools and no delivery-status MCP tool exposure [satisfies REQ-014, REQ-015] [depends: TRD-006] (2h)
+    - [x] Given docs are reviewed, when `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `CLAUDE.md`, and `AGENTS.md` are considered, then each is updated or explicitly recorded as no-op with reason.
+    - [x] Given an operator wants run visibility, when docs are read, then inbox progress, logs, events, and activity are described as complementary evidence.
+- [x] **TRD-011-TEST**: Add docs/checklist validation or reviewer evidence that docs were updated/no-op recorded and stale prompt installation steps are covered [verifies TRD-011] [satisfies REQ-008, REQ-013, REQ-014] [depends: TRD-011] (1h)
+- [x] **TRD-012**: Run regression verification for existing read/detail tools and no delivery-status MCP tool exposure [satisfies REQ-014, REQ-015] [depends: TRD-006] (2h)
   - Validates PRD ACs: AC-014-1, AC-014-2, AC-015-1, AC-015-3
   - Implementation AC:
-    - [ ] Given the new write tool is present, when existing run detail tests run, then `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`, and `foreman_inbox_get` keep current behavior.
-    - [ ] Given tools are listed, when names are inspected, then `foreman_inbox_delivery_update` is absent.
-- [ ] **TRD-012-TEST**: Execute targeted MCP/read-detail regression tests and record proof in the implementation report [verifies TRD-012] [satisfies REQ-014, REQ-015] [depends: TRD-012] (1h)
+    - [x] Given the new write tool is present, when existing run detail tests run, then `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`, and `foreman_inbox_get` keep current behavior.
+    - [x] Given tools are listed, when names are inspected, then `foreman_inbox_delivery_update` is absent.
+- [x] **TRD-012-TEST**: Execute targeted MCP/read-detail regression tests and record proof in the implementation report [verifies TRD-012] [satisfies REQ-014, REQ-015] [depends: TRD-012] (1h)
 
 ## Sprint Planning
 

@@ -4,6 +4,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
   alias ForemanServer.MCP.Tools
   alias ForemanServer.MCP.ToolError
   alias ForemanServer.CommandGateway
+  alias ForemanServer.ProjectionStore
   alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter}
 
   # `foreman_work_submit` gates on `Router.manual/1` (default backend
@@ -33,13 +34,28 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
     {:ok, _} = Application.ensure_all_started(:meck)
     :meck.new(CommandGateway, [:passthrough, :no_link])
     {:ok, _} = AdapterCatalog.register(StubBackendAdapter)
+    original_projection_state = :sys.get_state(ProjectionStore)
+    original_mcp_config = Application.get_env(:foreman_server, :mcp, [])
 
     on_exit(fn ->
       :meck.unload(CommandGateway)
       AdapterCatalog.unregister(StubBackendAdapter)
+      :sys.replace_state(ProjectionStore, fn _ -> original_projection_state end)
+      Application.put_env(:foreman_server, :mcp, original_mcp_config)
     end)
 
     :ok
+  end
+
+  defp put_run_projection(run_id) do
+    :sys.replace_state(ProjectionStore, fn state ->
+      Map.put(state, :runs, Map.put(Map.get(state, :runs, %{}), run_id, %{run_id: run_id}))
+    end)
+  end
+
+  defp allow_writes do
+    config = Application.get_env(:foreman_server, :mcp, [])
+    Application.put_env(:foreman_server, :mcp, Keyword.put(config, :allow_workflow_writes, true))
   end
 
   describe "foreman_task_create" do
@@ -258,6 +274,121 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                   code: "DOMAIN_ERROR",
                   message: "{:command_not_allowed, \"run.cancel\"}"
                 }}
+    end
+  end
+
+  describe "foreman_inbox_send" do
+    test "default policy refuses without dispatch" do
+      assert Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: "starting"}) ==
+               {:error,
+                %ToolError{
+                  code: "POLICY_REFUSED",
+                  message: "Tool foreman_inbox_send is not permitted"
+                }}
+
+      refute :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
+    test "dispatches inbox.send through CommandGateway and returns bounded DTO" do
+      allow_writes()
+      put_run_projection("run-1")
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.type == "inbox.send"
+        assert envelope.aggregate_id == "inbox:run-1"
+        assert envelope.command_id == "cmd-1"
+
+        assert envelope.payload == %{
+                 run_id: "run-1",
+                 message_id: "msg-1",
+                 body: "implemented step 1",
+                 metadata: %{"phase_id" => "phase-1", "severity" => "info"}
+               }
+
+        {:ok, %{event_type: "InboxMessageAppended"}}
+      end)
+
+      assert Tools.call_tool("foreman_inbox_send", %{
+               run_id: "run-1",
+               message_id: "msg-1",
+               command_id: "cmd-1",
+               body: "implemented step 1",
+               metadata: %{phase_id: "phase-1", severity: "info"}
+             }) == {:ok, %{run_id: "run-1", message_id: "msg-1", status: "sent"}}
+    end
+
+    test "derives deterministic command id from caller-supplied message id" do
+      allow_writes()
+      put_run_projection("run-1")
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert envelope.payload.message_id == "msg-stable"
+        assert String.starts_with?(envelope.command_id, "mcp:foreman_inbox_send:")
+        {:ok, %{}}
+      end)
+
+      assert {:ok, %{message_id: "msg-stable", status: "sent"}} =
+               Tools.call_tool("foreman_inbox_send", %{
+                 run_id: "run-1",
+                 message_id: "msg-stable",
+                 body: "still working"
+               })
+    end
+
+    test "rejects unknown run before dispatch" do
+      allow_writes()
+
+      assert Tools.call_tool("foreman_inbox_send", %{run_id: "missing", body: "starting"}) ==
+               {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+
+      refute :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
+    test "rejects invalid params before dispatch" do
+      allow_writes()
+      put_run_projection("run-1")
+      over_limit = String.duplicate("x", 2_001)
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+               Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: ""})
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+               Tools.call_tool("foreman_inbox_send", %{run_id: "run-1", body: over_limit})
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+               Tools.call_tool("foreman_inbox_send", %{
+                 run_id: "run-1",
+                 body: "progress",
+                 metadata: %{prompt: "secret prompt"}
+               })
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS"}} =
+               Tools.call_tool("foreman_inbox_send", %{
+                 run_id: "run-1",
+                 body: "progress",
+                 ignored_atom: "reject me"
+               })
+
+      refute :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
+    test "maps duplicate message to ALREADY_EXISTS without echoing body" do
+      allow_writes()
+      put_run_projection("run-1")
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
+        {:error, {:already_exists, :message, "msg-1"}}
+      end)
+
+      assert {:error, %ToolError{code: "ALREADY_EXISTS", message: message}} =
+               Tools.call_tool("foreman_inbox_send", %{
+                 run_id: "run-1",
+                 message_id: "msg-1",
+                 body: "secret body"
+               })
+
+      assert message =~ "msg-1"
+      refute message =~ "secret body"
     end
   end
 end

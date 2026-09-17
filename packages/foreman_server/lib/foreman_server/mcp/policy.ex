@@ -7,6 +7,7 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_run_cancel",
     "foreman_run_pause",
     "foreman_run_resume",
+    "foreman_inbox_send",
     "foreman_workflow_put",
     "foreman_workflow_delete",
     "foreman_prompt_put"

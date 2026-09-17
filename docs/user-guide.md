@@ -720,8 +720,8 @@ and behavior cannot diverge.
 `foreman_workflow_list`, `foreman_workflow_get`,
 `foreman_workflow_validate`, `foreman_prompt_get`, `foreman_work_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
-`foreman_run_get_events`, `foreman_run_get_activity`, `foreman_task_list`,
-`foreman_task_get`.
+`foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
+`foreman_task_list`, `foreman_task_get`.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,
@@ -729,12 +729,26 @@ and behavior cannot diverge.
 - `foreman_run_get_logs` reads durable worker stdout/stderr events from
   `worker:<run_id>:<worker_id>` streams. Known runs with no output return
   an empty result; unknown runs return `NOT_FOUND`.
+- `foreman_inbox_get` reads operator-facing run progress messages from the
+  per-run inbox projection. Use it alongside logs/events/activity: inbox
+  messages are agent-authored progress notes, logs are raw stdout/stderr,
+  events are durable system facts, and activity is heartbeat/liveness data.
 
 **Write tools** (`foreman_task_create`, `foreman_task_update`,
 `foreman_run_cancel`, `foreman_run_pause`, `foreman_run_resume`,
-`foreman_workflow_put`, `foreman_workflow_delete`,
+`foreman_inbox_send`, `foreman_workflow_put`, `foreman_workflow_delete`,
 `foreman_prompt_put`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
+
+`foreman_inbox_send` appends concise progress to the run inbox via the public
+`inbox.send` operator command. It requires `run_id` plus a 1-2,000 character
+`body`, accepts optional caller-stable `message_id`/`command_id`, and only
+allows JSON-safe metadata keys `phase_id`, `worker_id`, `session_id`, and
+`severity`. Prompts tell agents to send phase start, material milestone,
+blocker, and phase completion notes when the tool is available, never secrets,
+prompts, large logs, or command output; denial/unavailability must not block
+work. After editing bundled prompts or workflows, run `npm run build` if assets
+need regeneration and `foreman init --force` to install fresh runtime copies.
 
 Tool call failures are MCP tool errors carrying the gateway's
 structured reason, never transport-level JSON-RPC errors.
