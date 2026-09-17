@@ -70,9 +70,6 @@ config :foreman_server, :start_beads_orphan_janitor?, false
 config :foreman_server, :jido_harness, enabled: false
 config :phoenix, Phoenix.Diagnostics, enabled: false
 
-config :logster,
-  capture_log: false
-
 # Jido checkpoint store (TRD-2026-4212be7e, JCR-T004) — off by default
 # in tests because most test cases don't need Postgres persistence;
 # opt in per-test via Application.put_env(:foreman_server, :jido_ecto,

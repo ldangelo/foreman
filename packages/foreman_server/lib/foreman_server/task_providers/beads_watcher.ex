@@ -6,10 +6,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     * On `init/1`, resolves the JSONL path via the configured `BrRunner`
       implementation (`@runner`, default `SystemBrRunner`, test override
-      `BrRunnerMock`), opens the file with `:file.open/2`, then returns
-      via `{:continue, :boot_replay}`. `handle_continue/2` runs
-      `boot_replay/1` (offset 0 → EOF under the 3-way cursor priority)
-      only once `CommandRouter` is registered — checked via
+      `BrRunnerMock`), checks it exists, then returns via
+      `{:continue, :boot_replay}`. `handle_continue/2` runs
+      `boot_replay/1` (a full rescan of the JSONL, see below) only once
+      `CommandRouter` is registered — checked via
       `command_router_ready?/0` and retried every `@boot_replay_retry_ms`
       otherwise, so a watcher that starts (opt-in, before `CommandRouter`
       in the application's children list) before the router does cannot
@@ -20,10 +20,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     * In tail mode, a `{:file_event, pid, {path, events}}` for the
       exact `jsonl_path` is the primary (<1s) trigger: it schedules a
       single `:debounced_read_more` `@debounce_ms` (100ms) out,
-      coalescing any further events in that window into the same read.
-      The fixed-cadence `:read_more` poll (`@default_poll_ms`, 30s)
-      remains as an eventual-consistency backstop for a missed watch
-      event.
+      coalescing any further events in that window into the same
+      rescan. The fixed-cadence `:read_more` poll (`@default_poll_ms`,
+      30s) remains as an eventual-consistency backstop for a missed
+      watch event.
     * For each complete line, applies the full pipeline via
       `process_line/2`: parse JSON → check `agent_context.foreman`
       (suppress + `:skipped` per AC-022-3) → check
@@ -51,38 +51,48 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       misleading `:imported`, and is retried via the dedupe branch
       above on the next poll.
 
-  ## 3-way cursor priority (TRD §2.2.6 item 6)
+  ## Stateless full rescan, not a byte-offset cursor (foreman-fo3k)
 
-  `read_offset` is the byte position of the START of the FIRST LINE NOT
-  TERMINALLY DISPATCHED:
+  This module previously tracked a byte-offset cursor (`read_offset`)
+  into a file handle opened once at `init/1` and held for the
+  GenServer's lifetime, reading only bytes appended since the last
+  cursor position. That design assumed the JSONL only ever grows by
+  pure appends at a stable byte range. Neither half of that assumption
+  held: `br`'s JSONL export rewrites the ENTIRE file via atomic
+  write-temp-then-rename on every mutation (verified: `ls -i` before
+  and after a single `br create` showed the file's inode change), and
+  an existing bead's line is not guaranteed to stay at a stable byte
+  offset across writes either (verified: updating one bead did not
+  reliably preserve another bead's byte position in the file). A
+  persistent file handle therefore went stale — pointing at an
+  unlinked, frozen copy of the file — after the very first `br`
+  mutation following any boot, silently freezing `read_offset` forever
+  and making the watcher dispatch-once-per-restart instead of live.
 
-    (a) start byte of the first transient complete-line if the loop
-        stopped at a transient;
-    (b) start byte of any trailing fragment if the file ends on an
-        unterminated JSONL line;
-    (c) the file size (EOF) if the file ends on a terminator.
-
-  `partial_line` is the bytes of that first-undispatched line
-  (transient-line bytes, trailing fragment bytes, or `""`).
-  It is observability metadata; correctness on the next poll does
-  NOT depend on it (the next read seeks to `read_offset` and
-  re-reads the bytes from disk).
-
-  Terminal advance moves `read_offset` past `byte_size(line) + 1`.
-  Transient hold leaves `read_offset` at the transient-line start byte.
+  `rescan/2` replaces that design: every trigger (fs event or poll)
+  reads the CURRENT file fresh by path (`File.read/1`, no held file
+  descriptor), splits it into complete lines, and applies
+  `process_line/2` to every one — not just lines "new since last read".
+  This is safe and idempotent by construction because
+  `check_dedupe/2`'s `ProjectionStore.get_task(external_id: bead.id)`
+  check (already required for cross-restart safety, see below) makes
+  reprocessing an already-terminal bead a cheap dedupe-and-return, not
+  a repeat dispatch. It also fixes a latent correctness gap the old
+  cursor design had: an earlier bead whose workflow mapping is
+  temporarily unresolvable (`:transient`) no longer needs special
+  "don't block bead's appended after it" handling, because there is no
+  cursor position for it to block — every bead gets an independent,
+  fully-reprocessed attempt on every trigger.
 
   ## Restart contract (full-replay-on-every-boot, TRD §2.2.6 item 8)
 
-  The watcher does NOT maintain a durable offset. On every boot, the
-  watcher reads the JSONL from offset 0 to current EOF, applies the
-  full status-gated parse + dedupe + suppress + status-gate +
-  workflow-selection + trd_path-check + dispatch-and-approve pipeline
-  (`process_line/2`), then captures the boot-completion cursor and
-  enters tail mode. The `ProjectionStore` dedupe check is the
-  cross-restart safety net — beads that transitioned to `open` while
+  The watcher does NOT maintain a durable offset — every trigger,
+  including the first one after boot, is the same full rescan. The
+  `ProjectionStore` dedupe check is the cross-restart (and
+  cross-rescan) safety net — beads that transitioned to `open` while
   the watcher was offline are recovered, created, and approved on the
-  next boot's replay exactly as they would have been had the watcher
-  been running continuously (TRD-004..TRD-007 requirement REQ-004).
+  next rescan exactly as they would have been had the watcher been
+  running continuously (TRD-004..TRD-007 requirement REQ-004).
 
   ## Opt-in supervision (TRD §2.2.6 item 9)
 
@@ -94,6 +104,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   """
 
   use GenServer
+  require Logger
 
   alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.CommandRouter
@@ -138,9 +149,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           project_id: String.t(),
           jsonl_path: String.t(),
           database_path: String.t(),
-          file_handle: :file.io_device(),
-          read_offset: non_neg_integer(),
-          partial_line: binary(),
           poll_ms: pos_integer(),
           fs_watcher_pid: pid() | nil,
           debounce_timer: reference() | nil
@@ -150,9 +158,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     :project_id,
     :jsonl_path,
     :database_path,
-    :file_handle,
-    :read_offset,
-    :partial_line,
     :poll_ms,
     :fs_watcher_pid,
     :debounce_timer
@@ -177,7 +182,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @default_poll_ms 30_000
   @debounce_ms 100
   @preflight_timeout_ms 30_000
-  @read_chunk_bytes 64 * 1024
   @boot_replay_retry_ms 50
 
   # Telemetry event paths
@@ -278,6 +282,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     database_path = Keyword.fetch!(opts, :database_path)
     poll_ms = Keyword.get(opts, :poll_ms, @default_poll_ms)
 
+    Logger.info(
+      "BeadsWatcher starting project=#{project_id} database_path=#{database_path} poll_ms=#{poll_ms}"
+    )
+
     TaskProviderTelemetry.emit(
       @start_event,
       %{system_time: System.system_time()},
@@ -286,14 +294,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     with :ok <- check_coverage_drift(project_id, database_path),
          {:ok, jsonl_path} <- resolve_jsonl_path(project_id, database_path),
-         {:ok, file_handle} <- :file.open(jsonl_path, [:read, :binary, :raw]) do
+         :ok <- check_jsonl_readable(jsonl_path) do
+      Logger.info("BeadsWatcher project=#{project_id} resolved jsonl_path=#{jsonl_path}")
+
       initial = %__MODULE__{
         project_id: project_id,
         jsonl_path: jsonl_path,
         database_path: database_path,
-        file_handle: file_handle,
-        read_offset: 0,
-        partial_line: "",
         poll_ms: poll_ms
       }
 
@@ -302,13 +309,20 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           state = boot_replay(initial)
           state = start_fs_watcher(state)
           schedule_read_more(state.poll_ms)
+
+          Logger.info(
+            "BeadsWatcher project=#{project_id} boot replay complete, entering tail mode " <>
+              "fs_watcher_pid=#{inspect(state.fs_watcher_pid)}"
+          )
+
           {:ok, state}
         rescue
           e ->
-            # Close the file handle on any boot-replay failure so we don't
-            # leak an OS file descriptor. terminate/2 is NOT called when
-            # init raises, so the rescue branch owns the cleanup.
-            :file.close(file_handle)
+            Logger.error(
+              "BeadsWatcher project=#{project_id} boot replay crashed: " <>
+                Exception.format(:error, e, __STACKTRACE__)
+            )
+
             reraise e, __STACKTRACE__
         end
       else
@@ -330,10 +344,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         # test and every normal steady-state restart finds the router
         # already registered and takes the synchronous branch above,
         # so this adds no timing change to the common case.
+        Logger.warning(
+          "BeadsWatcher project=#{project_id} CommandRouter not ready yet, deferring boot replay"
+        )
+
         {:ok, initial, {:continue, :boot_replay}}
       end
     else
       {:error, {:coverage_drift, status}} ->
+        Logger.error(
+          "BeadsWatcher project=#{project_id} refusing to start: coverage_drift status=#{inspect(status)}"
+        )
+
         TaskProviderTelemetry.emit(
           @coverage_drift_event,
           %{system_time: System.system_time()},
@@ -349,6 +371,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         {:stop, {:coverage_drift, status}}
 
       {:error, {:preflight_failed, _project_id, reason}} ->
+        Logger.error(
+          "BeadsWatcher project=#{project_id} preflight failed: #{inspect(reason)}"
+        )
+
         TaskProviderTelemetry.emit(
           @error_event,
           %{system_time: System.system_time()},
@@ -358,6 +384,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         {:stop, {:preflight_failed, reason}}
 
       {:error, {:file_open_failed, reason}} ->
+        Logger.error(
+          "BeadsWatcher project=#{project_id} failed to open jsonl file: #{inspect(reason)}"
+        )
+
         TaskProviderTelemetry.emit(
           @error_event,
           %{system_time: System.system_time()},
@@ -367,6 +397,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         {:stop, {:file_open_failed, reason}}
 
       {:error, reason} ->
+        Logger.error("BeadsWatcher project=#{project_id} init failed: #{inspect(reason)}")
+
         TaskProviderTelemetry.emit(
           @error_event,
           %{system_time: System.system_time()},
@@ -380,6 +412,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @impl true
   def handle_continue(:boot_replay, state) do
     if command_router_ready?() do
+      Logger.info("BeadsWatcher project=#{state.project_id} CommandRouter ready, running deferred boot replay")
       state = boot_replay(state)
       state = start_fs_watcher(state)
       schedule_read_more(state.poll_ms)
@@ -389,7 +422,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       {:noreply, state}
     end
   end
-
   # Retry of the `:boot_replay` continue, scheduled by
   # `schedule_boot_replay_retry/0` while `CommandRouter` was not yet
   # registered.
@@ -399,13 +431,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   @impl true
   def handle_info(:read_more, state) do
+    Logger.debug("BeadsWatcher project=#{state.project_id} poll tick")
+
     TaskProviderTelemetry.emit(
       @read_more_event,
       %{system_time: System.system_time()},
-      %{project_id: state.project_id, read_offset: state.read_offset}
+      %{project_id: state.project_id}
     )
 
-    state = perform_read_more(state)
+    state = perform_rescan(state)
     schedule_read_more(state.poll_ms)
     {:noreply, state}
   end
@@ -413,12 +447,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # Fires `@debounce_ms` after the first matching `:file_event` in a
   # burst (see the `debounce_timer: nil` guard below) — coalescing any
   # further events in that window into this single read, since
-  # `read_more/2` always reads from `read_offset` to current EOF.
+  # `rescan/2` reads the whole current file fresh each call (foreman-fo3k).
   def handle_info(:debounced_read_more, state) do
-    state = perform_read_more(%{state | debounce_timer: nil})
+    state = perform_rescan(%{state | debounce_timer: nil})
     {:noreply, state}
   end
-
   # Primary (<1s) trigger (TRD-011): a `file_system` change from OUR
   # subscribed watcher (`fs_watcher_pid` match). Compared by basename,
   # NOT full path equality — on macOS, FSEvents (the `fs_mac` backend)
@@ -434,6 +467,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         %__MODULE__{fs_watcher_pid: pid} = state
       ) do
     if Path.basename(path) == Path.basename(state.jsonl_path) do
+      Logger.debug(
+        "BeadsWatcher project=#{state.project_id} fs_event matched jsonl_path=#{state.jsonl_path}, scheduling debounced read"
+      )
+
       schedule_debounced_read(state)
     else
       {:noreply, state}
@@ -466,17 +503,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # fs-watch-driven `:debounced_read_more` handler — the lease-guarded
   # read+dispatch pass is identical either way; only the trigger
   # differs (fixed-cadence poll vs. debounced file_event).
-  defp perform_read_more(state) do
-    {state, _counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
+  defp perform_rescan(state) do
+    {state, _counters} = with_beads_lease(state, fn -> rescan(state, %Counters{}) end)
     state
   end
 
   @impl true
-  def terminate(_reason, state) do
-    if is_reference(state.file_handle) do
-      :file.close(state.file_handle)
-    end
-
+  def terminate(_reason, _state) do
     :ok
   end
 
@@ -491,8 +524,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   (`lines_processed / lines_imported / lines_suppressed / lines_reconciled`)
   required by TRD §3 Risk-Mitigation (line 607).
 
-  Boot replay and tail mode share `read_more/2` for the loop body
-  so the cursor mechanics are identical in both modes.
+  Boot replay and tail mode share `rescan/2` for the loop body.
   """
   @spec boot_replay(t()) :: t()
   def boot_replay(%__MODULE__{} = state) do
@@ -504,7 +536,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, jsonl_path: state.jsonl_path}
     )
 
-    {state, counters} = with_beads_lease(state, fn -> read_more(state, %Counters{}) end)
+    {state, counters} = with_beads_lease(state, fn -> rescan(state, %Counters{}) end)
 
     completed_at_ms = System.monotonic_time(:millisecond)
 
@@ -516,8 +548,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       },
       %{
         project_id: state.project_id,
-        read_offset: state.read_offset,
-        partial_line_bytes: byte_size(state.partial_line),
         lines_processed: counters.lines_processed,
         lines_imported: counters.lines_imported,
         lines_suppressed: counters.lines_suppressed,
@@ -562,6 +592,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           result
 
         {:error, reason} ->
+          Logger.warning(
+            "BeadsWatcher project=#{state.project_id} lease_acquire failed reason=#{inspect(reason)}, skipping this read cycle"
+          )
+
           TaskProviderTelemetry.emit(
             @error_event,
             %{system_time: System.system_time()},
@@ -572,6 +606,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       end
     rescue
       e in BeadsDbLease.ReleaseError ->
+        Logger.error(
+          "BeadsWatcher project=#{state.project_id} lease_release raised: #{Exception.message(e)}"
+        )
+
         TaskProviderTelemetry.emit(
           @error_event,
           %{system_time: System.system_time()},
@@ -628,51 +666,60 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   end
 
   # ---------------------------------------------------------------------
-  # Per-line processing loop body (shared by boot replay and tail mode)
+  # Full rescan (shared by boot replay and tail mode) — foreman-fo3k
   # ---------------------------------------------------------------------
 
   @doc """
-  Read from `read_offset` to EOF, split on `\n` (globally), and apply
-  the 3-way cursor priority across each complete line.
+  Read the ENTIRE current JSONL from disk, split into complete lines, and
+  apply `process_line/2` to every one.
 
-  Scans and reduces ALL complete lines in this read; it does NOT halt at
-  the first transient line. Only the FIRST transient complete-line's
-  start byte is remembered as the retry cursor (`state.read_offset`);
-  every later complete-line in the same read still gets an independent
-  terminal-or-transient attempt via `advance_one_line/2` (see
-  `apply_3_way_cursor/3`) — an earlier bead this project's workflow
-  catalog cannot yet route must not permanently block every bead
-  appended after it. On the next poll the read seeks back to that
-  retry cursor and re-reads from there, so terminally-processed later
-  lines ARE re-scanned; terminal side effects reached through them
-  must therefore be safe to repeat (see `current_bead_status/2`'s live
-  status check before `block_missing_trd_path/2` mutates).
+  No byte-offset cursor is maintained. `br`'s JSONL export rewrites the
+  whole file via atomic write-temp-then-rename on every mutation,
+  rotating the file's inode each time; a bead's line is not guaranteed
+  to stay at a stable byte offset across writes (verified empirically:
+  updating one bead did not reliably preserve another bead's byte
+  position in the file). A "bytes new since last read" cursor is
+  therefore not a safe concept for this file (foreman-fo3k — a
+  persistent file handle opened once at boot also silently stopped
+  seeing new bytes after the first post-boot inode rotation). Instead,
+  every trigger (fs event or poll) rescans every line and relies on
+  `check_dedupe/2`'s `ProjectionStore.get_task(external_id: bead.id)`
+  check — already required for cross-restart safety — to skip every
+  bead that already has a task. Idempotent by construction:
+  reprocessing an already-terminal bead is a cheap dedupe-and-return,
+  not a repeat dispatch.
 
-  The trailing fragment (bytes after the last terminator) is preserved
-  in `state.partial_line` only when no line in this read held
-  transient — when one did, the held line's own bytes (already stored
-  by `advance_one_line/2` via the retry cursor) take precedence and the
-  trailing fragment is discarded (it will be re-read on the next poll).
+  Trailing bytes after the last `\n` (a write caught mid-flush) are
+  dropped for this pass; the next trigger re-reads the whole file and
+  sees the completed line.
 
   This is the loop body shared by boot replay (`boot_replay/1`) and
-  tail mode (`handle_info(:read_more, ...)`); the TRD spec calls it
-  `read_more/1` (TRD-011-TASK action 3, TRD-012-TASK).
+  tail mode (`handle_info(:read_more, ...)` /
+  `handle_info(:debounced_read_more, ...)`).
 
   Returns `{state, counters}` so the caller can emit replay / read-more
   telemetry with the four counters
   (`lines_processed / lines_imported / lines_suppressed / lines_reconciled`)
   required by TRD §3 Risk-Mitigation (line 607).
   """
-  @spec read_more(t()) :: {t(), counters()}
-  def read_more(%__MODULE__{} = state) do
-    read_more(state, %Counters{})
+  @spec rescan(t()) :: {t(), counters()}
+  def rescan(%__MODULE__{} = state) do
+    rescan(state, %Counters{})
   end
 
-  @spec read_more(t(), counters()) :: {t(), counters()}
-  def read_more(%__MODULE__{} = state, counters) do
-    case read_to_eof(state) do
+  @spec rescan(t(), counters()) :: {t(), counters()}
+  def rescan(%__MODULE__{jsonl_path: jsonl_path} = state, counters) do
+    case File.read(jsonl_path) do
       {:ok, raw_bytes} ->
-        apply_3_way_cursor(state, raw_bytes, counters)
+        {complete_lines, _trailing_fragment} = split_complete_lines(raw_bytes)
+
+        final_counters =
+          Enum.reduce(complete_lines, counters, fn line, acc_counters ->
+            outcome = process_line(state, line)
+            bump_counters(acc_counters, outcome)
+          end)
+
+        {state, final_counters}
 
       {:error, reason} ->
         TaskProviderTelemetry.emit(
@@ -682,64 +729,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         )
 
         {state, counters}
-    end
-  end
-
-  defp read_to_eof(%__MODULE__{file_handle: dev, read_offset: offset}) do
-    case :file.position(dev, offset) do
-      {:ok, ^offset} -> read_chunk_loop(dev, "")
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp read_chunk_loop(dev, acc) do
-    case :file.read(dev, @read_chunk_bytes) do
-      {:ok, chunk} -> read_chunk_loop(dev, acc <> chunk)
-      :eof -> {:ok, acc}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp apply_3_way_cursor(state, raw_bytes, counters)
-       when is_binary(raw_bytes) and is_struct(counters, Counters) do
-    {complete_lines, trailing_fragment} = split_complete_lines(raw_bytes)
-
-    {scanned_state, final_counters, first_transient} =
-      Enum.reduce(complete_lines, {state, counters, nil}, fn line, {acc, acc_counters, held} ->
-        {acc2, outcome} = advance_one_line(acc, line)
-        new_counters = bump_counters(acc_counters, outcome)
-
-        case outcome do
-          :transient ->
-            # `advance_one_line/2` holds `read_offset` at this line's
-            # start byte on :transient (correct for a single line in
-            # isolation) but does NOT halt the pass anymore: a bead
-            # this project's workflow catalog cannot yet route (or
-            # whose dispatch transiently failed) must not permanently
-            # block every bead appended after it — one unresolved
-            # early bead blocking an entire project's auto-dispatch
-            # forever is the defect this replaces. Remember only the
-            # FIRST transient line's start byte (the correct retry
-            # position — TRD §2.2.6's "first not terminally dispatched
-            # line" definition), then keep scanning with a working
-            # copy whose `read_offset` is advanced manually past this
-            # line so later lines still compute correct dispatch state
-            # and get a fair, independent attempt this same pass.
-            held = held || {acc2.read_offset, line}
-            advanced = %{acc2 | read_offset: acc.read_offset + byte_size(line) + 1}
-            {advanced, new_counters, held}
-
-          _ ->
-            {acc2, new_counters, held}
-        end
-      end)
-
-    case first_transient do
-      nil ->
-        {%{scanned_state | partial_line: trailing_fragment}, final_counters}
-
-      {offset, line} ->
-        {%{scanned_state | read_offset: offset, partial_line: line}, final_counters}
     end
   end
 
@@ -786,48 +775,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       parts ->
         {init, [trailing]} = Enum.split(parts, -1)
         {init, trailing}
-    end
-  end
-
-  @doc """
-  Advance the cursor for one complete line per the 3-way cursor priority.
-
-  Returns `{new_state, outcome}` where `outcome` is one of:
-
-    * `:imported` / `:skipped` / `:reconciled` / `:rejected` — terminal
-      advance (`read_offset` moves past `byte_size(line) + 1`).
-    * `:malformed` — terminal advance (the line was structurally
-      unrecoverable; advancing past it prevents an infinite loop on
-      the same byte offset).
-    * `:transient` — transient hold (`read_offset` HOLDS at the
-      transient-line start byte; `partial_line` is the transient bytes).
-
-  Any other outcome is treated as transient (defensive: preserves the
-  single-cursor invariant when the pipeline returns an unexpected atom).
-  """
-  @spec advance_one_line(t(), binary()) :: {t(), atom()}
-  def advance_one_line(%__MODULE__{} = state, line) when is_binary(line) do
-    outcome = process_line(state, line)
-    line_byte_size = byte_size(line)
-
-    case outcome do
-      :imported ->
-        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :imported}
-
-      :skipped ->
-        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :skipped}
-
-      :reconciled ->
-        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :reconciled}
-
-      :rejected ->
-        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :rejected}
-
-      :malformed ->
-        {%{state | read_offset: state.read_offset + line_byte_size + 1}, :malformed}
-
-      :transient ->
-        {%{state | partial_line: line}, :transient}
     end
   end
 
@@ -911,42 +858,55 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       %{project_id: state.project_id, line_bytes: byte_size(line)}
     )
 
-    with {:ok, parsed} <- decode_line(line),
-         :ok <- check_foreman_tag(state, parsed),
-         :ok <- check_prompt(parsed),
-         :ok <- check_dedupe(state, parsed),
-         :ok <- check_status(state, parsed),
-         {:ok, workflow_type} <- select_workflow(state, parsed),
-         {:ok, trd_path} <- check_trd_path(state, parsed, workflow_type) do
-      dispatch_new_bead(state, parsed, workflow_type, trd_path)
-    else
-      :skip_foreman ->
-        :skipped
+    bead_id_for_log =
+      case Jason.decode(line) do
+        {:ok, %{"id" => id}} when is_binary(id) -> id
+        _other -> "?"
+      end
 
-      :skip_status ->
-        :skipped
+    outcome =
+      with {:ok, parsed} <- decode_line(line),
+           :ok <- check_foreman_tag(state, parsed),
+           :ok <- check_prompt(parsed),
+           :ok <- check_dedupe(state, parsed),
+           :ok <- check_status(state, parsed),
+           {:ok, workflow_type} <- select_workflow(state, parsed),
+           {:ok, trd_path} <- check_trd_path(state, parsed, workflow_type) do
+        dispatch_new_bead(state, parsed, workflow_type, trd_path)
+      else
+        :skip_foreman ->
+          :skipped
 
-      {:error, :unmapped_type} ->
-        :transient
+        :skip_status ->
+          :skipped
 
-      {:error, :missing_trd_path} ->
-        :skipped
+        {:error, :unmapped_type} ->
+          :transient
 
-      :reconcile ->
-        :reconciled
+        {:error, :missing_trd_path} ->
+          :skipped
 
-      {:retry_approval, bead_id} ->
-        finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
+        :reconcile ->
+          :reconciled
 
-      :malformed ->
-        TaskProviderTelemetry.emit(
-          @malformed_event,
-          %{system_time: System.system_time()},
-          %{project_id: state.project_id, line_bytes: byte_size(line)}
-        )
+        {:retry_approval, bead_id} ->
+          finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
 
-        :malformed
-    end
+        :malformed ->
+          TaskProviderTelemetry.emit(
+            @malformed_event,
+            %{system_time: System.system_time()},
+            %{project_id: state.project_id, line_bytes: byte_size(line)}
+          )
+
+          :malformed
+      end
+
+    Logger.info(
+      "BeadsWatcher project=#{state.project_id} bead=#{bead_id_for_log} line_outcome=#{inspect(outcome)}"
+    )
+
+    outcome
   end
 
   # ----- JSON parse -----------------------------------------------------
@@ -1238,10 +1198,20 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
     if is_binary(bead_id) and bead_id != "" do
       envelope = synthesize_task_create_envelope(state, parsed, bead_id, workflow_type, trd_path)
+
+      Logger.info(
+        "BeadsWatcher project=#{state.project_id} bead=#{bead_id} dispatching task.create workflow_type=#{workflow_type}"
+      )
+
       # Dispatch is unconditional — every shape (incl. {:exit, _} and
       # retryable ProviderError) reaches classify_dispatch_result/3, which
       # routes anything non-terminal to :transient and holds the cursor.
       result = command_gateway().dispatch_system(envelope, 5_000)
+
+      Logger.info(
+        "BeadsWatcher project=#{state.project_id} bead=#{bead_id} task.create result=#{inspect(result)}"
+      )
+
       classify_dispatch_result(state, bead_id, result)
     else
       # Bead with no `id` cannot be dispatched (no external_id). Skip
@@ -1309,6 +1279,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         # an archived project or an invalid status will not change the
         # outcome), so the cursor still advances — just under a distinct
         # outcome that is never counted as an import.
+        Logger.warning(
+          "BeadsWatcher project=#{state.project_id} bead=#{bead_id} task.create rejected result=#{inspect(result)}"
+        )
+
         TaskProviderTelemetry.emit(
           @rejected_event,
           %{system_time: System.system_time()},
@@ -1318,10 +1292,13 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
             result: result
           }
         )
-
         :rejected
 
       true ->
+        Logger.error(
+          "BeadsWatcher project=#{state.project_id} bead=#{bead_id} task.create unexpected result=#{inspect(result)}, holding as transient"
+        )
+
         TaskProviderTelemetry.emit(
           @error_event,
           %{system_time: System.system_time()},
@@ -1433,12 +1410,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # Helpers
   # ---------------------------------------------------------------------
 
+  # Boot-time existence/permission preflight only (foreman-fo3k). Unlike
+  # the pre-fix design, no file handle from this check is retained —
+  # every actual read (`rescan/2`) opens the file fresh by path.
+  defp check_jsonl_readable(jsonl_path) do
+    if File.regular?(jsonl_path) do
+      :ok
+    else
+      {:error, {:file_open_failed, :enoent}}
+    end
+  end
+
   # Resolve the JSONL tail target for `project_id`.
   #
   # `br where --db <database_path> --json` returns a JSON document of the
   # form `{"path", "prefix", "database_path", "jsonl_path"}` per REQ-022.
   # The watcher's tail target is the `"jsonl_path"` key, NOT the
-  # `database_path` (the JSONL is the append-only event log under the
+  # `database_path` (the JSONL is a full snapshot, one line per bead,
+  # rewritten via atomic write-temp-then-rename on every mutation, under the
   # same `.beads/` directory). The runner response shape is `%{stdout,
   # stderr, exit_code}` per `SystemBrRunner.cmd/3`.
   defp resolve_jsonl_path(project_id, database_path)

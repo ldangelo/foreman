@@ -55,12 +55,6 @@ defmodule ForemanServer.ConfigTest do
       assert Keyword.get(foreman_env(opts), :worker_launcher_enabled) == false
     end
 
-    test "logster capture_log is disabled in test" do
-      opts = read_env!(:test)
-      logster = Keyword.get(opts, :logster) || []
-      assert Keyword.get(logster, :capture_log) == false
-    end
-
     test "Phoenix.Diagnostics is disabled in test" do
       opts = read_env!(:test)
       phoenix = Keyword.get(opts, :phoenix) || []

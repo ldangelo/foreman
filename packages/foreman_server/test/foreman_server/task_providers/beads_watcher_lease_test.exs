@@ -85,14 +85,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
       jsonl_path,
       ~s({"id":"bead-lease","title":"x","issue_type":"task","status":"open"}\n)
     )
-
     state = %BeadsWatcher{
       project_id: "proj-lease",
       jsonl_path: jsonl_path,
       database_path: database_path,
-      file_handle: nil,
-      read_offset: 0,
-      partial_line: "",
       poll_ms: 1_000
     }
 
@@ -101,15 +97,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
 
     watcher_task =
       Task.async(fn ->
-        # `:raw` file handles are process-bound in Erlang — open it
-        # inside the spawned task itself, not the test process, or
-        # reads fail with :not_on_controlling_process.
-        {:ok, handle} = :file.open(jsonl_path, [:read, :binary, :raw])
-        state = %{state | file_handle: handle}
         Agent.update(order_agent, &[:watcher_start | &1])
         BeadsWatcher.boot_replay(state)
         Agent.update(order_agent, &[:watcher_end | &1])
-        :file.close(handle)
       end)
 
     # Give the watcher time to acquire the lease and enter its (slow)

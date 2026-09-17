@@ -751,8 +751,10 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   /api/tasks/:id` instead of CLI stdout output. A project without a
   `:create` provider takes the no-op path: no Bead, no `external_id`.
 - **Inbound sync.** Set `config :foreman_server, :start_beads_watcher?,
-  true` to run one `BeadsWatcher` per registered project, tailing its
-  JSONL and dispatching `task.create` for Beads Foreman doesn't yet own.
+  true` to run one `BeadsWatcher` per registered project, rescanning its
+  JSONL from scratch on every fs event/poll (relying on the projection
+  store for dedupe, not a byte-offset cursor) and dispatching
+  `task.create` for Beads Foreman doesn't yet own.
 - **Orphan janitor.** Set `config :foreman_server,
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or
