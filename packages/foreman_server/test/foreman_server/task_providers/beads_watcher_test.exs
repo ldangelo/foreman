@@ -233,9 +233,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       assert BeadsWatcher.process_line(state, line) == :transient
     end
 
-    test "{:error, {:already_exists, :task, _}} on task.create is :imported (idempotent retry)", %{
-      state: state
-    } do
+    test "{:error, {:already_exists, :task, _}} on task.create is :imported (idempotent retry)",
+         %{
+           state: state
+         } do
       FakeCommandGateway.stub_response_sequence([
         {:error, {:already_exists, :task, "task:beads:proj-1:bead-4"}},
         {:ok, nil}

@@ -263,7 +263,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :imported
-      
 
       [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
 
@@ -350,17 +349,29 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:ok, nil})
       _ = BeadsWatcher.process_line(state, foreman_line)
 
-      _ = BeadsWatcher.process_line(recon_state, ~s({"id":"bead-b2","title":"r","issue_type":"task","status":"open"}))
+      _ =
+        BeadsWatcher.process_line(
+          recon_state,
+          ~s({"id":"bead-b2","title":"r","issue_type":"task","status":"open"})
+        )
 
       _ = BeadsWatcher.process_line(state, imported_line)
 
       FakeCommandGateway.stub_response({:error, {:invalid_task_status, "closed"}})
 
-      _ = BeadsWatcher.process_line(state, ~s({"id":"bead-b4","title":"t","issue_type":"task","status":"open"}))
+      _ =
+        BeadsWatcher.process_line(
+          state,
+          ~s({"id":"bead-b4","title":"t","issue_type":"task","status":"open"})
+        )
 
       FakeCommandGateway.stub_response({:error, :down})
 
-      _ = BeadsWatcher.process_line(state, ~s({"id":"bead-b5","title":"t","issue_type":"task","status":"open"}))
+      _ =
+        BeadsWatcher.process_line(
+          state,
+          ~s({"id":"bead-b5","title":"t","issue_type":"task","status":"open"})
+        )
 
       assert FakeCommandGateway.operator_calls() == [],
              "watcher MUST NOT route through dispatch_operator/2 — " <>
@@ -392,7 +403,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       assert outcome_1 == :transient
       assert outcome_2 == :transient
-
 
       # Same command_id across retries — the retry uses the deterministic
       # envelope so the Actor's expected_stream_version logic doesn't
@@ -453,7 +463,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :imported
-      
     end
 
     test "{:error, {:already_exists, :task, _}} advances read_offset" do
@@ -468,7 +477,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :imported
-      
     end
 
     test "{:error, {:invalid_task_status, _}} is rejected, not imported, and advances read_offset" do
@@ -480,7 +488,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :rejected
-      
     end
 
     test "{:error, {:project_archived, _}} is rejected, not imported, and advances read_offset" do
@@ -492,7 +499,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :rejected
-      
     end
 
     test "{:error, :project_id_required} is rejected, not imported, and advances read_offset" do
@@ -504,7 +510,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :rejected
-      
     end
   end
 
@@ -518,7 +523,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :skipped
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -529,7 +534,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :skipped
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -540,7 +545,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :skipped
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -551,7 +556,6 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :imported
-      
 
       [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.external_id == "bead-direct-open"
@@ -600,8 +604,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :transient
-      
-      
+
       assert FakeCommandGateway.calls() == []
 
       assert_receive {:telemetry, ^ref, metadata}, 200
@@ -631,7 +634,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :malformed
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -642,7 +645,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :malformed
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -655,7 +658,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :malformed
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -684,7 +687,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
     test "whitespace-only title and description is malformed" do
       state = %BeadsWatcher{
-        project_id: "proj-whitespace-prompt",
+        project_id: "proj-whitespace-prompt"
       }
 
       line =
@@ -740,7 +743,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       state = %BeadsWatcher{
         project_id: "proj-trd",
-        database_path: "/tmp/proj-trd.db",
+        database_path: "/tmp/proj-trd.db"
       }
 
       line =
@@ -749,7 +752,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       outcome = BeadsWatcher.process_line(state, line)
 
       assert outcome == :skipped
-      
+
       assert FakeCommandGateway.calls() == []
     end
 
@@ -768,7 +771,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       state = %BeadsWatcher{
         project_id: "proj-trd",
-        database_path: "/tmp/proj-trd.db",
+        database_path: "/tmp/proj-trd.db"
       }
 
       line =
@@ -797,7 +800,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       state = %BeadsWatcher{
         project_id: "proj-trd",
-        database_path: "/tmp/proj-trd.db",
+        database_path: "/tmp/proj-trd.db"
       }
 
       line =

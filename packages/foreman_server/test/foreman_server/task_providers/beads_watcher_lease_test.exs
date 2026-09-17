@@ -85,6 +85,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
       jsonl_path,
       ~s({"id":"bead-lease","title":"x","issue_type":"task","status":"open"}\n)
     )
+
     state = %BeadsWatcher{
       project_id: "proj-lease",
       jsonl_path: jsonl_path,

@@ -371,9 +371,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         {:stop, {:coverage_drift, status}}
 
       {:error, {:preflight_failed, _project_id, reason}} ->
-        Logger.error(
-          "BeadsWatcher project=#{project_id} preflight failed: #{inspect(reason)}"
-        )
+        Logger.error("BeadsWatcher project=#{project_id} preflight failed: #{inspect(reason)}")
 
         TaskProviderTelemetry.emit(
           @error_event,
@@ -412,7 +410,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   @impl true
   def handle_continue(:boot_replay, state) do
     if command_router_ready?() do
-      Logger.info("BeadsWatcher project=#{state.project_id} CommandRouter ready, running deferred boot replay")
+      Logger.info(
+        "BeadsWatcher project=#{state.project_id} CommandRouter ready, running deferred boot replay"
+      )
+
       state = boot_replay(state)
       state = start_fs_watcher(state)
       schedule_read_more(state.poll_ms)
@@ -422,6 +423,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       {:noreply, state}
     end
   end
+
   # Retry of the `:boot_replay` continue, scheduled by
   # `schedule_boot_replay_retry/0` while `CommandRouter` was not yet
   # registered.
@@ -452,6 +454,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     state = perform_rescan(%{state | debounce_timer: nil})
     {:noreply, state}
   end
+
   # Primary (<1s) trigger (TRD-011): a `file_system` change from OUR
   # subscribed watcher (`fs_watcher_pid` match). Compared by basename,
   # NOT full path equality — on macOS, FSEvents (the `fs_mac` backend)
@@ -1292,6 +1295,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
             result: result
           }
         )
+
         :rejected
 
       true ->
