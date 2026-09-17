@@ -43,7 +43,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
   alias ForemanServer.Work.RunPayload
   alias ForemanServer.{ProjectionStore, RunAdmission, Telemetry}
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Workflow.{BootReconciliation, Worktree}
+  alias ForemanServer.Workflow.{BootReconciliation, RunSupervisor, Worktree}
+  alias ForemanServer.RunControl
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
@@ -77,8 +78,15 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @task_dispatch_event_types ~w(TaskApproved TaskDispatched)
   @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked RunDeleted)
+  # Subset of @run_terminated_event_types whose executor may still be
+  # blocked on a live agent — RunCompleted and RunBlocked are excluded
+  # because the executor is already finished or halting on its own for
+  # those, so there is nothing left to cancel.
+  @agent_killing_terminal_event_types ~w(RunCancelled RunFlaggedStuck RunFailed RunDeleted)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
   @slot_promotion_event_types ~w(RunSlotTransferred)
+  @run_stop_event_types ~w(RunPaused)
+  @run_resume_event_types ~w(RunResumed)
 
   for event_type <- @task_dispatch_event_types do
     @impl true
@@ -124,6 +132,28 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  for event_type <- @run_stop_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_run_stopped(unquote(event_type), envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_run_stopped(unquote(event_type), envelope, state)
+    end
+  end
+
+  for event_type <- @run_resume_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_run_resumed(unquote(event_type), envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_run_resumed(unquote(event_type), envelope, state)
+    end
+  end
+
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
     {:noreply, state}
@@ -144,10 +174,45 @@ defmodule ForemanServer.Workflow.Dispatcher do
     reason = payload["reason"] || payload[:reason] || terminal_reason_from_event_type(event_type)
 
     if is_binary(run_id) and run_id != "" do
+      if event_type in @agent_killing_terminal_event_types do
+        RunControl.request(run_id, :cancel)
+        RunControl.cancel_agent(run_id)
+      end
+
       if event_type == "RunDeleted", do: Worktree.clean_for_run(run_id)
       BootReconciliation.run_terminated(run_id, reason)
       terminate_lease(run_id, reason)
       terminate_slot(run_id, reason)
+    end
+
+    {:noreply, state}
+  end
+
+  # RunPaused does NOT route through handle_run_terminated/3:
+  # `BootReconciliation.run_terminated/2` reopens the provider issue on
+  # the assumption the run is over, which is wrong for a pause the
+  # operator expects to resume. A paused run still releases its slot and
+  # Beads lease (below) so it does not hold either resource for the
+  # duration of the pause.
+  defp handle_run_stopped(_event_type, envelope, state) do
+    payload = unwrap_data(envelope)
+    run_id = payload["run_id"] || payload[:run_id]
+
+    if is_binary(run_id) and run_id != "" do
+      RunControl.request(run_id, :pause)
+
+      case RunControl.cancel_agent(run_id) do
+        :ok ->
+          :ok
+
+        {:error, :no_agent} ->
+          Logger.info(
+            "ForemanServer.Workflow.Dispatcher: run.pause for #{run_id} had no active agent to cancel"
+          )
+      end
+
+      terminate_lease(run_id, "run_paused")
+      terminate_slot(run_id, "run_paused")
     end
 
     {:noreply, state}
@@ -457,6 +522,106 @@ defmodule ForemanServer.Workflow.Dispatcher do
         end
     end
   end
+
+  defp handle_run_resumed(_event_type, envelope, state) do
+    payload = unwrap_data(envelope)
+    run_id = payload["run_id"] || payload[:run_id]
+
+    if is_binary(run_id) and run_id != "" do
+      RunControl.clear(run_id)
+      resume_run(run_id, state)
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp resume_run(run_id, state) do
+    case ProjectionStore.tasks_by_run_id(run_id) do
+      [] ->
+        Logger.warning("handle_run_resumed: no task found for run #{run_id}")
+        {:noreply, state}
+
+      [task | _] ->
+        phase_specs = extract_phase_specs(task)
+        project_id = Map.get(task, :project_id) || Map.get(task, "project_id")
+        approval_id = Map.get(task, :approval_id) || Map.get(task, "approval_id")
+
+        workflow_snapshot =
+          Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+
+        admission_payload = %{
+          run_id: run_id,
+          task_id: Map.get(task, :task_id) || Map.get(task, "task_id"),
+          project_id: project_id,
+          approval_id: approval_id,
+          workflow_snapshot: workflow_snapshot,
+          phase_specs: phase_specs
+        }
+
+        resume_from = resume_from_index(run_id, phase_specs)
+
+        case safe_run_admission_resume(admission_payload) do
+          {:ok, :slot_queued} ->
+            {:noreply, state}
+
+          {:ok, :queued} ->
+            {:noreply, state}
+
+          {:ok, _} ->
+            RunSupervisor.start_run(run_id, task, resume_from: resume_from)
+            {:noreply, state}
+
+          {:error, reason} ->
+            Logger.warning(
+              "handle_run_resumed: admission failed for #{run_id}: #{inspect(reason)}"
+            )
+
+            {:noreply, state}
+        end
+    end
+  end
+
+  # 0-based index of the first non-completed phase. Phase projection
+  # `:index` is 1-based (`PhaseStarted.index :: pos_integer()`), so the
+  # completed 0-based set is each completed phase's `index - 1`. An empty
+  # phase list resumes at 0. When every phase in range is already
+  # completed, the default must be `total` (out of range), not `0` —
+  # `handle_cast({:advance_to, ...})`'s finalize branch (`run_executor.ex`)
+  # only fires for an out-of-range `next_index`; falling back to `0` would
+  # instead re-run the first phase of an already-finished run.
+  defp resume_from_index(run_id, phase_specs) do
+    completed_0based =
+      run_id
+      |> ProjectionStore.phases_for_run()
+      |> Enum.filter(&(&1.status == "completed"))
+      |> MapSet.new(&(&1.index - 1))
+
+    total = length(phase_specs)
+    Enum.find(0..(total - 1)//1, total, &(&1 not in completed_0based))
+  end
+
+  # Re-acquires the run's admission gates (global slot, and the per-DB
+  # Beads lease when applicable) WITHOUT re-dispatching `run.start` — the
+  # Run aggregate already re-entered a live state via `run.resume`/
+  # `RunResumed`, and `RunAdmission.start/2` would reject a second
+  # `run.start` against an existing run (`require_absent/2`). Same
+  # best-effort exit shielding as `safe_run_admission_start/2`.
+  defp safe_run_admission_resume(payload) do
+    try do
+      RunAdmission.resume(payload)
+    catch
+      :exit, exit_reason ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: RunAdmission.resume for #{inspect(Map.get(payload, :run_id))} exited: #{inspect(exit_reason)}"
+        )
+
+        {:error, {:run_admission_exit, exit_reason}}
+    end
+  end
+
+  @doc false
+  def __resume_from_index_for_test__(run_id, phase_specs),
+    do: resume_from_index(run_id, phase_specs)
 
   defp re_dispatch_promoted(task_id, run_id, state) do
     case ProjectionStore.task_projection(task_id) do

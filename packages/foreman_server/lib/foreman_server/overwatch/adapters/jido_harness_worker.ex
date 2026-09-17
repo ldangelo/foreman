@@ -37,6 +37,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
   alias ForemanServer.Overwatch.{WorkerLogPolicy, WorkerProtocol}
+  alias ForemanServer.RunControl
 
   @default_heartbeat_interval_ms 5_000
 
@@ -121,7 +122,9 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     task =
       Task.async(fn ->
-        {result, log_events} = run_agent(state.provider, state.prompt, state.driver_opts)
+        {result, log_events} =
+          run_agent(state.run_id, state.provider, state.prompt, state.driver_opts)
+
         send(parent_pid, {:agent_done, result, log_events})
       end)
 
@@ -184,18 +187,23 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   # already had. `JidoHarnessAdapter.normalize_raw_error/1` is the single
   # site that reads it, shared with the non-Overwatch adapter so the two
   # cannot drift.
-  @spec run_agent(atom(), String.t(), keyword()) ::
+  @spec run_agent(String.t(), atom(), String.t(), keyword()) ::
           {{:ok, String.t()} | ErrorCodes.code(), [map()]}
-  defp run_agent(provider, prompt, driver_opts) do
+  defp run_agent(run_id, provider, prompt, driver_opts) do
+    driver_opts =
+      Keyword.put(driver_opts, :on_start, fn harness_run_id ->
+        RunControl.register_agent(run_id, harness_run_id)
+      end)
+
     case Driver.run(provider, prompt, driver_opts) do
       {:ok, %Jido.Harness.RunResult{} = run_result} ->
         {normalize_result(run_result), log_events(run_result)}
 
       {:ok, detached} when is_map(detached) ->
-        run_id = detached[:run_id] || detached["run_id"]
+        harness_run_id = detached[:run_id] || detached["run_id"]
         timeout = Keyword.get(driver_opts, :await_timeout, :infinity)
 
-        case Driver.await(run_id, timeout) do
+        case Driver.await(harness_run_id, timeout) do
           {:ok, %Jido.Harness.RunResult{} = run_result} ->
             {normalize_result(run_result), log_events(run_result)}
 

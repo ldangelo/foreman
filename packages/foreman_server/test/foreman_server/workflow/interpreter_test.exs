@@ -559,14 +559,21 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       assert hd(workflow["phases"])["timeoutMinutes"] == 20
     end
 
-    test "rejects non-positive and non-integer timeout_minutes values" do
-      for value <- ["0", "-1", "later", "\"15\"", "false"] do
+    test "rejects negative and non-integer timeout_minutes values" do
+      for value <- ["-1", "later", "\"15\"", "false"] do
         path = commit_manifest([{"a", "    timeout_minutes: #{value}\n"}])
 
         assert_raise Workflow.MissingRequiredPhaseError,
-                     ~r/phase 0 "timeout_minutes" must be a positive integer number of minutes/,
+                     ~r/phase 0 "timeout_minutes" must be a non-negative integer number of minutes/,
                      fn -> Workflow.Interpreter.load!(path) end
       end
+    end
+
+    test "accepts timeout_minutes: 0 to mean no timeout" do
+      path = commit_manifest([{"a", "    timeout_minutes: 0\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert hd(workflow["phases"])["timeout_minutes"] == 0
     end
 
     test "accepts an absent commit key and does not synthesize one" do

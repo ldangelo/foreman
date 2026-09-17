@@ -7,7 +7,7 @@ defmodule ForemanServerWeb.CommandController do
   which validates the envelope, gates on the operator allowlist
   (`project.register`, `project.update`, `project.archive`,
   `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
-  `run.cancel`, `run.remove`, and `run.reset`),
+  `run.cancel`, `run.pause`, `run.resume`, `run.remove`, and `run.reset`),
   enriches the payload, and dispatches to
   `CommandRouter`.
 
@@ -21,7 +21,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.remove run.reset)
+  @allowed_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset)
 
   def create(conn, params) do
     envelope = build_envelope(params)

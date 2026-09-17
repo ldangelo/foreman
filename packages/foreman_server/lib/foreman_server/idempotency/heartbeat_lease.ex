@@ -36,6 +36,15 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
   end
 
   @doc """
+  Returns the default lease TTL in milliseconds (`@default_lease_ms`).
+  Callers that need a concrete lease budget when they have no phase
+  deadline of their own (e.g. an `:infinity` `FailurePolicy.timeout_ms`)
+  use this instead of hard-coding the module's private default.
+  """
+  @spec default_lease_ms() :: pos_integer()
+  def default_lease_ms, do: @default_lease_ms
+
+  @doc """
   Acquire a heartbeat lease for `key`. Marks the key as `started` in
   `KeyStore` with `task_id` and `run_id` in metadata so crash recovery can
   look up side effects without parsing the composite key string.

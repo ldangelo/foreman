@@ -58,9 +58,11 @@ design, and one apparent duplicate turned out to carry a command the other did
 not (`foreman issue webhook`), so deleting on a glance would have lost content.
 The annotations are also the reason the file is now trustworthy about what is
 real, which it was not: it still has no section for `task approve`, `task get`,
-`task retry`, `run get`, `run cancel`, `run reset`, `workflow install` or
-`workflow remove`, all of which exist. To re-verify any of this, read the
-`switch` in `main.go` and the `case` lists in `runProject`/`runTask`/`runRun`/
+`task retry`, `run get`, `run cancel`, `run pause`, `run resume`, `run reset`,
+`workflow install` or `workflow remove`, all of which exist. `run pause` and
+`run resume` are new (unattended-run-control, 2026-09). To re-verify any of
+this, read the `switch` in `main.go` and the `case` lists in
+`runProject`/`runTask`/`runRun`/
 `runWorkflow` — that is the whole surface, and it takes one grep.
 
 ## 1. Think Before Coding
@@ -156,9 +158,14 @@ phase PR record after that phase's commit decision, targeting the recorded run
 base branch from the same Foreman run branch. Absent or false preserves default
 final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
-is the complete declarable vocabulary. `timeout_minutes:` (alias `timeoutMinutes:`) is a positive integer
-phase execution timeout in minutes; absent means fall back to app-config
-`failure_policies` / `default_timeout_ms`. `Interpreter` and `PhaseSpec` still
+is the complete declarable vocabulary. `timeout_minutes:` (alias `timeoutMinutes:`) is a
+non-negative integer phase execution timeout in minutes; `0`, or the key
+being absent, both mean no timeout (unattended-run-control, 2026-09):
+`FailurePolicy`'s built-in default is now `:infinity`, not a 60-second/30-minute
+ceiling, and the bundled workflows no longer declare `timeout_minutes:` at
+all. Declare a positive `timeout_minutes:` to opt a specific phase back into
+a deadline; app-config `failure_policies` can still pin one per task type.
+`Interpreter` and `PhaseSpec` still
 contain zero top-level `pr`, `merge`, or `checkpoint` keys.
 
 **Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
@@ -1004,7 +1011,7 @@ handlers were removed from `packages/foreman_cli/cmd/foreman/task.go`, which
 still exists for shared HTTP helpers used by other command files; invoking
 any of the removed verbs now produces the CLI's standard "unknown
 command" error, indistinguishable from a typo). `foreman run
-list/get/cancel/remove/reset` are unaffected. This does NOT remove the underlying `task.create`
+list/get/cancel/pause/resume/remove/reset` are unaffected. This does NOT remove the underlying `task.create`
 / `task.approve` / `task.retry` domain command types dispatched through
 `CommandGateway`/`CommandRouter` — those still exist and are the mechanism
 BeadsWatcher's TRD-007 auto-approval (`dispatch_new_bead/2`) uses internally
@@ -1140,16 +1147,35 @@ foreman run list
 
 Task statuses: `open` (created), `ready` (approved, waiting for dispatch), `in_progress` (running), `completed`, `failed`, `cancelled`.
 
-#### 4. Cancel a task/run
+#### 4. Cancel, pause, or resume a task/run
 
 `foreman task retry` is REMOVED (TRD-018) — no CLI replacement exists for
 retrying the internal `task.retry` command; it remains internal-only.
 
 ```bash
 foreman run cancel --id <run-id> --reason "reason"
+foreman run pause --id <run-id> --reason "reason"   # stop now; keep the run resumable
+foreman run resume --id <run-id>                      # continue a paused run
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
 ```
+
+**Unattended-run-control (2026-09).** `run cancel` no longer just marks the
+run projection terminal: `Dispatcher.handle_run_terminated/3` now also
+requests `RunControl` to kill the dispatched agent — including the
+OS-level process, via `RunControl.cancel_agent/1` ->
+`Jido.Harness.Run.cancel/1` — for `RunCancelled`, `RunFlaggedStuck`,
+`RunFailed`, and `RunDeleted` (not `RunCompleted`/`RunBlocked`, where the
+executor has already finished or is halting on its own). `run pause`
+interrupts the current phase the same way but commits its partial work to
+the run branch first and keeps the run's worktree, slot, and Beads lease
+claim releasable-but-resumable rather than terminal. `run resume`
+re-enters the run at the first non-`completed` phase, rehydrating the
+persisted worktree rather than re-creating it, and re-runs that phase from
+scratch against the committed partial state — a resumed phase whose agent
+produces no *new* output will fail its `requiredFile` discovery gate
+exactly as a first attempt would; that is correct, not a regression to
+soften.
 
 ### Go CLI Commands
 
@@ -1164,6 +1190,8 @@ The remaining surface:
 foreman run list             # List run projections
 foreman run get <id>         # Fetch run projection
 foreman run cancel --id <id> --reason <text>
+foreman run pause --id <id> --reason <text>  # stop now, resumable
+foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
 foreman project list         # List projects
@@ -1515,7 +1543,10 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `TaskDispatched` | `Dispatcher` | Records dispatch on task |
 | `ProjectRunReserved` | `Project.handle_command/2` | Implementation key reservation |
 | `RunStarted` | `Run.handle_command/2` | Creates run projection, spawns worker |
-| `RunCancelled` | `Run.handle_command/2` | Marks run cancelled |
+| `RunCancelled` | `Run.handle_command/2` | Marks run cancelled; `Dispatcher` also kills the dispatched agent via `RunControl.cancel_agent/1` |
+| `RunPaused` | `Run.handle_command/2` | Stops the run resumably; `Dispatcher` kills the dispatched agent (after the executor commits partial work) and releases the run slot/lease without reopening the task |
+| `RunResumed` | `Run.handle_command/2` | Re-enters a paused run at its first non-completed phase |
+| `RunBaseBranchRecorded` | `Run.handle_command/2` | Persists the run's PR base branch so a resumed run cannot retarget it |
 | `RunDeleted`\* | `Run.handle_command/2` | Marks run removed and triggers cleanup fan-out |
 | `RunReset`\* | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
 | `RunCompleted` | `Run.handle_command/2` | Marks run terminal success |
@@ -1789,7 +1820,7 @@ create`/`approve`/`retry`/`get`/`list`/`update` were deleted from the Go CLI
 `packages/foreman_cli/cmd/foreman/task.go`, which still exists for shared
 HTTP helpers used by other command files) — invoking any of them
 produces the CLI's standard "unknown command" error. `foreman run
-list/get/cancel/remove/reset` are unaffected and remain the way to inspect or
+list/get/cancel/pause/resume/remove/reset` are unaffected and remain the way to inspect or
 control a dispatched run.
 
 **Workflow-selection (TRD-005) coverage is currently narrow — most issue
@@ -1896,6 +1927,8 @@ inspect or control the resulting dispatched run:
 foreman run list             # List run projections
 foreman run get <id>         # Fetch run projection
 foreman run cancel --id <id> --reason <text>
+foreman run pause --id <id> --reason <text>  # stop now, resumable
+foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
 ```

@@ -165,7 +165,11 @@ Resolution order, high → low:
    `timeout_ms` here when a workflow phase declares `timeout_minutes:`.
 2. App config: `config :foreman_server, :agent_runtime, failure_policies: %{task_type => %{...}}`.
 3. Built-in defaults:
-   `%{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}`.
+   `%{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: :infinity}`
+   (unattended-run-control: phases have no default wall-clock deadline;
+   `timeout_minutes: 0` on a phase, or omitting it, both resolve to
+   `:infinity` — declare a positive `timeout_minutes:` to opt a phase back
+   into a deadline).
 
 Special rule (TRD-007 AC-3): if the resolved `:fallback` is `true`
 and **no layer** supplies `:max_attempts`, then `:max_attempts` is `2`.
@@ -275,7 +279,8 @@ overridable via `config :foreman_server, :workflow_root` —
 fixture catalog so it never depends on an operator's real directory).
 Phase specs normalize `commit:` and
 `stack_pr:` as boolean phase fields and `timeout_minutes:` (or camelCase `timeoutMinutes:`) as an optional
-positive-integer phase execution timeout in minutes. `stack_pr: true` records a
+non-negative-integer phase execution timeout in minutes (`0`, or omitting the
+key entirely, means no timeout — see §6). `stack_pr: true` records a
 phase PR from the single run branch to the recorded run base branch and keeps it
 separate from the final run `pr_url`.
 

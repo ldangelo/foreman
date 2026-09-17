@@ -30,6 +30,12 @@ defmodule ForemanServer.RunExecutorLiveness do
   triggered lazy initialisation. Without a long-lived owner, an ETS
   table created by a test process dies when that process exits, losing
   liveness state for invocations that span process boundaries.
+
+  A deadline may be `:infinity` (`FailurePolicy.timeout_ms` for a phase with
+  no configured timeout). `lookup/2` treats an `:infinity` deadline as
+  permanently active — the run is exempt from stuck detection for as long as
+  its executor lives, and the exemption still requires the stored owner to
+  match the registered executor, exactly like every other entry.
   """
 
   use GenServer
@@ -60,22 +66,24 @@ defmodule ForemanServer.RunExecutorLiveness do
   Records an active invocation deadline for `run_id`, owned by `owner`.
 
   `deadline_ms` is the absolute wall-clock millisecond timestamp at
-  which the in-flight invocation will time out. `owner` is the PID of
-  the `RunExecutor` process that is currently blocking on
-  `AgentRuntime.execute/3`; it MUST be the process that is also
-  registered under `RunExecutorRegistry` for `run_id`. Callers MUST
-  publish the deadline BEFORE blocking into the agent and call
-  `clear/1` AFTER the agent returns (success or failure) so the table
-  never records a deadline past completion.
+  which the in-flight invocation will time out, or `:infinity` for a
+  phase with no configured timeout (`FailurePolicy.timeout_ms ==
+  :infinity`). `owner` is the PID of the `RunExecutor` process that is
+  currently blocking on `AgentRuntime.execute/3`; it MUST be the process
+  that is also registered under `RunExecutorRegistry` for `run_id`.
+  Callers MUST publish the deadline BEFORE blocking into the agent and
+  call `clear/1` AFTER the agent returns (success or failure) so the
+  table never records a deadline past completion.
 
   Storing the owner PID is what makes the StuckDetector exemption
   safe across a brutal executor kill: a respawned executor's PID will
   not match the dead owner's stored PID, so any future-looking
   deadline left behind by the dead owner will not exempt the run.
   """
-  @spec record(String.t(), pid(), non_neg_integer()) :: :ok
+  @spec record(String.t(), pid(), timeout()) :: :ok
   def record(run_id, owner, deadline_ms)
-      when is_binary(run_id) and is_pid(owner) and is_integer(deadline_ms) do
+      when is_binary(run_id) and is_pid(owner) and
+             (is_integer(deadline_ms) or deadline_ms == :infinity) do
     :ets.insert(@table, {run_id, {owner, deadline_ms}})
     :ok
   end
@@ -85,13 +93,16 @@ defmodule ForemanServer.RunExecutorLiveness do
 
     * `:none` — no entry recorded; the run is either idle, terminated,
       or was started before this process came up.
-    * `{:active, owner, deadline_ms}` — an entry is recorded,
-      `now_ms` is strictly before `deadline_ms`, and `owner` is the PID
-      that recorded the deadline. The in-flight invocation is still
-      within its timeout window.
+    * `{:active, owner, deadline_ms}` — an entry is recorded, and
+      either `deadline_ms` is `:infinity` or `now_ms` is strictly
+      before it; `owner` is the PID that recorded the deadline. The
+      in-flight invocation is still within its timeout window (an
+      `:infinity` deadline never leaves this window while its
+      executor lives).
     * `{:expired, owner, deadline_ms}` — an entry is recorded but
       `now_ms >= deadline_ms`. The in-flight invocation has exceeded
-      its timeout window; the StuckDetector should flag the run.
+      its timeout window; the StuckDetector should flag the run. Never
+      returned for an `:infinity` deadline.
 
   Callers that want to exempt a run from stuck detection MUST compare
   the returned `owner` against the currently-registered executor PID
@@ -101,10 +112,13 @@ defmodule ForemanServer.RunExecutorLiveness do
   """
   @spec lookup(String.t(), non_neg_integer()) ::
           :none
-          | {:active, pid(), non_neg_integer()}
+          | {:active, pid(), timeout()}
           | {:expired, pid(), non_neg_integer()}
   def lookup(run_id, now_ms) when is_binary(run_id) and is_integer(now_ms) do
     case :ets.lookup(@table, run_id) do
+      [{^run_id, {owner, :infinity}}] ->
+        {:active, owner, :infinity}
+
       [{^run_id, {owner, deadline_ms}}] when now_ms < deadline_ms ->
         {:active, owner, deadline_ms}
 

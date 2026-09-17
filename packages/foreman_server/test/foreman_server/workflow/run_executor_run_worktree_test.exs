@@ -15,6 +15,7 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   # not the ones it inherited.
   use ExUnit.Case, async: false
 
+  alias ForemanServer.ProjectionStore
   alias ForemanServer.VcsAdapter.Default
   alias ForemanServer.Workflow.PlanContext
   alias ForemanServer.Workflow.RunExecutor
@@ -691,6 +692,161 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
+  # An operator's `run.pause`/`run.cancel` reaches this blocked, synchronous
+  # phase loop only through `RunControl.intent/1` — the dispatcher cancels the
+  # in-flight agent, which unblocks `execute_agent/4` with an error, and this
+  # is where that error is folded into a stop instead of a PhaseFailed. Real
+  # git, no mocks: pause must leave the killed agent's partial work committed
+  # on the run branch; cancel must leave the tree exactly as the agent left it.
+  describe "handle_phase_body_error/6 honours RunControl.intent/1" do
+    setup %{repo: repo, base: base} do
+      run_id = "run-pause-#{System.unique_integer([:positive])}"
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/#{run_id}"
+
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+      record = %{worktree_path: wt, branch: branch, base_ref: base}
+
+      on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+
+      %{run_id: run_id, record: record, wt: wt, branch: branch}
+    end
+
+    test "pause commits the phase's partial work and stops without a phase failure",
+         %{repo: repo, base: base, run_id: run_id, record: record, wt: wt, branch: branch} do
+      write!(wt, "docs/PRD/partial.md")
+
+      :ok = ForemanServer.RunControl.request(run_id, :pause)
+
+      assert {:stopped, %{status: :paused}} =
+               RunExecutor.__handle_phase_body_error_for_test__(
+                 %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress},
+                 %{},
+                 1,
+                 record,
+                 :worker_died_no_result
+               )
+
+      assert count_commits(repo, base, branch) == 1,
+             "the killed phase's partial work must land on the run branch"
+
+      tracked = git!(repo, ["ls-tree", "-r", "--name-only", branch])
+      assert String.contains?(tracked, "docs/PRD/partial.md")
+    end
+
+    test "cancel stops without committing whatever the phase left behind",
+         %{repo: repo, base: base, run_id: run_id, record: record, wt: wt, branch: branch} do
+      write!(wt, "docs/PRD/orphaned.md")
+
+      :ok = ForemanServer.RunControl.request(run_id, :cancel)
+
+      assert {:stopped, %{status: :cancelled}} =
+               RunExecutor.__handle_phase_body_error_for_test__(
+                 %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress},
+                 %{},
+                 1,
+                 record,
+                 :worker_died_no_result
+               )
+
+      assert count_commits(repo, base, branch) == 0,
+             "cancel must not commit the cancelled phase's partial work"
+    end
+  end
+
+  # The gap `handle_phase_body_error/6` alone cannot close: a pause/cancel
+  # requested while the executor sits BETWEEN phases (no agent running, so
+  # `RunControl.cancel_agent/1` has nothing to interrupt) must still stop the
+  # run before the next phase starts — not silently run that phase to
+  # completion while the intent sits unconsumed in the ETS table.
+  describe "run_single_phase/3 honours RunControl.intent/1 before a phase starts" do
+    setup do
+      run_id = "run-between-#{System.unique_integer([:positive])}"
+      on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+      %{run_id: run_id}
+    end
+
+    test "pause stops before the next phase creates a worktree or commits anything",
+         %{repo: repo, run_id: run_id} do
+      :ok = ForemanServer.RunControl.request(run_id, :pause)
+
+      state = %{
+        run_id: run_id,
+        plan_context: %{"project_root" => repo},
+        task: %{task_id: run_id},
+        status: :in_progress
+      }
+
+      assert {:stopped, %{status: :paused}} =
+               RunExecutor.__run_single_phase_for_test__(
+                 state,
+                 %{"command" => "/skill:never-runs"},
+                 0
+               )
+
+      worktrees = git!(repo, ["worktree", "list", "--porcelain"])
+
+      assert length(Regex.scan(~r/^worktree /m, worktrees)) == 1,
+             "no run worktree should have been created for a phase that never started"
+    end
+
+    test "cancel stops before the next phase creates a worktree or commits anything",
+         %{repo: repo, run_id: run_id} do
+      :ok = ForemanServer.RunControl.request(run_id, :cancel)
+
+      state = %{
+        run_id: run_id,
+        plan_context: %{"project_root" => repo},
+        task: %{task_id: run_id},
+        status: :in_progress
+      }
+
+      assert {:stopped, %{status: :cancelled}} =
+               RunExecutor.__run_single_phase_for_test__(
+                 state,
+                 %{"command" => "/skill:never-runs"},
+                 0
+               )
+
+      worktrees = git!(repo, ["worktree", "list", "--porcelain"])
+
+      assert length(Regex.scan(~r/^worktree /m, worktrees)) == 1,
+             "no run worktree should have been created for a phase that never started"
+    end
+  end
+
+  # The gap `run_single_phase/3`'s check alone cannot close: when the LAST
+  # phase completes, `handle_cast({:advance_to, ...})` finalizes the run
+  # (`finalize_run/1`) DIRECTLY, without ever routing through
+  # `start_phase_at_index/2`/`run_single_phase/3`. A pause/cancel racing that
+  # last phase's completion must still stop the run before it finalizes —
+  # not let `maybe_complete_task`, AutoPR, and `RunCompleted` fire anyway.
+  describe "handle_cast({:advance_to, ...}) honours RunControl.intent/1 before finalizing" do
+    setup do
+      run_id = "run-finalize-race-#{System.unique_integer([:positive])}"
+      on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+      %{run_id: run_id}
+    end
+
+    test "pause stops before the run finalizes", %{run_id: run_id} do
+      :ok = ForemanServer.RunControl.request(run_id, :pause)
+
+      state = %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress}
+
+      assert {:stop, :normal, %{status: :paused}} =
+               RunExecutor.__handle_cast_advance_to_for_test__(state, 0)
+    end
+
+    test "cancel stops before the run finalizes", %{run_id: run_id} do
+      :ok = ForemanServer.RunControl.request(run_id, :cancel)
+
+      state = %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress}
+
+      assert {:stop, :normal, %{status: :cancelled}} =
+               RunExecutor.__handle_cast_advance_to_for_test__(state, 0)
+    end
+  end
+
   defp count_commits(repo, base, branch) do
     git!(repo, ["rev-list", "--count", "#{base}..#{branch}"])
     |> String.trim()
@@ -727,6 +883,148 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   defp commit!(root, message) do
     git!(root, ["add", "-A"])
     git!(root, ["commit", "--no-gpg-sign", "-m", message, "--quiet"])
+  end
+
+  # `find_resumable_worktree/1` must match the `operation_id` shape the
+  # production create path actually emits (`create_run_worktree/2`:
+  # `operation_id = "wt-" <> state.run_id`, no phase suffix — the
+  # `WorktreeCreated` moduledoc previously described a stale per-phase
+  # shape from before the one-worktree-per-run refactor). Seed a
+  # `WorktreeCreated` event through the real `ProjectionStore` with that
+  # exact shape rather than hand-picking a string that happens to satisfy
+  # the lookup, so this proves the two sides actually agree.
+  describe "find_resumable_worktree/1" do
+    test "finds the run's worktree entry by its real operation_id shape" do
+      run_id = "run-rehydrate-#{System.unique_integer([:positive])}"
+
+      created = %{
+        event_type: "WorktreeCreated",
+        payload: %{
+          operation_id: "wt-" <> run_id,
+          project_id: "project-rehydrate-test",
+          run_id: run_id,
+          phase_id: "#{run_id}-phase-1",
+          repo_path: "/tmp/repo",
+          worktree_path: "/tmp/repo-wt",
+          branch: "foreman/#{run_id}",
+          base_ref: "abc123",
+          cleanup: "never"
+        }
+      }
+
+      ProjectionStore.apply_events([created])
+
+      assert %{operation_id: "wt-" <> ^run_id, worktree_path: "/tmp/repo-wt"} =
+               RunExecutor.__find_resumable_worktree_for_test__(run_id)
+    end
+
+    test "returns nil when the run has no worktree entry" do
+      run_id = "run-rehydrate-missing-#{System.unique_integer([:positive])}"
+      assert RunExecutor.__find_resumable_worktree_for_test__(run_id) == nil
+    end
+  end
+
+  # `rehydrate_resume_context/1` is `handle_kickoff_ready/1`'s first step on
+  # a resuming executor (`resuming?: true`) — it is what makes
+  # `ensure_run_worktree/2` take the REUSE path instead of `git worktree
+  # add`ing a path that already exists on disk (which would fail outright).
+  # Real git worktree, real `ProjectionStore` seeding, no mocks: this is
+  # the actual on-disk state a resumed run's executor rehydrates from.
+  describe "rehydrate_resume_context/1 (resume worktree reuse)" do
+    test "a resuming executor rehydrates run_worktree from the persisted entry, not a fresh create",
+         %{repo: repo, base: base} do
+      run_id = "run-resume-rehydrate-#{System.unique_integer([:positive])}"
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/#{run_id}"
+
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+
+      created = %{
+        event_type: "WorktreeCreated",
+        payload: %{
+          operation_id: "wt-" <> run_id,
+          project_id: "project-resume-test",
+          run_id: run_id,
+          phase_id: "#{run_id}-phase-1",
+          repo_path: repo,
+          worktree_path: wt,
+          branch: branch,
+          base_ref: base,
+          cleanup: "never"
+        }
+      }
+
+      ProjectionStore.apply_events([created])
+
+      state = %{
+        run_id: run_id,
+        resuming?: true,
+        worktree_spec: %{},
+        plan_context: %{
+          "source_revision" => base,
+          "project_root" => repo,
+          "implementation_key" => "test-key"
+        }
+      }
+
+      assert {:ok, resumed_state} = RunExecutor.__rehydrate_resume_context_for_test__(state)
+
+      assert %{
+               operation_id: "wt-" <> ^run_id,
+               worktree_path: ^wt,
+               branch: ^branch,
+               project_root: ^repo
+             } = resumed_state.run_worktree
+
+      # The rehydrated path is the SAME on-disk worktree `create_worktree/3`
+      # made above, still checked out — proof this took the reuse path
+      # rather than discarding the entry and re-provisioning.
+      assert File.dir?(wt)
+
+      Default.clean_worktree(wt, worktree_opts(repo, base, branch))
+    end
+
+    test "a non-resuming executor is a no-op (fresh runs never rehydrate)" do
+      state = %{run_id: "run-not-resuming", resuming?: false}
+
+      assert RunExecutor.__rehydrate_resume_context_for_test__(state) == {:ok, state}
+    end
+  end
+
+  # `init/1` is the `resume_from`/`resuming?`/`completed` derivation this
+  # advisory flagged as having zero test hits: a `resume_from:` opt must
+  # pre-populate `completed` with every phase index before it (so
+  # `handle_cast({:advance_to, ...})` never re-marks them) and set
+  # `resuming?: true` (so `rehydrate_resume_context/1` and the
+  # claim-skip in `handle_kickoff_ready/1` both activate). A fresh run
+  # (no `resume_from:` opt) must get neither.
+  describe "init/1 (resume state derivation)" do
+    test "a fresh run (no resume_from opt) starts un-resumed with nothing completed" do
+      assert {:ok, state} = RunExecutor.init({"run-fresh", %{task_id: "run-fresh"}, []})
+      assert state.resume_from == 0
+      assert state.resuming? == false
+      assert state.completed == []
+    end
+
+    test "resume_from: 0 (explicitly passed) IS treated as resuming, unlike the absent-opt fresh-run default" do
+      assert {:ok, state} =
+               RunExecutor.init(
+                 {"run-resume-zero", %{task_id: "run-resume-zero"}, resume_from: 0}
+               )
+
+      assert state.resume_from == 0
+      assert state.resuming? == true
+      assert state.completed == []
+    end
+
+    test "resume_from: N pre-populates completed with every index before N and marks resuming" do
+      assert {:ok, state} =
+               RunExecutor.init({"run-resume-two", %{task_id: "run-resume-two"}, resume_from: 2})
+
+      assert state.resume_from == 2
+      assert state.resuming? == true
+      assert state.completed == [0, 1]
+    end
   end
 
   defp git!(root, args) do

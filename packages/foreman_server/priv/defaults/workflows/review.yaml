@@ -16,8 +16,6 @@ phases:
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 80
-    timeout_minutes: 25
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
     commit: true
   # `stack_pr: true` is what makes PR creation an explicit workflow step:
@@ -30,8 +28,6 @@ phases:
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 80
-    timeout_minutes: 25
     artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
     commit: true
     stack_pr: true

@@ -3040,7 +3040,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         }
       }
 
-      assert {:ok, state} = RunExecutor.init({"run-persisted", projection})
+      assert {:ok, state} = RunExecutor.init({"run-persisted", projection, []})
       assert length(state.phase_specs) == 1
 
       [%{name: "implement", command: cmd, action: :command} = phase] = state.phase_specs
@@ -3060,7 +3060,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     test "falls back to phase_specs == [] when workflow_snapshot is missing or malformed" do
       # Snapshot absent: zero phases is the safe default.
       assert {:ok, state} =
-               RunExecutor.init({"run-x1", %{task_id: "t", project_id: "p"}})
+               RunExecutor.init({"run-x1", %{task_id: "t", project_id: "p"}, []})
 
       assert state.phase_specs == []
 
@@ -3068,7 +3068,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert {:ok, state} =
                RunExecutor.init({
                  "run-x2",
-                 %{task_id: "t", project_id: "p", workflow_snapshot: %{"workflow_name" => "x"}}
+                 %{task_id: "t", project_id: "p", workflow_snapshot: %{"workflow_name" => "x"}},
+                 []
                })
 
       assert state.phase_specs == []
@@ -3077,7 +3078,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert {:ok, state} =
                RunExecutor.init({
                  "run-x3",
-                 %{task_id: "t", project_id: "p", workflow_snapshot: %{"phases" => "not-a-list"}}
+                 %{task_id: "t", project_id: "p", workflow_snapshot: %{"phases" => "not-a-list"}},
+                 []
                })
 
       assert state.phase_specs == []
@@ -3111,7 +3113,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         }
       }
 
-      assert {:ok, state} = RunExecutor.init({"run-atom", projection})
+      assert {:ok, state} = RunExecutor.init({"run-atom", projection, []})
       assert length(state.phase_specs) == 1
       assert state.worktree_spec[:enabled] == true
     end
@@ -3184,7 +3186,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         }
       }
 
-      {:ok, state} = RunExecutor.init({"run-template", projection})
+      {:ok, state} = RunExecutor.init({"run-template", projection, []})
       {:noreply, _next_state} = RunExecutor.handle_info(:kickoff, state)
 
       expected_artifact =
@@ -3255,7 +3257,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         }
       }
 
-      {:ok, state} = RunExecutor.init({"run-strict", projection})
+      {:ok, state} = RunExecutor.init({"run-strict", projection, []})
       assert length(state.phase_specs) == 1
 
       # Drive :kickoff synchronously so the assertion below observes

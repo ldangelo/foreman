@@ -233,17 +233,34 @@ worktree.
 foreman run list --project-id foreman --status failed --limit 5
 foreman run get <run-id>
 foreman run cancel --id <run-id> --reason stuck_in_recovery
+foreman run pause --id <run-id> --reason operator_pause
+foreman run resume --id <run-id>
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
 ```
 
-- `run cancel` marks the run terminal (`cancelled`).
+- `run cancel` marks the run terminal (`cancelled`) and kills the
+  dispatched agent, including its OS-level process, via `RunControl`.
+- `run pause` interrupts the current phase the same way, but first commits
+  the phase's partial work to the run branch and leaves the run resumable
+  (`paused`) rather than terminal — it releases the run's slot and Beads
+  lease without reopening the underlying task.
+- `run resume` continues a `paused` run: it re-acquires a slot/lease,
+  rehydrates the persisted worktree, and re-runs the interrupted phase from
+  its last committed state onward. A resumed phase that produces no *new*
+  output fails its discovery gate exactly as a first attempt would.
 - `run remove` terminates the run, releases its slot and any per-DB
   Beads lease, and best-effort cleans the worktree and local branch.
   Use it when a run is wedged and you want a clean slate.
 - `run reset` clears a **failed or stuck** run's projection state so it
   can be resubmitted fresh; cancelled or completed runs are rejected
   with `{:run_not_resettable, "<status>"}`.
+
+Phases have no default execution timeout: a workflow's `timeout_minutes:`
+(alias `timeoutMinutes:`) is optional, and `0` or an absent key both mean
+"run until it finishes" rather than falling back to a fixed ceiling.
+Declare a positive `timeout_minutes:` on a phase to opt it back into a
+deadline.
 
 ### Agent command assets
 
@@ -715,7 +732,8 @@ and behavior cannot diverge.
   an empty result; unknown runs return `NOT_FOUND`.
 
 **Write tools** (`foreman_task_create`, `foreman_task_update`,
-`foreman_run_cancel`, `foreman_workflow_put`, `foreman_workflow_delete`,
+`foreman_run_cancel`, `foreman_run_pause`, `foreman_run_resume`,
+`foreman_workflow_put`, `foreman_workflow_delete`,
 `foreman_prompt_put`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
@@ -732,7 +750,13 @@ structured reason, never transport-level JSON-RPC errors.
   `description`, `priority`, `status`). Requires `task_id` and at
   least one field to update.
 - `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
-  `reason`.
+  `reason`; the dispatched agent, including its OS-level process, is
+  killed via `RunControl`.
+- `foreman_run_pause` dispatches `run.pause` with `run_id` and `reason`,
+  interrupting the current phase after committing its partial work and
+  leaving the run resumable.
+- `foreman_run_resume` dispatches `run.resume` with `run_id`, re-entering
+  the run at its first non-completed phase.
 
 
 ## 10. Task-provider (Beads) enablement
@@ -751,8 +775,10 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   /api/tasks/:id` instead of CLI stdout output. A project without a
   `:create` provider takes the no-op path: no Bead, no `external_id`.
 - **Inbound sync.** Set `config :foreman_server, :start_beads_watcher?,
-  true` to run one `BeadsWatcher` per registered project, tailing its
-  JSONL and dispatching `task.create` for Beads Foreman doesn't yet own.
+  true` to run one `BeadsWatcher` per registered project, rescanning its
+  JSONL from scratch on every fs event/poll (relying on the projection
+  store for dedupe, not a byte-offset cursor) and dispatching
+  `task.create` for Beads Foreman doesn't yet own.
 - **Orphan janitor.** Set `config :foreman_server,
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or
@@ -893,9 +919,11 @@ repository pre-commit hooks, and a phase that produced nothing creates no commit
 
 A phase controls **whether** it commits, with a phase-level `commit:` boolean.
 A phase can also request a phase PR record with `stack_pr: true`; that does not
-force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinutes:` also accepted) as a positive integer
-number of minutes for its execution timeout; if omitted, Foreman uses the
-Elixir app-config failure policy for that phase name, then `default_timeout_ms`.
+force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinutes:` also accepted) as a
+non-negative-integer number of minutes for its execution timeout; `0`, or an
+omitted key, both mean no timeout, which is the default — Foreman only
+falls back to the Elixir app-config failure policy / `default_timeout_ms`
+when one is explicitly configured for that phase name.
 Unlike `worktree:`, which is workflow-level because a run has only one worktree,
 each phase produces its own output, so these are genuinely per-phase questions:
 

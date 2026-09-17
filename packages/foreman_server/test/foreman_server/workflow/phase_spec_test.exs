@@ -22,7 +22,6 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     :context,
     :index,
     :mail,
-    :max_turns,
     :models,
     :name,
     :prompt,
@@ -41,7 +40,6 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         "index" => 1,
         "artifact" => "REPORT.md",
         "requiredFile" => "docs/TRD/x.md",
-        "maxTurns" => 40,
         "timeoutMinutes" => 15
       }
 
@@ -51,7 +49,6 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         index: 1,
         artifact_template: "REPORT.md",
         required_file: "docs/TRD/x.md",
-        max_turns: 40,
         timeout_minutes: 15
       }
 
@@ -69,13 +66,11 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
       spec =
         PhaseSpec.normalize(%{
           "requiredFile" => "a.md",
-          "maxTurns" => 12,
           "timeoutMinutes" => 7,
           "artifact" => "b"
         })
 
       assert spec[:required_file] == "a.md"
-      assert spec[:max_turns] == 12
       assert spec[:timeout_minutes] == 7
       assert spec[:artifact_template] == "b"
     end
@@ -102,7 +97,6 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
         "index" => 3,
         "models" => ["m"],
         "provider" => "pi",
-        "maxTurns" => 9,
         "timeout_minutes" => 11,
         "mail" => %{"to" => "x"},
         "context" => %{"k" => "v"},

@@ -12,7 +12,7 @@ defmodule ForemanServer.AgentRuntime.FailurePolicy do
     2. Per-task-type config under `:foreman_server, :agent_runtime, :failure_policies`.
     3. Built-in defaults (TRD line 187):
 
-           %{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}
+           %{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: :infinity}
 
   ## Special rule (TRD-007 AC 3)
 
@@ -30,7 +30,7 @@ defmodule ForemanServer.AgentRuntime.FailurePolicy do
   @default_fail_fast true
   @default_fallback false
   @default_max_attempts 1
-  @default_timeout_ms 60_000
+  @default_timeout_ms :infinity
 
   @type task_type :: atom() | nil
   @type opts :: keyword() | map()
@@ -43,7 +43,7 @@ defmodule ForemanServer.AgentRuntime.FailurePolicy do
           fail_fast: true,
           fallback: boolean(),
           max_attempts: pos_integer(),
-          timeout_ms: pos_integer()
+          timeout_ms: timeout()
         }
 
   @doc """
@@ -54,7 +54,7 @@ defmodule ForemanServer.AgentRuntime.FailurePolicy do
   ## Examples
 
       iex> ForemanServer.AgentRuntime.FailurePolicy.resolve(:code_generation, [])
-      %{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}
+      %{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: :infinity}
   """
   @spec resolve(task_type(), opts()) :: t()
   def resolve(task_type, opts) when is_list(opts) do

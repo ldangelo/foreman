@@ -92,6 +92,11 @@ defmodule ForemanServer.Application do
           # the deadline is published here via ETS BEFORE the executor blocks
           # into AgentRuntime and cleared after.
           ForemanServer.RunExecutorLiveness,
+          # RunControl owns the pause/cancel stop-intent table keyed by
+          # run_id. RunExecutor blocks synchronously on an in-flight phase's
+          # agent, so an operator's run.pause/run.cancel command reaches it
+          # through this ETS table rather than a GenServer.call.
+          ForemanServer.RunControl,
           # Workflow.Catalog owns the in-memory workflow + prompt snapshots,
           # auto-installs the bundled templates on first boot, and reloads
           # files when the directory changes. Must start before any code path

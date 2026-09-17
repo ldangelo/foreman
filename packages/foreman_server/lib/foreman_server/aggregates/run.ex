@@ -35,6 +35,7 @@ defmodule ForemanServer.Aggregates.Run do
       :terminal?,
       :last_sequence,
       :merge_gate,
+      :base_branch,
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
@@ -53,6 +54,7 @@ defmodule ForemanServer.Aggregates.Run do
       terminal?: false,
       last_sequence: 0,
       merge_gate: nil,
+      base_branch: nil,
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
@@ -163,6 +165,16 @@ defmodule ForemanServer.Aggregates.Run do
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
+      "RunResumed" ->
+        %State{
+          state
+          | status: "awaiting_worker",
+            terminal?: false,
+            run_id: Aggregate.get(payload, :run_id) || state.run_id,
+            project_id: Aggregate.get(payload, :project_id) || state.project_id,
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
+        }
+
       "RunCancelled" ->
         %State{
           state
@@ -224,6 +236,13 @@ defmodule ForemanServer.Aggregates.Run do
         %State{
           state
           | merge_gate: :pending,
+            run_id: Aggregate.get(payload, :run_id) || state.run_id
+        }
+
+      "RunBaseBranchRecorded" ->
+        %State{
+          state
+          | base_branch: Aggregate.get(payload, :base_branch),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
     end
@@ -378,6 +397,27 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # run.resume — emits `RunResumed` (re-admits a paused run to
+  # `status: "awaiting_worker", terminal?: false`). Only accepted from
+  # `status: "paused"`; any other status, including every terminal one,
+  # is rejected by `require_resumable/1`.
+  def handle_command(state, %{type: "run.resume", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- require_resumable(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunResumed",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:project_id, state.project_id)
+           |> Map.put_new(:reason, "operator_resume")
+       }}
+    end
+  end
+
   # run.cancel — emits `RunCancelled` (terminal, state shape `cancelled`).
   def handle_command(state, %{type: "run.cancel", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
@@ -392,6 +432,29 @@ defmodule ForemanServer.Aggregates.Run do
            |> Map.put(:run_id, run_id)
            |> Map.put(:project_id, state.project_id)
            |> Map.put_new(:status, "cancelled")
+       }}
+    end
+  end
+
+  # run.record_base_branch — emits `RunBaseBranchRecorded`, persisting
+  # the run's PR base branch so a resumed executor reads it back instead
+  # of re-deriving it from whatever branch the checkout is on at resume
+  # time. Dispatched via `CommandGateway.dispatch_system/2` by
+  # `RunExecutor.remember_run_base_branch/1`.
+  def handle_command(state, %{type: "run.record_base_branch", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, base_branch} <-
+           Aggregate.required_binary(Aggregate.get(payload, :base_branch), :base_branch),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunBaseBranchRecorded",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:base_branch, base_branch)
        }}
     end
   end
@@ -775,6 +838,9 @@ defmodule ForemanServer.Aggregates.Run do
        do: :ok
 
   defp require_resettable(%State{status: status}), do: {:error, {:run_not_resettable, status}}
+
+  defp require_resumable(%State{status: "paused"}), do: :ok
+  defp require_resumable(%State{status: status}), do: {:error, {:run_not_resumable, status}}
 
   defp allow_delete_on_terminal(%State{status: "deleted"}),
     do: {:error, {:run_terminal, "deleted"}}

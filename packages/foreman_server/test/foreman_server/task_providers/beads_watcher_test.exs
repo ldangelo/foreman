@@ -34,14 +34,42 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       prev = :persistent_term.get({__MODULE__, :calls}, [])
       :persistent_term.put({__MODULE__, :calls}, prev ++ [{command, timeout}])
 
-      case :persistent_term.get({__MODULE__, :sequence}, []) do
-        [next | rest] ->
-          :persistent_term.put({__MODULE__, :sequence}, rest)
-          next
+      result =
+        case :persistent_term.get({__MODULE__, :sequence}, []) do
+          [next | rest] ->
+            :persistent_term.put({__MODULE__, :sequence}, rest)
+            next
 
-        [] ->
-          :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+          [] ->
+            :persistent_term.get({__MODULE__, :response}, {:ok, nil})
+        end
+
+      # Mirrors production's read model: a successful (or idempotent
+      # already-exists) `task.create` makes the task visible to the NEXT
+      # `ProjectionStore.get_task/1` dedupe check. Without this, these
+      # fakes don't agree with each other the way the real
+      # CommandGateway/ProjectionStore pair does, and a test asserting
+      # idempotency across two `rescan/2` passes would be exercising an
+      # impossible-in-production state (a "created" task the store has
+      # never heard of).
+      case {command.type, result} do
+        {"task.create", {:ok, _}} ->
+          ForemanServer.TaskProviders.BeadsWatcherTest.FakeProjectionStore.stub_external_id(
+            command.payload.external_id,
+            %{id: command.aggregate_id, status: "ready"}
+          )
+
+        {"task.create", {:error, {:already_exists, :task, _}}} ->
+          ForemanServer.TaskProviders.BeadsWatcherTest.FakeProjectionStore.stub_external_id(
+            command.payload.external_id,
+            %{id: command.aggregate_id, status: "ready"}
+          )
+
+        _ ->
+          :ok
       end
+
+      result
     end
 
     def dispatch_system_approval(command, timeout), do: dispatch_system(command, timeout)
@@ -161,110 +189,80 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     end
   end
 
-  # --- Cursor advance: terminal outcomes advance read_offset -----------
+  # --- process_line/2: terminal and transient outcomes ------------------
 
-  describe "advance_one_line/2 with terminal outcomes" do
+  describe "process_line/2 outcomes" do
     setup do
-      state = %BeadsWatcher{project_id: "proj-1", read_offset: 0, partial_line: ""}
-      {:ok, state: state}
+      {:ok, state: %BeadsWatcher{project_id: "proj-1"}}
     end
 
-    test "imported advances read_offset by line_bytes + 1", %{state: state} do
+    test "imported bead returns :imported", %{state: state} do
       FakeCommandGateway.stub_response({:ok, nil})
       line = ~s({"id":"bead-1","title":"hello","issue_type":"task","status":"open"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :imported
-      assert new_state.read_offset == byte_size(line) + 1
-      assert new_state.partial_line == ""
+      assert BeadsWatcher.process_line(state, line) == :imported
     end
 
-    test "skipped advances read_offset by line_bytes + 1", %{state: state} do
+    test "foreman-owned bead returns :skipped without dispatching", %{state: state} do
       line =
         ~s({"id":"bead-1","title":"foreman-owned","agent_context":{"foreman":{"task_id":"t1"}}})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :skipped
-      assert new_state.read_offset == byte_size(line) + 1
+      assert BeadsWatcher.process_line(state, line) == :skipped
+      assert FakeCommandGateway.calls() == []
     end
 
-    test "reconciled advances read_offset by line_bytes + 1 when dedupe hits", %{state: state} do
+    test "already-imported bead (dedupe hit) returns :reconciled", %{state: state} do
       FakeProjectionStore.stub_external_id("bead-2", %{id: "task:beads:proj-1:bead-2"})
       line = ~s({"id":"bead-2","title":"already imported"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :reconciled
-      assert new_state.read_offset == byte_size(line) + 1
+      assert BeadsWatcher.process_line(state, line) == :reconciled
       assert FakeCommandGateway.calls() == []
     end
 
-    test "malformed advances read_offset by line_bytes + 1", %{state: state} do
+    test "non-JSON line returns :malformed without dispatching", %{state: state} do
       line = "{not json at all"
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :malformed
-      assert new_state.read_offset == byte_size(line) + 1
+      assert BeadsWatcher.process_line(state, line) == :malformed
       assert FakeCommandGateway.calls() == []
     end
-  end
 
-  # --- Cursor advance: transient hold preserves the read_offset --------
-
-  describe "advance_one_line/2 with transient hold" do
-    test "transient holds read_offset and stores the partial line" do
+    test "transient dispatch failure returns :transient", %{state: state} do
       FakeCommandGateway.stub_response({:error, :down})
-      state = %BeadsWatcher{project_id: "proj-1", read_offset: 100, partial_line: ""}
       line = ~s({"id":"bead-3","title":"will retry","issue_type":"task","status":"open"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :transient
-      assert new_state.read_offset == 100
-      assert new_state.partial_line == line
+      assert BeadsWatcher.process_line(state, line) == :transient
     end
 
-    test "terminal_dispatch? {:error, {:already_exists, :task, _}} is :imported" do
+    test "{:error, {:already_exists, :task, _}} on task.create is :imported (idempotent retry)",
+         %{
+           state: state
+         } do
       FakeCommandGateway.stub_response_sequence([
         {:error, {:already_exists, :task, "task:beads:proj-1:bead-4"}},
         {:ok, nil}
       ])
 
-      state = %BeadsWatcher{project_id: "proj-1", read_offset: 0, partial_line: ""}
       line = ~s({"id":"bead-4","title":"duplicate","issue_type":"task","status":"open"})
 
-      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :imported
+      assert BeadsWatcher.process_line(state, line) == :imported
     end
 
-    test "{:exit, :killed} shape holds cursor (transient, not a crash)" do
+    test "{:exit, :killed} shape is :transient, not a crash", %{state: state} do
       FakeCommandGateway.stub_response({:exit, :killed})
-      state = %BeadsWatcher{project_id: "proj-1", read_offset: 250, partial_line: ""}
       line = ~s({"id":"bead-exit","title":"x","issue_type":"task","status":"open"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :transient
-      assert new_state.read_offset == 250
-      assert new_state.partial_line == line
+      assert BeadsWatcher.process_line(state, line) == :transient
     end
   end
 
   describe "deterministic envelope" do
     test "command_id encodes project_id + bead_id (deterministic across retries)" do
       FakeCommandGateway.stub_response({:error, :down})
-      state = %BeadsWatcher{project_id: "proj-det", read_offset: 0, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-det"}
       line = ~s({"id":"bead-det","title":"x","priority":1,"issue_type":"task","status":"open"})
 
-      {state_after_1, _} = BeadsWatcher.advance_one_line(state, line)
-      {state_after_2, _} = BeadsWatcher.advance_one_line(state_after_1, line)
-
-      assert state_after_2.read_offset == state_after_1.read_offset,
-             "transient retry MUST hold cursor at same offset"
+      BeadsWatcher.process_line(state, line)
+      BeadsWatcher.process_line(state, line)
 
       calls = FakeCommandGateway.calls()
       assert length(calls) == 2
@@ -283,19 +281,25 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "dispatches with explicit timeout argument (boundary drift guard)" do
       FakeCommandGateway.stub_response({:ok, nil})
-      state = %BeadsWatcher{project_id: "proj-x", read_offset: 0, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-x"}
       line = ~s({"id":"bead-x","title":"x","issue_type":"task","status":"open"})
 
-      BeadsWatcher.advance_one_line(state, line)
+      BeadsWatcher.process_line(state, line)
 
       [{_cmd, timeout}, _approve_call] = FakeCommandGateway.calls()
       assert is_integer(timeout) and timeout > 0
     end
   end
 
-  # --- read_more: file-backed cursor mechanics -------------------------
+  # --- rescan/2: stateless full-file rescan (foreman-fo3k) --------------
+  #
+  # Every trigger reads the CURRENT file fresh by path — no held file
+  # descriptor, no byte-offset cursor. These tests exercise that
+  # directly via real files on disk, including the regression case for
+  # foreman-fo3k (the file being replaced out from under an open
+  # descriptor must not stop new content from being seen).
 
-  describe "read_more/1 file-backed cursor" do
+  describe "rescan/2 stateless full-file read" do
     setup do
       tmp =
         Path.join(
@@ -308,111 +312,103 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       {:ok, tmp: tmp}
     end
 
-    defp open_state(tmp, content) do
+    defp state_for(tmp, content) do
       path = Path.join(tmp, "issues.jsonl")
       File.write!(path, content)
-      {:ok, handle} = :file.open(path, [:read, :binary, :raw])
 
       %BeadsWatcher{
         project_id: "proj-r",
         jsonl_path: path,
         database_path: Path.join(tmp, "beads.db"),
-        file_handle: handle,
-        read_offset: 0,
-        partial_line: "",
         poll_ms: 1000
       }
     end
 
-    test "processes all complete lines and leaves partial_line empty", %{tmp: tmp} do
+    test "processes every complete line", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
 
       state =
-        open_state(
+        state_for(
           tmp,
           ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b","issue_type":"task","status":"open"}\n)
         )
 
-      {new_state, counters} = BeadsWatcher.read_more(state)
+      {_state, counters} = BeadsWatcher.rescan(state)
 
-      assert new_state.read_offset ==
-               byte_size(
-                 ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b","issue_type":"task","status":"open"}\n)
-               )
-
-      assert new_state.partial_line == ""
       assert counters.lines_processed == 2
       assert counters.lines_imported == 2
       assert counters.lines_suppressed == 0
     end
 
-    test "preserves trailing fragment in partial_line when last line is unterminated", %{tmp: tmp} do
+    test "ignores an unterminated trailing fragment for this pass", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
 
       body =
         ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b-frag)
 
-      state = open_state(tmp, body)
-      {new_state, counters} = BeadsWatcher.read_more(state)
+      state = state_for(tmp, body)
+      {_state, counters} = BeadsWatcher.rescan(state)
 
-      assert new_state.partial_line == ~s({"id":"b","title":"b-frag)
       assert counters.lines_imported == 1
       assert counters.lines_processed == 1
     end
 
-    test "subsequent read_more completes the fragment and dispatches the second bead", %{tmp: tmp} do
+    test "a later rescan sees a completed fragment once the file is finished", %{tmp: tmp} do
       FakeCommandGateway.stub_response({:ok, nil})
 
       body =
         ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b-frag)
 
-      state = open_state(tmp, body)
+      state = state_for(tmp, body)
+      BeadsWatcher.rescan(state)
 
-      {state, _} = BeadsWatcher.read_more(state)
-
-      # Append the rest of line b + a terminator
       File.write!(state.jsonl_path, ~s(","issue_type":"task","status":"open"}\n), [:append])
-      {state2, counters2} = BeadsWatcher.read_more(state)
+      {_state, counters2} = BeadsWatcher.rescan(state)
 
-      assert state2.partial_line == ""
+      # Full rescan reprocesses everything: "a" is now deduped
+      # (:reconciled, it already has a task from the first rescan) and
+      # "b" is newly complete (:imported) — two lines processed, one
+      # newly imported.
+      assert counters2.lines_processed == 2
       assert counters2.lines_imported == 1
-      assert counters2.lines_processed == 1
       # Two beads imported across the two reads, each create+approve
       # pair producing two dispatch_system/2 calls.
       assert length(FakeCommandGateway.calls()) == 4
     end
 
-    test "a transient line holds the retry cursor at its own start but does not block later lines in the same pass",
-         %{tmp: tmp} do
-      FakeCommandGateway.stub_response({:error, :down})
+    test "regression (foreman-fo3k): a full file replacement (inode rotation) is still seen", %{
+      tmp: tmp
+    } do
+      FakeCommandGateway.stub_response({:ok, nil})
 
-      body =
-        ~s({"id":"transient","title":"t","issue_type":"task","status":"open"}\n{"id":"later","title":"l","issue_type":"task","status":"open"}\n)
+      state =
+        state_for(tmp, ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n))
 
-      state = open_state(tmp, body)
+      {_state, counters1} = BeadsWatcher.rescan(state)
+      assert counters1.lines_imported == 1
 
-      {state, counters} = BeadsWatcher.read_more(state)
+      # Simulate `br`'s atomic write-temp-then-rename export: write a
+      # NEW file at a temp path and rename it over the original,
+      # rotating the inode the old bug's persistent file handle would
+      # have kept pointing at.
+      tmp_path = state.jsonl_path <> ".tmp"
 
-      # Retry cursor holds at the FIRST transient line's start byte —
-      # unchanged from before: a permanently-stuck bead's retry
-      # position must still be exact so a fix to whatever is blocking
-      # it (a workflow-catalog mapping, a transient dispatch failure)
-      # is retried on the next poll. What changed: this no longer
-      # halts the whole pass — "later" is still visited and dispatched
-      # this same read (TRD-2026 follow-up: one permanently-unmapped
-      # or transiently-failing early bead must not block every bead
-      # appended after it forever).
-      assert state.read_offset == 0
+      File.write!(
+        tmp_path,
+        ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n) <>
+          ~s({"id":"b","title":"b","issue_type":"task","status":"open"}\n)
+      )
 
-      assert state.partial_line ==
-               ~s({"id":"transient","title":"t","issue_type":"task","status":"open"})
+      File.rename!(tmp_path, state.jsonl_path)
 
-      # Both lines hit the same stubbed dispatch failure, so both are
-      # independently transient this pass — proving "later" really was
-      # attempted, not skipped.
-      assert counters.lines_transient == 2
-      assert counters.lines_processed == 2
-      assert length(FakeCommandGateway.calls()) == 2
+      {_state, counters2} = BeadsWatcher.rescan(state)
+
+      # "a" is deduped (already has a task from the first rescan);
+      # "b" is new and gets imported. Both are still visible after the
+      # rename — this is what the pre-fix design could never do again
+      # after the first mutation.
+      assert counters2.lines_processed == 2
+      assert counters2.lines_imported == 1
     end
 
     test "an unmapped early bead does not block a later bead whose type resolves to a real workflow",
@@ -427,20 +423,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       body =
         ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open"}\n{"id":"routable","title":"r","issue_type":"task","status":"open"}\n)
 
-      state = open_state(tmp, body)
+      state = state_for(tmp, body)
 
-      {state, counters} = BeadsWatcher.read_more(state)
-
-      # "stuck" holds the retry cursor (its type never resolves to a
-      # workflow), but "routable" — appended AFTER it — still gets
-      # created and approved in the SAME pass. This is the exact
-      # scenario that motivated the fix: a single unmapped-type open
-      # bead anywhere in a project's history must not permanently
-      # block every bead behind it.
-      assert state.read_offset == 0
-
-      assert state.partial_line ==
-               ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open"})
+      {_state, counters} = BeadsWatcher.rescan(state)
 
       assert counters.lines_transient == 1
       assert counters.lines_imported == 1
@@ -458,7 +443,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       body =
         ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b","issue_type":"task","status":"open"}\n{"id":"c","title":"c","agent_context":{"foreman":{"task_id":"t"}}}\n)
 
-      state = open_state(tmp, body)
+      state = state_for(tmp, body)
 
       table =
         attach_collector(
@@ -485,18 +470,14 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       # The bead was created while the watcher was offline (draft — no
       # dispatch), then transitioned to open — also while offline. Both
-      # JSONL lines exist by the time the watcher (re)starts and replays
-      # from offset 0.
+      # JSONL lines exist by the time the watcher (re)starts and replays.
       body =
         ~s({"id":"bead-restart","title":"x","status":"draft"}\n) <>
           ~s({"id":"bead-restart","title":"x","issue_type":"task","status":"open"}\n)
 
-      state = open_state(tmp, body)
+      state = state_for(tmp, body)
 
-      replayed = BeadsWatcher.boot_replay(state)
-
-      assert replayed.read_offset == byte_size(body)
-      assert replayed.partial_line == ""
+      BeadsWatcher.boot_replay(state)
 
       # draft line: status-gate skip, no dispatch. open line: not
       # deduped (the draft line never created a task) -> create+approve.
@@ -507,23 +488,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       assert approve_cmd.aggregate_id == create_cmd.aggregate_id
     end
 
-    test "boot_replay starts state at offset 0 with empty partial_line", %{tmp: tmp} do
-      FakeCommandGateway.stub_response({:ok, nil})
-      body = ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n)
-      state = open_state(tmp, body)
-
-      replayed = BeadsWatcher.boot_replay(state)
-
-      assert replayed.read_offset == byte_size(body)
-      assert replayed.partial_line == ""
-    end
-
-    test "boot_replay on empty file keeps read_offset at 0 with zero counters", %{tmp: tmp} do
-      state = open_state(tmp, "")
-      replayed = BeadsWatcher.boot_replay(state)
-
-      assert replayed.read_offset == 0
-      assert replayed.partial_line == ""
+    test "boot_replay on empty file produces zero counters", %{tmp: tmp} do
+      state = state_for(tmp, "")
+      {_state, counters} = BeadsWatcher.rescan(state)
+      assert counters.lines_processed == 0
     end
   end
 
@@ -539,12 +507,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
           [:foreman_server, :task_provider, :beads, :watcher, :reconciled]
         )
 
-      state = %BeadsWatcher{project_id: "proj-r", read_offset: 0, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-r"}
       line = ~s({"id":"bead-r","title":"already-imported"})
 
-      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :reconciled
+      assert BeadsWatcher.process_line(state, line) == :reconciled
       assert FakeCommandGateway.calls() == []
 
       events = collected(table)
@@ -559,13 +525,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       FakeCommandGateway.stub_response({:ok, %{}})
 
-      state = %BeadsWatcher{project_id: "proj-pending", read_offset: 0, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-pending"}
       line = ~s({"id":"bead-pending","title":"stuck","issue_type":"task","status":"open"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :imported
-      assert new_state.read_offset == byte_size(line) + 1
+      assert BeadsWatcher.process_line(state, line) == :imported
 
       # Only the retried `task.approve` dispatches — no new `task.create`,
       # since the task already exists.
@@ -573,7 +536,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       assert cmd.type == "task.approve"
     end
 
-    test "task exists but status is still open holds the cursor as transient when retried approval also fails" do
+    test "task exists but status is still open reports :transient when retried approval also fails" do
       FakeProjectionStore.stub_external_id("bead-stuck", %{
         id: "task:beads:proj-stuck:bead-stuck",
         status: "open"
@@ -581,14 +544,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       FakeCommandGateway.stub_response({:error, :down})
 
-      state = %BeadsWatcher{project_id: "proj-stuck", read_offset: 100, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-stuck"}
       line = ~s({"id":"bead-stuck","title":"stuck","issue_type":"task","status":"open"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :transient
-      assert new_state.read_offset == 100
-      assert new_state.partial_line == line
+      assert BeadsWatcher.process_line(state, line) == :transient
 
       assert [{cmd, _timeout}] = FakeCommandGateway.calls()
       assert cmd.type == "task.approve"
@@ -605,12 +564,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
           [:foreman_server, :task_provider, :beads, :watcher, :skipped]
         )
 
-      state = %BeadsWatcher{project_id: "proj-s", read_offset: 0, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-s"}
       line = ~s({"id":"bead-s","title":"x","agent_context":{"foreman":{"task_id":"t1"}}})
 
-      {_new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :skipped
+      assert BeadsWatcher.process_line(state, line) == :skipped
       assert FakeCommandGateway.calls() == []
 
       events = collected(table)
@@ -621,34 +578,28 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
   # --- Malformed terminal advance --------------------------------------
 
   describe "malformed terminal advance" do
-    test "non-JSON line returns :malformed and advances cursor (no infinite loop)" do
+    test "non-JSON line returns :malformed (no infinite loop possible: stateless)" do
       table =
         attach_collector(
           "malformed",
           [:foreman_server, :task_provider, :beads, :watcher, :malformed]
         )
 
-      state = %BeadsWatcher{project_id: "proj-m", read_offset: 0, partial_line: ""}
+      state = %BeadsWatcher{project_id: "proj-m"}
       line = "{not json"
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :malformed
-      assert new_state.read_offset == byte_size(line) + 1
+      assert BeadsWatcher.process_line(state, line) == :malformed
       assert FakeCommandGateway.calls() == []
 
       events = collected(table)
       assert [:foreman_server, :task_provider, :beads, :watcher, :malformed] in events
     end
 
-    test "bead with no id field returns :malformed (terminal advance)" do
-      state = %BeadsWatcher{project_id: "proj-n", read_offset: 0, partial_line: ""}
+    test "bead with no id field returns :malformed" do
+      state = %BeadsWatcher{project_id: "proj-n"}
       line = ~s({"title":"no-id","issue_type":"task","status":"open"})
 
-      {new_state, outcome} = BeadsWatcher.advance_one_line(state, line)
-
-      assert outcome == :malformed
-      assert new_state.read_offset == byte_size(line) + 1
+      assert BeadsWatcher.process_line(state, line) == :malformed
       assert FakeCommandGateway.calls() == []
     end
   end

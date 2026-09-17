@@ -1,5 +1,6 @@
 name: prd
 description: Create a PRD through the full ensemble chain: create-prd, refine-prd, create-trd, refine-trd, implement-trd.
+task_types: [feature]
 # Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
 # `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
 operator_timeout_ms: 300000
@@ -42,32 +43,28 @@ worktree:
 # legitimate stage-for-review outcome rather than an error).
 phases:
   - name: create-prd
-    timeout_minutes: 10
-    command: "/skill:ensemble-create-prd --foreman"
+    command: "/skill:ensemble-create-prd {{input.prompt}} --foreman"
     commit: true
   - name: refine-prd
-    timeout_minutes: 10
     command: "/skill:ensemble-refine-prd --foreman"
     commit: true
+    stack_pr: true
   - name: create-trd
-    timeout_minutes: 10
     command: "/skill:ensemble-create-trd --foreman"
     commit: true
   - name: refine-trd
-    timeout_minutes: 15
     command: "/skill:ensemble-refine-trd-foreman --foreman"
     commit: true
+    stack_pr: true
   - name: implement-trd
-    timeout_minutes: 60
     command: "/skill:ensemble-implement-trd --foreman"
     commit: true
+    stack_pr: true
   - name: coderabbit-review
     prompt: review-coderabbit.md
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 80
-    timeout_minutes: 25
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
     commit: true
   # `stack_pr: true` is what makes PR creation an explicit workflow step:
@@ -80,8 +77,6 @@ phases:
     provider: pi
     models:
       default: minimax/MiniMax-M2.7
-    maxTurns: 80
-    timeout_minutes: 25
     artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
     commit: true
     stack_pr: true

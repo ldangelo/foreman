@@ -14,6 +14,8 @@
 //	commands           Generate/install agent command assets
 //	run list            List run projections
 //	run get <id>        Fetch a run projection
+//	run pause           Pause a run
+//	run resume          Resume a paused run
 //	run remove          Remove a run and clean worktree/branch
 //	run reset           Reset a failed or stuck run projection
 //	workflow install    Install workflow assets from --source or --remote
@@ -52,6 +54,8 @@ Commands:
   commands           Generate/install agent command assets
   run list            List run projections
   run get <id>        Fetch a run projection
+  run pause           Pause a run
+  run resume          Resume a paused run
   run remove          Remove a run and clean worktree/branch
   run reset           Reset a failed or stuck run projection
   workflow install    Install workflow assets

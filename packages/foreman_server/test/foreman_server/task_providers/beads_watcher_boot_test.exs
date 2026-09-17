@@ -3,7 +3,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherBootTest do
   `init/1`-level tests for `BeadsWatcher` that boot a real supervised
   process (`start_link/1`), as opposed to `beads_watcher_test.exs` and
   `beads_watcher_pipeline_test.exs`, which exercise the pure pipeline
-  functions (`process_line/2`, `advance_one_line/2`, `boot_replay/1`)
+  functions (`process_line/2`, `rescan/2`, `boot_replay/1`)
   against a hand-built state.
 
   Uses `:set_mox_global` (mirrors `beads_orphan_janitor_test.exs`)

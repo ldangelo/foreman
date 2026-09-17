@@ -457,4 +457,114 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         end
     end
   end
+
+  # `resume_from_index/2` is the 0-based/1-based conversion boundary named in
+  # the plan's assumptions section: phase projection `:index` is 1-based
+  # (`PhaseStarted.index :: pos_integer()`), but `phase_specs` — and the
+  # `start_phase_at_index/2` it feeds — are addressed 0-based. Get this wrong
+  # and a resumed run either re-runs an already-completed phase or skips one.
+  describe "resume_from_index/2" do
+    test "finds the first non-completed phase, converting 1-based projection index to 0-based" do
+      run_id = "run-resume-index-#{System.unique_integer([:positive])}"
+
+      phase_1_started = %{
+        event_type: "PhaseStarted",
+        payload: %{
+          phase_id: "#{run_id}-phase-1",
+          run_id: run_id,
+          index: 1,
+          name: "phase-1",
+          attempt: 1,
+          artifact_template: "phase-{{index}}.md"
+        }
+      }
+
+      phase_1_completed = %{
+        event_type: "PhaseCompleted",
+        payload: %{
+          phase_id: "#{run_id}-phase-1",
+          run_id: run_id,
+          index: 1,
+          artifact_path: "phase-1.md",
+          artifact_sha256: String.duplicate("a", 64),
+          artifact_bytes: 10
+        }
+      }
+
+      phase_2_started = %{
+        event_type: "PhaseStarted",
+        payload: %{
+          phase_id: "#{run_id}-phase-2",
+          run_id: run_id,
+          index: 2,
+          name: "phase-2",
+          attempt: 1,
+          artifact_template: "phase-{{index}}.md"
+        }
+      }
+
+      ProjectionStore.apply_events([phase_1_started, phase_1_completed, phase_2_started])
+
+      phase_specs = [%{"name" => "phase-1"}, %{"name" => "phase-2"}, %{"name" => "phase-3"}]
+
+      # Phase 1 (projection index 1) is completed; phase 2 (projection
+      # index 2) is only started, not completed. Resume must land on the
+      # 0-based index of phase 2 — index 1 in `phase_specs` — not phase 1
+      # (already done) and not phase 3 (index 2, never reached).
+      assert Dispatcher.__resume_from_index_for_test__(run_id, phase_specs) == 1
+    end
+
+    test "resumes at 0 when no phase has started yet" do
+      run_id = "run-resume-index-empty-#{System.unique_integer([:positive])}"
+      phase_specs = [%{"name" => "phase-1"}, %{"name" => "phase-2"}]
+
+      assert Dispatcher.__resume_from_index_for_test__(run_id, phase_specs) == 0
+    end
+
+    test "resumes past the end when every phase already completed" do
+      run_id = "run-resume-index-done-#{System.unique_integer([:positive])}"
+
+      events =
+        for index <- [1, 2] do
+          phase_id = "#{run_id}-phase-#{index}"
+
+          [
+            %{
+              event_type: "PhaseStarted",
+              payload: %{
+                phase_id: phase_id,
+                run_id: run_id,
+                index: index,
+                name: "phase-#{index}",
+                attempt: 1,
+                artifact_template: "phase-{{index}}.md"
+              }
+            },
+            %{
+              event_type: "PhaseCompleted",
+              payload: %{
+                phase_id: phase_id,
+                run_id: run_id,
+                index: index,
+                artifact_path: "phase-#{index}.md",
+                artifact_sha256: String.duplicate("a", 64),
+                artifact_bytes: 10
+              }
+            }
+          ]
+        end
+        |> List.flatten()
+
+      ProjectionStore.apply_events(events)
+
+      phase_specs = [%{"name" => "phase-1"}, %{"name" => "phase-2"}]
+
+      # The default must be out-of-range (`length(phase_specs)`), not `0` —
+      # `start_phase_at_index/2` treats an out-of-range index as "all
+      # phases complete" and finalizes; `0` would instead re-run phase 1 of
+      # an already-finished run.
+      assert Dispatcher.__resume_from_index_for_test__(run_id, phase_specs) ==
+               length(phase_specs)
+    end
+  end
 end

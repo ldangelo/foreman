@@ -524,13 +524,13 @@ defmodule ForemanServer.Workflow.Interpreter do
       nil ->
         :ok
 
-      value when is_integer(value) and value > 0 ->
+      value when is_integer(value) and value >= 0 ->
         :ok
 
       _other ->
         raise Workflow.MissingRequiredPhaseError,
           message:
-            "workflow template #{path} phase #{index} \"timeout_minutes\" must be a positive integer number of minutes"
+            "workflow template #{path} phase #{index} \"timeout_minutes\" must be a non-negative integer number of minutes (0 = no timeout)"
     end
   end
 
