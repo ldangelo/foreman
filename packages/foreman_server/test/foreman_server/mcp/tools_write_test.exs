@@ -447,6 +447,29 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       refute :meck.called(CommandGateway, :dispatch_operator, :_)
     end
 
+    test "rejects command_id supplied without message_id" do
+      allow_writes()
+      put_run_projection("run-1")
+
+      # Without message_id, a retry of this exact call would mint a NEW
+      # random message_id and report it back to the caller, even though
+      # CommandRouter's dedupe on command_id means only the first call's
+      # message actually persisted -- the caller would be told an id that
+      # was never stored. Reject the combination outright.
+      assert Tools.call_tool("foreman_inbox_send", %{
+               run_id: "run-1",
+               command_id: "cmd-no-message-id",
+               body: "progress"
+             }) ==
+               {:error,
+                %ToolError{
+                  code: "INVALID_PARAMS",
+                  message: "command_id requires message_id to also be supplied"
+                }}
+
+      refute :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
     test "maps duplicate message to ALREADY_EXISTS without echoing body" do
       allow_writes()
       put_run_projection("run-1")

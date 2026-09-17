@@ -913,6 +913,7 @@ defmodule ForemanServer.MCP.Tools do
          {:ok, run_id} <- required_nonblank(args, :run_id),
          {:ok, body} <- required_nonblank(args, :body),
          :ok <- validate_inbox_body(body),
+         :ok <- reject_command_id_without_message_id(args),
          {:ok, message_id} <- optional_nonblank(args, :message_id, &mint_inbox_message_id/0),
          {:ok, command_id} <-
            optional_nonblank(args, :command_id, fn -> inbox_command_id(run_id, message_id) end),
@@ -929,6 +930,25 @@ defmodule ForemanServer.MCP.Tools do
            metadata: metadata
          }
        }}
+    end
+  end
+
+  # A caller-supplied command_id without a caller-supplied message_id
+  # would report a freshly-minted message_id back to the caller on every
+  # call (see mint_inbox_message_id/0 below), including a genuine retry --
+  # but CommandRouter dedupes by command_id, so only the FIRST call's
+  # message actually persists. A retry would then tell the caller a
+  # message_id that was never stored. Reject the combination outright
+  # rather than silently reporting a mismatched identifier.
+  defp reject_command_id_without_message_id(args) do
+    if Map.get(args, :command_id) != nil and Map.get(args, :message_id) == nil do
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "command_id requires message_id to also be supplied"
+       }}
+    else
+      :ok
     end
   end
 
