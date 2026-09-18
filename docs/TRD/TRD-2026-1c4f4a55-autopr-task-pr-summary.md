@@ -97,7 +97,7 @@ graph TD
 | Boundary | Protocol | Input | Output/Error |
 |---|---|---|---|
 | RunExecutor -> AutoPR | Elixir map context | `run_id`, `base_branch`, `artifact_path`, `head_branch`, `cwd`, optional `task_title`, `task_description`, `task_id`, `task_external_id`, `task_external_link` | `{:ok, pr_url}` / `:noop` / `{:error, reason}` |
-| AutoPR validation | Pure helper | Context map | `{:ok, summary | nil}` or `{:error, {:invalid_task_summary, reason}}` |
+| AutoPR validation | Pure helper | Context map | `{:ok, summary \| nil}` or `{:error, {:invalid_task_summary, reason}}` |
 | PR composition | Pure helper | run id, artifact path, findings, valid summary | `{title, body}` strings |
 | Git/GitHub | `System.cmd/3` argv | `git rev-list`, `git push`, `gh pr create --title title --body body` | existing typed command errors |
 

@@ -1899,43 +1899,48 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp task_summary_context(state) do
-    task = Map.get(state, :task) || %{}
+  # Normalize the five approved task-summary fields once, preferring atom keys.
+  # After normalization every downstream read uses only canonical atom keys — no
+  # dual atom/string resolution anywhere in the boundary.
+  defp normalize_task(task) when is_map(task) do
+    Enum.reduce([:title, :description, :task_id, :external_id, :external_link], %{}, fn
+      field, acc ->
+        normalized =
+          cond do
+            Map.has_key?(task, field) -> Map.get(task, field)
+            Map.has_key?(task, Atom.to_string(field)) -> Map.get(task, Atom.to_string(field))
+            true -> nil
+          end
 
-    if task_summary_backed?(state, task) do
+        if is_nil(normalized), do: acc, else: Map.put(acc, field, normalized)
+    end)
+  end
+
+  defp task_summary_context(state) do
+    normalized = normalize_task(Map.get(state, :task) || %{})
+
+    if task_summary_backed?(state, normalized) do
       %{}
-      |> Map.put(:task_title, task_value(task, :title))
-      |> Map.put(:task_description, task_value(task, :description))
-      |> maybe_put_task_field(:task_id, task_value(task, :task_id))
-      |> maybe_put_task_field(:task_external_id, task_value(task, :external_id))
-      |> maybe_put_task_field(:task_external_link, task_value(task, :external_link))
+      |> Map.put(:task_title, Map.get(normalized, :title))
+      |> Map.put(:task_description, Map.get(normalized, :description))
+      |> maybe_put_task_field(:task_id, Map.get(normalized, :task_id))
+      |> maybe_put_task_field(:task_external_id, Map.get(normalized, :external_id))
+      |> maybe_put_task_field(:task_external_link, Map.get(normalized, :external_link))
     else
       %{}
     end
   end
 
-  defp task_summary_backed?(state, task) do
+  defp task_summary_backed?(state, normalized) do
     Map.get(state, :source) == :task or
       Enum.any?(
         [:title, :description, :task_id, :external_id, :external_link],
-        &task_has_key?(task, &1)
+        &Map.has_key?(normalized, &1)
       )
   end
 
   defp maybe_put_task_field(acc, _field, nil), do: acc
   defp maybe_put_task_field(acc, field, value), do: Map.put(acc, field, value)
-
-  defp task_has_key?(task, field) when is_map(task) do
-    Map.has_key?(task, field) or Map.has_key?(task, Atom.to_string(field))
-  end
-
-  defp task_value(task, field) when is_map(task) do
-    cond do
-      Map.has_key?(task, field) -> Map.get(task, field)
-      Map.has_key?(task, Atom.to_string(field)) -> Map.get(task, Atom.to_string(field))
-      true -> nil
-    end
-  end
 
   # The branch a PR must target, or the typed reason Foreman cannot name it.
   #
