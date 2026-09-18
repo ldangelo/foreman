@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-1c4f4a55
 label: prd-autopr-task-pr-summary
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 13
 total_acceptance_criteria: 33
-readiness_score: 4.6
+readiness_score: 4.7
 ---
 
 # PRD: Include bead/task title and description in AutoPR-generated PR summary
@@ -112,7 +112,8 @@ Source reconnaissance found these relevant facts:
 
 - `state.task.title` and `state.task.description` are the canonical metadata source for final AutoPRs when present.
 - If task metadata is absent because the run is ad-hoc/no-task, the existing generic PR title/body remains valid and must not be treated as an error.
-- If task metadata is present but malformed or blank, the implementation should fail loudly before creating a misleading task-backed PR.
+- If a task aggregate is present but either title or description is malformed or blank, final AutoPR should fail loudly with a typed validation error before creating a misleading task-backed PR.
+- Task-backed title and description are treated as an atomic pair: both are required for task-aware PR composition, while ad-hoc/no-task runs keep the legacy fallback.
 - The task summary should be additive: it should appear before existing artifact and review findings sections, not replace them.
 - A task/bead identifier should be included only if it is already available in Foreman state; implementation must not shell out to `br` or inspect Beads SQLite.
 
@@ -174,7 +175,7 @@ AutoPR MUST keep the existing behavior for no-task/ad-hoc runs that do not have 
 
 - AC-005-1: Given an AutoPR context with no task metadata, when `open_pr` is reached, then title and body match the current generic title/body byte-for-byte except for existing dynamic run/artifact/findings content.
 - AC-005-2: Given a run has no Task aggregate, when final AutoPR succeeds, then no task metadata validation error is raised.
-- AC-005-3: Given only one of task title or description is available, when metadata validation runs, then behavior is explicit and tested: either the available value is used with safe fallback for the missing value, or the task-backed PR fails with a typed error. The TRD must choose one policy before implementation.
+- AC-005-3: Given a task aggregate is present but only one of task title or description is available, when metadata validation runs, then final AutoPR fails with a typed validation error before any PR title/body is composed or `gh pr create` is invoked.
 
 ### REQ-006: Include task/bead identifiers when safely available
 
@@ -311,7 +312,7 @@ No circular dependencies identified.
    **Resolution:** REQ-001 and REQ-005 forbid synthesis and preserve exact no-task fallback.
 
 3. **Issue:** A partially present task title/description policy can be ambiguous.  
-   **Resolution:** REQ-005 and REQ-009 require an explicit TRD choice and typed/tested behavior before implementation.
+   **Resolution:** Foreman-mode refinement selected the loud-failure policy: task-backed AutoPR requires both title and description, while no-task/ad-hoc runs keep the legacy fallback.
 
 4. **Issue:** Including Beads IDs might tempt implementation to shell out to `br` or inspect Beads storage.  
    **Resolution:** REQ-006 permits identifiers only when already present in Foreman state.
@@ -327,18 +328,18 @@ No circular dependencies identified.
 
 All safe resolutions auto-applied under Foreman mode.
 
-Ambiguity scan complete: 0 items marked for clarification.
+Ambiguity scan complete: 0 items marked for clarification after resolving the partial-metadata policy.
 
 ## 11. Implementation Readiness Gate
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4.6 | Covers metadata plumbing, title/body composition, fallback, traceability id, branch behavior, PhasePR separation, tests, live verification, logging, and docs. |
-| Testability | 4.7 | Requirements have concrete ACs; deterministic tests plus optional live verification are defined. |
-| Clarity | 4.5 | Additive body behavior and no-task fallback are clear; TRD must choose the exact partial-metadata policy before coding. |
+| Completeness | 4.7 | Covers metadata plumbing, title/body composition, fallback, traceability id, branch behavior, PhasePR separation, tests, live verification, logging, and docs. |
+| Testability | 4.8 | Requirements have concrete ACs; deterministic tests plus optional live verification are defined, including the partial-metadata failure path. |
+| Clarity | 4.8 | Additive body behavior, no-task fallback, and partial task metadata failure policy are explicit. |
 | Feasibility | 4.6 | Uses existing task fields and current AutoPR/RunExecutor seams; no new storage or provider integration required. |
 
-Overall readiness score: **4.6**  
+Overall readiness score: **4.7**
 Gate decision: **PASS**
 
 ## 12. Suggested Next Step
@@ -348,3 +349,10 @@ Create a TRD from this PRD:
 ```sh
 /ensemble-create-trd docs/PRD/PRD-2026-1c4f4a55-autopr-task-pr-summary.md
 ```
+
+## 13. Version History
+
+### 2026-09-18 — v1.0.1
+
+- Resolved the partial task metadata policy: task-backed AutoPR requires both title and description; missing/blank partial metadata fails with a typed validation error.
+- Updated readiness score from 4.6 to 4.7 after clarification.
