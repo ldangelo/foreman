@@ -958,7 +958,10 @@ force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinute
 non-negative-integer number of minutes for its execution timeout; `0`, or an
 omitted key, both mean no timeout, which is the default — Foreman only
 falls back to the Elixir app-config failure policy / `default_timeout_ms`
-when one is explicitly configured for that phase name.
+when one is explicitly configured for that phase name. If a live process still
+times out omitted-timeout phases at 30 minutes, check/restart the running BEAM:
+older dev/prod config set `default_timeout_ms: 1_800_000`, and a stale server
+can retain that env after the checkout changes.
 Unlike `worktree:`, which is workflow-level because a run has only one worktree,
 each phase produces its own output, so these are genuinely per-phase questions:
 

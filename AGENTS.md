@@ -168,7 +168,12 @@ ceiling, and the bundled workflows no longer declare `timeout_minutes:` at
 all. Declare a positive `timeout_minutes:` to opt a specific phase back into
 a deadline; app-config `failure_policies` can still pin one per task type.
 `Interpreter` and `PhaseSpec` still
-contain zero top-level `pr`, `merge`, or `checkpoint` keys.
+contain zero top-level `pr`, `merge`, or `checkpoint` keys. If a live server
+still enforces a 30-minute phase ceiling after this change, do not reinterpret
+this paragraph as false; first prove the running BEAM/config. Pre-#510 dev/prod
+config set `:foreman_server, :agent_runtime, default_timeout_ms: 1_800_000`,
+and a long-lived or stale server can retain that app env until restarted even
+though the checkout no longer ships it.
 
 **Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
 alone makes unsatisfiable — and warned about at run terminal in the case whose

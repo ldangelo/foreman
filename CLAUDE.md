@@ -163,13 +163,15 @@ Resolution order, high → low:
 
 1. Per-call `opts` — **only present keys override.** `RunExecutor` passes
    `timeout_ms` here when a workflow phase declares `timeout_minutes:`.
-2. App config: `config :foreman_server, :agent_runtime, failure_policies: %{task_type => %{...}}`.
-3. Built-in defaults:
+2. Per-task app config: `config :foreman_server, :agent_runtime, failure_policies: %{task_type => %{...}}`.
+3. App config default: `config :foreman_server, :agent_runtime, default_timeout_ms: ...`.
+4. Built-in defaults:
    `%{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: :infinity}`
-   (unattended-run-control: phases have no default wall-clock deadline;
-   `timeout_minutes: 0` on a phase, or omitting it, both resolve to
-   `:infinity` — declare a positive `timeout_minutes:` to opt a phase back
-   into a deadline).
+   (unattended-run-control: shipped config sets no `default_timeout_ms`, so
+   phases have no default wall-clock deadline; `timeout_minutes: 0` on a
+   phase, or omitting it, both resolve to `:infinity` unless an explicit app
+   config policy/default is present — declare a positive `timeout_minutes:` to
+   opt a phase back into a deadline).
 
 Special rule (TRD-007 AC-3): if the resolved `:fallback` is `true`
 and **no layer** supplies `:max_attempts`, then `:max_attempts` is `2`.
@@ -220,7 +222,7 @@ App config read by the runtime:
 | `:foreman_server, :agent_runtime, :enabled` | `Application.start/2` child wiring | `false` (set to `true` in `config.exs`) |
 | `:foreman_server, :agent_runtime, :adapters` | `AgentRuntime.Supervisor.init/1` | `[]` |
 | `:foreman_server, :agent_runtime, :failure_policies` | `FailurePolicy.resolve/2` | `%{}` |
-| `:foreman_server, :agent_runtime, :default_timeout_ms` | `FailurePolicy.resolve/2` | `60_000` |
+| `:foreman_server, :agent_runtime, :default_timeout_ms` | `FailurePolicy.resolve/2` | `:infinity` |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :executable` | `PiAdapter.execute/2` | `"pi"` (resolved via `System.find_executable/1`) |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :timeout_ms` | `PiAdapter.execute/2` | `60_000` |
 
