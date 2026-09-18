@@ -956,12 +956,15 @@ A phase controls **whether** it commits, with a phase-level `commit:` boolean.
 A phase can also request a phase PR record with `stack_pr: true`; that does not
 force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinutes:` also accepted) as a
 non-negative-integer number of minutes for its execution timeout; `0`, or an
-omitted key, both mean no timeout, which is the default — Foreman only
-falls back to the Elixir app-config failure policy / `default_timeout_ms`
-when one is explicitly configured for that phase name. If a live process still
-times out omitted-timeout phases at 30 minutes, check/restart the running BEAM:
-older dev/prod config set `default_timeout_ms: 1_800_000`, and a stale server
-can retain that env after the checkout changes.
+omitted key, both mean no timeout. When `timeout_minutes` is absent, the resolved
+deadline follows `FailurePolicy.resolve/2` precedence: per-call opts, then
+`:foreman_server, :agent_runtime, :failure_policies[task_type]`, then
+`:foreman_server, :agent_runtime, :default_timeout_ms`, then the built-in default
+of `:infinity`. No shipped config file sets either key, so the built-in default
+is `:infinity` in normal operation. If a live process still times out omitted-timeout
+phases at 30 minutes, check/restart the running BEAM: older dev/prod config set
+`default_timeout_ms: 1_800_000`, and a stale server can retain that env after
+the checkout changes removed it.
 Unlike `worktree:`, which is workflow-level because a run has only one worktree,
 each phase produces its own output, so these are genuinely per-phase questions:
 
