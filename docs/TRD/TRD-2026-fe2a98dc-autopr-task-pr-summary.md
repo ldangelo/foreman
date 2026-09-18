@@ -2,10 +2,10 @@
 document_id: TRD-2026-fe2a98dc
 label: trd-autopr-task-pr-summary
 prd_reference: docs/PRD/PRD-2026-fe2a98dc-autopr-task-pr-summary.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
-design_readiness_score: 4.7
+design_readiness_score: 4.8
 kind: trd
 ---
 
@@ -28,7 +28,7 @@ Source PRD: `docs/PRD/PRD-2026-fe2a98dc-autopr-task-pr-summary.md` (`PRD-2026-fe
 | Domain | Requirements | Notes |
 |---|---|---|
 | AutoPR context contract | REQ-001, REQ-011 | `ForemanServer.Workflow.AutoPR.context()` must carry optional task metadata as typed fields. |
-| Run finalization wiring | REQ-001, REQ-005 | `RunExecutor.auto_pr/1` has `state.task`, `state.task_id`, and projections available when building the AutoPR context. |
+| Run finalization wiring | REQ-001, REQ-005 | `RunExecutor.auto_pr/1` has `state.task`; internal task ids come from `task_id(state)`/`state.task`, and provider-facing Beads ids come from `state.task.external_id`. |
 | PR title/body composition | REQ-002, REQ-003, REQ-004, REQ-006, REQ-012 | `AutoPR.open_pr/5` currently owns `gh pr create` title/body construction and fallback shape. |
 | Safety/redaction | REQ-007 | Task metadata must be trimmed, redacted, bounded, and omitted when blank before it reaches `gh`. |
 | Tests and live verification | REQ-008, REQ-009 | Need pure composition tests, RunExecutor wiring tests, fallback regression tests, and one live Beads-backed verification. |
@@ -48,7 +48,7 @@ In-repo mechanisms reused directly:
 | Existing `gh pr create` wrapper | `AutoPR.open_pr/5` | REQ-002 through REQ-007 |
 | Task aggregate fields | `ForemanServer.Aggregates.Task.State` | REQ-001, REQ-003 |
 | Task projection external id | `ForemanServer.ProjectionStore` task projection | REQ-005 |
-| Existing redaction boundary | `ForemanServer.Observability.Redactor` or nearest existing safe redaction helper | REQ-007 |
+| Existing redaction boundary | `ForemanServer.Observability.Redactor.redact_message/1` | REQ-007 |
 
 ## Architecture Alternatives
 
@@ -67,13 +67,13 @@ Implement task-aware AutoPR summaries by extending `ForemanServer.Workflow.AutoP
 ### Key Decisions
 
 1. **Context shape:** add optional typed fields for `task_title`, `task_description`, `task_id`, and `task_external_id` (or equivalent names with one atom convention) to `AutoPR.context()`.
-2. **Executor boundary:** `RunExecutor.auto_pr/1` sources title/description from `state.task`, internal id from `state.task_id` or `state.task.task_id`, and provider-facing id from the task projection when available.
+2. **Executor boundary:** `RunExecutor.auto_pr/1` sources title/description from `state.task`, internal id through the existing `task_id(state)`/`state.task` lookup, and provider-facing id from `state.task.external_id` when available. Do not introduce or rely on a nonexistent `state.task_id` field.
 3. **Title:** when normalized `task_title` is nonblank, emit `feat(task): <task title>` capped at 120 visible characters total with deterministic trailing ellipsis on the title portion. When title is blank/absent, emit exactly `feat(run): <run_id>`.
 4. **Body fallback:** when no usable task title, description, task id, or external id exists, keep the body exactly as today: `Foreman run `<run_id>` complete.` plus optional artifact and findings sections.
 5. **Task body section:** when any usable task metadata exists, render a `## Task` section before artifact/findings, including title, bounded/redacted description, task id, external id, and `br show <id>` for Beads/provider-facing ids.
 6. **Additive composition:** existing artifact line and CodeRabbit findings section remain present and ordered after the task summary.
-7. **Safety:** trim title/description/ids, omit blanks, redact obvious secrets using the existing Foreman redaction boundary or a small AutoPR-local wrapper around it, and cap rendered description at 4,000 visible characters with a truncation notice pointing to task traceability.
-8. **Test seam:** expose pure/private-testable title/body composition through small functions or assert through mocked `System.cmd/3`/existing test seam without network calls.
+7. **Safety:** trim title/description/ids, omit blanks, redact obvious secrets with `ForemanServer.Observability.Redactor.redact_message/1` (or a tiny AutoPR-local wrapper that delegates to it), and cap rendered description at 4,000 graphemes with a truncation notice pointing to task traceability.
+8. **Test seam:** expose pure title/body composition through `@doc false` functions or assert at the `gh pr create` boundary using a temp bare `origin` and fake `gh` executable on `PATH`; do not hit GitHub or depend on live remotes in unit tests.
 
 ## System Architecture Design
 
@@ -84,8 +84,8 @@ Implement task-aware AutoPR summaries by extending `ForemanServer.Workflow.AutoP
 | `ForemanServer.Workflow.AutoPR` | Decide whether to open a PR and compose `gh pr create` args | Extend context type; pass task metadata into `open_pr`; add title/body normalization helpers; preserve fallback exactness |
 | `ForemanServer.Workflow.RunExecutor` | Build AutoPR context at finalization | Add task summary fields from state/projection to the context map |
 | `ForemanServer.Aggregates.Task.State` | Source title/description/internal task id | Reused; no domain event shape change expected |
-| `ForemanServer.ProjectionStore` | Source provider-facing `external_id` if task projection exists | Reused read-only at AutoPR context build boundary |
-| Redaction helper | Remove unsafe secret-like content before PR body | Reuse existing `ForemanServer.Observability.Redactor` or closest existing helper; add tests around output |
+| `state.task` task projection | Source provider-facing `external_id` if present on the task projection passed to the executor | Reused read-only at AutoPR context build boundary |
+| Redaction helper | Remove unsafe secret-like content before PR body | Reuse `ForemanServer.Observability.Redactor.redact_message/1`; add tests around output |
 | Tests | Pin behavior and fallback | Add AutoPR composition tests and RunExecutor context wiring coverage |
 | Docs | Operator-facing behavior | Update only real behavior/conventions after implementation |
 
@@ -94,12 +94,11 @@ Implement task-aware AutoPR summaries by extending `ForemanServer.Workflow.AutoP
 ```mermaid
 graph TD
   A[RunExecutor finalizes run] --> B[state.task title/description]
-  A --> C[state.task_id]
-  C --> D[ProjectionStore.task_projection task_id]
-  D --> E[external_id]
+  A --> C[task_id state internal id]
+  A --> D[state.task external_id]
   B --> F[AutoPR context optional task fields]
   C --> F
-  E --> F
+  D --> F
   F --> G[AutoPR maybe_create_pr]
   G --> H[resolve head branch + commits ahead]
   H --> I[compose task-aware title/body]
@@ -111,7 +110,7 @@ graph TD
 
 | Boundary | Protocol | Input | Output/Error |
 |---|---|---|---|
-| RunExecutor → AutoPR | Elixir map typed by `AutoPR.context()` | Required `run_id`, `base_branch`; optional `artifact_path`, `head_branch`, `cwd`, `task_title`, `task_description`, `task_id`, `task_external_id` | `{:ok, pr_url}`, `:noop`, or existing typed error tuples |
+| RunExecutor → AutoPR | Elixir map typed by `AutoPR.context()` | Required `run_id`, `base_branch`; optional `artifact_path`, `head_branch`, `cwd`, `task_title`, `task_description`, `task_id`, `task_external_id` (`task_external_id` is omitted/nil unless `state.task.external_id` is nonblank) | `{:ok, pr_url}`, `:noop`, or existing typed error tuples |
 | AutoPR title helper | Pure Elixir | `run_id`, optional task title | `feat(task): <capped title>` or exact `feat(run): <run_id>` fallback |
 | AutoPR body helper | Pure Elixir | `run_id`, artifact path, task fields | Existing fallback body or task summary + artifact + findings |
 | GitHub CLI | `System.cmd("gh", ["pr", "create", ...])` | Existing base/head/title/body args | Existing success/error behavior |
