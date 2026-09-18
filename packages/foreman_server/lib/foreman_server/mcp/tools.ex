@@ -1294,9 +1294,10 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp fetch_comment_task_id(run) do
-    case Map.get(run, :task_id) do
-      task_id when is_binary(task_id) and task_id != "" -> {:ok, task_id}
-      _ -> {:error, %ToolError{code: "INVALID_STATE", message: "Run is not bound to a task"}}
+    case Map.fetch(run, :task_id) do
+      {:ok, task_id} when is_binary(task_id) and task_id != "" -> {:ok, task_id}
+      {:ok, _} -> {:error, %ToolError{code: "INVALID_STATE", message: "Run task_id is malformed"}}
+      :error -> {:error, %ToolError{code: "INVALID_STATE", message: "Run is not bound to a task"}}
     end
   end
 
@@ -1308,16 +1309,28 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp fetch_comment_external_id(task) do
-    case Map.get(task, :external_id) do
-      external_id when is_binary(external_id) and external_id != "" -> {:ok, external_id}
-      _ -> {:error, %ToolError{code: "INVALID_STATE", message: "Task has no provider issue id"}}
+    case Map.fetch(task, :external_id) do
+      {:ok, external_id} when is_binary(external_id) and external_id != "" ->
+        {:ok, external_id}
+
+      {:ok, _} ->
+        {:error, %ToolError{code: "INVALID_STATE", message: "Task external_id is malformed"}}
+
+      :error ->
+        {:error, %ToolError{code: "INVALID_STATE", message: "Task has no provider issue id"}}
     end
   end
 
   defp fetch_comment_project_id(run) do
-    case Map.get(run, :project_id) do
-      project_id when is_binary(project_id) and project_id != "" -> {:ok, project_id}
-      _ -> {:error, %ToolError{code: "INVALID_STATE", message: "Run has no project id"}}
+    case Map.fetch(run, :project_id) do
+      {:ok, project_id} when is_binary(project_id) and project_id != "" ->
+        {:ok, project_id}
+
+      {:ok, _} ->
+        {:error, %ToolError{code: "INVALID_STATE", message: "Run project_id is malformed"}}
+
+      :error ->
+        {:error, %ToolError{code: "INVALID_STATE", message: "Run has no project id"}}
     end
   end
 

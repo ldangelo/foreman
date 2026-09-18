@@ -1657,6 +1657,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     |> Enum.join(" ")
   end
 
+  defp validate_comment_issue_id(nil), do: {:error, missing_comment_issue_id_error()}
+
   defp validate_comment_issue_id(issue_id) when is_binary(issue_id) do
     if String.trim(issue_id) == "" do
       {:error, invalid_comment_issue_id_error()}
@@ -1665,7 +1667,21 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp validate_comment_issue_id(_issue_id), do: {:error, invalid_comment_issue_id_error()}
+  defp validate_comment_issue_id(issue_id),
+    do: raise(ArgumentError, "expected binary issue_id, got: #{inspect(issue_id)}")
+
+  defp missing_comment_issue_id_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "MISSING_ARGUMENT",
+        "Issue identifier is missing.",
+        "Pass a non-nil Beads issue identifier before retrying.",
+        false
+      ),
+      nil,
+      0
+    )
+  end
 
   defp invalid_comment_issue_id_error do
     CodeMap.build_provider_error(
@@ -1680,6 +1696,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     )
   end
 
+  defp validate_comment_body(nil), do: {:error, missing_comment_body_error()}
+
   defp validate_comment_body(body) when is_binary(body) do
     if String.trim(body) == "" do
       {:error, invalid_comment_body_error()}
@@ -1688,7 +1706,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp validate_comment_body(_body), do: {:error, invalid_comment_body_error()}
+  defp validate_comment_body(body),
+    do: raise(ArgumentError, "expected binary body, got: #{inspect(body)}")
 
   defp invalid_comment_body_error do
     CodeMap.build_provider_error(
@@ -1696,6 +1715,19 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         "INVALID_TRANSITION_COMMENT",
         "Comment body must be a non-empty string.",
         "Pass a composed Work Log comment body before retrying.",
+        false
+      ),
+      nil,
+      0
+    )
+  end
+
+  defp missing_comment_body_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "MISSING_ARGUMENT",
+        "Comment body is missing.",
+        "Pass a non-nil comment body string before retrying.",
         false
       ),
       nil,

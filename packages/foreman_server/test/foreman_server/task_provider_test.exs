@@ -31,6 +31,14 @@ defmodule ForemanServer.TaskProviderTest do
   test "comment result is a typed struct with enforced keys" do
     assert_raise ArgumentError, fn -> struct!(Comment, %{status: "comment_added"}) end
 
+    assert_raise KeyError, fn ->
+      struct!(Comment, %{
+        provider_issue_id: "task-1",
+        status: "comment_added",
+        unexpected: true
+      })
+    end
+
     assert %Comment{provider_issue_id: "task-1", status: "comment_added"} =
              struct!(Comment, %{provider_issue_id: "task-1", status: "comment_added"})
   end

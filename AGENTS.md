@@ -728,7 +728,7 @@ indistinguishable from a client typo.
 - `CommandRouter.aggregate_module_for/1` has `"inbox:"` clause → routes to InboxThread
 - Event structs `InboxMessageAppended` / `InboxDeliveryUpdated` under `lib/foreman_server/events/`
 - `ProjectionStore` handles both events; exposes `inbox_thread/1` and `list_inbox_threads/0`
-- MCP tools `foreman_inbox_get` and write-gated `foreman_inbox_send` exist; `foreman_inbox_send` dispatches public operator `inbox.send` through `CommandGateway`, while `inbox.delivery.update` remains system-only.
+- MCP tools `foreman_inbox_get`, write-gated `foreman_inbox_send`, and write-gated `foreman_task_add_comment` exist; `foreman_inbox_send` dispatches public operator `inbox.send` through `CommandGateway`, while `foreman_task_add_comment` calls `TaskProvider.comment/3` directly via the adapter registry and does not route through `CommandGateway` or the `Task` aggregate.
 
 The per-run operator inbox is functional. Public run-progress writes use MCP `foreman_inbox_send` only when `allow_workflow_writes: true`; trusted OTP automation may still use `dispatch_system` for internal `inbox.send` / `inbox.delivery.update`.
 
@@ -1764,7 +1764,7 @@ files exist under `lib/`; see `docs/TRD/TRD-2026-8030852f-foreman-kata-task-prov
 @callback complete(issue_id :: String.t(), opts :: keyword()) :: {:ok, Issue.t() | :terminal} | {:error, ProviderError.t()}
 @callback fail(issue_id :: String.t(), reason :: String.t(), opts :: keyword()) :: {:ok, :reopened} | {:error, ProviderError.t()}
 @callback reopen(issue_id :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
-@callback annotate(issue_id :: String.t(), body :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback comment(issue_id :: String.t(), body :: String.t(), opts :: keyword()) :: {:ok, Comment.t()} | {:error, ProviderError.t()}
 @callback set_priority(issue_id :: String.t(), priority :: 0..4, opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
 @callback set_assignee(issue_id :: String.t(), actor :: String.t() | nil, opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
 @callback list_dependencies(issue_id :: String.t(), opts :: keyword()) :: {:ok, [String.t()]} | {:error, ProviderError.t()}
