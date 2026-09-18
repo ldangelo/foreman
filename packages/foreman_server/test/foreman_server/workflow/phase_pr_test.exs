@@ -54,8 +54,9 @@ defmodule ForemanServer.Workflow.PhasePRTest do
   end
 
   test "stack_pr push fires on every phase, including reuses of an open PR" do
-    # Regression guard for foreman-2jru. Without unconditional push_head,
-    # every stack_pr phase after the first records status=existing without
+    # Bug: PhasePR.create_or_reuse/1 ran `push_head(request)` only as a
+    # one-shot; on every later `stack_pr` phase, matching open PRs
+    # short-circuited to `{:ok, %Record{status: "existing"}}` WITHOUT
     # shipping the phase's commits to the remote — leaving the PR diff
     # stuck at the first phase's diff. The bug hit every prd.yaml run with
     # 2+ stack_pr phases.
@@ -73,9 +74,27 @@ defmodule ForemanServer.Workflow.PhasePRTest do
         {open_json, 0}
     end
 
-    PhasePR.maybe_create(request(%{phase_index: 1, phase_name: "refine-prd", command_runner: runner}))
-    PhasePR.maybe_create(request(%{phase_index: 4, phase_name: "refine-trd", command_runner: runner}))
-    PhasePR.maybe_create(request(%{phase_index: 5, phase_name: "implement-trd", command_runner: runner}))
+    # Every reuse must explicitly return :existing — not just push. A
+    # silent status change (e.g. an earlier :created) would let this test
+    # pass while every reuse was actually being treated as a fresh PR,
+    # which would mask a regression to the short-circuit-only path the
+    # fix removes.
+    request_i = fn i ->
+      request(%{
+        phase_index: i,
+        phase_name: "refine-prd",
+        command_runner: runner
+      })
+    end
+
+    assert {:ok, %PhasePR.Record{status: "existing", phase_index: 1}} =
+             PhasePR.maybe_create(request_i.(1))
+
+    assert {:ok, %PhasePR.Record{status: "existing", phase_index: 4}} =
+             PhasePR.maybe_create(request_i.(4))
+
+    assert {:ok, %PhasePR.Record{status: "existing", phase_index: 5}} =
+             PhasePR.maybe_create(request_i.(5))
 
     assert_received :pushed
     assert_received :pushed
