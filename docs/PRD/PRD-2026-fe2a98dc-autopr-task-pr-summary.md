@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-fe2a98dc
 label: prd-autopr-task-pr-summary
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 12
 total_acceptance_criteria: 27
-readiness_score: 4.3
+readiness_score: 4.8
 ---
 
 # PRD: Include Task Context in AutoPR-Generated PR Summaries
@@ -29,7 +29,7 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **Include bead/task title and
 | Acceptance criteria coverage | 12/12 (100%) |
 | Risk flags | 5 |
 | Dependencies | 10 |
-| Open ambiguity markers | 3 |
+| Open ambiguity markers | 0 |
 
 ## Acceptance Criteria Summary
 
@@ -54,7 +54,7 @@ Foreman AutoPR currently creates GitHub PRs whose title and body identify only t
 
 This product changes AutoPR output so PR reviewers see the task or bead title, description, and traceability identifiers directly in the generated PR summary. The existing no-task fallback must remain valid and must preserve today's `feat(run): <run_id>` title/body shape for ad-hoc runs that have no task context.
 
-Foreman mode auto-selected STANDARD depth. Clarifying interviews were skipped; unresolved product decisions are marked inline with explicit clarification markers.
+Foreman mode auto-selected STANDARD depth. Clarifying interviews were skipped; refinement resolved the remaining product decisions with explicit default policies for PR title format, task traceability rendering, and task description bounds.
 
 ## 2. Background and Evidence
 
@@ -69,6 +69,7 @@ Problem evidence from source-checked input:
 - `AutoPR.context()` contains `run_id`, `base_branch`, `artifact_path`, `head_branch`, and `cwd`, but no task title, description, or task id.
 - `RunExecutor.auto_pr/1` builds the AutoPR context in `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex` with `state.task` already in scope.
 - `ForemanServer.Aggregates.Task.State` already carries `:title` and `:description`.
+- Task projections can also carry provider-facing `external_id`/`external_link` fields for Beads traceability.
 - Task ids can map to Beads ids such as `beads:foreman:foreman-w95o`, giving reviewers a path back to `br show <id>` when available.
 
 ### 2.2 Current codebase shape
@@ -125,8 +126,9 @@ Needs the change to respect typed boundaries, preserve ad-hoc fallback behavior,
 - STANDARD PRD depth is sufficient.
 - This is a Foreman server behavior change, not a CLI-only feature.
 - `state.task.title` and `state.task.description` are the canonical in-process source at finalization time.
-- Task id inclusion is desirable when a usable id exists.
+- Task id inclusion is required when a usable id exists; provider-facing Beads ids should be shown separately from Foreman's internal `task_id` when both are available.
 - Ad-hoc work-submit style runs may not have meaningful title/description and must continue to create valid PRs.
+- Task-backed PR titles should use `feat(task): <task title>` with deterministic truncation rather than a bare task title, preserving a conventional PR-title prefix.
 
 ## 6. Requirements
 
@@ -141,7 +143,7 @@ Risk: Task metadata can silently disappear if context keys are informal or dupli
 `RunExecutor` MUST pass task summary metadata into `AutoPR.maybe_create_pr/1` when available.
 
 - AC-001-1: Given `state.task` has a non-blank title and description, when `RunExecutor.auto_pr/1` builds the AutoPR context, then the context includes task title and task description sourced from `state.task`.
-- AC-001-2: Given `state.task` has a usable task id, when AutoPR context is built, then the context includes that id for traceability.
+- AC-001-2: Given `state.task` has a usable internal task id and/or provider-facing external id, when AutoPR context is built, then the context includes those identifiers as distinct optional typed fields for traceability.
 - AC-001-3: Given any task field is nil, blank, or absent, when AutoPR context is built, then AutoPR receives nil/absent normalized values and does not crash.
 
 ### REQ-002: Build PR title from task title when available
@@ -152,9 +154,9 @@ Risk: Unbounded or malformed task titles can produce unusable GitHub PR titles.
 
 AutoPR MUST use the task title as the primary PR title input when it is present and non-blank.
 
-- AC-002-1: Given a task title `Include bead/task title and description in AutoPR-generated PR summary`, when AutoPR opens the PR, then the GitHub PR title includes that task title instead of only `feat(run): <run_id>`.
+- AC-002-1: Given a task title `Include bead/task title and description in AutoPR-generated PR summary`, when AutoPR opens the PR, then the GitHub PR title is `feat(task): Include bead/task title and description in AutoPR-generated PR summary` instead of only `feat(run): <run_id>`.
 - AC-002-2: Given the task title is nil, blank, or whitespace-only, when AutoPR opens the PR, then the title remains exactly `feat(run): <run_id>`.
-- AC-002-3: Given a task title exceeds GitHub/operator-friendly length, when AutoPR builds the title, then it applies a deterministic safe truncation or prefix policy [NEEDS CLARIFICATION: Should the title be exactly the task title, `feat(task): <task title>`, or a truncated `feat(task): <task title>` format?].
+- AC-002-3: Given a task title exceeds operator-friendly length, when AutoPR builds the title, then it emits `feat(task): <trimmed title>` capped at 120 visible characters total, truncating the title portion deterministically with a trailing ellipsis while preserving the `feat(task): ` prefix.
 
 ### REQ-003: Add task context section to PR body
 
@@ -186,7 +188,7 @@ Complexity: Medium
 AutoPR MUST include usable task traceability in the PR body when available.
 
 - AC-005-1: Given a task id exists, when AutoPR creates the PR body, then the task context section includes that id.
-- AC-005-2: Given the task id is a Beads-style id or provider-facing id, when rendered, then the body gives reviewers enough information to navigate back to the task [NEEDS CLARIFICATION: Should the PR body include a literal `br show <id>` command, a plain id, or both?].
+- AC-005-2: Given a provider-facing Beads id or Beads-style task id exists, when rendered, then the body includes both the plain id and a literal `br show <id>` command so reviewers can navigate back to the task.
 
 ### REQ-006: Keep review-findings and artifact sections intact
 
@@ -207,7 +209,7 @@ Risk: Task descriptions can contain long content, secrets, or markdown that rend
 AutoPR MUST normalize task metadata before injecting it into `gh pr create` arguments.
 
 - AC-007-1: Given task title or description contains leading/trailing whitespace, when PR content is composed, then rendered fields are trimmed and blank fields are omitted.
-- AC-007-2: Given task description is very long, when PR body is composed, then AutoPR applies a bounded rendering policy [NEEDS CLARIFICATION: What maximum task description length should be included in the PR body before truncation or link-only behavior?].
+- AC-007-2: Given task description exceeds 4,000 visible characters after trimming/redaction, when PR body is composed, then AutoPR includes only the first 4,000 visible characters followed by a clear truncation notice that points reviewers to the task id/Beads command for the full description.
 - AC-007-3: Given task metadata contains obvious secrets or private tokens, when PR content is composed, then implementation uses Foreman's existing redaction boundary or an equivalent PR-body redaction path before invoking `gh`.
 
 ### 6b. Verification and Compatibility
@@ -287,29 +289,29 @@ No circular dependencies identified.
 
 ## 8. Adversarial Review
 
-Foreman mode auto-applied safe resolutions where possible.
+Foreman mode auto-applied safe resolutions during refinement.
 
-1. **Title format ambiguity.** Recommended resolution: keep exact fallback `feat(run): <run_id>` and use a task-title-derived title for task-backed runs, with final prefix/truncation policy decided during refinement/TRD. Inline marker added in REQ-002.
-2. **Traceability format ambiguity.** Recommended resolution: include task id at minimum; include `br show <id>` if the id is Beads-style and docs confirm this is operator-friendly. Inline marker added in REQ-005.
-3. **Description length/safety ambiguity.** Recommended resolution: trim/redact, then bound the body section to avoid huge PR bodies. Inline marker added in REQ-007.
+1. **Title format ambiguity.** Resolved: task-backed PRs use `feat(task): <task title>` and cap the full title at 120 visible characters with deterministic ellipsis truncation; no-task fallback remains exactly `feat(run): <run_id>`.
+2. **Traceability format ambiguity.** Resolved: the PR body includes the plain task id and, for provider-facing Beads ids, a literal `br show <id>` command.
+3. **Description length/safety ambiguity.** Resolved: task descriptions are trimmed/redacted and capped at 4,000 visible characters with a truncation notice pointing to the task id/Beads command for full context.
 4. **Fallback regression risk.** Recommended resolution: make exact fallback title/body a Must requirement with tests.
 5. **Findings block regression risk.** Recommended resolution: require task context to be additive and keep artifact/findings behavior intact.
 6. **Unit-only verification gap.** Recommended resolution: require one live Beads-backed AutoPR verification with `gh pr view`.
 7. **Documentation drift risk.** Recommended resolution: require explicit documentation consideration and updates where operator behavior changes.
 
-Ambiguity scan complete: 3 items marked for clarification.
+Ambiguity scan complete: 0 items remain marked for clarification.
 
 ## 9. Implementation Readiness Gate
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4 | Covers data flow, title/body behavior, fallback, traceability, safety, tests, live verification, and docs. |
-| Testability | 5 | Acceptance criteria include exact fallback checks, composition tests, RunExecutor wiring tests, and live PR verification. |
-| Clarity | 4 | Three bounded product decisions remain marked for refinement; core behavior is clear. |
-| Feasibility | 4 | Data already exists in `state.task`; change is localized to RunExecutor/AutoPR plus tests/docs. |
-| Overall | 4.3 | READY with minor clarification markers; suitable for TRD creation/refinement. |
+| Completeness | 5 | Covers data flow, title/body behavior, fallback, traceability, safety, tests, live verification, and docs with resolved formatting/bounds policies. |
+| Testability | 5 | Acceptance criteria include exact fallback checks, composition tests, RunExecutor wiring tests, deterministic truncation checks, and live PR verification. |
+| Clarity | 5 | Remaining title, traceability, and description-bound decisions are explicit and testable. |
+| Feasibility | 4 | Data already exists in `state.task`/task projections; change is localized to RunExecutor/AutoPR plus tests/docs. |
+| Overall | 4.8 | READY; suitable for TRD creation/refinement. |
 
-Gate decision: **READY — proceed to TRD creation or PRD refinement**. The TRD/refinement should resolve the three inline clarification markers before implementation if exact title format/body limits are important.
+Gate decision: **READY — proceed to TRD creation**. The TRD should preserve the resolved title format, traceability rendering, and description bound policies.
 
 ## 10. Suggested Next Step
 
@@ -321,6 +323,13 @@ Run one of:
 ```
 
 ## 11. Changelog
+
+### 1.0.1 — 2026-09-18
+
+- Resolved title format policy as `feat(task): <task title>` capped at 120 visible characters with fallback `feat(run): <run_id>` unchanged.
+- Resolved traceability policy to include plain task ids plus `br show <id>` for provider-facing Beads ids.
+- Resolved description rendering policy to trim/redact and cap task descriptions at 4,000 visible characters with a truncation notice.
+- Updated PRD Health and readiness score from 4.3 to 4.8.
 
 ### 1.0.0 — 2026-09-18
 
