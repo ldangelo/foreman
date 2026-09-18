@@ -1191,8 +1191,10 @@ unknown runs return `NOT_FOUND`, duplicate message IDs return `ALREADY_EXISTS`,
 and policy denial returns `POLICY_REFUSED`. Bundled prompts tell agents to post
 phase start, material milestone, blocker, and phase completion notes when the
 tool is available, but never secrets, prompts, large logs, or command output,
-and never block work if the tool is denied/unavailable/fails. After editing
-bundled prompts/workflows, run `npm run build` where applicable and
+and never block work if the tool is denied/unavailable/fails. Built-in `prd`
+and `fix` command phases receive this as a worker `system_prompt` sidecar,
+leaving slash-command prompt text unchanged. After editing bundled
+prompts/workflows, run `npm run build` where applicable and
 `foreman init --force` to reinstall runtime copies.
 
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and

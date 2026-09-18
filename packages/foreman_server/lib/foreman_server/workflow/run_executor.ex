@@ -58,6 +58,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.WorkerEnvironment
   require Logger
+
+  @command_phase_inbox_progress_system_prompt """
+  Foreman operator progress: when foreman_inbox_send is available, send concise run inbox notes at phase start, material milestones, blockers, and phase completion. Use the current run_id from phase context. Do not send timer-only chatter. If foreman_inbox_send is denied, unavailable, or fails, continue the phase and mention the failed status update only if relevant. Never include prompts, credentials, secrets, large logs, or command output in inbox messages.
+  """
+
+  @command_phase_inbox_progress_targets %{
+    "prd" => MapSet.new(~w(create-prd refine-prd create-trd refine-trd implement-trd)),
+    "fix" => MapSet.new(~w(fix))
+  }
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @type state :: %{
           task: map(),
@@ -1227,7 +1236,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
               await_timeout: remaining_ms,
               cwd: cwd
             ]
-            |> maybe_put_driver_model(model),
+            |> maybe_put_driver_model(model)
+            |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec),
           project_id: project_id(state),
           env_map: env,
           result_recipient: self(),
@@ -1958,6 +1968,43 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # assigns map used by render_prompt_template/4 so manifests can reference
   # {{input.prompt}}, {{project_id}}, etc. in their command string.
   # Manifests that don't reference any variable still work (no-op).
+
+  defp maybe_put_command_phase_inbox_system_prompt(driver_opts, state, phase_spec) do
+    if command_phase_inbox_progress_covered?(state, phase_spec) do
+      Keyword.put(driver_opts, :system_prompt, command_phase_inbox_progress_system_prompt())
+    else
+      driver_opts
+    end
+  end
+
+  defp command_phase_inbox_progress_covered?(state, phase_spec) do
+    workflow_name = workflow_name_for_command_phase(state)
+    phase_name = phase_spec_name(phase_spec)
+
+    phase_action(phase_spec) == :command and
+      is_binary(workflow_name) and
+      MapSet.member?(
+        Map.get(@command_phase_inbox_progress_targets, workflow_name, MapSet.new()),
+        phase_name
+      )
+  end
+
+  defp workflow_name_for_command_phase(state) do
+    workflow_snapshot =
+      Map.get(state.task, :workflow_snapshot) || Map.get(state.task, "workflow_snapshot") || %{}
+
+    Map.get(workflow_snapshot, :workflow_name) ||
+      Map.get(workflow_snapshot, "workflow_name") ||
+      Map.get(state.task, :workflow_name) ||
+      Map.get(state.task, "workflow_name") ||
+      Map.get(state.task, :workflow_type) ||
+      Map.get(state.task, "workflow_type")
+  end
+
+  defp command_phase_inbox_progress_system_prompt do
+    String.trim(@command_phase_inbox_progress_system_prompt)
+  end
+
   defp render_command_template(nil, _state, _phase_spec, _index), do: nil
 
   defp render_command_template(command, state, phase_spec, index)
@@ -3514,6 +3561,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def __foreman_env_for_test__(state, worktree_record, artifact_path, model),
     do: foreman_env(state, worktree_record, artifact_path, model)
+
+  def __command_phase_inbox_progress_covered_for_test__(state, phase_spec),
+    do: command_phase_inbox_progress_covered?(state, PhaseSpec.normalize(phase_spec))
+
+  def __command_phase_inbox_progress_system_prompt_for_test__,
+    do: command_phase_inbox_progress_system_prompt()
+
+  def __maybe_put_command_phase_inbox_system_prompt_for_test__(driver_opts, state, phase_spec),
+    do:
+      maybe_put_command_phase_inbox_system_prompt(
+        driver_opts,
+        state,
+        PhaseSpec.normalize(phase_spec)
+      )
 
   @doc false
   def __worktree_task_id_for_test__(task, run_id),
