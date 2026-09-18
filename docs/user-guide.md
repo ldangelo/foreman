@@ -917,12 +917,13 @@ true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 A `stack_pr: true` phase runs after that phase's normal commit decision and
 before `PhaseCompleted`. It targets the recorded run base branch and uses the
 same Foreman run branch as the head. Because every tagged phase shares that
-head/base pair, GitHub usually exposes one open PR; later tagged phases reuse
-that PR URL and the diff is cumulative from the run base, not an isolated
-per-phase branch diff. If the head has no commits beyond the run base, Foreman
-records a phase PR no-op and continues. Push/create failures and closed matching
-PRs fail the responsible phase with typed details. A created or reused phase PR
-record suppresses the final AutoPR; no-op records do not.
+head/base pair, GitHub usually exposes one open PR; later tagged phases push the
+run branch again before reusing that PR URL, so the remote diff stays cumulative
+from the run base instead of silently showing an older phase's head. If the head
+has no commits beyond the run base, Foreman records a phase PR no-op and
+continues. Push/create failures and closed matching PRs fail the responsible
+phase with typed details. A created or reused phase PR record suppresses the
+final AutoPR; no-op records do not.
 
 **PR bodies carry unresolved review findings.** Both PR-opening paths (final
 `AutoPR` and a `stack_pr: true` phase PR) append a `## Unresolved review

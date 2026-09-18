@@ -157,7 +157,7 @@ timeout in minutes — `0`, or an omitted key, both mean no timeout (the
 default). Declare a positive value to opt a phase back into a deadline.
 The default run branch is `foreman/<task-id>/<run-id>` — `<task-id>` is
 the provider-facing identifier when available (falls back to `<run-id>` for ad-hoc),
-so each retry of the same task gets a unique branch. `stack_pr:` reuses the existing head/base PR when present, records
+so each retry of the same task gets a unique branch. `stack_pr:` reuses the existing head/base PR when present, pushes before reuse so provider diffs stay current, records
 no-op when there are no committed diffs, and suppresses final AutoPR only for
 created/reused phase PR records. Full operator semantics live in
 [`docs/user-guide.md`](./docs/user-guide.md#pr-creation-and-merge-reconciliation).
