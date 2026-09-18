@@ -1308,10 +1308,29 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end
 
         {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
-          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms do
-            {:error, :worker_timeout}
-          else
-            {:error, :worker_died_no_result}
+          # DOWN arrived first. Check if a worker_result is already queued
+          # before returning timeout/died_no_result. A non-blocking receive
+          # with after 0 handles the race where the worker completed and sent
+          # the result, but the DOWN was processed first.
+          receive do
+            {:worker_result, result} ->
+              if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms and
+                   not completed_worker_success?(result) do
+                Logger.warning(
+                  "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
+                )
+
+                {:error, :worker_timeout}
+              else
+                result
+              end
+          after
+            0 ->
+              if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms do
+                {:error, :worker_timeout}
+              else
+                {:error, :worker_died_no_result}
+              end
           end
       after
         timeout_ms ->

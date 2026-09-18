@@ -541,6 +541,33 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              )
   end
 
+  # CodeRabbit review: the :DOWN branch must check for a queued worker_result
+  # before returning timeout/died_no_result, to handle the race where the worker
+  # completed, sent the result, but DOWN arrived at the mailbox first.
+  test "wait_for_worker_result/4 accepts queued success when DOWN arrives first" do
+    # A spawned process that exits immediately sends DOWN to monitors
+    launch_pid = spawn(fn -> :ok end)
+
+    # Queue DOWN first, then the result - tests that the :DOWN branch finds
+    # the already-queued result via non-blocking receive
+    ref = Process.monitor(launch_pid)
+    # Flush the DOWN that arrives immediately after monitoring
+    receive do: ({:DOWN, ^ref, :process, ^launch_pid, :normal} -> :ok)
+    # Now manually queue DOWN first, then the result
+    send(self(), {:DOWN, ref, :process, launch_pid, :normal})
+    send(self(), {:worker_result, {:ok, "success before down"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:ok, "success before down"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-down-first",
+               "run-down-first",
+               deadline_ms
+             )
+  end
+
   test "wait_for_worker_result/4 accepts a worker result delivered before the deadline" do
     {:ok, launch_pid} = Agent.start_link(fn -> :ok end)
     on_exit(fn -> if Process.alive?(launch_pid), do: Agent.stop(launch_pid) end)
