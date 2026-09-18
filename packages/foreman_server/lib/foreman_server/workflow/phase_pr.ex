@@ -76,6 +76,18 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   @type result :: {:ok, %Record{}} | {:error, %Error{}}
 
+  @doc """
+  Creates or reconciles a phase PR record for this phase.
+
+  Publishes the run head branch, then finds or creates a GitHub PR targeting
+  the recorded run base branch from the same head. Each phase in a run records
+  its own outcome; the underlying PR is shared across all phases in the run
+  because they share the same base/head pair.
+
+  Returns `{:ok, record}` on success, `{:error, error}` on any failure.
+  A `:noop` record (no commits ahead) does not suppress final AutoPR.
+  A `:created` or `:existing` record suppresses final AutoPR.
+  """
   @spec maybe_create(%Request{}) :: result()
   def maybe_create(%Request{} = request) do
     with :ok <- validate_request(request),
