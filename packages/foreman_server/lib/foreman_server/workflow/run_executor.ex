@@ -1250,47 +1250,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         case Overwatch.start_phase(phase, launch_opts) do
           {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
-            # Recompute the receive ceiling AFTER Overwatch.start_phase/2
-            # returns: any time spent in worker admission, LaunchWorker
-            # supervision, or provider handshake has already elapsed
-            # against deadline_ms, so the receive budget reflects only
-            # post-start wall time. Pre-computing before dispatch would
-            # let worker-setup eat into the budget.
-            remaining_after_start_ms = remaining_from(deadline_ms)
-
-            # Deadlines already exhausted at the receive boundary never
-            # reach wait_for_worker_result/4: its `after N` clause only
-            # schedules a future check, so passing `0` would trip its
-            # timeout branch on the same tick but lose the explicit
-            # "budget exhausted before receive" signal here. Surface it
-            # synchronously with the same warning operator log.
-            case remaining_after_start_ms do
-              ms when ms > 0 ->
-                # Pass the absolute deadline (not the receive budget):
-                # wait_for_worker_result/4 validates wall-clock time
-                # against it inside the receive itself, so a result
-                # already queued in the mailbox when the receive starts
-                # (e.g. worker finished during the gap between this check
-                # and entering the function) is still rejected as late
-                # rather than accepted as success (CodeRabbit review).
-                wait_for_worker_result(launch_pid, worker_id, state.run_id, deadline_ms)
-
-              _ ->
-                Logger.warning(
-                  "[#{state.run_id}] worker #{worker_id} deadline exhausted before receive; supervisor will reap launch process"
-                )
-
-                # Schedule non-blocking teardown so the supervised
-                # LaunchWorker is stopped even on this fast path, which
-                # never reaches wait_for_worker_result/4's own cleanup
-                # (CodeRabbit review). Detached, for the same
-                # self-deadlock reason documented on the call below.
-                Task.start(fn ->
-                  Overwatch.WorkerSupervisor.stop_worker(worker_id, state.run_id)
-                end)
-
-                {:error, :worker_timeout}
-            end
+            # Always enter wait_for_worker_result/4, even when the budget is
+            # exhausted at the receive boundary. A worker_result can already be
+            # queued after the worker completed but before final lifecycle event
+            # dispatch returned; the receive owns the distinction between an
+            # already-delivered success and no result before the deadline.
+            wait_for_worker_result(launch_pid, worker_id, state.run_id, deadline_ms)
 
           {:error, {:already_started, _pid}} ->
             {:error, :worker_already_started}
@@ -1315,15 +1280,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # result message is the signal, the DOWN is just cleanup.
   #
   # `deadline_ms` is the absolute wall-clock budget (System.system_time
-  # milliseconds), not a relative timeout: the receive validates the
-  # current time against it BEFORE accepting a queued `{:worker_result,
-  # result}`, so a result already sitting in the mailbox when this
-  # receive starts — because wall time crossed deadline_ms during the
-  # gap between the caller's own check and this call — is rejected as
-  # late instead of accepted as success (CodeRabbit review). The
-  # caller already short-circuits a deadline exhausted before this call,
-  # so in practice `deadline_ms` is still in the future on entry, but
-  # the receive itself never trusts that.
+  # milliseconds), not a relative timeout. The deadline limits how long this
+  # process waits for a result; it does not invalidate a success that is already
+  # queued in the RunExecutor mailbox. That queued-result window is real: the
+  # worker handles `:agent_done` by synchronously emitting logs and WorkerExited
+  # before sending `{:worker_result, result}`. If that final event dispatch runs
+  # across the phase deadline, the worker still completed and its non-empty
+  # success result is the authoritative completion signal.
   @spec wait_for_worker_result(pid(), String.t(), String.t(), timeout()) ::
           {:ok, String.t()} | {:error, term()}
   defp wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms) do
@@ -1333,9 +1296,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
     result =
       receive do
         {:worker_result, result} ->
-          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms do
+          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms and
+               not completed_worker_success?(result) do
             Logger.warning(
-              "[#{run_id}] worker #{worker_id} result arrived after deadline; supervisor will reap launch process"
+              "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
             )
 
             {:error, :worker_timeout}
@@ -1344,7 +1308,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end
 
         {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
-          {:error, :worker_died_no_result}
+          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms do
+            {:error, :worker_timeout}
+          else
+            {:error, :worker_died_no_result}
+          end
       after
         timeout_ms ->
           Logger.warning(
@@ -1413,6 +1381,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     result
   end
+
+  defp completed_worker_success?({:ok, output}) when is_binary(output),
+    do: String.trim(output) != ""
+
+  defp completed_worker_success?({:ok, _output}), do: true
+  defp completed_worker_success?({:error, _reason}), do: false
 
   # `policy.timeout_ms` from `FailurePolicy.resolve/2` is either a positive
   # integer (milliseconds) or `:infinity` (`timeout_minutes: 0`, or no

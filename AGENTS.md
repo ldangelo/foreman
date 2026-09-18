@@ -110,6 +110,8 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
+RunExecutor phase completion rule: a phase deadline limits waiting for a worker result; it must not discard a `{:worker_result, {:ok, non_empty_output}}` already queued in the executor mailbox after the worker completed. Agent success remains authoritative even if final lifecycle dispatch crosses the wall-clock deadline; queued errors or missing results may still time out.
+
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
