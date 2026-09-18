@@ -39,7 +39,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCommentTest do
 
   test "comment/3 writes through SystemBrRunner and returns typed comment", %{temp_dir: temp_dir} do
     db_path = "/abs/path/beads.db"
-    body = "Work Log\nWorkflow: fix\nPhase: develop\n\nWork performed:\nDone"
+    body = "Work Log: Workflow fix - Phase develop - Work performed: Done"
 
     expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
       assert request == {:comments_add, %{id: "task-1", body: body}}
@@ -57,15 +57,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCommentTest do
     end)
 
     assert {:ok, %Comment{provider_issue_id: "task-1", status: "comment_added"}} =
-             BeadsAdapter.comment("task-1", body, %{database_path: db_path})
+             BeadsAdapter.annotate("task-1", body, %{database_path: db_path})
   end
 
   test "comment/3 rejects invalid id/body before invoking br" do
     assert {:error, %ProviderError{code: "INVALID_TASK_ID"}} =
-             BeadsAdapter.comment("", "body", :ignored)
+             BeadsAdapter.annotate("", "body", :ignored)
 
     assert {:error, %ProviderError{code: "INVALID_TRANSITION_COMMENT"}} =
-             BeadsAdapter.comment("task-1", "", :ignored)
+             BeadsAdapter.annotate("task-1", "", :ignored)
   end
 
   test "comment/3 maps br error envelopes safely" do
@@ -85,7 +85,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCommentTest do
     end)
 
     assert {:error, %ProviderError{} = provider_error} =
-             BeadsAdapter.comment("task-1", "body", %{database_path: "/abs/path.db"})
+             BeadsAdapter.annotate("task-1", "body", %{database_path: "/abs/path.db"})
 
     assert provider_error.code == "BR_DATABASE_LOCKED"
     assert provider_error.context.command == "br comments add"

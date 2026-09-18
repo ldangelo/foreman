@@ -1212,7 +1212,7 @@ defmodule ForemanServer.MCP.Tools do
          {:ok, external_id} <- fetch_comment_external_id(task),
          {:ok, project_id} <- fetch_comment_project_id(run),
          {:ok, provider_module, provider_config} <- fetch_comment_provider_config(project_id),
-         {:ok, _comment} <- provider_module.comment(external_id, body, provider_config) do
+         {:ok, _comment} <- provider_module.annotate(external_id, body, provider_config) do
       duration_us = System.monotonic_time(:microsecond) - start_us
       Telemetry.mcp_tool_call(duration_us, "foreman_task_add_comment", :ok)
 

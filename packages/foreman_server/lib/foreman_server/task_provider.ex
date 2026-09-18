@@ -99,5 +99,5 @@ defmodule ForemanServer.TaskProvider do
   @callback add_dependency(issue_id(), issue_id(), project_config()) :: :ok | {:error, term()}
 
   @doc "Append a fully composed comment/work-log body to a provider issue."
-  @callback comment(issue_id(), comment_body(), project_config()) :: comment_result()
+  @callback annotate(issue_id(), comment_body(), project_config()) :: comment_result()
 end

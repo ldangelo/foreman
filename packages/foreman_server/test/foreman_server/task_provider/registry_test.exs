@@ -45,7 +45,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
-    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+    def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
 
     @impl true
     def create(_attrs, _project_config),
@@ -92,7 +92,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
-    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+    def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
 
     @impl true
     def create(_attrs, _project_config),
@@ -139,7 +139,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
-    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+    def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
 
     @impl true
     def create(_attrs, _project_config),
@@ -186,7 +186,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
-    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+    def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
 
     @impl true
     def create(_attrs, _project_config),

@@ -294,5 +294,5 @@ defmodule ForemanServer.ActorInFlightCacheTest.StubProvider do
   def add_dependency(_project_id, _id, _depends_on), do: :ok
 
   @impl true
-  def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+  def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
 end

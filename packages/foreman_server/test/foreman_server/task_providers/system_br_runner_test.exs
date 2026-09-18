@@ -123,7 +123,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       fn ->
         assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
                  SystemBrRunner.cmd(
-                   {:comments_add, %{id: "task-1", body: "Work Log\nDone"}},
+                   {:comments_add, %{id: "task-1", body: "Work Log: Done"}},
                    %{database_path: "/tmp/cached.db"}
                  )
 
@@ -133,7 +133,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
                    "add",
                    "task-1",
                    "--message",
-                   "Work Log\nDone",
+                  "Work Log: Done",
                    "--json",
                    "--db",
                    "/tmp/cached.db"

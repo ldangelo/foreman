@@ -23,7 +23,7 @@ defmodule ForemanServer.TaskProviderTest do
     assert {:reopen, 3} in callbacks
     assert {:set_priority, 3} in callbacks
     assert {:add_dependency, 3} in callbacks
-    assert {:comment, 3} in callbacks
+    assert {:annotate, 3} in callbacks
     assert {:create, 2} in callbacks
     assert length(callbacks) == 13
   end

@@ -46,7 +46,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         :claim,
         :close,
         :reopen,
-        :comment,
+        :annotate,
         :set_priority,
         :set_assignee,
         :list_dependencies,
@@ -1761,7 +1761,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def comment(issue_id, body, project_config) do
+  def annotate(issue_id, body, project_config) do
     with :ok <- validate_comment_issue_id(issue_id),
          :ok <- validate_comment_body(body),
          {:ok, database_path} <- fetch_database_path(project_config) do

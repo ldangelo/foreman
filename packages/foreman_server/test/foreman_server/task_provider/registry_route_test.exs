@@ -56,7 +56,7 @@ defmodule ForemanServer.TaskProvider.RegistryRouteTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
-    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+    def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
   end
 
   defmodule UnavailableStub do
@@ -107,7 +107,7 @@ defmodule ForemanServer.TaskProvider.RegistryRouteTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
-    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+    def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
   end
 
   setup_all do
