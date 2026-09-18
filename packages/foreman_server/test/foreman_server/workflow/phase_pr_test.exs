@@ -39,11 +39,12 @@ defmodule ForemanServer.Workflow.PhasePRTest do
     assert record.head_branch == "foreman/run-1"
   end
 
-  test "reuses an existing open head/base PR" do
+  test "reuses an existing open head/base PR and still pushes the head" do
     open_json = ~s([{"url":"https://github.com/acme/repo/pull/7","number":7}])
 
     runner = fn
       "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+      "git", ["push", "-u", "origin", "foreman/run-1"], _opts -> {"", 0}
       "gh", ["pr", "list", "--state", "open" | _], _opts -> {open_json, 0}
     end
 
@@ -52,11 +53,41 @@ defmodule ForemanServer.Workflow.PhasePRTest do
     assert record.pr_url == "https://github.com/acme/repo/pull/7"
   end
 
+  test "stack_pr push fires on every phase, including reuses of an open PR" do
+    # Regression guard for foreman-2jru. Without unconditional push_head,
+    # every stack_pr phase after the first records status=existing without
+    # shipping the phase's commits to the remote — leaving the PR diff
+    # stuck at the first phase's diff. The bug hit every prd.yaml run with
+    # 2+ stack_pr phases.
+    open_json = ~s([{"url":"https://github.com/acme/repo/pull/7","number":7}])
+    test_pid = self()
+
+    runner = fn
+      "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+
+      "git", ["push", "-u", "origin", "foreman/run-1"], _opts ->
+        send(test_pid, :pushed)
+        {"", 0}
+
+      "gh", ["pr", "list", "--state", "open" | _], _opts ->
+        {open_json, 0}
+    end
+
+    PhasePR.maybe_create(request(%{phase_index: 1, phase_name: "refine-prd", command_runner: runner}))
+    PhasePR.maybe_create(request(%{phase_index: 4, phase_name: "refine-trd", command_runner: runner}))
+    PhasePR.maybe_create(request(%{phase_index: 5, phase_name: "implement-trd", command_runner: runner}))
+
+    assert_received :pushed
+    assert_received :pushed
+    assert_received :pushed
+  end
+
   test "closed matching PR is a typed error" do
     closed_json = ~s([{"url":"https://github.com/acme/repo/pull/8","number":8}])
 
     runner = fn
       "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+      "git", ["push", "-u", "origin", "foreman/run-1"], _opts -> {"", 0}
       "gh", ["pr", "list", "--state", "open" | _], _opts -> {"[]", 0}
       "gh", ["pr", "list", "--state", "closed" | _], _opts -> {closed_json, 0}
     end
