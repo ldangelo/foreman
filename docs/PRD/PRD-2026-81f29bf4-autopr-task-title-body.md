@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-81f29bf4
 label: prd-autopr-task-title-body
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 12
 total_acceptance_criteria: 31
-readiness_score: 4.3
+readiness_score: 4.7
 ---
 
 # PRD: AutoPR PR title/description actual implementation
@@ -29,8 +29,8 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description
 | Acceptance criteria coverage | 12/12 (100%) |
 | Risk flags | 7 |
 | Dependencies | 9 |
-| Open ambiguity markers | 6 |
-| TRD decisions required | 6 |
+| Open ambiguity markers | 0 |
+| TRD decisions required | 0 |
 
 ## Acceptance Criteria Summary
 
@@ -55,7 +55,7 @@ Foreman's final AutoPR currently creates a generic PR title, `feat(run): <run_id
 
 This is implementation work for the previously closed PR #513 design. The prior PRD/TRD paths named in the task are not present in this worktree, so they are treated as external investigation artifacts, not as source files to ship. This PRD does not cover `PhasePR` per-phase title behavior or the push-before-reuse bug tracked separately by foreman-2jru.
 
-Foreman mode auto-selected STANDARD depth. Interviews were skipped under `--foreman`; unresolved product choices are marked inline with `[NEEDS CLARIFICATION: ...]` rather than guessed.
+Foreman mode auto-selected STANDARD depth. This refinement resolved the prior inline clarification markers with best-effort product defaults and left implementation approval for a later step.
 
 ## 2. Background and Evidence
 
@@ -120,9 +120,9 @@ Needs the implementation to stay inside existing typed boundaries, preserve curr
 
 - The Task aggregate is the source of truth for the final AutoPR title and body.
 - The final AutoPR should prefer task metadata from `state.task`; if a plan context task is already the canonical source in the run state, the TRD must verify that exact source before implementation.
-- Existing AutoPR artifact findings support may still need preservation [NEEDS CLARIFICATION: Should unresolved review findings and artifact links be appended to the task description body, or should the PR body be exactly the task description?].
-- Phase prefix behavior remains unresolved [NEEDS CLARIFICATION: Should final AutoPR ever prefix the task title with a phase/workflow prefix, or must the title equal `Task.title` exactly?].
-- Missing task metadata should not silently produce a malformed PR [NEEDS CLARIFICATION: When `Task.description` is blank, should AutoPR fall back to the current generated body or fail finalization?].
+- Final AutoPR body MUST be exactly the Task description for task-backed runs. Existing generated run/artifact sections and unresolved review findings MUST NOT be appended to the body unless a later approved requirement explicitly changes that behavior.
+- Final AutoPR title MUST equal `Task.title` exactly for task-backed runs. It MUST NOT add phase, workflow, run, or provider-id prefixes.
+- Missing task metadata policy: task-backed runs with blank/invalid `Task.title` or `Task.description` MUST fail final AutoPR with a typed validation error. Runs with no Task aggregate preserve the existing legacy generated title/body fallback.
 
 ## 6. Requirements
 
@@ -158,11 +158,11 @@ Priority: Must
 Complexity: Medium  
 Risk: Body replacement may remove existing artifact/review finding context if not deliberate.
 
-Final AutoPR MUST use the Task description as the GitHub PR body for run-level PRs [NEEDS CLARIFICATION: Should AutoPR preserve the current generated run/artifact section in addition to the task description?].
+Final AutoPR MUST use the Task description as the exact GitHub PR body for task-backed run-level PRs. It MUST NOT append the current generated run/artifact section or unresolved review findings.
 
-- AC-003-1: Given a Task description, when AutoPR executes `gh pr create`, then the `--body` argument includes the Task description.
+- AC-003-1: Given a Task description, when AutoPR executes `gh pr create`, then the `--body` argument equals the Task description.
 - AC-003-2: Given the Task description spans multiple lines and contains Markdown, when the body is passed to `gh`, then line breaks and Markdown are preserved.
-- AC-003-3: Given existing unresolved review findings extraction is enabled for artifacts, when task description is used as body, then the TRD explicitly decides and tests whether findings are appended, omitted, or moved.
+- AC-003-3: Given existing unresolved review findings extraction is enabled for artifacts, when task description is used as body, then findings and artifact links are omitted from the PR body and existing artifact files remain the source for that detail.
 
 ### REQ-004: Preserve existing AutoPR eligibility and branch behavior
 
@@ -182,10 +182,10 @@ Priority: Must
 Complexity: Medium  
 Risk: Silent fallback can create a plausible but wrong PR.
 
-AutoPR MUST define explicit behavior for absent or blank task title/description rather than accidentally producing partial metadata.
+AutoPR MUST define explicit behavior for absent or blank task title/description rather than accidentally producing partial metadata. For task-backed runs, blank or non-string task title/description is invalid and MUST fail with a typed validation error. For runs with no Task aggregate, existing generated AutoPR title/body fallback remains unchanged for backward compatibility.
 
-- AC-005-1: Given task title is absent or blank, when final AutoPR would create a PR, then behavior follows an explicit tested policy [NEEDS CLARIFICATION: Should blank `Task.title` fail finalization, use the current `feat(run): <run_id>` fallback, or use a provider-facing task id?].
-- AC-005-2: Given task description is absent or blank, when final AutoPR would create a PR, then behavior follows an explicit tested policy and logs enough context for an operator to diagnose without exposing sensitive body text.
+- AC-005-1: Given a task-backed run has an absent, non-string, or blank `Task.title`, when final AutoPR would create a PR, then finalization fails with a typed metadata validation error and does not call `gh pr create`.
+- AC-005-2: Given a task-backed run has an absent, non-string, or blank `Task.description`, when final AutoPR would create a PR, then finalization fails with a typed metadata validation error and logs enough context for an operator to diagnose without exposing sensitive body text.
 
 ### 6b. Boundary preservation
 
@@ -307,14 +307,14 @@ No circular dependencies identified.
 
 ## 9. Adversarial Self-Review
 
-1. **Issue:** Existing generated body includes run artifact and unresolved review findings; replacing it with task description could hide useful review data.  
-   **Resolution:** Marked explicit clarification in REQ-003 and required TRD decision/test coverage.
+1. **Issue:** Existing generated body includes run artifact and unresolved review findings; replacing it with task description could hide useful review data.
+   **Resolution:** Resolved to exact Task description body for task-backed runs. Artifact files remain the source for run artifacts/findings unless a later requirement adds append behavior.
 
-2. **Issue:** The task description says "phase prefix override? TBD", so exact title composition is unresolved.  
-   **Resolution:** Marked clarification in assumptions and limited scope to final AutoPR, not PhasePR.
+2. **Issue:** The task description says "phase prefix override? TBD", so exact title composition was unclear.
+   **Resolution:** Resolved to exact `Task.title` for final AutoPR. No phase/workflow/run/provider prefix is added.
 
-3. **Issue:** Missing title/description fallback can produce plausible wrong PRs.  
-   **Resolution:** Added REQ-005 with explicit policy requirement and tests.
+3. **Issue:** Missing title/description fallback can produce plausible wrong PRs.
+   **Resolution:** Resolved to typed validation failure for task-backed runs with blank/invalid title or description, while preserving legacy generated fallback only when no Task aggregate exists.
 
 4. **Issue:** Integration test could accidentally depend on live GitHub or local Postgres credentials.  
    **Resolution:** Added REQ-007 no-network deterministic seam requirement.
@@ -330,18 +330,18 @@ No circular dependencies identified.
 
 All safe resolutions auto-applied under Foreman mode.
 
-Ambiguity scan complete: 6 items marked for clarification.
+Ambiguity scan complete: 0 items remain marked for clarification.
 
 ## 10. Implementation Readiness Gate
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4.4 | Covers metadata plumbing, composition, fallback, phase separation, tests, docs, and logging. |
-| Testability | 4.4 | Every Must/Should requirement has measurable ACs; external GitHub avoided by deterministic seams. |
-| Clarity | 4.0 | Four marked ambiguities remain for TRD/refinement, mainly title/body exact fallback and artifact/finding body composition. |
-| Feasibility | 4.5 | Builds on existing `RunExecutor` task metadata extraction and AutoPR context. |
+| Completeness | 4.7 | Covers metadata plumbing, exact composition, explicit fallback/error policy, phase separation, tests, docs, and logging. |
+| Testability | 4.7 | Every Must/Should requirement has measurable ACs; exact title/body and fallback/error policies are testable without external GitHub. |
+| Clarity | 4.8 | Prior ambiguity markers are resolved: exact title, exact body, no appended artifacts/findings, typed failure for blank task metadata, legacy fallback only for no-task runs. |
+| Feasibility | 4.6 | Builds on existing `RunExecutor` task metadata extraction and AutoPR context with a narrow validation/composition change. |
 
-Overall readiness score: **4.3**  
+Overall readiness score: **4.7**
 Gate decision: **PASS**
 
 ## 11. Suggested Next Step
@@ -351,3 +351,14 @@ Create a TRD from this PRD:
 ```sh
 /ensemble-create-trd docs/PRD/PRD-2026-81f29bf4-autopr-task-title-body.md
 ```
+
+
+## 12. Changelog
+
+### 2026-09-18 — v1.0.1
+
+- Resolved six Foreman-mode clarification markers.
+- Defined final AutoPR title as exact `Task.title` for task-backed runs.
+- Defined final AutoPR body as exact `Task.description` for task-backed runs, with no generated run/artifact/finding appendix.
+- Defined fallback/error policy: task-backed blank or invalid title/description fails with a typed validation error; no-task runs keep the existing generated AutoPR fallback.
+- Re-scored Implementation Readiness Gate from 4.3 to 4.7.
