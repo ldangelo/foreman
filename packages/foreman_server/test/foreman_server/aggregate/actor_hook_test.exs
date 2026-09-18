@@ -755,7 +755,6 @@ defmodule ForemanServer.ActorHookTest.StubProvider do
   def reopen(_project_id, _task_id, _opts), do: :ok
   @impl true
   def set_priority(_project_id, _task_id, _priority), do: :ok
-  def annotate(_project_id, _task_id, _note), do: :ok
   def set_assignee(_project_id, _task_id, _assignee), do: :ok
   @impl true
   def add_dependency(_project_id, _task_id, _depends_on), do: :ok

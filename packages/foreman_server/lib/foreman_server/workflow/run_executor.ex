@@ -60,7 +60,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   require Logger
 
   @command_phase_inbox_progress_system_prompt """
-  Foreman operator progress: when foreman_inbox_send is available, send concise run inbox notes at phase start, material milestones, blockers, and phase completion. Use the current run_id from phase context. Do not send timer-only chatter. If foreman_inbox_send is denied, unavailable, or fails, continue the phase and mention the failed status update only if relevant. Never include prompts, credentials, secrets, large logs, or command output in inbox messages.
+  Foreman operator progress: when foreman_inbox_send is available, send concise run inbox notes at phase start, material milestones, blockers, and phase completion. When foreman_task_add_comment is available, also write concise task Work Log comments at the same cadence. Use the current run_id from phase context. Use only the tool; do not run `br`, open Beads SQLite, or call provider adapter internals. Do not send timer-only chatter. If either progress tool is denied, unavailable, or fails, continue the phase and mention the failed status update only if relevant. Never include prompts, credentials, secrets, large logs, or command output in messages.
   """
 
   @command_phase_inbox_progress_targets %{

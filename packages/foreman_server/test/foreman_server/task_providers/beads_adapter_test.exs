@@ -115,8 +115,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
     assert BeadsAdapter.available?() == true
   end
 
-  test "12 callbacks are defined" do
-    assert length(@expected_callbacks) == 12
+  test "all callbacks are defined" do
     assert BeadsAdapter.behaviour_info(:callbacks) == @expected_callbacks
 
     Enum.each(@expected_callbacks, fn {name, arity} ->
