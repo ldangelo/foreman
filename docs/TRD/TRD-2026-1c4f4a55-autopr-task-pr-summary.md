@@ -2,7 +2,7 @@
 document_id: TRD-2026-1c4f4a55
 label: trd-autopr-task-pr-summary
 prd_reference: docs/PRD/PRD-2026-1c4f4a55-autopr-task-pr-summary.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 design_readiness_score: 4.8
@@ -34,7 +34,7 @@ Source PRD: `docs/PRD/PRD-2026-1c4f4a55-autopr-task-pr-summary.md` (`PRD-2026-1c
 | Tests and verification | REQ-010, REQ-011 | Use deterministic ExUnit/system-command boundary tests; live Beads/GitHub check is conditional. |
 | Documentation | REQ-013 | Review README, user guide, CLI reference, CLAUDE, AGENTS. |
 
-Brownfield system. Existing seams: `ForemanServer.Workflow.RunExecutor.auto_pr/1`, `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, `AutoPR.open_pr/5`, `ReviewFindings.extract/1`, and task state fields `:title`, `:description`, `:task_id`.
+Brownfield system. Existing seams: `ForemanServer.Workflow.RunExecutor.auto_pr/1`, `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, `AutoPR.open_pr/5`, `ReviewFindings.extract/1`, and projected task fields `:title`, `:description`, `:task_id`, `:external_id`, and `:external_link`.
 
 ## Reused Capabilities
 
@@ -52,7 +52,7 @@ Foreman mode: auto-selected Option C (typed task summary fields in final AutoPR 
 
 ## Architecture Decision
 
-Implement task-aware final AutoPR through typed optional task summary fields on the AutoPR context. `RunExecutor` extracts task title, description, and available identifiers from its existing task state/projection. `AutoPR` owns context validation plus safe title/body composition. Ad-hoc contexts with no task summary keep exact fallback title/body. Task-backed contexts with incomplete or malformed task summary fail before branch push or PR creation.
+Implement task-aware final AutoPR through typed optional task summary fields on the AutoPR context. `RunExecutor` extracts task title, description, and available identifiers from its existing task projection/state. `AutoPR` owns context validation plus safe title/body composition. Ad-hoc contexts with no task summary keep exact fallback title/body. Task-backed contexts with incomplete or malformed task summary fail before branch push or PR creation.
 
 ### Key Decisions
 
@@ -60,7 +60,7 @@ Implement task-aware final AutoPR through typed optional task summary fields on 
 2. **Atomic task summary.** A task-aware context is valid only when both title and description are non-blank binaries. Partial/blank/non-string task metadata returns a typed error before `push_head/3` or `open_pr`.
 3. **Explicit no-task fallback.** Absence of all task summary fields means ad-hoc behavior: title remains `feat(run): <run_id>` and body remains run completion text, optional artifact, and findings.
 4. **Known keys only.** `RunExecutor` whitelists title, description, and existing IDs; unknown task metadata is ignored.
-5. **Safe ID inclusion.** The PR body includes a task identifier only if already in state/projection (`task_id`, provider-facing id/external id if present). No `br`, Beads SQLite, or provider adapter calls.
+5. **Safe ID inclusion.** The PR body includes a task identifier only if already in state/projection (`task_id`, `external_id`, or `external_link` if present). No `br`, Beads SQLite, or provider adapter calls.
 6. **No branch semantics change.** Base/head resolution, commits-ahead gate, push-before-create, PhasePR skip, PR association, and run completion ordering stay unchanged except typed AutoPR errors are handled explicitly.
 7. **Description redaction in logs.** Logs may include run id, branches, PR URL, validation reason, and identifiers; they must not dump full task descriptions or generated PR body.
 8. **Docs are surgical.** Update only docs that describe final AutoPR output/operator expectations; record no-change decisions in implementation output.
@@ -71,7 +71,7 @@ Implement task-aware final AutoPR through typed optional task summary fields on 
 
 | Component | Responsibility | Change |
 |---|---|---|
-| `ForemanServer.Workflow.RunExecutor` | Final run orchestration and AutoPR context assembly | Add helper that extracts `task_title`, `task_description`, optional `task_id`/provider id from `state.task`; pass whitelisted fields to AutoPR. |
+| `ForemanServer.Workflow.RunExecutor` | Final run orchestration and AutoPR context assembly | Add helper that extracts `task_title`, `task_description`, optional `task_id`/`external_id`/`external_link` from `state.task`; pass whitelisted fields to AutoPR. |
 | `ForemanServer.Workflow.AutoPR` | Branch gate, push, PR title/body composition, `gh pr create` | Extend context type; validate task summary; build task-aware title/body; preserve fallback; keep logs redacted. |
 | `ForemanServer.Workflow.ReviewFindings` | Existing findings body section | No behavior change; still appended after task summary/artifact section. |
 | Tests | Deterministic proof | Add AutoPR command-composition/validation tests and RunExecutor context extraction tests. |
@@ -96,7 +96,7 @@ graph TD
 
 | Boundary | Protocol | Input | Output/Error |
 |---|---|---|---|
-| RunExecutor -> AutoPR | Elixir map context | `run_id`, `base_branch`, `artifact_path`, `head_branch`, `cwd`, optional `task_title`, `task_description`, `task_id`, `task_provider_id` | `{:ok, pr_url}` / `:noop` / `{:error, reason}` |
+| RunExecutor -> AutoPR | Elixir map context | `run_id`, `base_branch`, `artifact_path`, `head_branch`, `cwd`, optional `task_title`, `task_description`, `task_id`, `task_external_id`, `task_external_link` | `{:ok, pr_url}` / `:noop` / `{:error, reason}` |
 | AutoPR validation | Pure helper | Context map | `{:ok, summary | nil}` or `{:error, {:invalid_task_summary, reason}}` |
 | PR composition | Pure helper | run id, artifact path, findings, valid summary | `{title, body}` strings |
 | Git/GitHub | `System.cmd/3` argv | `git rev-list`, `git push`, `gh pr create --title title --body body` | existing typed command errors |
@@ -107,7 +107,7 @@ graph TD
 - No task fields at all: valid ad-hoc fallback.
 - Any partial, blank, or non-string task title/description: `{:error, {:invalid_task_summary, reason}}` before branch push/PR creation.
 - Unknown metadata keys: ignored at RunExecutor extraction boundary.
-- Base/head/git/gh failures: existing typed errors preserved.
+- Base/head/git/gh failures: existing typed errors preserved after context validation accepts a task summary or no-task fallback.
 
 ## Master Task List
 
@@ -254,13 +254,13 @@ graph TD
   - Implementation AC:
     - [ ] Given no commits ahead, AutoPR with task metadata still returns `:noop` and never calls `gh pr create`.
     - [ ] Given commits ahead, AutoPR still pushes head before PR create.
-    - [ ] Given branch resolution fails, branch error wins and title/body fallback does not mask it.
+    - [ ] Given branch resolution fails with valid task metadata, branch error wins and title/body fallback does not mask it.
 - [ ] **TRD-011-TEST**: Extend existing AutoPR git decision tests to include task metadata on noop, push, and branch error paths [verifies TRD-011] [satisfies REQ-007, REQ-010] [depends: TRD-011] (3h)
   - Validates PRD ACs: AC-007-1, AC-007-2, AC-007-3, AC-010-1
   - Implementation AC:
     - [ ] Existing no-commits test passes with task summary fields added.
     - [ ] Existing commits-ahead test passes with task summary fields added.
-    - [ ] Existing branch error test passes with task summary fields added.
+    - [ ] Existing branch error test passes with valid task summary fields added.
 
 - [ ] **TRD-012**: Confirm PhasePR behavior remains separate from final AutoPR behavior [satisfies REQ-008] [depends: TRD-009] (2h)
   - Validates PRD ACs: AC-008-1, AC-008-2
@@ -432,12 +432,22 @@ Traceability check: 13 requirements covered, 0 uncovered, 0 orphaned annotations
 
 Overall design readiness score: **4.8 PASS**.
 
+## Refinement Notes
+
+- Foreman-mode refinement confirmed the design stays aligned with the current AutoPR/RunExecutor seams.
+- Clarified safe identifier names to match projected task data: `task_id`, `external_id`, and `external_link`; no provider lookup is allowed during AutoPR.
+- Clarified ordering: task summary validation happens before push/PR creation; existing branch errors remain preserved once metadata is valid or absent.
+- Rechecked task/requirement coverage after refinement: 13 requirements, 33 PRD acceptance criteria, and 30 TRD tasks remain covered.
+
+## Changelog
+
+- 2026-09-18 — v1.0.1: Foreman-mode refinement; pinned safe task identifier fields to existing projection keys, clarified AutoPR validation/branch-error ordering, removed the unrelated configure-team next step, and preserved the 4.8 PASS readiness score.
+
 ## Output and Next Steps
 
 - TRD path: `docs/TRD/TRD-2026-1c4f4a55-autopr-task-pr-summary.md`
 - Source PRD correlation id: `1c4f4a55`
 - Parsed task count target: 30 tasks (15 implementation + 15 test/verification tasks)
-- Suggested next command: `/ensemble-configure-team docs/TRD/TRD-2026-1c4f4a55-autopr-task-pr-summary.md`
-- Implementation command after approval: `/ensemble-implement-trd-beads docs/TRD/TRD-2026-1c4f4a55-autopr-task-pr-summary.md`
+- Suggested implementation command after approval: `/ensemble-implement-trd-beads docs/TRD/TRD-2026-1c4f4a55-autopr-task-pr-summary.md`
 
 Stop here and wait for approval before implementation.
