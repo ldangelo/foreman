@@ -1,17 +1,9 @@
 defmodule ForemanServer.Workflow.AutoPRTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureLog
 
   alias ForemanServer.Workflow.AutoPR
-
-  # AutoPR previously had no test coverage at all, which is why nobody noticed
-  # that it required a `FOREMAN_COMPLETE` marker no skill ever emitted — so a
-  # PR could not land from any workflow, and the failure was invisible because
-  # `:noop` was logged at info while the run completed successfully.
-  #
-  # These tests exercise the real decision logic against a real git repo. The
-  # `gh` invocation itself is not exercised (it would hit the network); the
-  # boundary tested here is "does AutoPR decide to open a PR, and from which
-  # branch".
 
   setup do
     repo = Path.join(System.tmp_dir!(), "autopr-#{System.unique_integer([:positive])}")
@@ -33,16 +25,76 @@ defmodule ForemanServer.Workflow.AutoPRTest do
 
   defp commit_on_branch(%{repo: repo, git: git}, branch) do
     {_, 0} = git.(["checkout", "-b", branch])
-    File.write!(Path.join(repo, "#{branch |> String.replace("/", "-")}.txt"), "work\n")
+    File.write!(Path.join(repo, "#{String.replace(branch, "/", "-")}.txt"), "work\n")
     {_, 0} = git.(["add", "."])
     {_, 0} = git.(["commit", "-m", "work on #{branch}"])
     {_, 0} = git.(["checkout", "main"])
     :ok
   end
 
+  defp prepend_path(path, fun) do
+    old_path = System.get_env("PATH")
+    System.put_env("PATH", path <> Path.delimiter() <> old_path)
+
+    try do
+      fun.()
+    after
+      System.put_env("PATH", old_path)
+    end
+  end
+
+  defp write_executable(path, content) do
+    File.write!(path, content)
+    File.chmod!(path, 0o755)
+  end
+
+  defp command_shim_dir(capture_file, opts \\ []) do
+    bin = Path.join(System.tmp_dir!(), "autopr-bin-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(bin)
+
+    rev_count = Keyword.get(opts, :rev_count, "1")
+    push_exit = Keyword.get(opts, :push_exit, 0)
+    gh_exit = Keyword.get(opts, :gh_exit, 0)
+
+    write_executable(
+      Path.join(bin, "git"),
+      """
+      #!/usr/bin/env sh
+      printf 'git %s\n' "$*" >> #{capture_file}
+      if [ "$1" = "rev-list" ]; then
+        echo #{rev_count}
+        exit 0
+      fi
+      if [ "$1" = "push" ]; then
+        exit #{push_exit}
+      fi
+      exit 0
+      """
+    )
+
+    write_executable(
+      Path.join(bin, "gh"),
+      """
+      #!/usr/bin/env sh
+      printf 'gh' >> #{capture_file}
+      for arg in "$@"; do
+        printf '\t%s' "$arg" >> #{capture_file}
+      done
+      printf '\n' >> #{capture_file}
+      if [ #{gh_exit} -eq 0 ]; then
+        echo https://github.com/acme/repo/pull/1
+      else
+        echo gh failed
+      fi
+      exit #{gh_exit}
+      """
+    )
+
+    bin
+  end
+
   describe "head branch resolution" do
     test "uses the Foreman-derived branch from run state" do
-      # The whole point of the rewrite: no artifact, no marker, still resolves.
       ctx = %{
         run_id: "run-1",
         base_branch: "main",
@@ -50,13 +102,11 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         cwd: "/nonexistent-so-git-fails"
       }
 
-      # Reaches the git probe, meaning the branch resolved.
       assert {:error, {:rev_list_failed, _, _}} = AutoPR.maybe_create_pr(ctx)
     end
 
     test "errors when neither run state nor artifact supplies a branch" do
       ctx = %{run_id: "run-1", base_branch: "main", head_branch: nil, cwd: nil}
-
       assert {:error, :no_head_branch} = AutoPR.maybe_create_pr(ctx)
     end
 
@@ -94,10 +144,6 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         cwd: ctx.repo
       }
 
-      # Commits exist, so AutoPR publishes the branch and then runs
-      # `gh pr create`. This temp repo has no remote, so the push fails first.
-      # The contract under test is that it got past the decision and surfaced
-      # an error rather than silently no-opping, which is what used to happen.
       assert {:error, reason} = AutoPR.maybe_create_pr(context)
       assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
     end
@@ -138,21 +184,199 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert {:error, {:invalid_context, _}} =
                AutoPR.maybe_create_pr(%{run_id: "run-7", base_branch: ""})
     end
+
+    test "validates full task metadata, fallback absence, and ignored unknown keys" do
+      assert {:ok, %{title: "Task title", description: "Task body", task_id: "task-1"}} =
+               AutoPR.validate_task_summary(%{
+                 task_title: "Task title",
+                 task_description: "Task body",
+                 task_id: "task-1",
+                 task_unknown: "ignored"
+               })
+
+      assert AutoPR.validate_task_summary(%{other: "value"}) == {:ok, nil}
+    end
+
+    test "rejects partial, blank, and non-string task metadata before git commands" do
+      for context <- [
+            %{task_title: "Title"},
+            %{task_description: "Body"},
+            %{task_title: " ", task_description: "Body"},
+            %{task_title: "Title", task_description: ""},
+            %{task_title: 1, task_description: "Body"},
+            %{task_title: "Title", task_description: %{}}
+          ] do
+        assert {:error, {:invalid_task_summary, _}} =
+                 AutoPR.maybe_create_pr(
+                   Map.merge(context, %{
+                     run_id: "run-invalid",
+                     base_branch: "main",
+                     head_branch: "head",
+                     cwd: "/path-that-would-fail-if-git-ran"
+                   })
+                 )
+      end
+    end
+  end
+
+  describe "PR text composition" do
+    test "preserves exact legacy fallback title and body with no artifact" do
+      assert AutoPR.compose_pr_text("run-legacy", nil, nil) ==
+               {"feat(run): run-legacy", "Foreman run `run-legacy` complete.\n"}
+    end
+
+    test "preserves fallback artifact and findings ordering" do
+      artifact =
+        Path.join(System.tmp_dir!(), "autopr-artifact-#{System.unique_integer([:positive])}.md")
+
+      try do
+        File.write!(artifact, """
+        done
+        <!-- FOREMAN_REVIEW_FINDINGS_START -->
+        - fix this
+        <!-- FOREMAN_REVIEW_FINDINGS_END -->
+        """)
+
+        {_title, body} = AutoPR.compose_pr_text("run-findings", artifact, nil)
+
+        assert body =~ "Foreman run `run-findings` complete.\n\nArtifact: #{artifact}\n"
+        assert body =~ "## Unresolved review findings\n\n- fix this\n"
+      after
+        File.rm(artifact)
+      end
+    end
+
+    test "adds task summary before artifact and findings while preserving markdown and ids" do
+      artifact =
+        Path.join(
+          System.tmp_dir!(),
+          "autopr-task-artifact-#{System.unique_integer([:positive])}.md"
+        )
+
+      try do
+        File.write!(artifact, """
+        done
+        <!-- FOREMAN_REVIEW_FINDINGS_START -->
+        - unresolved
+        <!-- FOREMAN_REVIEW_FINDINGS_END -->
+        """)
+
+        summary = %{
+          title: "Fix AutoPR / title \"safe\"",
+          description: "Line 1\n\n- markdown stays",
+          task_id: "task-123",
+          external_id: "bead-7",
+          external_link: "https://beads.example/bead-7"
+        }
+
+        {title, body} = AutoPR.compose_pr_text("run-task", artifact, summary)
+
+        assert title == "Fix AutoPR / title \"safe\""
+        assert body =~ "## Task summary"
+        assert body =~ "### Fix AutoPR / title \"safe\""
+        assert body =~ "Line 1\n\n- markdown stays"
+        assert body =~ "- Task ID: task-123"
+        assert body =~ "- External ID: bead-7"
+        assert body =~ "- External Link: https://beads.example/bead-7"
+        assert body =~ "Artifact: #{artifact}"
+        assert body =~ "## Unresolved review findings\n\n- unresolved\n"
+        assert String.index(body, "## Task summary") < String.index(body, "Artifact:")
+
+        assert String.index(body, "Artifact:") <
+                 String.index(body, "## Unresolved review findings")
+      after
+        File.rm(artifact)
+      end
+    end
+
+    test "omits task id placeholders when ids are absent" do
+      {_title, body} =
+        AutoPR.compose_pr_text("run-no-ids", nil, %{
+          title: "Title",
+          description: "Body"
+        })
+
+      refute body =~ "Task ID:"
+      refute body =~ "External ID:"
+      refute body =~ "External Link:"
+    end
+  end
+
+  describe "command boundary and logging" do
+    test "passes task title as a gh argv value and preserves push ordering" do
+      capture =
+        Path.join(System.tmp_dir!(), "autopr-capture-#{System.unique_integer([:positive])}.log")
+
+      bin = command_shim_dir(capture)
+
+      try do
+        result =
+          prepend_path(bin, fn ->
+            AutoPR.maybe_create_pr(%{
+              run_id: "run-cmd",
+              base_branch: "main",
+              head_branch: "foreman/run-cmd/final",
+              cwd: System.tmp_dir!(),
+              task_title: "Fix AutoPR / title \"safe\" $(no-shell)",
+              task_description: "body"
+            })
+          end)
+
+        assert result == {:ok, "https://github.com/acme/repo/pull/1"}
+
+        lines = capture |> File.read!() |> String.split("\n", trim: true)
+        assert Enum.at(lines, 0) =~ "git rev-list --count main..foreman/run-cmd/final"
+        assert Enum.at(lines, 1) =~ "git push -u origin foreman/run-cmd/final"
+
+        gh_line = Enum.find(lines, &String.starts_with?(&1, "gh\t"))
+        assert gh_line =~ "\t--title\tFix AutoPR / title \"safe\" $(no-shell)\t"
+        assert gh_line =~ "\t--body\tForeman run `run-cmd` complete."
+      after
+        File.rm(capture)
+        File.rm_rf(bin)
+      end
+    end
+
+    test "does not log task descriptions or full PR body" do
+      capture =
+        Path.join(System.tmp_dir!(), "autopr-capture-#{System.unique_integer([:positive])}.log")
+
+      bin = command_shim_dir(capture, gh_exit: 1)
+      secret = "sentinel-secret-description"
+
+      try do
+        log =
+          capture_log(fn ->
+            prepend_path(bin, fn ->
+              assert {:error, {:gh_pr_create_failed, 1, "gh failed"}} =
+                       AutoPR.maybe_create_pr(%{
+                         run_id: "run-log",
+                         base_branch: "main",
+                         head_branch: "foreman/run-log/final",
+                         cwd: System.tmp_dir!(),
+                         task_title: "Task title",
+                         task_description: secret
+                       })
+            end)
+          end)
+
+        assert log =~ "run-log"
+        refute log =~ secret
+        refute log =~ "## Task summary"
+      after
+        File.rm(capture)
+        File.rm_rf(bin)
+      end
+    end
   end
 
   describe "the base branch decides what the PR would contain" do
-    # PR #420 opened with `--base=main` while the run had been cut from
-    # `feat/mcp-run-details`, so its diff was an entire unrelated session of
-    # commits. `commits_ahead/3` reads the same base `gh pr create` does, so
-    # under the default branch a run that produced nothing still looks like it
-    # has work to propose.
     test "a head level with its feature-branch base is a noop, though ahead of main", ctx do
       %{repo: repo, git: git} = ctx
       {_, 0} = git.(["checkout", "-b", "feat/mcp-run-details"])
       File.write!(Path.join(repo, "unrelated.txt"), "another session's commit\n")
       {_, 0} = git.(["add", "."])
       {_, 0} = git.(["commit", "-m", "unrelated session work"])
-      # The run's branch is cut from the feature branch and adds nothing to it.
       {_, 0} = git.(["branch", "foreman/run-8/create-prd"])
 
       assert AutoPR.maybe_create_pr(%{
@@ -162,8 +386,6 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                cwd: repo
              }) == :noop
 
-      # The same head against the default branch is one commit "ahead", and
-      # every line of that commit belongs to the unrelated session. That is #420.
       assert {:error, reason} =
                AutoPR.maybe_create_pr(%{
                  run_id: "run-8",

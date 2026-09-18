@@ -238,9 +238,15 @@ workflow `merge:` or `pr:` fields."
 `auto_pr/1` is still final-run behavior from `finalize_run/1`; it is skipped
 when durable phase PR records already represent the run. `AutoPR.maybe_create_pr/1`
 takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
-`cwd`) and derives title and body itself; there is no declarable title, body,
-draft, reviewer, or label — except one automatic addition: when the
-PR-creating phase's artifact contains a
+`cwd`, plus optional task summary fields) and derives title and body itself;
+there is no declarable title, body, draft, reviewer, or label. For task-backed
+final AutoPRs, `RunExecutor` passes only already-projected task title,
+description, `task_id`, `external_id`, and `external_link` values; AutoPR uses
+the title as the PR title and adds a `## Task summary` body section. Missing,
+blank, or non-string title/description is a typed AutoPR error before push/PR
+creation, not a fallback. Ad-hoc final AutoPRs keep the legacy generic run
+summary. PhasePR title/body composition is separate and unchanged. Another
+automatic addition: when the PR-creating phase's artifact contains a
 `<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
 -->` block (the format the bundled `review` workflow's phases write),
 `ForemanServer.Workflow.ReviewFindings` appends its content to the body under

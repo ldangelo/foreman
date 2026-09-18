@@ -914,6 +914,12 @@ single branch — `foreman/<task-id>/<run-id>` unless the workflow's `worktree.b
 otherwise. Workflows may opt into phase boundary PR records with `stack_pr:
 true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 `checkpointPr` settings remain unsupported.
+
+For task-backed runs, final AutoPR uses the approved task title as the PR title
+and adds a `## Task summary` body section with the task description plus any
+already-projected task/provider identifiers. Ad-hoc runs, and phase PRs, keep
+the existing generic run title/body behavior. Partial or malformed task summary
+metadata is a typed AutoPR error before any branch push or PR creation.
 A `stack_pr: true` phase runs after that phase's normal commit decision and
 before `PhaseCompleted`. It targets the recorded run base branch and uses the
 same Foreman run branch as the head. Because every tagged phase shares that

@@ -64,12 +64,25 @@ defmodule ForemanServer.Workflow.AutoPR do
   @gh_args ~w[pr create]
   @branch_regex ~r/FOREMAN_BRANCH=(\S+)/
 
+  @type task_summary :: %{
+          required(:title) => String.t(),
+          required(:description) => String.t(),
+          optional(:task_id) => String.t(),
+          optional(:external_id) => String.t(),
+          optional(:external_link) => String.t()
+        }
+
   @type context :: %{
           required(:run_id) => String.t(),
           required(:base_branch) => String.t(),
           optional(:artifact_path) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
-          optional(:cwd) => String.t() | nil
+          optional(:cwd) => String.t() | nil,
+          optional(:task_title) => String.t(),
+          optional(:task_description) => String.t(),
+          optional(:task_id) => String.t(),
+          optional(:task_external_id) => String.t(),
+          optional(:task_external_link) => String.t()
         }
 
   @type result :: {:ok, String.t()} | :noop | {:error, term()}
@@ -86,11 +99,19 @@ defmodule ForemanServer.Workflow.AutoPR do
       when is_binary(run_id) and is_binary(base_branch) and base_branch != "" do
     cwd = Map.get(context, :cwd)
 
-    with {:ok, head_branch} <- resolve_head_branch(context),
+    with {:ok, task_summary} <- validate_task_summary(context),
+         {:ok, head_branch} <- resolve_head_branch(context),
          {:ok, ahead} <- commits_ahead(base_branch, head_branch, cwd) do
       if ahead > 0 do
         with :ok <- push_head(run_id, head_branch, cwd) do
-          open_pr(run_id, base_branch, head_branch, Map.get(context, :artifact_path), cwd)
+          open_pr(
+            run_id,
+            base_branch,
+            head_branch,
+            Map.get(context, :artifact_path),
+            cwd,
+            task_summary
+          )
         end
       else
         Logger.info(
@@ -110,6 +131,44 @@ defmodule ForemanServer.Workflow.AutoPR do
 
   def maybe_create_pr(context) do
     {:error, {:invalid_context, context}}
+  end
+
+  @doc false
+  @spec validate_task_summary(context()) ::
+          {:ok, task_summary() | nil} | {:error, {:invalid_task_summary, term()}}
+  def validate_task_summary(context) when is_map(context) do
+    known_fields = [
+      :task_title,
+      :task_description,
+      :task_id,
+      :task_external_id,
+      :task_external_link
+    ]
+
+    if Enum.any?(known_fields, &Map.has_key?(context, &1)) do
+      with {:ok, title} <- required_task_string(context, :task_title),
+           {:ok, description} <- required_task_string(context, :task_description),
+           {:ok, ids} <- optional_task_ids(context) do
+        {:ok, Map.merge(%{title: title, description: description}, ids)}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  @doc false
+  @spec compose_pr_text(String.t(), String.t() | nil, task_summary() | nil) ::
+          {String.t(), String.t()}
+  def compose_pr_text(run_id, artifact_path, task_summary) when is_binary(run_id) do
+    title = if task_summary, do: task_summary.title, else: "feat(run): #{run_id}"
+
+    body =
+      "Foreman run `#{run_id}` complete.\n" <>
+        task_summary_section(task_summary) <>
+        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
+        findings_section(artifact_path)
+
+    {title, body}
   end
 
   @doc """
@@ -216,13 +275,8 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp open_pr(run_id, base_branch, head_branch, artifact_path, cwd) do
-    title = "feat(run): #{run_id}"
-
-    body =
-      "Foreman run `#{run_id}` complete.\n" <>
-        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
-        findings_section(artifact_path)
+  defp open_pr(run_id, base_branch, head_branch, artifact_path, cwd, task_summary) do
+    {title, body} = compose_pr_text(run_id, artifact_path, task_summary)
 
     cmd =
       @gh_args ++
@@ -269,6 +323,77 @@ defmodule ForemanServer.Workflow.AutoPR do
 
         {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
     end
+  end
+
+  defp required_task_string(context, field) do
+    case Map.fetch(context, field) do
+      {:ok, value} when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        if trimmed == "" do
+          {:error, {:invalid_task_summary, {:blank, field}}}
+        else
+          {:ok, value}
+        end
+
+      {:ok, _value} ->
+        {:error, {:invalid_task_summary, {:malformed, field}}}
+
+      :error ->
+        {:error, {:invalid_task_summary, {:missing, field}}}
+    end
+  end
+
+  defp optional_task_ids(context) do
+    id_fields = [
+      task_id: :task_id,
+      task_external_id: :external_id,
+      task_external_link: :external_link
+    ]
+
+    Enum.reduce_while(id_fields, {:ok, %{}}, fn {context_field, summary_field}, {:ok, acc} ->
+      case Map.fetch(context, context_field) do
+        {:ok, value} when is_binary(value) ->
+          trimmed = String.trim(value)
+
+          if trimmed == "" do
+            {:halt, {:error, {:invalid_task_summary, {:blank, context_field}}}}
+          else
+            {:cont, {:ok, Map.put(acc, summary_field, value)}}
+          end
+
+        {:ok, nil} ->
+          {:cont, {:ok, acc}}
+
+        {:ok, _value} ->
+          {:halt, {:error, {:invalid_task_summary, {:malformed, context_field}}}}
+
+        :error ->
+          {:cont, {:ok, acc}}
+      end
+    end)
+  end
+
+  defp task_summary_section(nil), do: ""
+
+  defp task_summary_section(summary) do
+    ids =
+      [
+        {"Task ID", Map.get(summary, :task_id)},
+        {"External ID", Map.get(summary, :external_id)},
+        {"External Link", Map.get(summary, :external_link)}
+      ]
+      |> Enum.filter(fn {_label, value} -> is_binary(value) and String.trim(value) != "" end)
+      |> Enum.map(fn {label, value} -> "- #{label}: #{value}\n" end)
+      |> Enum.join()
+
+    id_block = if ids == "", do: "", else: ids <> "\n"
+
+    "\n## Task summary\n\n" <>
+      "### #{summary.title}\n\n" <>
+      id_block <>
+      summary.description <>
+      "\n"
   end
 
   defp pr_url_from_output(output) do

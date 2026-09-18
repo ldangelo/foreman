@@ -1884,16 +1884,56 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp auto_pr(state) do
     case run_base_branch(state) do
       {:ok, base_branch} ->
-        AutoPR.maybe_create_pr(%{
+        %{
           run_id: state.run_id,
           base_branch: base_branch,
           artifact_path: completion_artifact_path(state),
           head_branch: get_in(state, [:last_worktree, :branch]),
           cwd: vcs_working_directory(state)
-        })
+        }
+        |> Map.merge(task_summary_context(state))
+        |> AutoPR.maybe_create_pr()
 
       {:error, reason} ->
         {:error, {:auto_pr_base_branch_unresolved, reason}}
+    end
+  end
+
+  defp task_summary_context(state) do
+    task = Map.get(state, :task) || %{}
+
+    if task_summary_backed?(state, task) do
+      %{}
+      |> Map.put(:task_title, task_value(task, :title))
+      |> Map.put(:task_description, task_value(task, :description))
+      |> maybe_put_task_field(:task_id, task_value(task, :task_id))
+      |> maybe_put_task_field(:task_external_id, task_value(task, :external_id))
+      |> maybe_put_task_field(:task_external_link, task_value(task, :external_link))
+    else
+      %{}
+    end
+  end
+
+  defp task_summary_backed?(state, task) do
+    Map.get(state, :source) == :task or
+      Enum.any?(
+        [:title, :description, :task_id, :external_id, :external_link],
+        &task_has_key?(task, &1)
+      )
+  end
+
+  defp maybe_put_task_field(acc, _field, nil), do: acc
+  defp maybe_put_task_field(acc, field, value), do: Map.put(acc, field, value)
+
+  defp task_has_key?(task, field) when is_map(task) do
+    Map.has_key?(task, field) or Map.has_key?(task, Atom.to_string(field))
+  end
+
+  defp task_value(task, field) when is_map(task) do
+    cond do
+      Map.has_key?(task, field) -> Map.get(task, field)
+      Map.has_key?(task, Atom.to_string(field)) -> Map.get(task, Atom.to_string(field))
+      true -> nil
     end
   end
 
@@ -3576,6 +3616,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
+
+  @doc false
+  def __task_summary_context_for_test__(state), do: task_summary_context(state)
 
   @doc false
   def __find_resumable_worktree_for_test__(run_id), do: find_resumable_worktree(run_id)

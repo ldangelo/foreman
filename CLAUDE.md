@@ -283,7 +283,10 @@ non-negative-integer phase execution timeout in minutes (`0`, or omitting the
 key entirely, means no timeout — see §6). `stack_pr: true` records a
 phase PR from the single run branch to the recorded run base branch and keeps it
 separate from the final run `pr_url`; PhasePR must push the head before open-PR
-reuse so a record cannot mask a stale provider diff.
+reuse so a record cannot mask a stale provider diff. Final AutoPR uses approved
+task title/description/safe ids already in run state when present; ad-hoc
+fallback and PhasePR text stay unchanged; partial/malformed task summary fails
+before push/PR create.
 
 - **Single owner of manifests.** `Approval.resolve_workflow_snapshot/2`
   (the public `Approval.prepare/2` path) and the private
