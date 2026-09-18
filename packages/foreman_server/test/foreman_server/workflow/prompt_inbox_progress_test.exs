@@ -65,6 +65,38 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
     refute Keyword.has_key?(opts, :prompt)
   end
 
+  test "dispatch_agent renders slash-command prompt and injects system_prompt sidecar" do
+    state = state_for_workflow("prd")
+
+    phase = %{
+      "name" => "create-prd",
+      "command" => "/skill:ensemble-create-prd {{input.prompt}} --foreman"
+    }
+
+    # The rendered prompt must be the slash command, not the original template.
+    rendered =
+      RunExecutor.__render_command_template_for_test__(
+        "/skill:ensemble-create-prd {{input.prompt}} --foreman",
+        state,
+        phase,
+        0
+      )
+
+    assert is_binary(rendered)
+    assert rendered =~ "/skill:ensemble-create-prd"
+    assert rendered =~ "--foreman"
+
+    # system_prompt sidecar must be present in driver_opts for covered phases.
+    opts =
+      RunExecutor.__maybe_put_command_phase_inbox_system_prompt_for_test__([], state, phase)
+
+    assert Keyword.has_key?(opts, :system_prompt)
+
+    assert RunExecutor.__command_phase_inbox_progress_system_prompt_for_test__() in Keyword.values(
+             opts
+           )
+  end
+
   test "uncovered command phases do not receive a sidecar" do
     state = state_for_workflow("prd")
     phase = %{"name" => "other", "command" => "/skill:other"}

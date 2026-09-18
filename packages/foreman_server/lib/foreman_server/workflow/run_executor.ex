@@ -1977,8 +1977,29 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # Reads a workflow-name key from a map, handling both atom and string forms,
+  # and treating nil / blank strings as absent.
+  defp workflow_name_binary(map, key) when is_atom(key) do
+    Map.get(map, key) || Map.get(map, to_string(key)) || blank_workflow_name()
+  end
+
+  defp workflow_name_binary(map, key) when is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_existing_atom(key)) || blank_workflow_name()
+  end
+
+  defp blank_workflow_name, do: nil
+
   defp command_phase_inbox_progress_covered?(state, phase_spec) do
-    workflow_name = workflow_name_for_command_phase(state)
+    workflow_snapshot =
+      Map.get(state.task, :workflow_snapshot) || Map.get(state.task, "workflow_snapshot") || %{}
+
+    # Normalize once: prefer the snapshot name, skip it if blank, fall back to
+    # the task's own workflow_name / workflow_type fields.
+    workflow_name =
+      workflow_name_binary(workflow_snapshot, :workflow_name) ||
+        workflow_name_binary(state.task, :workflow_name) ||
+        workflow_name_binary(state.task, :workflow_type)
+
     phase_name = phase_spec_name(phase_spec)
 
     phase_action(phase_spec) == :command and
@@ -1987,18 +2008,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Map.get(@command_phase_inbox_progress_targets, workflow_name, MapSet.new()),
         phase_name
       )
-  end
-
-  defp workflow_name_for_command_phase(state) do
-    workflow_snapshot =
-      Map.get(state.task, :workflow_snapshot) || Map.get(state.task, "workflow_snapshot") || %{}
-
-    Map.get(workflow_snapshot, :workflow_name) ||
-      Map.get(workflow_snapshot, "workflow_name") ||
-      Map.get(state.task, :workflow_name) ||
-      Map.get(state.task, "workflow_name") ||
-      Map.get(state.task, :workflow_type) ||
-      Map.get(state.task, "workflow_type")
   end
 
   defp command_phase_inbox_progress_system_prompt do
@@ -3575,6 +3584,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
         state,
         PhaseSpec.normalize(phase_spec)
       )
+
+  @doc false
+  def __render_command_template_for_test__(command, state, phase_spec, index),
+    do: render_command_template(command, state, PhaseSpec.normalize(phase_spec), index)
 
   @doc false
   def __worktree_task_id_for_test__(task, run_id),
