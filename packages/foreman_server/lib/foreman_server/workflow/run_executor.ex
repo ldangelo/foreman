@@ -1884,18 +1884,54 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp auto_pr(state) do
     case run_base_branch(state) do
       {:ok, base_branch} ->
-        AutoPR.maybe_create_pr(%{
-          run_id: state.run_id,
-          base_branch: base_branch,
-          artifact_path: completion_artifact_path(state),
-          head_branch: get_in(state, [:last_worktree, :branch]),
-          cwd: vcs_working_directory(state)
-        })
+        state
+        |> auto_pr_context(base_branch)
+        |> AutoPR.maybe_create_pr()
 
       {:error, reason} ->
         {:error, {:auto_pr_base_branch_unresolved, reason}}
     end
   end
+
+  defp auto_pr_context(state, base_branch) do
+    %{
+      run_id: state.run_id,
+      base_branch: base_branch,
+      artifact_path: completion_artifact_path(state),
+      head_branch: get_in(state, [:last_worktree, :branch]),
+      cwd: vcs_working_directory(state)
+    }
+    |> maybe_put_auto_pr_task_metadata(state)
+  end
+
+  defp maybe_put_auto_pr_task_metadata(context, state) do
+    task = Map.get(state, :task) || %{}
+
+    if task_backed?(state) do
+      context
+      |> Map.put(:task_title, task_field(task, :title))
+      |> Map.put(:task_description, task_field(task, :description))
+    else
+      context
+    end
+  end
+
+  defp task_backed?(state) do
+    task = Map.get(state, :task) || %{}
+    Map.get(state, :source) == :task or present?(task_field(task, :task_id))
+  end
+
+  defp task_field(task, key) when is_map(task) do
+    case {Map.fetch(task, key), Map.fetch(task, to_string(key))} do
+      {{:ok, value}, _} -> value
+      {:error, {:ok, value}} -> value
+      {:error, :error} -> nil
+    end
+  end
+
+  defp task_field(_task, _key), do: nil
+
+  defp present?(value), do: is_binary(value) and value != ""
 
   # The branch a PR must target, or the typed reason Foreman cannot name it.
   #
@@ -3576,6 +3612,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
+
+  @doc false
+  def __auto_pr_context_for_test__(state, base_branch), do: auto_pr_context(state, base_branch)
 
   @doc false
   def __find_resumable_worktree_for_test__(run_id), do: find_resumable_worktree(run_id)

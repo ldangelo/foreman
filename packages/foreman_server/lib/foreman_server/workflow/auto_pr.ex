@@ -64,12 +64,27 @@ defmodule ForemanServer.Workflow.AutoPR do
   @gh_args ~w[pr create]
   @branch_regex ~r/FOREMAN_BRANCH=(\S+)/
 
+  defmodule TaskMetadataError do
+    @moduledoc "Typed AutoPR task metadata validation error."
+    @enforce_keys [:run_id, :field, :reason]
+    @type t :: %__MODULE__{
+            run_id: String.t(),
+            field: :title | :description,
+            reason: :missing | :blank | :invalid
+          }
+    defstruct [:run_id, :field, :reason]
+  end
+
   @type context :: %{
           required(:run_id) => String.t(),
           required(:base_branch) => String.t(),
           optional(:artifact_path) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
-          optional(:cwd) => String.t() | nil
+          optional(:cwd) => String.t() | nil,
+          optional(:task_title) => String.t() | nil,
+          optional(:task_description) => String.t() | nil,
+          optional(:command_runner) => (String.t(), [String.t()], keyword() ->
+                                          {String.t(), integer()})
         }
 
   @type result :: {:ok, String.t()} | :noop | {:error, term()}
@@ -87,10 +102,11 @@ defmodule ForemanServer.Workflow.AutoPR do
     cwd = Map.get(context, :cwd)
 
     with {:ok, head_branch} <- resolve_head_branch(context),
-         {:ok, ahead} <- commits_ahead(base_branch, head_branch, cwd) do
+         {:ok, ahead} <- commits_ahead(context, base_branch, head_branch, cwd) do
       if ahead > 0 do
-        with :ok <- push_head(run_id, head_branch, cwd) do
-          open_pr(run_id, base_branch, head_branch, Map.get(context, :artifact_path), cwd)
+        with {:ok, pr_content} <- pr_content(context),
+             :ok <- push_head(context, run_id, head_branch, cwd) do
+          open_pr(context, run_id, base_branch, head_branch, pr_content, cwd)
         end
       else
         Logger.info(
@@ -166,12 +182,12 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp commits_ahead(base_branch, head_branch, cwd) do
+  defp commits_ahead(context, base_branch, head_branch, cwd) do
     args = ["rev-list", "--count", base_branch <> ".." <> head_branch]
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
-    case System.cmd("git", args, opts) do
+    case run(context, "git", args, opts) do
       {output, 0} ->
         case Integer.parse(String.trim(output)) do
           {count, _} -> {:ok, count}
@@ -187,7 +203,7 @@ defmodule ForemanServer.Workflow.AutoPR do
   # fails with "Head ref must be a branch" / "No commits between ...". Foreman
   # creates the run branch locally in a worktree, so it must be published
   # first.
-  defp push_head(run_id, head_branch, cwd) do
+  defp push_head(context, run_id, head_branch, cwd) do
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
@@ -198,7 +214,7 @@ defmodule ForemanServer.Workflow.AutoPR do
       outcome: "start"
     )
 
-    case System.cmd("git", ["push", "-u", "origin", head_branch], opts) do
+    case run(context, "git", ["push", "-u", "origin", head_branch], opts) do
       {_output, 0} ->
         :ok
 
@@ -216,14 +232,7 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp open_pr(run_id, base_branch, head_branch, artifact_path, cwd) do
-    title = "feat(run): #{run_id}"
-
-    body =
-      "Foreman run `#{run_id}` complete.\n" <>
-        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
-        findings_section(artifact_path)
-
+  defp open_pr(context, run_id, base_branch, head_branch, %{title: title, body: body}, cwd) do
     cmd =
       @gh_args ++
         ["--base", base_branch, "--head", head_branch, "--title", title, "--body", body]
@@ -241,7 +250,7 @@ defmodule ForemanServer.Workflow.AutoPR do
       outcome: "start"
     )
 
-    case System.cmd("gh", cmd, opts) do
+    case run(context, "gh", cmd, opts) do
       {output, 0} ->
         pr_url = pr_url_from_output(output) || String.trim(output)
 
@@ -269,6 +278,53 @@ defmodule ForemanServer.Workflow.AutoPR do
 
         {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
     end
+  end
+
+  defp pr_content(context) do
+    cond do
+      Map.has_key?(context, :task_title) or Map.has_key?(context, :task_description) ->
+        with {:ok, title} <- validate_task_field(context, :task_title, :title),
+             {:ok, body} <- validate_task_field(context, :task_description, :description) do
+          {:ok, %{title: title, body: body}}
+        end
+
+      true ->
+        run_id = Map.fetch!(context, :run_id)
+        artifact_path = Map.get(context, :artifact_path)
+
+        {:ok,
+         %{
+           title: "feat(run): #{run_id}",
+           body:
+             "Foreman run `#{run_id}` complete.\n" <>
+               if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
+               findings_section(artifact_path)
+         }}
+    end
+  end
+
+  defp validate_task_field(context, context_key, field) do
+    run_id = Map.fetch!(context, :run_id)
+
+    case Map.fetch(context, context_key) do
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :blank}}
+        else
+          {:ok, value}
+        end
+
+      {:ok, _other} ->
+        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :invalid}}
+
+      :error ->
+        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :missing}}
+    end
+  end
+
+  defp run(context, executable, args, opts) do
+    runner = Map.get(context, :command_runner) || (&System.cmd/3)
+    runner.(executable, args, opts)
   end
 
   defp pr_url_from_output(output) do

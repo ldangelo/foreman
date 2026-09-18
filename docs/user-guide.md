@@ -911,7 +911,11 @@ optimization; polling remains the fallback.
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's
 single branch — `foreman/<task-id>/<run-id>` unless the workflow's `worktree.branch` says
-otherwise. Workflows may opt into phase boundary PR records with `stack_pr:
+otherwise. For task-backed runs, the final PR title is exactly the task title and
+the final PR body is exactly the task description; if either is absent, blank, or
+malformed, AutoPR returns a typed metadata error before publishing the branch.
+Ad-hoc no-task runs keep the legacy generated run/artifact title and body.
+Workflows may opt into phase boundary PR records with `stack_pr:
 true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 `checkpointPr` settings remain unsupported.
 A `stack_pr: true` phase runs after that phase's normal commit decision and
@@ -925,15 +929,16 @@ continues. Push/create failures and closed matching PRs fail the responsible
 phase with typed details. A created or reused phase PR record suppresses the
 final AutoPR; no-op records do not.
 
-**PR bodies carry unresolved review findings.** Both PR-opening paths (final
-`AutoPR` and a `stack_pr: true` phase PR) append a `## Unresolved review
-findings` section to the body when the PR-creating phase's artifact contains a
-`<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
--->` block — the format the bundled `review` workflow's phases write. Absent or
-empty blocks add nothing, so a PR body is byte-identical to before this feature
-when no review phase ran or none produced unresolved findings. An unterminated
-block (a start marker with no matching end marker) is distinct: the phase found
-something and failed to close its markers, so a warning is logged and the body
+**PR bodies carry unresolved review findings only when Foreman generates the body.**
+Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Unresolved
+review findings` section to the generated body when the PR-creating phase's
+artifact contains a `<!-- FOREMAN_REVIEW_FINDINGS_START -->` /
+`<!-- FOREMAN_REVIEW_FINDINGS_END -->` block — the format the bundled `review`
+workflow's phases write. Task-backed final AutoPR bodies are exact task
+descriptions and do not append artifact or review-finding sections. Absent or
+empty blocks add nothing to generated bodies. An unterminated block (a start
+marker with no matching end marker) is distinct: the phase found something and
+failed to close its markers, so a warning is logged and the generated body
 instead names the artifact for a human to check directly, rather than silently
 dropping the findings.
 

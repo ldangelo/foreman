@@ -140,6 +140,112 @@ defmodule ForemanServer.Workflow.AutoPRTest do
     end
   end
 
+  describe "task metadata title/body" do
+    test "uses task title and description exactly as gh pr create arguments" do
+      parent = self()
+
+      runner = fn
+        "git", ["rev-list", "--count", "main..foreman/run-10/implement"], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", "foreman/run-10/implement"], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/10\n", 0}
+      end
+
+      title = "AutoPR PR title/description: actual implementation / #42"
+      body = "Implement the thing.\n\n- preserve markdown\n- keep $shell as text"
+
+      assert {:ok, "https://github.com/acme/repo/pull/10"} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-10",
+                 base_branch: "main",
+                 head_branch: "foreman/run-10/implement",
+                 task_title: title,
+                 task_description: body,
+                 command_runner: runner
+               })
+
+      assert_receive {:gh_args, args}
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--title")) + 1) == title
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1) == body
+    end
+
+    test "validates task metadata before publishing the head branch" do
+      parent = self()
+
+      runner = fn executable, args, _opts ->
+        send(parent, {:cmd, executable, args})
+
+        case {executable, args} do
+          {"git", ["rev-list", "--count", _]} -> {"1\n", 0}
+          _ -> flunk("unexpected command after invalid metadata: #{executable} #{inspect(args)}")
+        end
+      end
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :description, reason: :blank}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-11",
+                 base_branch: "main",
+                 head_branch: "foreman/run-11/implement",
+                 task_title: "Task title",
+                 task_description: "   ",
+                 command_runner: runner
+               })
+
+      assert_receive {:cmd, "git", ["rev-list", "--count", "main..foreman/run-11/implement"]}
+      refute_receive {:cmd, "git", ["push", "-u", "origin", _]}
+      refute_receive {:cmd, "gh", _}
+    end
+
+    test "preserves legacy generated body and review findings when no task metadata is present" do
+      parent = self()
+
+      artifact =
+        Path.join(System.tmp_dir!(), "autopr-findings-#{System.unique_integer([:positive])}.md")
+
+      File.write!(artifact, """
+      report
+      <!-- FOREMAN_REVIEW_FINDINGS_START -->
+      finding one
+      <!-- FOREMAN_REVIEW_FINDINGS_END -->
+      """)
+
+      on_exit(fn -> File.rm_rf(artifact) end)
+
+      runner = fn
+        "git", ["rev-list", "--count", "main..foreman/run-12/implement"], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", "foreman/run-12/implement"], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/12\n", 0}
+      end
+
+      assert {:ok, _url} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-12",
+                 base_branch: "main",
+                 head_branch: "foreman/run-12/implement",
+                 artifact_path: artifact,
+                 command_runner: runner
+               })
+
+      assert_receive {:gh_args, args}
+      body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
+      assert body =~ "Foreman run `run-12` complete."
+      assert body =~ "Artifact: #{artifact}"
+      assert body =~ "## Unresolved review findings"
+      assert body =~ "finding one"
+    end
+  end
+
   describe "the base branch decides what the PR would contain" do
     # PR #420 opened with `--base=main` while the run had been cut from
     # `feat/mcp-run-details`, so its diff was an entire unrelated session of
