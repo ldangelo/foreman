@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-3a76a0f0
 label: prd-task-add-comment-work-log
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 14
 total_acceptance_criteria: 39
-readiness_score: 4.7
+readiness_score: 4.8
 ---
 
 # PRD: Task Work Log Comment Tool via TaskProvider
@@ -93,6 +93,7 @@ In scope:
 - Implement the comment callback for `BeadsAdapter` using `SystemBrRunner` and `br comments add`.
 - Add MCP tool `foreman_task_add_comment`.
 - Build the Work Log body from structured tool fields: workflow name, phase name, and description of work performed.
+- Validate required structured fields and bounded body length before any provider write.
 - Resolve `run_id`, Foreman task, project, provider module, and provider task id server-side.
 - Gate the tool under the implemented MCP write policy.
 - Add workflow prompt/skill guidance for phase start, material milestones, blockers, and phase completion.
@@ -113,6 +114,7 @@ Out of scope:
 - Tool name is `foreman_task_add_comment`.
 - Work Log v1 targets the run's underlying provider-tracked task, not arbitrary task ids supplied by the agent.
 - The agent should provide `run_id`, `workflow_name`, `phase_name`, and `description`; Foreman should resolve task and provider context.
+- The MCP schema should not accept caller-supplied provider task ids or Beads issue ids in v1.
 - The server should compose a parseable comment body such as a `Work Log` block with `Workflow`, `Phase`, and `Work performed` fields.
 - Created-at and author are supplied by Beads and must not be manually duplicated as authoritative timestamps.
 - Policy gating needs an explicit TRD decision: either use existing `allow_workflow_writes` for v1 or introduce a narrower comment-write policy. This PRD requires the decision and tests; it does not pre-choose a separate flag.
@@ -152,7 +154,7 @@ Risk: This is the first direct MCP-to-TaskProvider mutation and can blur aggrega
 
 MCP clients MUST be able to discover and call `foreman_task_add_comment` when write policy permits it.
 
-- AC-003-1: Given MCP write policy permits the tool, when `tools/list` is called, then `foreman_task_add_comment` appears with schema fields for `run_id`, `workflow_name`, `phase_name`, and `description`.
+- AC-003-1: Given MCP write policy permits the tool, when `tools/list` is called, then `foreman_task_add_comment` appears with schema fields for `run_id`, `workflow_name`, `phase_name`, and `description`, and no provider issue id or Beads id input field.
 - AC-003-2: Given valid arguments for a provider-tracked run, when the tool is called, then it resolves the task provider and requests a comment write through `TaskProvider.comment/3`.
 - AC-003-3: Given implementation is inspected, when the handler is traced, then it does not dispatch `task.update`, write projections, append aggregate events directly, or mutate the Foreman task aggregate.
 
@@ -172,12 +174,12 @@ The tool MUST derive the provider issue target from Foreman's run/task state rat
 
 Priority: Must
 Complexity: Medium
-Risk: Free-form comments would be inconsistent and hard to parse.
+Risk: Free-form or unbounded comments would be inconsistent, hard to parse, and unsafe to send to the provider.
 
 Foreman MUST construct the comment body from structured fields supplied to the MCP tool.
 
-- AC-005-1: Given `workflow_name`, `phase_name`, and `description` are supplied, when the tool writes the comment, then the body includes a stable `Work Log` shape with those fields.
-- AC-005-2: Given a caller omits or blanks any required structured field, when the tool validates arguments, then it returns `INVALID_PARAMS` before any provider call.
+- AC-005-1: Given `workflow_name`, `phase_name`, and `description` are supplied, when the tool writes the comment, then the body includes a stable `Work Log` shape with those fields and no fabricated authoritative timestamp or author.
+- AC-005-2: Given a caller omits, blanks, or exceeds bounded length for any required structured field, when the tool validates arguments, then it returns `INVALID_PARAMS` before any provider call.
 - AC-005-3: Given the Beads comment is created, when it is listed with `br comments list` or shown with `br show`, then Beads provides the comment creation time and author, while Foreman's body provides workflow, phase, and work-performed content.
 
 ### REQ-006: Preserve write-policy safety with an explicit policy decision
@@ -235,7 +237,7 @@ Risk: Static prompt checks can pass while agents never call the tool.
 
 The feature MUST be proven through a real workflow run that writes a provider comment.
 
-- AC-010-1: Given the implementation is complete and writes are enabled according to policy, when a `prd` or `fix` workflow is dispatched on a Beads-backed task, then at least one phase calls `foreman_task_add_comment`.
+- AC-010-1: Given the implementation is complete, runtime prompts are refreshed, and writes are enabled according to policy, when a `prd` or `fix` workflow is dispatched on a Beads-backed task, then at least one phase calls `foreman_task_add_comment`.
 - AC-010-2: Given the phase call succeeds, when `br comments list <task-id>` or `br show <task-id>` is run by the verifier, then the Work Log entry is visible with correct workflow, phase, description, Beads timestamp, and Beads author.
 - AC-010-3: Given live verification is reported, when evidence is reviewed, then it includes the run id, task id, tool-call proof, and Beads comment proof.
 
@@ -365,15 +367,21 @@ Problem: AGENTS.md reportedly documents unsupported provider callbacks such as `
 
 Resolution auto-applied under foreman mode: REQ-011 requires documentation correction based on implemented behavior.
 
+### Issue 8: Unbounded or misdirected input could create unsafe provider writes
+
+Problem: A direct provider mutation tool must not let agents supply provider issue ids or oversized comment text.
+
+Resolution auto-applied under foreman mode: REQ-003 excludes provider issue id inputs from the MCP schema, and REQ-005 requires bounded structured-field validation before provider calls.
+
 ## 10. Implementation Readiness Gate
 
 | Dimension | Score | Notes |
 |---|---:|---|
 | Completeness | 5.0 | Covers provider contract, adapter, MCP, policy, prompts, docs, and live verification. |
-| Testability | 4.8 | ACs are concrete; live verification depends on Beads-backed run availability. |
-| Clarity | 4.5 | Two TRD decisions remain but are explicit and bounded. |
+| Testability | 4.9 | ACs now cover schema exclusion, bounded inputs, and live runtime prompt refresh; live verification still depends on Beads-backed run availability. |
+| Clarity | 4.7 | Two TRD decisions remain but are explicit and bounded, and v1 input boundaries are clearer. |
 | Feasibility | 4.5 | Builds on existing TaskProvider, SystemBrRunner, MCP policy, and prompt patterns. |
-| Overall | 4.7 | PASS |
+| Overall | 4.8 | PASS |
 
 Gate decision: PASS. Save PRD.
 
@@ -389,3 +397,13 @@ Create a TRD from this PRD:
 ```bash
 /ensemble-create-trd docs/PRD/PRD-2026-3a76a0f0-task-add-comment-work-log.md
 ```
+
+## 13. Changelog
+
+### 2026-09-18 — v1.0.1
+
+- Clarified that v1 MCP schema must not accept provider issue ids or Beads ids.
+- Added bounded structured-field validation before provider writes.
+- Tightened Work Log body requirements to avoid fabricated authoritative timestamps/authors.
+- Strengthened live verification to require refreshed runtime prompts.
+- Re-scored readiness from 4.7 to 4.8.
