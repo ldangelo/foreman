@@ -2,10 +2,10 @@
 document_id: TRD-2026-3a76a0f0
 label: trd-task-add-comment-work-log
 prd_reference: docs/PRD/PRD-2026-3a76a0f0-task-add-comment-work-log.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
-design_readiness_score: 4.7
+design_readiness_score: 4.8
 kind: trd
 ---
 
@@ -73,7 +73,7 @@ Implement `foreman_task_add_comment` as a first-class MCP write tool that writes
 4. **No aggregate mutation:** `foreman_task_add_comment` does not dispatch `task.update`, append task events, or mutate projections. Its side effect is the upstream provider comment only.
 5. **Structured body:** server composes a stable Work Log body with `Work Log`, `Workflow`, `Phase`, and `Work performed`. It does not fabricate authoritative timestamp or author.
 6. **Bounds:** reject blank or oversize structured fields before provider routing. Suggested v1 limits: workflow and phase 1-100 chars each; description 1-2,000 chars; final body no more than 2,500 chars.
-7. **Beads path:** extend `SystemBrRunner` with a `:comment`/`:comments_add` action that produces `br comments add <id> -m <body> --json --db <database_path>` or the verified equivalent; `BeadsAdapter.comment/3` calls only the runner.
+7. **Beads path:** extend `SystemBrRunner` with one explicit `:comments_add` action. Because `br comments add --help` verifies `--message`, `--db`, and `--json`, the runner should build `br comments add <id> --message <body> --json --db <database_path>` through a dedicated argv clause; `BeadsAdapter.comment/3` calls only the runner.
 8. **Provider scope:** Beads is the only v1 implementation. Other providers that lack `comment/3` return a typed unsupported/configuration error.
 9. **Prompt behavior:** agents add concise Work Log comments at phase start, material milestones, blockers, and completion when the tool is available; denial/failure is non-blocking.
 10. **Verification:** final implementation proof requires a live Beads-backed Foreman workflow where a phase calls the tool and `br comments list <task-id>` or `br show <task-id>` displays the Work Log.
@@ -86,7 +86,7 @@ Implement `foreman_task_add_comment` as a first-class MCP write tool that writes
 |---|---|---|
 | `ForemanServer.TaskProvider.Comment` | Typed provider comment result | New struct/module with enforced keys and Jason encoder if returned through MCP-adjacent paths. |
 | `ForemanServer.TaskProvider` | Provider behavior contract | Add `comment/3`, docs, typedoc for `comment_body` and `comment_result`. |
-| `ForemanServer.TaskProviders.SystemBrRunner` | Sole `br` command constructor/executor | Add comment action/subcommand, validation, and tests for argv shape and DB normalization. |
+| `ForemanServer.TaskProviders.SystemBrRunner` | Sole `br` command constructor/executor | Add a dedicated `:comments_add` action, payload validation, nested `comments add` argv construction, and tests for argv shape and DB normalization. |
 | `ForemanServer.TaskProviders.BeadsAdapter` | Beads provider implementation | Add `comment/3` using `SystemBrRunner`, map errors to `%ProviderError{}`, and return `Comment.t()`. |
 | `ForemanServer.TaskProvider.Registry` | Per-project provider/config resolution | Reused; no code change expected beyond contract tests accepting the new callback. |
 | `ForemanServer.MCP.Policy` | Default-deny MCP write list | Add `foreman_task_add_comment` to `@write_tools`; keep `allow_workflow_writes` as v1 gate. |
@@ -121,7 +121,7 @@ graph TD
 | Projection lookup | Internal read model | `run_id` -> run; `task_id` -> task | `NOT_FOUND` for missing run/task; `INVALID_STATE` for missing project/task/provider issue id |
 | Provider registry | GenServer call | `project_id` | `{:ok, %{provider_module, config}}` or typed provider-configuration error |
 | Provider callback | `TaskProvider.comment/3` | `provider_issue_id`, composed body, project config | `{:ok, Comment.t()}` or `{:error, ProviderError.t()}` |
-| Beads runner | `SystemBrRunner.cmd/3` | `{:comment, %{id, body}}` or selected action name | `br comments add <id> -m <body> --json --db <database_path>` result |
+| Beads runner | `SystemBrRunner.cmd/3` | `{:comments_add, %{id, body}}` | `br comments add <id> --message <body> --json --db <database_path>` result |
 
 ## Master Task List
 
@@ -136,24 +136,24 @@ graph TD
     - [ ] Given maintainers read `task_provider.ex`, when they inspect `comment/3`, then args and typed return are documented.
     - [ ] Given comment succeeds, when returned, then the result is `%ForemanServer.TaskProvider.Comment{}` or a deliberately named typed struct, never a bare map.
 - [ ] **TRD-001-TEST**: Add behavior/struct tests for `comment/3` reflection, enforced comment result keys, and no bare-map success contract [verifies TRD-001] [satisfies REQ-001, REQ-008, REQ-014] [depends: TRD-001] (2h)
-- [ ] **TRD-002**: Extend `SystemBrRunner` with a comment action that builds the verified `br comments add <id> -m <body>` command through the existing per-DB runner path [satisfies REQ-002, REQ-007, REQ-014] [depends: TRD-001] (3h)
+- [ ] **TRD-002**: Extend `SystemBrRunner` with a `:comments_add` action that builds the verified `br comments add <id> --message <body> --json --db <database_path>` command through the existing per-DB runner path [satisfies REQ-002, REQ-007, REQ-014] [depends: TRD-001] (3h)
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-007-2, AC-014-1
   - Implementation AC:
-    - [ ] Given request payload has nonblank id and body, when argv is built, then it invokes `br comments add <id> -m <body>` with the normalized `--db` argument and JSON flag only if supported by the verified CLI contract.
+    - [ ] Given request payload has nonblank id and body, when argv is built, then it invokes `br comments add <id> --message <body> --json --db <normalized database path>` using the source-verified Beads comments contract.
     - [ ] Given id or body is blank/non-string, when validation runs, then `ArgumentError` is raised before invoking `br`.
     - [ ] Given a database path is present, when the runner executes, then it uses the existing runner lock/serialization and not a new `System.cmd` site.
-- [ ] **TRD-002-TEST**: Add `SystemBrRunner` tests for comment argv shape, DB leaf normalization, invalid payload rejection, and absence of direct worker shelling assumptions [verifies TRD-002] [satisfies REQ-002, REQ-007, REQ-014] [depends: TRD-002] (2h)
+- [ ] **TRD-002-TEST**: Add `SystemBrRunner` tests for `:comments_add` argv shape, nested `comments add` ordering, DB leaf normalization, invalid payload rejection, and absence of direct worker shelling assumptions [verifies TRD-002] [satisfies REQ-002, REQ-007, REQ-014] [depends: TRD-002] (2h)
 - [ ] **TRD-003**: Implement `BeadsAdapter.comment/3` with input validation, `SystemBrRunner` invocation, provider error mapping, telemetry consistent with other adapter operations, and typed success result [satisfies REQ-002, REQ-008, REQ-013] [depends: TRD-001, TRD-002] (4h)
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-008-3, AC-013-1
   - Implementation AC:
-    - [ ] Given a valid Beads issue id/body/config, when `BeadsAdapter.comment/3` runs, then it calls `@runner.cmd/3` with the comment request and returns `{:ok, %Comment{status: "comment_added"}}`.
+    - [ ] Given a valid Beads issue id/body/config, when `BeadsAdapter.comment/3` runs, then it calls `@runner.cmd({:comments_add, %{id: issue_id, body: body}}, config, _)` and returns `{:ok, %Comment{status: "comment_added"}}`.
     - [ ] Given `br` returns an error envelope, when mapped, then the adapter returns `%ProviderError{}` with safe bounded diagnostics and retryability from the code map or explicit mapping.
     - [ ] Given issue id/body/config is invalid, when called, then it returns a typed provider error before the runner is invoked.
 - [ ] **TRD-003-TEST**: Add Beads adapter tests for successful comment request, invalid id/body/config, `br` error envelope mapping, parse/contract failure, and no direct `System.cmd` use [verifies TRD-003] [satisfies REQ-002, REQ-008, REQ-013, REQ-014] [depends: TRD-003] (4h)
 - [ ] **TRD-004**: Update provider capability reporting and registry/route tests so Beads advertises comment support accurately and unsupported providers fail loudly [satisfies REQ-011, REQ-013, REQ-014] [depends: TRD-003] (2h)
   - Validates PRD ACs: AC-011-2, AC-013-1, AC-013-2, AC-014-1
   - Implementation AC:
-    - [ ] Given `BeadsAdapter.capabilities/0` is inspected, when supports are listed, then comment support is present and stale unsupported capability claims are corrected only if source-proven.
+    - [ ] Given `BeadsAdapter.capabilities/0` is inspected, when supports are listed, then comment support is present, `:annotate` is not used as a synonym for comments, and any stale unsupported capability claims touched by this feature are corrected only when source-proven.
     - [ ] Given a provider cannot satisfy the new behavior callback, when registered, then registry contract checks reject it rather than silently routing comment writes.
 - [ ] **TRD-004-TEST**: Update provider capability/registry tests for comment support and contract enforcement [verifies TRD-004] [satisfies REQ-011, REQ-013, REQ-014] [depends: TRD-004] (2h)
 
@@ -344,11 +344,11 @@ Traceability check: 14 requirements covered, 0 uncovered, 0 orphaned annotations
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Architecture completeness | 4.7 | Components, data flow, interfaces, policy, and provider boundary are defined; exact `br comments add --json` support must be verified during implementation. |
+| Architecture completeness | 4.8 | Components, data flow, interfaces, policy, provider boundary, and source-verified Beads comments argv are defined. |
 | Task coverage | 4.8 | Every PRD requirement has implementation and test coverage plus live proof. |
-| Dependency clarity | 4.6 | Dependencies are explicit and acyclic; critical path is long but PR slices are shippable. |
-| Estimate confidence | 4.5 | Estimates are granular; TRD-007/TRD-014 remain environment-sensitive. |
-| Overall | 4.7 | PASS |
+| Dependency clarity | 4.7 | Dependencies are explicit and acyclic; critical path is long but PR slices are shippable. |
+| Estimate confidence | 4.7 | Estimates are granular; TRD-007/TRD-014 remain environment-sensitive but runner ambiguity is reduced. |
+| Overall | 4.8 | PASS |
 
 Gate decision: PASS. Proceed to output; implementation requires approval.
 
@@ -356,7 +356,7 @@ Gate decision: PASS. Proceed to output; implementation requires approval.
 
 - TRD path: `docs/TRD/TRD-2026-3a76a0f0-task-add-comment-work-log.md`
 - Task count: 28 total tasks (14 implementation, 14 test)
-- Design readiness score: 4.7 PASS
+- Design readiness score: 4.8 PASS
 - Source PRD correlation id: `3a76a0f0`
 
 Suggested next steps after approval:
@@ -365,3 +365,12 @@ Suggested next steps after approval:
 /ensemble-configure-team docs/TRD/TRD-2026-3a76a0f0-task-add-comment-work-log.md
 /ensemble-implement-trd-beads docs/TRD/TRD-2026-3a76a0f0-task-add-comment-work-log.md
 ```
+
+## Changelog
+
+### 2026-09-18 — v1.0.1
+
+- Refined Beads runner design to use a single `:comments_add` action and the source-verified `br comments add <id> --message <body> --json --db <database_path>` contract.
+- Tightened `SystemBrRunner`, `BeadsAdapter`, and capability-reporting task acceptance criteria so comments are not conflated with stale `:annotate` support.
+- Re-scored Design Readiness from 4.7 to 4.8 after removing runner-contract ambiguity.
+- Documentation files were considered and left unchanged because this phase changed only the TRD planning artifact, not implemented runtime behavior.
