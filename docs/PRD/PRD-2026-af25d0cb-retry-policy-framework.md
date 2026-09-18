@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-af25d0cb
 label: prd-retry-policy-framework
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 15
 total_acceptance_criteria: 37
-readiness_score: 4.4
+readiness_score: 4.5
 readiness_gate: PASS
 ---
 
@@ -22,16 +22,16 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **retry_policy framework: des
 | Must | 12 |
 | Should | 3 |
 | Could | 0 |
-| Won't | 1 |
+| Won't | 0 |
 
 | Metric | Value |
 |---|---:|
 | Requirement coverage | 15/15 (100%) |
 | Acceptance criteria coverage | 15/15 (100%) |
-| Risk flags | 10 |
+| Risk flags | 8 |
 | Dependencies | 14 |
 | Open ambiguity markers | 0 |
-| TRD decisions required | 5 |
+| Ratification decisions required | 5 |
 
 ## Acceptance Criteria Summary
 
@@ -103,7 +103,7 @@ In scope:
 
 Out of scope for v1:
 
-- Phase-level integer retry override. This is a **Won't for v1** unless ratification changes scope before TRD.
+- Phase-level integer retry override. This is a non-requirement exclusion for v1, not a separate Won't-priority requirement, unless ratification changes scope before TRD.
 - Retrying only part of a phase's agent transcript.
 - Retrying in a different worktree.
 - Recovering from permanent validation, schema, authorization, or operator-decision failures.
@@ -323,20 +323,29 @@ No circular dependencies identified.
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4.4 | Covers ratification, all four PR areas, tests, and docs. |
+| Completeness | 4.5 | Covers ratification, all four PR areas, tests, docs, and non-goal exclusions. |
 | Testability | 4.5 | Every requirement has measurable ACs; deterministic timing called out. |
-| Clarity | 4.2 | Open decisions are isolated in REQ-001; behavior defaults are documented as assumptions. |
+| Clarity | 4.4 | Open decisions are isolated in REQ-001; Foreman-mode defaults are documented as assumptions, and health metrics now distinguish requirements from exclusions. |
 | Feasibility | 4.4 | Uses existing policy, executor, projection, inbox, and docs boundaries. |
 
-Overall score: **4.4 PASS**
+Overall score: **4.5 PASS**
 
 Concerns:
 
 - `docs/design/retry-policy.md` was not present in this checkout, so TRD authors must verify the design artifact before relying on details not included in the task description.
 - `idempotent_default` is safety-critical; if ratification changes it to permissive, REQ-011 and tests must be revised before implementation.
 
-Gate decision: **PASS**. Save PRD and proceed to TRD only after REQ-001 is satisfied.
+Gate decision: **PASS**. Readiness score: 4.4 -> 4.5 (improved after metadata/health consistency fixes). Save PRD and proceed to TRD only after REQ-001 is satisfied.
 
 ## 10. Suggested Next Step
 
 `/ensemble-create-trd docs/PRD/PRD-2026-af25d0cb-retry-policy-framework.md`
+
+## Changelog
+
+### 2026-09-18 — v1.0.1
+
+- Corrected PRD Health priority counts so out-of-scope exclusions are not counted as Won't-priority requirements.
+- Recalculated risk flag count from requirement metadata.
+- Clarified the phase-level integer override as a v1 exclusion rather than a separate requirement.
+- Re-scored the Implementation Readiness Gate after refinement.
