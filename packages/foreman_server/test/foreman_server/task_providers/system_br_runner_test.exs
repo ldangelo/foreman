@@ -133,7 +133,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
                    "add",
                    "task-1",
                    "--message",
-                  "Work Log: Done",
+                   "Work Log: Done",
                    "--json",
                    "--db",
                    "/tmp/cached.db"
