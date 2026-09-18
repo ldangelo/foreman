@@ -1,6 +1,8 @@
 defmodule ForemanServer.Workflow.AutoPRTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.Workflow.AutoPR
 
   # AutoPR previously had no test coverage at all, which is why nobody noticed
@@ -301,6 +303,68 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                })
 
       assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+    end
+  end
+
+  describe "task metadata validation and log safety" do
+    test "reports missing and invalid task metadata with typed errors" do
+      runner = fn
+        "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+        executable, args, _opts -> flunk("unexpected command: #{executable} #{inspect(args)}")
+      end
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :description, reason: :missing}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-missing-description",
+                 base_branch: "main",
+                 head_branch: "foreman/run-missing-description/implement",
+                 task_title: "Task title",
+                 command_runner: runner
+               })
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :title, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-invalid-title",
+                 base_branch: "main",
+                 head_branch: "foreman/run-invalid-title/implement",
+                 task_title: 123,
+                 task_description: "Task body",
+                 command_runner: runner
+               })
+    end
+
+    test "does not write task body text in AutoPR success or validation logs" do
+      parent = self()
+      sentinel = "SECRET-SENTINEL-TASK-BODY"
+
+      runner = fn
+        "git", ["rev-list", "--count", _], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", _], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/13\n", 0}
+      end
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _url} =
+                   AutoPR.maybe_create_pr(%{
+                     run_id: "run-log-safety",
+                     base_branch: "main",
+                     head_branch: "foreman/run-log-safety/implement",
+                     task_title: "Task title",
+                     task_description: sentinel,
+                     command_runner: runner
+                   })
+        end)
+
+      assert_receive {:gh_args, args}
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1) == sentinel
+      refute log =~ sentinel
     end
   end
 end

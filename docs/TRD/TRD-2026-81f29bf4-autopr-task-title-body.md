@@ -147,37 +147,37 @@ RunExecutor context without task metadata
 
 **Shippable State:** Final AutoPR can use exact task title/body or fail safely before PR side effects when task metadata is invalid.
 
-- [ ] **TRD-001**: Add `AutoPR.TaskMetadataError` typed error and task metadata fields to the AutoPR context contract (2h) [satisfies REQ-005, REQ-009]
+- [x] **TRD-001**: Add `AutoPR.TaskMetadataError` typed error and task metadata fields to the AutoPR context contract (2h) [satisfies REQ-005, REQ-009]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-009-1, AC-009-3.
   - Implementation AC:
     - Given malformed task metadata, when AutoPR validates content, then it returns `%TaskMetadataError{}` with field and reason.
     - Given no task metadata keys are present, when AutoPR validates content, then legacy fallback remains available.
 
-- [ ] **TRD-001-TEST**: Add focused tests for typed metadata errors and legacy no-task fallback (2h) [verifies TRD-001] [satisfies REQ-005, REQ-008, REQ-009] [depends: TRD-001]
+- [x] **TRD-001-TEST**: Add focused tests for typed metadata errors and legacy no-task fallback (2h) [verifies TRD-001] [satisfies REQ-005, REQ-008, REQ-009] [depends: TRD-001]
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-008-3, AC-009-1.
   - Implementation AC:
     - Given blank/non-string/missing task-backed fields, when tested, then each expected error reason is asserted.
     - Given no task metadata keys, when tested, then generated legacy title/body still appear.
 
-- [ ] **TRD-002**: Implement AutoPR PR content selection that uses exact task title/body when task metadata keys are present (3h) [satisfies REQ-002, REQ-003, REQ-012] [depends: TRD-001]
+- [x] **TRD-002**: Implement AutoPR PR content selection that uses exact task title/body when task metadata keys are present (3h) [satisfies REQ-002, REQ-003, REQ-012] [depends: TRD-001]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-003-1, AC-003-2, AC-003-3, AC-012-1.
   - Implementation AC:
     - Given task title/description, when `gh pr create` args are built, then title/body equal task metadata exactly.
     - Given artifact findings exist, when task body path is used, then findings are not appended.
 
-- [ ] **TRD-002-TEST**: Add AutoPR command-argument tests for exact task title/body, multiline Markdown, and shell-special characters (3h) [verifies TRD-002] [satisfies REQ-002, REQ-003, REQ-008, REQ-012] [depends: TRD-002]
+- [x] **TRD-002-TEST**: Add AutoPR command-argument tests for exact task title/body, multiline Markdown, and shell-special characters (3h) [verifies TRD-002] [satisfies REQ-002, REQ-003, REQ-008, REQ-012] [depends: TRD-002]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-003-1, AC-003-2, AC-003-3, AC-008-1, AC-008-2, AC-012-2.
   - Implementation AC:
     - Given multiline Markdown body, when command args are captured, then body is one arg preserving line breaks.
     - Given shell-special title text, when args are captured, then no shell interpolation occurs.
 
-- [ ] **TRD-003**: Add a command-runner seam to AutoPR so tests can capture `git`/`gh` boundaries without network (2h) [satisfies REQ-007, REQ-008]
+- [x] **TRD-003**: Add a command-runner seam to AutoPR so tests can capture `git`/`gh` boundaries without network (2h) [satisfies REQ-007, REQ-008]
   - Validates PRD ACs: AC-007-2, AC-007-3, AC-008-1.
   - Implementation AC:
     - Given `command_runner` is supplied, when AutoPR runs commands, then it calls the seam instead of `System.cmd/3`.
     - Given no seam is supplied, when production code runs, then `System.cmd/3` behavior remains unchanged.
 
-- [ ] **TRD-003-TEST**: Add seam tests proving command order: rev-list, metadata validation, push, then PR create (2h) [verifies TRD-003] [satisfies REQ-004, REQ-007, REQ-008] [depends: TRD-003, TRD-001, TRD-002]
+- [x] **TRD-003-TEST**: Add seam tests proving command order: rev-list, metadata validation, push, then PR create (2h) [verifies TRD-003] [satisfies REQ-004, REQ-007, REQ-008] [depends: TRD-003, TRD-001, TRD-002]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-007-2, AC-007-3.
   - Implementation AC:
     - Given invalid metadata and commits ahead, when AutoPR runs, then rev-list occurs but push and gh do not.
@@ -187,38 +187,38 @@ RunExecutor context without task metadata
 
 **Shippable State:** Task-backed final AutoPR receives approved task title/description from run state while no-task runs still generate legacy PR summaries.
 
-- [ ] **TRD-004**: Extend final `RunExecutor` AutoPR context with `:task_title` and `:task_description` for task-backed runs only (3h) [satisfies REQ-001, REQ-004, REQ-006]
+- [x] **TRD-004**: Extend final `RunExecutor` AutoPR context with `:task_title` and `:task_description` for task-backed runs only (3h) [satisfies REQ-001, REQ-004, REQ-006]
   - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-3, AC-006-2.
   - Implementation AC:
     - Given state has task metadata, when context is built, then explicit task keys are present.
     - Given state has no task aggregate, when context is built, then task keys are absent.
 
-- [ ] **TRD-004-TEST**: Add executor context tests for task-backed and no-task runs preserving existing AutoPR fields (3h) [verifies TRD-004] [satisfies REQ-001, REQ-004, REQ-006] [depends: TRD-004]
+- [x] **TRD-004-TEST**: Add executor context tests for task-backed and no-task runs preserving existing AutoPR fields (3h) [verifies TRD-004] [satisfies REQ-001, REQ-004, REQ-006] [depends: TRD-004]
   - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-3, AC-006-2.
   - Implementation AC:
     - Given task-backed state, when helper/test seam builds context, then run/base/artifact/head/cwd and task fields are asserted.
     - Given no-task state, when context is built, then legacy fields are unchanged and task fields absent.
 
-- [ ] **TRD-005**: Implement task metadata extraction for canonical atom-keyed and string-keyed task shapes without accepting unknown fields (2h) [satisfies REQ-001, REQ-009] [depends: TRD-004]
+- [x] **TRD-005**: Implement task metadata extraction for canonical atom-keyed and string-keyed task shapes without accepting unknown fields (2h) [satisfies REQ-001, REQ-009] [depends: TRD-004]
   - Validates PRD ACs: AC-001-2, AC-009-2.
   - Implementation AC:
     - Given atom-keyed task title/description, when extracted, then exact values are used.
     - Given string-keyed task title/description, when extracted, then exact values are used.
     - Given unknown task keys, when extracted, then they are ignored.
 
-- [ ] **TRD-005-TEST**: Add extractor tests for atom keys, string keys, unknown keys, nil, blank, and non-string values flowing to AutoPR validation (3h) [verifies TRD-005] [satisfies REQ-001, REQ-005, REQ-009] [depends: TRD-005]
+- [x] **TRD-005-TEST**: Add extractor tests for atom keys, string keys, unknown keys, nil, blank, and non-string values flowing to AutoPR validation (3h) [verifies TRD-005] [satisfies REQ-001, REQ-005, REQ-009] [depends: TRD-005]
   - Validates PRD ACs: AC-001-2, AC-005-1, AC-005-2, AC-009-1, AC-009-2.
   - Implementation AC:
     - Given malformed-present fields, when final AutoPR context reaches AutoPR, then typed validation fails instead of silent no-task fallback.
     - Given unknown keys, when tests inspect context, then unknown values are not propagated.
 
-- [ ] **TRD-006**: Preserve final-only AutoPR behavior by avoiding `PhasePR` title/body paths and existing phase PR skip semantics (2h) [satisfies REQ-006]
+- [x] **TRD-006**: Preserve final-only AutoPR behavior by avoiding `PhasePR` title/body paths and existing phase PR skip semantics (2h) [satisfies REQ-006]
   - Validates PRD ACs: AC-002-3, AC-006-1, AC-006-2.
   - Implementation AC:
     - Given phase PR records exist, when run finalization evaluates final AutoPR, then existing skip behavior is unchanged.
     - Given no phase PR records exist, when final AutoPR runs, then task title/body apply only to final PR.
 
-- [ ] **TRD-006-TEST**: Add regression tests showing `PhasePR` behavior and phase-PR skip logic are unchanged (3h) [verifies TRD-006] [satisfies REQ-002, REQ-006] [depends: TRD-006]
+- [x] **TRD-006-TEST**: Add regression tests showing `PhasePR` behavior and phase-PR skip logic are unchanged (3h) [verifies TRD-006] [satisfies REQ-002, REQ-006] [depends: TRD-006]
   - Validates PRD ACs: AC-002-3, AC-006-1, AC-006-2.
   - Implementation AC:
     - Given `PhasePR` creates/reuses phase PRs, when tests run, then phase titles do not use task metadata.
@@ -228,38 +228,38 @@ RunExecutor context without task metadata
 
 **Shippable State:** A task-backed run reaching final AutoPR opens/reuses the final PR with task title/body while preserving branch/noop/error behavior.
 
-- [ ] **TRD-007**: Add real Task aggregate/run-state integration path so final AutoPR context receives task title/description from task state (4h) [satisfies REQ-001, REQ-007] [depends: TRD-004, TRD-005]
+- [x] **TRD-007**: Add real Task aggregate/run-state integration path so final AutoPR context receives task title/description from task state (4h) [satisfies REQ-001, REQ-007] [depends: TRD-004, TRD-005]
   - Validates PRD ACs: AC-001-1, AC-007-1, AC-007-2, AC-007-3.
   - Implementation AC:
     - Given created/approved Task aggregate metadata, when final AutoPR boundary is reached, then captured context contains that metadata.
     - Given local GitHub is unavailable, when test runs, then command runner seam prevents network calls.
 
-- [ ] **TRD-007-TEST**: Add integration test through task creation/approval/run finalization boundary capturing final PR `gh` args (5h) [verifies TRD-007] [satisfies REQ-001, REQ-002, REQ-003, REQ-007] [depends: TRD-007, TRD-003]
+- [x] **TRD-007-TEST**: Add integration test through task creation/approval/run finalization boundary capturing final PR `gh` args (5h) [verifies TRD-007] [satisfies REQ-001, REQ-002, REQ-003, REQ-007] [depends: TRD-007, TRD-003]
   - Validates PRD ACs: AC-001-1, AC-002-1, AC-003-1, AC-007-1, AC-007-2, AC-007-3.
   - Implementation AC:
     - Given task title/body in aggregate, when final PR would be created, then captured `--title`/`--body` equal aggregate values.
     - Given DB/GitHub are unavailable, when focused test runs, then no external network dependency exists.
 
-- [ ] **TRD-008**: Preserve commits-ahead noop, base/head resolution, push-before-create, PR association, and error semantics with task metadata present (3h) [satisfies REQ-004, REQ-006, REQ-009] [depends: TRD-002, TRD-004]
+- [x] **TRD-008**: Preserve commits-ahead noop, base/head resolution, push-before-create, PR association, and error semantics with task metadata present (3h) [satisfies REQ-004, REQ-006, REQ-009] [depends: TRD-002, TRD-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-006-2, AC-009-3.
   - Implementation AC:
     - Given no commits ahead, when task metadata exists, then AutoPR returns `:noop` and does not call `gh`.
     - Given base branch resolution fails, when finalization runs, then typed base-branch error is returned unchanged.
 
-- [ ] **TRD-008-TEST**: Add branch behavior regression tests with task metadata present (4h) [verifies TRD-008] [satisfies REQ-004, REQ-006, REQ-009] [depends: TRD-008]
+- [x] **TRD-008-TEST**: Add branch behavior regression tests with task metadata present (4h) [verifies TRD-008] [satisfies REQ-004, REQ-006, REQ-009] [depends: TRD-008]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-006-2, AC-009-3.
   - Implementation AC:
     - Given no commits ahead plus task metadata, when test runs, then result is `:noop`.
     - Given commits ahead plus task metadata, when test captures commands, then push occurs before create.
     - Given base error, when test runs, then error is not masked by metadata fallback.
 
-- [ ] **TRD-009**: Audit AutoPR and RunExecutor logging to avoid raw task description leakage (2h) [satisfies REQ-012]
+- [x] **TRD-009**: Audit AutoPR and RunExecutor logging to avoid raw task description leakage (2h) [satisfies REQ-012]
   - Validates PRD ACs: AC-005-2, AC-012-1, AC-012-2.
   - Implementation AC:
     - Given description contains sensitive-looking content, when success/failure logs are emitted, then full body text is absent.
     - Given metadata validation fails, when logs are emitted, then field/reason/run id are present without body text.
 
-- [ ] **TRD-009-TEST**: Add logging/redaction tests or assertions for task description not being logged by new code paths (3h) [verifies TRD-009] [satisfies REQ-005, REQ-012] [depends: TRD-009]
+- [x] **TRD-009-TEST**: Add logging/redaction tests or assertions for task description not being logged by new code paths (3h) [verifies TRD-009] [satisfies REQ-005, REQ-012] [depends: TRD-009]
   - Validates PRD ACs: AC-005-2, AC-012-1, AC-012-2.
   - Implementation AC:
     - Given a sentinel secret in description, when new log paths execute, then captured logs do not contain the sentinel.
@@ -269,37 +269,37 @@ RunExecutor context without task metadata
 
 **Shippable State:** Operators and maintainers can see the final AutoPR task-title/task-body behavior documented and verified by focused compile/test gates.
 
-- [ ] **TRD-010**: Review and update behavior-facing docs for final AutoPR task title/body (`README.md`, `docs/user-guide.md`, `docs/cli-reference.md`) (3h) [satisfies REQ-011]
+- [x] **TRD-010**: Review and update behavior-facing docs for final AutoPR task title/body (`README.md`, `docs/user-guide.md`, `docs/cli-reference.md`) (3h) [satisfies REQ-011]
   - Validates PRD ACs: AC-011-1.
   - Implementation AC:
     - Given docs mention final AutoPR title/body, when updated, then they describe task title as PR title and task description as PR body for task-backed runs.
     - Given a doc has no relevant behavior text, when reviewed, then no unrelated text is changed.
 
-- [ ] **TRD-010-TEST**: Add documentation verification notes and grep/source checks for changed AutoPR docs (1h) [verifies TRD-010] [satisfies REQ-011] [depends: TRD-010]
+- [x] **TRD-010-TEST**: Add documentation verification notes and grep/source checks for changed AutoPR docs (1h) [verifies TRD-010] [satisfies REQ-011] [depends: TRD-010]
   - Validates PRD ACs: AC-011-1, AC-011-2.
   - Implementation AC:
     - Given changed docs, when verification runs, then referenced behavior matches source/tests.
     - Given untouched docs, when output is prepared, then no-change rationale is recorded.
 
-- [ ] **TRD-011**: Review `CLAUDE.md` and `AGENTS.md` for operator/agent expectation changes; update surgically or record no-change rationale (2h) [satisfies REQ-010, REQ-011]
+- [x] **TRD-011**: Review `CLAUDE.md` and `AGENTS.md` for operator/agent expectation changes; update surgically or record no-change rationale (2h) [satisfies REQ-010, REQ-011]
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-011-1, AC-011-2.
   - Implementation AC:
     - Given agent policy docs mention AutoPR or Foreman commit expectations, when behavior changes, then text is updated accurately.
     - Given no policy behavior changes are needed, when final output is written, then rationale is explicit.
 
-- [ ] **TRD-011-TEST**: Verify doc-policy consistency and no accidental claims about user-authored commits/hooks (1h) [verifies TRD-011] [satisfies REQ-010, REQ-011] [depends: TRD-011]
+- [x] **TRD-011-TEST**: Verify doc-policy consistency and no accidental claims about user-authored commits/hooks (1h) [verifies TRD-011] [satisfies REQ-010, REQ-011] [depends: TRD-011]
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-011-2.
   - Implementation AC:
     - Given docs mention commit behavior, when reviewed, then they do not contradict Foreman author/no-verify policy.
     - Given `AGENTS.md` is unchanged, when final notes are written, then the review rationale is present.
 
-- [ ] **TRD-012**: Run implementation validation gates and prepare final proof artifact (2h) [satisfies REQ-004, REQ-007, REQ-008, REQ-009, REQ-011, REQ-012] [depends: TRD-001-TEST, TRD-002-TEST, TRD-003-TEST, TRD-004-TEST, TRD-005-TEST, TRD-006-TEST, TRD-007-TEST, TRD-008-TEST, TRD-009-TEST, TRD-010-TEST, TRD-011-TEST]
+- [x] **TRD-012**: Run implementation validation gates and prepare final proof artifact (2h) [satisfies REQ-004, REQ-007, REQ-008, REQ-009, REQ-011, REQ-012] [depends: TRD-001-TEST, TRD-002-TEST, TRD-003-TEST, TRD-004-TEST, TRD-005-TEST, TRD-006-TEST, TRD-007-TEST, TRD-008-TEST, TRD-009-TEST, TRD-010-TEST, TRD-011-TEST]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-007-1, AC-007-2, AC-007-3, AC-008-1, AC-008-2, AC-008-3, AC-009-1, AC-009-2, AC-009-3, AC-011-1, AC-011-2, AC-012-1, AC-012-2.
   - Implementation AC:
     - Given focused tests and compile gates, when they pass or are blocked by environment, then final proof records exact commands and results.
     - Given local Postgres blocks integration tests, when finalizing, then report blocked tests truthfully and include passing compile/diff checks.
 
-- [ ] **TRD-012-TEST**: Validate the final task graph with `trd-cli parse`, compile/tests, and `git diff --check` before implementation completion (2h) [verifies TRD-012] [satisfies REQ-004, REQ-007, REQ-008, REQ-009, REQ-011, REQ-012] [depends: TRD-012]
+- [x] **TRD-012-TEST**: Validate the final task graph with `trd-cli parse`, compile/tests, and `git diff --check` before implementation completion (2h) [verifies TRD-012] [satisfies REQ-004, REQ-007, REQ-008, REQ-009, REQ-011, REQ-012] [depends: TRD-012]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-007-3, AC-008-1, AC-008-2, AC-008-3, AC-009-3, AC-011-1, AC-012-2.
   - Implementation AC:
     - Given TRD file exists, when parsed, then all intended tasks are found and no task parser warnings exist.

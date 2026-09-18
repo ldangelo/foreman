@@ -101,4 +101,53 @@ defmodule ForemanServer.Workflow.RunExecutorAutoPRTaskMetadataTest do
     refute Map.has_key?(context, :task_title)
     refute Map.has_key?(context, :task_description)
   end
+
+  test "task metadata extraction accepts atom keys, string keys, and ignores unknown keys" do
+    atom_context =
+      RunExecutor.__auto_pr_context_for_test__(
+        %{
+          run_id: "run-atom-task",
+          task: %{
+            task_id: "task-atom",
+            title: "Atom title",
+            description: "Atom body",
+            ignored: "do not propagate"
+          },
+          source: :task,
+          current_phase: nil,
+          phase_specs: [],
+          plan_context: %{"project_root" => "/tmp/foreman-autopr-atom"},
+          last_worktree: %{branch: "foreman/task-atom/run-atom-task"}
+        },
+        "main"
+      )
+
+    assert atom_context.task_title == "Atom title"
+    assert atom_context.task_description == "Atom body"
+    refute Map.has_key?(atom_context, :ignored)
+
+    string_context =
+      RunExecutor.__auto_pr_context_for_test__(
+        %{
+          "run_id" => "ignored-string-run-id",
+          run_id: "run-string-task",
+          task: %{
+            "task_id" => "task-string",
+            "title" => "String title",
+            "description" => "String body",
+            "ignored" => "do not propagate"
+          },
+          source: :task,
+          current_phase: nil,
+          phase_specs: [],
+          plan_context: %{"project_root" => "/tmp/foreman-autopr-string"},
+          last_worktree: %{branch: "foreman/task-string/run-string-task"}
+        },
+        "main"
+      )
+
+    assert string_context.task_title == "String title"
+    assert string_context.task_description == "String body"
+    refute Map.has_key?(string_context, :ignored)
+  end
 end
