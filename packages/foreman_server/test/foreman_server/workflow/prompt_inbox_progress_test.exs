@@ -151,7 +151,8 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
       task: %{
         workflow_snapshot: %{"workflow_name" => workflow_name}
       },
-      run_id: "run-test"
+      run_id: "run-test",
+      artifact_base: "/tmp/foreman-test-artifacts"
     }
   end
 end

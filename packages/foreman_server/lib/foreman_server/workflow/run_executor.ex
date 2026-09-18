@@ -1977,28 +1977,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # Reads a workflow-name key from a map, handling both atom and string forms,
-  # and treating nil / blank strings as absent.
-  defp workflow_name_binary(map, key) when is_atom(key) do
-    Map.get(map, key) || Map.get(map, to_string(key)) || blank_workflow_name()
-  end
-
-  defp workflow_name_binary(map, key) when is_binary(key) do
-    Map.get(map, key) || Map.get(map, String.to_existing_atom(key)) || blank_workflow_name()
-  end
-
-  defp blank_workflow_name, do: nil
-
   defp command_phase_inbox_progress_covered?(state, phase_spec) do
-    workflow_snapshot =
-      Map.get(state.task, :workflow_snapshot) || Map.get(state.task, "workflow_snapshot") || %{}
+    # Outer state.task is atom-keyed per ProjectionStore/TaskApproved
+    # deserialization (see comment on load_phases_for_run/1, lines 261-266).
+    # Inner workflow_snapshot is string-keyed because the snapshot's contents
+    # round-trip through JSON when the resolved phase is frozen onto a domain
+    # event. Read each at the boundary with the convention it actually has;
+    # do NOT pattern-match both forms (AGENTS.md §5.4).
+    workflow_snapshot = state_task_workflow_snapshot(state)
 
-    # Normalize once: prefer the snapshot name, skip it if blank, fall back to
-    # the task's own workflow_name / workflow_type fields.
     workflow_name =
-      workflow_name_binary(workflow_snapshot, :workflow_name) ||
-        workflow_name_binary(state.task, :workflow_name) ||
-        workflow_name_binary(state.task, :workflow_type)
+      workflow_snapshot_string(workflow_snapshot, "workflow_name") ||
+        Map.get(state.task, :workflow_name) ||
+        Map.get(state.task, :workflow_type)
 
     phase_name = phase_spec_name(phase_spec)
 
@@ -2008,6 +1999,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Map.get(@command_phase_inbox_progress_targets, workflow_name, MapSet.new()),
         phase_name
       )
+  end
+
+  # Reads state.task[:workflow_snapshot]. Atom-keyed per AGENTS.md §5.4 — any
+  # string-key variant here would be a producer-side bug, not a defensive
+  # read. Returns an empty map when no snapshot is attached.
+  defp state_task_workflow_snapshot(state) do
+    case Map.fetch(state.task, :workflow_snapshot) do
+      {:ok, snapshot} when is_map(snapshot) -> snapshot
+      _ -> %{}
+    end
+  end
+
+  # Reads a key from the inner workflow_snapshot (string-keyed by JSON
+  # round-trip, see above). Empty/missing values fall through to `next`,
+  # so callers can chain `a || b || c` lookups against the same snapshot.
+  defp workflow_snapshot_string(snapshot, key) when is_binary(key) do
+    case Map.fetch(snapshot, key) do
+      {:ok, ""} -> nil
+      {:ok, value} when is_binary(value) -> value
+      _ -> nil
+    end
   end
 
   defp command_phase_inbox_progress_system_prompt do
