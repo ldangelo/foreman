@@ -5,6 +5,10 @@ defmodule ForemanServer.Workflow.PhasePR do
   The request is typed and explicit: base branch is the recorded run base branch,
   head branch is the Foreman run branch, and no defaults are invented. Results
   are phase records, not final run PR associations.
+
+  Phase PR reconciliation must publish the head branch before it reuses a
+  matching open PR. Otherwise a reused PR record can look successful while the
+  provider still shows an older remote head and a stale cumulative diff.
   """
 
   require Logger
@@ -72,6 +76,18 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   @type result :: {:ok, %Record{}} | {:error, %Error{}}
 
+  @doc """
+  Creates or reconciles a phase PR record for this phase.
+
+  Publishes the run head branch, then finds or creates a GitHub PR targeting
+  the recorded run base branch from the same head. Each phase in a run records
+  its own outcome; the underlying PR is shared across all phases in the run
+  because they share the same base/head pair.
+
+  Returns `{:ok, record}` on success, `{:error, error}` on any failure.
+  A `:noop` record (no commits ahead) does not suppress final AutoPR.
+  A `:created` or `:existing` record suppresses final AutoPR.
+  """
   @spec maybe_create(%Request{}) :: result()
   def maybe_create(%Request{} = request) do
     with :ok <- validate_request(request),
@@ -150,14 +166,6 @@ defmodule ForemanServer.Workflow.PhasePR do
   end
 
   defp create_or_reuse(request) do
-    # Push unconditionally on every stack_pr phase with commits ahead of base.
-    # The previous ordering (`matching_pr(open)` first inside `with`)
-    # short-circuited on the reuse path — once a run's first stack_pr phase
-    # created a PR, every later stack_pr phase matched that open PR and
-    # returned `record(:existing, ...)` while skipping `push_head`,
-    # leaving subsequent phase commits local-only and the PR diff stale.
-    # `git push` is idempotent ("Everything up-to-date" exits 0) so calling
-    # it on every invocation costs nothing when the remote is already current.
     with :ok <- push_head(request),
          :none <- matching_pr(request, "open"),
          :none <- matching_pr(request, "closed") do

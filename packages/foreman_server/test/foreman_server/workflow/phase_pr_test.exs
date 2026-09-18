@@ -39,67 +39,70 @@ defmodule ForemanServer.Workflow.PhasePRTest do
     assert record.head_branch == "foreman/run-1"
   end
 
-  test "reuses an existing open head/base PR and still pushes the head" do
+  test "reuses an existing open head/base PR after pushing head" do
     open_json = ~s([{"url":"https://github.com/acme/repo/pull/7","number":7}])
+    {:ok, calls} = Agent.start_link(fn -> [] end)
 
     runner = fn
-      "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
-      "git", ["push", "-u", "origin", "foreman/run-1"], _opts -> {"", 0}
-      "gh", ["pr", "list", "--state", "open" | _], _opts -> {open_json, 0}
+      executable, args, _opts ->
+        Agent.update(calls, &[{executable, args} | &1])
+
+        case {executable, args} do
+          {"git", ["rev-list", "--count", _]} -> {"1\n", 0}
+          {"git", ["push", "-u", "origin", "foreman/run-1"]} -> {"Everything up-to-date\n", 0}
+          {"gh", ["pr", "list", "--state", "open" | _]} -> {open_json, 0}
+        end
     end
 
     assert {:ok, record} = PhasePR.maybe_create(request(%{command_runner: runner}))
     assert record.status == "existing"
     assert record.pr_url == "https://github.com/acme/repo/pull/7"
+
+    assert [{"git", ["push", "-u", "origin", "foreman/run-1"]}] =
+             calls
+             |> Agent.get(&Enum.reverse/1)
+             |> Enum.filter(fn {executable, args} ->
+               executable == "git" and Enum.take(args, 1) == ["push"]
+             end)
   end
 
-  test "stack_pr push fires on every phase, including reuses of an open PR" do
-    # Bug: PhasePR.create_or_reuse/1 ran `push_head(request)` only as a
-    # one-shot; on every later `stack_pr` phase, matching open PRs
-    # short-circuited to `{:ok, %Record{status: "existing"}}` WITHOUT
-    # shipping the phase's commits to the remote — leaving the PR diff
-    # stuck at the first phase's diff. The bug hit every prd.yaml run with
-    # 2+ stack_pr phases.
-    open_json = ~s([{"url":"https://github.com/acme/repo/pull/7","number":7}])
-    test_pid = self()
+  test "three sequential stack PR phases push cumulative branch state" do
+    {repo, remote} = git_fixture!()
+    {:ok, gh_state} = Agent.start_link(fn -> %{open?: false} end)
+    {:ok, pushes} = Agent.start_link(fn -> [] end)
+    runner = git_runner_with_fake_gh(gh_state, pushes)
 
-    runner = fn
-      "git", ["rev-list", "--count", _], _opts ->
-        {"1\n", 0}
+    Enum.each(1..3, fn index ->
+      write_phase_commit!(repo, index)
 
-      "git", ["push", "-u", "origin", "foreman/run-1"], _opts ->
-        send(test_pid, :pushed)
-        {"", 0}
+      assert {:ok, record} =
+               PhasePR.maybe_create(
+                 request(%{
+                   phase_id: "phase-#{index}",
+                   phase_index: index,
+                   phase_name: "phase-#{index}",
+                   cwd: repo,
+                   command_runner: runner
+                 })
+               )
 
-      "gh", ["pr", "list", "--state", "open" | _], _opts ->
-        {open_json, 0}
-    end
+      assert record.status in ["created", "existing"]
+    end)
 
-    # Every reuse must explicitly return :existing — not just push. A
-    # silent status change (e.g. an earlier :created) would let this test
-    # pass while every reuse was actually being treated as a fresh PR,
-    # which would mask a regression to the short-circuit-only path the
-    # fix removes.
-    request_i = fn i ->
-      request(%{
-        phase_index: i,
-        phase_name: "refine-prd",
-        command_runner: runner
-      })
-    end
+    assert Agent.get(pushes, &Enum.reverse/1) == [
+             ["push", "-u", "origin", "foreman/run-1"],
+             ["push", "-u", "origin", "foreman/run-1"],
+             ["push", "-u", "origin", "foreman/run-1"]
+           ]
 
-    assert {:ok, %PhasePR.Record{status: "existing", phase_index: 1}} =
-             PhasePR.maybe_create(request_i.(1))
-
-    assert {:ok, %PhasePR.Record{status: "existing", phase_index: 4}} =
-             PhasePR.maybe_create(request_i.(4))
-
-    assert {:ok, %PhasePR.Record{status: "existing", phase_index: 5}} =
-             PhasePR.maybe_create(request_i.(5))
-
-    assert_received :pushed
-    assert_received :pushed
-    assert_received :pushed
+    assert {"3\n", 0} =
+             System.cmd("git", [
+               "--git-dir",
+               remote,
+               "rev-list",
+               "--count",
+               "main..refs/heads/foreman/run-1"
+             ])
   end
 
   test "closed matching PR is a typed error" do
@@ -124,6 +127,69 @@ defmodule ForemanServer.Workflow.PhasePRTest do
   defp runner_with_ahead(count) do
     fn
       "git", ["rev-list", "--count", _], _opts -> {"#{count}\n", 0}
+    end
+  end
+
+  defp git_fixture! do
+    root = Path.join(System.tmp_dir!(), "foreman-phase-pr-#{System.unique_integer([:positive])}")
+    repo = Path.join(root, "repo")
+    remote = Path.join(root, "remote.git")
+
+    File.rm_rf!(root)
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    git!(root, ["init", "--bare", remote])
+    git!(root, ["init", repo])
+    git!(repo, ["config", "user.email", "foreman@example.com"])
+    git!(repo, ["config", "user.name", "Foreman Test"])
+    git!(repo, ["checkout", "-b", "main"])
+    File.write!(Path.join(repo, "README.md"), "base\n")
+    git!(repo, ["add", "README.md"])
+    git!(repo, ["commit", "-m", "base"])
+    git!(repo, ["remote", "add", "origin", remote])
+    git!(repo, ["push", "-u", "origin", "main"])
+    git!(repo, ["checkout", "-b", "foreman/run-1"])
+
+    {repo, remote}
+  end
+
+  defp write_phase_commit!(repo, index) do
+    path = Path.join(repo, "phase-#{index}.txt")
+    File.write!(path, "phase #{index}\n")
+    git!(repo, ["add", Path.basename(path)])
+    git!(repo, ["commit", "-m", "phase #{index}"])
+  end
+
+  defp git_runner_with_fake_gh(gh_state, pushes) do
+    fn
+      "git", ["push" | _] = args, opts ->
+        Agent.update(pushes, &[args | &1])
+        System.cmd("git", args, opts)
+
+      "git", args, opts ->
+        System.cmd("git", args, opts)
+
+      "gh", ["pr", "list", "--state", "open" | _], _opts ->
+        if Agent.get(gh_state, & &1.open?) do
+          {~s([{"url":"https://github.com/acme/repo/pull/7","number":7}]), 0}
+        else
+          {"[]", 0}
+        end
+
+      "gh", ["pr", "list", "--state", "closed" | _], _opts ->
+        {"[]", 0}
+
+      "gh", ["pr", "create" | _], _opts ->
+        Agent.update(gh_state, &%{&1 | open?: true})
+        {"https://github.com/acme/repo/pull/7\n", 0}
+    end
+  end
+
+  defp git!(cwd, args) do
+    case System.cmd("git", args, cd: cwd, stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, exit_code} -> flunk("git #{Enum.join(args, " ")} failed (#{exit_code}): #{output}")
     end
   end
 
