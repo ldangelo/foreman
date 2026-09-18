@@ -554,7 +554,7 @@ own state, so for a known run the read cannot fail, and declaring failures that
 cannot occur misdescribes the contract. Redact and control-character-normalize
 output before event persistence.
 
-`foreman_inbox_get` reads the per-run operator inbox projection; `foreman_inbox_send` is the write-gated MCP progress-note tool. It dispatches public `inbox.send` through `CommandGateway` only when `allow_workflow_writes: true`, requires `run_id` plus a 1-2,000 character body, permits only safe metadata keys (`phase_id`, `worker_id`, `session_id`, `severity`), and must not carry secrets, prompts, large logs, or command output. Inbox progress complements logs/events/activity; it does not replace them. Bundled prompts tell agents to continue work if the tool is denied or unavailable.
+`foreman_inbox_get` reads the per-run operator inbox projection; `foreman_inbox_send` is the write-gated MCP progress-note tool. It dispatches public `inbox.send` through `CommandGateway` only when `allow_workflow_writes: true`, requires `run_id` plus a 1-2,000 character body, permits only safe metadata keys (`phase_id`, `worker_id`, `session_id`, `severity`), and must not carry secrets, prompts, large logs, or command output. Inbox progress complements logs/events/activity; it does not replace them. Bundled prompts tell agents to continue work if the tool is denied or unavailable. Built-in `prd`/`fix` command phases receive the same guidance via worker `system_prompt`; slash-command prompt bytes stay unchanged.
 
 **stdout and stderr arrive on different `Jido.Harness` events, and this is the
 one thing to check when a channel comes back empty.** stdout text rides

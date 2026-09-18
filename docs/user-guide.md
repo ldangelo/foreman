@@ -747,8 +747,11 @@ allows JSON-safe metadata keys `phase_id`, `worker_id`, `session_id`, and
 `severity`. Prompts tell agents to send phase start, material milestone,
 blocker, and phase completion notes when the tool is available, never secrets,
 prompts, large logs, or command output; denial/unavailability must not block
-work. After editing bundled prompts or workflows, run `npm run build` if assets
-need regeneration and `foreman init --force` to install fresh runtime copies.
+work. Built-in `prd`/`fix` command phases receive the same guidance through a
+worker `system_prompt` sidecar, so their slash-command prompt text stays
+unchanged. After editing bundled prompts or workflows, run `npm run build` if
+assets need regeneration and `foreman init --force` to install fresh runtime
+copies.
 
 Tool call failures are MCP tool errors carrying the gateway's
 structured reason, never transport-level JSON-RPC errors.

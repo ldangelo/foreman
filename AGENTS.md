@@ -362,6 +362,9 @@ dispatched process: run-d6cdefe69706087e6bce5b1a10b95384's pi transcript runs
 substitutes the rendered command string for the rendered prompt
 (`run_executor.ex:470-477`); `request.prompt` survives only as the fallback for
 a command that renders to nil, so for any real command phase it is discarded.
+Built-in `prd`/`fix` command phases keep those command prompt bytes unchanged;
+Foreman-owned inbox progress guidance rides separately through worker
+`system_prompt`.
 Anything such a phase must know — the artifact path, and the task subject
 itself — therefore travels by env or does not travel. With neither, the agent
 reconstructs a subject from repository reconnaissance: three live runs
