@@ -235,15 +235,15 @@ Operator and developer docs MUST describe the real behavior after this change.
 
 ### REQ-012: Protect secrets, prompts, and large output
 
-Priority: Should  
+Priority: Must
 Complexity: Medium
 Risk: Progress messages that include prompts, credentials, logs, or command output can expose sensitive data and bloat the run inbox.
 
-Progress updates SHOULD maintain the same safety boundaries as existing prompt guidance.
+Progress updates MUST maintain the same safety boundaries as existing prompt guidance — and MUST NOT surface message bodies, including sensitive data, via telemetry metadata. AC-012-3 is the release-blocking control: an implementation that satisfies every other MUST while adding inbox message bodies to telemetry metadata does NOT satisfy this requirement.
 
 - AC-012-1: Given a phase has access to task prompts, credentials, environment variables, or command output, when it sends an inbox note, then those contents are not copied into the note.
 - AC-012-2: Given a phase has a large log or test output, when progress is sent, then the inbox note summarizes state and points to normal artifacts/logs instead of embedding output.
-- AC-012-3: Given a phase processes sensitive data, when telemetry for inbox send is captured, then message body contents are not added to telemetry metadata.
+- AC-012-3: Given a phase processes sensitive data, when telemetry for inbox send is captured, then message body contents are not added to telemetry metadata. Release-blocking; non-negotiable.
 
 ### REQ-013: Preserve existing review-tail behavior
 
