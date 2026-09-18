@@ -760,6 +760,9 @@ defmodule ForemanServer.ActorHookTest.StubProvider do
   @impl true
   def add_dependency(_project_id, _task_id, _depends_on), do: :ok
 
+  @impl true
+  def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+
   defp default_issue do
     %Issue{
       id: "stub-default",

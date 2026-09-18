@@ -12,6 +12,8 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.ManifestWriter
   alias ForemanServer.MCP.Policy
   alias ForemanServer.MCP.ToolError
+  alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServerWeb.MCP.Tools.Doctor, as: MCPDoctor
 
   # Typed DTOs — per AGENTS.md §5.1.
@@ -78,6 +80,18 @@ defmodule ForemanServer.MCP.Tools do
     @type t :: %__MODULE__{run_id: String.t(), message_id: String.t(), status: String.t()}
     @derive Jason.Encoder
     defstruct [:run_id, :message_id, :status]
+  end
+
+  defmodule TaskAddCommentResult do
+    @enforce_keys [:run_id, :task_id, :provider, :status]
+    @type t :: %__MODULE__{
+            run_id: String.t(),
+            task_id: String.t(),
+            provider: String.t(),
+            status: String.t()
+          }
+    @derive Jason.Encoder
+    defstruct [:run_id, :task_id, :provider, :status]
   end
 
   # String → atom map for backend names accepted by Router.manual/1.
@@ -275,6 +289,30 @@ defmodule ForemanServer.MCP.Tools do
         }
       },
       required: ["task_id"]
+    }
+  }
+
+  @schema_foreman_task_add_comment %{
+    name: "foreman_task_add_comment",
+    description:
+      "Append a structured Work Log comment to the provider-backed task for a run. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        run_id: %{type: "string", description: "The Foreman run ID"},
+        workflow_name: %{
+          type: "string",
+          maxLength: 100,
+          description: "Workflow name (1-100 chars)"
+        },
+        phase_name: %{type: "string", maxLength: 100, description: "Phase name (1-100 chars)"},
+        description: %{
+          type: "string",
+          maxLength: 2000,
+          description: "Concise work performed description (1-2000 chars)"
+        }
+      },
+      required: ["run_id", "workflow_name", "phase_name", "description"]
     }
   }
 
@@ -500,6 +538,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_task_list,
     @schema_foreman_task_get,
     @schema_foreman_task_update,
+    @schema_foreman_task_add_comment,
     @schema_foreman_run_cancel,
     @schema_foreman_run_pause,
     @schema_foreman_run_resume,
@@ -1149,6 +1188,164 @@ defmodule ForemanServer.MCP.Tools do
 
   defp inbox_send_tool_error(reason),
     do: %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}
+
+  @task_add_comment_args [:run_id, :workflow_name, :phase_name, :description]
+  @task_add_comment_field_max 100
+  @task_add_comment_description_max 2_000
+  @task_add_comment_body_max 2_500
+
+  defp tool_foreman_task_add_comment(%{} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    with :ok <- authorize_write_tool("foreman_task_add_comment"),
+         :ok <- reject_unknown_task_add_comment_args(args),
+         {:ok, run_id} <- required_nonblank(args, :run_id),
+         {:ok, workflow_name} <-
+           required_bounded(args, :workflow_name, @task_add_comment_field_max),
+         {:ok, phase_name} <- required_bounded(args, :phase_name, @task_add_comment_field_max),
+         {:ok, description} <-
+           required_bounded(args, :description, @task_add_comment_description_max),
+         {:ok, body} <- compose_task_comment_body(workflow_name, phase_name, description),
+         {:ok, run} <- fetch_comment_run(run_id),
+         {:ok, task_id} <- fetch_comment_task_id(run),
+         {:ok, task} <- fetch_comment_task(task_id),
+         {:ok, external_id} <- fetch_comment_external_id(task),
+         {:ok, project_id} <- fetch_comment_project_id(run),
+         {:ok, provider_module, provider_config} <- fetch_comment_provider_config(project_id),
+         {:ok, _comment} <- provider_module.comment(external_id, body, provider_config) do
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_task_add_comment", :ok)
+
+      {:ok,
+       %__MODULE__.TaskAddCommentResult{
+         run_id: run_id,
+         task_id: task_id,
+         provider: provider_name(provider_module),
+         status: "comment_added"
+       }}
+    else
+      {:error, %ToolError{}} = error ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_task_add_comment", :error)
+        error
+
+      {:error, %ProviderError{} = provider_error} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_task_add_comment", :error)
+        {:error, provider_comment_tool_error(provider_error)}
+    end
+  end
+
+  defp reject_unknown_task_add_comment_args(args) do
+    unknown = Map.keys(args) -- @task_add_comment_args
+
+    if unknown == [] do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message: "Unknown arguments: " <> Enum.map_join(unknown, ", ", &to_string/1)
+       }}
+    end
+  end
+
+  defp required_bounded(args, key, max_length) do
+    with {:ok, value} <- required_nonblank(args, key) do
+      if String.length(value) <= max_length do
+        {:ok, value}
+      else
+        {:error,
+         %ToolError{
+           code: "INVALID_PARAMS",
+           message: "#{key} must be at most #{max_length} UTF-8 characters"
+         }}
+      end
+    end
+  end
+
+  defp compose_task_comment_body(workflow_name, phase_name, description) do
+    body = """
+    Work Log
+    Workflow: #{workflow_name}
+    Phase: #{phase_name}
+
+    Work performed:
+    #{description}
+    """
+
+    if String.length(body) <= @task_add_comment_body_max do
+      {:ok, body}
+    else
+      {:error,
+       %ToolError{
+         code: "INVALID_PARAMS",
+         message:
+           "composed Work Log body must be at most #{@task_add_comment_body_max} UTF-8 characters"
+       }}
+    end
+  end
+
+  defp fetch_comment_run(run_id) do
+    case ProjectionStore.run(run_id) do
+      nil -> {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+      run -> {:ok, run}
+    end
+  end
+
+  defp fetch_comment_task_id(run) do
+    case Map.get(run, :task_id) do
+      task_id when is_binary(task_id) and task_id != "" -> {:ok, task_id}
+      _ -> {:error, %ToolError{code: "INVALID_STATE", message: "Run is not bound to a task"}}
+    end
+  end
+
+  defp fetch_comment_task(task_id) do
+    case ProjectionStore.task_projection(task_id) do
+      nil -> {:error, %ToolError{code: "NOT_FOUND", message: "Task not found"}}
+      task -> {:ok, task}
+    end
+  end
+
+  defp fetch_comment_external_id(task) do
+    case Map.get(task, :external_id) do
+      external_id when is_binary(external_id) and external_id != "" -> {:ok, external_id}
+      _ -> {:error, %ToolError{code: "INVALID_STATE", message: "Task has no provider issue id"}}
+    end
+  end
+
+  defp fetch_comment_project_id(run) do
+    case Map.get(run, :project_id) do
+      project_id when is_binary(project_id) and project_id != "" -> {:ok, project_id}
+      _ -> {:error, %ToolError{code: "INVALID_STATE", message: "Run has no project id"}}
+    end
+  end
+
+  defp fetch_comment_provider_config(project_id) do
+    case TaskProviderRegistry.project_config(project_id) do
+      {:ok, %{provider_module: provider_module, config: config}} ->
+        {:ok, provider_module, config}
+
+      {:error, reason} ->
+        {:error,
+         %ToolError{
+           code: "PROVIDER_CONFIG_ERROR",
+           message: "Task provider config unavailable: #{inspect(reason)}"
+         }}
+    end
+  end
+
+  defp provider_name(provider_module) do
+    if function_exported?(provider_module, :name, 0) do
+      provider_module.name() |> to_string()
+    else
+      inspect(provider_module)
+    end
+  end
+
+  defp provider_comment_tool_error(%ProviderError{} = provider_error) do
+    %ToolError{code: provider_error.code, message: provider_error.message}
+  end
 
   defp tool_foreman_task_create(
          %{

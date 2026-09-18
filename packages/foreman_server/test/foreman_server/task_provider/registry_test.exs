@@ -45,6 +45,9 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+
+    @impl true
     def create(_attrs, _project_config),
       do: {:error, ForemanServer.TaskProviders.ProviderError.new("test", "create not supported")}
   end
@@ -87,6 +90,9 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
 
     @impl true
     def create(_attrs, _project_config),
@@ -133,6 +139,9 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
     @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+
+    @impl true
     def create(_attrs, _project_config),
       do: {:error, ForemanServer.TaskProviders.ProviderError.new("test", "create not supported")}
   end
@@ -175,6 +184,9 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
 
     @impl true
     def create(_attrs, _project_config),

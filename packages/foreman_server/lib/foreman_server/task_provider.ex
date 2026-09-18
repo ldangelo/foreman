@@ -3,13 +3,14 @@ defmodule ForemanServer.TaskProvider do
   TRD-2026-48f7b420 §PR 1a: behaviour for task provider integrations.
 
   Providers expose three metadata callbacks (`name/0`, `capabilities/0`,
-  `available?/0`) plus nine operational callbacks (`create/2`, `list_ready/2`,
-  `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, and
-  `add_dependency/3`). The `@callback` declarations define the contract and
-  provide the `behaviour_info(:callbacks)` reflection used by TRD-001-TEST.
+  `available?/0`) plus ten operational callbacks (`create/2`, `list_ready/2`,
+  `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`,
+  `add_dependency/3`, and `comment/3`). The `@callback` declarations define the
+  contract and provide the `behaviour_info(:callbacks)` reflection used by
+  TRD-001-TEST.
   """
 
-  alias ForemanServer.TaskProvider.Issue
+  alias ForemanServer.TaskProvider.{Comment, Issue}
   alias ForemanServer.TaskProviders.ProviderError
 
   @typedoc "Provider-specific project configuration resolved from application config."
@@ -35,6 +36,12 @@ defmodule ForemanServer.TaskProvider do
 
   @typedoc "Provider-specific priority payload."
   @type priority :: term()
+
+  @typedoc "Fully composed comment/work-log body supplied to a provider."
+  @type comment_body :: String.t()
+
+  @typedoc "Provider comment write result."
+  @type comment_result :: {:ok, Comment.t()} | {:error, ProviderError.t()}
 
   @typedoc "Single-issue lookup result."
   @type issue_result :: {:ok, Issue.t()} | {:error, ProviderError.t()}
@@ -90,4 +97,7 @@ defmodule ForemanServer.TaskProvider do
 
   @doc "Add a dependency edge between two provider issues."
   @callback add_dependency(issue_id(), issue_id(), project_config()) :: :ok | {:error, term()}
+
+  @doc "Append a fully composed comment/work-log body to a provider issue."
+  @callback comment(issue_id(), comment_body(), project_config()) :: comment_result()
 end

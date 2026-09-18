@@ -54,6 +54,9 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
+    @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+
     def preflight_database(_database_path, _opts), do: :ok
   end
 
@@ -104,6 +107,9 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
 
+    @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
+
     def preflight_database(_database_path, _opts), do: :ok
   end
 
@@ -152,6 +158,9 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def comment(_id, _body, _project_config), do: {:error, :not_implemented}
 
     def preflight_database(_database_path, _opts) do
       {:error, ProviderError.new("DATABASE_NOT_FOUND", "database missing")}

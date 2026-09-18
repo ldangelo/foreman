@@ -115,6 +115,43 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     )
   end
 
+  test "comments_add request translates to br comments add with message, json, and db",
+       %{temp_dir: temp_dir} do
+    with_fake_br(
+      temp_dir,
+      "for arg in \"$@\"; do\n  printf '%s\\n' \"$arg\"\ndone\n",
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd(
+                   {:comments_add, %{id: "task-1", body: "Work Log\nDone"}},
+                   %{database_path: "/tmp/cached.db"}
+                 )
+
+        assert String.split(stdout, "\n", trim: true) ==
+                 [
+                   "comments",
+                   "add",
+                   "task-1",
+                   "--message",
+                   "Work Log\nDone",
+                   "--json",
+                   "--db",
+                   "/tmp/cached.db"
+                 ]
+      end
+    )
+  end
+
+  test "comments_add rejects blank id/body before invoking br" do
+    assert_raise ArgumentError, ~r/expected :id to be a non-empty binary/, fn ->
+      SystemBrRunner.cmd({:comments_add, %{id: "", body: "body"}}, %{database_path: "/tmp/db"})
+    end
+
+    assert_raise ArgumentError, ~r/expected :body to be a non-empty binary/, fn ->
+      SystemBrRunner.cmd({:comments_add, %{id: "task-1", body: ""}}, %{database_path: "/tmp/db"})
+    end
+  end
+
   test "version request translates to br --version", %{temp_dir: temp_dir} do
     with_fake_br(
       temp_dir,
