@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-81f29bf4
 label: trd-autopr-task-title-body
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 prd_reference: docs/PRD/PRD-2026-81f29bf4-autopr-task-title-body.md
@@ -12,6 +12,7 @@ total_acceptance_criteria: 31
 design_readiness_score: 4.8
 readiness_score: 4.8
 total_tasks: 24
+total_hours_estimate: 62
 kind: trd
 ---
 
@@ -328,7 +329,8 @@ RunExecutor context without task metadata
 TRD-001 -> TRD-002 -> TRD-002-TEST
 TRD-001 -> TRD-001-TEST
 TRD-003 -> TRD-003-TEST
-TRD-004 -> TRD-004-TEST -> TRD-005 -> TRD-005-TEST
+TRD-004 -> TRD-004-TEST
+TRD-004 -> TRD-005 -> TRD-005-TEST
 TRD-004,TRD-005 -> TRD-007 -> TRD-007-TEST
 TRD-002,TRD-004 -> TRD-008 -> TRD-008-TEST
 TRD-006 -> TRD-006-TEST
@@ -338,7 +340,9 @@ TRD-011 -> TRD-011-TEST
 all tests -> TRD-012 -> TRD-012-TEST
 ```
 
-No circular dependencies identified. Longest chain depth is acceptable for a four-PR stack. No task is estimated at 8h+.
+No circular dependencies identified. Longest chain depth is acceptable for a four-PR stack. No task is estimated at 8h+. Total estimate: 62h.
+
+Dependency graph refinement note: implementation tasks are sequenced before their paired test tasks; cross-PR dependencies flow backward only, so each PR remains shippable without depending on later PR work.
 
 ## Acceptance Criteria Traceability
 
@@ -422,3 +426,8 @@ Suggested next commands:
 /ensemble-configure-team docs/TRD/TRD-2026-81f29bf4-autopr-task-title-body.md
 /ensemble-implement-trd-beads docs/TRD/TRD-2026-81f29bf4-autopr-task-title-body.md
 ```
+
+## Version History
+
+- **1.0.1** — 2026-09-18 — Foreman refinement pass: added total hour estimate metadata, clarified dependency graph sequencing, recorded PR-stack shippability validation, and preserved 24-task scope/readiness.
+- **1.0.0** — 2026-09-18 — Initial TRD generated from PRD-2026-81f29bf4.
