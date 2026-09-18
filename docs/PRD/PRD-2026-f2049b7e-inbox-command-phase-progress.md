@@ -26,7 +26,7 @@ Foreman task title read from user-delivered Foreman subject: **Wire foreman_inbo
 | Metric | Value |
 |---|---:|
 | Requirement coverage | 14/14 (100%) |
-| Acceptance criteria coverage | 14/14 (100%) |
+| Acceptance criteria coverage | 44/44 (100%) |
 | Risk flags | 11 |
 | Dependencies | 12 |
 | Open ambiguity markers | 0 |

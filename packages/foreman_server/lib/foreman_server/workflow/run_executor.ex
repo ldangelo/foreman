@@ -1994,7 +1994,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     phase_name = phase_spec_name(phase_spec)
 
     phase_action(phase_spec) == :command and
-      is_binary(workflow_name) and
+      is_binary(workflow_name) and workflow_name != "" and
       MapSet.member?(
         Map.get(@command_phase_inbox_progress_targets, workflow_name, MapSet.new()),
         phase_name
