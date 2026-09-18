@@ -64,7 +64,8 @@ defmodule ForemanServer.Workflow.PhasePRTest do
     test_pid = self()
 
     runner = fn
-      "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+      "git", ["rev-list", "--count", _], _opts ->
+        {"1\n", 0}
 
       "git", ["push", "-u", "origin", "foreman/run-1"], _opts ->
         send(test_pid, :pushed)
