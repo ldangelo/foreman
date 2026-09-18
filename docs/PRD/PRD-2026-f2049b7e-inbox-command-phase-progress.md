@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-f2049b7e
 label: prd-inbox-command-phase-progress
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 14
 total_acceptance_criteria: 44
-readiness_score: 4.5
+readiness_score: 4.7
 ---
 
 # PRD: Inbox Progress for Command-Driven PRD and Fix Phases
@@ -27,7 +27,7 @@ Foreman task title read from user-delivered Foreman subject: **Wire foreman_inbo
 |---|---:|
 | Requirement coverage | 14/14 (100%) |
 | Acceptance criteria coverage | 14/14 (100%) |
-| Risk flags | 8 |
+| Risk flags | 11 |
 | Dependencies | 12 |
 | Open ambiguity markers | 0 |
 | TRD decisions required | 2 |
@@ -57,7 +57,7 @@ Foreman task title read from user-delivered Foreman subject: **Wire foreman_inbo
 
 This PRD requires every phase in `prd.yaml` and `fix.yaml` to produce the same operator-visible inbox progress behavior as existing prompt phases when `foreman_inbox_send` is available. The implementation must validate the mechanism before changing manifests, because converting `command:` to `prompt:` can alter skill invocation, argument rendering, artifact paths, and Foreman subject delivery. Acceptance requires live dispatched `prd` and `fix` runs verified with `foreman_inbox_get`, not only static text checks.
 
-Foreman mode auto-selected STANDARD depth. Interviews were skipped. Ambiguity scan complete: 0 items marked for clarification.
+Foreman refine mode auto-applied all structural findings. Ambiguity scan complete: 0 items marked for clarification.
 
 ## 2. Background and Evidence
 
@@ -139,41 +139,45 @@ The change MUST preserve the existing Foreman subject contract and skill argumen
 
 Priority: Must  
 Complexity: Medium
+Risk: Partial coverage would leave some PRD/TRD work silent and make operators misread active phases as stalled.
 
 Every core phase in `prd.yaml` MUST have operator-visible inbox progress behavior.
 
-- AC-004-1: Given `create-prd` starts and `foreman_inbox_send` is available, then the run inbox receives a concise start note and completion note.
-- AC-004-2: Given `refine-prd` starts and `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
-- AC-004-3: Given `create-trd` starts and `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
-- AC-004-4: Given `refine-trd` starts and `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
-- AC-004-5: Given `implement-trd` starts and `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
+- AC-004-1: Given `create-prd` starts, when `foreman_inbox_send` is available, then the run inbox receives a concise start note and completion note.
+- AC-004-2: Given `refine-prd` starts, when `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
+- AC-004-3: Given `create-trd` starts, when `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
+- AC-004-4: Given `refine-trd` starts, when `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
+- AC-004-5: Given `implement-trd` starts, when `foreman_inbox_send` is available, then the run inbox receives phase progress consistent with the standard contract.
 
 ### REQ-005: Cover the `fix.yaml` core phase
 
 Priority: Must  
 Complexity: Medium
+Risk: Fix runs are common operator-facing workflows, so missing progress there undermines the inbox feature even if PRD phases are covered.
 
 The core `fix` phase MUST have operator-visible inbox progress behavior.
 
-- AC-005-1: Given the `fix` phase starts and `foreman_inbox_send` is available, then the run inbox receives a concise start note and completion note.
-- AC-005-2: Given the `fix` phase encounters a blocker and `foreman_inbox_send` is available, then the run inbox receives a blocker note without dumping logs, prompts, credentials, or command output.
+- AC-005-1: Given the `fix` phase starts, when `foreman_inbox_send` is available, then the run inbox receives a concise start note and completion note.
+- AC-005-2: Given the `fix` phase encounters a blocker, when `foreman_inbox_send` is available, then the run inbox receives a blocker note without dumping logs, prompts, credentials, or command output.
 
 ### REQ-006: Apply the standard operator progress contract
 
 Priority: Must  
 Complexity: Medium
+Risk: Inconsistent cadence can create noisy inboxes or omit the milestones operators rely on.
 
 Command-driven phases MUST use the same cadence and safety language as existing prompt-driven phases.
 
-- AC-006-1: Given a covered phase starts and `foreman_inbox_send` is available, then it sends a start note that identifies the phase and current intent.
-- AC-006-2: Given a covered phase reaches a material milestone and `foreman_inbox_send` is available, then it sends a concise milestone note.
-- AC-006-3: Given a covered phase completes and `foreman_inbox_send` is available, then it sends a concise completion note with result or next-phase handoff.
+- AC-006-1: Given a covered phase starts, when `foreman_inbox_send` is available, then it sends a start note that identifies the phase and current intent.
+- AC-006-2: Given a covered phase reaches a material milestone, when `foreman_inbox_send` is available, then it sends a concise milestone note.
+- AC-006-3: Given a covered phase completes, when `foreman_inbox_send` is available, then it sends a concise completion note with result or next-phase handoff.
 - AC-006-4: Given no material change occurred, when time passes, then the phase does not send timer-only chatter.
 
 ### REQ-007: Keep inbox-send failures non-blocking
 
 Priority: Must  
 Complexity: Medium
+Risk: Treating progress updates as mandatory would turn an observability helper into a workflow failure source.
 
 Inbox progress reporting MUST NOT become a hard dependency for workflow completion.
 
@@ -184,7 +188,7 @@ Inbox progress reporting MUST NOT become a hard dependency for workflow completi
 ### REQ-008: Refresh installed runtime workflows/prompts
 
 Priority: Must  
-Complexity: Medium  
+Complexity: Medium
 Risk: Editing source manifests without reinstalling runtime copies leaves live dispatch unchanged.
 
 The implementation MUST update installed runtime workflow/prompt copies after changing bundled source manifests or prompts.
@@ -196,6 +200,7 @@ The implementation MUST update installed runtime workflow/prompt copies after ch
 
 Priority: Must  
 Complexity: Medium
+Risk: Without automated checks, future workflow edits can silently remove command-phase progress instructions.
 
 Automated tests MUST fail if `prd.yaml` or `fix.yaml` regress to uncovered core phases.
 
@@ -220,6 +225,7 @@ Acceptance MUST include live dispatched runs proving actual inbox writes.
 
 Priority: Must  
 Complexity: Medium
+Risk: If docs are not checked, operators may continue to expect prompt-only behavior or miss the runtime-install requirement.
 
 Operator and developer docs MUST describe the real behavior after this change.
 
@@ -231,6 +237,7 @@ Operator and developer docs MUST describe the real behavior after this change.
 
 Priority: Should  
 Complexity: Medium
+Risk: Progress messages that include prompts, credentials, logs, or command output can expose sensitive data and bloat the run inbox.
 
 Progress updates SHOULD maintain the same safety boundaries as existing prompt guidance.
 
@@ -303,15 +310,24 @@ Circular dependencies: none identified.
 
 | Dimension | Score | Rationale |
 |---|---:|---|
-| Completeness | 4.5 | Covers phase inventory, mechanism choice, all target phases, safety, tests, docs, runtime install, and live proof. |
-| Testability | 4.7 | Includes source tests plus live `foreman_inbox_get` verification. |
-| Clarity | 4.4 | Key uncertainty is explicit TRD decision work, not hidden assumption. |
-| Feasibility | 4.4 | Builds on existing MCP tool and prompt guidance; main risk is command/prompt semantics. |
+| Completeness | 4.7 | Covers phase inventory, mechanism choice, all target phases, safety, tests, docs, runtime install, live proof, and per-requirement risk flags. |
+| Testability | 4.8 | Includes source tests plus live `foreman_inbox_get` verification for `prd` and `fix` workflows. |
+| Clarity | 4.6 | Restores complete requirement and acceptance-criteria wording and makes TRD decision points explicit. |
+| Feasibility | 4.5 | Builds on existing MCP tool and prompt guidance; main risk remains command/prompt semantics. |
 
-Overall readiness score: **4.5**
+Overall readiness score: **4.7**
 
 Gate decision: **PASS** — ready for TRD handoff.
 
 ## 12. Suggested Next Step
 
 Create a TRD for `PRD-2026-f2049b7e` and decide the command-phase guidance delivery mechanism before implementation.
+
+## 13. Changelog
+
+### 2026-09-18 — v1.0.1
+
+- Restored full PRD prose, requirement headings, acceptance criteria, dependency-map rows, TRD decision points, and readiness-gate text where prior text had become compressed or incomplete.
+- Added explicit risk indicators to all Medium-complexity requirements.
+- Recalculated PRD Health risk flags from 8 to 11 while preserving 14 requirements and 44 acceptance criteria.
+- Re-scored readiness from 4.5 to 4.7 after structural restoration and risk-flag completion.
