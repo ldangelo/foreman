@@ -57,6 +57,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_task_list",
                "foreman_task_get",
                "foreman_task_update",
+               "foreman_task_add_comment",
                "foreman_run_cancel",
                "foreman_run_pause",
                "foreman_run_resume",
@@ -123,6 +124,18 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert Map.has_key?(tool.inputSchema.properties, "command_id")
       assert Map.has_key?(tool.inputSchema.properties, "metadata")
       refute Tools.list_tools() |> Enum.any?(&(&1.name == "foreman_inbox_delivery_update"))
+    end
+
+    test "foreman_task_add_comment advertises structured Work Log schema without provider ids" do
+      tool = Tools.list_tools() |> Enum.find(&(&1.name == "foreman_task_add_comment"))
+
+      assert tool.inputSchema.required == ["run_id", "workflow_name", "phase_name", "description"]
+      assert tool.inputSchema.properties.workflow_name.maxLength == 100
+      assert tool.inputSchema.properties.phase_name.maxLength == 100
+      assert tool.inputSchema.properties.description.maxLength == 2_000
+      refute Map.has_key?(tool.inputSchema.properties, :task_id)
+      refute Map.has_key?(tool.inputSchema.properties, :provider_issue_id)
+      refute Map.has_key?(tool.inputSchema.properties, :body)
     end
   end
 

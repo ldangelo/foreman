@@ -744,4 +744,7 @@ defmodule ForemanServer.ActorCompensationTest.StubProvider do
   def set_priority(_project_id, _id, _priority), do: :ok
   @impl true
   def add_dependency(_project_id, _id, _depends_on), do: :ok
+
+  @impl true
+  def annotate(_id, _body, _project_config), do: {:error, :not_implemented}
 end

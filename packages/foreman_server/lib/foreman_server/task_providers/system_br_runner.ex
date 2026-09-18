@@ -15,6 +15,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     update: "update",
     set_priority: "update",
     add_dependency: "dep",
+    comments_add: "comments",
     create: "create",
     coordination_status: "coordination",
     close: "close",
@@ -157,6 +158,14 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ["br", "coordination", "status", "--db", database_path | action_argv]
   end
 
+  defp build_argv({:comments_add, _payload} = request, project_config) do
+    {action, payload} = validate_request!(request)
+    database_path = fetch_database_path!(project_config)
+    action_argv = build_action_argv(action, payload)
+
+    ["br" | action_argv] ++ ["--json", "--db", database_path]
+  end
+
   defp build_argv(request, project_config) do
     {action, payload} = validate_request!(request)
     database_path = fetch_database_path!(project_config)
@@ -268,6 +277,18 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ]
   end
 
+  defp build_action_argv(:comments_add, payload) do
+    validate_payload_shape!(:comments_add, payload)
+
+    [
+      "comments",
+      "add",
+      fetch_optional(payload, :id),
+      "--message",
+      fetch_optional(payload, :body)
+    ]
+  end
+
   defp build_action_argv(:close, payload) do
     validate_payload_shape!(:close, payload)
 
@@ -373,6 +394,24 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       other ->
         raise ArgumentError,
               "expected :dependency_id to be a non-empty binary, got: #{inspect(other)}"
+    end
+  end
+
+  defp validate_payload_shape!(:comments_add, payload) do
+    case fetch_optional(payload, :id) do
+      id when is_binary(id) and id != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :id to be a non-empty binary, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :body) do
+      body when is_binary(body) and body != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :body to be a non-empty binary, got: #{inspect(other)}"
     end
   end
 

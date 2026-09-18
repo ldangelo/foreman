@@ -6,7 +6,7 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
   @workflow_dir Path.expand("../../../priv/defaults/workflows", __DIR__)
   @prompt_dir Path.join(@workflow_dir, "prompts")
 
-  test "bundled prompts include non-blocking inbox progress guidance" do
+  test "bundled prompts include non-blocking inbox progress and Work Log guidance" do
     prompts = Path.wildcard(Path.join(@prompt_dir, "*.md"))
     assert prompts != []
 
@@ -128,6 +128,10 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
 
   defp assert_progress_contract!(body, label) do
     assert body =~ "foreman_inbox_send", "#{label} must mention foreman_inbox_send"
+    assert body =~ "foreman_task_add_comment", "#{label} must mention foreman_task_add_comment"
+    assert body =~ "Work Log", "#{label} must describe task Work Log comments"
+    assert body =~ "Use only the tool", "#{label} must avoid direct provider writes"
+    assert body =~ "do not run `br`", "#{label} must prohibit direct Beads CLI usage"
     assert body =~ "phase start", "#{label} must mention phase start progress"
     assert body =~ "material milestones", "#{label} must mention material milestone progress"
     assert body =~ "blockers", "#{label} must mention blocker progress"

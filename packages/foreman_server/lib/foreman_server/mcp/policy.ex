@@ -4,6 +4,7 @@ defmodule ForemanServer.MCP.Policy do
   @write_tools [
     "foreman_task_create",
     "foreman_task_update",
+    "foreman_task_add_comment",
     "foreman_run_cancel",
     "foreman_run_pause",
     "foreman_run_resume",

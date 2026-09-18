@@ -5,7 +5,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
-  alias ForemanServer.TaskProvider.Issue
+  alias ForemanServer.TaskProvider.{Comment, Issue}
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
@@ -1655,6 +1655,147 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     |> TaskProviderTelemetry.scrub_argv()
     |> then(&["br" | &1])
     |> Enum.join(" ")
+  end
+
+  defp validate_comment_issue_id(nil), do: {:error, missing_comment_issue_id_error()}
+
+  defp validate_comment_issue_id(issue_id) when is_binary(issue_id) do
+    if String.trim(issue_id) == "" do
+      {:error, invalid_comment_issue_id_error()}
+    else
+      :ok
+    end
+  end
+
+  defp validate_comment_issue_id(issue_id),
+    do: raise(ArgumentError, "expected binary issue_id, got: #{inspect(issue_id)}")
+
+  defp missing_comment_issue_id_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "MISSING_ARGUMENT",
+        "Issue identifier is missing.",
+        "Pass a non-nil Beads issue identifier before retrying.",
+        false
+      ),
+      nil,
+      0
+    )
+  end
+
+  defp invalid_comment_issue_id_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "INVALID_TASK_ID",
+        "Issue identifier must be a non-empty string.",
+        "Pass the Beads task identifier returned by the provider.",
+        false
+      ),
+      nil,
+      0
+    )
+  end
+
+  defp validate_comment_body(nil), do: {:error, missing_comment_body_error()}
+
+  defp validate_comment_body(body) when is_binary(body) do
+    if String.trim(body) == "" do
+      {:error, invalid_comment_body_error()}
+    else
+      :ok
+    end
+  end
+
+  defp validate_comment_body(body),
+    do: raise(ArgumentError, "expected binary body, got: #{inspect(body)}")
+
+  defp invalid_comment_body_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "INVALID_TRANSITION_COMMENT",
+        "Comment body must be a non-empty string.",
+        "Pass a composed Work Log comment body before retrying.",
+        false
+      ),
+      nil,
+      0
+    )
+  end
+
+  defp missing_comment_body_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "MISSING_ARGUMENT",
+        "Comment body is missing.",
+        "Pass a non-nil comment body string before retrying.",
+        false
+      ),
+      nil,
+      0
+    )
+  end
+
+  defp build_comment_error(stdout, stderr, result) do
+    stderr_byte_count = byte_size(stderr)
+    command = "br comments add"
+
+    case parse_br_error_envelope(stderr, stdout) do
+      {:ok, envelope} ->
+        envelope
+        |> ProviderErrorInput.from_br_envelope()
+        |> CodeMap.build_provider_error(command, stderr_byte_count)
+
+      :error ->
+        CodeMap.build_provider_error(
+          ProviderErrorInput.from_local(
+            "BR_PARSE_ERROR",
+            "Beads CLI returned an unreadable error envelope.",
+            "Verify the installed br version and retry.",
+            false
+          ),
+          command,
+          stderr_byte_count
+        )
+    end
+    |> maybe_put_exit_code(result)
+  end
+
+  @impl true
+  def annotate(issue_id, body, project_config) do
+    with :ok <- validate_comment_issue_id(issue_id),
+         :ok <- validate_comment_body(body),
+         {:ok, database_path} <- fetch_database_path(project_config) do
+      request = {:comments_add, %{id: issue_id, body: body}}
+
+      case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
+        {:ok, _response} ->
+          {:ok,
+           %Comment{
+             provider_issue_id: issue_id,
+             status: "comment_added",
+             provider_metadata: %{}
+           }}
+
+        {:error, %{stdout: stdout, stderr: stderr} = result} ->
+          {:error, build_comment_error(stdout, stderr, result)}
+      end
+    else
+      :error ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "CREATE_FAILED",
+             "Could not resolve database_path for comment write.",
+             "Ensure the project is registered with a beads database_path.",
+             false
+           ),
+           nil,
+           0
+         )}
+
+      {:error, %ProviderError{}} = error ->
+        error
+    end
   end
 
   @impl true

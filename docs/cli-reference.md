@@ -1174,10 +1174,11 @@ max 500), and `offset` (default 0), and returns `{tasks, total, limit, offset,
 next_offset}` in task-id ascending order. `foreman_task_get` returns one full task
 projection or `NOT_FOUND`.
 
-Write tools (`foreman_task_create`, `foreman_task_update`, `foreman_run_cancel`,
-`foreman_run_pause`, `foreman_run_resume`, `foreman_inbox_send`,
-`foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
-unadvertised and refused unless `allow_workflow_writes: true`.
+Write tools (`foreman_task_create`, `foreman_task_update`,
+`foreman_task_add_comment`, `foreman_run_cancel`, `foreman_run_pause`,
+`foreman_run_resume`, `foreman_inbox_send`, `foreman_workflow_put`,
+`foreman_workflow_delete`, `foreman_prompt_put`) are unadvertised and refused
+unless `allow_workflow_writes: true`.
 `foreman_task_create` requires `description` for `FOREMAN_TASK_DESCRIPTION`, passes
 `prompt` separately for `:prompt`-action phases, and defaults `auto_approve: true`.
 `foreman_task_update` requires `task_id` and at least one of `title`,
@@ -1191,9 +1192,14 @@ unknown runs return `NOT_FOUND`, duplicate message IDs return `ALREADY_EXISTS`,
 and policy denial returns `POLICY_REFUSED`. Bundled prompts tell agents to post
 phase start, material milestone, blocker, and phase completion notes when the
 tool is available, but never secrets, prompts, large logs, or command output,
-and never block work if the tool is denied/unavailable/fails. Built-in `prd`
-and `fix` command phases receive this as a worker `system_prompt` sidecar,
-leaving slash-command prompt text unchanged. After editing bundled
+and never block work if the tool is denied/unavailable/fails.
+`foreman_task_add_comment` appends a structured provider Work Log comment for a
+run-bound task: required `run_id`, `workflow_name`, `phase_name`, and
+`description` (1-2,000 chars). Foreman resolves the task/provider target and
+rejects caller-supplied provider ids or raw bodies. Agents use it on the same
+phase start/milestone/blocker/completion cadence, and failure is non-blocking.
+Built-in `prd` and `fix` command phases receive this as a worker `system_prompt`
+sidecar, leaving slash-command prompt text unchanged. After editing bundled
 prompts/workflows, run `npm run build` where applicable and
 `foreman init --force` to reinstall runtime copies.
 

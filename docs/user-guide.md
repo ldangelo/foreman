@@ -735,9 +735,9 @@ and behavior cannot diverge.
   events are durable system facts, and activity is heartbeat/liveness data.
 
 **Write tools** (`foreman_task_create`, `foreman_task_update`,
-`foreman_run_cancel`, `foreman_run_pause`, `foreman_run_resume`,
-`foreman_inbox_send`, `foreman_workflow_put`, `foreman_workflow_delete`,
-`foreman_prompt_put`) are unadvertised and refused unless
+`foreman_task_add_comment`, `foreman_run_cancel`, `foreman_run_pause`,
+`foreman_run_resume`, `foreman_inbox_send`, `foreman_workflow_put`,
+`foreman_workflow_delete`, `foreman_prompt_put`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
 `foreman_inbox_send` appends concise progress to the run inbox via the public
@@ -749,8 +749,18 @@ blocker, and phase completion notes when the tool is available, never secrets,
 prompts, large logs, or command output; denial/unavailability must not block
 work. Built-in `prd`/`fix` command phases receive the same guidance through a
 worker `system_prompt` sidecar, so their slash-command prompt text stays
-unchanged. After editing bundled prompts or workflows, run `npm run build` if
-assets need regeneration and `foreman init --force` to install fresh runtime
+unchanged.
+
+`foreman_task_add_comment` appends a structured Work Log comment to the task
+provider issue bound to a run. It requires `run_id`, `workflow_name`,
+`phase_name`, and a 1-2,000 character `description`; Foreman resolves the task
+and provider issue server-side, composes the comment body, and does not accept a
+Beads id, provider issue id, or raw body from the caller. Bundled prompts tell
+agents to use it at phase start, material milestones, blockers, and completion;
+denial/unavailability must not block work.
+
+After editing bundled prompts or workflows, run `npm run build` if assets
+need regeneration and `foreman init --force` to install fresh runtime
 copies.
 
 Tool call failures are MCP tool errors carrying the gateway's
