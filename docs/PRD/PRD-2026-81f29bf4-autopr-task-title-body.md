@@ -1,18 +1,18 @@
 ---
 document_id: PRD-2026-81f29bf4
 label: prd-autopr-task-title-body
-version: 1.0.1
+version: 1.0.2
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 12
 total_acceptance_criteria: 31
-readiness_score: 4.7
+readiness_score: 4.8
 ---
 
-# PRD: AutoPR PR title/description actual implementation
+# PRD: Include bead/task title and description in AutoPR PR summary
 
-Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description: actual implementation**
+Foreman task title read from `FOREMAN_TASK_TITLE`: **Include bead/task title and description in AutoPR-generated PR summary**
 
 ## PRD Health Summary
 
@@ -27,8 +27,8 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description
 |---|---:|
 | Requirement coverage | 12/12 (100%) |
 | Acceptance criteria coverage | 12/12 (100%) |
-| Risk flags | 7 |
-| Dependencies | 9 |
+| Risk flags | 9 |
+| Dependencies | 10 |
 | Open ambiguity markers | 0 |
 | TRD decisions required | 0 |
 
@@ -53,7 +53,7 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description
 
 Foreman's final AutoPR currently creates a generic PR title, `feat(run): <run_id>`, and a generated body describing the run artifact. That makes review queues hard to scan and disconnects the final PR from the task an operator approved. This PRD requires the final run AutoPR to use the Task aggregate's title and description as the PR title and body.
 
-This is implementation work for the previously closed PR #513 design. The prior PRD/TRD paths named in the task are not present in this worktree, so they are treated as external investigation artifacts, not as source files to ship. This PRD does not cover `PhasePR` per-phase title behavior or the push-before-reuse bug tracked separately by foreman-2jru.
+This is implementation work for the previously closed PR #513 design. The current Foreman task frames the outcome as including the approved bead/task title and description in the generated PR summary; this PRD keeps that behavior scoped to final AutoPR title/body composition. The prior PRD/TRD paths named in the task are not present in this worktree, so they are treated as external investigation artifacts, not as source files to ship. This PRD does not cover `PhasePR` per-phase title behavior or the push-before-reuse bug tracked separately by foreman-2jru.
 
 Foreman mode auto-selected STANDARD depth. This refinement resolved the prior inline clarification markers with best-effort product defaults and left implementation approval for a later step.
 
@@ -100,7 +100,7 @@ Needs the implementation to stay inside existing typed boundaries, preserve curr
 
 ### In scope
 
-- Thread Task aggregate `title` and `description` into the final AutoPR context map.
+- Thread Task aggregate `title` and `description` into the final AutoPR context map for task-backed and Beads-backed runs.
 - Use task title as the final AutoPR title.
 - Use task description as the final AutoPR body.
 - Preserve existing AutoPR branch resolution, commit-ahead detection, push, PR creation, no-op, and error behavior.
@@ -336,12 +336,12 @@ Ambiguity scan complete: 0 items remain marked for clarification.
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4.7 | Covers metadata plumbing, exact composition, explicit fallback/error policy, phase separation, tests, docs, and logging. |
+| Completeness | 4.8 | Covers metadata plumbing, exact composition, explicit fallback/error policy, phase separation, tests, docs, logging, and the bead/task wording from the current operator task. |
 | Testability | 4.7 | Every Must/Should requirement has measurable ACs; exact title/body and fallback/error policies are testable without external GitHub. |
-| Clarity | 4.8 | Prior ambiguity markers are resolved: exact title, exact body, no appended artifacts/findings, typed failure for blank task metadata, legacy fallback only for no-task runs. |
+| Clarity | 4.9 | Prior ambiguity markers are resolved and the PRD title/scope now match the current operator task wording: exact title, exact body, no appended artifacts/findings, typed failure for blank task metadata, legacy fallback only for no-task runs. |
 | Feasibility | 4.6 | Builds on existing `RunExecutor` task metadata extraction and AutoPR context with a narrow validation/composition change. |
 
-Overall readiness score: **4.7**
+Overall readiness score: **4.8**
 Gate decision: **PASS**
 
 ## 11. Suggested Next Step
@@ -362,3 +362,10 @@ Create a TRD from this PRD:
 - Defined final AutoPR body as exact `Task.description` for task-backed runs, with no generated run/artifact/finding appendix.
 - Defined fallback/error policy: task-backed blank or invalid title/description fails with a typed validation error; no-task runs keep the existing generated AutoPR fallback.
 - Re-scored Implementation Readiness Gate from 4.3 to 4.7.
+
+### 2026-09-18 — v1.0.2
+
+- Aligned the PRD title and Foreman task-title reference with the current bead/task AutoPR summary wording.
+- Clarified that the scope covers task-backed and Beads-backed final AutoPR runs.
+- Recomputed PRD Health risk flags from 7 to 9 and dependencies from 9 to 10.
+- Re-scored Implementation Readiness Gate from 4.7 to 4.8.
