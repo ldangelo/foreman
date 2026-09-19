@@ -415,6 +415,36 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # `{:worker_result, _}` is normally consumed by the blocking receive inside
+  # `wait_for_worker_result/4`, which every timeout path now drains. This clause
+  # exists for the one window that receive cannot cover: the deadline fires, the
+  # drain runs against an empty mailbox, and a late worker (or a duplicate
+  # LaunchWorker re-launch, whose result has no left-over waiter by design — see
+  # the comment in the worker test double in run_executor_test.exs) delivers its
+  # result afterwards.
+  #
+  # Silently dropping it would let it sit in the mailbox until the NEXT phase's
+  # `wait_for_worker_result/4` matched it immediately and committed the previous
+  # phase's output as its own artifact. So the result is logged with run context
+  # and discarded — an operator can still see that a result arrived late, which
+  # is exactly the evidence a timeout-only view of the run is missing.
+  #
+  # This is a targeted clause on a specific message shape, not a permissive
+  # catch-all: every other unexpected message still falls through to the default
+  # `handle_info/2` behaviour (AGENTS.md §5.2).
+  @impl true
+  def handle_info({:worker_result, result}, state) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} discarding stray worker_result with no waiter " <>
+        "(#{inspect(result)}); a phase's wait had already ended",
+      run_id: state.run_id,
+      task_id: task_id(state),
+      operation: "run_executor.stale_worker_result"
+    )
+
+    {:noreply, state}
+  end
+
   @impl true
   def handle_cast({:advance_to, completed_index}, state) do
     # The `run_single_phase/3` intent check only guards the NEXT phase. The
@@ -1250,47 +1280,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         case Overwatch.start_phase(phase, launch_opts) do
           {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
-            # Recompute the receive ceiling AFTER Overwatch.start_phase/2
-            # returns: any time spent in worker admission, LaunchWorker
-            # supervision, or provider handshake has already elapsed
-            # against deadline_ms, so the receive budget reflects only
-            # post-start wall time. Pre-computing before dispatch would
-            # let worker-setup eat into the budget.
-            remaining_after_start_ms = remaining_from(deadline_ms)
-
-            # Deadlines already exhausted at the receive boundary never
-            # reach wait_for_worker_result/4: its `after N` clause only
-            # schedules a future check, so passing `0` would trip its
-            # timeout branch on the same tick but lose the explicit
-            # "budget exhausted before receive" signal here. Surface it
-            # synchronously with the same warning operator log.
-            case remaining_after_start_ms do
-              ms when ms > 0 ->
-                # Pass the absolute deadline (not the receive budget):
-                # wait_for_worker_result/4 validates wall-clock time
-                # against it inside the receive itself, so a result
-                # already queued in the mailbox when the receive starts
-                # (e.g. worker finished during the gap between this check
-                # and entering the function) is still rejected as late
-                # rather than accepted as success (CodeRabbit review).
-                wait_for_worker_result(launch_pid, worker_id, state.run_id, deadline_ms)
-
-              _ ->
-                Logger.warning(
-                  "[#{state.run_id}] worker #{worker_id} deadline exhausted before receive; supervisor will reap launch process"
-                )
-
-                # Schedule non-blocking teardown so the supervised
-                # LaunchWorker is stopped even on this fast path, which
-                # never reaches wait_for_worker_result/4's own cleanup
-                # (CodeRabbit review). Detached, for the same
-                # self-deadlock reason documented on the call below.
-                Task.start(fn ->
-                  Overwatch.WorkerSupervisor.stop_worker(worker_id, state.run_id)
-                end)
-
-                {:error, :worker_timeout}
-            end
+            # Always enter wait_for_worker_result/4, even when the budget is
+            # exhausted at the receive boundary. A worker_result can already be
+            # queued after the worker completed but before final lifecycle event
+            # dispatch returned; the receive owns the distinction between an
+            # already-delivered success and no result before the deadline.
+            wait_for_worker_result(launch_pid, worker_id, state.run_id, deadline_ms)
 
           {:error, {:already_started, _pid}} ->
             {:error, :worker_already_started}
@@ -1315,15 +1310,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # result message is the signal, the DOWN is just cleanup.
   #
   # `deadline_ms` is the absolute wall-clock budget (System.system_time
-  # milliseconds), not a relative timeout: the receive validates the
-  # current time against it BEFORE accepting a queued `{:worker_result,
-  # result}`, so a result already sitting in the mailbox when this
-  # receive starts — because wall time crossed deadline_ms during the
-  # gap between the caller's own check and this call — is rejected as
-  # late instead of accepted as success (CodeRabbit review). The
-  # caller already short-circuits a deadline exhausted before this call,
-  # so in practice `deadline_ms` is still in the future on entry, but
-  # the receive itself never trusts that.
+  # milliseconds), not a relative timeout: it bounds how long this process
+  # BLOCKS waiting for `{:worker_result, result}`. It is not a validity window
+  # stamped on the result itself.
+  #
+  # A result cannot already be sitting in the mailbox when this receive starts:
+  # `Overwatch.start_phase/2` returns only after the worker has been spawned
+  # (`WorkerSupervisor.start_worker/1` → `LaunchWorker.init/1` →
+  # `WorkerProtocol.start_worker/3` → `adapter.start_link/1`, all synchronous in
+  # the CALLER), and the adapter sends `{:worker_result, result}` only after
+  # activation and agent completion. The earliest a result can exist is after
+  # this call has already begun waiting. So the deadline only decides how long
+  # we wait; a result that arrives before it is accepted on its merits (a
+  # non-empty success is authoritative; a late error result is not). When the
+  # deadline elapses with no result, this drains the mailbox — see
+  # `drain_worker_result_stubs/3` — so a late arrival cannot leak into the next
+  # phase.
+
+  # Drain and discard any `{:worker_result, _}` still queued in this
+  # RunExecutor's mailbox once a timeout has been decided for the current phase.
+  #
+  # Results are discarded rather than absorbed by the dedicated
+  # `handle_info/2` clause above: that clause only covers results that arrive
+  # AFTER a wait has already returned, whereas here the wait is still on the
+  # stack and the result must be removed synchronously before this function
+  # returns, so the next phase's blocking receive cannot match it even if the
+  # current process happens to yield in between.
+  #
+  # Loops so more than one leaked message cannot survive (e.g. a duplicate
+  # LaunchWorker re-launch result queued behind this phase's own). Discarded
+  # results are logged with run/worker context, never silently dropped, so an
+  # operator can tell "arrived late" from "never arrived".
+  @spec drain_worker_result_stubs(String.t(), String.t(), term()) :: :ok
+  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason) do
+    drain_worker_result_stubs(run_id, worker_id, timeout_reason, 0)
+  end
+
+  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained) do
+    receive do
+      {:worker_result, result} ->
+        Logger.warning(
+          "[#{run_id}] worker #{worker_id}: discarding queued worker_result after " <>
+            "#{inspect(timeout_reason)} (drained #{drained + 1}: #{inspect(result)})"
+        )
+
+        drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1)
+    after
+      0 ->
+        :ok
+    end
+  end
+
   @spec wait_for_worker_result(pid(), String.t(), String.t(), timeout()) ::
           {:ok, String.t()} | {:error, term()}
   defp wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms) do
@@ -1333,10 +1370,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
     result =
       receive do
         {:worker_result, result} ->
-          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms do
+          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms and
+               not completed_worker_success?(result) do
             Logger.warning(
-              "[#{run_id}] worker #{worker_id} result arrived after deadline; supervisor will reap launch process"
+              "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
             )
+
+            # Rejected: discard it so the next phase's receive cannot match it.
+            drain_worker_result_stubs(run_id, worker_id, :worker_timeout)
 
             {:error, :worker_timeout}
           else
@@ -1344,14 +1385,74 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end
 
         {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
-          {:error, :worker_died_no_result}
+          # DOWN arrived first. Probe for a worker_result already queued behind
+          # it: a worker that completed does send its result, so DOWN winning
+          # the race is not evidence that no result exists.
+          receive do
+            {:worker_result, result} ->
+              if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms and
+                   not completed_worker_success?(result) do
+                Logger.warning(
+                  "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
+                )
+
+                # Rejected: discard it so the next phase's receive cannot match it.
+                drain_worker_result_stubs(run_id, worker_id, :worker_timeout)
+
+                {:error, :worker_timeout}
+              else
+                result
+              end
+          after
+            0 ->
+              # DOWN with no worker_result behind it: the worker died without
+              # producing a result. That is a crash, and it stays
+              # `:worker_died_no_result` even when wall time has crossed the
+              # deadline (AGENTS.md §5.3). `:worker_timeout` means "deadline
+              # elapsed, result unknown/stale" — reporting a result-less death
+              # as a timeout once the deadline passed loses a distinction the
+              # pause/cancel handling downstream depends on.
+
+              # Nothing queued behind the DOWN now — but a late-arriving or
+              # duplicate result must not survive this return either.
+              drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result)
+
+              {:error, :worker_died_no_result}
+
+          end
       after
         timeout_ms ->
-          Logger.warning(
-            "[#{run_id}] worker #{worker_id} did not deliver result within #{timeout_ms}ms; supervisor will reap launch process"
-          )
+          # §5.3 outcome discrimination: `:worker_timeout` means "the deadline
+          # elapsed and the result is unknown". If the launch worker is already
+          # dead here, the outcome is NOT unknown — it died without producing a
+          # result, and that must stay `:worker_died_no_result` even once wall
+          # time has crossed the deadline (pause/cancel handling downstream keys
+          # off the distinction, see run_executor_run_worktree_test.exs).
+          #
+          # `Process.alive?/1` is authoritative: the monitor DOWN for this pid
+          # cannot be in our mailbox ahead of this arm without also having
+          # matched the `{:DOWN, ^ref, ...}` clause above (a queued DOWN for a
+          # dead pid is delivered at monitor-install time, before the receive),
+          # so a dead pid here means a result-less death whose DOWN we never
+          # observed. Drain first so a result that raced the death cannot leak
+          # into the next phase.
+          if Process.alive?(launch_pid) do
+            Logger.warning(
+              "[#{run_id}] worker #{worker_id} did not deliver result within #{timeout_ms}ms; supervisor will reap launch process"
+            )
 
-          {:error, :worker_timeout}
+            drain_worker_result_stubs(run_id, worker_id, :worker_timeout)
+
+            {:error, :worker_timeout}
+          else
+            Logger.warning(
+              "[#{run_id}] worker #{worker_id} died without delivering a result"
+            )
+
+            drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result)
+
+            {:error, :worker_died_no_result}
+          end
       end
 
     # Remove the LaunchWorker child spec so nothing for this phase can be
@@ -1413,6 +1514,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     result
   end
+
+  defp completed_worker_success?({:ok, output}) when is_binary(output),
+    do: String.trim(output) != ""
+
+  defp completed_worker_success?({:ok, _output}), do: true
+  defp completed_worker_success?({:error, _reason}), do: false
 
   # `policy.timeout_ms` from `FailurePolicy.resolve/2` is either a positive
   # integer (milliseconds) or `:infinity` (`timeout_minutes: 0`, or no

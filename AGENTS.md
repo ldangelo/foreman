@@ -110,6 +110,8 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
+RunExecutor phase completion rules: (1) A phase deadline bounds how long the executor waits for `{:worker_result, _}`; it does not invalidate a non-empty `{:ok, output}` success already in the mailbox — that success stays authoritative even if final lifecycle dispatch crosses the wall-clock deadline, while a queued error may still be rejected as `:worker_timeout`. (2) Every timeout return path MUST drain any `{:worker_result, _}` left in the mailbox before returning: `handle_info/2` has no such clause (no permissive catch-all, §5.2), so an undispatched result would be matched by the NEXT phase and committed as its artifact. (3) A worker that died without producing a result is always `:worker_died_no_result`, even past the deadline; `:worker_timeout` means "deadline elapsed, result unknown", never "crash" (§5.3).
+
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
