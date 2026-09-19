@@ -502,6 +502,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # wins over the :infinity built-in — the precedence the 30-min-ceiling
     # investigation (foreman-4uj5) turned on.
     refute Map.has_key?(phase_spec(script_key, artifact_dir), :timeout_minutes)
+
     assert RunExecutor.__failure_policy_for_test__(phase_spec(script_key, artifact_dir)).timeout_ms ==
              1_800_000
   end
