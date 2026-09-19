@@ -1327,6 +1327,46 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `drain_worker_result_stubs/3` — so a late arrival cannot leak into the next
   # phase.
 
+  # One deadline rule for every `{:worker_result, _}` arrival path (the direct
+  # success arm and the DOWN-first probe arm must not drift apart — they are
+  # the same race observed from two orderings):
+  #
+  #   * within deadline -> the result is the outcome, unconditionally;
+  #   * past deadline, non-empty success -> record the completed outcome. The
+  #     agent did produce its artifact; failing the phase and discarding real
+  #     work because delivery raced the deadline is the outcome-preserving
+  #     choice, and it removes the success/error asymmetry where a late error
+  #     was rejected but a late success silently determined the result;
+  #   * past deadline, error/empty -> reject, then keep scanning the mailbox
+  #     through the drain, because a genuine success can still be queued
+  #     behind it under scheduler load.
+  defp accept_after_deadline(result, deadline_ms, run_id, worker_id, reason) do
+    past_deadline? =
+      deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms
+
+    cond do
+      not past_deadline? ->
+        result
+
+      completed_worker_success?(result) ->
+        Logger.warning(
+          "[#{run_id}] worker #{worker_id} successful result arrived after deadline; recording the completed outcome"
+        )
+
+        result
+
+      true ->
+        Logger.warning(
+          "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
+        )
+
+        case drain_worker_result_stubs(run_id, worker_id, reason) do
+          {:ok, recovered} -> recovered
+          _ -> {:error, reason}
+        end
+    end
+  end
+
   # Drain and discard any `{:worker_result, _}` still queued in this
   # RunExecutor's mailbox once a timeout has been decided for the current phase.
   #
@@ -1341,7 +1381,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # LaunchWorker re-launch result queued behind this phase's own). Discarded
   # results are logged with run/worker context, never silently dropped, so an
   # operator can tell "arrived late" from "never arrived".
-  @spec drain_worker_result_stubs(String.t(), String.t(), term()) :: :ok
+  @spec drain_worker_result_stubs(String.t(), String.t(), term()) ::
+          :ok | {:ok, term()}
   defp drain_worker_result_stubs(run_id, worker_id, timeout_reason) do
     drain_worker_result_stubs(run_id, worker_id, timeout_reason, 0)
   end
@@ -1349,17 +1390,45 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained) do
     receive do
       {:worker_result, result} ->
-        Logger.warning(
-          "[#{run_id}] worker #{worker_id}: discarding queued worker_result after " <>
-            "#{inspect(timeout_reason)} (drained #{drained + 1}: #{inspect(result)})"
-        )
+        # A queued result is not automatically stale. Under heavy scheduler
+        # load a worker can finish before the deadline and its result sit in
+        # our mailbox behind the DOWN (the worker's own mailbox was busy, so
+        # :agent_done — and the send it triggers — was processed late even
+        # though run_agent returned on time). If a drained result is a
+        # non-empty success, it is the phase's authoritative outcome, not a
+        # stub: keep the FIRST such success and discard only genuinely
+        # rejected/late-error results, logging each. Returning it lets the
+        # caller complete the phase with real work instead of failing it and
+        # discarding the output.
+        cond do
+          drained_success(result) ->
+            Logger.warning(
+              "[#{run_id}] worker #{worker_id}: recovered queued worker_result after " <>
+                "#{inspect(timeout_reason)} — preserving successful outcome (drained #{drained} stub(s) before it)"
+            )
 
-        drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1)
+            {:ok, result}
+
+          true ->
+            Logger.warning(
+              "[#{run_id}] worker #{worker_id}: discarding queued worker_result after " <>
+                "#{inspect(timeout_reason)} (drained #{drained + 1}: #{inspect(result)})"
+            )
+
+            drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1)
+        end
     after
       0 ->
         :ok
     end
   end
+
+  # A success is worth recovering from the drain path only when its value
+  # proves the agent actually produced output — the same bar
+  # `completed_worker_success?/1` applies to post-deadline arrivals.
+  defp drained_success({:ok, output}) when is_binary(output), do: String.trim(output) != ""
+  defp drained_success({:ok, _output}), do: true
+  defp drained_success(_other), do: false
 
   @spec wait_for_worker_result(pid(), String.t(), String.t(), timeout()) ::
           {:ok, String.t()} | {:error, term()}
@@ -1370,19 +1439,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
     result =
       receive do
         {:worker_result, result} ->
-          if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms and
-               not completed_worker_success?(result) do
-            Logger.warning(
-              "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
-            )
-
-            # Rejected: discard it so the next phase's receive cannot match it.
-            drain_worker_result_stubs(run_id, worker_id, :worker_timeout)
-
-            {:error, :worker_timeout}
-          else
-            result
-          end
+          # Same deadline rule as the DOWN-branch probe (see
+          # `accept_after_deadline/5`): a post-deadline ERROR is rejected — but
+          # the scan for a real queued success continues through the drain.
+          accept_after_deadline(result, deadline_ms, run_id, worker_id, :worker_timeout)
 
         {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
           # DOWN arrived first. Probe for a worker_result already queued behind
@@ -1390,19 +1450,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           # the race is not evidence that no result exists.
           receive do
             {:worker_result, result} ->
-              if deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms and
-                   not completed_worker_success?(result) do
-                Logger.warning(
-                  "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
-                )
-
-                # Rejected: discard it so the next phase's receive cannot match it.
-                drain_worker_result_stubs(run_id, worker_id, :worker_timeout)
-
-                {:error, :worker_timeout}
-              else
-                result
-              end
+              accept_after_deadline(result, deadline_ms, run_id, worker_id, :worker_timeout)
           after
             0 ->
               # DOWN with no worker_result behind it: the worker died without
@@ -1415,9 +1463,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
               # Nothing queued behind the DOWN now — but a late-arriving or
               # duplicate result must not survive this return either.
-              drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result)
-
-              {:error, :worker_died_no_result}
+              case drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result) do
+                {:ok, recovered} -> recovered
+                _ -> {:error, :worker_died_no_result}
+              end
           end
       after
         timeout_ms ->
@@ -1440,15 +1489,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
               "[#{run_id}] worker #{worker_id} did not deliver result within #{timeout_ms}ms; supervisor will reap launch process"
             )
 
-            drain_worker_result_stubs(run_id, worker_id, :worker_timeout)
-
-            {:error, :worker_timeout}
+            case drain_worker_result_stubs(run_id, worker_id, :worker_timeout) do
+              {:ok, recovered} -> recovered
+              _ -> {:error, :worker_timeout}
+            end
           else
             Logger.warning("[#{run_id}] worker #{worker_id} died without delivering a result")
 
-            drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result)
-
-            {:error, :worker_died_no_result}
+            case drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result) do
+              {:ok, recovered} -> recovered
+              _ -> {:error, :worker_died_no_result}
+            end
           end
       end
 

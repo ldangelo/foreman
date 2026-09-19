@@ -549,6 +549,30 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              )
   end
 
+  # CodeRabbit #524 Major follow-up: a late ERROR must not swallow a real
+  # success queued behind it. Under scheduler load the worker's :agent_done
+  # send can be processed after run_agent returned on time — so the mailbox can
+  # hold an error result (or crash stub) with the phase's genuine artifact
+  # behind it. The drain scans past the rejection and recovers it.
+  test "wait_for_worker_result/4 recovers a queued success behind a post-deadline error" do
+    launch_pid = spawn(fn -> :ok end)
+
+    send(self(), {:worker_result, {:error, {:task_crashed, :no_connection}}})
+    send(self(), {:worker_result, {:ok, "the real artifact"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:ok, "the real artifact"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-behind-error",
+               "run-behind-error",
+               deadline_ms
+             )
+
+    refute_received {:worker_result, _}
+  end
+
   # The mailbox-leak regression. RunExecutor's handle_info/2 has NO
   # `{:worker_result, _}` clause (by design — see the duplicate-relaunch comment
   # in the worker test double above, and AGENTS.md §5.2 forbidding a permissive
