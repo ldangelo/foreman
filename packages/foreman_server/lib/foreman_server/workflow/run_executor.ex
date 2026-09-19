@@ -1909,12 +1909,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     if task_backed?(state) do
       context
-      |> Map.put(:task_title, task_field(task, :title))
-      |> Map.put(:task_description, task_field(task, :description))
+      |> maybe_put_task_field(:task_title, task_field(task, :title))
+      |> maybe_put_task_field(:task_description, task_field(task, :description))
     else
       context
     end
   end
+
+  # A nil task field means the field was never set (the Task aggregate defaults
+  # `description` to nil). Omit the key instead of storing nil, so AutoPR's
+  # "absent" (`:missing` / legacy fallback) and "malformed" (`:invalid`) cases
+  # stay distinguishable — an explicit `nil` must never be reachable as a
+  # context value. AGENTS.md §5.3.
+  defp maybe_put_task_field(context, _key, nil), do: context
+  defp maybe_put_task_field(context, key, value), do: Map.put(context, key, value)
 
   defp task_backed?(state) do
     task = Map.get(state, :task) || %{}

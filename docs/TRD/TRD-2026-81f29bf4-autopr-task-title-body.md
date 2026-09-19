@@ -1,14 +1,14 @@
 ---
 document_id: TRD-2026-81f29bf4
 label: trd-autopr-task-title-body
-version: 1.0.1
+version: 1.0.2
 status: Draft
 date: 2026-09-18
 prd_reference: docs/PRD/PRD-2026-81f29bf4-autopr-task-title-body.md
 prd_label: prd-autopr-task-title-body
 scale_depth: STANDARD
 total_requirements: 12
-total_acceptance_criteria: 31
+total_acceptance_criteria: 32
 design_readiness_score: 4.8
 readiness_score: 4.8
 total_tasks: 24
@@ -26,7 +26,7 @@ Source PRD: `docs/PRD/PRD-2026-81f29bf4-autopr-task-title-body.md` (`PRD-2026-81
 
 - Required PRD sections present: executive summary, background/evidence, personas, scope, assumptions, requirements, dependency map, technical mapping, self-review, readiness gate.
 - Requirements: 12 sequential `REQ-NNN` IDs.
-- Acceptance criteria: 31 `AC-NNN-M` items, Given/When/Then format.
+- Acceptance criteria: 32 `AC-NNN-M` items, Given/When/Then format.
 - PRD readiness score: **4.8 PASS**.
 - Subject match: PRD title and `FOREMAN_TASK_TITLE` both describe task/bead title+description in final AutoPR-generated PR summary.
 - MCP enhancement: skipped (no MCP tools detected).
@@ -148,13 +148,13 @@ RunExecutor context without task metadata
 **Shippable State:** Final AutoPR can use exact task title/body or fail safely before PR side effects when task metadata is invalid.
 
 - [x] **TRD-001**: Add `AutoPR.TaskMetadataError` typed error and task metadata fields to the AutoPR context contract (2h) [satisfies REQ-005, REQ-009]
-  - Validates PRD ACs: AC-005-1, AC-005-2, AC-009-1, AC-009-3.
+  - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-009-1, AC-009-3.
   - Implementation AC:
     - Given malformed task metadata, when AutoPR validates content, then it returns `%TaskMetadataError{}` with field and reason.
     - Given no task metadata keys are present, when AutoPR validates content, then legacy fallback remains available.
 
 - [x] **TRD-001-TEST**: Add focused tests for typed metadata errors and legacy no-task fallback (2h) [verifies TRD-001] [satisfies REQ-005, REQ-008, REQ-009] [depends: TRD-001]
-  - Validates PRD ACs: AC-005-1, AC-005-2, AC-008-3, AC-009-1.
+  - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-008-3, AC-009-1.
   - Implementation AC:
     - Given blank/non-string/missing task-backed fields, when tested, then each expected error reason is asserted.
     - Given no task metadata keys, when tested, then generated legacy title/body still appear.
@@ -188,15 +188,15 @@ RunExecutor context without task metadata
 **Shippable State:** Task-backed final AutoPR receives approved task title/description from run state while no-task runs still generate legacy PR summaries.
 
 - [x] **TRD-004**: Extend final `RunExecutor` AutoPR context with `:task_title` and `:task_description` for task-backed runs only (3h) [satisfies REQ-001, REQ-004, REQ-006]
-  - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-3, AC-006-2.
+  - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-3, AC-005-3, AC-006-2.
   - Implementation AC:
-    - Given state has task metadata, when context is built, then explicit task keys are present.
+    - Given state has task metadata, when context is built, then set task keys are present and unset (nil) task fields are omitted, not stored as nil.
     - Given state has no task aggregate, when context is built, then task keys are absent.
 
 - [x] **TRD-004-TEST**: Add executor context tests for task-backed and no-task runs preserving existing AutoPR fields (3h) [verifies TRD-004] [satisfies REQ-001, REQ-004, REQ-006] [depends: TRD-004]
-  - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-3, AC-006-2.
+  - Validates PRD ACs: AC-001-1, AC-001-3, AC-004-3, AC-005-3, AC-006-2.
   - Implementation AC:
-    - Given task-backed state, when helper/test seam builds context, then run/base/artifact/head/cwd and task fields are asserted.
+    - Given task-backed state, when helper/test seam builds context, then run/base/artifact/head/cwd and set task fields are asserted, and a nil task field never appears as a context value.
     - Given no-task state, when context is built, then legacy fields are unchanged and task fields absent.
 
 - [x] **TRD-005**: Implement task metadata extraction for canonical atom-keyed and string-keyed task shapes without accepting unknown fields (2h) [satisfies REQ-001, REQ-009] [depends: TRD-004]
@@ -207,9 +207,9 @@ RunExecutor context without task metadata
     - Given unknown task keys, when extracted, then they are ignored.
 
 - [x] **TRD-005-TEST**: Add extractor tests for atom keys, string keys, unknown keys, nil, blank, and non-string values flowing to AutoPR validation (3h) [verifies TRD-005] [satisfies REQ-001, REQ-005, REQ-009] [depends: TRD-005]
-  - Validates PRD ACs: AC-001-2, AC-005-1, AC-005-2, AC-009-1, AC-009-2.
+  - Validates PRD ACs: AC-001-2, AC-005-1, AC-005-2, AC-005-3, AC-009-1, AC-009-2.
   - Implementation AC:
-    - Given malformed-present fields, when final AutoPR context reaches AutoPR, then typed validation fails instead of silent no-task fallback.
+    - Given malformed-present fields (explicit nil, blank, or non-string), when the final AutoPR context reaches AutoPR, then typed validation fails instead of silent no-task fallback; fields the task never set are omitted upstream and fall back per AC-005-3.
     - Given unknown keys, when tests inspect context, then unknown values are not propagated.
 
 - [x] **TRD-006**: Preserve final-only AutoPR behavior by avoiding `PhasePR` title/body paths and existing phase PR skip semantics (2h) [satisfies REQ-006]
@@ -429,5 +429,6 @@ Suggested next commands:
 
 ## Version History
 
+- **1.0.2** — 2026-09-18 — PR #520 review fix: aligned with PRD v1.0.3 (AC-005-3, 32 ACs). Unset (nil) task fields are now omitted from the AutoPR context so title-only tasks fall back to generated title/body instead of hard-failing; explicitly-stored nil remains a present-but-unusable `:invalid` error.
 - **1.0.1** — 2026-09-18 — Foreman refinement pass: added total hour estimate metadata, clarified dependency graph sequencing, recorded PR-stack shippability validation, and preserved 24-task scope/readiness.
 - **1.0.0** — 2026-09-18 — Initial TRD generated from PRD-2026-81f29bf4.

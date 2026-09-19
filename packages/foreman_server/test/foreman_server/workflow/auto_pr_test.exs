@@ -176,6 +176,65 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1) == body
     end
 
+    test "a run with only a task title falls back to the generated body" do
+      parent = self()
+
+      runner = fn
+        "git", ["rev-list", "--count", "main..foreman/run-title-only/implement"], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", "foreman/run-title-only/implement"], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/13\n", 0}
+      end
+
+      # An unset description is absent from the context (RunExecutor omits nil
+      # fields) — that must fall back, not hard-fail and silently produce no PR.
+      assert {:ok, _url} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-title-only",
+                 base_branch: "main",
+                 head_branch: "foreman/run-title-only/implement",
+                 task_title: "Only a title",
+                 command_runner: runner
+               })
+
+      assert_receive {:gh_args, args}
+      title = Enum.at(args, Enum.find_index(args, &(&1 == "--title")) + 1)
+      body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
+      assert title == "Only a title"
+      assert body =~ "Foreman run `run-title-only` complete."
+    end
+
+    test "an explicitly nil task field is malformed, not absent" do
+      runner = fn
+        "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+        executable, args, _opts -> flunk("unexpected command: #{executable} #{inspect(args)}")
+      end
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :description, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-nil-description",
+                 base_branch: "main",
+                 head_branch: "foreman/run-nil-description/implement",
+                 task_title: "Task title",
+                 task_description: nil,
+                 command_runner: runner
+               })
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :title, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-nil-title",
+                 base_branch: "main",
+                 head_branch: "foreman/run-nil-title/implement",
+                 task_title: nil,
+                 command_runner: runner
+               })
+    end
+
     test "validates task metadata before publishing the head branch" do
       parent = self()
 
@@ -313,12 +372,13 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         executable, args, _opts -> flunk("unexpected command: #{executable} #{inspect(args)}")
       end
 
-      assert {:error, %AutoPR.TaskMetadataError{field: :description, reason: :missing}} =
+      assert {:error, %AutoPR.TaskMetadataError{field: :title, reason: :invalid}} =
                AutoPR.maybe_create_pr(%{
-                 run_id: "run-missing-description",
+                 run_id: "run-nil-title",
                  base_branch: "main",
-                 head_branch: "foreman/run-missing-description/implement",
-                 task_title: "Task title",
+                 head_branch: "foreman/run-nil-title/implement",
+                 task_title: nil,
+                 task_description: "Task body",
                  command_runner: runner
                })
 

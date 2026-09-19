@@ -241,9 +241,12 @@ takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
 `cwd`, and optional task metadata) and derives title and body itself; there is
 no declarable title, body, draft, reviewer, or label. For task-backed final
 AutoPRs, `RunExecutor` passes the task title and description, and AutoPR uses
-those exact strings as the GitHub PR title and body. Blank, missing, or
-non-string task title/description is a typed metadata error before the branch is
-published. For no-task runs AutoPR preserves the legacy generated title/body;
+those exact strings as the GitHub PR title and body. A task title/description
+that is present but blank or non-string is a typed metadata error before the
+branch is published; a field the task never set is omitted from the context, so
+a title-only task (no description) falls back to the generated title/body
+rather than failing. For no-task runs AutoPR preserves the legacy generated
+title/body;
 only that generated-body path appends `ForemanServer.Workflow.ReviewFindings`
 content under `## Unresolved review findings` when the artifact contains the
 bundled review markers. Phase PRs keep their separate title/body behavior.

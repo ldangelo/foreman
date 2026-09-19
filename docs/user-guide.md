@@ -911,10 +911,13 @@ optimization; polling remains the fallback.
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's
 single branch — `foreman/<task-id>/<run-id>` unless the workflow's `worktree.branch` says
-otherwise. For task-backed runs, the final PR title is exactly the task title and
-the final PR body is exactly the task description; if either is absent, blank, or
-malformed, AutoPR returns a typed metadata error before publishing the branch.
-Ad-hoc no-task runs keep the legacy generated run/artifact title and body.
+otherwise. For task-backed runs, when both the task title and task description
+are set, the final PR title is exactly the task title and the final PR body is
+exactly the task description; if either is present but blank or malformed,
+AutoPR returns a typed metadata error before publishing the branch. A task field
+that was never set (for example, a title-only task) does not fail: AutoPR falls
+back to the generated title/body. Ad-hoc no-task runs keep the legacy generated
+run/artifact title and body either way.
 Workflows may opt into phase boundary PR records with `stack_pr:
 true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 `checkpointPr` settings remain unsupported.

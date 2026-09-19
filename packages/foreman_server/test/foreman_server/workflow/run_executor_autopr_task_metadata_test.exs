@@ -58,7 +58,7 @@ defmodule ForemanServer.Workflow.RunExecutorAutoPRTaskMetadataTest do
     assert context.cwd == "/tmp/foreman-autopr-metadata"
   end
 
-  test "task-backed context preserves malformed metadata for AutoPR validation instead of omitting it" do
+  test "task-backed context omits unset task fields instead of storing nil" do
     context =
       RunExecutor.__auto_pr_context_for_test__(
         %{
@@ -78,9 +78,48 @@ defmodule ForemanServer.Workflow.RunExecutorAutoPRTaskMetadataTest do
       )
 
     assert Map.has_key?(context, :task_title)
-    assert Map.has_key?(context, :task_description)
+    refute Map.has_key?(context, :task_description)
     assert context.task_title == "Good title"
-    assert context.task_description == nil
+  end
+
+  test "task-backed context never stores an explicit nil task field" do
+    nil_valued =
+      RunExecutor.__auto_pr_context_for_test__(
+        %{
+          run_id: "run-autopr-explicit-nil",
+          task: %{task_id: "task-autopr-explicit-nil", title: nil, description: nil},
+          source: :task,
+          current_phase: nil,
+          phase_specs: [],
+          plan_context: %{"project_root" => "/tmp/foreman-autopr-explicit-nil"},
+          last_worktree: %{branch: "foreman/task-autopr-explicit-nil/run-autopr-explicit-nil"}
+        },
+        "main"
+      )
+
+    refute Map.has_key?(nil_valued, :task_title)
+    refute Map.has_key?(nil_valued, :task_description)
+
+    set_valued =
+      RunExecutor.__auto_pr_context_for_test__(
+        %{
+          run_id: "run-autopr-set-fields",
+          task: %{
+            task_id: "task-autopr-set-fields",
+            title: "Good title",
+            description: "Good description"
+          },
+          source: :task,
+          current_phase: nil,
+          phase_specs: [],
+          plan_context: %{"project_root" => "/tmp/foreman-autopr-set-fields"},
+          last_worktree: %{branch: "foreman/task-autopr-set-fields/run-autopr-set-fields"}
+        },
+        "main"
+      )
+
+    assert set_valued.task_title == "Good title"
+    assert set_valued.task_description == "Good description"
   end
 
   test "non-task runs keep legacy AutoPR context without task metadata" do

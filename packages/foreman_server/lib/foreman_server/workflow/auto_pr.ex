@@ -81,8 +81,11 @@ defmodule ForemanServer.Workflow.AutoPR do
           optional(:artifact_path) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
           optional(:cwd) => String.t() | nil,
-          optional(:task_title) => String.t() | nil,
-          optional(:task_description) => String.t() | nil,
+          # A nil value means the field was never set (the Task aggregate
+          # defaults description to nil). Producers MUST omit the key rather
+          # than store nil, so presence and nil never mean the same thing.
+          optional(:task_title) => String.t(),
+          optional(:task_description) => String.t(),
           optional(:command_runner) => (String.t(), [String.t()], keyword() ->
                                           {String.t(), integer()})
         }
@@ -280,47 +283,73 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
+  @doc false
+  def __pr_content_for_test__(context), do: pr_content(context)
+
   defp pr_content(context) do
-    cond do
-      Map.has_key?(context, :task_title) or Map.has_key?(context, :task_description) ->
-        with {:ok, title} <- validate_task_field(context, :task_title, :title),
-             {:ok, body} <- validate_task_field(context, :task_description, :description) do
+    title = fetch_task_field(context, :task_title)
+    description = fetch_task_field(context, :task_description)
+
+    case {title, description} do
+      {:absent, :absent} ->
+        {:ok, legacy_pr_content(context)}
+
+      _task_backed ->
+        with {:ok, title} <- resolve_task_field(context, title, :task_title, :title),
+             {:ok, body} <- resolve_task_field(context, description, :task_description, :description) do
           {:ok, %{title: title, body: body}}
         end
-
-      true ->
-        run_id = Map.fetch!(context, :run_id)
-        artifact_path = Map.get(context, :artifact_path)
-
-        {:ok,
-         %{
-           title: "feat(run): #{run_id}",
-           body:
-             "Foreman run `#{run_id}` complete.\n" <>
-               if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
-               findings_section(artifact_path)
-         }}
     end
   end
 
-  defp validate_task_field(context, context_key, field) do
+  # A task key the producer never set is `:absent` (fall back); a key explicitly
+  # stored - even as nil - is present and must validate its type (AGENTS.md
+  # §5.3). Map.take is NOT used: on the pinned toolchain (Elixir 1.20) it
+  # injects `key: nil` for absent keys, silently turning "absent" into a typed
+  # error.
+  defp fetch_task_field(context, key) do
+    case Map.fetch(context, key) do
+      {:ok, value} -> {:present, value}
+      :error -> :absent
+    end
+  end
+
+  defp resolve_task_field(context, field_result, context_key, field) do
+    case field_result do
+      {:present, value} -> validate_task_value(context, value, field)
+      :absent -> {:ok, absent_task_field(context, context_key)}
+    end
+  end
+
+  defp absent_task_field(context, :task_title), do: legacy_pr_title(context)
+  defp absent_task_field(context, :task_description), do: generated_body(context)
+
+  defp legacy_pr_title(context), do: "feat(run): " <> Map.fetch!(context, :run_id)
+
+  defp validate_task_value(context, value, field) do
     run_id = Map.fetch!(context, :run_id)
 
-    case Map.fetch(context, context_key) do
-      {:ok, value} when is_binary(value) ->
-        if String.trim(value) == "" do
-          {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :blank}}
-        else
-          {:ok, value}
-        end
-
-      {:ok, _other} ->
-        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :invalid}}
-
-      :error ->
-        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :missing}}
+    cond do
+      is_binary(value) and String.trim(value) != "" -> {:ok, value}
+      is_binary(value) -> {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :blank}}
+      true -> {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :invalid}}
     end
   end
+
+  defp generated_body(context) do
+    run_id = Map.fetch!(context, :run_id)
+    artifact_path = Map.get(context, :artifact_path)
+
+    "Foreman run `#{run_id}` complete.\n" <>
+      if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
+      findings_section(artifact_path)
+  end
+
+  defp legacy_pr_content(context) do
+    %{title: legacy_pr_title(context), body: generated_body(context)}
+  end
+
+
 
   defp run(context, executable, args, opts) do
     runner = Map.get(context, :command_runner) || (&System.cmd/3)
