@@ -549,6 +549,33 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              )
   end
 
+  # CodeRabbit #524 (round 2) Major: recovering a queued success must not stop
+  # the drain — strays queued BEHIND the success would otherwise leak into the
+  # next phase's receive and be committed as its artifact. The loop runs to
+  # mailbox-empty and returns the FIRST recovered success.
+  test "draining a recovered success keeps discarding results queued behind it" do
+    launch_pid = spawn(fn -> :ok end)
+
+    # Post-deadline error first, then a real success, then a duplicate
+    # re-launch stray queued behind the success.
+    send(self(), {:worker_result, {:error, {:task_crashed, :no_connection}}})
+    send(self(), {:worker_result, {:ok, "first success"}})
+    send(self(), {:worker_result, {:ok, "duplicate re-launch stray"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:ok, "first success"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-drain-all",
+               "run-drain-all",
+               deadline_ms
+             )
+
+    # Nothing may remain: a leftover would be absorbed by the next phase.
+    refute_received {:worker_result, _}
+  end
+
   # CodeRabbit #524 Major follow-up: a late ERROR must not swallow a real
   # success queued behind it. Under scheduler load the worker's :agent_done
   # send can be processed after run_agent returned on time — so the mailbox can

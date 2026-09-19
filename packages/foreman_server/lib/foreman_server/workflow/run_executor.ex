@@ -1387,39 +1387,38 @@ defmodule ForemanServer.Workflow.RunExecutor do
     drain_worker_result_stubs(run_id, worker_id, timeout_reason, 0)
   end
 
-  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained) do
+  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained, recovered \\ nil)
+
+  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained, recovered) do
+    # The loop MUST run to mailbox-empty before returning, whatever it finds on
+    # the way: any {:worker_result, _} left here is absorbable by the NEXT
+    # phase's blocking receive, which would commit the previous phase's output
+    # as its own artifact (see the docstring above and the leak regression
+    # tests). `recovered` remembers the FIRST successful result seen so the
+    # scan can keep discarding strays behind it and still return the outcome.
     receive do
       {:worker_result, result} ->
-        # A queued result is not automatically stale. Under heavy scheduler
-        # load a worker can finish before the deadline and its result sit in
-        # our mailbox behind the DOWN (the worker's own mailbox was busy, so
-        # :agent_done — and the send it triggers — was processed late even
-        # though run_agent returned on time). If a drained result is a
-        # non-empty success, it is the phase's authoritative outcome, not a
-        # stub: keep the FIRST such success and discard only genuinely
-        # rejected/late-error results, logging each. Returning it lets the
-        # caller complete the phase with real work instead of failing it and
-        # discarding the output.
-        cond do
-          drained_success(result) ->
-            Logger.warning(
-              "[#{run_id}] worker #{worker_id}: recovered queued worker_result after " <>
-                "#{inspect(timeout_reason)} — preserving successful outcome (drained #{drained} stub(s) before it)"
-            )
+        if drained_success(result) and is_nil(recovered) do
+          Logger.warning(
+            "[#{run_id}] worker #{worker_id}: recovered queued worker_result after " <>
+              "#{inspect(timeout_reason)} (#{inspect(result)}); continuing to drain"
+          )
 
-            {:ok, result}
+          drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1, result)
+        else
+          Logger.warning(
+            "[#{run_id}] worker #{worker_id}: discarding queued worker_result after " <>
+              "#{inspect(timeout_reason)} (drained #{drained + 1}: #{inspect(result)})"
+          )
 
-          true ->
-            Logger.warning(
-              "[#{run_id}] worker #{worker_id}: discarding queued worker_result after " <>
-                "#{inspect(timeout_reason)} (drained #{drained + 1}: #{inspect(result)})"
-            )
-
-            drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1)
+          drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1, recovered)
         end
     after
       0 ->
-        :ok
+        case recovered do
+          nil -> :ok
+          result -> {:ok, result}
+        end
     end
   end
 
