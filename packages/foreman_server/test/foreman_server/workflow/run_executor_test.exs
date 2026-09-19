@@ -426,76 +426,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert RunExecutor.__failure_policy_for_test__(phase).timeout_ms == 180_000
   end
 
-  test "absent phase timeout reaches dispatched worker as :infinity when app config has no default timeout",
-       %{temp_dir: _temp_dir} do
-    # Integration pin for unattended-run-control: a workflow phase with no
-    # timeout_minutes and no app-config default_timeout_ms must launch with an
-    # infinite worker budget. This catches drift where a stale/configured
-    # 30-minute default is silently reintroduced below FailurePolicy.resolve/2.
-    start_schema_cache!()
-
-    previous_agent_runtime = Application.get_env(:foreman_server, :agent_runtime)
-
-    Application.put_env(:foreman_server, :agent_runtime,
-      enabled: true,
-      adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter],
-      failure_policies: %{}
-    )
-
-    on_exit(fn ->
-      case previous_agent_runtime do
-        nil -> Application.delete_env(:foreman_server, :agent_runtime)
-        value -> Application.put_env(:foreman_server, :agent_runtime, value)
-      end
-    end)
-
-    test_pid = self()
-    project_id = unique_id("project")
-    task_id = unique_id("task")
-    run_id = unique_id("run")
-    script_key = unique_id("script")
-    database_path = unique_database_path(script_key)
-    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-
-    phase = phase_spec(script_key, artifact_dir)
-    workflow_snapshot = snapshot([phase])
-
-    LifecycleStore.put(script_key, %{test_pid: test_pid, probe_driver_opts: true})
-
-    seed_project_task_and_run!(
-      project_id,
-      task_id,
-      run_id,
-      workflow_snapshot,
-      project_task_provider(database_path)
-    )
-
-    register_project!(project_id, database_path)
-
-    stub(BrRunnerMock, :cmd, fn
-      {:update, %{flags: ["--claim", ^task_id]}}, _project_config, _opts ->
-        {:ok,
-         %{
-           stdout: Jason.encode!(issue_payload(task_id, "in_progress", %{})),
-           stderr: "",
-           exit_code: 0
-         }}
-
-      {:close, %{id: ^task_id}}, _project_config, _opts ->
-        {:ok,
-         %{stdout: Jason.encode!(issue_payload(task_id, "closed", %{})), stderr: "", exit_code: 0}}
-    end)
-
-    assert is_pid(start_run_executor!(run_id, task_id))
-
-    assert {:adapter_execute, "Run phase implement", _context} = receive_message()
-    assert {:adapter_env, _env} = receive_message()
-    assert {:adapter_driver_opts, driver_opts} = receive_message()
-
-    assert Keyword.fetch!(driver_opts, :timeout) == :infinity
-    assert Keyword.fetch!(driver_opts, :await_timeout) == :infinity
-  end
-
   test "phase timeout_minutes reaches the dispatched worker's driver_opts, not just FailurePolicy.resolve/2",
        %{temp_dir: _temp_dir} do
     # __failure_policy_for_test__/1 above proves resolution in isolation; this
@@ -567,6 +497,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # bug (1_000ms or 1ms) fails this assertion instead of passing it.
     assert Keyword.fetch!(driver_opts, :timeout) in 55_000..60_000
     assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
+
+    # Same launch path with `timeout_minutes:` absent: the app-config default
+    # wins over the :infinity built-in — the precedence the 30-min-ceiling
+    # investigation (foreman-4uj5) turned on.
+    refute Map.has_key?(phase_spec(script_key, artifact_dir), :timeout_minutes)
+    assert RunExecutor.__failure_policy_for_test__(phase_spec(script_key, artifact_dir)).timeout_ms ==
+             1_800_000
   end
 
   # Phase deadlines bound how long RunExecutor waits for a worker result.

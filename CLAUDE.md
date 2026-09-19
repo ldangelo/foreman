@@ -167,7 +167,7 @@ Resolution order, high → low:
 3. App config default: `config :foreman_server, :agent_runtime, default_timeout_ms: ...`.
 4. Built-in defaults:
    `%{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: :infinity}`
-   (unattended-run-control: shipped config sets no `default_timeout_ms`, so
+   (unattended-run-control: dev/prod config sets no `default_timeout_ms`, so
    phases have no default wall-clock deadline; `timeout_minutes: 0` on a
    phase, or omitting it, both resolve to `:infinity` unless an explicit app
    config policy/default is present — declare a positive `timeout_minutes:` to
