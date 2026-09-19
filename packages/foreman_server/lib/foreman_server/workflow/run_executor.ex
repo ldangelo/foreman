@@ -1418,7 +1418,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
               drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result)
 
               {:error, :worker_died_no_result}
-
           end
       after
         timeout_ms ->
@@ -1445,9 +1444,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
             {:error, :worker_timeout}
           else
-            Logger.warning(
-              "[#{run_id}] worker #{worker_id} died without delivering a result"
-            )
+            Logger.warning("[#{run_id}] worker #{worker_id} died without delivering a result")
 
             drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result)
 

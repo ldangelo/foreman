@@ -296,7 +296,8 @@ defmodule ForemanServer.Workflow.AutoPR do
 
       _task_backed ->
         with {:ok, title} <- resolve_task_field(context, title, :task_title, :title),
-             {:ok, body} <- resolve_task_field(context, description, :task_description, :description) do
+             {:ok, body} <-
+               resolve_task_field(context, description, :task_description, :description) do
           {:ok, %{title: title, body: body}}
         end
     end
@@ -330,9 +331,14 @@ defmodule ForemanServer.Workflow.AutoPR do
     run_id = Map.fetch!(context, :run_id)
 
     cond do
-      is_binary(value) and String.trim(value) != "" -> {:ok, value}
-      is_binary(value) -> {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :blank}}
-      true -> {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :invalid}}
+      is_binary(value) and String.trim(value) != "" ->
+        {:ok, value}
+
+      is_binary(value) ->
+        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :blank}}
+
+      true ->
+        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :invalid}}
     end
   end
 
@@ -348,8 +354,6 @@ defmodule ForemanServer.Workflow.AutoPR do
   defp legacy_pr_content(context) do
     %{title: legacy_pr_title(context), body: generated_body(context)}
   end
-
-
 
   defp run(context, executable, args, opts) do
     runner = Map.get(context, :command_runner) || (&System.cmd/3)

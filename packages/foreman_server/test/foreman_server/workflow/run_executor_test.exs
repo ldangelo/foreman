@@ -685,12 +685,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert {:noreply, ^state} = RunExecutor.handle_info({:worker_result, {:ok, "stale"}}, state)
 
-    assert ExUnit.CaptureLog.capture_log(
-             fn ->
-               assert {:noreply, _} =
-                        RunExecutor.handle_info({:worker_result, {:ok, "stale"}}, state)
-             end
-           ) =~ "discarding stray worker_result"
+    assert ExUnit.CaptureLog.capture_log(fn ->
+             assert {:noreply, _} =
+                      RunExecutor.handle_info({:worker_result, {:ok, "stale"}}, state)
+           end) =~ "discarding stray worker_result"
   end
 
   test "wait_for_worker_result/4 accepts queued success when DOWN arrives first" do
