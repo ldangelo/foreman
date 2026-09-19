@@ -238,15 +238,18 @@ workflow `merge:` or `pr:` fields."
 `auto_pr/1` is still final-run behavior from `finalize_run/1`; it is skipped
 when durable phase PR records already represent the run. `AutoPR.maybe_create_pr/1`
 takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
-`cwd`) and derives title and body itself; there is no declarable title, body,
-draft, reviewer, or label — except one automatic addition: when the
-PR-creating phase's artifact contains a
-`<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
--->` block (the format the bundled `review` workflow's phases write),
-`ForemanServer.Workflow.ReviewFindings` appends its content to the body under
-`## Unresolved review findings`. Absent, empty, or unterminated blocks add
-nothing beyond a logged warning for the unterminated case, so a PR body from
-a non-review workflow is byte-identical to before this behavior existed.
+`cwd`, and optional task metadata) and derives title and body itself; there is
+no declarable title, body, draft, reviewer, or label. For task-backed final
+AutoPRs, `RunExecutor` passes the task title and description, and AutoPR uses
+those exact strings as the GitHub PR title and body. A task title/description
+that is present but blank or non-string is a typed metadata error before the
+branch is published; a field the task never set is omitted from the context, so
+a title-only task (no description) falls back to the generated title/body
+rather than failing. For no-task runs AutoPR preserves the legacy generated
+title/body;
+only that generated-body path appends `ForemanServer.Workflow.ReviewFindings`
+content under `## Unresolved review findings` when the artifact contains the
+bundled review markers. Phase PRs keep their separate title/body behavior.
 Foreman commits with a fixed message, its own author
 identity, and `--no-verify`; only WHETHER a phase commits and whether it asks
 for a phase PR record are declarable.

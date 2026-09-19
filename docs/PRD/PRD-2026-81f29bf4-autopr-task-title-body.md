@@ -1,18 +1,18 @@
 ---
 document_id: PRD-2026-81f29bf4
 label: prd-autopr-task-title-body
-version: 1.0.1
+version: 1.0.3
 status: Draft
 date: 2026-09-18
 scale_depth: STANDARD
 total_requirements: 12
-total_acceptance_criteria: 31
-readiness_score: 4.7
+total_acceptance_criteria: 32
+readiness_score: 4.8
 ---
 
-# PRD: AutoPR PR title/description actual implementation
+# PRD: Include bead/task title and description in AutoPR PR summary
 
-Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description: actual implementation**
+Foreman task title read from `FOREMAN_TASK_TITLE`: **Include bead/task title and description in AutoPR-generated PR summary**
 
 ## PRD Health Summary
 
@@ -27,8 +27,8 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description
 |---|---:|
 | Requirement coverage | 12/12 (100%) |
 | Acceptance criteria coverage | 12/12 (100%) |
-| Risk flags | 7 |
-| Dependencies | 9 |
+| Risk flags | 9 |
+| Dependencies | 10 |
 | Open ambiguity markers | 0 |
 | TRD decisions required | 0 |
 
@@ -40,7 +40,7 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description
 | REQ-002 | Use task title as final AutoPR title | Must | Medium | 3 |
 | REQ-003 | Use task description as final AutoPR body | Must | Medium | 3 |
 | REQ-004 | Preserve existing AutoPR eligibility and branch behavior | Must | High | 3 |
-| REQ-005 | Define safe fallback behavior for missing metadata | Must | Medium | 2 |
+| REQ-005 | Define safe fallback behavior for missing metadata | Must | Medium | 3 |
 | REQ-006 | Keep final AutoPR separate from phase PR behavior | Must | Medium | 2 |
 | REQ-007 | Verify with a real Task aggregate and AutoPR call | Must | High | 3 |
 | REQ-008 | Cover AutoPR title/body composition with focused tests | Must | Medium | 3 |
@@ -53,7 +53,7 @@ Foreman task title read from `FOREMAN_TASK_TITLE`: **AutoPR PR title/description
 
 Foreman's final AutoPR currently creates a generic PR title, `feat(run): <run_id>`, and a generated body describing the run artifact. That makes review queues hard to scan and disconnects the final PR from the task an operator approved. This PRD requires the final run AutoPR to use the Task aggregate's title and description as the PR title and body.
 
-This is implementation work for the previously closed PR #513 design. The prior PRD/TRD paths named in the task are not present in this worktree, so they are treated as external investigation artifacts, not as source files to ship. This PRD does not cover `PhasePR` per-phase title behavior or the push-before-reuse bug tracked separately by foreman-2jru.
+This is implementation work for the previously closed PR #513 design. The current Foreman task frames the outcome as including the approved bead/task title and description in the generated PR summary; this PRD keeps that behavior scoped to final AutoPR title/body composition. Two distinct sets of PRD/TRD paths appear in the task: the prior-run artifacts named there (for example the `PRD-2026-1c4f4a55` lineage from closed PR #523) are external investigation inputs, not files this change ships; the canonical `PRD-2026-81f29bf4` / `TRD-2026-81f29bf4` documents are the deliverable that ships with it. This PRD does not cover `PhasePR` per-phase title behavior or the push-before-reuse bug tracked separately by foreman-2jru.
 
 Foreman mode auto-selected STANDARD depth. This refinement resolved the prior inline clarification markers with best-effort product defaults and left implementation approval for a later step.
 
@@ -100,7 +100,7 @@ Needs the implementation to stay inside existing typed boundaries, preserve curr
 
 ### In scope
 
-- Thread Task aggregate `title` and `description` into the final AutoPR context map.
+- Thread Task aggregate `title` and `description` into the final AutoPR context map for task-backed and Beads-backed runs.
 - Use task title as the final AutoPR title.
 - Use task description as the final AutoPR body.
 - Preserve existing AutoPR branch resolution, commit-ahead detection, push, PR creation, no-op, and error behavior.
@@ -182,10 +182,11 @@ Priority: Must
 Complexity: Medium  
 Risk: Silent fallback can create a plausible but wrong PR.
 
-AutoPR MUST define explicit behavior for absent or blank task title/description rather than accidentally producing partial metadata. For task-backed runs, blank or non-string task title/description is invalid and MUST fail with a typed validation error. For runs with no Task aggregate, existing generated AutoPR title/body fallback remains unchanged for backward compatibility.
+AutoPR MUST define explicit behavior for a task title/description that is set but unusable, versus one the task never set, rather than accidentally producing partial metadata. For task-backed runs, a present-but-blank or non-string task title/description is invalid and MUST fail with a typed validation error. A field the task never set (nil in the Task aggregate, including a title-only task with no description) is not an error: it MUST be omitted from the AutoPR context, and the run falls back to the legacy generated title/body. For runs with no Task aggregate, existing generated AutoPR title/body fallback remains unchanged for backward compatibility.
 
-- AC-005-1: Given a task-backed run has an absent, non-string, or blank `Task.title`, when final AutoPR would create a PR, then finalization fails with a typed metadata validation error and does not call `gh pr create`.
-- AC-005-2: Given a task-backed run has an absent, non-string, or blank `Task.description`, when final AutoPR would create a PR, then finalization fails with a typed metadata validation error and logs enough context for an operator to diagnose without exposing sensitive body text.
+- AC-005-1: Given a task-backed run has a `Task.title` that is present but non-string or blank (a key explicitly stored as nil counts as present-but-unusable and MUST be reported `:invalid`, distinct from an absent key reported `:missing`), when final AutoPR would create a PR, then finalization fails with a typed metadata validation error and does not call `gh pr create`. A title the task never set (no title key at all) falls back per AC-005-3.
+- AC-005-2: Given a task-backed run has a `Task.description` that is present but non-string or blank (same nil-vs-absent reporting rule as AC-005-1), when final AutoPR would create a PR, then finalization fails with a typed metadata validation error and logs enough context for an operator to diagnose without exposing sensitive body text.
+- AC-005-3: Given a task-backed run whose task never set a title and/or description (aggregate default nil, e.g. a title-only task), when final AutoPR would create a PR, then the unset field is omitted from the context and AutoPR falls back to the legacy generated title/body without a validation error.
 
 ### 6b. Boundary preservation
 
@@ -322,8 +323,8 @@ No circular dependencies identified.
 5. **Issue:** Task description may contain sensitive details and fail logs might expose it.  
    **Resolution:** Added REQ-012 to prevent full body logging.
 
-6. **Issue:** Prior PRD/TRD artifacts named in the task are absent from this worktree.  
-   **Resolution:** Treat them as external investigation artifacts only; do not ship docs without implementation.
+6. **Issue:** Prior-run PRD/TRD artifacts named in the task are absent from this worktree.  
+   **Resolution:** They remain external investigation inputs only; do not ship those documents without their implementation. This PRD's and TRD's own `PRD-2026-81f29bf4` / `TRD-2026-81f29bf4` documents do ship with this change as its design record.
 
 7. **Issue:** PhasePR and final AutoPR bugs are easy to conflate.  
    **Resolution:** Scope and REQ-006 explicitly exclude PhasePR title/push behavior.
@@ -336,12 +337,12 @@ Ambiguity scan complete: 0 items remain marked for clarification.
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 4.7 | Covers metadata plumbing, exact composition, explicit fallback/error policy, phase separation, tests, docs, and logging. |
+| Completeness | 4.8 | Covers metadata plumbing, exact composition, explicit fallback/error policy, phase separation, tests, docs, logging, and the bead/task wording from the current operator task. |
 | Testability | 4.7 | Every Must/Should requirement has measurable ACs; exact title/body and fallback/error policies are testable without external GitHub. |
-| Clarity | 4.8 | Prior ambiguity markers are resolved: exact title, exact body, no appended artifacts/findings, typed failure for blank task metadata, legacy fallback only for no-task runs. |
+| Clarity | 4.9 | Prior ambiguity markers are resolved and the PRD title/scope now match the current operator task wording: exact title, exact body, no appended artifacts/findings, typed failure for present-but-blank or malformed task metadata, nil-vs-absent reporting discrimination, and legacy fallback for unset task fields and no-task runs. |
 | Feasibility | 4.6 | Builds on existing `RunExecutor` task metadata extraction and AutoPR context with a narrow validation/composition change. |
 
-Overall readiness score: **4.7**
+Overall readiness score: **4.8**
 Gate decision: **PASS**
 
 ## 11. Suggested Next Step
@@ -362,3 +363,24 @@ Create a TRD from this PRD:
 - Defined final AutoPR body as exact `Task.description` for task-backed runs, with no generated run/artifact/finding appendix.
 - Defined fallback/error policy: task-backed blank or invalid title/description fails with a typed validation error; no-task runs keep the existing generated AutoPR fallback.
 - Re-scored Implementation Readiness Gate from 4.3 to 4.7.
+
+### 2026-09-18 — v1.0.2
+
+- Aligned the PRD title and Foreman task-title reference with the current bead/task AutoPR summary wording.
+- Clarified that the scope covers task-backed and Beads-backed final AutoPR runs.
+- Recomputed PRD Health risk flags from 7 to 9 and dependencies from 9 to 10.
+- Re-scored Implementation Readiness Gate from 4.7 to 4.8.
+
+### 2026-09-18 — v1.0.3
+
+- Resolved the PR #520 review blocker: a task-backed run whose task never set a
+  description (aggregate default `nil`, e.g. a title-only task) previously
+  selected the task path and hard-failed with `TaskMetadataError(field:
+  :description, reason: :invalid)`, silently producing no PR. REQ-005 now
+  separates "never set" (omit the key; fall back to the generated title/body)
+  from "present but unusable" (typed error; `nil` reported `:invalid`, absent
+  reported `:missing`, blank reported `:blank`). Added AC-005-3; AC count 31→32.
+- Disambiguated the shipped-document claim: this PRD/TRD pair
+  (`PRD-2026-81f29bf4` / `TRD-2026-81f29bf4`) ships with this change; prior-run
+  artifacts such as `PRD-2026-1c4f4a55` (closed PR #523) remain external
+  investigation inputs, consistent with this PR's actual file set.
