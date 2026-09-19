@@ -911,7 +911,14 @@ optimization; polling remains the fallback.
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's
 single branch — `foreman/<task-id>/<run-id>` unless the workflow's `worktree.branch` says
-otherwise. Workflows may opt into phase boundary PR records with `stack_pr:
+otherwise. For task-backed runs, when both the task title and task description
+are set, the final PR title is exactly the task title and the final PR body is
+exactly the task description; if either is present but blank or malformed,
+AutoPR returns a typed metadata error before publishing the branch. A task field
+that was never set (for example, a title-only task) does not fail: AutoPR falls
+back to the generated title/body. Ad-hoc no-task runs keep the legacy generated
+run/artifact title and body either way.
+Workflows may opt into phase boundary PR records with `stack_pr:
 true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 `checkpointPr` settings remain unsupported.
 A `stack_pr: true` phase runs after that phase's normal commit decision and
@@ -925,15 +932,16 @@ continues. Push/create failures and closed matching PRs fail the responsible
 phase with typed details. A created or reused phase PR record suppresses the
 final AutoPR; no-op records do not.
 
-**PR bodies carry unresolved review findings.** Both PR-opening paths (final
-`AutoPR` and a `stack_pr: true` phase PR) append a `## Unresolved review
-findings` section to the body when the PR-creating phase's artifact contains a
-`<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
--->` block — the format the bundled `review` workflow's phases write. Absent or
-empty blocks add nothing, so a PR body is byte-identical to before this feature
-when no review phase ran or none produced unresolved findings. An unterminated
-block (a start marker with no matching end marker) is distinct: the phase found
-something and failed to close its markers, so a warning is logged and the body
+**PR bodies carry unresolved review findings only when Foreman generates the body.**
+Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Unresolved
+review findings` section to the generated body when the PR-creating phase's
+artifact contains a `<!-- FOREMAN_REVIEW_FINDINGS_START -->` /
+`<!-- FOREMAN_REVIEW_FINDINGS_END -->` block — the format the bundled `review`
+workflow's phases write. Task-backed final AutoPR bodies are exact task
+descriptions and do not append artifact or review-finding sections. Absent or
+empty blocks add nothing to generated bodies. An unterminated block (a start
+marker with no matching end marker) is distinct: the phase found something and
+failed to close its markers, so a warning is logged and the generated body
 instead names the artifact for a human to check directly, rather than silently
 dropping the findings.
 
@@ -948,9 +956,19 @@ A phase controls **whether** it commits, with a phase-level `commit:` boolean.
 A phase can also request a phase PR record with `stack_pr: true`; that does not
 force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinutes:` also accepted) as a
 non-negative-integer number of minutes for its execution timeout; `0`, or an
-omitted key, both mean no timeout, which is the default — Foreman only
-falls back to the Elixir app-config failure policy / `default_timeout_ms`
-when one is explicitly configured for that phase name.
+omitted key, both mean no timeout. When `timeout_minutes` is absent, the resolved
+deadline follows `FailurePolicy.resolve/2` precedence: per-call opts, then
+`:foreman_server, :agent_runtime, :failure_policies[task_type]`, then
+`:foreman_server, :agent_runtime, :default_timeout_ms`, then the built-in default
+of `:infinity`. No dev or prod config file sets either key (`config/test.exs` sets
+`:agent_runtime`, and run-executor tests `Application.put_env` failure policies and
+defaults into it), so absent-timeout phases have no wall-clock deadline in normal
+operation. There is no confirmed source for a live 30-minute ceiling on a phase
+that declares none (foreman-4uj5): a BEAM started before #510 could still hold the
+`default_timeout_ms: 1_800_000` that dev/prod config carried then, but the one run
+that showed the symptom dispatched ~12 h after #510 from a workflow with no phase
+timeout, so treat that as an unproven hypothesis — verify a server's effective
+config live before concluding it.
 Unlike `worktree:`, which is workflow-level because a run has only one worktree,
 each phase produces its own output, so these are genuinely per-phase questions:
 
