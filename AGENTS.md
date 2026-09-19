@@ -161,14 +161,43 @@ base branch from the same Foreman run branch. Absent or false preserves default
 final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
 is the complete declarable vocabulary. `timeout_minutes:` (alias `timeoutMinutes:`) is a
-non-negative integer phase execution timeout in minutes; `0`, or the key
-being absent, both mean no timeout (unattended-run-control, 2026-09):
-`FailurePolicy`'s built-in default is now `:infinity`, not a 60-second/30-minute
-ceiling, and the bundled workflows no longer declare `timeout_minutes:` at
-all. Declare a positive `timeout_minutes:` to opt a specific phase back into
-a deadline; app-config `failure_policies` can still pin one per task type.
-`Interpreter` and `PhaseSpec` still
-contain zero top-level `pr`, `merge`, or `checkpoint` keys.
+non-negative integer phase execution timeout in minutes. When the key is
+present — `0` included — it is authoritative and nothing below overrides it:
+`RunExecutor` passes `timeout_ms: :infinity` for `0` and
+`timeout_ms: minutes * 60_000` for a positive value (`phase_timeout_opts/1`).
+An ABSENT key passes no override at all, so the deadline resolves through
+`FailurePolicy.resolve/2` precedence, high → low:
+
+1. Per-call `opts` — only present keys override; this is where a phase's
+   `timeout_minutes:` lands.
+2. Per-task-type app config: `:foreman_server, :agent_runtime,
+   :failure_policies[task_type][:timeout_ms]`.
+3. App-config default: `:foreman_server, :agent_runtime, :default_timeout_ms`.
+4. Built-in `@default_timeout_ms`, which is `:infinity`
+   (unattended-run-control, 2026-09) — not a 60-second/30-minute ceiling.
+
+`failure_policy.ex:67-83` is the source of truth for that order; the bundled
+workflows no longer declare `timeout_minutes:` at all, so an absent-timeout
+phase has no wall-clock deadline in normal operation. Declare a positive
+`timeout_minutes:` to opt a specific phase back into a deadline; app-config
+`failure_policies` can still pin one per task type.
+
+**A live 30-minute ceiling on a phase that declares no `timeout_minutes:` has
+no identified cause (foreman-4uj5, 2026-09-18); do not assert one here.** The
+stale-pre-#510-server story was the initial hypothesis, and the obvious form of
+it is FALSIFIED: the pre-#510 built-in default a stale BEAM would have retained
+was `60_000` ms, not `1_800_000`, and the run in question dispatched ~12 h after
+#510 merged from a checkout — and an installed runtime workflow
+(`~/.foreman/workflows/prd.yaml`) — whose `coderabbit-review` phase declares no
+`timeout_minutes:`. The pre-#510 `packages/foreman_server/config/{dev,prod}.exs` block
+that did set `default_timeout_ms: 1_800_000` is still a plausible path for a
+long-lived BEAM started before #510 — but prove it against the live process
+first: read its `:foreman_server, :agent_runtime` app env and the
+`timeout_minutes:` in the workflow copy it actually loaded. The only other
+`1_800_000` in `lib/` is `StallPolicy`'s opt-in messaging-stall threshold, which
+emits `RunFlaggedStuck`, not `:worker_timeout`.
+`Interpreter` and `PhaseSpec` still contain zero top-level `pr`, `merge`, or
+`checkpoint` keys.
 
 **Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
 alone makes unsatisfiable — and warned about at run terminal in the case whose

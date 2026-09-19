@@ -956,9 +956,19 @@ A phase controls **whether** it commits, with a phase-level `commit:` boolean.
 A phase can also request a phase PR record with `stack_pr: true`; that does not
 force a commit. A phase can declare `timeout_minutes:` (camelCase `timeoutMinutes:` also accepted) as a
 non-negative-integer number of minutes for its execution timeout; `0`, or an
-omitted key, both mean no timeout, which is the default — Foreman only
-falls back to the Elixir app-config failure policy / `default_timeout_ms`
-when one is explicitly configured for that phase name.
+omitted key, both mean no timeout. When `timeout_minutes` is absent, the resolved
+deadline follows `FailurePolicy.resolve/2` precedence: per-call opts, then
+`:foreman_server, :agent_runtime, :failure_policies[task_type]`, then
+`:foreman_server, :agent_runtime, :default_timeout_ms`, then the built-in default
+of `:infinity`. No dev or prod config file sets either key (`config/test.exs` sets
+`:agent_runtime`, and run-executor tests `Application.put_env` failure policies and
+defaults into it), so absent-timeout phases have no wall-clock deadline in normal
+operation. There is no confirmed source for a live 30-minute ceiling on a phase
+that declares none (foreman-4uj5): a BEAM started before #510 could still hold the
+`default_timeout_ms: 1_800_000` that dev/prod config carried then, but the one run
+that showed the symptom dispatched ~12 h after #510 from a workflow with no phase
+timeout, so treat that as an unproven hypothesis — verify a server's effective
+config live before concluding it.
 Unlike `worktree:`, which is workflow-level because a run has only one worktree,
 each phase produces its own output, so these are genuinely per-phase questions:
 

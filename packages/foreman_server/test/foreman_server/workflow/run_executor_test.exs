@@ -497,6 +497,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # bug (1_000ms or 1ms) fails this assertion instead of passing it.
     assert Keyword.fetch!(driver_opts, :timeout) in 55_000..60_000
     assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
+
+    # Same launch path with `timeout_minutes:` absent: the app-config default
+    # wins over the :infinity built-in — the precedence the 30-min-ceiling
+    # investigation (foreman-4uj5) turned on.
+    refute Map.has_key?(phase_spec(script_key, artifact_dir), :timeout_minutes)
+    assert RunExecutor.__failure_policy_for_test__(phase_spec(script_key, artifact_dir)).timeout_ms ==
+             1_800_000
   end
 
   # Phase deadlines bound how long RunExecutor waits for a worker result.
