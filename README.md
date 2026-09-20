@@ -159,7 +159,9 @@ The default run branch is `foreman/<task-id>/<run-id>` — `<task-id>` is
 the provider-facing identifier when available (falls back to `<run-id>` for ad-hoc),
 so each retry of the same task gets a unique branch. `stack_pr:` reuses the existing head/base PR when present, pushes before reuse so provider diffs stay current, records
 no-op when there are no committed diffs, and suppresses final AutoPR only for
-created/reused phase PR records. Full operator semantics live in
+created/reused phase PR records. For task-backed runs, final AutoPR uses the task title as
+the PR title and the task description as the PR body; ad-hoc no-task runs keep the legacy
+generated run/artifact body. Full operator semantics live in
 [`docs/user-guide.md`](./docs/user-guide.md#pr-creation-and-merge-reconciliation).
 
 ## Agent runtime (Jido-harness backed)

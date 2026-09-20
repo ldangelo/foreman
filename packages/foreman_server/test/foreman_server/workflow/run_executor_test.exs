@@ -497,22 +497,24 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # bug (1_000ms or 1ms) fails this assertion instead of passing it.
     assert Keyword.fetch!(driver_opts, :timeout) in 55_000..60_000
     assert Keyword.fetch!(driver_opts, :await_timeout) in 55_000..60_000
+
+    # Same launch path with `timeout_minutes:` absent: the app-config default
+    # wins over the :infinity built-in — the precedence the 30-min-ceiling
+    # investigation (foreman-4uj5) turned on.
+    refute Map.has_key?(phase_spec(script_key, artifact_dir), :timeout_minutes)
+
+    assert RunExecutor.__failure_policy_for_test__(phase_spec(script_key, artifact_dir)).timeout_ms ==
+             1_800_000
   end
 
-  # CodeRabbit review on PR #481: wait_for_worker_result/4 used to accept
-  # any `{:worker_result, result}` message unconditionally once it was in
-  # the mailbox, trusting only a *relative* receive timeout computed at
-  # call time. A result that finished dispatch-side (Overwatch admission,
-  # LaunchWorker supervision, provider handshake) during the scheduling
-  # gap between the caller's deadline check and this receive actually
-  # starting could therefore be accepted as success even though the
-  # phase's absolute deadline had already elapsed. Passing the absolute
-  # `deadline_ms` and validating wall-clock time inside the receive closes
-  # that race: a message already queued when the receive starts is still
-  # rejected as late.
-  test "wait_for_worker_result/4 rejects a worker result already queued after the deadline has passed" do
-    {:ok, launch_pid} = Agent.start_link(fn -> :ok end)
-    on_exit(fn -> if Process.alive?(launch_pid), do: Agent.stop(launch_pid) end)
+  # Phase deadlines bound how long RunExecutor waits for a worker result.
+  # They do not invalidate a success already queued in the mailbox after the
+  # worker completed but before final lifecycle dispatch returned. That case
+  # was observed in a CodeRabbit review phase: the agent reported success, then
+  # RunExecutor rejected the queued result as :worker_timeout once wall time
+  # crossed the deadline during finalization.
+  test "wait_for_worker_result/4 accepts a queued worker success after the deadline has passed" do
+    launch_pid = spawn(fn -> :ok end)
 
     # Queue the result in this process's mailbox BEFORE calling
     # wait_for_worker_result/4 so Erlang's receive matches it immediately,
@@ -522,11 +524,245 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     deadline_ms = System.system_time(:millisecond) - 1
 
-    assert {:error, :worker_timeout} =
+    assert {:ok, "late artifact"} =
              RunExecutor.__wait_for_worker_result_for_test__(
                launch_pid,
                "worker-late",
                "run-late",
+               deadline_ms
+             )
+  end
+
+  test "wait_for_worker_result/4 still times out a queued worker error after the deadline" do
+    launch_pid = spawn(fn -> :ok end)
+
+    send(self(), {:worker_result, {:error, :agent_failed}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:error, :worker_timeout} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-error-late",
+               "run-error-late",
+               deadline_ms
+             )
+  end
+
+  # CodeRabbit #524 (round 2) Major: recovering a queued success must not stop
+  # the drain — strays queued BEHIND the success would otherwise leak into the
+  # next phase's receive and be committed as its artifact. The loop runs to
+  # mailbox-empty and returns the FIRST recovered success.
+  test "draining a recovered success keeps discarding results queued behind it" do
+    launch_pid = spawn(fn -> :ok end)
+
+    # Post-deadline error first, then a real success, then a duplicate
+    # re-launch stray queued behind the success.
+    send(self(), {:worker_result, {:error, {:task_crashed, :no_connection}}})
+    send(self(), {:worker_result, {:ok, "first success"}})
+    send(self(), {:worker_result, {:ok, "duplicate re-launch stray"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:ok, "first success"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-drain-all",
+               "run-drain-all",
+               deadline_ms
+             )
+
+    # Nothing may remain: a leftover would be absorbed by the next phase.
+    refute_received {:worker_result, _}
+  end
+
+  # CodeRabbit #524 Major follow-up: a late ERROR must not swallow a real
+  # success queued behind it. Under scheduler load the worker's :agent_done
+  # send can be processed after run_agent returned on time — so the mailbox can
+  # hold an error result (or crash stub) with the phase's genuine artifact
+  # behind it. The drain scans past the rejection and recovers it.
+  test "wait_for_worker_result/4 recovers a queued success behind a post-deadline error" do
+    launch_pid = spawn(fn -> :ok end)
+
+    send(self(), {:worker_result, {:error, {:task_crashed, :no_connection}}})
+    send(self(), {:worker_result, {:ok, "the real artifact"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:ok, "the real artifact"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-behind-error",
+               "run-behind-error",
+               deadline_ms
+             )
+
+    refute_received {:worker_result, _}
+  end
+
+  # The mailbox-leak regression. RunExecutor's handle_info/2 has NO
+  # `{:worker_result, _}` clause (by design — see the duplicate-relaunch comment
+  # in the worker test double above, and AGENTS.md §5.2 forbidding a permissive
+  # catch-all). So a result nobody matched stays in the process mailbox, and the
+  # NEXT phase's `wait_for_worker_result/4` blocking receive matches it
+  # immediately — the next phase writes and commits the PREVIOUS phase's output
+  # as its own artifact. Every timeout return path must therefore drain the
+  # mailbox. These tests pin the drain directly: after a timed-out wait, the
+  # calling process must hold no `{:worker_result, _}` at all.
+  test "wait_for_worker_result/4 consumes a queued result on both timeout and success paths" do
+    launch_pid = spawn(fn -> :ok end)
+
+    # Deadline already gone and the queued result is an error: the receive
+    # matches, rejects it as :worker_timeout, and must consume (not leave) it.
+    send(self(), {:worker_result, {:error, :agent_failed}})
+
+    assert {:error, :worker_timeout} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-late-error",
+               "run-late-error",
+               System.system_time(:millisecond) - 1
+             )
+
+    refute_received {:worker_result, _}
+
+    # A non-empty success past the deadline is honoured as authoritative — and
+    # still removed from the mailbox, so the next phase cannot steal it.
+    send(self(), {:worker_result, {:ok, "stale artifact from a previous phase"}})
+
+    assert {:ok, "stale artifact from a previous phase"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-queued-ok",
+               "run-queued-ok",
+               System.system_time(:millisecond) - 1
+             )
+
+    refute_received {:worker_result, _}
+  end
+
+  # The real cross-phase leak: RunExecutor's handle_info/2 had no
+  # `{:worker_result, _}` clause, so a result nobody matched stayed in the
+  # mailbox (AGENTS.md §5.2 forbids a permissive catch-all to absorb it), and
+  # the NEXT phase's blocking receive matched it immediately — committing the
+  # previous phase's output as its own artifact. `wait_for_worker_result/4` now
+  # drains on every timeout return, and handle_info/2 has an explicit
+  # log-and-discard clause for the window the receive cannot see.
+  #
+  # `wait_for_worker_result/4` is a private helper, so these are unit-level: the
+  # `after 0` drain is observable directly from this test process. The
+  # after-the-return window is covered by the handle_info clause test below,
+  # which drives a real supervised executor.
+  # The mailbox-leak regression, unit-level. `wait_for_worker_result/4` is
+  # private and the real call site is the same process that owns the mailbox, so
+  # this test process stands in for the RunExecutor: a stale result queued
+  # before the call must be consumed by the timeout path, not survive to the
+  # next phase's receive.
+  test "wait_for_worker_result/4 timeout paths drain the mailbox" do
+    launch_pid = spawn(fn -> :ok end)
+
+    # Past deadline + an error already queued: rejected as timeout AND consumed.
+    send(self(), {:worker_result, {:error, :agent_failed}})
+
+    assert {:error, :worker_timeout} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-drain-1",
+               "run-drain-1",
+               System.system_time(:millisecond) - 1
+             )
+
+    refute_received {:worker_result, _}
+
+    # Same again, this time with TWO stale results queued behind the one the
+    # receive matches — the drain must be a loop, not a single flush.
+    send(self(), {:worker_result, {:error, :first}})
+    send(self(), {:worker_result, {:error, "leaked from an earlier phase"}})
+
+    assert {:error, :worker_timeout} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-drain-2",
+               "run-drain-2",
+               System.system_time(:millisecond) - 1
+             )
+
+    refute_received {:worker_result, _}
+  end
+
+  # §5.3 outcome discrimination: `:worker_timeout` means "deadline elapsed,
+  # result unknown/stale". A worker that DIED without ever producing a result is
+  # `:worker_died_no_result`, and that must not degrade into `:worker_timeout`
+  # merely because wall time crossed the deadline — downstream pause/cancel
+  # handling (run_executor_run_worktree_test.exs) keys off the distinction.
+  test "wait_for_worker_result/4 reports a result-less death as :worker_died_no_result after the deadline" do
+    # A worker that has already died without ever producing a result, past the
+    # deadline. Detection keys off the launch pid, not a queued DOWN: monitor
+    # refs are unique per `Process.monitor/1` call, so a DOWN a test synthesises
+    # can never match the internal monitor's ref, and the real DOWN for an
+    # already-dead pid is delivered at monitor-install time (flushed below).
+    launch_pid = spawn(fn -> :ok end)
+    ref = Process.monitor(launch_pid)
+    receive do: ({:DOWN, ^ref, :process, ^launch_pid, :normal} -> :ok)
+
+    # The outcome must stay `:worker_died_no_result` even though wall time has
+    # crossed the deadline (§5.3) — `:worker_timeout` means "deadline elapsed,
+    # result unknown", never "crash", and downstream pause/cancel handling keys
+    # off that distinction.
+    assert {:error, :worker_died_no_result} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-died-late",
+               "run-died-late",
+               System.system_time(:millisecond) - 1
+             )
+
+    # A result-less death must not leave anything for the next phase either.
+    refute_received {:worker_result, _}
+  end
+
+  # End-to-end for the explicit handle_info/2 clause: a stray
+  # `{:worker_result, _}` arriving while the executor sits between phases must be
+  # logged and discarded, not left in the mailbox for the next phase's
+  # blocking receive to steal.
+  test "handle_info/2 logs and discards a stray worker_result" do
+    run_id = "run-stray-#{System.unique_integer([:positive])}"
+
+    state = %{
+      run_id: run_id,
+      task: %{task_id: run_id},
+      status: :in_progress,
+      phase: %{index: 1, context: %{}}
+    }
+
+    assert {:noreply, ^state} = RunExecutor.handle_info({:worker_result, {:ok, "stale"}}, state)
+
+    assert ExUnit.CaptureLog.capture_log(fn ->
+             assert {:noreply, _} =
+                      RunExecutor.handle_info({:worker_result, {:ok, "stale"}}, state)
+           end) =~ "discarding stray worker_result"
+  end
+
+  test "wait_for_worker_result/4 accepts queued success when DOWN arrives first" do
+    # A spawned process that exits immediately sends DOWN to monitors
+    launch_pid = spawn(fn -> :ok end)
+
+    # Queue DOWN first, then the result - tests that the :DOWN branch finds
+    # the already-queued result via non-blocking receive
+    ref = Process.monitor(launch_pid)
+    # Flush the DOWN that arrives immediately after monitoring
+    receive do: ({:DOWN, ^ref, :process, ^launch_pid, :normal} -> :ok)
+    # Now manually queue DOWN first, then the result
+    send(self(), {:DOWN, ref, :process, launch_pid, :normal})
+    send(self(), {:worker_result, {:ok, "success before down"}})
+
+    deadline_ms = System.system_time(:millisecond) - 1
+
+    assert {:ok, "success before down"} =
+             RunExecutor.__wait_for_worker_result_for_test__(
+               launch_pid,
+               "worker-down-first",
+               "run-down-first",
                deadline_ms
              )
   end

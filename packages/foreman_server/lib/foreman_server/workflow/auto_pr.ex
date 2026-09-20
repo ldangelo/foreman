@@ -64,12 +64,30 @@ defmodule ForemanServer.Workflow.AutoPR do
   @gh_args ~w[pr create]
   @branch_regex ~r/FOREMAN_BRANCH=(\S+)/
 
+  defmodule TaskMetadataError do
+    @moduledoc "Typed AutoPR task metadata validation error."
+    @enforce_keys [:run_id, :field, :reason]
+    @type t :: %__MODULE__{
+            run_id: String.t(),
+            field: :title | :description,
+            reason: :missing | :blank | :invalid
+          }
+    defstruct [:run_id, :field, :reason]
+  end
+
   @type context :: %{
           required(:run_id) => String.t(),
           required(:base_branch) => String.t(),
           optional(:artifact_path) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
-          optional(:cwd) => String.t() | nil
+          optional(:cwd) => String.t() | nil,
+          # A nil value means the field was never set (the Task aggregate
+          # defaults description to nil). Producers MUST omit the key rather
+          # than store nil, so presence and nil never mean the same thing.
+          optional(:task_title) => String.t(),
+          optional(:task_description) => String.t(),
+          optional(:command_runner) => (String.t(), [String.t()], keyword() ->
+                                          {String.t(), integer()})
         }
 
   @type result :: {:ok, String.t()} | :noop | {:error, term()}
@@ -87,10 +105,11 @@ defmodule ForemanServer.Workflow.AutoPR do
     cwd = Map.get(context, :cwd)
 
     with {:ok, head_branch} <- resolve_head_branch(context),
-         {:ok, ahead} <- commits_ahead(base_branch, head_branch, cwd) do
+         {:ok, ahead} <- commits_ahead(context, base_branch, head_branch, cwd) do
       if ahead > 0 do
-        with :ok <- push_head(run_id, head_branch, cwd) do
-          open_pr(run_id, base_branch, head_branch, Map.get(context, :artifact_path), cwd)
+        with {:ok, pr_content} <- pr_content(context),
+             :ok <- push_head(context, run_id, head_branch, cwd) do
+          open_pr(context, run_id, base_branch, head_branch, pr_content, cwd)
         end
       else
         Logger.info(
@@ -166,12 +185,12 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp commits_ahead(base_branch, head_branch, cwd) do
+  defp commits_ahead(context, base_branch, head_branch, cwd) do
     args = ["rev-list", "--count", base_branch <> ".." <> head_branch]
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
-    case System.cmd("git", args, opts) do
+    case run(context, "git", args, opts) do
       {output, 0} ->
         case Integer.parse(String.trim(output)) do
           {count, _} -> {:ok, count}
@@ -187,7 +206,7 @@ defmodule ForemanServer.Workflow.AutoPR do
   # fails with "Head ref must be a branch" / "No commits between ...". Foreman
   # creates the run branch locally in a worktree, so it must be published
   # first.
-  defp push_head(run_id, head_branch, cwd) do
+  defp push_head(context, run_id, head_branch, cwd) do
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
@@ -198,7 +217,7 @@ defmodule ForemanServer.Workflow.AutoPR do
       outcome: "start"
     )
 
-    case System.cmd("git", ["push", "-u", "origin", head_branch], opts) do
+    case run(context, "git", ["push", "-u", "origin", head_branch], opts) do
       {_output, 0} ->
         :ok
 
@@ -216,14 +235,7 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp open_pr(run_id, base_branch, head_branch, artifact_path, cwd) do
-    title = "feat(run): #{run_id}"
-
-    body =
-      "Foreman run `#{run_id}` complete.\n" <>
-        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
-        findings_section(artifact_path)
-
+  defp open_pr(context, run_id, base_branch, head_branch, %{title: title, body: body}, cwd) do
     cmd =
       @gh_args ++
         ["--base", base_branch, "--head", head_branch, "--title", title, "--body", body]
@@ -241,7 +253,7 @@ defmodule ForemanServer.Workflow.AutoPR do
       outcome: "start"
     )
 
-    case System.cmd("gh", cmd, opts) do
+    case run(context, "gh", cmd, opts) do
       {output, 0} ->
         pr_url = pr_url_from_output(output) || String.trim(output)
 
@@ -269,6 +281,83 @@ defmodule ForemanServer.Workflow.AutoPR do
 
         {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
     end
+  end
+
+  @doc false
+  def __pr_content_for_test__(context), do: pr_content(context)
+
+  defp pr_content(context) do
+    title = fetch_task_field(context, :task_title)
+    description = fetch_task_field(context, :task_description)
+
+    case {title, description} do
+      {:absent, :absent} ->
+        {:ok, legacy_pr_content(context)}
+
+      _task_backed ->
+        with {:ok, title} <- resolve_task_field(context, title, :task_title, :title),
+             {:ok, body} <-
+               resolve_task_field(context, description, :task_description, :description) do
+          {:ok, %{title: title, body: body}}
+        end
+    end
+  end
+
+  # A task key the producer never set is `:absent` (fall back); a key explicitly
+  # stored - even as nil - is present and must validate its type (AGENTS.md
+  # §5.3). Map.take is NOT used: on the pinned toolchain (Elixir 1.20) it
+  # injects `key: nil` for absent keys, silently turning "absent" into a typed
+  # error.
+  defp fetch_task_field(context, key) do
+    case Map.fetch(context, key) do
+      {:ok, value} -> {:present, value}
+      :error -> :absent
+    end
+  end
+
+  defp resolve_task_field(context, field_result, context_key, field) do
+    case field_result do
+      {:present, value} -> validate_task_value(context, value, field)
+      :absent -> {:ok, absent_task_field(context, context_key)}
+    end
+  end
+
+  defp absent_task_field(context, :task_title), do: legacy_pr_title(context)
+  defp absent_task_field(context, :task_description), do: generated_body(context)
+
+  defp legacy_pr_title(context), do: "feat(run): " <> Map.fetch!(context, :run_id)
+
+  defp validate_task_value(context, value, field) do
+    run_id = Map.fetch!(context, :run_id)
+
+    cond do
+      is_binary(value) and String.trim(value) != "" ->
+        {:ok, value}
+
+      is_binary(value) ->
+        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :blank}}
+
+      true ->
+        {:error, %TaskMetadataError{run_id: run_id, field: field, reason: :invalid}}
+    end
+  end
+
+  defp generated_body(context) do
+    run_id = Map.fetch!(context, :run_id)
+    artifact_path = Map.get(context, :artifact_path)
+
+    "Foreman run `#{run_id}` complete.\n" <>
+      if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
+      findings_section(artifact_path)
+  end
+
+  defp legacy_pr_content(context) do
+    %{title: legacy_pr_title(context), body: generated_body(context)}
+  end
+
+  defp run(context, executable, args, opts) do
+    runner = Map.get(context, :command_runner) || (&System.cmd/3)
+    runner.(executable, args, opts)
   end
 
   defp pr_url_from_output(output) do

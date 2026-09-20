@@ -110,6 +110,8 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
+RunExecutor phase completion rules: (1) A phase deadline bounds how long the executor waits for `{:worker_result, _}`; it does not invalidate a non-empty `{:ok, output}` success already in the mailbox — that success stays authoritative even if final lifecycle dispatch crosses the wall-clock deadline, while a queued error may still be rejected as `:worker_timeout`. (2) Every timeout return path MUST drain any `{:worker_result, _}` left in the mailbox before returning: `handle_info/2` has no such clause (no permissive catch-all, §5.2), so an undispatched result would be matched by the NEXT phase and committed as its artifact. (3) A worker that died without producing a result is always `:worker_died_no_result`, even past the deadline; `:worker_timeout` means "deadline elapsed, result unknown", never "crash" (§5.3).
+
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
@@ -159,14 +161,43 @@ base branch from the same Foreman run branch. Absent or false preserves default
 final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
 is the complete declarable vocabulary. `timeout_minutes:` (alias `timeoutMinutes:`) is a
-non-negative integer phase execution timeout in minutes; `0`, or the key
-being absent, both mean no timeout (unattended-run-control, 2026-09):
-`FailurePolicy`'s built-in default is now `:infinity`, not a 60-second/30-minute
-ceiling, and the bundled workflows no longer declare `timeout_minutes:` at
-all. Declare a positive `timeout_minutes:` to opt a specific phase back into
-a deadline; app-config `failure_policies` can still pin one per task type.
-`Interpreter` and `PhaseSpec` still
-contain zero top-level `pr`, `merge`, or `checkpoint` keys.
+non-negative integer phase execution timeout in minutes. When the key is
+present — `0` included — it is authoritative and nothing below overrides it:
+`RunExecutor` passes `timeout_ms: :infinity` for `0` and
+`timeout_ms: minutes * 60_000` for a positive value (`phase_timeout_opts/1`).
+An ABSENT key passes no override at all, so the deadline resolves through
+`FailurePolicy.resolve/2` precedence, high → low:
+
+1. Per-call `opts` — only present keys override; this is where a phase's
+   `timeout_minutes:` lands.
+2. Per-task-type app config: `:foreman_server, :agent_runtime,
+   :failure_policies[task_type][:timeout_ms]`.
+3. App-config default: `:foreman_server, :agent_runtime, :default_timeout_ms`.
+4. Built-in `@default_timeout_ms`, which is `:infinity`
+   (unattended-run-control, 2026-09) — not a 60-second/30-minute ceiling.
+
+`failure_policy.ex:67-83` is the source of truth for that order; the bundled
+workflows no longer declare `timeout_minutes:` at all, so an absent-timeout
+phase has no wall-clock deadline in normal operation. Declare a positive
+`timeout_minutes:` to opt a specific phase back into a deadline; app-config
+`failure_policies` can still pin one per task type.
+
+**A live 30-minute ceiling on a phase that declares no `timeout_minutes:` has
+no identified cause (foreman-4uj5, 2026-09-18); do not assert one here.** The
+stale-pre-#510-server story was the initial hypothesis, and the obvious form of
+it is FALSIFIED: the pre-#510 built-in default a stale BEAM would have retained
+was `60_000` ms, not `1_800_000`, and the run in question dispatched ~12 h after
+#510 merged from a checkout — and an installed runtime workflow
+(`~/.foreman/workflows/prd.yaml`) — whose `coderabbit-review` phase declares no
+`timeout_minutes:`. The pre-#510 `packages/foreman_server/config/{dev,prod}.exs` block
+that did set `default_timeout_ms: 1_800_000` is still a plausible path for a
+long-lived BEAM started before #510 — but prove it against the live process
+first: read its `:foreman_server, :agent_runtime` app env and the
+`timeout_minutes:` in the workflow copy it actually loaded. The only other
+`1_800_000` in `lib/` is `StallPolicy`'s opt-in messaging-stall threshold, which
+emits `RunFlaggedStuck`, not `:worker_timeout`.
+`Interpreter` and `PhaseSpec` still contain zero top-level `pr`, `merge`, or
+`checkpoint` keys.
 
 **Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
 alone makes unsatisfiable — and warned about at run terminal in the case whose
@@ -238,15 +269,18 @@ workflow `merge:` or `pr:` fields."
 `auto_pr/1` is still final-run behavior from `finalize_run/1`; it is skipped
 when durable phase PR records already represent the run. `AutoPR.maybe_create_pr/1`
 takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
-`cwd`) and derives title and body itself; there is no declarable title, body,
-draft, reviewer, or label — except one automatic addition: when the
-PR-creating phase's artifact contains a
-`<!-- FOREMAN_REVIEW_FINDINGS_START -->` / `<!-- FOREMAN_REVIEW_FINDINGS_END
--->` block (the format the bundled `review` workflow's phases write),
-`ForemanServer.Workflow.ReviewFindings` appends its content to the body under
-`## Unresolved review findings`. Absent, empty, or unterminated blocks add
-nothing beyond a logged warning for the unterminated case, so a PR body from
-a non-review workflow is byte-identical to before this behavior existed.
+`cwd`, and optional task metadata) and derives title and body itself; there is
+no declarable title, body, draft, reviewer, or label. For task-backed final
+AutoPRs, `RunExecutor` passes the task title and description, and AutoPR uses
+those exact strings as the GitHub PR title and body. A task title/description
+that is present but blank or non-string is a typed metadata error before the
+branch is published; a field the task never set is omitted from the context, so
+a title-only task (no description) falls back to the generated title/body
+rather than failing. For no-task runs AutoPR preserves the legacy generated
+title/body;
+only that generated-body path appends `ForemanServer.Workflow.ReviewFindings`
+content under `## Unresolved review findings` when the artifact contains the
+bundled review markers. Phase PRs keep their separate title/body behavior.
 Foreman commits with a fixed message, its own author
 identity, and `--no-verify`; only WHETHER a phase commits and whether it asks
 for a phase PR record are declarable.

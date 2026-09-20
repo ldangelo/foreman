@@ -1,6 +1,8 @@
 defmodule ForemanServer.Workflow.AutoPRTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.Workflow.AutoPR
 
   # AutoPR previously had no test coverage at all, which is why nobody noticed
@@ -140,6 +142,171 @@ defmodule ForemanServer.Workflow.AutoPRTest do
     end
   end
 
+  describe "task metadata title/body" do
+    test "uses task title and description exactly as gh pr create arguments" do
+      parent = self()
+
+      runner = fn
+        "git", ["rev-list", "--count", "main..foreman/run-10/implement"], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", "foreman/run-10/implement"], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/10\n", 0}
+      end
+
+      title = "AutoPR PR title/description: actual implementation / #42"
+      body = "Implement the thing.\n\n- preserve markdown\n- keep $shell as text"
+
+      assert {:ok, "https://github.com/acme/repo/pull/10"} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-10",
+                 base_branch: "main",
+                 head_branch: "foreman/run-10/implement",
+                 task_title: title,
+                 task_description: body,
+                 command_runner: runner
+               })
+
+      assert_receive {:gh_args, args}
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--title")) + 1) == title
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1) == body
+    end
+
+    test "a run with only a task title falls back to the generated body" do
+      parent = self()
+
+      runner = fn
+        "git", ["rev-list", "--count", "main..foreman/run-title-only/implement"], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", "foreman/run-title-only/implement"], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/13\n", 0}
+      end
+
+      # An unset description is absent from the context (RunExecutor omits nil
+      # fields) — that must fall back, not hard-fail and silently produce no PR.
+      assert {:ok, _url} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-title-only",
+                 base_branch: "main",
+                 head_branch: "foreman/run-title-only/implement",
+                 task_title: "Only a title",
+                 command_runner: runner
+               })
+
+      assert_receive {:gh_args, args}
+      title = Enum.at(args, Enum.find_index(args, &(&1 == "--title")) + 1)
+      body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
+      assert title == "Only a title"
+      assert body =~ "Foreman run `run-title-only` complete."
+    end
+
+    test "an explicitly nil task field is malformed, not absent" do
+      runner = fn
+        "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+        executable, args, _opts -> flunk("unexpected command: #{executable} #{inspect(args)}")
+      end
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :description, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-nil-description",
+                 base_branch: "main",
+                 head_branch: "foreman/run-nil-description/implement",
+                 task_title: "Task title",
+                 task_description: nil,
+                 command_runner: runner
+               })
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :title, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-nil-title",
+                 base_branch: "main",
+                 head_branch: "foreman/run-nil-title/implement",
+                 task_title: nil,
+                 command_runner: runner
+               })
+    end
+
+    test "validates task metadata before publishing the head branch" do
+      parent = self()
+
+      runner = fn executable, args, _opts ->
+        send(parent, {:cmd, executable, args})
+
+        case {executable, args} do
+          {"git", ["rev-list", "--count", _]} -> {"1\n", 0}
+          _ -> flunk("unexpected command after invalid metadata: #{executable} #{inspect(args)}")
+        end
+      end
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :description, reason: :blank}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-11",
+                 base_branch: "main",
+                 head_branch: "foreman/run-11/implement",
+                 task_title: "Task title",
+                 task_description: "   ",
+                 command_runner: runner
+               })
+
+      assert_receive {:cmd, "git", ["rev-list", "--count", "main..foreman/run-11/implement"]}
+      refute_receive {:cmd, "git", ["push", "-u", "origin", _]}
+      refute_receive {:cmd, "gh", _}
+    end
+
+    test "preserves legacy generated body and review findings when no task metadata is present" do
+      parent = self()
+
+      artifact =
+        Path.join(System.tmp_dir!(), "autopr-findings-#{System.unique_integer([:positive])}.md")
+
+      File.write!(artifact, """
+      report
+      <!-- FOREMAN_REVIEW_FINDINGS_START -->
+      finding one
+      <!-- FOREMAN_REVIEW_FINDINGS_END -->
+      """)
+
+      on_exit(fn -> File.rm_rf(artifact) end)
+
+      runner = fn
+        "git", ["rev-list", "--count", "main..foreman/run-12/implement"], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", "foreman/run-12/implement"], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/12\n", 0}
+      end
+
+      assert {:ok, _url} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-12",
+                 base_branch: "main",
+                 head_branch: "foreman/run-12/implement",
+                 artifact_path: artifact,
+                 command_runner: runner
+               })
+
+      assert_receive {:gh_args, args}
+      body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
+      assert body =~ "Foreman run `run-12` complete."
+      assert body =~ "Artifact: #{artifact}"
+      assert body =~ "## Unresolved review findings"
+      assert body =~ "finding one"
+    end
+  end
+
   describe "the base branch decides what the PR would contain" do
     # PR #420 opened with `--base=main` while the run had been cut from
     # `feat/mcp-run-details`, so its diff was an entire unrelated session of
@@ -195,6 +362,69 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                })
 
       assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+    end
+  end
+
+  describe "task metadata validation and log safety" do
+    test "reports missing and invalid task metadata with typed errors" do
+      runner = fn
+        "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
+        executable, args, _opts -> flunk("unexpected command: #{executable} #{inspect(args)}")
+      end
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :title, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-nil-title",
+                 base_branch: "main",
+                 head_branch: "foreman/run-nil-title/implement",
+                 task_title: nil,
+                 task_description: "Task body",
+                 command_runner: runner
+               })
+
+      assert {:error, %AutoPR.TaskMetadataError{field: :title, reason: :invalid}} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-invalid-title",
+                 base_branch: "main",
+                 head_branch: "foreman/run-invalid-title/implement",
+                 task_title: 123,
+                 task_description: "Task body",
+                 command_runner: runner
+               })
+    end
+
+    test "does not write task body text in AutoPR success or validation logs" do
+      parent = self()
+      sentinel = "SECRET-SENTINEL-TASK-BODY"
+
+      runner = fn
+        "git", ["rev-list", "--count", _], _opts ->
+          {"1\n", 0}
+
+        "git", ["push", "-u", "origin", _], _opts ->
+          {"", 0}
+
+        "gh", args, _opts ->
+          send(parent, {:gh_args, args})
+          {"https://github.com/acme/repo/pull/13\n", 0}
+      end
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _url} =
+                   AutoPR.maybe_create_pr(%{
+                     run_id: "run-log-safety",
+                     base_branch: "main",
+                     head_branch: "foreman/run-log-safety/implement",
+                     task_title: "Task title",
+                     task_description: sentinel,
+                     command_runner: runner
+                   })
+        end)
+
+      assert_receive {:gh_args, args}
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1) == sentinel
+      refute log =~ sentinel
     end
   end
 end
