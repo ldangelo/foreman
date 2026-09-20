@@ -1460,8 +1460,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
               # as a timeout once the deadline passed loses a distinction the
               # pause/cancel handling downstream depends on.
 
-              # Nothing queued behind the DOWN now — but a late-arriving or
-              # duplicate result must not survive this return either.
+              # Nothing matched the probe receive, but a result can still be
+              # queued behind the DOWN that the probe's own arm ordering missed
+              # (e.g. delivered between the two receives): drain scans the rest
+              # of the mailbox, discarding every stub. If a real success turns
+              # up, THAT is the phase's outcome and is preserved; nothing else
+              # is allowed to survive this return.
               case drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result) do
                 {:ok, recovered} -> recovered
                 _ -> {:error, :worker_died_no_result}
