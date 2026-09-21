@@ -271,7 +271,11 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
   defp safe_stop(pid) do
     if Process.alive?(pid) do
       try do
-        GenServer.stop(pid, :normal, 1_000)
+        # 5s, not 1s: avoid GenServer.stop escalating to Process.exit(pid,
+        # :kill) under full-suite load, which — unlike a :normal exit —
+        # also kills a supervisor's co-located Registry (started linked
+        # in init/1, e.g. BeadsOrphanJanitorSupervisor.Registry).
+        GenServer.stop(pid, :normal, 5_000)
       catch
         :exit, _ -> :ok
       end
