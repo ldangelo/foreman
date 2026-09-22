@@ -258,7 +258,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-imp-pipe"}
 
       line =
-        ~s({"id":"bead-imp-pipe","title":"hello","priority":2,"issue_type":"task","status":"open"})
+        ~s({"id":"bead-imp-pipe","title":"hello","priority":2,"issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -288,7 +288,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-prompt"}
 
       line =
-        ~s({"id":"bead-prompt","title":"fix the thing","description":"it is broken because X","issue_type":"task","status":"open"})
+        ~s({"id":"bead-prompt","title":"fix the thing","description":"it is broken because X","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -302,7 +302,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-prompt-2"}
 
       line =
-        ~s({"id":"bead-no-desc","title":"just the title","issue_type":"task","status":"open"})
+        ~s({"id":"bead-no-desc","title":"just the title","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -315,7 +315,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
     test "title and description both absent is malformed, not imported with an empty prompt" do
       state = %BeadsWatcher{project_id: "proj-prompt-3"}
 
-      line = ~s({"id":"bead-no-title","issue_type":"task","status":"open"})
+      line =
+        ~s({"id":"bead-no-title","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -344,7 +345,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
         %{id: "task:beads:proj-boundary:bead-b2"}
       )
 
-      imported_line = ~s({"id":"bead-b3","title":"new","issue_type":"task","status":"open"})
+      imported_line =
+        ~s({"id":"bead-b3","title":"new","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       FakeCommandGateway.stub_response({:ok, nil})
       _ = BeadsWatcher.process_line(state, foreman_line)
@@ -352,7 +354,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       _ =
         BeadsWatcher.process_line(
           recon_state,
-          ~s({"id":"bead-b2","title":"r","issue_type":"task","status":"open"})
+          ~s({"id":"bead-b2","title":"r","issue_type":"task","status":"open","labels":["foreman-exec"]})
         )
 
       _ = BeadsWatcher.process_line(state, imported_line)
@@ -362,7 +364,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       _ =
         BeadsWatcher.process_line(
           state,
-          ~s({"id":"bead-b4","title":"t","issue_type":"task","status":"open"})
+          ~s({"id":"bead-b4","title":"t","issue_type":"task","status":"open","labels":["foreman-exec"]})
         )
 
       FakeCommandGateway.stub_response({:error, :down})
@@ -370,7 +372,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       _ =
         BeadsWatcher.process_line(
           state,
-          ~s({"id":"bead-b5","title":"t","issue_type":"task","status":"open"})
+          ~s({"id":"bead-b5","title":"t","issue_type":"task","status":"open","labels":["foreman-exec"]})
         )
 
       assert FakeCommandGateway.operator_calls() == [],
@@ -396,7 +398,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       state = %BeadsWatcher{project_id: "proj-prov-err"}
 
-      line = ~s({"id":"bead-prov","title":"x","issue_type":"task","status":"open"})
+      line =
+        ~s({"id":"bead-prov","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome_1 = BeadsWatcher.process_line(state, line)
       outcome_2 = BeadsWatcher.process_line(state, line)
@@ -418,7 +421,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:error, {:wrong_expected_version, 5, 6}})
 
       state = %BeadsWatcher{project_id: "proj-wver"}
-      line = ~s({"id":"bead-wver","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-wver","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome_1 = BeadsWatcher.process_line(state, line)
       outcome_2 = BeadsWatcher.process_line(state, line)
@@ -439,7 +444,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:exit, :killed})
 
       state = %BeadsWatcher{project_id: "proj-exit"}
-      line = ~s({"id":"bead-exit","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-exit","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       _ = BeadsWatcher.process_line(state, line)
       _ = BeadsWatcher.process_line(state, line)
@@ -458,7 +465,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:ok, :imported_ok})
 
       state = %BeadsWatcher{project_id: "proj-tok"}
-      line = ~s({"id":"bead-tok","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-tok","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -472,7 +481,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       ])
 
       state = %BeadsWatcher{project_id: "proj-ae"}
-      line = ~s({"id":"bead-ae","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-ae","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -483,7 +494,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:error, {:invalid_task_status, "closed"}})
 
       state = %BeadsWatcher{project_id: "proj-its"}
-      line = ~s({"id":"bead-its","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-its","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -494,7 +507,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:error, {:project_archived, "archived since 2026-08-01"}})
 
       state = %BeadsWatcher{project_id: "proj-pa"}
-      line = ~s({"id":"bead-pa","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-pa","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -505,7 +520,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeCommandGateway.stub_response({:error, :project_id_required})
 
       state = %BeadsWatcher{project_id: "proj-pir"}
-      line = ~s({"id":"bead-pir","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-pir","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -551,7 +568,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
     test "open status is accepted directly, with no draft intermediate required" do
       state = %BeadsWatcher{project_id: "proj-status"}
-      line = ~s({"id":"bead-direct-open","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-direct-open","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -559,6 +578,106 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.external_id == "bead-direct-open"
+    end
+  end
+
+  # --- Label gate (opt-in foreman-exec labeling) ---------------------------
+
+  describe "label gate requires foreman-exec label" do
+    test "bead with foreman-exec label IS imported (Foreman processes)" do
+      FakeWorkflowCatalog.stub_response({:ok, "fix"})
+      state = %BeadsWatcher{project_id: "proj-label"}
+
+      line =
+        ~s({"id":"bead-labeled","title":"fix x","issue_type":"bug","status":"open","labels":["foreman-exec"]})
+
+      outcome = BeadsWatcher.process_line(state, line)
+
+      assert outcome == :imported
+      assert FakeCommandGateway.calls() != []
+    end
+
+    test "bead with empty labels list IS skipped (not labeled, left for external)" do
+      state = %BeadsWatcher{project_id: "proj-label"}
+
+      line =
+        ~s({"id":"bead-empty-labels","title":"fix y","issue_type":"bug","status":"open","labels":[]})
+
+      outcome = BeadsWatcher.process_line(state, line)
+
+      assert outcome == :skipped
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "bead without label IS skipped (absent labels, left for external script)" do
+      state = %BeadsWatcher{project_id: "proj-label"}
+
+      line =
+        ~s({"id":"bead-no-label","title":"fix z","issue_type":"bug","status":"open"})
+
+      outcome = BeadsWatcher.process_line(state, line)
+
+      assert outcome == :skipped
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "bead with mixed labels (only one is foreman-exec) IS imported" do
+      FakeWorkflowCatalog.stub_response({:ok, "fix"})
+      state = %BeadsWatcher{project_id: "proj-label"}
+
+      line =
+        ~s({"id":"bead-mixed","title":"fix w","issue_type":"bug","status":"open","labels":["backlog","foreman-exec","urgent"]})
+
+      outcome = BeadsWatcher.process_line(state, line)
+
+      assert outcome == :imported
+      assert FakeCommandGateway.calls() != []
+    end
+
+    test "labels that is present but not a list is malformed: no external claim, no dispatch" do
+      state = %BeadsWatcher{project_id: "proj-label"}
+
+      handler_id = unique_handler("malformed-labels")
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :watcher, :malformed],
+        fn _event, _measurements, metadata, _config ->
+          send(self(), {:telemetry, ref, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      # Jason decodes JSON `null` to `nil`, which `Map.get/2` cannot tell apart
+      # from an absent key — `check_labels/2`'s `:absent` sentinel default is
+      # what distinguishes them (§5.3), so a `null` is malformed data, not a
+      # bead left for external processing.
+      for line <- [
+            ~s({"id":"bead-null-labels","title":"fix u","issue_type":"bug","status":"open","labels":null}),
+            ~s({"id":"bead-bad-labels","title":"fix v","issue_type":"bug","status":"open","labels":"foreman-exec"})
+          ] do
+        assert BeadsWatcher.process_line(state, line) == :malformed
+      end
+
+      assert FakeCommandGateway.calls() == []
+
+      # The cause rides on the pipeline's one malformed event (§5.5): the event
+      # name stays the malformed total, the reason stays queryable.
+      for _ <- 1..2 do
+        assert_receive {:telemetry, ^ref, %{reason: reason}}, 200
+        assert match?({:labels_not_a_list, _}, reason)
+      end
+
+      refute_receive {:telemetry, ^ref, _}, 50
     end
   end
 
@@ -599,7 +718,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-unmapped"}
 
       line =
-        ~s({"id":"bead-unmapped","title":"x","status":"open","issue_type":"custom_research"})
+        ~s({"id":"bead-unmapped","title":"x","status":"open","issue_type":"custom_research","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -618,7 +737,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-mapped"}
 
       line =
-        ~s({"id":"bead-mapped","title":"x","status":"open","issue_type":"implement_trd"})
+        ~s({"id":"bead-mapped","title":"x","status":"open","issue_type":"implement_trd","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -629,7 +748,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
     test "missing issue_type is malformed, not transient, and advances read_offset" do
       state = %BeadsWatcher{project_id: "proj-no-type"}
-      line = ~s({"id":"bead-no-type","title":"x","status":"open"})
+      line = ~s({"id":"bead-no-type","title":"x","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -640,7 +759,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
     test "non-string issue_type is malformed, not transient, and advances read_offset" do
       state = %BeadsWatcher{project_id: "proj-bad-type"}
-      line = ~s({"id":"bead-bad-type","title":"x","status":"open","issue_type":42})
+
+      line =
+        ~s({"id":"bead-bad-type","title":"x","status":"open","issue_type":42,"labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -653,7 +774,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-no-prompt"}
 
       line =
-        ~s({"id":"bead-no-prompt","title":"","description":"","status":"open","issue_type":"bug"})
+        ~s({"id":"bead-no-prompt","title":"","description":"","status":"open","issue_type":"bug","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -664,7 +785,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
     test "missing title and description entirely is malformed" do
       state = %BeadsWatcher{project_id: "proj-no-prompt-2"}
-      line = ~s({"id":"bead-no-fields","status":"open","issue_type":"bug"})
+
+      line =
+        ~s({"id":"bead-no-fields","status":"open","issue_type":"bug","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -677,7 +800,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       line =
         ~s({"id":"bead-numeric-title","title":42,"description":"a real description",) <>
-          ~s("status":"open","issue_type":"bug"})
+          ~s("status":"open","issue_type":"bug","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -692,7 +815,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       line =
         ~s({"id":"bead-whitespace","title":"   ","description":"\\n\\t ",) <>
-          ~s("status":"open","issue_type":"bug"})
+          ~s("status":"open","issue_type":"bug","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -706,7 +829,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       line =
         ~s({"id":"bead-trim","title":"  padded title  ","description":"  padded desc  ",) <>
-          ~s("status":"open","issue_type":"bug"})
+          ~s("status":"open","issue_type":"bug","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -747,7 +870,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       }
 
       line =
-        ~s({"id":"bead-missing-trd","title":"x","status":"open","issue_type":"implement_trd"})
+        ~s({"id":"bead-missing-trd","title":"x","status":"open","issue_type":"implement_trd","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -775,7 +898,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       }
 
       line =
-        ~s({"id":"bead-empty-trd","title":"x","status":"open","issue_type":"implement_trd_beads",) <>
+        ~s({"id":"bead-empty-trd","title":"x","status":"open","issue_type":"implement_trd_beads","labels":["foreman-exec"],) <>
           ~s("agent_context":{"trd_path":""}})
 
       outcome = BeadsWatcher.process_line(state, line)
@@ -804,7 +927,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       }
 
       line =
-        ~s({"id":"bead-already-blocked","title":"x","status":"open","issue_type":"implement_trd"})
+        ~s({"id":"bead-already-blocked","title":"x","status":"open","issue_type":"implement_trd","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -818,7 +941,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       state = %BeadsWatcher{project_id: "proj-trd"}
 
       line =
-        ~s({"id":"bead-with-trd","title":"x","status":"open","issue_type":"implement_trd",) <>
+        ~s({"id":"bead-with-trd","title":"x","status":"open","issue_type":"implement_trd","labels":["foreman-exec"],) <>
           ~s("agent_context":{"trd_path":"docs/TRD/TRD-123-example.md"}})
 
       outcome = BeadsWatcher.process_line(state, line)
@@ -832,7 +955,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       FakeWorkflowCatalog.stub_response({:ok, "generic"})
 
       state = %BeadsWatcher{project_id: "proj-trd"}
-      line = ~s({"id":"bead-no-trd-needed","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-no-trd-needed","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -847,7 +972,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
   describe "auto-approval on open transition" do
     test "bead transitioning to open results in a created-and-approved task with no separate operator action" do
       state = %BeadsWatcher{project_id: "proj-auto"}
-      line = ~s({"id":"bead-auto","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-auto","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       outcome = BeadsWatcher.process_line(state, line)
 
@@ -890,7 +1017,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       end)
 
       state = %BeadsWatcher{project_id: "proj-auto-tel"}
-      line = ~s({"id":"bead-auto-tel","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-auto-tel","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       _outcome = BeadsWatcher.process_line(state, line)
 

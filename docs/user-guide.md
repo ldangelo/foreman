@@ -805,6 +805,27 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   JSONL from scratch on every fs event/poll (relying on the projection
   store for dedupe, not a byte-offset cursor) and dispatching
   `task.create` for Beads Foreman doesn't yet own.
+  **Dispatch partitioning via label gate (opt-IN).** By default, only Beads
+  tagged with the `"foreman-exec"` label dispatch to Foreman; all others skip
+  and route to external processors. Operator workflow: `br update <bead-id>
+  --labels foreman-exec` to include in Foreman dispatch; omit the label to
+  route externally (default). Labels are Beads-native; use `br show <id>
+  --json` to verify a bead's labels before claiming. A bead whose `labels`
+  field is absent, or is a list without `"foreman-exec"`, routes externally
+  without blocking; a `labels` field that is present but not a list —
+  including an explicit `null` — is malformed (absent and malformed are
+  distinct causes) and must be fixed manually before it is scanned again.
+  The skip branches emit
+  `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]`
+  telemetry (reasons `:no_labels` / `:not_foreman_exec`). A malformed `labels`
+  field is counted under the pipeline's existing `...:watcher, :malformed`
+  event rather than a bespoke one, tagged with its cause in that event's
+  `reason` metadata (e.g. `{:labels_not_a_list, "foreman-exec"}`). Every
+  malformed path in the watcher — bad JSON, blank prompt, missing `issue_type`,
+  missing bead id, malformed labels — funnels through that one event, so the
+  event name is the malformed total and each cause stays queryable. All carry
+  the watcher's configured `project_id`, and the outcome is logged once per
+  line at `info`.
 - **Orphan janitor.** Set `config :foreman_server,
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or

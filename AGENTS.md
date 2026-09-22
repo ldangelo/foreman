@@ -1901,6 +1901,27 @@ also `:malformed`; an absent `description` is fine (title-only prompt).
 default flip to `main`'s `config/dev.exs`) to run one watcher per registered
 project, tailing its JSONL and auto-dispatching per the mapping above. See
 `docs/user-guide.md`'s "Inbound sync" note for the config key.
+
+### Beads Dispatch Partitioning via Label Gate (opt-IN semantics)
+
+**BeadsWatcher implements label-based partitioning with opt-IN semantics** to route beads between Foreman and external processors (e.g., human operators, external automation). Only beads tagged with the `"foreman-exec"` label dispatch to Foreman; all others skip and route to external processes.
+
+**Operator workflow:**
+- Include a bead in Foreman dispatch: `br update <bead-id> --labels foreman-exec`
+- Exclude a bead from Foreman dispatch: Omit the flag (default behavior; routes externally)
+
+**Mechanics:**
+- **Gate location**: Label check runs in the BeadsWatcher pipeline after status validation, before workflow selection
+- **Semantics**:
+  - Absent labels field (key missing) → `:skip_labels` outcome (external routing). A present-but-`null` field is NOT absent: `Jason` decodes it to `nil`, which `Map.get/2` cannot tell apart from a missing key, so `check_labels/2` reads it through a `:absent` sentinel default and classifies `nil` as malformed (§5.3), not external routing.
+  - Present labels field with `"foreman-exec"` → `:ok` (Foreman dispatch allowed)
+  - Present labels field without `"foreman-exec"` → `:skip_labels` outcome (external routing)
+  - Present labels field that is not a list — a string, a `null`, any non-list (type violation) → `:malformed` outcome (data integrity error; must be fixed manually)
+- **Dedupe & ordering**: The label gate prevents duplicate dispatch attempts within Foreman; status-to-`in_progress` transition on the task side prevents duplicate dispatch across sessions
+- **Telemetry**: The `:no_labels` and `:not_foreman_exec` skip branches emit `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]` events. A malformed labels field emits no bespoke event: every malformed path in the pipeline returns `{:malformed, cause}` and `process_line/2` funnels all of them through one `emit_malformed/3`, which fires the pipeline's existing `@malformed_event` with the cause in its `reason` metadata key (e.g. `{:labels_not_a_list, "foreman-exec"}`). Events carry the watcher's configured `project_id` from its state, not the parsed bead record (bead JSONL lines carry no `project_id` field). The outcome is logged once, at `info`, by the pipeline's existing per-line log line.
+
+**Rationale**: Operator discipline on label assignment enforces cooperation without requiring locks, separate aggregates, or ensemble modifications. Beads API natively supports labels; they are queryable via `br show --json` and filterable via `br list --label`.
+
 ### Using bv as an AI sidecar
 
 bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).

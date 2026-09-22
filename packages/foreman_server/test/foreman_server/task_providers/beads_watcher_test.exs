@@ -198,7 +198,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "imported bead returns :imported", %{state: state} do
       FakeCommandGateway.stub_response({:ok, nil})
-      line = ~s({"id":"bead-1","title":"hello","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-1","title":"hello","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :imported
     end
@@ -228,7 +230,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "transient dispatch failure returns :transient", %{state: state} do
       FakeCommandGateway.stub_response({:error, :down})
-      line = ~s({"id":"bead-3","title":"will retry","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-3","title":"will retry","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :transient
     end
@@ -242,14 +246,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
         {:ok, nil}
       ])
 
-      line = ~s({"id":"bead-4","title":"duplicate","issue_type":"task","status":"open"})
+      line =
+        ~s({"id":"bead-4","title":"duplicate","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :imported
     end
 
     test "{:exit, :killed} shape is :transient, not a crash", %{state: state} do
       FakeCommandGateway.stub_response({:exit, :killed})
-      line = ~s({"id":"bead-exit","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-exit","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :transient
     end
@@ -259,7 +266,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "command_id encodes project_id + bead_id (deterministic across retries)" do
       FakeCommandGateway.stub_response({:error, :down})
       state = %BeadsWatcher{project_id: "proj-det"}
-      line = ~s({"id":"bead-det","title":"x","priority":1,"issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-det","title":"x","priority":1,"issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       BeadsWatcher.process_line(state, line)
       BeadsWatcher.process_line(state, line)
@@ -282,7 +291,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "dispatches with explicit timeout argument (boundary drift guard)" do
       FakeCommandGateway.stub_response({:ok, nil})
       state = %BeadsWatcher{project_id: "proj-x"}
-      line = ~s({"id":"bead-x","title":"x","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-x","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       BeadsWatcher.process_line(state, line)
 
@@ -330,7 +341,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       state =
         state_for(
           tmp,
-          ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b","issue_type":"task","status":"open"}\n)
+          ~s({"id":"a","title":"a","issue_type":"task","status":"open","labels":["foreman-exec"]}\n{"id":"b","title":"b","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
         )
 
       {_state, counters} = BeadsWatcher.rescan(state)
@@ -344,7 +355,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:ok, nil})
 
       body =
-        ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b-frag)
+        ~s({"id":"a","title":"a","issue_type":"task","status":"open","labels":["foreman-exec"]}\n{"id":"b","title":"b-frag)
 
       state = state_for(tmp, body)
       {_state, counters} = BeadsWatcher.rescan(state)
@@ -357,12 +368,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:ok, nil})
 
       body =
-        ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b-frag)
+        ~s({"id":"a","title":"a","issue_type":"task","status":"open","labels":["foreman-exec"]}\n{"id":"b","title":"b-frag)
 
       state = state_for(tmp, body)
       BeadsWatcher.rescan(state)
 
-      File.write!(state.jsonl_path, ~s(","issue_type":"task","status":"open"}\n), [:append])
+      File.write!(
+        state.jsonl_path,
+        ~s(","issue_type":"task","status":"open","labels":["foreman-exec"]}\n),
+        [:append]
+      )
+
       {_state, counters2} = BeadsWatcher.rescan(state)
 
       # Full rescan reprocesses everything: "a" is now deduped
@@ -382,7 +398,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:ok, nil})
 
       state =
-        state_for(tmp, ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n))
+        state_for(
+          tmp,
+          ~s({"id":"a","title":"a","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
+        )
 
       {_state, counters1} = BeadsWatcher.rescan(state)
       assert counters1.lines_imported == 1
@@ -395,8 +414,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       File.write!(
         tmp_path,
-        ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n) <>
-          ~s({"id":"b","title":"b","issue_type":"task","status":"open"}\n)
+        ~s({"id":"a","title":"a","issue_type":"task","status":"open","labels":["foreman-exec"]}\n) <>
+          ~s({"id":"b","title":"b","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
       )
 
       File.rename!(tmp_path, state.jsonl_path)
@@ -421,7 +440,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       )
 
       body =
-        ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open"}\n{"id":"routable","title":"r","issue_type":"task","status":"open"}\n)
+        ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open","labels":["foreman-exec"]}\n{"id":"routable","title":"r","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
 
       state = state_for(tmp, body)
 
@@ -441,7 +460,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:ok, nil})
 
       body =
-        ~s({"id":"a","title":"a","issue_type":"task","status":"open"}\n{"id":"b","title":"b","issue_type":"task","status":"open"}\n{"id":"c","title":"c","agent_context":{"foreman":{"task_id":"t"}}}\n)
+        ~s({"id":"a","title":"a","issue_type":"task","status":"open","labels":["foreman-exec"]}\n{"id":"b","title":"b","issue_type":"task","status":"open","labels":["foreman-exec"]}\n{"id":"c","title":"c","agent_context":{"foreman":{"task_id":"t"}}}\n)
 
       state = state_for(tmp, body)
 
@@ -473,7 +492,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       # JSONL lines exist by the time the watcher (re)starts and replays.
       body =
         ~s({"id":"bead-restart","title":"x","status":"draft"}\n) <>
-          ~s({"id":"bead-restart","title":"x","issue_type":"task","status":"open"}\n)
+          ~s({"id":"bead-restart","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
 
       state = state_for(tmp, body)
 
@@ -526,7 +545,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:ok, %{}})
 
       state = %BeadsWatcher{project_id: "proj-pending"}
-      line = ~s({"id":"bead-pending","title":"stuck","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-pending","title":"stuck","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :imported
 
@@ -545,7 +566,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       FakeCommandGateway.stub_response({:error, :down})
 
       state = %BeadsWatcher{project_id: "proj-stuck"}
-      line = ~s({"id":"bead-stuck","title":"stuck","issue_type":"task","status":"open"})
+
+      line =
+        ~s({"id":"bead-stuck","title":"stuck","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :transient
 
@@ -597,7 +620,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
     test "bead with no id field returns :malformed" do
       state = %BeadsWatcher{project_id: "proj-n"}
-      line = ~s({"title":"no-id","issue_type":"task","status":"open"})
+      line = ~s({"title":"no-id","issue_type":"task","status":"open","labels":["foreman-exec"]})
 
       assert BeadsWatcher.process_line(state, line) == :malformed
       assert FakeCommandGateway.calls() == []

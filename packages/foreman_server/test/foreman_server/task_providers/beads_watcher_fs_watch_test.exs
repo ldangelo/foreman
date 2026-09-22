@@ -200,7 +200,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
       "id" => bead_id,
       "title" => "live tail dispatch #{bead_id}",
       "issue_type" => "task",
-      "status" => "open"
+      "status" => "open",
+      "labels" => ["foreman-exec"]
     }) <> "\n"
   end
 
