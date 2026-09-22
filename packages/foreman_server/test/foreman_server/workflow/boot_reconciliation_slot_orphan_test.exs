@@ -18,12 +18,10 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
   end
 
   setup do
-    cleanup_run_slots_stream()
-    cleanup_boot_reconciliation_runs()
+    ForemanServer.TestSupport.RunSlotsReset.reset!()
 
     on_exit(fn ->
-      cleanup_run_slots_stream()
-      cleanup_boot_reconciliation_runs()
+      ForemanServer.TestSupport.RunSlotsReset.reset!()
     end)
 
     :ok
@@ -150,46 +148,6 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
 
   defp unique_id(prefix) do
     "#{prefix}-slot-orphan-#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
-  end
-
-  defp cleanup_run_slots_stream do
-    case Store.delete_stream(@run_slots_stream, :any_version, :hard) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, :stream_not_found} -> :ok
-      {:error, :not_supported} -> :ok
-    end
-
-    case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
-      [{pid, _}] when is_pid(pid) ->
-        ref = Process.monitor(pid)
-        Process.exit(pid, :kill)
-
-        receive do
-          {:DOWN, ^ref, :process, ^pid, _} -> :ok
-        after
-          1_000 -> :ok
-        end
-
-      _ ->
-        :ok
-    end
-
-    Process.sleep(20)
-    :ok
-  end
-
-  defp cleanup_boot_reconciliation_runs do
-    :sys.replace_state(ProjectionStore, fn state ->
-      %{
-        state
-        | runs:
-            Map.reject(state.runs, fn {run_id, _run} ->
-              String.contains?(run_id, "-slot-orphan-")
-            end),
-          run_slots: %{capacity: 0, holders: %{}, waiters: []}
-      }
-    end)
   end
 
   defp append_run_slot_holder!(run_id, version, capacity) do

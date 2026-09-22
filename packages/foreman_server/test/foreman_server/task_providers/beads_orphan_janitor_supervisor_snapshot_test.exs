@@ -48,7 +48,12 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisorSnapshotTest d
       pid ->
         if Process.alive?(pid) do
           try do
-            GenServer.stop(pid, :normal, 1_000)
+            # 5s, not 1s: under full-suite load a slow supervisor stop
+            # here would otherwise time out and GenServer.stop escalates
+            # to Process.exit(pid, :kill) — an untrappable kill signal
+            # that (unlike a :normal exit) also kills the co-located
+            # Registry linked to this supervisor in its own init/1.
+            GenServer.stop(pid, :normal, 5_000)
           catch
             :exit, _ -> :ok
           end
@@ -64,7 +69,7 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisorSnapshotTest d
       # on_exit only needs to stop the supervisor — children die with it.
       if Process.alive?(sup) do
         try do
-          GenServer.stop(sup, :normal, 1_000)
+          GenServer.stop(sup, :normal, 5_000)
         catch
           :exit, _ -> :ok
         end

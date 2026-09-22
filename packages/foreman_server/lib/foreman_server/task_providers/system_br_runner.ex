@@ -658,7 +658,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     path =
       Path.join(
         System.tmp_dir!(),
-        "system_br_runner_#{kind}_#{System.unique_integer([:positive, :monotonic])}.tmp"
+        "system_br_runner_#{kind}_#{System.unique_integer([:positive, :monotonic])}_#{System.system_time(:nanosecond)}_#{:rand.uniform(1_000_000)}.tmp"
       )
 
     try do
