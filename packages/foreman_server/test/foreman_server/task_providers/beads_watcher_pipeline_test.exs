@@ -634,25 +634,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert FakeCommandGateway.calls() != []
     end
 
-    test "bead with non-list labels field is malformed, not skipped" do
+    test "labels that is present but not a list is malformed: no external claim, no dispatch" do
       state = %BeadsWatcher{project_id: "proj-label"}
 
-      line =
-        ~s({"id":"bead-bad-labels","title":"fix v","issue_type":"bug","status":"open","labels":"foreman-exec"})
-
-      outcome = BeadsWatcher.process_line(state, line)
-
-      assert outcome == :malformed
-      assert FakeCommandGateway.calls() == []
-    end
-
-    test "bead with explicit null labels is malformed, not left for external" do
-      handler_id = unique_handler("null-labels")
+      handler_id = unique_handler("malformed-labels")
       ref = make_ref()
 
       :telemetry.attach(
         handler_id,
-        [:foreman_server, :task_provider, :beads, :watcher, :label_gate, :malformed],
+        [:foreman_server, :task_provider, :beads, :watcher, :malformed],
         fn _event, _measurements, metadata, _config ->
           send(self(), {:telemetry, ref, metadata})
         end,
@@ -667,20 +657,27 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
         end
       end)
 
-      state = %BeadsWatcher{project_id: "proj-label"}
+      # Jason decodes JSON `null` to `nil`, which `Map.get/2` cannot tell apart
+      # from an absent key — `check_labels/2`'s `:absent` sentinel default is
+      # what distinguishes them (§5.3), so a `null` is malformed data, not a
+      # bead left for external processing.
+      for line <- [
+            ~s({"id":"bead-null-labels","title":"fix u","issue_type":"bug","status":"open","labels":null}),
+            ~s({"id":"bead-bad-labels","title":"fix v","issue_type":"bug","status":"open","labels":"foreman-exec"})
+          ] do
+        assert BeadsWatcher.process_line(state, line) == :malformed
+      end
 
-      # Jason decodes `"labels": null` to `nil`; treating that as "absent"
-      # would route malformed data down the external-processing path.
-      line =
-        ~s({"id":"bead-null-labels","title":"fix u","issue_type":"bug","status":"open","labels":null})
-
-      outcome = BeadsWatcher.process_line(state, line)
-
-      assert outcome == :malformed
       assert FakeCommandGateway.calls() == []
-      assert_receive {:telemetry, ^ref, metadata}, 200
-      assert metadata[:bead_id] == "bead-null-labels"
-      assert metadata[:project_id] == "proj-label"
+
+      # The cause rides on the pipeline's one malformed event (§5.5): the event
+      # name stays the malformed total, the reason stays queryable.
+      for _ <- 1..2 do
+        assert_receive {:telemetry, ^ref, %{reason: reason}}, 200
+        assert match?({:labels_not_a_list, _}, reason)
+      end
+
+      refute_receive {:telemetry, ^ref, _}, 50
     end
   end
 

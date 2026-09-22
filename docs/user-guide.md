@@ -817,10 +817,15 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   distinct causes) and must be fixed manually before it is scanned again.
   The skip branches emit
   `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]`
-  telemetry (reasons `:no_labels` / `:not_foreman_exec`); the malformed
-  branch emits `[:foreman_server, :task_provider, :beads, :watcher,
-  :label_gate, :malformed]` and a `Logger.error`. All label-gate events
-  carry the watcher's configured `project_id`.
+  telemetry (reasons `:no_labels` / `:not_foreman_exec`). A malformed `labels`
+  field is counted under the pipeline's existing `...:watcher, :malformed`
+  event rather than a bespoke one, tagged with its cause in that event's
+  `reason` metadata (e.g. `{:labels_not_a_list, "foreman-exec"}`). Every
+  malformed path in the watcher — bad JSON, blank prompt, missing `issue_type`,
+  missing bead id, malformed labels — funnels through that one event, so the
+  event name is the malformed total and each cause stays queryable. All carry
+  the watcher's configured `project_id`, and the outcome is logged once per
+  line at `info`.
 - **Orphan janitor.** Set `config :foreman_server,
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or

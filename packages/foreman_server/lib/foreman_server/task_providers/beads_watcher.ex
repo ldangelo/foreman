@@ -876,7 +876,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
            :ok <- check_labels(state, parsed),
            {:ok, workflow_type} <- select_workflow(state, parsed),
            {:ok, trd_path} <- check_trd_path(state, parsed, workflow_type) do
-        dispatch_new_bead(state, parsed, workflow_type, trd_path)
+        case dispatch_new_bead(state, parsed, workflow_type, trd_path) do
+          {:malformed, reason} -> emit_malformed(state, reason, line)
+          other -> other
+        end
       else
         :skip_foreman ->
           :skipped
@@ -899,14 +902,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         {:retry_approval, bead_id} ->
           finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
 
-        :malformed ->
-          TaskProviderTelemetry.emit(
-            @malformed_event,
-            %{system_time: System.system_time()},
-            %{project_id: state.project_id, line_bytes: byte_size(line)}
-          )
-
-          :malformed
+        {:malformed, reason} ->
+          emit_malformed(state, reason, line)
       end
 
     Logger.info(
@@ -921,9 +918,22 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   defp decode_line(line) when is_binary(line) do
     case Jason.decode(line) do
       {:ok, parsed} when is_map(parsed) -> {:ok, parsed}
-      {:ok, _other} -> :malformed
-      {:error, _reason} -> :malformed
+      {:ok, _other} -> {:malformed, :not_a_json_object}
+      {:error, _reason} -> {:malformed, :json_undecodable}
     end
+  end
+
+  # Emit the ONE malformed record for a line, tagged with its cause. Every
+  # malformed path — with-else or with-body — funnels through here, so the
+  # event name stays the malformed total and a cause stays queryable (§5.5).
+  defp emit_malformed(state, reason, line) do
+    TaskProviderTelemetry.emit(
+      @malformed_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, reason: reason, line_bytes: byte_size(line)}
+    )
+
+    :malformed
   end
 
   # ----- Foreman-tag suppression (AC-022-3) ------------------------------
@@ -967,7 +977,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     # silently salvaging via `description` alone -- `bead_prompt/1`'s
     # join order puts `title` first for the same reason.
     if blank?(title) or (not is_nil(description) and blank?(description)) do
-      :malformed
+      {:malformed, :blank_prompt}
     else
       :ok
     end
@@ -1078,19 +1088,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         # Present but not a valid label list (a JSON `null` decodes to `nil`,
         # which is indistinguishable from "absent" under Map.get/2) — malformed,
         # not external-routing (§5.3: absent and malformed are different causes).
-        bead_id = Map.get(parsed, "id")
-
-        Logger.error(
-          "BeadsWatcher bead=#{bead_id} malformed labels field (expected list, got #{inspect(labels)})"
-        )
-
-        TaskProviderTelemetry.emit(
-          [:foreman_server, :task_provider, :beads, :watcher, :label_gate, :malformed],
-          %{system_time: System.system_time()},
-          %{project_id: state.project_id, bead_id: bead_id}
-        )
-
-        :malformed
+        #
+        # Return the cause; process_line/2's with-else emits the ONE malformed
+        # record for the line, tagged with it. A Logger call or a second event
+        # here would copy a fact the pipeline already counts and logs (§5.5).
+        {:malformed, {:labels_not_a_list, inspect(labels)}}
     end
   end
 
@@ -1102,7 +1104,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         resolve_workflow_type(state, parsed, issue_type)
 
       _missing_or_invalid ->
-        :malformed
+        {:malformed, :issue_type_missing}
     end
   end
 
@@ -1263,6 +1265,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   # ----- Dispatch new bead (AC-022-1) -------------------------------------
 
+  # Returns :imported | :transient | {:malformed, cause}. The malformed arm
+  # travels as a tagged tuple: this function is the `with` body, not a `with`
+  # clause, so its return never reaches the with-else — process_line/2 matches
+  # it there.
   defp dispatch_new_bead(state, parsed, workflow_type, trd_path) when is_map(parsed) do
     bead_id = Map.get(parsed, "id")
 
@@ -1286,7 +1292,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     else
       # Bead with no `id` cannot be dispatched (no external_id). Skip
       # silently with a malformed classification so the cursor advances.
-      :malformed
+      {:malformed, :bead_id_missing}
     end
   end
 
