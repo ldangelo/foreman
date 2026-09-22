@@ -645,6 +645,43 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert outcome == :malformed
       assert FakeCommandGateway.calls() == []
     end
+
+    test "bead with explicit null labels is malformed, not left for external" do
+      handler_id = unique_handler("null-labels")
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :watcher, :label_gate, :malformed],
+        fn _event, _measurements, metadata, _config ->
+          send(self(), {:telemetry, ref, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      state = %BeadsWatcher{project_id: "proj-label"}
+
+      # Jason decodes `"labels": null` to `nil`; treating that as "absent"
+      # would route malformed data down the external-processing path.
+      line =
+        ~s({"id":"bead-null-labels","title":"fix u","issue_type":"bug","status":"open","labels":null})
+
+      outcome = BeadsWatcher.process_line(state, line)
+
+      assert outcome == :malformed
+      assert FakeCommandGateway.calls() == []
+      assert_receive {:telemetry, ^ref, metadata}, 200
+      assert metadata[:bead_id] == "bead-null-labels"
+      assert metadata[:project_id] == "proj-label"
+    end
   end
 
   # --- Workflow selection (TRD-005-TEST, REQ-001) -------------------------

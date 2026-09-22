@@ -873,7 +873,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
            :ok <- check_prompt(parsed),
            :ok <- check_dedupe(state, parsed),
            :ok <- check_status(state, parsed),
-           :ok <- check_labels(parsed),
+           :ok <- check_labels(state, parsed),
            {:ok, workflow_type} <- select_workflow(state, parsed),
            {:ok, trd_path} <- check_trd_path(state, parsed, workflow_type) do
         dispatch_new_bead(state, parsed, workflow_type, trd_path)
@@ -1037,9 +1037,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # prevents race conditions: Foreman claims only what's labeled for it;
   # external tooling claims everything else.
 
-  defp check_labels(parsed) when is_map(parsed) do
-    case Map.get(parsed, "labels") do
-      nil ->
+  defp check_labels(state, parsed) when is_map(parsed) do
+    case Map.get(parsed, "labels", :absent) do
+      :absent ->
         # Absent labels field — normal for opt-in, skip this bead for external processing
         bead_id = Map.get(parsed, "id")
 
@@ -1050,7 +1050,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         TaskProviderTelemetry.emit(
           [:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped],
           %{system_time: System.system_time()},
-          %{project_id: parsed["project_id"], bead_id: bead_id, reason: :no_labels}
+          %{project_id: state.project_id, bead_id: bead_id, reason: :no_labels}
         )
 
         :skip_labels
@@ -1068,18 +1068,26 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           TaskProviderTelemetry.emit(
             [:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped],
             %{system_time: System.system_time()},
-            %{project_id: parsed["project_id"], bead_id: bead_id, reason: :not_foreman_exec}
+            %{project_id: state.project_id, bead_id: bead_id, reason: :not_foreman_exec}
           )
 
           :skip_labels
         end
 
       labels ->
-        # Present but not a list — malformed
+        # Present but not a valid label list (a JSON `null` decodes to `nil`,
+        # which is indistinguishable from "absent" under Map.get/2) — malformed,
+        # not external-routing (§5.3: absent and malformed are different causes).
         bead_id = Map.get(parsed, "id")
 
         Logger.error(
           "BeadsWatcher bead=#{bead_id} malformed labels field (expected list, got #{inspect(labels)})"
+        )
+
+        TaskProviderTelemetry.emit(
+          [:foreman_server, :task_provider, :beads, :watcher, :label_gate, :malformed],
+          %{system_time: System.system_time()},
+          %{project_id: state.project_id, bead_id: bead_id}
         )
 
         :malformed

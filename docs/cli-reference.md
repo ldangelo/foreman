@@ -330,8 +330,11 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > `foreman run submit`" — the first two verbs were deleted on
 > 2026-09-13 (see the note at the top of this file). Start work today
 > by creating or opening a bead (`br create`, or `br update <id>
-> --status=open`) — BeadsWatcher dispatches the internal
-> `task.create` + `task.approve` commands automatically — or use
+> --status=open`) and labeling it for Foreman (`br update <id> --labels
+> foreman-exec`) — BeadsWatcher dispatches the internal `task.create` +
+> `task.approve` commands automatically for open, labeled beads; unlabeled
+> beads are left for external processors (see the label gate in
+> [`docs/user-guide.md`](../docs/user-guide.md)).
 > `foreman run submit` for one-step ad-hoc execution.
 > Telemetry specifically is not a CLI flag on any command: Langfuse LLM
 > traces are controlled by `OTEL_EXPORTER_OTLP_ENDPOINT`,
@@ -351,7 +354,8 @@ Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orch
 > convention. `foreman run --watch` in the paragraph after it is likewise
 > not a real invocation. Today: `foreman run submit` for one-step ad-hoc
 > execution, or let BeadsWatcher auto-dispatch via `br create`/`br update
-> --status=open`.
+> --status=open` with the `foreman-exec` label (the label gate skips an
+> open bead that lacks it).
 
 Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation; Elixir Overwatch rejects Graphify tools so worker discovery does not create slow generated worktree artifacts. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
@@ -1375,8 +1379,9 @@ foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
 > authoritative verb list at the top of this file). Invoking it now
 > produces the CLI's standard "unknown command" error. Task creation
 > today is driven by Beads — `br create`, or transitioning an
-> existing bead to `status: open` — which BeadsWatcher observes to
-> dispatch the internal `task.create` command automatically; that
+> existing bead to `status: open` with the `foreman-exec` label — which
+> BeadsWatcher observes to dispatch the internal `task.create` command
+> automatically (an open bead without the label is skipped by the label gate); that
 > internal command's guard/payload semantics are unchanged, only the
 > CLI verb is gone.
 >

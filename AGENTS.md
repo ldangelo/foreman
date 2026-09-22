@@ -1913,12 +1913,12 @@ project, tailing its JSONL and auto-dispatching per the mapping above. See
 **Mechanics:**
 - **Gate location**: Label check runs in the BeadsWatcher pipeline after status validation, before workflow selection
 - **Semantics**:
-  - Absent labels field (nil) → `:skip_labels` outcome (external routing)
+  - Absent labels field (key missing) → `:skip_labels` outcome (external routing). A present-but-`null` field is NOT absent — `Jason` decodes it to `nil` and the gate classifies it `:malformed` (§5.3), not external routing.
   - Present labels field with `"foreman-exec"` → `:ok` (Foreman dispatch allowed)
   - Present labels field without `"foreman-exec"` → `:skip_labels` outcome (external routing)
-  - Present labels field that is non-list (type violation) → `:malformed` outcome (data integrity error; must be fixed manually)
+  - Present labels field that is not a list — a string, a `null`, any non-list (type violation) → `:malformed` outcome (data integrity error; must be fixed manually)
 - **Dedupe & ordering**: The label gate prevents duplicate dispatch attempts within Foreman; status-to-`in_progress` transition on the task side prevents duplicate dispatch across sessions
-- **Telemetry**: The `:no_labels` and `:not_foreman_exec` skip branches emit `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]` events. Non-list labels return `:malformed`, which the generic malformed handler in `process_line/2` emits as `[:foreman_server, :task_provider, :beads, :watcher, :malformed]`; `check_labels` additionally logs at `Logger.error`.
+- **Telemetry**: The `:no_labels` and `:not_foreman_exec` skip branches emit `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]` events; the malformed branch emits `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :malformed]` and logs at `Logger.error`. All three carry the watcher's configured `project_id` from its state, not the parsed bead record (bead JSONL lines carry no `project_id` field).
 
 **Rationale**: Operator discipline on label assignment enforces cooperation without requiring locks, separate aggregates, or ensemble modifications. Beads API natively supports labels; they are queryable via `br show --json` and filterable via `br list --label`.
 
