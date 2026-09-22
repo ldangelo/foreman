@@ -805,6 +805,15 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   JSONL from scratch on every fs event/poll (relying on the projection
   store for dedupe, not a byte-offset cursor) and dispatching
   `task.create` for Beads Foreman doesn't yet own.
+  **Dispatch partitioning via label gate (opt-IN).** By default, only Beads 
+  tagged with the `"foreman-exec"` label dispatch to Foreman; all others skip 
+  and route to external processors. Operator workflow: `br update <bead-id> 
+  --labels foreman-exec` to include in Foreman dispatch; omit label to route 
+  externally (default). Labels are Beads-native; use `br show <id> --json` to 
+  verify a bead's labels before claiming. Absent labels (nil) or labels without 
+  "foreman-exec" route the bead externally without blocking; labels that are 
+  non-list (type violation) are treated as malformed and must be fixed manually 
+  before re-scanning. The skip branches emit `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]` telemetry (reasons `:no_labels` / `:not_foreman_exec`); the malformed branch emits the generic `:watcher, :malformed` telemetry event and a `Logger.error`.
 - **Orphan janitor.** Set `config :foreman_server,
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or

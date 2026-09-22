@@ -56,7 +56,11 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   `config :foreman_server, :start_beads_watcher?, true`. The
   `BeadsWatcherSupervisor` spawns one `BeadsWatcher` per registered
   project; each watcher tails the project's JSONL and dispatches
-  `task.create` for new Beads that Foreman doesn't yet own.
+  `task.create` for new Beads that Foreman doesn't yet own. Dispatch is
+  opt-IN by label: only Beads tagged `foreman-exec`
+  (`br update <id> --labels foreman-exec`) route to Foreman; untagged
+  Beads are skipped for external processing. See `docs/user-guide.md`
+  and `AGENTS.md` §"Beads Dispatch Partitioning via Label Gate".
 - **Orphan janitor.** Opt in with
   `config :foreman_server, :start_beads_orphan_janitor?, true`. After a
   grace window, `BeadsOrphanJanitor` closes Beads whose matching
