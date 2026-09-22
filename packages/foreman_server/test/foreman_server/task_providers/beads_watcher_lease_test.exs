@@ -83,7 +83,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
 
     File.write!(
       jsonl_path,
-      ~s({"id":"bead-lease","title":"x","issue_type":"task","status":"open"}\n)
+      ~s({"id":"bead-lease","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
     )
 
     state = %BeadsWatcher{
