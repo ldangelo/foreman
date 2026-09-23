@@ -23,6 +23,16 @@ service in `packages/foreman_server`. This repository contains:
 | Jido migration (TRD-2026-4212be7e) | `JIDO_FORKS.md` (fork inventory), `docs/guides/adding-a-jido-harness-provider.md` (provider extension), and per-PR notes in `docs/TRD/`. |
 | Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` (or the `config :foreman_server, :workflow_root` override) has no `*.yaml`. |
 
+## Operator run dashboard
+
+The Phoenix server exposes two bearer-token guarded browser dashboards:
+`/dashboard` keeps the existing Jido live dashboard, and `/dashboard/runs`
+opens the operator run-management dashboard. `/dashboard/runs` reads run,
+phase, task, durable log, worktree, and PR projections; Stop maps to
+`run.pause` with reason `operator_pause`, Resume to `run.resume`, Reset to
+`run.reset`, and Abandon to `run.remove`. See `docs/user-guide.md` for the
+operator workflow and action semantics.
+
 ## Beads sync (atomic task.create + bidirectional sync)
 
 The Go/Elixir CQRS slice wires Beads (the `br` CLI) into Foreman so

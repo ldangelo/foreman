@@ -19,6 +19,10 @@ config :foreman_server, ForemanServer.EventStore,
 config :foreman_server, ForemanServer.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")
 
+config :foreman_server, ForemanServerWeb.Endpoint,
+  secret_key_base: String.duplicate("a", 64),
+  live_view: [signing_salt: "operator_dashboard_tests"]
+
 config :foreman_server,
   worker_launcher_enabled: false
 
@@ -77,7 +81,8 @@ config :phoenix, Phoenix.Diagnostics, enabled: false
 config :foreman_server, :jido_ecto, enabled: false
 
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
-  url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test"),
+  url:
+    System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test"),
   # This Repo shares one Postgres database with ForemanServer.EventStore in
   # test (see EventStore config above) — dev/prod separate them into
   # foreman_dev/foreman_eventstore_dev, but test.exs colocates both to avoid

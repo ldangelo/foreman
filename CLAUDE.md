@@ -405,6 +405,20 @@ RunExecutor drives claim/complete/fail. Workflow.BootReconciliation
 drives orphan-reopen. `set_priority` and `add_dependency` stay at the
 adapter boundary until a separate operator surface TRD introduces them.
 
+## 13.1 Operator run dashboard boundary
+
+The run-management dashboard is `GET /dashboard/runs`, guarded by the
+existing browser `:require_authenticated` token plug. Keep `/dashboard`
+as the separate Jido live dashboard. The run dashboard reads only
+`ProjectionStore` projections (runs, phases, tasks, logs, worktrees,
+PR associations) through `ForemanServerWeb.OperatorDashboard`; durable
+logs come from `ProjectionStore.run_logs/1`, not server `Logger` output.
+Run-control buttons dispatch public operator envelopes through
+`CommandGateway.dispatch_operator/1`; Stop is `run.pause` with default
+reason `operator_pause`, Abandon is `run.remove`, Resume is
+`run.resume`, and Reset/Restart is `run.reset`. Code evidence stays
+read-only and may use projected worktree/branch/base data only.
+
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
 Atomic `task.create` and bidirectional Beads sync are governed by

@@ -86,6 +86,12 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > corrected inventory above). The block above is authoritative; AGENTS.md's
 > Operator Reference (Task Lifecycle / Go CLI Commands) reflects the same
 > TRD-018 removal and remains accurate against the Go source.
+>
+> Web dashboard note: the operator run-management surface is not a CLI verb.
+> Open `/dashboard/runs` on the Phoenix server with the bearer token guard;
+> `/dashboard` remains the separate Jido live dashboard. Dashboard run controls
+> dispatch the same command types listed above (`run.pause`, `run.resume`,
+> `run.remove`, `run.reset`, and separately-labelled `run.cancel` if exposed).
 
 ## Global Usage
 

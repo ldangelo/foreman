@@ -1021,6 +1021,10 @@ The Go CLI (`foreman`) defaults to `http://127.0.0.1:4766` — set `FOREMAN_API_
 FOREMAN_API_URL=http://127.0.0.1:4766 foreman run list
 ```
 
+### Operator run dashboard
+
+Open `http://127.0.0.1:4766/dashboard/runs` with the configured browser bearer token (`Authorization: Bearer <token>` or `?token=<token>`) to inspect and control runs. `/dashboard` remains the Jido live dashboard. Run dashboard actions stay on the public command boundary: Stop=`run.pause` with `operator_pause`, Resume=`run.resume`, Reset=`run.reset`, Abandon=`run.remove`; Cancel, if shown, is distinct from Stop.
+
 ### Registering Beads-backed Projects
 
 `foreman project create` / `foreman project update` require

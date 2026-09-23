@@ -171,6 +171,8 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("task.retry"), do: "task"
   defp aggregate_prefix("task.update"), do: "task"
   defp aggregate_prefix("run.cancel"), do: "run"
+  defp aggregate_prefix("run.pause"), do: "run"
+  defp aggregate_prefix("run.resume"), do: "run"
   defp aggregate_prefix("run.remove"), do: "run"
   defp aggregate_prefix("run.reset"), do: "run"
   defp aggregate_prefix(_), do: ""
@@ -184,6 +186,8 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("task.retry"), do: :task_id
   defp id_field_for("task.update"), do: :task_id
   defp id_field_for("run.cancel"), do: :run_id
+  defp id_field_for("run.pause"), do: :run_id
+  defp id_field_for("run.resume"), do: :run_id
   defp id_field_for("run.remove"), do: :run_id
   defp id_field_for("run.reset"), do: :run_id
   defp id_field_for(_), do: nil

@@ -13,14 +13,33 @@ defmodule ForemanServerWeb.CommandControllerTest do
     def dispatch_operator(_command), do: {:error, {:wrong_expected_version, 7}}
   end
 
+  defmodule CapturingGateway do
+    def dispatch_operator(command) do
+      send(
+        Application.fetch_env!(:foreman_server, :command_controller_test_pid),
+        {:controller_command, command}
+      )
+
+      {:ok, %{accepted: true}}
+    end
+  end
+
   setup do
     previous = Application.get_env(:foreman_server, :command_gateway_module)
+    previous_pid = Application.get_env(:foreman_server, :command_controller_test_pid)
+    Application.put_env(:foreman_server, :command_controller_test_pid, self())
 
     on_exit(fn ->
       if previous == nil do
         Application.delete_env(:foreman_server, :command_gateway_module)
       else
         Application.put_env(:foreman_server, :command_gateway_module, previous)
+      end
+
+      if previous_pid == nil do
+        Application.delete_env(:foreman_server, :command_controller_test_pid)
+      else
+        Application.put_env(:foreman_server, :command_controller_test_pid, previous_pid)
       end
     end)
 
@@ -82,6 +101,22 @@ defmodule ForemanServerWeb.CommandControllerTest do
     body = %{type: "run.start", payload: %{run_id: "r1"}}
     conn = build_conn() |> post("/api/commands", body)
     assert json_response(conn, 400)["error"] == "invalid_envelope"
+  end
+
+  test "POST /api/commands derives run aggregate ids for pause and resume" do
+    Application.put_env(:foreman_server, :command_gateway_module, CapturingGateway)
+
+    for type <- ["run.pause", "run.resume"] do
+      conn =
+        build_conn()
+        |> post("/api/commands", %{
+          type: type,
+          payload: %{run_id: "run-controller", reason: "operator"}
+        })
+
+      assert json_response(conn, 201)["status"] == "accepted"
+      assert_receive {:controller_command, %{type: ^type, aggregate_id: "run:run-controller"}}
+    end
   end
 
   test "POST /api/commands projects a project.register envelope end-to-end" do

@@ -203,128 +203,128 @@ Read-only evidence helper rules:
 
 **Shippable State:** Operators can open an authenticated `/dashboard/runs` page, see an empty/error-capable run-management shell, and the existing Jido dashboard remains available.
 
-- [ ] **TRD-001**: Add dedicated `/dashboard/runs` LiveView route and `OperatorRunDashboardLive` skeleton behind existing browser auth [satisfies REQ-001, REQ-011] (3h)
+- [x] **TRD-001**: Add dedicated `/dashboard/runs` LiveView route and `OperatorRunDashboardLive` skeleton behind existing browser auth [satisfies REQ-001, REQ-011] (3h)
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-011-1
   - Implementation AC:
-    - [ ] Given an authenticated operator opens `/dashboard/runs`, when the server responds, then the page title and H1 identify a run-management dashboard.
-    - [ ] Given no projected runs are available, when the page renders, then it shows an explicit empty state and no crash.
-    - [ ] Given `/dashboard` is opened, when routing resolves, then the existing Jido dashboard remains separate.
-    - [ ] Given the browser auth token is absent, wrong, or not configured, when `/dashboard/runs` is requested, then the existing auth guard returns `401 unauthorized`.
-- [ ] **TRD-001-TEST**: Add route/auth/empty-state LiveView tests for `/dashboard/runs` and non-regression coverage for `/dashboard` [verifies TRD-001] [satisfies REQ-001, REQ-011] [depends: TRD-001] (3h)
+    - [x] Given an authenticated operator opens `/dashboard/runs`, when the server responds, then the page title and H1 identify a run-management dashboard.
+    - [x] Given no projected runs are available, when the page renders, then it shows an explicit empty state and no crash.
+    - [x] Given `/dashboard` is opened, when routing resolves, then the existing Jido dashboard remains separate.
+    - [x] Given the browser auth token is absent, wrong, or not configured, when `/dashboard/runs` is requested, then the existing auth guard returns `401 unauthorized`.
+- [x] **TRD-001-TEST**: Add route/auth/empty-state LiveView tests for `/dashboard/runs` and non-regression coverage for `/dashboard` [verifies TRD-001] [satisfies REQ-001, REQ-011] [depends: TRD-001] (3h)
 
-- [ ] **TRD-002**: Add `ForemanServerWeb.OperatorDashboard` context and run-list DTO builder from `ProjectionStore.list_runs/1` [satisfies REQ-002, REQ-010, REQ-012] [depends: TRD-001] (4h)
+- [x] **TRD-002**: Add `ForemanServerWeb.OperatorDashboard` context and run-list DTO builder from `ProjectionStore.list_runs/1` [satisfies REQ-002, REQ-010, REQ-012] [depends: TRD-001] (4h)
   - Validates PRD ACs: AC-002-1, AC-002-4, AC-010-1, AC-012-3
   - Implementation AC:
-    - [ ] Given projected runs exist, when the context lists runs, then each DTO includes run id, project id, status, workflow, current phase id/name when resolvable, timestamps, task id, latest stall marker, PR marker, and ad-hoc/no-task marker.
-    - [ ] Given status or project filters are present, when the context queries runs, then only matching rows are returned.
-    - [ ] Given an unknown or malformed optional field is absent, when DTOs are built, then the UI receives an explicit absent marker rather than raising.
-    - [ ] Given no limit is supplied or an excessive limit is supplied, when the context queries runs, then it applies the documented default/cap before calling `ProjectionStore.list_runs/1`.
-- [ ] **TRD-002-TEST**: Unit-test run-list DTO fields, filters, ad-hoc/no-task labelling, and empty/error states with projection fixtures [verifies TRD-002] [satisfies REQ-002, REQ-010, REQ-012] [depends: TRD-002] (3h)
+    - [x] Given projected runs exist, when the context lists runs, then each DTO includes run id, project id, status, workflow, current phase id/name when resolvable, timestamps, task id, latest stall marker, PR marker, and ad-hoc/no-task marker.
+    - [x] Given status or project filters are present, when the context queries runs, then only matching rows are returned.
+    - [x] Given an unknown or malformed optional field is absent, when DTOs are built, then the UI receives an explicit absent marker rather than raising.
+    - [x] Given no limit is supplied or an excessive limit is supplied, when the context queries runs, then it applies the documented default/cap before calling `ProjectionStore.list_runs/1`.
+- [x] **TRD-002-TEST**: Unit-test run-list DTO fields, filters, ad-hoc/no-task labelling, and empty/error states with projection fixtures [verifies TRD-002] [satisfies REQ-002, REQ-010, REQ-012] [depends: TRD-002] (3h)
 
 ### PR 2: Run detail, phase status, logs, and live refresh
 
 **Shippable State:** Operators can select a run and inspect task context, phase progression, stall/failure reasons, and bounded durable worker logs with automatic refresh.
 
-- [ ] **TRD-003**: Implement run detail DTO with task context, phase rail, statuses, timestamps, failure reasons, and latest stall from projections [satisfies REQ-002, REQ-003, REQ-010] [depends: TRD-002] (5h)
+- [x] **TRD-003**: Implement run detail DTO with task context, phase rail, statuses, timestamps, failure reasons, and latest stall from projections [satisfies REQ-002, REQ-003, REQ-010] [depends: TRD-002] (5h)
   - Validates PRD ACs: AC-002-2, AC-003-1, AC-003-2, AC-003-3, AC-010-1
   - Implementation AC:
-    - [ ] Given a selected multi-phase run, when detail loads, then every projected phase id shows name, status, start/completion time, artifact, and failure/stall reason when present.
-    - [ ] Given a run status is paused, cancelled, failed, stuck, completed, or in progress, when rendered, then text and non-color symbols distinguish it.
-    - [ ] Given `latest_stall` exists on the run or phase projection, when detail loads, then the dashboard displays that projection value and does not recompute stall rules.
-- [ ] **TRD-003-TEST**: Add detail DTO and LiveView render tests for phase states, terminal states, latest stall, failure reasons, and task metadata [verifies TRD-003] [satisfies REQ-002, REQ-003, REQ-010] [depends: TRD-003] (4h)
+    - [x] Given a selected multi-phase run, when detail loads, then every projected phase id shows name, status, start/completion time, artifact, and failure/stall reason when present.
+    - [x] Given a run status is paused, cancelled, failed, stuck, completed, or in progress, when rendered, then text and non-color symbols distinguish it.
+    - [x] Given `latest_stall` exists on the run or phase projection, when detail loads, then the dashboard displays that projection value and does not recompute stall rules.
+- [x] **TRD-003-TEST**: Add detail DTO and LiveView render tests for phase states, terminal states, latest stall, failure reasons, and task metadata [verifies TRD-003] [satisfies REQ-002, REQ-003, REQ-010] [depends: TRD-003] (4h)
 
-- [ ] **TRD-004**: Add bounded durable log pane backed only by `ProjectionStore.run_logs/1` [satisfies REQ-004, REQ-010, REQ-012] [depends: TRD-003] (4h)
+- [x] **TRD-004**: Add bounded durable log pane backed only by `ProjectionStore.run_logs/1` [satisfies REQ-004, REQ-010, REQ-012] [depends: TRD-003] (4h)
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-010-1, AC-012-3
   - Implementation AC:
-    - [ ] Given worker stdout/stderr events exist, when the log tab renders, then logs appear ordered with stream, timestamp/sequence, and bounded body text.
-    - [ ] Given the run id is unknown, when logs are requested, then the dashboard reports `run_not_found` instead of an empty successful log.
-    - [ ] Given `ProjectionStore.run_logs/1` returns `truncated`, `omitted_entries`, `omitted_bytes`, `limit`, or `max_limit`, when rendered, then the UI shows the truncation/tail notice.
-    - [ ] Given server `Logger` output exists, when logs render, then it is not copied into run logs.
-- [ ] **TRD-004-TEST**: Add tests for durable log rendering, unknown-run not-found, long-log bounds, and no server-log fallback [verifies TRD-004] [satisfies REQ-004, REQ-010, REQ-012] [depends: TRD-004] (4h)
+    - [x] Given worker stdout/stderr events exist, when the log tab renders, then logs appear ordered with stream, timestamp/sequence, and bounded body text.
+    - [x] Given the run id is unknown, when logs are requested, then the dashboard reports `run_not_found` instead of an empty successful log.
+    - [x] Given `ProjectionStore.run_logs/1` returns `truncated`, `omitted_entries`, `omitted_bytes`, `limit`, or `max_limit`, when rendered, then the UI shows the truncation/tail notice.
+    - [x] Given server `Logger` output exists, when logs render, then it is not copied into run logs.
+- [x] **TRD-004-TEST**: Add tests for durable log rendering, unknown-run not-found, long-log bounds, and no server-log fallback [verifies TRD-004] [satisfies REQ-004, REQ-010, REQ-012] [depends: TRD-004] (4h)
 
-- [ ] **TRD-005**: Implement bounded refresh with stale/error indicators and last-known-state preservation [satisfies REQ-012] [depends: TRD-004] (3h)
+- [x] **TRD-005**: Implement bounded refresh with stale/error indicators and last-known-state preservation [satisfies REQ-012] [depends: TRD-004] (3h)
   - Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3
   - Implementation AC:
-    - [ ] Given a connected LiveView, when refresh is healthy, then visible run state updates within 2 seconds under local-server conditions.
-    - [ ] Given refresh fails, when the next render occurs, then the last successful state remains visible with a stale/error marker.
-    - [ ] Given many runs exist, when refresh executes, then list queries apply limit/filter bounds.
-- [ ] **TRD-005-TEST**: Add LiveView timer/refresh tests for update cadence, stale-state display, and bounded query params [verifies TRD-005] [satisfies REQ-012] [depends: TRD-005] (3h)
+    - [x] Given a connected LiveView, when refresh is healthy, then visible run state updates within 2 seconds under local-server conditions.
+    - [x] Given refresh fails, when the next render occurs, then the last successful state remains visible with a stale/error marker.
+    - [x] Given many runs exist, when refresh executes, then list queries apply limit/filter bounds.
+- [x] **TRD-005-TEST**: Add LiveView timer/refresh tests for update cadence, stale-state display, and bounded query params [verifies TRD-005] [satisfies REQ-012] [depends: TRD-005] (3h)
 
 ### PR 3: Code changes, PR evidence, and accessible navigation
 
 **Shippable State:** Operators can inspect read-only changed-file/PR evidence and navigate the run cockpit by keyboard without relying on color.
 
-- [ ] **TRD-006**: Add read-only code evidence helper for retained worktrees, run branches, base refs, PR URL, and phase PR records [satisfies REQ-005, REQ-010] [depends: TRD-003] (6h)
+- [x] **TRD-006**: Add read-only code evidence helper for retained worktrees, run branches, base refs, PR URL, and phase PR records [satisfies REQ-005, REQ-010] [depends: TRD-003] (6h)
   - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3, AC-005-4, AC-010-1, AC-010-3
   - Implementation AC:
-    - [ ] Given a retained worktree and base ref are projected, when evidence loads, then changed files are listed relative to the recorded base without mutating the repo.
-    - [ ] Given only PR or branch metadata remains, when evidence loads, then the UI shows PR/branch evidence and labels missing local worktree evidence explicitly.
-    - [ ] Given worktree/base/branch data is absent or malformed, when evidence loads, then the helper returns a typed unavailable reason and no shell fallback to private internals.
-    - [ ] Given a projected path is absolute, escapes with `..`, or points outside the worktree, when evidence loads, then it is rejected as malformed.
-    - [ ] Given a file is selected, when the operator opens review, then the dashboard renders or links to read-only/diff content only within documented row/byte bounds.
-- [ ] **TRD-006-TEST**: Add tests for changed-file evidence, cleaned-worktree fallback, PR metadata display, and typed unavailable states [verifies TRD-006] [satisfies REQ-005, REQ-010] [depends: TRD-006] (5h)
+    - [x] Given a retained worktree and base ref are projected, when evidence loads, then changed files are listed relative to the recorded base without mutating the repo.
+    - [x] Given only PR or branch metadata remains, when evidence loads, then the UI shows PR/branch evidence and labels missing local worktree evidence explicitly.
+    - [x] Given worktree/base/branch data is absent or malformed, when evidence loads, then the helper returns a typed unavailable reason and no shell fallback to private internals.
+    - [x] Given a projected path is absolute, escapes with `..`, or points outside the worktree, when evidence loads, then it is rejected as malformed.
+    - [x] Given a file is selected, when the operator opens review, then the dashboard renders or links to read-only/diff content only within documented row/byte bounds.
+- [x] **TRD-006-TEST**: Add tests for changed-file evidence, cleaned-worktree fallback, PR metadata display, and typed unavailable states [verifies TRD-006] [satisfies REQ-005, REQ-010] [depends: TRD-006] (5h)
 
-- [ ] **TRD-007**: Implement dashboard layout, tabs, filters, and keyboard-first navigation using old cockpit concepts adapted to LiveView [satisfies REQ-001, REQ-002, REQ-003, REQ-013] [depends: TRD-005, TRD-006] (6h)
+- [x] **TRD-007**: Implement dashboard layout, tabs, filters, and keyboard-first navigation using old cockpit concepts adapted to LiveView [satisfies REQ-001, REQ-002, REQ-003, REQ-013] [depends: TRD-005, TRD-006] (6h)
   - Validates PRD ACs: AC-001-1, AC-002-3, AC-003-2, AC-013-1, AC-013-2, AC-013-3
   - Implementation AC:
-    - [ ] Given keyboard input, when the operator moves through run list, detail tabs, logs, changed files, and actions, then every primary view and action is reachable.
-    - [ ] Given color is unavailable, when statuses and focus are rendered, then text labels/symbols and focus markers distinguish them.
-    - [ ] Given a narrow viewport, when the dashboard renders, then list/detail content remains usable rather than truncating all actionable data.
-    - [ ] Given the old cockpit branch is referenced, when implementation comments/docs cite it, then stale commands/APIs are not copied.
-- [ ] **TRD-007-TEST**: Add LiveView render/event tests for filters, tabs, keyboard navigation, non-color status markers, and responsive empty/detail states [verifies TRD-007] [satisfies REQ-001, REQ-002, REQ-003, REQ-013] [depends: TRD-007] (5h)
+    - [x] Given keyboard input, when the operator moves through run list, detail tabs, logs, changed files, and actions, then every primary view and action is reachable.
+    - [x] Given color is unavailable, when statuses and focus are rendered, then text labels/symbols and focus markers distinguish them.
+    - [x] Given a narrow viewport, when the dashboard renders, then list/detail content remains usable rather than truncating all actionable data.
+    - [x] Given the old cockpit branch is referenced, when implementation comments/docs cite it, then stale commands/APIs are not copied.
+- [x] **TRD-007-TEST**: Add LiveView render/event tests for filters, tabs, keyboard navigation, non-color status markers, and responsive empty/detail states [verifies TRD-007] [satisfies REQ-001, REQ-002, REQ-003, REQ-013] [depends: TRD-007] (5h)
 
 ### PR 4: Stop, abandon, restart controls
 
 **Shippable State:** Authorized operators can safely stop, abandon, resume, or reset eligible runs from the dashboard with confirmation, typed rejection display, and no boundary bypass.
 
-- [ ] **TRD-008**: Add action eligibility and confirmation model for Stop, Abandon, Resume, Reset, and optional separately labelled Cancel [satisfies REQ-006, REQ-007, REQ-008, REQ-011] [depends: TRD-003] (4h)
+- [x] **TRD-008**: Add action eligibility and confirmation model for Stop, Abandon, Resume, Reset, and optional separately labelled Cancel [satisfies REQ-006, REQ-007, REQ-008, REQ-011] [depends: TRD-003] (4h)
   - Validates PRD ACs: AC-006-1, AC-007-2, AC-008-3, AC-011-2
   - Implementation AC:
-    - [ ] Given an active run, when actions are computed, then Stop is enabled and maps to `run.pause`.
-    - [ ] Given a paused run, when actions are computed, then Resume/Restart maps to `run.resume`.
-    - [ ] Given a failed or stuck run, when actions are computed, then Reset/Restart maps to `run.reset` only when the command is valid.
-    - [ ] Given abandon is shown, when confirmation renders, then it states resource cleanup/evidence consequences.
-    - [ ] Given terminal cancellation is exposed, when rendered, then it is labelled Cancel and not Stop.
-- [ ] **TRD-008-TEST**: Unit-test eligibility matrix and confirmation copy for active, paused, failed, stuck, completed, cancelled, removed, and ineligible states [verifies TRD-008] [satisfies REQ-006, REQ-007, REQ-008, REQ-011] [depends: TRD-008] (4h)
+    - [x] Given an active run, when actions are computed, then Stop is enabled and maps to `run.pause`.
+    - [x] Given a paused run, when actions are computed, then Resume/Restart maps to `run.resume`.
+    - [x] Given a failed or stuck run, when actions are computed, then Reset/Restart maps to `run.reset` only when the command is valid.
+    - [x] Given abandon is shown, when confirmation renders, then it states resource cleanup/evidence consequences.
+    - [x] Given terminal cancellation is exposed, when rendered, then it is labelled Cancel and not Stop.
+- [x] **TRD-008-TEST**: Unit-test eligibility matrix and confirmation copy for active, paused, failed, stuck, completed, cancelled, removed, and ineligible states [verifies TRD-008] [satisfies REQ-006, REQ-007, REQ-008, REQ-011] [depends: TRD-008] (4h)
 
-- [ ] **TRD-009**: Dispatch run-control actions through `CommandGateway.dispatch_operator/1` with idempotent command ids, typed errors, actor/reason metadata, and refresh-on-result [satisfies REQ-006, REQ-007, REQ-008, REQ-010, REQ-011] [depends: TRD-008] (6h)
+- [x] **TRD-009**: Dispatch run-control actions through `CommandGateway.dispatch_operator/1` with idempotent command ids, typed errors, actor/reason metadata, and refresh-on-result [satisfies REQ-006, REQ-007, REQ-008, REQ-010, REQ-011] [depends: TRD-008] (6h)
   - Validates PRD ACs: AC-006-1, AC-006-2, AC-006-3, AC-007-1, AC-007-3, AC-008-1, AC-008-2, AC-008-4, AC-010-2, AC-011-3
   - Implementation AC:
-    - [ ] Given Stop is confirmed, when dispatch runs, then the command type is `run.pause`, `aggregate_id` is `run:<run_id>`, payload carries `run_id`, and blank reason defaults to `operator_pause` before dispatch.
-    - [ ] Given Abandon is confirmed, when dispatch runs, then the command type is `run.remove` and default active views exclude the run after success while explicit removed filters can query it if projected.
-    - [ ] Given Resume is confirmed, when dispatch runs, then the command type is `run.resume` and lineage/audit fields remain visible from projections.
-    - [ ] Given Reset is confirmed, when dispatch runs, then the command type is `run.reset` and removed task-retry CLI behavior is not exposed.
-    - [ ] Given command dispatch is rejected, when the response is rendered, then the typed rejection reason appears and previous state remains visible.
-- [ ] **TRD-009-TEST**: Add command-dispatch tests proving exact command types/payloads, success refresh, typed rejection display, and no direct event-store/Beads/filesystem mutation [verifies TRD-009] [satisfies REQ-006, REQ-007, REQ-008, REQ-010, REQ-011] [depends: TRD-009] (5h)
+    - [x] Given Stop is confirmed, when dispatch runs, then the command type is `run.pause`, `aggregate_id` is `run:<run_id>`, payload carries `run_id`, and blank reason defaults to `operator_pause` before dispatch.
+    - [x] Given Abandon is confirmed, when dispatch runs, then the command type is `run.remove` and default active views exclude the run after success while explicit removed filters can query it if projected.
+    - [x] Given Resume is confirmed, when dispatch runs, then the command type is `run.resume` and lineage/audit fields remain visible from projections.
+    - [x] Given Reset is confirmed, when dispatch runs, then the command type is `run.reset` and removed task-retry CLI behavior is not exposed.
+    - [x] Given command dispatch is rejected, when the response is rendered, then the typed rejection reason appears and previous state remains visible.
+- [x] **TRD-009-TEST**: Add command-dispatch tests proving exact command types/payloads, success refresh, typed rejection display, and no direct event-store/Beads/filesystem mutation [verifies TRD-009] [satisfies REQ-006, REQ-007, REQ-008, REQ-010, REQ-011] [depends: TRD-009] (5h)
 
 ### PR 5: Documentation, release hardening, and workflow proof
 
 **Shippable State:** The run-management dashboard is documented, covered by operator workflow tests, and final evidence proves docs and tests match the shipped behavior.
 
-- [ ] **TRD-010**: Add end-to-end operator workflow tests covering list, detail, logs, changes, confirmations, rejected actions, and refresh behavior [satisfies REQ-014] [depends: TRD-009] (5h)
+- [x] **TRD-010**: Add end-to-end operator workflow tests covering list, detail, logs, changes, confirmations, rejected actions, and refresh behavior [satisfies REQ-014] [depends: TRD-009] (5h)
   - Validates PRD ACs: AC-014-1
   - Implementation AC:
-    - [ ] Given seeded projections, when the LiveView test drives the workflow, then run list, detail tabs, logs, changes, and PR evidence render.
-    - [ ] Given action confirmation is accepted, when the command succeeds or fails, then the result state or typed error is shown.
-    - [ ] Given refresh runs after a projection change, when the page updates, then the operator sees the new status without manual reload.
-- [ ] **TRD-010-TEST**: Run the operator workflow test suite and record command/output summary in the implementation report [verifies TRD-010] [satisfies REQ-014] [depends: TRD-010] (2h)
+    - [x] Given seeded projections, when the LiveView test drives the workflow, then run list, detail tabs, logs, changes, and PR evidence render.
+    - [x] Given action confirmation is accepted, when the command succeeds or fails, then the result state or typed error is shown.
+    - [x] Given refresh runs after a projection change, when the page updates, then the operator sees the new status without manual reload.
+- [x] **TRD-010-TEST**: Run the operator workflow test suite and record command/output summary in the implementation report [verifies TRD-010] [satisfies REQ-014] [depends: TRD-010] (2h)
 
-- [ ] **TRD-011**: Update operator/developer docs for dashboard entry, auth, statuses, logs, changes, Stop/Cancel/Abandon/Restart semantics, and documentation discipline [satisfies REQ-001, REQ-006, REQ-007, REQ-008, REQ-014] [depends: TRD-010] (4h)
+- [x] **TRD-011**: Update operator/developer docs for dashboard entry, auth, statuses, logs, changes, Stop/Cancel/Abandon/Restart semantics, and documentation discipline [satisfies REQ-001, REQ-006, REQ-007, REQ-008, REQ-014] [depends: TRD-010] (4h)
   - Validates PRD ACs: AC-001-3, AC-014-2, AC-014-3
   - Implementation AC:
-    - [ ] Given `README.md` and `docs/user-guide.md` are read, when dashboard docs are added, then an operator can open `/dashboard/runs`, authenticate by the documented token method, and understand status/action semantics.
-    - [ ] Given `docs/cli-reference.md` is checked, when no CLI behavior changed, then it remains unchanged or receives only accurate cross-reference text.
-    - [ ] Given `CLAUDE.md` and `AGENTS.md` are checked, when operator expectations or workflow instructions changed, then only relevant stale or new behavior is edited.
-    - [ ] Given externally visible identifiers are listed, when finalization completes, then all five required docs have edit/no-op rationale, including new `/dashboard/runs` and any new module names.
-- [ ] **TRD-011-TEST**: Add final documentation-gate evidence listing identifiers and the edit/no-op rationale for `CLAUDE.md`, `AGENTS.md`, `README.md`, `docs/user-guide.md`, and `docs/cli-reference.md` [verifies TRD-011] [satisfies REQ-014] [depends: TRD-011] (1h)
+    - [x] Given `README.md` and `docs/user-guide.md` are read, when dashboard docs are added, then an operator can open `/dashboard/runs`, authenticate by the documented token method, and understand status/action semantics.
+    - [x] Given `docs/cli-reference.md` is checked, when no CLI behavior changed, then it remains unchanged or receives only accurate cross-reference text.
+    - [x] Given `CLAUDE.md` and `AGENTS.md` are checked, when operator expectations or workflow instructions changed, then only relevant stale or new behavior is edited.
+    - [x] Given externally visible identifiers are listed, when finalization completes, then all five required docs have edit/no-op rationale, including new `/dashboard/runs` and any new module names.
+- [x] **TRD-011-TEST**: Add final documentation-gate evidence listing identifiers and the edit/no-op rationale for `CLAUDE.md`, `AGENTS.md`, `README.md`, `docs/user-guide.md`, and `docs/cli-reference.md` [verifies TRD-011] [satisfies REQ-014] [depends: TRD-011] (1h)
 
-- [ ] **TRD-012**: Perform final source-boundary audit and run focused test/build gates before implementation completion [satisfies REQ-010, REQ-014] [depends: TRD-011] (3h)
+- [x] **TRD-012**: Perform final source-boundary audit and run focused test/build gates before implementation completion [satisfies REQ-010, REQ-014] [depends: TRD-011] (3h)
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-010-3, AC-014-1
   - Implementation AC:
-    - [ ] Given the implementation diff is reviewed, when reads are traced, then none read raw event-store tables or Beads SQLite.
-    - [ ] Given mutation code is reviewed, when writes are traced, then all run-state mutations route through `CommandGateway`/`CommandRouter`.
-    - [ ] Given tests are run, when gates finish, then no failures remain.
-- [ ] **TRD-012-TEST**: Record focused ExUnit/build command results and boundary-audit findings in the implementation report [verifies TRD-012] [satisfies REQ-010, REQ-014] [depends: TRD-012] (2h)
+    - [x] Given the implementation diff is reviewed, when reads are traced, then none read raw event-store tables or Beads SQLite.
+    - [x] Given mutation code is reviewed, when writes are traced, then all run-state mutations route through `CommandGateway`/`CommandRouter`.
+    - [x] Given tests are run, when gates finish, then no failures remain.
+- [x] **TRD-012-TEST**: Record focused ExUnit/build command results and boundary-audit findings in the implementation report [verifies TRD-012] [satisfies REQ-010, REQ-014] [depends: TRD-012] (2h)
 
 ## Sprint Planning
 
