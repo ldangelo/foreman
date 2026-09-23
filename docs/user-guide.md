@@ -293,13 +293,13 @@ Support states:
 ## 2. Operator API surface
 
 All external domain mutations go through `POST /api/commands`. The
-operator allowlist (`ForemanServerWeb.CommandController.@allowed_types`,
-mirrored by `ForemanServer.CommandGateway.@allowed_operator_types`) is
-exactly:
+operator allowlist (`ForemanServer.CommandGateway.@allowed_operator_types`)
+is exactly:
 
 - `project.register`
 - `project.update`
 - `project.archive`
+- `project.reactivate`
 - `task.create`
 - `task.approve`
 - `task.retry`
@@ -309,6 +309,7 @@ exactly:
 - `run.resume`
 - `run.remove`
 - `run.reset`
+- `inbox.send`
 
 `CommandController` derives or verifies `aggregate_id` before calling
 `CommandGateway`. The expected form is `<prefix>:<id>` (`task:<task_id>`,

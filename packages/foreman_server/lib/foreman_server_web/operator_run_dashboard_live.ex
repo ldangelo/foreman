@@ -48,7 +48,18 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
   def handle_event("tab", %{"tab" => tab}, socket)
       when tab in ["summary", "logs", "changes", "actions"] do
-    {:noreply, assign(socket, :active_tab, tab)}
+    socket = assign(socket, :active_tab, tab)
+
+    socket =
+      if tab == "changes" and socket.assigns.detail do
+        detail = socket.assigns.detail
+        changes = OperatorDashboard.change_evidence(detail.run.run_id)
+        assign(socket, :detail, %{detail | changes: changes})
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   def handle_event("run-action", %{"action" => action, "run-id" => run_id} = params, socket) do
@@ -194,7 +205,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
         case selected_run_id do
           nil -> nil
           :absent -> nil
-          run_id -> detail_or_nil(run_id)
+          run_id -> detail_or_nil(run_id, socket.assigns.active_tab)
         end
 
       socket
@@ -212,10 +223,19 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     end
   end
 
-  defp detail_or_nil(run_id) do
+  defp detail_or_nil(run_id, active_tab) do
     case OperatorDashboard.run_detail(run_id) do
-      {:ok, detail} -> detail
-      {:error, _} -> nil
+      {:ok, detail} ->
+        # Load changes lazily only when the changes tab is already active to
+        # avoid running a synchronous git command on every refresh tick.
+        if active_tab == "changes" do
+          %{detail | changes: OperatorDashboard.change_evidence(run_id)}
+        else
+          detail
+        end
+
+      {:error, _} ->
+        nil
     end
   end
 

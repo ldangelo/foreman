@@ -46,6 +46,7 @@ defmodule ForemanServerWeb.OperatorDashboard do
       phases: [],
       task: :absent,
       logs: :absent,
+      # loaded lazily by the LiveView
       changes: :absent,
       worktrees: [],
       pr_association: :absent
@@ -74,7 +75,6 @@ defmodule ForemanServerWeb.OperatorDashboard do
         phases = ProjectionStore.phases_for_run(run_id)
         task = task_for_run(run)
         logs = ProjectionStore.run_logs(run_id)
-        changes = ChangeEvidence.for_run(run_id)
         worktrees = ProjectionStore.worktrees_for_run(run_id)
         pr_association = pr_association(run_id)
 
@@ -84,7 +84,6 @@ defmodule ForemanServerWeb.OperatorDashboard do
            phases: Enum.map(phases, &phase_dto/1),
            task: task,
            logs: logs,
-           changes: changes,
            worktrees: worktrees,
            pr_association: pr_association
          }}
@@ -220,11 +219,15 @@ defmodule ForemanServerWeb.OperatorDashboard do
     phases = phases || phases_for_run(run)
     current_phase = current_phase(phases)
     task_id = value(run, :task_id)
-    status = value(run, :status) || :absent
+
+    # Required invariant fields — fail loudly if absent rather than masking.
+    run_id = run_id(run)
+    status = status(run)
+
     pr_url = value(run, :pr_url)
 
     %RunDTO{
-      run_id: value(run, :run_id) || :absent,
+      run_id: run_id,
       project_id: value(run, :project_id) || :absent,
       status: status,
       workflow: value(run, :workflow_name) || :absent,
@@ -242,6 +245,21 @@ defmodule ForemanServerWeb.OperatorDashboard do
       failure_reason: value(run, :failure_reason) || :absent,
       actions: actions_for_status(status)
     }
+  end
+
+  # Fail loudly on missing required invariant fields.
+  defp run_id(run) do
+    case value(run, :run_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> raise KeyError, key: :run_id, term: run
+    end
+  end
+
+  defp status(run) do
+    case value(run, :status) do
+      s when is_binary(s) -> s
+      _ -> raise KeyError, key: :status, term: run
+    end
   end
 
   defp phases_for_run(run) do
