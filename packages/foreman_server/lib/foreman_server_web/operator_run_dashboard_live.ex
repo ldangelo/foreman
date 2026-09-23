@@ -28,6 +28,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
      |> assign(:stale?, false)
      |> assign(:error, nil)
      |> assign(:action_result, nil)
+     |> assign(:action_intent_key, new_action_intent_key())
      |> refresh()}
   end
 
@@ -65,13 +66,14 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
   def handle_event("run-action", %{"action" => action, "run-id" => run_id} = params, socket) do
     reason = params["reason"]
+    intent_key = params["intent-key"]
 
     result =
       case action do
-        "stop" -> OperatorDashboard.pause_run(run_id, reason)
-        "resume" -> OperatorDashboard.resume_run(run_id, reason)
-        "abandon" -> OperatorDashboard.remove_run(run_id, reason)
-        "reset" -> OperatorDashboard.reset_run(run_id, reason)
+        "stop" -> OperatorDashboard.pause_run(run_id, reason, intent_key)
+        "resume" -> OperatorDashboard.resume_run(run_id, reason, intent_key)
+        "abandon" -> OperatorDashboard.remove_run(run_id, reason, intent_key)
+        "reset" -> OperatorDashboard.reset_run(run_id, reason, intent_key)
         _ -> {:error, :unknown_action}
       end
 
@@ -80,6 +82,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     {:noreply,
      socket
      |> assign(:action_result, message)
+     |> assign(:action_intent_key, new_action_intent_key())
      |> refresh()}
   end
 
@@ -175,6 +178,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
               <p>Stop pauses the run with reason <code>operator_pause</code>. Cancel is not Stop.</p>
               <form phx-submit="run-action">
                 <input type="hidden" name="run-id" value={@detail.run.run_id} />
+                <input type="hidden" name="intent-key" value={@action_intent_key} />
                 <label>Reason <input name="reason" placeholder="operator reason" /></label>
                 <button name="action" value="stop" disabled={!@detail.run.actions.stop.enabled}>Stop / pause</button>
                 <button name="action" value="resume" disabled={!@detail.run.actions.resume.enabled}>Resume</button>
@@ -307,6 +311,15 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
   defp schedule_refresh do
     Process.send_after(self(), :refresh, @refresh_ms)
+  end
+
+  # Stable per-form-render intent key so a client-side retry of the SAME
+  # confirmed run-action (e.g. a LiveView reconnect resending an
+  # unacknowledged submit) reuses the same command_id and is deduplicated
+  # by CommandGateway/CommandRouter, while a genuinely new action gets a
+  # fresh one after each result.
+  defp new_action_intent_key do
+    Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
   end
 
   defp render_logs({:ok, logs}) do

@@ -412,13 +412,14 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
     worktree = ProjectionStore.worktrees_for_run(run_id) |> Enum.find(&created_worktree?/1)
 
     cond do
-      is_map(worktree) and safe_abs_dir?(worktree_path(worktree)) and usable_base?(worktree, run) ->
-        {:ok,
-         %{
-           kind: :worktree,
-           cwd: worktree_path(worktree),
-           base: value(worktree, :base_ref) || value(run, :base_branch)
-         }}
+      is_map(worktree) and safe_abs_dir?(worktree_path(worktree)) ->
+        case resolved_base(worktree_path(worktree), worktree, run) do
+          {:ok, base_sha} ->
+            {:ok, %{kind: :worktree, cwd: worktree_path(worktree), base: base_sha}}
+
+          :error ->
+            {:unavailable, :base_unavailable, %{worktree: worktree_path(worktree) || :absent}}
+        end
 
       is_map(worktree) ->
         {:unavailable, :base_unavailable, %{worktree: worktree_path(worktree) || :absent}}
@@ -435,9 +436,30 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
     value(worktree, :status) in [nil, "created"] and is_binary(worktree_path(worktree))
   end
 
-  defp usable_base?(worktree, run) do
+  # Reject a projected base ref/branch that looks like a git CLI option or
+  # carries control/whitespace characters before it ever reaches a git argv,
+  # then resolve it to a real commit SHA via `rev-parse --end-of-options`.
+  # Without this, an attacker-controlled projection value starting with `-`
+  # (e.g. a `base_branch` of "--output=/tmp/x") would be parsed by `git diff`
+  # as an option instead of a ref -- `--output=<path>` makes git WRITE a file
+  # on what is supposed to be a read-only evidence-browsing path. Every
+  # caller of `source.base` (`changed_files/1`, `preview/2`) receives an
+  # already-verified SHA from this one funnel, never the raw projection value.
+  defp resolved_base(cwd, worktree, run) do
     base = value(worktree, :base_ref) || value(run, :base_branch)
-    is_binary(base) and base != ""
+
+    with true <- safe_git_ref?(base),
+         {:ok, sha} <-
+           git(cwd, ["rev-parse", "--verify", "--end-of-options", base <> "^{commit}"]) do
+      {:ok, String.trim(sha)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp safe_git_ref?(base) do
+    is_binary(base) and base != "" and not String.starts_with?(base, "-") and
+      not String.contains?(base, ["\0", "\n", "\r", " "])
   end
 
   defp changed_files(%{cwd: cwd, base: base}) do
