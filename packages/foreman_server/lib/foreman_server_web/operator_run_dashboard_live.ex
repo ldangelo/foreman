@@ -82,7 +82,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     {:noreply,
      socket
      |> assign(:action_result, message)
-     |> assign(:action_intent_key, new_action_intent_key())
+     |> assign(:action_intent_key, intent_key_after(result, intent_key))
      |> refresh()}
   end
 
@@ -306,8 +306,22 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   defp first_run_id([]), do: nil
 
   defp action_message({:ok, %{command: command}}), do: "Command accepted: #{command.type}"
+
+  defp action_message({:error, :dispatch_timeout, command}) do
+    "Command result unknown (dispatch timed out): #{command.type} may still be processing. Retrying reuses the same intent key."
+  end
+
   defp action_message({:error, reason, _command}), do: "Command rejected: #{inspect(reason)}"
   defp action_message({:error, reason}), do: "Command rejected: #{inspect(reason)}"
+
+  # A timeout means the outcome is UNKNOWN, not failed -- the append may
+  # have already committed on the gateway side. Keep the same intent key so
+  # an operator retry of the same confirmed action is deduplicated by
+  # CommandGateway/CommandRouter instead of minting a second command_id for
+  # what is really one intent. Every definitive outcome (accepted or a real
+  # rejection) gets a fresh key for the next, genuinely new action.
+  defp intent_key_after({:error, :dispatch_timeout, _command}, current_key), do: current_key
+  defp intent_key_after(_result, _current_key), do: new_action_intent_key()
 
   defp schedule_refresh do
     Process.send_after(self(), :refresh, @refresh_ms)

@@ -152,14 +152,28 @@ defmodule ForemanServerWeb.OperatorDashboard do
       payload: %{run_id: run_id, reason: clean_reason, actor: "operator_dashboard"}
     }
 
-    case command_gateway().dispatch_operator(envelope) do
+    case safe_dispatch(envelope) do
       {:ok, result} -> {:ok, %{command: envelope, result: result}}
+      {:error, :dispatch_timeout} -> {:error, :dispatch_timeout, envelope}
       {:error, reason} -> {:error, reason, envelope}
       {:error, reason, detail} -> {:error, {reason, detail}, envelope}
     end
   end
 
   def dispatch_action(_type, _run_id, _reason, _idempotency_key), do: {:error, :run_not_found}
+
+  # `CommandGateway.dispatch_operator/2`'s default is a 5s `GenServer.call`.
+  # A timeout raises an `:exit` in the CALLER (this LiveView-backing
+  # process) rather than returning an error tuple -- catch it so the result
+  # is an explicit, uncertain-but-handleable outcome. The append may have
+  # already committed on the other side; the caller must treat this as
+  # "unknown", not "failed", and must NOT rotate any retry/idempotency key
+  # tied to this dispatch.
+  defp safe_dispatch(envelope) do
+    command_gateway().dispatch_operator(envelope)
+  catch
+    :exit, _reason -> {:error, :dispatch_timeout}
+  end
 
   defp command_gateway do
     Application.get_env(:foreman_server, :command_gateway_module, @default_gateway)
@@ -375,6 +389,12 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
   @max_files 200
   @max_bytes 24_000
 
+  defmodule EvidenceSource do
+    @moduledoc false
+    @enforce_keys [:kind, :cwd, :base]
+    defstruct [:kind, :cwd, :base]
+  end
+
   def for_run(run_id) when is_binary(run_id) and run_id != "" do
     with run when is_map(run) <- ProjectionStore.run(run_id),
          {:ok, source} <- evidence_source(run_id, run),
@@ -415,9 +435,12 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
       is_map(worktree) and safe_abs_dir?(worktree_path(worktree)) ->
         case resolved_base(worktree_path(worktree), worktree, run) do
           {:ok, base_sha} ->
-            {:ok, %{kind: :worktree, cwd: worktree_path(worktree), base: base_sha}}
+            {:ok, %EvidenceSource{kind: :worktree, cwd: worktree_path(worktree), base: base_sha}}
 
-          :error ->
+          {:error, :git_unavailable} ->
+            {:error, :git_unavailable}
+
+          {:error, _malformed_or_unresolvable} ->
             {:unavailable, :base_unavailable, %{worktree: worktree_path(worktree) || :absent}}
         end
 
@@ -445,15 +468,25 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
   # on what is supposed to be a read-only evidence-browsing path. Every
   # caller of `source.base` (`changed_files/1`, `preview/2`) receives an
   # already-verified SHA from this one funnel, never the raw projection value.
+  #
+  # Three failure shapes are kept distinct rather than collapsed to one
+  # atom: a missing/malformed ref and a ref git cannot resolve (ambiguous or
+  # unknown) are both legitimate "no usable base yet" states, but a raw git
+  # command failure (`:git_unavailable`) is a real error and must propagate
+  # as one instead of silently reading as the same unavailable-but-ok state.
   defp resolved_base(cwd, worktree, run) do
     base = value(worktree, :base_ref) || value(run, :base_branch)
 
-    with true <- safe_git_ref?(base),
-         {:ok, sha} <-
-           git(cwd, ["rev-parse", "--verify", "--end-of-options", base <> "^{commit}"]) do
-      {:ok, String.trim(sha)}
-    else
-      _ -> :error
+    cond do
+      not safe_git_ref?(base) ->
+        {:error, :base_ref_malformed}
+
+      true ->
+        case git_stdout(cwd, ["rev-parse", "--verify", "--end-of-options", base <> "^{commit}"]) do
+          {:ok, sha} -> {:ok, String.trim(sha)}
+          {:error, :git_unavailable} -> {:error, :git_unavailable}
+          {:error, reason} -> {:error, {:base_ref_unresolvable, reason}}
+        end
     end
   end
 
@@ -487,6 +520,20 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
 
   defp git(cwd, args) do
     case System.cmd("git", args, cd: cwd, stderr_to_stdout: true) do
+      {out, 0} -> {:ok, out}
+      {out, _} -> {:error, String.slice(out, 0, 1_000)}
+    end
+  rescue
+    _ -> {:error, :git_unavailable}
+  end
+
+  # Never merges stderr into stdout, unlike `git/2`. A resolved commit SHA
+  # must be exactly the SHA and nothing else -- `git rev-parse` can exit 0
+  # while ALSO writing an ambiguous-ref warning to stderr (e.g. when a
+  # branch and tag share the projected base name), and `git/2`'s merged
+  # output would silently append that warning onto the SHA string.
+  defp git_stdout(cwd, args) do
+    case System.cmd("git", args, cd: cwd, stderr_to_stdout: false) do
       {out, 0} -> {:ok, out}
       {out, _} -> {:error, String.slice(out, 0, 1_000)}
     end
