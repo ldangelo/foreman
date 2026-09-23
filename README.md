@@ -33,6 +33,11 @@ phase, task, durable log, worktree, and PR projections; Stop maps to
 `run.reset`, and Abandon to `run.remove`. See `docs/user-guide.md` for the
 operator workflow and action semantics.
 
+The full operator command allowlist — including `project.reactivate`,
+`task.update`, and `inbox.send`, which have no other narrative home in this
+repo's docs — is enumerated in `docs/user-guide.md`'s HTTP API section
+(`ForemanServer.CommandGateway.@allowed_operator_types`).
+
 ## Beads sync (atomic task.create + bidirectional sync)
 
 The Go/Elixir CQRS slice wires Beads (the `br` CLI) into Foreman so

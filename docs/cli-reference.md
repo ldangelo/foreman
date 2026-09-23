@@ -92,6 +92,11 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > `/dashboard` remains the separate Jido live dashboard. Dashboard run controls
 > dispatch the same command types listed above (`run.pause`, `run.resume`,
 > `run.remove`, `run.reset`, and separately-labelled `run.cancel` if exposed).
+> None of these are Go CLI verbs. Two more operator command types have no
+> section here either: `task.update` did have a Go CLI verb (`foreman task
+> update`, removed by TRD-018, see this file's top-of-file note);
+> `project.reactivate` never had one. `docs/user-guide.md`'s HTTP API
+> section is the complete operator command allowlist.
 
 ## Global Usage
 

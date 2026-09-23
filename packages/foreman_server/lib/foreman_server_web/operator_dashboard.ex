@@ -55,14 +55,18 @@ defmodule ForemanServerWeb.OperatorDashboard do
 
   @doc "List run rows with bounded filters."
   def list_runs(params \\ %{}) do
-    opts = query_opts(params)
+    case query_opts(params) do
+      {:ok, opts} ->
+        rows =
+          opts
+          |> ProjectionStore.list_runs()
+          |> Enum.map(&run_dto/1)
 
-    rows =
-      opts
-      |> ProjectionStore.list_runs()
-      |> Enum.map(&run_dto/1)
+        {:ok, rows}
 
-    {:ok, rows}
+      {:error, _} = error ->
+        error
+    end
   end
 
   @doc "Load full dashboard detail for one run."
@@ -115,24 +119,35 @@ defmodule ForemanServerWeb.OperatorDashboard do
     }
   end
 
-  def pause_run(run_id, reason \\ nil),
-    do: dispatch_action("run.pause", run_id, reason || "operator_pause")
+  def pause_run(run_id, reason \\ nil, idempotency_key \\ nil),
+    do: dispatch_action("run.pause", run_id, reason || "operator_pause", idempotency_key)
 
-  def resume_run(run_id, reason \\ nil),
-    do: dispatch_action("run.resume", run_id, reason || "operator_resume")
+  def resume_run(run_id, reason \\ nil, idempotency_key \\ nil),
+    do: dispatch_action("run.resume", run_id, reason || "operator_resume", idempotency_key)
 
-  def remove_run(run_id, reason \\ nil),
-    do: dispatch_action("run.remove", run_id, reason || "operator_abandon")
+  def remove_run(run_id, reason \\ nil, idempotency_key \\ nil),
+    do: dispatch_action("run.remove", run_id, reason || "operator_abandon", idempotency_key)
 
-  def reset_run(run_id, reason \\ nil),
-    do: dispatch_action("run.reset", run_id, reason || "operator_reset")
+  def reset_run(run_id, reason \\ nil, idempotency_key \\ nil),
+    do: dispatch_action("run.reset", run_id, reason || "operator_reset", idempotency_key)
 
-  def dispatch_action(type, run_id, reason) when is_binary(run_id) and run_id != "" do
+  @doc """
+  Dispatch a run-control command. `idempotency_key`, when supplied by the
+  caller, is reused verbatim as the command-id suffix so a client-side retry
+  of the SAME confirmed operator intent (e.g. a LiveView reconnect resending
+  an unacknowledged click) produces the same `command_id` and is deduplicated
+  by `CommandRouter`. Omit it to get a fresh one-shot id (default; matches
+  prior behavior for callers that don't track intent identity).
+  """
+  def dispatch_action(type, run_id, reason, idempotency_key \\ nil)
+
+  def dispatch_action(type, run_id, reason, idempotency_key)
+      when is_binary(run_id) and run_id != "" do
     clean_reason = non_blank(reason, default_reason(type))
 
     envelope = %{
       type: type,
-      command_id: command_id(type, run_id),
+      command_id: command_id(type, run_id, idempotency_key),
       aggregate_id: "run:" <> run_id,
       payload: %{run_id: run_id, reason: clean_reason, actor: "operator_dashboard"}
     }
@@ -144,14 +159,14 @@ defmodule ForemanServerWeb.OperatorDashboard do
     end
   end
 
-  def dispatch_action(_type, _run_id, _reason), do: {:error, :run_not_found}
+  def dispatch_action(_type, _run_id, _reason, _idempotency_key), do: {:error, :run_not_found}
 
   defp command_gateway do
     Application.get_env(:foreman_server, :command_gateway_module, @default_gateway)
   end
 
-  defp command_id(type, run_id) do
-    suffix = System.unique_integer([:positive, :monotonic])
+  defp command_id(type, run_id, idempotency_key) do
+    suffix = idempotency_key || System.unique_integer([:positive, :monotonic])
     "dashboard:#{type}:#{run_id}:#{suffix}"
   end
 
@@ -171,18 +186,27 @@ defmodule ForemanServerWeb.OperatorDashboard do
   defp non_blank(_, default), do: default
 
   defp query_opts(params) do
-    params
-    |> normalize_params()
-    |> Enum.reduce([limit: limit_from(params)], fn
-      {:status, value}, acc when is_binary(value) and value != "" ->
-        Keyword.put(acc, :status, value)
+    case limit_from(params) do
+      {:ok, limit} ->
+        opts =
+          params
+          |> normalize_params()
+          |> Enum.reduce([limit: limit], fn
+            {:status, value}, acc when is_binary(value) and value != "" ->
+              Keyword.put(acc, :status, value)
 
-      {:project_id, value}, acc when is_binary(value) and value != "" ->
-        Keyword.put(acc, :project_id, value)
+            {:project_id, value}, acc when is_binary(value) and value != "" ->
+              Keyword.put(acc, :project_id, value)
 
-      _, acc ->
-        acc
-    end)
+            _, acc ->
+              acc
+          end)
+
+        {:ok, opts}
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp normalize_params(params) when is_map(params) do
@@ -195,25 +219,31 @@ defmodule ForemanServerWeb.OperatorDashboard do
 
   defp normalize_params(_), do: %{}
 
+  # Absent limit defaults; a PRESENT but invalid limit ("abc", "10x", 0,
+  # negative) is a malformed-input error, never silently coerced to the
+  # default -- that would make invalid operator input look successful.
   defp limit_from(params) do
     params
     |> normalize_params()
     |> Map.get(:limit)
     |> parse_limit()
-    |> min(@max_limit)
-  end
-
-  defp parse_limit(nil), do: @default_limit
-  defp parse_limit(value) when is_integer(value) and value > 0, do: value
-
-  defp parse_limit(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> int
-      _ -> @default_limit
+    |> case do
+      {:ok, limit} -> {:ok, min(limit, @max_limit)}
+      {:error, _} = error -> error
     end
   end
 
-  defp parse_limit(_), do: @default_limit
+  defp parse_limit(nil), do: {:ok, @default_limit}
+  defp parse_limit(value) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp parse_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> {:ok, int}
+      _ -> {:error, {:malformed_limit, value}}
+    end
+  end
+
+  defp parse_limit(value), do: {:error, {:malformed_limit, value}}
 
   defp run_dto(run, phases \\ nil) do
     phases = phases || phases_for_run(run)
@@ -318,11 +348,22 @@ defmodule ForemanServerWeb.OperatorDashboard do
     }
   end
 
-  defp value(nil, _key), do: nil
-  defp value(:absent, _key), do: nil
+  # Normalize once at this single boundary rather than letting every reader
+  # probe both key shapes: the atom key wins deterministically whenever
+  # present, even if its value is falsy (`false`, `0`, `""`) -- `||` here
+  # would incorrectly fall through to the string key on a legitimate falsy
+  # atom value, and would pick whichever key happens to be truthy when both
+  # are present with conflicting values. Public so
+  # `OperatorDashboard.ChangeEvidence` shares this boundary instead of
+  # keeping its own drifting copy.
+  def value(nil, _key), do: nil
+  def value(:absent, _key), do: nil
 
-  defp value(map, key) when is_map(map) and is_atom(key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  def value(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, v} -> v
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
 end
 
@@ -359,7 +400,7 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
          true <- safe_relative?(rel_path),
          true <- Enum.any?(files, &(&1.path == rel_path)),
          {:ok, source} <- evidence_source(run_id, ProjectionStore.run(run_id)),
-         {:ok, text} <- git(source.cwd, ["diff", "--", rel_path]) do
+         {:ok, text} <- git(source.cwd, ["diff", source.base <> "..HEAD", "--", rel_path]) do
       {:ok, String.slice(text, 0, @max_bytes)}
     else
       false -> {:error, :malformed_path}
@@ -443,9 +484,7 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
 
   defp safe_relative?(_), do: false
 
-  defp value(nil, _key), do: nil
-
-  defp value(map, key) when is_map(map) and is_atom(key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
-  end
+  # Shared with `OperatorDashboard.value/2` -- one normalization boundary
+  # for projection records, not two independently-drifting copies.
+  defp value(map, key), do: ForemanServerWeb.OperatorDashboard.value(map, key)
 end

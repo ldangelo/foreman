@@ -22,6 +22,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
      |> assign(:limit, params["limit"] || "100")
      |> assign(:runs, [])
      |> assign(:detail, nil)
+     |> assign(:detail_error, nil)
      |> assign(:active_tab, "summary")
      |> assign(:last_refresh_at, nil)
      |> assign(:stale?, false)
@@ -53,7 +54,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     socket =
       if tab == "changes" and socket.assigns.detail do
         detail = socket.assigns.detail
-        changes = OperatorDashboard.change_evidence(detail.run.run_id)
+        changes = load_changes_bounded(detail.run.run_id)
         assign(socket, :detail, %{detail | changes: changes})
       else
         socket
@@ -85,7 +86,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   @impl true
   def handle_info(:refresh, socket) do
     schedule_refresh()
-    {:noreply, refresh(socket)}
+    {:noreply, refresh(socket, reload_changes?: false)}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -182,8 +183,15 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
               </form>
             </section>
           <% else %>
-            <h2>No run selected</h2>
-            <p>Select a run to inspect phases, logs, changes, and safe actions.</p>
+            <%= if @detail_error do %>
+              <h2>Run detail unavailable</h2>
+              <p class="dashboard-detail-error">
+                Could not load run <code>{elem(@detail_error, 0)}</code>: {inspect(elem(@detail_error, 1))}
+              </p>
+            <% else %>
+              <h2>No run selected</h2>
+              <p>Select a run to inspect phases, logs, changes, and safe actions.</p>
+            <% end %>
           <% end %>
         </section>
       </section>
@@ -191,7 +199,14 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp refresh(socket) do
+  # `reload_changes?: false` (the periodic 2s timer tick) reuses whatever
+  # changes evidence is already assigned instead of re-running the
+  # git-backed evidence read on every poll; an explicit operator action
+  # (select-run, tab switch, filter, manual refresh, run-action) always
+  # reloads it. Either way the read itself is bounded (`load_changes_bounded/1`).
+  defp refresh(socket, opts \\ []) do
+    reload_changes? = Keyword.get(opts, :reload_changes?, true)
+
     params = %{
       status: socket.assigns.status_filter,
       project_id: socket.assigns.project_filter,
@@ -200,18 +215,33 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
     with {:ok, runs} <- OperatorDashboard.list_runs(params) do
       selected_run_id = socket.assigns.selected_run_id || first_run_id(runs)
+      previous_changes = previous_changes(socket, selected_run_id)
 
-      detail =
+      {detail, detail_error} =
         case selected_run_id do
-          nil -> nil
-          :absent -> nil
-          run_id -> detail_or_nil(run_id, socket.assigns.active_tab)
+          nil ->
+            {nil, nil}
+
+          :absent ->
+            {nil, nil}
+
+          run_id ->
+            case detail_result(
+                   run_id,
+                   socket.assigns.active_tab,
+                   reload_changes?,
+                   previous_changes
+                 ) do
+              {:ok, detail} -> {detail, nil}
+              {:error, reason} -> {nil, {run_id, reason}}
+            end
         end
 
       socket
       |> assign(:runs, runs)
       |> assign(:selected_run_id, selected_run_id)
       |> assign(:detail, detail)
+      |> assign(:detail_error, detail_error)
       |> assign(:last_refresh_at, DateTime.utc_now() |> DateTime.to_iso8601())
       |> assign(:stale?, false)
       |> assign(:error, nil)
@@ -223,19 +253,48 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     end
   end
 
-  defp detail_or_nil(run_id, active_tab) do
+  # Only reuse the previously loaded evidence when it belongs to the SAME
+  # selected run -- switching runs must never show the prior run's changes.
+  defp previous_changes(socket, run_id) do
+    case socket.assigns[:detail] do
+      %{run: %{run_id: ^run_id}, changes: changes} -> changes
+      _ -> nil
+    end
+  end
+
+  defp detail_result(run_id, active_tab, reload_changes?, previous_changes) do
     case OperatorDashboard.run_detail(run_id) do
       {:ok, detail} ->
-        # Load changes lazily only when the changes tab is already active to
-        # avoid running a synchronous git command on every refresh tick.
-        if active_tab == "changes" do
-          %{detail | changes: OperatorDashboard.change_evidence(run_id)}
-        else
-          detail
-        end
+        changes =
+          cond do
+            active_tab != "changes" -> :absent
+            reload_changes? or is_nil(previous_changes) -> load_changes_bounded(run_id)
+            true -> previous_changes
+          end
 
-      {:error, _} ->
-        nil
+        {:ok, %{detail | changes: changes}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @evidence_timeout_ms 3_000
+
+  # Change evidence shells out to git (`ChangeEvidence.for_run/1`). Run it in
+  # a bounded task so a slow/hung git command cannot block this LiveView
+  # process -- including its filters and run controls -- for longer than
+  # @evidence_timeout_ms.
+  defp load_changes_bounded(run_id) do
+    task = Task.async(fn -> OperatorDashboard.change_evidence(run_id) end)
+
+    case Task.yield(task, @evidence_timeout_ms) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, :evidence_timeout}
     end
   end
 
@@ -274,14 +333,6 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp render_logs(_other) do
-    assigns = %{}
-
-    ~H"""
-    <p>No durable worker logs.</p>
-    """
-  end
-
   defp render_changes({:ok, %{state: :available} = changes}) do
     assigns = %{changes: changes}
 
@@ -301,11 +352,19 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp render_changes(_other) do
+  defp render_changes({:error, reason}) do
+    assigns = %{reason: reason}
+
+    ~H"""
+    <p>Change evidence unavailable: {inspect(@reason)}</p>
+    """
+  end
+
+  defp render_changes(:absent) do
     assigns = %{}
 
     ~H"""
-    <p>Change evidence unavailable.</p>
+    <p>Open the Changes tab to load evidence.</p>
     """
   end
 end

@@ -13,8 +13,9 @@ defmodule ForemanServer.Events.RunResumed do
           run_id: String.t(),
           project_id: String.t() | nil,
           reason: String.t() | nil,
+          actor: String.t() | nil,
           sequence: non_neg_integer() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :project_id, :reason, :sequence]
+  defstruct [:run_id, :project_id, :reason, :actor, :sequence]
 end

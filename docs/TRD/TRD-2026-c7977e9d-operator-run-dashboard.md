@@ -22,7 +22,7 @@ Source PRD: `docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md` (`PRD-2026-c7
 - Acceptance criteria: 45 `AC-NNN-M` items, Given/When/Then format.
 - PRD readiness score: **4.8 PASS**.
 - Subject match: PRD and Foreman task both describe adding a web-first operator dashboard for run management.
-- Foreman source PRD path used exactly: `/Users/ldangelo/.foreman/worktrees/foreman/foreman-wktn/run-649b3f39262c2f2a6b6df1b8af4c1511/workspace/docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md`.
+- Foreman source PRD path used exactly: `docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md` (repository-relative; resolved against the run's worktree root at TRD-authoring time).
 
 ## Refinement Pass Summary
 
@@ -151,7 +151,7 @@ graph TD
 | Boundary | Protocol | Request | Response/Error |
 |---|---|---|---|
 | Dashboard route | Phoenix LiveView | Authenticated GET `/dashboard/runs` | LiveView HTML; unauthenticated rejected by existing auth guard. |
-| Auth | Existing browser guard | `Authorization: Bearer <token>` or `?token=<token>` | `401 unauthorized` when missing, mismatched, or token config absent. |
+| Auth | Existing browser guard | `Authorization: Bearer <token>` or `?token=<token>` | `401 unauthorized` when missing, mismatched, or token config absent. Query-token access is a documented residual risk (browsers/proxies/access logs can retain query strings); scope it to controlled tooling rather than routine browser navigation where a header can be used instead. |
 | Run list | Internal context | `%{status?: binary, project_id?: binary, limit?: pos_integer}` | `{:ok, [%RunDTO{}]}` or typed unavailable error. |
 | Run detail | Internal context | `run_id` | `{:ok, %RunDetailDTO{}}` or `{:error, :run_not_found}`. |
 | Logs | Internal context | `run_id`, `cursor/limit` UI params | `run_logs/1` DTO with bounded ordered entries plus truncation metadata; unknown run -> `:run_not_found`. |
@@ -167,9 +167,9 @@ The dashboard context owns envelope construction. LiveView passes intent, `run_i
 ```elixir
 %{
   type: "run.pause",
-  command_id: "dashboard:run.pause:<run_id>:<unique>",
+  command_id: "dashboard:run.pause:<run_id>:<idempotency_key>",
   aggregate_id: "run:<run_id>",
-  payload: %{run_id: run_id, reason: non_blank_reason || "operator_pause"}
+  payload: %{run_id: run_id, reason: non_blank_reason || "operator_pause", actor: "operator_dashboard"}
 }
 ```
 
@@ -186,10 +186,10 @@ Envelope rules:
 
 | DTO | Required fields | Bound |
 |---|---|---|
-| Run row | `run_id`, `project_id`, `status`, `workflow`, `task_id`/ad-hoc marker, current phase label, timestamps, `latest_stall`, PR marker | List query default limit 100; operator-selectable limit capped in context. |
+| Run row | `run_id`, `project_id`, `status`, `workflow`, `task_id`/ad-hoc marker, current phase label, timestamps, `latest_stall`, PR marker | List query default limit 100, maximum 250 (`@default_limit`/`@max_limit` in `OperatorDashboard`); a present-but-invalid limit is a typed `{:error, {:malformed_limit, value}}`, never silently coerced to the default. |
 | Run detail | Run row fields plus task title/provider ids, phase rows, failure/stall reasons, artifacts, worktree/PR evidence summary | Unknown optional projection fields become explicit `:absent`, never `nil`-poisoned UI logic. |
 | Logs | `entries`, `count`, `limit`, `truncated`, `omitted_entries`, `omitted_bytes`, `max_limit` | Use `ProjectionStore.run_logs/1`; do not fetch or copy server Logger output. |
-| Changes | file path, status, source (`worktree`, `branch`, `pr`, `artifact`), optional bounded diff/preview | Cap file rows and bytes; reject absolute paths and `..`; no writes. |
+| Changes | file path, status, source (`worktree`, `branch`, `pr`, `artifact`), optional bounded diff/preview | Cap file rows at 200 and preview bytes at 24,000 (`@max_files`/`@max_bytes` in `OperatorDashboard.ChangeEvidence`); reject absolute paths and `..` for changed-file paths; no writes. |
 
 Read-only evidence helper rules:
 
@@ -238,7 +238,7 @@ Read-only evidence helper rules:
   - Implementation AC:
     - [x] Given worker stdout/stderr events exist, when the log tab renders, then logs appear ordered with stream, timestamp/sequence, and bounded body text.
     - [x] Given the run id is unknown, when logs are requested, then the dashboard reports `run_not_found` instead of an empty successful log.
-    - [x] Given `ProjectionStore.run_logs/1` returns `truncated`, `omitted_entries`, `omitted_bytes`, `limit`, or `max_limit`, when rendered, then the UI shows the truncation/tail notice.
+    - [x] Given `ProjectionStore.run_logs/1` returns `truncated: true` or positive `omitted_entries`/`omitted_bytes`, when rendered, then the UI shows a truncation/tail notice; `limit` and `max_limit` are always rendered as configured bounds and never by themselves gate the notice.
     - [x] Given server `Logger` output exists, when logs render, then it is not copied into run logs.
 - [x] **TRD-004-TEST**: Add tests for durable log rendering, unknown-run not-found, long-log bounds, and no server-log fallback [verifies TRD-004] [satisfies REQ-004, REQ-010, REQ-012] [depends: TRD-004] (4h)
 
@@ -260,7 +260,7 @@ Read-only evidence helper rules:
     - [x] Given a retained worktree and base ref are projected, when evidence loads, then changed files are listed relative to the recorded base without mutating the repo.
     - [x] Given only PR or branch metadata remains, when evidence loads, then the UI shows PR/branch evidence and labels missing local worktree evidence explicitly.
     - [x] Given worktree/base/branch data is absent or malformed, when evidence loads, then the helper returns a typed unavailable reason and no shell fallback to private internals.
-    - [x] Given a projected path is absolute, escapes with `..`, or points outside the worktree, when evidence loads, then it is rejected as malformed.
+    - [x] Given a projected CHANGED-FILE path is absolute, escapes with `..`, or points outside the worktree, when evidence loads, then it is rejected as malformed. The worktree ROOT path is validated separately and MUST be an absolute, existing directory -- that check is not part of this rejection rule.
     - [x] Given a file is selected, when the operator opens review, then the dashboard renders or links to read-only/diff content only within documented row/byte bounds.
 - [x] **TRD-006-TEST**: Add tests for changed-file evidence, cleaned-worktree fallback, PR metadata display, and typed unavailable states [verifies TRD-006] [satisfies REQ-005, REQ-010] [depends: TRD-006] (5h)
 

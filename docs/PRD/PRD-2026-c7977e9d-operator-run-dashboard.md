@@ -220,7 +220,7 @@ Risk: A dashboard that writes around CommandRouter can corrupt run/task state.
 The dashboard MUST use Foreman's existing query and command boundaries.
 
 - AC-010-1: Given the dashboard reads runs, tasks, phases, logs, inbox, and PR data, when source code is reviewed, then reads come from controllers/MCP/projections or approved read APIs, not raw event-store or Beads SQLite reads.
-- AC-010-2: Given the dashboard mutates run state, when source code is reviewed, then mutation goes through existing command HTTP/MCP/CLI surfaces that route to `CommandGateway`/`CommandRouter`.
+- AC-010-2: Given the dashboard mutates run state, when source code is reviewed, then every mutation calls `CommandGateway.dispatch_operator/1` directly with the canonical command envelope — the same entry point every other surface (HTTP, MCP, CLI) uses — never a dashboard-only write path, and never raw event-store or Beads SQLite writes.
 - AC-010-3: Given a required read model is missing, when implementation reaches that gap, then it adds a typed server API/projection path instead of scraping logs or shelling out to private internals.
 
 ### REQ-011: Enforce auth and unsafe-action confirmation
@@ -232,7 +232,7 @@ The dashboard SHOULD protect operational data and destructive controls.
 
 - AC-011-1: Given an unauthenticated operator opens the dashboard, when auth is required, then access is rejected by existing Foreman auth guards.
 - AC-011-2: Given stop, abandon, or restart is selected, when the action has side effects, then the operator must confirm before dispatch.
-- AC-011-3: Given an action is dispatched, when audit data is available, then the actor, action, target run id, and result are visible in dashboard history or logs.
+- AC-011-3: Given a control action is dispatched, when it succeeds or is rejected, then a durable audit record — actor, action, target run id, and result — is available in history or logs.
 
 ### REQ-012: Keep the dashboard live without overloading the server
 
