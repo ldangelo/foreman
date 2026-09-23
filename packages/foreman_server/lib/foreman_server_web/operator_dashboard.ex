@@ -172,7 +172,7 @@ defmodule ForemanServerWeb.OperatorDashboard do
   defp safe_dispatch(envelope) do
     command_gateway().dispatch_operator(envelope)
   catch
-    :exit, _reason -> {:error, :dispatch_timeout}
+    :exit, {:timeout, {GenServer, :call, _}} -> {:error, :dispatch_timeout}
   end
 
   defp command_gateway do
