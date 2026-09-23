@@ -829,6 +829,15 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       )
 
     assert completed_phase.status == "completed"
+
+    # Phase completion (observed above via ProjectionStore, updated
+    # asynchronously off the Postgres NOTIFY -> event-subscription path) is
+    # NOT causally ordered with RunExecutor's own finalize_run/maybe_complete_task
+    # continuation, which is what actually dispatches the task-close command.
+    # Without this wait, verify_on_exit! can race ahead of that dispatch
+    # under load and report the close expectation as never invoked (see the
+    # identical wait + comment on the sibling tests above).
+    assert_receive {:runner_cmd, :close}, @poll_timeout_ms
   end
 
   test "requiredFile gate resolves the relative file from the active worktree, not the daemon cwd" do

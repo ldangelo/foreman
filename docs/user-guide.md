@@ -293,19 +293,23 @@ Support states:
 ## 2. Operator API surface
 
 All external domain mutations go through `POST /api/commands`. The
-operator allowlist (`ForemanServerWeb.CommandController.@allowed_types`,
-mirrored by `ForemanServer.CommandGateway.@allowed_operator_types`) is
-exactly:
+operator allowlist (`ForemanServer.CommandGateway.@allowed_operator_types`)
+is exactly:
 
 - `project.register`
 - `project.update`
 - `project.archive`
+- `project.reactivate`
 - `task.create`
 - `task.approve`
 - `task.retry`
+- `task.update`
 - `run.cancel`
+- `run.pause`
+- `run.resume`
 - `run.remove`
 - `run.reset`
+- `inbox.send`
 
 `CommandController` derives or verifies `aggregate_id` before calling
 `CommandGateway`. The expected form is `<prefix>:<id>` (`task:<task_id>`,
@@ -328,8 +332,8 @@ Other ingress paths are separate:
 - Webhooks: `/webhooks/external_trigger`, `/webhooks/github`,
   `/webhooks/operator/ingest`.
 - MCP: `/mcp` (also stdio; see [MCP tool integration](#9-mcp-tool-integration)).
-- Dev-only dashboards: `/debug/*` (dev env only) and `/dashboard/*`
-  (bearer-token guarded, every env).
+- Dev-only dashboards: `/debug/*` (dev env only).
+- Bearer-token guarded dashboards (every env): `/dashboard` for the Jido live dashboard and `/dashboard/runs` for operator run management.
 
 Read endpoints are projection-only:
 
@@ -345,6 +349,22 @@ Read endpoints are projection-only:
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
   and `GET /api/queue` expose corresponding projections.
+
+### Operator run dashboard
+
+Open `/dashboard/runs` with the same bearer token accepted by the browser dashboard guard: `Authorization: Bearer <token>` or `?token=<token>`. The route fails closed with `401 unauthorized` when the token is missing, wrong, or `:api_bearer_token` is unset. `/dashboard` remains the separate Jido live dashboard.
+
+The run dashboard lists projection-backed runs, task/ad-hoc context, phase status, PR markers, durable worker logs, and read-only change evidence. Logs are read from `ProjectionStore.run_logs/1`; server `Logger` output is not copied into run logs. Missing worktrees, branches, bases, or PR evidence show explicit unavailable states rather than shelling into private paths.
+
+Run controls use the public command boundary:
+
+- **Stop** pauses the run with `run.pause` and default reason `operator_pause`.
+- **Resume** continues a paused run with `run.resume`.
+- **Restart / Reset** uses `run.reset` only for eligible failed/stuck/recovery states.
+- **Abandon** removes the run with `run.remove` and may trigger Foreman's existing cleanup path.
+- Terminal **Cancel**, when exposed separately, is labelled Cancel and is not Stop.
+
+Rejected commands display their typed/domain reason and keep the last known projection state visible. The page refreshes on a bounded timer and marks stale data if refresh fails.
 
 ## 3. Ad-hoc task dispatch (unified with the task path)
 

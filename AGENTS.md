@@ -1021,6 +1021,10 @@ The Go CLI (`foreman`) defaults to `http://127.0.0.1:4766` — set `FOREMAN_API_
 FOREMAN_API_URL=http://127.0.0.1:4766 foreman run list
 ```
 
+### Operator run dashboard
+
+Open `http://127.0.0.1:4766/dashboard/runs` with the configured browser bearer token (`Authorization: Bearer <token>` or `?token=<token>`) to inspect and control runs. `/dashboard` remains the Jido live dashboard. Run dashboard actions stay on the public command boundary: Stop=`run.pause` with `operator_pause`, Resume=`run.resume`, Reset=`run.reset`, Abandon=`run.remove`; Cancel, if shown, is distinct from Stop.
+
 ### Registering Beads-backed Projects
 
 `foreman project create` / `foreman project update` require
@@ -1041,6 +1045,13 @@ Or use `Ctrl+C` in the terminal running the server.
 ### Task Lifecycle
 
 Tasks go through: `open` → `ready` → `in_progress` → `completed`/`failed`.
+
+`project.reactivate` and `task.update` are also valid `POST /api/commands`
+operator command types (`ForemanServer.CommandGateway.@allowed_operator_types`)
+with no other narrative discussion in this file. `task.update` did have a Go
+CLI verb (`foreman task update`, removed by TRD-018 below, same as
+create/approve/retry/get/list); `project.reactivate` never had one. See
+`docs/user-guide.md`'s HTTP API section for the complete allowlist.
 
 **TRD-018 (2026-09-13) deleted `foreman task create`/`approve`/`retry`/`get`/
 `list`/`update` entirely from the Go CLI** (the `task` dispatch case and its

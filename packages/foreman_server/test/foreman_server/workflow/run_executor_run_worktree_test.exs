@@ -16,11 +16,21 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.VcsAdapter.Default
   alias ForemanServer.Workflow.PlanContext
   alias ForemanServer.Workflow.RunExecutor
 
   setup do
+    # Other test files inject fixture projects directly into ProjectionStore's
+    # shared singleton state via `:sys.replace_state` (e.g.
+    # implementation_context_test.exs's `state.projects["proj-1"]`) without
+    # resetting it afterward. Reset defensively so tests here that assert a
+    # project id is UNREGISTERED (e.g. "proj-1" -> :project_not_found) can't
+    # inherit a leftover registration from an earlier file under full-suite
+    # load (AGENTS.md "Elixir Test Suite Non-Determinism").
+    ProjectionStoreReset.reset!()
+
     repo = Path.join(System.tmp_dir!(), "run-wt-#{System.unique_integer([:positive])}")
     File.rm_rf!(repo)
     File.mkdir_p!(repo)

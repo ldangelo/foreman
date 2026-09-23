@@ -14,6 +14,8 @@ defmodule ForemanServer.Events.RunPaused do
     * `sequence` — Optional sequence mirror (the Run aggregate does not
       require sequence; `validate_next_sequence` accepts `nil`).
     * `reason` — String reason for the pause. Informational only.
+    * `actor` — Identifier of who/what triggered the pause (e.g.
+      `"operator_dashboard"`). Nil for callers that don't identify an actor.
     * `metadata` — Map of arbitrary additional context. Default `%{}`.
 
   Producers MUST emit the same fields declared here.
@@ -23,8 +25,9 @@ defmodule ForemanServer.Events.RunPaused do
           run_id: String.t(),
           sequence: non_neg_integer() | nil,
           reason: String.t() | nil,
+          actor: String.t() | nil,
           metadata: map()
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :sequence, :reason, metadata: %{}]
+  defstruct [:run_id, :sequence, :reason, :actor, metadata: %{}]
 end

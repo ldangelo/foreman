@@ -68,5 +68,6 @@ defmodule ForemanServerWeb.Router do
   scope "/dashboard", ForemanServerWeb do
     pipe_through([:browser, :require_authenticated])
     live("/", LiveDashboard)
+    live("/runs", OperatorRunDashboardLive, :index)
   end
 end

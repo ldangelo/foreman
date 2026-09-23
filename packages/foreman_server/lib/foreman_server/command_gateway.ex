@@ -384,7 +384,7 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
-       when type in ["run.cancel", "run.remove", "run.reset"] do
+       when type in ["run.cancel", "run.pause", "run.resume", "run.remove", "run.reset"] do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
 
     cond do
