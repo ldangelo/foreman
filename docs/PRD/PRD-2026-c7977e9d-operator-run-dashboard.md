@@ -1,13 +1,13 @@
 ---
 document_id: PRD-2026-c7977e9d
 label: prd-operator-run-dashboard
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-23
 scale_depth: STANDARD
 total_requirements: 14
 total_acceptance_criteria: 45
-readiness_score: 4.4
+readiness_score: 4.8
 ---
 
 # PRD: Operator Dashboard for Run Management
@@ -29,8 +29,8 @@ Foreman task title read from user-delivered Foreman subject: **Add operator dash
 | Acceptance criteria coverage | 45/45 (100%) |
 | Risk flags | 8 |
 | Dependencies | 13 |
-| Open ambiguity markers | 3 |
-| TRD decisions required | 4 |
+| Open ambiguity markers | 0 |
+| TRD decisions required | 2 |
 
 ## Acceptance Criteria Summary
 
@@ -57,7 +57,7 @@ Foreman operators need a single dashboard for active and recent runs. Today run 
 
 This PRD defines an operator dashboard that shows runs, associated tasks, phase/status details, logs, code changes, and control actions. The dashboard must support stop, abandon, and restart, backed by Foreman's existing run-control/domain boundaries rather than direct event-store or database writes. An old branch with similar cockpit/dashboard work exists and must be mined as a baseline, not blindly restored.
 
-Foreman mode auto-selected STANDARD depth and skipped interviews. Ambiguity scan complete: 3 items marked for clarification.
+Foreman mode auto-selected STANDARD depth and skipped interviews. Refinement resolved the three ambiguity markers using best-effort defaults: confirmed the historical cockpit branch, selected a web-first initial surface, and mapped stop to pause/resumable stop.
 
 ## 2. Background and Evidence
 
@@ -68,7 +68,9 @@ Current source evidence:
 - `packages/foreman_server/lib/foreman_server_web/live_dashboard.ex` exists, but it is Jido/agent-oriented rather than a run-management cockpit.
 - `ForemanServer.RunControl` and run commands already cover control primitives such as cancel/pause/resume/remove/reset.
 - Durable run logs are projection-backed; `foreman_run_get_logs` and worker events are the source for run logs, not ordinary server logs.
-- Candidate historical baseline found on `origin/fix/cockpit-close-run-row`: `clients/cockpit/`, `clients/cockpit/run_actions.go`, `clients/cockpit/README.md`, and `docs/TRD/TRD-2026-019-operator-dashboard.md`. [NEEDS CLARIFICATION: Is `origin/fix/cockpit-close-run-row` the old branch intended as the baseline, or is there another dashboard branch to inspect?]
+- Confirmed historical baseline branch: `origin/fix/cockpit-close-run-row`. Evidence paths include `clients/cockpit/`, `clients/cockpit/run_actions.go`, `clients/cockpit/README.md`, and `docs/TRD/TRD-2026-019-operator-dashboard.md`.
+- Reusable concepts from the baseline include keyboard-first navigation, run action affordances, logs/reports/files/PR tabs, changed-file diff handling, bounded panes, and non-color focus/selection markers.
+- Stale baseline concepts include removed or unverified command/API assumptions such as `foreman board`, `foreman inbox`, task create/approve/update CLI flows, `/api/v1` store reads, and direct old cockpit retry/attach semantics.
 
 ## 3. Goals
 
@@ -94,8 +96,8 @@ Current source evidence:
 
 ## 6. Assumptions
 
-- The first shippable surface may be a Phoenix LiveView, a Go TUI client, or both; the TRD must choose one primary operator surface. [NEEDS CLARIFICATION: Should the initial dashboard be web-first, terminal-first, or both?]
-- Stop means "halt active execution without deleting forensic context" unless the TRD maps it differently to existing run commands. [NEEDS CLARIFICATION: Should stop map to pause, cancel, or offer both as distinct choices?]
+- The first shippable surface should be web-first via Phoenix/Phoenix LiveView because the server already owns authenticated HTTP/API boundaries and can reuse projection reads without reviving stale CLI/TUI command assumptions. The old Go cockpit remains baseline evidence for layout, keyboard, and interaction patterns, not the initial delivery vehicle.
+- Stop means `run pause`: halt active execution, commit partial work where supported, keep the run resumable, and preserve forensic context. A terminal `run cancel` action may exist only if labeled separately as Cancel, not as Stop.
 - Abandon means "make this run no longer actionable and clean/release resources when safe".
 - Restart means "start a new attempt from a safe state or resume a paused one, preserving auditability".
 - Operators are authenticated through existing Foreman auth/token mechanisms.
@@ -107,9 +109,9 @@ Current source evidence:
 Priority: Must  
 Complexity: Medium
 
-Foreman MUST provide a discoverable dashboard entry point for run management.
+Foreman MUST provide a discoverable web-first dashboard entry point for run management.
 
-- AC-001-1: Given the Foreman server is running, when an authenticated operator opens the dashboard entry point, then the operator sees a run-management dashboard rather than a generic agent dashboard.
+- AC-001-1: Given the Foreman server is running, when an authenticated operator opens the web dashboard entry point, then the operator sees a run-management dashboard rather than a generic agent dashboard.
 - AC-001-2: Given the dashboard loads, when run data is unavailable, then it shows a clear empty/error state without crashing.
 - AC-001-3: Given the dashboard entry point is documented, when an operator follows the docs, then they can reach the dashboard with the configured auth method.
 
@@ -167,11 +169,11 @@ Priority: Must
 Complexity: High  
 Risk: A wrong stop mapping can destroy useful partial work or leave workers running.
 
-The dashboard MUST let authorized operators stop an active run through Foreman's supported command path.
+The dashboard MUST let authorized operators stop an active run through Foreman's supported pause command path.
 
-- AC-006-1: Given a run is active, when the operator chooses stop and confirms, then Foreman dispatches the selected supported run-control command through the public command boundary.
-- AC-006-2: Given the stop command succeeds, when the dashboard refreshes, then the run status changes and the UI shows the result without requiring a manual reload.
-- AC-006-3: Given the stop command is rejected, when the dashboard shows the result, then it displays the typed rejection reason and leaves the previous run state visible.
+- AC-006-1: Given a run is active, when the operator chooses Stop and confirms, then Foreman dispatches `run.pause` through the public command boundary and labels any separate terminal cancellation action as Cancel.
+- AC-006-2: Given the pause command succeeds, when the dashboard refreshes, then the run status changes to paused/resumable and the UI shows the result without requiring a manual reload.
+- AC-006-3: Given the pause command is rejected, when the dashboard shows the result, then it displays the typed rejection reason and leaves the previous run state visible.
 
 ### REQ-007: Support abandon control
 
@@ -193,8 +195,8 @@ Risk: Restart can duplicate runs, rerun against stale code, or bypass task-provi
 
 The dashboard MUST support restarting a run only through safe Foreman semantics.
 
-- AC-008-1: Given a paused run is resumable, when the operator chooses restart/resume, then Foreman dispatches the supported resume path and shows the resulting state.
-- AC-008-2: Given a failed/stuck run is eligible for reset or retry, when the operator chooses restart, then the dashboard offers only commands valid for that run state.
+- AC-008-1: Given a paused run is resumable, when the operator chooses Restart/Resume, then Foreman dispatches `run.resume` and shows the resulting state.
+- AC-008-2: Given a failed/stuck run is eligible for reset, when the operator chooses Restart, then the dashboard offers `run.reset` only where valid and does not expose removed task-retry CLI behavior.
 - AC-008-3: Given a run is not eligible for restart, when selected, then the restart action is disabled with a reason.
 - AC-008-4: Given restart creates a new attempt or modifies run state, when complete, then the dashboard makes the lineage/audit relation visible enough for the operator to find the prior attempt.
 
@@ -205,8 +207,8 @@ Complexity: Medium
 
 The TRD MUST inspect the old dashboard branch before designing the new surface.
 
-- AC-009-1: Given the old branch is available, when the TRD is written, then it lists reusable concepts, obsolete concepts, and rejected concepts with file/path evidence.
-- AC-009-2: Given `clients/cockpit` exists on the old branch, when evaluated, then keyboard navigation, run action patterns, changed-file/diff handling, logs, reports, and PR tabs are considered explicitly.
+- AC-009-1: Given `origin/fix/cockpit-close-run-row` is available, when the TRD is written, then it lists reusable concepts, obsolete concepts, and rejected concepts with file/path evidence.
+- AC-009-2: Given `clients/cockpit` exists on the old branch, when evaluated, then keyboard navigation, run action patterns, changed-file/diff handling, logs, reports, PR tabs, and bounded layout behavior are considered explicitly.
 - AC-009-3: Given old docs mention commands or APIs no longer present, when reused, then the TRD marks them stale instead of copying them into current requirements.
 
 ### REQ-010: Preserve Foreman source-of-truth boundaries
@@ -306,10 +308,10 @@ No circular dependencies identified.
 Foreman mode auto-applied recommended resolutions where possible.
 
 1. **Issue:** "Stop" can mean pause or cancel.  
-   **Resolution:** Marked explicit clarification and required TRD mapping to supported run-control commands.
+   **Resolution:** Resolved Stop as `run.pause` / resumable stop. Terminal `run.cancel` may exist only as a separately labeled Cancel action.
 
 2. **Issue:** The old branch may target obsolete APIs and command names.  
-   **Resolution:** Added REQ-009 requiring evidence-based reuse and stale-reference rejection.
+   **Resolution:** Confirmed `origin/fix/cockpit-close-run-row` as baseline evidence and required stale-reference rejection for removed commands/APIs.
 
 3. **Issue:** Code-change viewing depends on whether worktrees survive cleanup.  
    **Resolution:** REQ-005 requires explicit missing-evidence states and use of branch/PR/artifact fallback.
@@ -324,7 +326,7 @@ Foreman mode auto-applied recommended resolutions where possible.
    **Resolution:** REQ-012 requires bounded polling/subscription behavior and stale-state display.
 
 7. **Issue:** UI choice is unresolved.  
-   **Resolution:** Marked clarification and left implementation surface to TRD after baseline review.
+   **Resolution:** Resolved the initial delivery surface as web-first Phoenix/LiveView; old Go cockpit informs interaction patterns but is not the primary surface.
 
 8. **Issue:** Logs and diffs can be huge or secret-bearing.  
    **Resolution:** Added bounded-display and existing authorization constraints.
@@ -333,20 +335,25 @@ Foreman mode auto-applied recommended resolutions where possible.
 
 | Dimension | Score | Rationale |
 |---|---:|---|
-| Completeness | 4 | Covers visibility, actions, boundaries, baseline reuse, docs/tests. UI surface and exact stop mapping remain open. |
+| Completeness | 5 | Covers visibility, actions, boundaries, baseline reuse, docs/tests, selected initial surface, and stop mapping. |
 | Testability | 5 | Requirements have observable ACs and source-boundary checks. |
-| Clarity | 4 | Most behavior is precise; three marked clarifications must be resolved before TRD finalization. |
+| Clarity | 4.5 | Requirements are precise; remaining TRD work is design detail rather than product ambiguity. |
 | Feasibility | 4.5 | Existing run/task APIs, control commands, logs, and old cockpit branch provide strong starting points. |
 
-Overall readiness score: **4.4 / 5.0**  
+Overall readiness score: **4.8 / 5.0**  
 Gate decision: **PASS**
 
 ## 12. Suggested Next Step
 
-Create a TRD that first inspects the old cockpit/dashboard branch, then chooses the primary surface and maps stop/abandon/restart to current Foreman run-control commands.
+Create a TRD that inspects `origin/fix/cockpit-close-run-row`, designs the web-first Phoenix/LiveView dashboard, and maps stop/abandon/restart to current Foreman run-control commands (`run.pause`, `run.remove`, `run.resume`/`run.reset`) without reviving stale cockpit command assumptions.
 
 Suggested command:
 
 ```text
 /ensemble-create-trd docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md
 ```
+
+
+## Changelog
+
+- 2026-09-23 — v1.0.1: Refined PRD in Foreman mode; resolved baseline branch, initial surface, and Stop mapping ambiguities; updated readiness score and health summary.
