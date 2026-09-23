@@ -2,10 +2,10 @@
 document_id: TRD-2026-c7977e9d
 label: trd-operator-run-dashboard
 prd_reference: docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-09-23
-design_readiness_score: 4.7
+design_readiness_score: 4.9
 kind: trd
 ---
 
@@ -23,6 +23,16 @@ Source PRD: `docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md` (`PRD-2026-c7
 - PRD readiness score: **4.8 PASS**.
 - Subject match: PRD and Foreman task both describe adding a web-first operator dashboard for run management.
 - Foreman source PRD path used exactly: `/Users/ldangelo/.foreman/worktrees/foreman/foreman-wktn/run-649b3f39262c2f2a6b6df1b8af4c1511/workspace/docs/PRD/PRD-2026-c7977e9d-operator-run-dashboard.md`.
+
+## Refinement Pass Summary
+
+Refinement tightened the implementation contract against current source:
+
+- Confirmed `/dashboard` is guarded by `ForemanServerWeb.Plugs.RequireAuthenticated`, which accepts `Authorization: Bearer <token>` or `?token=<token>` and fails closed when `:api_bearer_token` is unset.
+- Confirmed run reads available through `ProjectionStore.run/1`, `list_runs/1`, `phases_for_run/1`, `run_logs/1`, `pr_association/1`, `worktrees_for_run/1`, and task projections.
+- Confirmed durable log DTO shape: `run_logs/1` returns entries plus `count`, `limit`, `truncated`, `omitted_entries`, `omitted_bytes`, and `max_limit`, or `{:error, :run_not_found}`.
+- Confirmed operator pause must explicitly send `reason: "operator_pause"`; otherwise the aggregate default is `"crash_loop"`, which is only correct for the crash-loop detector.
+- Added exact dashboard command-envelope, auth, evidence-limit, and docs-gate requirements so implementation cannot drift into stale cockpit or private-state assumptions.
 
 ## Domain Analysis
 
@@ -95,6 +105,8 @@ The server already owns auth, projection state, typed commands, PubSub/event sub
 6. **Refresh:** use bounded periodic refresh initially (<=2s when connected) plus optional PubSub subscription if available; always keep last known state with stale/error markers.
 7. **Accessibility:** implement keyboard-first navigation, non-color status labels/symbols, focus markers, and responsive list/detail layout.
 8. **Docs:** document operator entry, status interpretation, logs/changes, and stop/abandon/restart semantics in living docs that expose operator behavior.
+9. **Operator pause reason:** dashboard Stop always sends a non-empty reason, defaulting to `"operator_pause"`, so operator stops cannot be projected or audited as crash-loop pauses.
+10. **Bounded evidence:** logs, changed files, and diff snippets are always bounded in the context layer before LiveView assigns are updated.
 
 ## System Architecture Design
 
@@ -139,13 +151,51 @@ graph TD
 | Boundary | Protocol | Request | Response/Error |
 |---|---|---|---|
 | Dashboard route | Phoenix LiveView | Authenticated GET `/dashboard/runs` | LiveView HTML; unauthenticated rejected by existing auth guard. |
+| Auth | Existing browser guard | `Authorization: Bearer <token>` or `?token=<token>` | `401 unauthorized` when missing, mismatched, or token config absent. |
 | Run list | Internal context | `%{status?: binary, project_id?: binary, limit?: pos_integer}` | `{:ok, [%RunDTO{}]}` or typed unavailable error. |
 | Run detail | Internal context | `run_id` | `{:ok, %RunDetailDTO{}}` or `{:error, :run_not_found}`. |
-| Logs | Internal context | `run_id`, `cursor/limit` UI params | Bounded ordered logs; unknown run -> `:run_not_found`; long logs -> tail/page metadata. |
+| Logs | Internal context | `run_id`, `cursor/limit` UI params | `run_logs/1` DTO with bounded ordered entries plus truncation metadata; unknown run -> `:run_not_found`. |
 | Change evidence | Internal context | `run_id` | Changed files + PR/worktree evidence or typed absent/unavailable state. |
 | Stop | Operator command | `run.pause` payload with `run_id`, `reason`, actor metadata if available | Success refreshes projection; rejection displayed with typed reason. |
 | Abandon | Operator command | `run.remove` payload with `run_id`, `reason` | Success hides from default active list but removed filter can find if projection keeps it. |
 | Restart/resume | Operator command | `run.resume` for paused, `run.reset` for eligible failed/stuck | Success refreshes projection; ineligible -> disabled action reason. |
+
+### Command Envelopes
+
+The dashboard context owns envelope construction. LiveView passes intent, `run_id`, optional reason, and operator identity only; it does not build commands inline.
+
+```elixir
+%{
+  type: "run.pause",
+  command_id: "dashboard:run.pause:<run_id>:<unique>",
+  aggregate_id: "run:<run_id>",
+  payload: %{run_id: run_id, reason: non_blank_reason || "operator_pause"}
+}
+```
+
+Envelope rules:
+
+- `run.pause`, `run.resume`, `run.remove`, `run.reset`, and optional `run.cancel` all use `CommandGateway.dispatch_operator/1`.
+- Stop is `run.pause` only. The context must not omit `reason` for Stop, because the aggregate's absent-reason default is `"crash_loop"`.
+- Resume uses `run.resume` only for status `"paused"`; failed/stuck restart uses `run.reset` only when the projection state and command rejection rules allow it.
+- Abandon uses `run.remove`; the UI copy says it may clean worktrees/branches via Foreman's existing removal path.
+- Cancel, if exposed, uses `run.cancel` and is visually/textually distinct from Stop.
+- Every rejection is rendered from the returned typed/domain reason; the previous DTO remains visible.
+
+### DTO and Evidence Limits
+
+| DTO | Required fields | Bound |
+|---|---|---|
+| Run row | `run_id`, `project_id`, `status`, `workflow`, `task_id`/ad-hoc marker, current phase label, timestamps, `latest_stall`, PR marker | List query default limit 100; operator-selectable limit capped in context. |
+| Run detail | Run row fields plus task title/provider ids, phase rows, failure/stall reasons, artifacts, worktree/PR evidence summary | Unknown optional projection fields become explicit `:absent`, never `nil`-poisoned UI logic. |
+| Logs | `entries`, `count`, `limit`, `truncated`, `omitted_entries`, `omitted_bytes`, `max_limit` | Use `ProjectionStore.run_logs/1`; do not fetch or copy server Logger output. |
+| Changes | file path, status, source (`worktree`, `branch`, `pr`, `artifact`), optional bounded diff/preview | Cap file rows and bytes; reject absolute paths and `..`; no writes. |
+
+Read-only evidence helper rules:
+
+- Use only projected worktree path, branch, base ref/base branch, PR URL, phase PR records, and artifacts.
+- Git calls, if needed, are read-only (`status`, `diff --name-status`, `show`, `rev-parse`); no checkout, reset, clean, fetch, push, branch delete, or `br`/Beads calls.
+- A missing worktree, missing branch, invalid base ref, or unavailable PR data returns a typed unavailable state with display copy.
 
 ## Master Task List
 
@@ -159,14 +209,16 @@ graph TD
     - [ ] Given an authenticated operator opens `/dashboard/runs`, when the server responds, then the page title and H1 identify a run-management dashboard.
     - [ ] Given no projected runs are available, when the page renders, then it shows an explicit empty state and no crash.
     - [ ] Given `/dashboard` is opened, when routing resolves, then the existing Jido dashboard remains separate.
+    - [ ] Given the browser auth token is absent, wrong, or not configured, when `/dashboard/runs` is requested, then the existing auth guard returns `401 unauthorized`.
 - [ ] **TRD-001-TEST**: Add route/auth/empty-state LiveView tests for `/dashboard/runs` and non-regression coverage for `/dashboard` [verifies TRD-001] [satisfies REQ-001, REQ-011] [depends: TRD-001] (3h)
 
 - [ ] **TRD-002**: Add `ForemanServerWeb.OperatorDashboard` context and run-list DTO builder from `ProjectionStore.list_runs/1` [satisfies REQ-002, REQ-010, REQ-012] [depends: TRD-001] (4h)
   - Validates PRD ACs: AC-002-1, AC-002-4, AC-010-1, AC-012-3
   - Implementation AC:
-    - [ ] Given projected runs exist, when the context lists runs, then each DTO includes run id, project id, status, workflow, current phase id/name when resolvable, timestamps, task id, and ad-hoc/no-task marker.
+    - [ ] Given projected runs exist, when the context lists runs, then each DTO includes run id, project id, status, workflow, current phase id/name when resolvable, timestamps, task id, latest stall marker, PR marker, and ad-hoc/no-task marker.
     - [ ] Given status or project filters are present, when the context queries runs, then only matching rows are returned.
     - [ ] Given an unknown or malformed optional field is absent, when DTOs are built, then the UI receives an explicit absent marker rather than raising.
+    - [ ] Given no limit is supplied or an excessive limit is supplied, when the context queries runs, then it applies the documented default/cap before calling `ProjectionStore.list_runs/1`.
 - [ ] **TRD-002-TEST**: Unit-test run-list DTO fields, filters, ad-hoc/no-task labelling, and empty/error states with projection fixtures [verifies TRD-002] [satisfies REQ-002, REQ-010, REQ-012] [depends: TRD-002] (3h)
 
 ### PR 2: Run detail, phase status, logs, and live refresh
@@ -186,7 +238,7 @@ graph TD
   - Implementation AC:
     - [ ] Given worker stdout/stderr events exist, when the log tab renders, then logs appear ordered with stream, timestamp/sequence, and bounded body text.
     - [ ] Given the run id is unknown, when logs are requested, then the dashboard reports `run_not_found` instead of an empty successful log.
-    - [ ] Given the log projection reports truncation or tail metadata, when rendered, then the UI shows the truncation/tail notice.
+    - [ ] Given `ProjectionStore.run_logs/1` returns `truncated`, `omitted_entries`, `omitted_bytes`, `limit`, or `max_limit`, when rendered, then the UI shows the truncation/tail notice.
     - [ ] Given server `Logger` output exists, when logs render, then it is not copied into run logs.
 - [ ] **TRD-004-TEST**: Add tests for durable log rendering, unknown-run not-found, long-log bounds, and no server-log fallback [verifies TRD-004] [satisfies REQ-004, REQ-010, REQ-012] [depends: TRD-004] (4h)
 
@@ -208,7 +260,8 @@ graph TD
     - [ ] Given a retained worktree and base ref are projected, when evidence loads, then changed files are listed relative to the recorded base without mutating the repo.
     - [ ] Given only PR or branch metadata remains, when evidence loads, then the UI shows PR/branch evidence and labels missing local worktree evidence explicitly.
     - [ ] Given worktree/base/branch data is absent or malformed, when evidence loads, then the helper returns a typed unavailable reason and no shell fallback to private internals.
-    - [ ] Given a file is selected, when the operator opens review, then the dashboard renders or links to read-only/diff content only.
+    - [ ] Given a projected path is absolute, escapes with `..`, or points outside the worktree, when evidence loads, then it is rejected as malformed.
+    - [ ] Given a file is selected, when the operator opens review, then the dashboard renders or links to read-only/diff content only within documented row/byte bounds.
 - [ ] **TRD-006-TEST**: Add tests for changed-file evidence, cleaned-worktree fallback, PR metadata display, and typed unavailable states [verifies TRD-006] [satisfies REQ-005, REQ-010] [depends: TRD-006] (5h)
 
 - [ ] **TRD-007**: Implement dashboard layout, tabs, filters, and keyboard-first navigation using old cockpit concepts adapted to LiveView [satisfies REQ-001, REQ-002, REQ-003, REQ-013] [depends: TRD-005, TRD-006] (6h)
@@ -237,7 +290,7 @@ graph TD
 - [ ] **TRD-009**: Dispatch run-control actions through `CommandGateway.dispatch_operator/1` with idempotent command ids, typed errors, actor/reason metadata, and refresh-on-result [satisfies REQ-006, REQ-007, REQ-008, REQ-010, REQ-011] [depends: TRD-008] (6h)
   - Validates PRD ACs: AC-006-1, AC-006-2, AC-006-3, AC-007-1, AC-007-3, AC-008-1, AC-008-2, AC-008-4, AC-010-2, AC-011-3
   - Implementation AC:
-    - [ ] Given Stop is confirmed, when dispatch runs, then the command type is `run.pause` and the UI refreshes to paused/resumable on success.
+    - [ ] Given Stop is confirmed, when dispatch runs, then the command type is `run.pause`, `aggregate_id` is `run:<run_id>`, payload carries `run_id`, and blank reason defaults to `operator_pause` before dispatch.
     - [ ] Given Abandon is confirmed, when dispatch runs, then the command type is `run.remove` and default active views exclude the run after success while explicit removed filters can query it if projected.
     - [ ] Given Resume is confirmed, when dispatch runs, then the command type is `run.resume` and lineage/audit fields remain visible from projections.
     - [ ] Given Reset is confirmed, when dispatch runs, then the command type is `run.reset` and removed task-retry CLI behavior is not exposed.
@@ -259,10 +312,10 @@ graph TD
 - [ ] **TRD-011**: Update operator/developer docs for dashboard entry, auth, statuses, logs, changes, Stop/Cancel/Abandon/Restart semantics, and documentation discipline [satisfies REQ-001, REQ-006, REQ-007, REQ-008, REQ-014] [depends: TRD-010] (4h)
   - Validates PRD ACs: AC-001-3, AC-014-2, AC-014-3
   - Implementation AC:
-    - [ ] Given `README.md` and `docs/user-guide.md` are read, when dashboard docs are added, then an operator can open `/dashboard/runs` and understand status/action semantics.
+    - [ ] Given `README.md` and `docs/user-guide.md` are read, when dashboard docs are added, then an operator can open `/dashboard/runs`, authenticate by the documented token method, and understand status/action semantics.
     - [ ] Given `docs/cli-reference.md` is checked, when no CLI behavior changed, then it remains unchanged or receives only accurate cross-reference text.
     - [ ] Given `CLAUDE.md` and `AGENTS.md` are checked, when operator expectations or workflow instructions changed, then only relevant stale or new behavior is edited.
-    - [ ] Given externally visible identifiers are listed, when finalization completes, then all five required docs have edit/no-op rationale.
+    - [ ] Given externally visible identifiers are listed, when finalization completes, then all five required docs have edit/no-op rationale, including new `/dashboard/runs` and any new module names.
 - [ ] **TRD-011-TEST**: Add final documentation-gate evidence listing identifiers and the edit/no-op rationale for `CLAUDE.md`, `AGENTS.md`, `README.md`, `docs/user-guide.md`, and `docs/cli-reference.md` [verifies TRD-011] [satisfies REQ-014] [depends: TRD-011] (1h)
 
 - [ ] **TRD-012**: Perform final source-boundary audit and run focused test/build gates before implementation completion [satisfies REQ-010, REQ-014] [depends: TRD-011] (3h)
@@ -387,19 +440,20 @@ Traceability check: 14 requirements covered, 0 uncovered, 0 orphaned annotations
 
 | Dimension | Score | Rationale |
 |---|---:|---|
-| Architecture completeness | 4.7 | Route, context, read model, command boundary, logs, code evidence, actions, refresh, and accessibility are defined. |
-| Task coverage | 4.8 | Every PRD requirement has implementation and test tasks; task parser requirements are satisfied with checkbox-prefixed tasks. |
-| Dependency clarity | 4.6 | PR boundaries are shippable and acyclic; action work waits on detail DTOs. |
-| Estimate confidence | 4.5 | Most tasks are 3-6h; highest-risk evidence/action tasks have paired tests and typed fallbacks. |
+| Architecture completeness | 4.9 | Route, auth guard, context, read model, command envelopes, logs, code evidence, actions, refresh, and accessibility are defined against current source. |
+| Task coverage | 4.9 | Every PRD requirement has implementation and test tasks; refinements added auth, bounds, command-envelope, and docs-gate proof. |
+| Dependency clarity | 4.8 | PR boundaries are shippable and acyclic; action work waits on detail DTOs; evidence and action risks are isolated. |
+| Estimate confidence | 4.8 | Most tasks are 3-6h; highest-risk evidence/action tasks have paired tests, typed fallbacks, and explicit source-contract checks. |
 
-Overall design readiness score: **4.7 / 5.0**  
+Overall design readiness score: **4.9 / 5.0**  
 Gate decision: **PASS**
 
 ## Output and Next Steps
 
 Saved TRD path: `docs/TRD/TRD-2026-c7977e9d-operator-run-dashboard.md`  
 Task count: 24 task lines (12 implementation, 12 test).  
-Source PRD correlation id: `c7977e9d`.
+Source PRD correlation id: `c7977e9d`.  
+Refined version: `1.0.1`.
 
 Suggested next commands:
 
