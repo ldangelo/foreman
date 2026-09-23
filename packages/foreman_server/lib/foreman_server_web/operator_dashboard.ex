@@ -424,6 +424,7 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
       {:ok, String.slice(text, 0, @max_bytes)}
     else
       false -> {:error, :malformed_path}
+      {:error, :git_unavailable} -> {:error, :git_unavailable}
       _ -> {:error, :unavailable}
     end
   end
