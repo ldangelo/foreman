@@ -156,13 +156,13 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-> **PARTLY INCORRECT — including what the command does.** `foreman init` does
-> not initialize a project: it POSTs an empty body to
-> `/api/admin/workflows/install` and prints the response (`init.go:20-43`). It
+> **PARTLY INCORRECT — including what the command does.** `foreman init`
+> (no `--template`) does not initialize a project: it POSTs an empty body to
+> `/api/admin/workflows/install` and prints the response (`init.go`). It
 > does not create `.foreman/`, install Pi skills, or register the project. It
-> declares one flag, `--force`, which is **required** — bare `foreman init`
-> returns `--force is required to refresh the installed runtime copy`
-> (`init.go:27-32`). `-n`/`--name` and `--wizard` do not exist, and `init` takes
+> declares `--force`, which is **required** for this path — bare
+> `foreman init` returns `--force is required to refresh the installed
+> runtime copy`. `-n`/`--name` and `--wizard` do not exist, and `init` takes
 > no positional name.
 
 Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, installs bundled Pi skills to `~/.pi/agent/skills/`, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
@@ -179,6 +179,39 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 | `-n, --name <name>` | Project name (default: directory name) |
 | `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
+
+#### `foreman init --template <name>` (real, current)
+
+This flag **is** implemented and does what its name says — it is the one
+piece of the inaccurate prose above that is now literally true, for the
+scaffold it produces. `--template <name>` (`basic`, `iterate`, `parallel`,
+`review`, or `triage`) scaffolds a repo-local `<dir>/.foreman/` (default
+`<dir>` is `.`): shared `README.md`/`Dockerfile`/`.gitignore`/`foreman_client.exs`
+plus the named template's runnable `.exs` script and its `prompts/*.md` file(s). It is a
+pure local file write — no HTTP request, no running server required — and
+never overwrites an existing file (a second invocation reports every file
+`skipped`). Combine with `--force` to also run the asset-refresh POST in the
+same invocation; `--force` still never overwrites a scaffold file either.
+
+```bash
+foreman init --template basic                       # scaffold .foreman/ in the current directory
+foreman init --template iterate --dir /path/to/repo  # scaffold into a different repo
+foreman init --template review --force               # scaffold AND refresh installed runtime prompts/workflows
+```
+
+| Option | Description |
+|--------|-------------|
+| `--template <name>` | Scaffold `.foreman/` from a bundled template: `basic`, `iterate`, `parallel`, `review`, `triage`. Unknown name is a usage error. |
+| `--dir <path>` | Directory to scaffold `.foreman/` into (default `.`) |
+
+The scaffolded scripts come in two kinds. `basic`, `iterate` and `parallel`
+drive a **running** `foreman_server` over HTTP through the scaffolded
+`foreman_client.exs`; they run with plain `elixir` (Erlang/OTP 27+, no Foreman
+checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
+(see the user guide's Remote Jobsite API section for the server-side config).
+`review` and `triage` call `ForemanServer.Jobsite` directly and must run inside
+a booted `foreman_server` app (`mix run`, not `mix run --no-start`), e.g. from a
+Foreman checkout: `cd packages/foreman_server && mix run ../../.foreman/review.exs`.
 
 ### `foreman project`
 

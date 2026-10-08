@@ -16,6 +16,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
+  alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.RunExecutor
   alias ForemanServer.Workflow.{AssetCatalog, Catalog}
 
@@ -525,12 +526,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     deadline_ms = System.system_time(:millisecond) - 1
 
     assert {:ok, "late artifact"} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-late",
-               "run-late",
-               deadline_ms
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-late",
+             "run-late",
+             deadline_ms)
   end
 
   test "wait_for_worker_result/4 still times out a queued worker error after the deadline" do
@@ -541,12 +540,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     deadline_ms = System.system_time(:millisecond) - 1
 
     assert {:error, :worker_timeout} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-error-late",
-               "run-error-late",
-               deadline_ms
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-error-late",
+             "run-error-late",
+             deadline_ms)
   end
 
   # CodeRabbit #524 (round 2) Major: recovering a queued success must not stop
@@ -565,12 +562,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     deadline_ms = System.system_time(:millisecond) - 1
 
     assert {:ok, "first success"} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-drain-all",
-               "run-drain-all",
-               deadline_ms
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-drain-all",
+             "run-drain-all",
+             deadline_ms)
 
     # Nothing may remain: a leftover would be absorbed by the next phase.
     refute_received {:worker_result, _}
@@ -590,12 +585,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     deadline_ms = System.system_time(:millisecond) - 1
 
     assert {:ok, "the real artifact"} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-behind-error",
-               "run-behind-error",
-               deadline_ms
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-behind-error",
+             "run-behind-error",
+             deadline_ms)
 
     refute_received {:worker_result, _}
   end
@@ -617,12 +610,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     send(self(), {:worker_result, {:error, :agent_failed}})
 
     assert {:error, :worker_timeout} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-late-error",
-               "run-late-error",
-               System.system_time(:millisecond) - 1
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-late-error",
+             "run-late-error",
+             System.system_time(:millisecond) - 1)
 
     refute_received {:worker_result, _}
 
@@ -631,12 +622,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     send(self(), {:worker_result, {:ok, "stale artifact from a previous phase"}})
 
     assert {:ok, "stale artifact from a previous phase"} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-queued-ok",
-               "run-queued-ok",
-               System.system_time(:millisecond) - 1
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-queued-ok",
+             "run-queued-ok",
+             System.system_time(:millisecond) - 1)
 
     refute_received {:worker_result, _}
   end
@@ -665,12 +654,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     send(self(), {:worker_result, {:error, :agent_failed}})
 
     assert {:error, :worker_timeout} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-drain-1",
-               "run-drain-1",
-               System.system_time(:millisecond) - 1
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-drain-1",
+             "run-drain-1",
+             System.system_time(:millisecond) - 1)
 
     refute_received {:worker_result, _}
 
@@ -680,12 +667,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     send(self(), {:worker_result, {:error, "leaked from an earlier phase"}})
 
     assert {:error, :worker_timeout} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-drain-2",
-               "run-drain-2",
-               System.system_time(:millisecond) - 1
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-drain-2",
+             "run-drain-2",
+             System.system_time(:millisecond) - 1)
 
     refute_received {:worker_result, _}
   end
@@ -710,12 +695,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # result unknown", never "crash", and downstream pause/cancel handling keys
     # off that distinction.
     assert {:error, :worker_died_no_result} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-died-late",
-               "run-died-late",
-               System.system_time(:millisecond) - 1
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-died-late",
+             "run-died-late",
+             System.system_time(:millisecond) - 1)
 
     # A result-less death must not leave anything for the next phase either.
     refute_received {:worker_result, _}
@@ -759,12 +742,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     deadline_ms = System.system_time(:millisecond) - 1
 
     assert {:ok, "success before down"} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-down-first",
-               "run-down-first",
-               deadline_ms
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-down-first",
+             "run-down-first",
+             deadline_ms)
   end
 
   test "wait_for_worker_result/4 accepts a worker result delivered before the deadline" do
@@ -776,12 +757,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     deadline_ms = System.system_time(:millisecond) + 60_000
 
     assert {:ok, "on-time artifact"} =
-             RunExecutor.__wait_for_worker_result_for_test__(
-               launch_pid,
-               "worker-on-time",
-               "run-on-time",
-               deadline_ms
-             )
+             OverwatchRunner.__wait_for_worker_result_for_test__(launch_pid,
+             "worker-on-time",
+             "run-on-time",
+             deadline_ms)
   end
 
   test "start phase claims before dispatch and completes on TaskExecutionCompleted", %{
@@ -1462,7 +1441,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert count_task_events(task_id, "TaskExecutionCompleted") == 1
 
-    assert :ok = RunExecutor.advance_to(run_id, 0)
+    # The executor outlives its own finalize (`{:noreply, finalized_state}`), so
+    # drive a second finalize against its live state — what a resumed executor
+    # with every phase already complete does through `run_phases/1`.
+    state = :sys.get_state(RunExecutor.pid_for(run_id))
+    assert {:noreply, _finalized} = RunExecutor.__finish_phases_for_test__(state)
 
     assert_receive {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _}, 1_000
 

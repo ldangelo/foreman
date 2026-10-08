@@ -684,10 +684,10 @@ defmodule ForemanServer.CommandGatewayTest do
       refute Map.has_key?(implementation, "beads_database_path")
     end
 
-    test "implement-trd-beads task includes beads_database_path in the frozen implementation context",
+    test "implement-trd-beads task includes beads_database_path and bead_id in the frozen implementation context",
          %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
       assert {:ok, _} =
-               CommandGateway.dispatch_operator(%{
+               CommandGateway.dispatch_system(%{
                  command_id: unique_id("command"),
                  aggregate_id: "task:#{task_id}",
                  type: "task.create",
@@ -698,7 +698,8 @@ defmodule ForemanServer.CommandGatewayTest do
                    workflow_type: "implement-trd-beads",
                    trd_path: trd_path,
                    priority: 2,
-                   title: "implement"
+                   title: "implement",
+                   external_id: "foreman-bead-1"
                  }
                })
 
@@ -715,6 +716,41 @@ defmodule ForemanServer.CommandGatewayTest do
       implementation = get_in(payload, ["workflow_snapshot", "implementation"])
       assert is_map(implementation)
       assert implementation["beads_database_path"] =~ "cg-ic-"
+      assert implementation["bead_id"] == "foreman-bead-1"
+    end
+
+    test "implement-trd-beads task with no resolvable bead id fails loudly at approval",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      # provider_tracked: false is the documented escape hatch (actor.ex's
+      # TRD-007 synchronous hook) for an ad-hoc task with no tracker record
+      # by design -- without it, this project's registered Beads provider
+      # would auto-create a backing bead for every task.create regardless
+      # of what the operator supplies, making external_id unconditionally
+      # non-nil and this scenario unreachable.
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd-beads",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement",
+                   provider_tracked: false
+                 }
+               })
+
+      assert {:error, {:implementation_context_failed, :bead_id_missing}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
     end
 
     test "legacy task without workflow_type passes workflow_snapshot through unchanged",

@@ -2,27 +2,34 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @moduledoc """
   Per-run executor.
 
-  Holds the in-memory run state (task projection, phase specs, current
-  phase index) and drives each phase to completion by:
+  Holds the in-memory run state (task projection, phase specs, completed
+  phase indices, plan context, the run's worktree) and drives the run:
 
-    1. Claiming the task through the configured task provider when the
-       project has `task_provider` config.
-    2. Emitting `PhaseStarted` via `CommandGateway.dispatch_system/1`.
-    3. Invoking the configured agent (currently Pi) via
-       `ForemanServer.AgentRuntime.invoke/1`.
-    4. Writing any returned artifact through `ArtifactTemplate.write/4`.
-    5. Emitting `PhaseCompleted` (or `PhaseFailed` + `TaskExecutionFailed`).
-    6. Casting `{:advance_to, index}` to itself so the next phase runs.
+    1. Claim the task through the configured task provider when the project
+       has `task_provider` config.
+    2. Compile the manifest's phases into one `ForemanServer.Jobsite.Program`
+       (`ForemanServer.Workflow.Lowering`) and run it on
+       `ForemanServer.Jobsite.Engine`, the same engine Jobsite scripts use.
+       `ForemanServer.Workflow.JobsiteObserver` threads this executor's own
+       state through the engine and calls the phase hooks below —
+       `phase_begin/3` (`PhaseStarted` + the run's worktree),
+       `phase_launch/4` (the agent dispatch the
+       `ForemanServer.Jobsite.Runners.Overwatch` runner performs),
+       `ArtifactTemplate.write/4`, `enforce_required_file/4`, the commit and
+       `phase_finish/5` (`PhaseCompleted`) — or `emit_phase_failure/4`
+       (`PhaseFailed` + `TaskExecutionFailed`) when a phase fails.
+    3. Finalize: complete the task, open the run's PR, mark the run
+       completed.
 
   Every gateway call's result is pattern-matched explicitly with
   `dispatch_system/3` returning `{:ok, _}` or `{:error, reason}` — failures
   are logged and terminate the executor's run rather than being silently
   swallowed.
 
-  `start_phase/2` is the orchestrator: it sequences start → execute →
-  complete → enqueue-next, returning `{:ok, updated_state}` on success
-  or `{:error, reason}`. It never confuses a phase result tuple with
-  state.
+  There is no phase loop here: sequencing, the between-phase pause/cancel
+  check (`RunControl.intent/1`), and resume (`resume_from`, which only
+  chooses where the lowered program starts) belong to the engine and the
+  lowering.
   """
 
   use GenServer
@@ -32,11 +39,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime.JidoHarness.{ModelCatalog, ReadinessCheck}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.Catalog
-  alias ForemanServer.Idempotency.HeartbeatLease
-  alias ForemanServer.RunExecutorLiveness
   alias ForemanServer.RunControl
   alias ForemanServer.Identity
-  alias ForemanServer.Overwatch
   alias ForemanServer.PrAssociate
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
@@ -44,11 +48,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
-  # Without this alias `StepSequencer.propagate_terminal/2` resolves to a
-  # non-existent top-level module and every multi-phase run — `plan.yaml`
-  # included — crashed the executor on the phase 1 -> phase 2 transition
-  # instead of advancing. Compile emitted the warning; nothing failed on it.
-  alias ForemanServer.Workflow.StepSequencer
+  alias ForemanServer.Jobsite.Context, as: JobsiteContext
+  alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
+  alias ForemanServer.Jobsite.Error, as: JobsiteError
+  alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
+  alias ForemanServer.Workflow.JobsiteObserver
+  alias ForemanServer.Workflow.Lowering
   alias ForemanServer.Workflow.FailureClassifier
   alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.Workflow.WorktreeSpec
@@ -90,11 +95,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       {run_id, task_projection, opts},
       name: via_tuple(run_id)
     )
-  end
-
-  @spec advance_to(String.t(), non_neg_integer()) :: :ok
-  def advance_to(run_id, completed_index) do
-    GenServer.cast(via_tuple(run_id), {:advance_to, completed_index})
   end
 
   @spec pid_for(String.t()) :: pid() | nil
@@ -387,27 +387,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   @impl true
-  def handle_info({:start_at, index}, state) do
-    case start_phase_at_index(state, index) do
-      {:ok, next_state} ->
-        {:noreply, next_state}
-
-      {:noop, next_state} ->
-        {:noreply, next_state}
-
-      {:stopped, next_state} ->
-        {:stop, :normal, next_state}
-
-      {:error, reason} ->
-        finalize_terminal_and_stop(state, {:phase_start_failed, index, reason})
-
-      # Worktree-bearing state from a failed phase — see `run_single_phase/3`.
-      {:error, reason, phase_state} ->
-        finalize_terminal_and_stop(phase_state, {:phase_start_failed, index, reason})
-    end
-  end
-
-  @impl true
   def handle_info({:retry_terminal_dispatch, reason, attempt_kind, attempt}, state) do
     case finalize_terminal_dispatch(state, reason, attempt_kind, attempt) do
       :ok -> {:stop, :normal, %{state | status: :failed}}
@@ -445,129 +424,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     {:noreply, state}
   end
 
-  @impl true
-  def handle_cast({:advance_to, completed_index}, state) do
-    # The `run_single_phase/3` intent check only guards the NEXT phase. The
-    # branch below that finalizes the run (all phases already complete) never
-    # reaches `run_single_phase/3` at all — it calls `finalize_run/1`
-    # directly from here, which has no intent guard of its own. Without this
-    # check, a `run.pause`/`run.cancel` racing the last phase's completion
-    # would still let the run finalize: `maybe_complete_task`, AutoPR, and
-    # `RunCompleted` all firing anyway. The last phase already committed its
-    # own work before this cast was sent, so there is nothing to commit here
-    # either way — `:pause` just leaves the run resumable (resuming a run
-    # with every phase already complete re-enters `start_phase_at_index/2`
-    # at an out-of-range index and finalizes normally); `:cancel` stops
-    # without finalizing.
-    case RunControl.intent(state.run_id) do
-      :pause ->
-        Logger.info(
-          "RunExecutor #{state.run_id} paused after phase #{completed_index} completed, before finalize",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          phase_index: completed_index,
-          operation: "run_executor.pause"
-        )
-
-        {:stop, :normal, %{state | status: :paused}}
-
-      :cancel ->
-        Logger.info(
-          "RunExecutor #{state.run_id} cancelled after phase #{completed_index} completed, before finalize",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          phase_index: completed_index,
-          operation: "run_executor.cancel"
-        )
-
-        {:stop, :normal, %{state | status: :cancelled}}
-
-      nil ->
-        advance_to_after_intent_check(state, completed_index)
-    end
-  end
-
-  defp advance_to_after_intent_check(state, completed_index) do
-    completed = Enum.uniq(state.completed ++ [completed_index])
-    next_index = completed_index + 1
-
-    # Get the previous phase's terminal status from persisted state
-    prev_status = Map.get(state.phase_statuses, completed_index, :in_progress)
-
-    case Enum.at(state.phase_specs, next_index) do
-      nil ->
-        # All phases complete - finalize run
-        Logger.info(
-          "RunExecutor #{state.run_id} all #{length(state.phase_specs)} phases complete; finalizing",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          operation: "run_executor.finalize",
-          outcome: "start"
-        )
-
-        next_state = %{state | completed: completed}
-
-        case finalize_run(next_state) do
-          {:ok, finalized_state} ->
-            {:noreply, finalized_state}
-
-          {:error, reason} ->
-            Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              operation: "run_executor.finalize",
-              outcome: "error",
-              reason: inspect(reason)
-            )
-
-            finalize_terminal_and_stop(next_state, {:finalize_run_failed, reason})
-        end
-
-      next_phase_spec ->
-        next_step = phase_spec_name(next_phase_spec)
-
-        # Use StepSequencer to determine if we should proceed based on prev phase status
-        case StepSequencer.propagate_terminal(prev_status, next_step) do
-          {:halt, :blocked} ->
-            Logger.warning("Previous phase #{completed_index} blocked; halting sequence")
-            next_state = %{state | completed: completed, status: :blocked}
-            emit_phase_blocked(state, next_index, "blocked by previous phase")
-            # A halt is terminal for the worktree even though it dispatches no
-            # terminal command here. Cleanup used to happen at every phase
-            # boundary, so a halt still reclaimed disk; now that it is
-            # run-terminal, these two branches are the only run endings that
-            # reach neither `finalize_run/1` nor `finalize_terminal_and_stop/2`,
-            # and `cleanup: always` would silently not apply to them.
-            _ = cleanup_run_worktree(next_state, :failure)
-            {:noreply, next_state}
-
-          {:halt, :failed} ->
-            Logger.warning("Previous phase #{completed_index} failed; halting sequence")
-            next_state = %{state | completed: completed, status: :failed}
-            _ = cleanup_run_worktree(next_state, :failure)
-            {:noreply, next_state}
-
-          {:cont, _} ->
-            # Proceed to next phase
-            Process.send_after(self(), {:start_at, next_index}, 0)
-            {:noreply, %{state | completed: completed}}
-        end
-    end
-  end
-
-  defp start_phase_at_index(state, index) do
-    case Enum.at(state.phase_specs, index) do
-      nil ->
-        case finalize_run(state) do
-          {:ok, finalized_state} -> {:noop, finalized_state}
-          {:error, reason} -> {:error, reason}
-        end
-
-      phase_spec ->
-        run_single_phase(state, phase_spec, index)
-    end
-  end
-
   # TRD-016: Verify claim/3 fires before phase 1 dispatch
   # This function is the kickoff_ready handler that runs when all prerequisites pass.
   # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
@@ -590,52 +446,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         case claim_result do
           :ok ->
-            case start_phase_at_index(state, state.resume_from) do
-              {:ok, next_state} ->
-                {:noreply, next_state}
-
-              {:noop, next_state} ->
-                {:noreply, next_state}
-
-              {:stopped, next_state} ->
-                {:stop, :normal, next_state}
-
-              {:error, reason} ->
-                # `start_phase_at_index/2` already attempted
-                # → `emit_phase_failure/4` → `emit_run_failure/2` → `run.fail`
-                # before returning this error. If the run is still
-                # non-terminal here it means the very first terminal
-                # dispatch was rejected (transport, aggregate reject,
-                # …) — re-route through the bounded retry helper so
-                # the reason is not dropped on the floor.
-                Logger.error(
-                  "RunExecutor #{state.run_id} start_phase_at_index(#{state.resume_from}) failed: #{inspect(reason)}",
-                  run_id: state.run_id,
-                  task_id: task_id(state),
-                  phase_index: state.resume_from,
-                  operation: "run_executor.phase_start",
-                  outcome: "error",
-                  reason: inspect(reason)
-                )
-
-                finalize_terminal_and_stop(state, {:initialization_failed, reason})
-
-              # The phase provisioned a worktree and then failed. Finalize with
-              # THAT state, not the pre-phase one, or `cleanup_run_worktree/2`
-              # cannot see the checkout it is supposed to reclaim.
-              {:error, reason, phase_state} ->
-                Logger.error(
-                  "RunExecutor #{state.run_id} start_phase_at_index(#{state.resume_from}) failed: #{inspect(reason)}",
-                  run_id: state.run_id,
-                  task_id: task_id(state),
-                  phase_index: state.resume_from,
-                  operation: "run_executor.phase_start",
-                  outcome: "error",
-                  reason: inspect(reason)
-                )
-
-                finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
-            end
+            run_phases(state)
 
           {:error, reason} ->
             Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
@@ -650,6 +461,215 @@ defmodule ForemanServer.Workflow.RunExecutor do
             finalize_terminal_and_stop(state, {:claim_failure, reason})
         end
     end
+  end
+
+  # Runs every phase from `state.resume_from` to the end as ONE engine
+  # program: `Workflow.Lowering` compiles the manifest, `Jobsite.Engine`
+  # executes it, and `Workflow.JobsiteObserver` carries this executor's run
+  # state through it and performs every Foreman-specific step.
+  #
+  # Replies at the same three exits the per-phase loop this replaced had: the
+  # run reached its end (finalize), an operator's pause/cancel stopped it
+  # (`{:stop, :normal, _}` with that status, never finalized), or a phase
+  # failed (the bounded-retry terminal helper).
+  defp run_phases(state) do
+    case Enum.at(state.phase_specs, state.resume_from) do
+      nil ->
+        # Resuming a run whose every phase already completed.
+        case finalize_run(state) do
+          {:ok, finalized_state} -> {:noreply, finalized_state}
+          {:error, reason} -> initialization_failed(state, reason)
+        end
+
+      _first_phase ->
+        # Read the checkout's branch before the first phase can move anything,
+        # so `finalize_run/1` knows which branch the run's work was cut from.
+        state = remember_run_base_branch(state)
+
+        lowering_ctx = %{
+          run_id: state.run_id,
+          worktree_spec: state.worktree_spec,
+          start_index: state.resume_from
+        }
+
+        case Lowering.lower(state.phase_specs, lowering_ctx) do
+          {:ok, program} ->
+            run_program(state, program)
+
+          {:error, %JobsiteError{details: %{index: index, reason: reason}}} ->
+            refuse_phase(state, index, reason)
+        end
+    end
+  end
+
+  # A phase `Lowering` refuses is failed the way phase validation always
+  # failed it — `phase.fail` for that phase, which also fails the run — but
+  # before any phase runs, so nothing is provisioned for a manifest that could
+  # never complete.
+  defp refuse_phase(state, index, reason) do
+    phase_spec = Enum.at(state.phase_specs, index)
+
+    reported =
+      case emit_phase_failure(state, phase_spec, phase_number(phase_spec, index), reason) do
+        :ok -> reason
+        {:error, lifecycle_reason} -> lifecycle_reason
+      end
+
+    initialization_failed(state, reported)
+  end
+
+  defp run_program(state, program) do
+    ctx = %JobsiteContext{jobsite_id: state.run_id, repo_path: vcs_working_directory(state)}
+
+    case JobsiteEngine.run_program(program, ctx,
+           observer: JobsiteObserver,
+           observer_state: JobsiteObserver.new(state),
+           intent: fn -> engine_intent(state.run_id) end
+         ) do
+      {:ok, _ctx, %{executor: executor}} ->
+        finish_phases(executor)
+
+      {:interrupted, kind, _reason, _ctx, observer_state} ->
+        stop_interrupted(kind, observer_state)
+
+      {:error, %JobsiteError{} = error, _ctx, observer_state} ->
+        fail_phases(state, error, observer_state)
+    end
+  end
+
+  # How an operator's `run.pause`/`run.cancel` reaches the engine between
+  # phases. Total over the three shapes `RunControl.intent/1` can return.
+  defp engine_intent(run_id) do
+    case RunControl.intent(run_id) do
+      :pause -> {:pause, "paused"}
+      :cancel -> {:cancel, "cancelled"}
+      nil -> :none
+    end
+  end
+
+  # An interruption reports as a stop with that status and never finalizes. One
+  # that arrives with no phase in flight was the engine's own between-phases
+  # check; one that arrives mid-phase was already logged (and, for a pause,
+  # committed) by `handle_phase_body_error/6`.
+  defp stop_interrupted(kind, %{executor: executor, phase: phase}) do
+    {status, verb} =
+      case kind do
+        :pause -> {:paused, "paused"}
+        :cancel -> {:cancelled, "cancelled"}
+      end
+
+    if phase == nil do
+      next_index = executor.completed |> Enum.max(fn -> -1 end) |> Kernel.+(1)
+      next_spec = Enum.at(executor.phase_specs, next_index)
+      phase_index = if next_spec, do: phase_number(next_spec, next_index), else: next_index + 1
+
+      Logger.info(
+        "RunExecutor #{executor.run_id} #{verb} before phase #{phase_index} started",
+        run_id: executor.run_id,
+        task_id: task_id(executor),
+        phase_index: phase_index,
+        operation: "run_executor.#{if kind == :pause, do: "pause", else: "cancel"}"
+      )
+    end
+
+    {:stop, :normal, %{executor | status: status}}
+  end
+
+  # The run's phases all completed. `Workflow.JobsiteObserver` cannot guard
+  # this edge — nothing is left for the engine to start — so the pause/cancel
+  # check happens here: without it a `run.pause`/`run.cancel` racing the last
+  # phase's completion would still let `maybe_complete_task`, AutoPR and
+  # `RunCompleted` all fire. The last phase already committed its own work, so
+  # there is nothing to commit either way: `:pause` leaves the run resumable
+  # (resuming with every phase complete re-enters `run_phases/1` at an
+  # out-of-range index and finalizes normally), `:cancel` stops without
+  # finalizing.
+  defp finish_phases(state) do
+    last_index = state.completed |> Enum.max(fn -> nil end)
+
+    case RunControl.intent(state.run_id) do
+      :pause ->
+        Logger.info(
+          "RunExecutor #{state.run_id} paused after phase #{last_index} completed, before finalize",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          phase_index: last_index,
+          operation: "run_executor.pause"
+        )
+
+        {:stop, :normal, %{state | status: :paused}}
+
+      :cancel ->
+        Logger.info(
+          "RunExecutor #{state.run_id} cancelled after phase #{last_index} completed, before finalize",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          phase_index: last_index,
+          operation: "run_executor.cancel"
+        )
+
+        {:stop, :normal, %{state | status: :cancelled}}
+
+      nil ->
+        Logger.info(
+          "RunExecutor #{state.run_id} all #{length(state.phase_specs)} phases complete; finalizing",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.finalize",
+          outcome: "start"
+        )
+
+        case finalize_run(state) do
+          {:ok, finalized_state} ->
+            {:noreply, finalized_state}
+
+          {:error, reason} ->
+            Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.finalize",
+              outcome: "error",
+              reason: inspect(reason)
+            )
+
+            finalize_terminal_and_stop(state, {:finalize_run_failed, reason})
+        end
+    end
+  end
+
+  # A failure out of the program. `Workflow.JobsiteObserver` already emitted
+  # `phase.fail` (and so `run.fail`) for it; if the run is still non-terminal
+  # here the very first terminal dispatch was rejected (transport, aggregate
+  # reject, ...), so the reason is re-routed through the bounded retry helper
+  # rather than dropped on the floor. The first phase to run reports as an
+  # initialization failure and later ones as that phase's start failure — the
+  # tags the per-phase loop always used. The state finalized is the observer's,
+  # not the pre-run one: a phase that provisioned the worktree and then failed
+  # must finalize with it, or `cleanup_run_worktree/2` cannot see the checkout
+  # it is supposed to reclaim.
+  defp fail_phases(state, %JobsiteError{details: details} = error, %{executor: executor}) do
+    reason = Map.get(details, :reason, error)
+    index = Map.get(details, :phase_idx, state.resume_from)
+
+    if index == state.resume_from do
+      initialization_failed(executor, reason)
+    else
+      finalize_terminal_and_stop(executor, {:phase_start_failed, index, reason})
+    end
+  end
+
+  defp initialization_failed(state, reason) do
+    Logger.error(
+      "RunExecutor #{state.run_id} run_phases(#{state.resume_from}) failed: #{inspect(reason)}",
+      run_id: state.run_id,
+      task_id: task_id(state),
+      phase_index: state.resume_from,
+      operation: "run_executor.phase_start",
+      outcome: "error",
+      reason: inspect(reason)
+    )
+
+    finalize_terminal_and_stop(state, {:initialization_failed, reason})
   end
 
   # Resume re-entry: rehydrates `state.run_worktree` from the run's
@@ -802,87 +822,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp run_single_phase(state, phase_spec, index) do
-    phase_index = phase_number(phase_spec, index)
-    # Read the checkout's branch before the first phase can move anything, so
-    # `finalize_run/1` knows which branch the run's work was cut from.
-    state = remember_run_base_branch(state)
-
-    # An operator's `run.pause`/`run.cancel` must also stop a run sitting
-    # BETWEEN phases — no agent running, so `RunControl.cancel_agent/1`
-    # returns `{:error, :no_agent}` and there is nothing for
-    # `handle_phase_body_error/6`'s error path to intercept. Without this
-    # check the intent sits unconsumed in the ETS table while the next phase
-    # runs to completion anyway. Nothing has started for THIS phase yet, so
-    # there is no partial work to commit — the prior phase already committed
-    # at its own boundary.
-    case RunControl.intent(state.run_id) do
-      :pause ->
-        Logger.info(
-          "RunExecutor #{state.run_id} paused before phase #{phase_index} started",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          phase_index: phase_index,
-          operation: "run_executor.pause"
-        )
-
-        {:stopped, %{state | status: :paused}}
-
-      :cancel ->
-        Logger.info(
-          "RunExecutor #{state.run_id} cancelled before phase #{phase_index} started",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          phase_index: phase_index,
-          operation: "run_executor.cancel"
-        )
-
-        {:stopped, %{state | status: :cancelled}}
-
-      nil ->
-        run_single_phase_body(state, phase_spec, index, phase_index)
-    end
-  end
-
-  defp run_single_phase_body(state, phase_spec, index, phase_index) do
-    with {:ok, _} <- validate_phase_action(phase_spec, phase_index),
-         {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
-         {:ok, worktree_record} <- maybe_create_worktree(state, phase_index) do
-      # The run's worktree, and the branch it writes to, are run-level facts:
-      # `remember_run_worktree/2` makes the record reusable by every later phase
-      # and `remember_worktree/2` retains the branch so `finalize_run/1` can
-      # open a PR from run state.
-      #
-      # There is deliberately no per-phase cleanup here. The worktree belongs to
-      # the run, so tearing it down at a phase boundary would destroy the very
-      # checkout the next phase is meant to continue in. Disk is reclaimed once,
-      # by `cleanup_run_worktree/2` in `finalize_run/1`, and by the `RunDeleted`
-      # fan-out (`Worktree.clean_for_run/1`) for runs that end some other way.
-      state =
-        state
-        |> remember_run_worktree(worktree_record)
-        |> remember_worktree(worktree_record)
-
-      # The worktree record lives ONLY in this local `state` until the phase
-      # succeeds and `run_phase_body/5` hands it back. A failing phase body used
-      # to return a bare `{:error, reason}`, so the callers in `handle_info/2`
-      # fell back to their PRE-phase state and `cleanup_run_worktree/2` looked
-      # for a `:run_worktree` that state had never seen — leaving the checkout on
-      # disk for a run that declared `cleanup: always`. Carry the state out with
-      # the error so the declared policy applies to the failure path too.
-      case run_phase_body(state, phase_spec, index, phase_index, worktree_record) do
-        {:error, reason} -> {:error, reason, state}
-        other -> other
-      end
-    else
-      {:error, reason} = err ->
-        case emit_phase_failure(state, phase_spec, phase_index, reason) do
-          :ok -> err
-          {:error, lifecycle_reason} -> {:error, lifecycle_reason}
-        end
-    end
-  end
-
   # Records the most recent worktree so finalize_run/1 can derive the PR head
   # branch from Foreman's own state rather than depending on the agent printing
   # a FOREMAN_BRANCH marker into its artifact.
@@ -997,16 +936,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp run_phase_body(state, phase_spec, index, phase_index, worktree_record) do
-    case execute_with_worktree(state, phase_spec, index, phase_index, worktree_record) do
-      {:ok, _next_state} = ok ->
-        ok
-
-      {:error, reason} = err ->
-        handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, err)
-    end
-  end
-
   # `RunControl.intent/1` is how an operator's run.pause/run.cancel reaches
   # this synchronous phase loop: the dispatcher cancels the in-flight
   # harness run (unblocking `execute_agent/4` with an error), and this is
@@ -1015,7 +944,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # recorded — the existing PhaseFailed/TaskExecutionFailed path. Total
   # match over the three shapes `RunControl.intent/1` can return; no
   # catch-all.
-  defp handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, err) do
+  @doc false
+  def handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, err) do
     case RunControl.intent(state.run_id) do
       :pause ->
         case commit_phase_worktree(state, phase_spec, phase_index, worktree_record) do
@@ -1063,49 +993,69 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp execute_with_worktree(state, phase_spec, index, phase_index, worktree_record) do
-    with {:ok, output} <- execute_agent(state, phase_spec, index, worktree_record),
-         {:ok, artifact_path} <-
-           __MODULE__.ArtifactTemplate.write(state, phase_spec, phase_index, output),
-         # `enforce_required_file/4` returns the state carrying whatever the
-         # gate captured, so a discovered planning document survives into the
-         # next phase's context.
-         {:ok, state} <-
-           enforce_required_file(state, phase_spec, phase_index, worktree_record),
-         {:ok, _} <- commit_phase_worktree(state, phase_spec, phase_index, worktree_record),
-         :ok <-
-           maybe_record_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path),
-         {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
-         {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
-      next_state = %{
-        state
-        | current_phase: index,
-          status: :in_progress,
-          completed: Enum.uniq((state.completed || []) ++ [index]),
-          phase_statuses: new_phase_statuses
-      }
+  # ---------------------------------------------------------------------
+  # Phase hooks. `Workflow.JobsiteObserver` calls these as the engine walks a
+  # lowered phase; each takes and returns this executor's own state, so the
+  # observer decides only WHEN each runs.
+  # ---------------------------------------------------------------------
 
-      GenServer.cast(self(), {:advance_to, index})
-      {:ok, next_state}
+  # `PhaseStarted`, then the run's worktree: provisioned on the first phase,
+  # re-entered on every later one with its `base_ref` refreshed to the shared
+  # checkout's HEAD (what keeps the discovery gate scoped per phase). Returns
+  # the worktree record, or `nil` for a workflow that disables its worktree.
+  # A failure is the bare reason: the observer's `step_failed/4` emits
+  # `phase.fail` for it, so a phase that failed to start is failed once.
+  @doc false
+  def phase_begin(state, phase_spec, index) do
+    phase_index = phase_number(phase_spec, index)
+
+    with {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
+         {:ok, worktree_record} <- maybe_create_worktree(state, phase_index) do
+      # The run's worktree, and the branch it writes to, are run-level facts:
+      # `remember_run_worktree/2` makes the record reusable by every later
+      # phase and `remember_worktree/2` retains the branch so `finalize_run/1`
+      # can open a PR from run state rather than depending on the agent
+      # printing a FOREMAN_BRANCH marker. There is deliberately no per-phase
+      # cleanup: the worktree belongs to the run, so tearing it down at a phase
+      # boundary would destroy the very checkout the next phase continues in.
+      # Disk is reclaimed once, by `cleanup_run_worktree/2` in `finalize_run/1`,
+      # and by the `RunDeleted` fan-out for runs that end some other way.
+      {:ok, state |> remember_run_worktree(worktree_record) |> remember_worktree(worktree_record),
+       worktree_record}
     end
   end
 
-  defp validate_phase_action(phase_spec, _phase_index) do
-    case phase_action(phase_spec) do
-      :command ->
-        command = phase_value(phase_spec, :command)
+  # Everything the phase's agent dispatch needs, as the `launch` the Overwatch
+  # runner executes. The plan subject is asserted first, so a subject-less
+  # discovery phase never launches a worker at all.
+  @doc false
+  def phase_launch(state, phase_spec, index, worktree_record) do
+    phase_index = phase_number(phase_spec, index)
 
-        if is_binary(command) and command != "" do
-          {:ok, :ok}
-        else
-          {:error, {:invalid_phase_command, phase_spec_name(phase_spec)}}
-        end
+    with :ok <- assert_plan_subject(state, phase_spec, phase_index) do
+      prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record)
+    end
+  end
 
-      :bash ->
-        {:error, {:unsupported_phase_action, :bash}}
+  # The tail of a phase, after its commit: the phase PR record when it asks for
+  # one, then `PhaseCompleted`, then the executor state that marks the phase
+  # done.
+  @doc false
+  def phase_finish(state, phase_spec, index, worktree_record, artifact_path) do
+    phase_index = phase_number(phase_spec, index)
 
-      _ ->
-        {:ok, :ok}
+    with :ok <-
+           maybe_record_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path),
+         {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
+         {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
+      {:ok,
+       %{
+         state
+         | current_phase: index,
+           status: :in_progress,
+           completed: Enum.uniq((state.completed || []) ++ [index]),
+           phase_statuses: new_phase_statuses
+       }}
     end
   end
 
@@ -1136,15 +1086,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @default_activation_timeout_ms 30_000
 
-  defp execute_agent(state, phase_spec, index, worktree_record) do
-    phase_index = phase_number(phase_spec, index)
-
-    case assert_plan_subject(state, phase_spec, phase_index) do
-      :ok -> dispatch_agent(state, phase_spec, index, phase_index, worktree_record)
-      {:error, _} = err -> err
-    end
-  end
-
   # A phase whose output is DISCOVERED rather than named must have been told
   # what to write about, or discovery captures a document on whatever
   # subject the agent inferred from the repository and the run reports
@@ -1168,7 +1109,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp dispatch_agent(state, phase_spec, index, phase_index, worktree_record) do
+  # Everything `dispatch_agent` used to compute before it launched a worker, as
+  # the `launch` map `Jobsite.Runners.Overwatch` dispatches from (its moduledoc
+  # lists the keys). It stays here because every value derives from run state:
+  # the request and rendered prompt, the 13-variable env, the FailurePolicy
+  # deadline, and the heartbeat lease's identity.
+  #
+  # TRD-076: the lease key is `<workflow>-<task>-<phase>`; the runner holds the
+  # lease for exactly the span of the dispatch, so the key stays `started` (or
+  # moves `ambiguous` on expiry) whether the agent completes, crashes or hangs.
+  # TRD-077: `task_id` rides along so crash recovery can look the run up without
+  # parsing the key.
+  #
+  # LGC-T002 / JHA-T002: the dispatch goes through `Overwatch.start_phase` (in
+  # the runner) so the supervised worker emits
+  # WorkerStarted/WorkerHeartbeat/WorkerExited via CommandRouter. Without that
+  # the run sits in awaiting_worker forever (WorkerStarted is the only
+  # transition trigger).
+  defp prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
 
     prompt =
@@ -1183,424 +1141,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     task_type = phase_spec_name(phase_spec)
     policy = AgentRuntime.FailurePolicy.resolve(task_type, phase_timeout_opts(phase_spec))
-    deadline_ms = deadline_from(Map.fetch!(policy, :timeout_ms))
+    timeout_ms = Map.fetch!(policy, :timeout_ms)
 
-    # TRD-076: build idempotency key and acquire heartbeat lease so the
-    # key stays `started` (or transitions `ambiguous` on expiry) regardless
-    # of whether the agent completes, crashes, or hangs.
-    # TRD-077: task_id and run_id are stored in KeyStore metadata so
-    # CrashRecovery.has_no_side_effects? can look them up without parsing
-    # the composite idempotency key string.
-    workflow_prefix = workflow_prefix_for(state)
-    idempotency_key = "#{workflow_prefix}-#{task_id(state)}-#{phase_index}"
+    model = phase_model(phase_spec)
+    cwd = working_directory_for(state, worktree_record)
+    env = foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-    HeartbeatLease.acquire(
-      idempotency_key,
-      lease_budget(Map.fetch!(policy, :timeout_ms)),
-      task_id(state),
-      state.run_id
-    )
+    {:ok,
+     %{
+       run_id: state.run_id,
+       phase_index: phase_index,
+       phase: Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index)),
+       deadline_ms: OverwatchRunner.deadline_from(timeout_ms),
+       activation_timeout_ms: @default_activation_timeout_ms,
+       lease: %{
+         key: "#{workflow_prefix_for(state)}-#{task_id(state)}-#{phase_index}",
+         budget_ms: OverwatchRunner.lease_budget(timeout_ms),
+         task_id: task_id(state)
+       },
+       driver_opts: fn remaining_ms ->
+         [timeout: remaining_ms, await_timeout: remaining_ms, cwd: cwd]
+         |> maybe_put_driver_model(model)
+         |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
+         |> maybe_put_approval_mode(phase_spec)
+       end,
+       launch_opts: [
+         prompt_path: materialize_prompt(state, phase_index, prompt),
+         provider: JidoHarness.request_provider(request),
+         prompt: prompt,
+         project_id: project_id(state),
+         env_map: env,
+         secrets:
+           WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
+       ]
+     }}
+  end
 
-    HeartbeatLease.register_worker(state.run_id, state.run_id, idempotency_key)
-
-    RunExecutorLiveness.record(state.run_id, self(), deadline_ms)
-
-    try do
-      # LGC-T002 / JHA-T002: dispatch through Overwatch.start_phase so the
-      # supervised worker emits WorkerStarted/WorkerHeartbeat/WorkerExited
-      # via CommandRouter. Without this, the run sits in awaiting_worker
-      # forever (WorkerStarted is the only transition trigger).
-      prompt_path = materialize_prompt(state, phase_index, prompt)
-      provider = JidoHarness.request_provider(request)
-      cwd = working_directory_for(state, worktree_record)
-
-      model = phase_model(phase_spec)
-
-      env =
-        foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
-
-      # floor of 0 — once deadline_ms has elapsed, give the driver zero
-      # additional budget so the FailurePolicy deadline is honoured even when
-      # admission/dispatch already consumed the budget (CodeRabbit review).
-      remaining_ms = remaining_from(deadline_ms)
-
-      if remaining_ms != :infinity and remaining_ms <= 0 do
-        Logger.warning(
-          "[#{state.run_id}] phase #{phase_index} deadline exhausted before worker activation"
-        )
-
-        {:error, :worker_timeout}
-      else
-        # Cap activation by the remaining phase budget: passing the fixed
-        # default here would let worker admission alone consume time past
-        # deadline_ms before the deadline-aware receive in
-        # wait_for_worker_result/4 even starts (CodeRabbit review).
-        # min(int, :infinity) returns int by Erlang term order — intentional, load-bearing.
-        activation_timeout_ms = min(@default_activation_timeout_ms, remaining_ms)
-
-        # Overwatch.build_launch_env assembles the env map from project_id +
-        # opts[:env_map]. We pass our env there so the supervised worker
-        # sees the same env the original AgentRuntime path did.
-        launch_opts = [
-          run_id: state.run_id,
-          session_id: generate_session_id(),
-          # Overridable so integration tests can inject an
-          # Overwatch-worker-protocol test double (start_link/1 +
-          # {:overwatch_activate,...} handshake + {:worker_result,...})
-          # instead of spawning a real Jido.Harness agent session.
-          # Defaults to the real production adapter everywhere this isn't
-          # explicitly configured.
-          adapter:
-            Application.get_env(
-              :foreman_server,
-              :worker_adapter,
-              ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
-            ),
-          adapter_name: "jido_harness",
-          prompt_path: prompt_path,
-          provider: provider,
-          prompt: prompt,
-          driver_opts:
-            [
-              timeout: remaining_ms,
-              await_timeout: remaining_ms,
-              cwd: cwd
-            ]
-            |> maybe_put_driver_model(model)
-            |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec),
-          project_id: project_id(state),
-          env_map: env,
-          result_recipient: self(),
-          activation_timeout_ms: activation_timeout_ms,
-          secrets:
-            WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
-        ]
-
-        phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))
-
-        case Overwatch.start_phase(phase, launch_opts) do
-          {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
-            # Always enter wait_for_worker_result/4, even when the budget is
-            # exhausted at the receive boundary. A worker_result can already be
-            # queued after the worker completed but before final lifecycle event
-            # dispatch returned; the receive owns the distinction between an
-            # already-delivered success and no result before the deadline.
-            wait_for_worker_result(launch_pid, worker_id, state.run_id, deadline_ms)
-
-          {:error, {:already_started, _pid}} ->
-            {:error, :worker_already_started}
-
-          {:error, reason} ->
-            {:error, {:overwatch_start_failed, reason}}
-        end
-      end
-    after
-      # TRD-076: release the heartbeat lease on every exit path (normal
-      # completion, crash, or error). The idempotency key transitions
-      # `completed` in KeyStore so crash-recovery knows it can skip
-      # side-effect inspection on retry.
-      HeartbeatLease.release(idempotency_key)
-      RunExecutorLiveness.clear(state.run_id, self())
+  # A phase's `approval_mode:` is the harness's tool-approval mode. Absent
+  # leaves the harness default, which for Claude is interactive — an
+  # unattended agent then cannot write a file and reports itself blocked while
+  # the run completes. `Interpreter` validates the value at load; this match is
+  # total over exactly those strings, so anything else raises (AGENTS.md 5.2)
+  # and no atom is minted from caller input.
+  defp maybe_put_approval_mode(driver_opts, phase_spec) do
+    case Map.get(phase_spec, :approval_mode) do
+      nil -> driver_opts
+      "default" -> Keyword.put(driver_opts, :approval_mode, :default)
+      "prompt" -> Keyword.put(driver_opts, :approval_mode, :prompt)
+      "auto_edit" -> Keyword.put(driver_opts, :approval_mode, :auto_edit)
+      "auto_approve" -> Keyword.put(driver_opts, :approval_mode, :auto_approve)
     end
   end
-
-  # Wait for the supervised worker to deliver its result. The worker pid
-  # sends `{:worker_result, result}` before exiting; the launch_pid dies
-  # normally after the worker exits. We accept either ordering: the
-  # result message is the signal, the DOWN is just cleanup.
-  #
-  # `deadline_ms` is the absolute wall-clock budget (System.system_time
-  # milliseconds), not a relative timeout: it bounds how long this process
-  # BLOCKS waiting for `{:worker_result, result}`. It is not a validity window
-  # stamped on the result itself.
-  #
-  # A result cannot already be sitting in the mailbox when this receive starts:
-  # `Overwatch.start_phase/2` returns only after the worker has been spawned
-  # (`WorkerSupervisor.start_worker/1` → `LaunchWorker.init/1` →
-  # `WorkerProtocol.start_worker/3` → `adapter.start_link/1`, all synchronous in
-  # the CALLER), and the adapter sends `{:worker_result, result}` only after
-  # activation and agent completion. The earliest a result can exist is after
-  # this call has already begun waiting. So the deadline only decides how long
-  # we wait; a result that arrives before it is accepted on its merits (a
-  # non-empty success is authoritative; a late error result is not). When the
-  # deadline elapses with no result, this drains the mailbox — see
-  # `drain_worker_result_stubs/3` — so a late arrival cannot leak into the next
-  # phase.
-
-  # One deadline rule for every `{:worker_result, _}` arrival path (the direct
-  # success arm and the DOWN-first probe arm must not drift apart — they are
-  # the same race observed from two orderings):
-  #
-  #   * within deadline -> the result is the outcome, unconditionally;
-  #   * past deadline, non-empty success -> record the completed outcome. The
-  #     agent did produce its artifact; failing the phase and discarding real
-  #     work because delivery raced the deadline is the outcome-preserving
-  #     choice, and it removes the success/error asymmetry where a late error
-  #     was rejected but a late success silently determined the result;
-  #   * past deadline, error/empty -> reject, then keep scanning the mailbox
-  #     through the drain, because a genuine success can still be queued
-  #     behind it under scheduler load.
-  defp accept_after_deadline(result, deadline_ms, run_id, worker_id, reason) do
-    past_deadline? =
-      deadline_ms != :infinity and System.system_time(:millisecond) >= deadline_ms
-
-    cond do
-      not past_deadline? ->
-        result
-
-      completed_worker_success?(result) ->
-        Logger.warning(
-          "[#{run_id}] worker #{worker_id} successful result arrived after deadline; recording the completed outcome"
-        )
-
-        result
-
-      true ->
-        Logger.warning(
-          "[#{run_id}] worker #{worker_id} error result arrived after deadline; supervisor will reap launch process"
-        )
-
-        case drain_worker_result_stubs(run_id, worker_id, reason) do
-          {:ok, recovered} -> recovered
-          _ -> {:error, reason}
-        end
-    end
-  end
-
-  # Drain and discard any `{:worker_result, _}` still queued in this
-  # RunExecutor's mailbox once a timeout has been decided for the current phase.
-  #
-  # Results are discarded rather than absorbed by the dedicated
-  # `handle_info/2` clause above: that clause only covers results that arrive
-  # AFTER a wait has already returned, whereas here the wait is still on the
-  # stack and the result must be removed synchronously before this function
-  # returns, so the next phase's blocking receive cannot match it even if the
-  # current process happens to yield in between.
-  #
-  # Loops so more than one leaked message cannot survive (e.g. a duplicate
-  # LaunchWorker re-launch result queued behind this phase's own). Discarded
-  # results are logged with run/worker context, never silently dropped, so an
-  # operator can tell "arrived late" from "never arrived".
-  @spec drain_worker_result_stubs(String.t(), String.t(), term()) ::
-          :ok | {:ok, term()}
-  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason) do
-    drain_worker_result_stubs(run_id, worker_id, timeout_reason, 0)
-  end
-
-  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained, recovered \\ nil)
-
-  defp drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained, recovered) do
-    # The loop MUST run to mailbox-empty before returning, whatever it finds on
-    # the way: any {:worker_result, _} left here is absorbable by the NEXT
-    # phase's blocking receive, which would commit the previous phase's output
-    # as its own artifact (see the docstring above and the leak regression
-    # tests). `recovered` remembers the FIRST successful result seen so the
-    # scan can keep discarding strays behind it and still return the outcome.
-    receive do
-      {:worker_result, result} ->
-        if drained_success(result) and is_nil(recovered) do
-          Logger.warning(
-            "[#{run_id}] worker #{worker_id}: recovered queued worker_result after " <>
-              "#{inspect(timeout_reason)} (#{inspect(result)}); continuing to drain"
-          )
-
-          drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1, result)
-        else
-          Logger.warning(
-            "[#{run_id}] worker #{worker_id}: discarding queued worker_result after " <>
-              "#{inspect(timeout_reason)} (drained #{drained + 1}: #{inspect(result)})"
-          )
-
-          drain_worker_result_stubs(run_id, worker_id, timeout_reason, drained + 1, recovered)
-        end
-    after
-      0 ->
-        case recovered do
-          nil -> :ok
-          result -> {:ok, result}
-        end
-    end
-  end
-
-  # A success is worth recovering from the drain path only when its value
-  # proves the agent actually produced output — the same bar
-  # `completed_worker_success?/1` applies to post-deadline arrivals.
-  defp drained_success({:ok, output}) when is_binary(output), do: String.trim(output) != ""
-  defp drained_success({:ok, _output}), do: true
-  defp drained_success(_other), do: false
-
-  @spec wait_for_worker_result(pid(), String.t(), String.t(), timeout()) ::
-          {:ok, String.t()} | {:error, term()}
-  defp wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms) do
-    ref = Process.monitor(launch_pid)
-    timeout_ms = remaining_from(deadline_ms)
-
-    result =
-      receive do
-        {:worker_result, result} ->
-          # Same deadline rule as the DOWN-branch probe (see
-          # `accept_after_deadline/5`): a post-deadline ERROR is rejected — but
-          # the scan for a real queued success continues through the drain.
-          accept_after_deadline(result, deadline_ms, run_id, worker_id, :worker_timeout)
-
-        {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
-          # DOWN arrived first. Probe for a worker_result already queued behind
-          # it: a worker that completed does send its result, so DOWN winning
-          # the race is not evidence that no result exists.
-          receive do
-            {:worker_result, result} ->
-              accept_after_deadline(result, deadline_ms, run_id, worker_id, :worker_timeout)
-          after
-            0 ->
-              # DOWN with no worker_result behind it: the worker died without
-              # producing a result. That is a crash, and it stays
-              # `:worker_died_no_result` even when wall time has crossed the
-              # deadline (AGENTS.md §5.3). `:worker_timeout` means "deadline
-              # elapsed, result unknown/stale" — reporting a result-less death
-              # as a timeout once the deadline passed loses a distinction the
-              # pause/cancel handling downstream depends on.
-
-              # Nothing matched the probe receive, but a result can still be
-              # queued behind the DOWN that the probe's own arm ordering missed
-              # (e.g. delivered between the two receives): drain scans the rest
-              # of the mailbox, discarding every stub. If a real success turns
-              # up, THAT is the phase's outcome and is preserved; nothing else
-              # is allowed to survive this return.
-              case drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result) do
-                {:ok, recovered} -> recovered
-                _ -> {:error, :worker_died_no_result}
-              end
-          end
-      after
-        timeout_ms ->
-          # §5.3 outcome discrimination: `:worker_timeout` means "the deadline
-          # elapsed and the result is unknown". If the launch worker is already
-          # dead here, the outcome is NOT unknown — it died without producing a
-          # result, and that must stay `:worker_died_no_result` even once wall
-          # time has crossed the deadline (pause/cancel handling downstream keys
-          # off the distinction, see run_executor_run_worktree_test.exs).
-          #
-          # `Process.alive?/1` is authoritative: the monitor DOWN for this pid
-          # cannot be in our mailbox ahead of this arm without also having
-          # matched the `{:DOWN, ^ref, ...}` clause above (a queued DOWN for a
-          # dead pid is delivered at monitor-install time, before the receive),
-          # so a dead pid here means a result-less death whose DOWN we never
-          # observed. Drain first so a result that raced the death cannot leak
-          # into the next phase.
-          if Process.alive?(launch_pid) do
-            Logger.warning(
-              "[#{run_id}] worker #{worker_id} did not deliver result within #{timeout_ms}ms; supervisor will reap launch process"
-            )
-
-            case drain_worker_result_stubs(run_id, worker_id, :worker_timeout) do
-              {:ok, recovered} -> recovered
-              _ -> {:error, :worker_timeout}
-            end
-          else
-            Logger.warning("[#{run_id}] worker #{worker_id} died without delivering a result")
-
-            case drain_worker_result_stubs(run_id, worker_id, :worker_died_no_result) do
-              {:ok, recovered} -> recovered
-              _ -> {:error, :worker_died_no_result}
-            end
-          end
-      end
-
-    # Remove the LaunchWorker child spec so nothing for this phase can be
-    # relaunched — a plain WorkerExited does NOT seal the Worker aggregate
-    # (only WorkerCrashed/RunCompleted/RunFailed do, see
-    # aggregates/worker.ex), so a crashed worker would otherwise keep
-    # restarting for a phase this process has already finished with.
-    #
-    # This is cleanup, NOT the guard against relaunching a *finished* phase.
-    # It used to be that guard, and it lost: under the old
-    # `restart: :permanent` child spec every worker exit relaunched, and in
-    # run-de055c18749db5e9c702d24950268cf9 the relaunch beat this task by
-    # 56ms and leaked an agent that ran 8m42s past the run's terminal state.
-    # `LaunchWorker` now propagates its worker's exit reason to a
-    # `restart: :transient` child spec, so a finished or torn-down worker
-    # ends its child without depending on this race.
-    #
-    # `stop_worker/2` internally blocks on
-    # `DynamicSupervisor.terminate_child/2`, which waits for LaunchWorker's
-    # shutdown to finish; that can need to round-trip through CommandRouter
-    # back to THIS run's aggregate actor — i.e. back to this very process.
-    # Calling it synchronously here deadlocks RunExecutor against itself
-    # (confirmed empirically: caused ~300 cascading suite-wide failures once
-    # EventStore subscriptions started timing out waiting on a stalled
-    # RunExecutor mailbox). Run it in a detached task instead so it can't
-    # block this GenServer callback.
-    Task.start(fn -> Overwatch.WorkerSupervisor.stop_worker(worker_id, run_id) end)
-
-    # Once the deadline is exhausted (either receive-timeout branch above,
-    # or a late worker_result rejected as timeout), the launch_pid's exit
-    # order no longer matters to this call — the detached stop_worker task
-    # above reaps it. Blocking here up to 5,000ms to drain a DOWN we no
-    # longer need would just add caller-visible latency after the timeout
-    # has already been decided (CodeRabbit review); demonitor and flush any
-    # already-queued DOWN instead.
-    #
-    # `:worker_died_no_result` already consumed the DOWN in the receive
-    # above — draining again here would just spin the full 5,000ms waiting
-    # for a message that can never arrive.
-    #
-    # Only a real result reaches this point without the DOWN already
-    # accounted for: the worker may still be tearing down, so drain it if
-    # it hasn't arrived yet, so the process monitor doesn't fire a stray
-    # message later.
-    case result do
-      {:error, :worker_timeout} ->
-        Process.demonitor(ref, [:flush])
-
-      {:error, :worker_died_no_result} ->
-        Process.demonitor(ref, [:flush])
-
-      _ ->
-        receive do
-          {:DOWN, ^ref, :process, ^launch_pid, _reason} -> :ok
-        after
-          5_000 -> :ok
-        end
-    end
-
-    result
-  end
-
-  defp completed_worker_success?({:ok, output}) when is_binary(output),
-    do: String.trim(output) != ""
-
-  defp completed_worker_success?({:ok, _output}), do: true
-  defp completed_worker_success?({:error, _reason}), do: false
-
-  # `policy.timeout_ms` from `FailurePolicy.resolve/2` is either a positive
-  # integer (milliseconds) or `:infinity` (`timeout_minutes: 0`, or no
-  # timeout configured anywhere). Total over both shapes — no catch-all
-  # (AGENTS.md §5.2) — so an unrecognized third shape is a compile-time
-  # FunctionClauseError, not a silently wrong deadline.
-  @spec deadline_from(timeout()) :: timeout()
-  defp deadline_from(:infinity), do: :infinity
-  defp deadline_from(ms) when is_integer(ms), do: System.system_time(:millisecond) + ms
-
-  # Mirrors `deadline_from/1`: an `:infinity` deadline never runs out, so the
-  # remaining budget is `:infinity` too. `receive ... after` accepts
-  # `:infinity` natively; `HeartbeatLease.acquire/4` cannot, which is what
-  # `lease_budget/1` below is for.
-  @spec remaining_from(timeout()) :: timeout()
-  defp remaining_from(:infinity), do: :infinity
-
-  defp remaining_from(deadline) when is_integer(deadline),
-    do: max(deadline - System.system_time(:millisecond), 0)
-
-  # `HeartbeatLease.acquire/4` arms a real `Process.send_after/3` timer and
-  # requires an integer lease_ms — it cannot accept `:infinity`. The lease is
-  # renewed to `HeartbeatLease.default_lease_ms/0` on every worker heartbeat
-  # regardless of the phase's own deadline (`Overwatch.Tracker` calls
-  # `renew/1` with the default), so handing it that same default when the
-  # phase has no deadline keeps the lease's steady-state TTL independent of
-  # the phase budget.
-  @spec lease_budget(timeout()) :: non_neg_integer()
-  defp lease_budget(:infinity), do: HeartbeatLease.default_lease_ms()
-  defp lease_budget(ms) when is_integer(ms), do: ms
 
   # Write the prompt to a deterministic path under the run's artifact
   # directory. WorkerStarted requires prompt_path as an @enforce_key,
@@ -1617,10 +1208,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp project_id(state) do
     Map.get(state.task, :project_id) || Map.get(state.task, "project_id")
-  end
-
-  defp generate_session_id do
-    "session-" <> Elixir.EventStore.UUID.uuid4()
   end
 
   # Strip `-trd` suffix from workflow type so both `implement-trd` and
@@ -1714,11 +1301,43 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Path.join([working_directory_of(state), "docs", "reports", "foreman-#{task_id_of(state)}"])
     end
 
+    # The run's own checkout first: the report is then committed on the run
+    # branch with the phase's work. Without a worktree, the task's directory,
+    # then the registered project's path. `File.cwd!/0` is the server's cwd,
+    # which for a task created by BeadsWatcher (no `working_directory`) put the
+    # report inside the Foreman repo itself, under the wrong project.
     defp working_directory_of(state) do
-      case Map.get(state.task, :working_directory) || Map.get(state.task, "working_directory") ||
-             Map.get(state.task, :source_repo_path) || Map.get(state.task, "source_repo_path") do
+      case run_worktree_path(state) || task_directory(state.task) ||
+             registered_project_path(state.task) do
+        dir when is_binary(dir) -> dir
+        nil -> File.cwd!()
+      end
+    end
+
+    defp run_worktree_path(state) do
+      case Map.get(state, :run_worktree) do
+        %{worktree_path: path} when is_binary(path) and path != "" -> path
+        _ -> nil
+      end
+    end
+
+    defp task_directory(task) do
+      case Map.get(task, :working_directory) || Map.get(task, "working_directory") ||
+             Map.get(task, :source_repo_path) || Map.get(task, "source_repo_path") do
         dir when is_binary(dir) and dir != "" -> dir
-        _ -> File.cwd!()
+        _ -> nil
+      end
+    end
+
+    defp registered_project_path(task) do
+      with id when is_binary(id) and id != "" <-
+             Map.get(task, :project_id) || Map.get(task, "project_id"),
+           %{} = projection <- ForemanServer.ProjectionStore.project_projection(id),
+           path when is_binary(path) and path != "" <-
+             Map.get(projection, :path) || Map.get(projection, "path") do
+        path
+      else
+        _ -> nil
       end
     end
 
@@ -1759,7 +1378,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp emit_phase_failure(state, phase_spec, phase_index, reason) do
+  @doc false
+  def emit_phase_failure(state, phase_spec, phase_index, reason) do
     Logger.warning(
       "RunExecutor phase #{phase_index} (#{phase_spec_name(phase_spec)}) failed: #{inspect(reason)}"
     )
@@ -1801,26 +1421,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         {:error, reason}
     end
-  end
-
-  # Emit PhaseBlocked event for the next phase when the sequence halts due to blocked status.
-  defp emit_phase_blocked(state, next_phase_index, reason) do
-    phase_id = Identity.phase_id(state.run_id, next_phase_index)
-
-    payload = %{
-      run_id: state.run_id,
-      phase_id: phase_id,
-      index: next_phase_index,
-      reason: reason
-    }
-
-    dispatch_system(
-      "phase.block",
-      payload,
-      state.run_id,
-      phase_id,
-      "phase:#{state.run_id}:#{phase_id}"
-    )
   end
 
   # Strict `run.fail` emission from `emit_phase_failure/4`:
@@ -3126,11 +2726,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
   end
 
-  @doc false
-  def __wait_for_worker_result_for_test__(launch_pid, worker_id, run_id, deadline_ms) do
-    wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms)
-  end
-
   defp commit_dirty_worktree(state, phase_index, path) do
     case worktree_dirty?(path) do
       {:ok, false} ->
@@ -3769,12 +3364,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   @doc false
-  def __run_single_phase_for_test__(state, phase_spec, index),
-    do: run_single_phase(state, phase_spec, index)
+  def __run_phases_for_test__(state), do: run_phases(state)
 
   @doc false
-  def __handle_cast_advance_to_for_test__(state, completed_index),
-    do: handle_cast({:advance_to, completed_index}, state)
+  def __finish_phases_for_test__(state), do: finish_phases(state)
 
   @doc false
   def __run_base_branch_for_test__(state), do: run_base_branch(state)
@@ -3873,12 +3466,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp phase_number(phase_spec, index) do
-    case Map.get(phase_spec, :index) do
-      value when is_integer(value) and value >= 1 -> value
-      _ -> index + 1
-    end
-  end
+  @doc false
+  def phase_number(phase_spec, index), do: PhaseSpec.number(phase_spec, index)
 
   defp default_artifact_base do
     case System.fetch_env("HOME") do
@@ -4427,7 +4016,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   #   * Every other key still names a context value that must resolve to an
   #     existing file (the frozen ImplementationContext's `trd_path`, which
   #     Foreman validated at approval and the agent only reads).
-  defp enforce_required_file(state, phase_spec, phase_index, worktree_record) do
+  @doc false
+  def enforce_required_file(state, phase_spec, phase_index, worktree_record) do
     case Map.get(phase_spec, :required_file) do
       nil ->
         {:ok, state}

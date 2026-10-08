@@ -47,6 +47,12 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   # `{:calling_self, ...}` — which the old code silently caught and
   # treated as "no subscribers", making `keep_subscribers: true` a
   # permanent no-op regardless of what was actually subscribed.
+  #
+  # Derives from `ForemanServer.ProjectionStore.initial_state/0` directly
+  # (exposed `@doc false` for exactly this) rather than a second
+  # hand-maintained key list or a type-inferred guess: a new state field
+  # is correct here by construction, for every key present or future,
+  # with no special-casing of non-map shapes (e.g. `run_slots`) required.
   defp empty_initial_state(opts, current_state) do
     subscribers =
       if Keyword.get(opts, :keep_subscribers, false) do
@@ -55,21 +61,6 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
         %{}
       end
 
-    %{
-      projects: %{},
-      runs: %{},
-      tasks: %{},
-      phases: %{},
-      pr_associations: %{},
-      run_logs: %{},
-      scheduler_intents: %{},
-      subscribers: subscribers,
-      project_active_runs: %{},
-      worktrees: %{},
-      worktree_create_orphans: %{},
-      run_slots: %{capacity: 0, holders: %{}, waiters: []},
-      works: %{},
-      inbox_threads: %{}
-    }
+    %{ForemanServer.ProjectionStore.initial_state() | subscribers: subscribers}
   end
 end

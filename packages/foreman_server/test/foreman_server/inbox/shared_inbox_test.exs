@@ -30,7 +30,17 @@ defmodule ForemanServer.Inbox.SharedInboxTest do
     # (in describe "dedupe_table ownership") proves the supervised GenServer
     # is running, which is only meaningful if no test setup creates it.
     DedupeTable.clear()
+    original_window = Application.get_env(:foreman_server, :inbox_dedupe_window_seconds)
     Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 60)
+
+    # Tests below set 0/120 or delete the key; without restoring, the last one
+    # to run leaks its window into every later inbox test.
+    on_exit(fn ->
+      case original_window do
+        nil -> Application.delete_env(:foreman_server, :inbox_dedupe_window_seconds)
+        value -> Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, value)
+      end
+    end)
     :ok
   end
 

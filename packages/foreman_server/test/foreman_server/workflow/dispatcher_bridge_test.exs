@@ -157,6 +157,28 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     )
   end
 
+  # The task enters `in_progress` at task.dispatch and leaves it when the run
+  # ends. This test points the project at a non-git temp dir, so the run can
+  # fail in less than one poll interval; a poll for `in_progress` alone then
+  # misses the transient state. Any post-dispatch status proves the bridge ran.
+  defp wait_for_dispatched(task_id) do
+    poll_until(
+      fn ->
+        case ProjectionStore.task_projection(task_id) do
+          %{status: status} = task when status in ["in_progress", "failed", "completed"] ->
+            {:ok, task}
+
+          %{status: other} ->
+            {:error, {:status, other}}
+
+          nil ->
+            {:error, :missing}
+        end
+      end,
+      "task #{task_id} dispatched"
+    )
+  end
+
   defp wait_for_active_run_reservation(project_id, run_id) do
     poll_until(
       fn ->
@@ -260,7 +282,7 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
       reserved_runs = wait_for_active_run_reservation(project_id, run_id)
       assert run_id in reserved_runs
 
-      dispatched = wait_for_status(task_id, "in_progress")
+      dispatched = wait_for_dispatched(task_id)
       assert dispatched.run_id == run_id
 
       run = wait_for_run(run_id)
@@ -268,6 +290,12 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
 
       refute is_nil(run.status) or run.status == "",
              "run #{run_id} should have a status, got: #{inspect(run)}"
+      # The fixture's project path is not a git repo, so the run always ends
+      # `failed` for exactly that reason. Any other failure reason would mean
+      # dispatch itself broke, which this test must not tolerate.
+      if dispatched.status == "failed" do
+        assert dispatched.failure_reason =~ "not_a_git_repo"
+      end
     end
   end
 

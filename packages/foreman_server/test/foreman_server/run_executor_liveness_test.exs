@@ -71,12 +71,9 @@ defmodule ForemanServer.RunExecutorLivenessTest do
       RunExecutorLiveness.record("run-replaced", original_owner, deadline_ms)
 
       # Respawned executor records under its own PID.
-      replacement_owner =
-        spawn(fn ->
-          :ok
-        end)
-
-      ref = Process.monitor(replacement_owner)
+      # spawn_monitor, not spawn + Process.monitor: the child can exit before
+      # the monitor is set, which yields :noproc instead of :normal.
+      {replacement_owner, ref} = spawn_monitor(fn -> :ok end)
       assert_receive {:DOWN, ^ref, :process, ^replacement_owner, :normal}, 1_000
 
       # The replacement records its own deadline under its own PID,

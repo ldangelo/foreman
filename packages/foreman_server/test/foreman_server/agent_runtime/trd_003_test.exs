@@ -246,6 +246,14 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
     end
 
     test "nil backend emits start+stop with backend: nil metadata (early-error short-circuit)" do
+      # `:backend_not_found` is only reachable when the catalog is non-empty
+      # (an empty one answers `:no_available_backend` first). Use this test's own
+      # catalog, like its siblings, instead of the global one, which is empty
+      # under `adapters: []` and was only non-empty after another test leaked a
+      # registration — so this test failed whenever it ran on its own.
+      {catalog_name, inv_name} = start_runtime()
+      {:ok, _} = AdapterCatalog.register(EchoAdapter, catalog_name)
+
       events =
         capture_telemetry(
           [
@@ -256,7 +264,9 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
             assert {:error, :backend_not_found} =
                      ForemanServer.AgentRuntime.execute("p", %{},
                        strategy: :manual,
-                       backend: nil
+                       backend: nil,
+                       catalog: catalog_name,
+                       invocation_supervisor: inv_name
                      )
           end
         )
