@@ -1930,7 +1930,8 @@ also `:malformed`; an absent `description` is fine (title-only prompt).
 :start_beads_watcher?, false`) — set it to `true` (dev-only; do not commit a
 default flip to `main`'s `config/dev.exs`) to run one watcher per registered
 project, tailing its JSONL and auto-dispatching per the mapping above. See
-`docs/user-guide.md`'s "Inbound sync" note for the config key.
+`docs/user-guide.md`'s "Inbound sync" note for the config key; the
+`FOREMAN_START_BEADS_WATCHER=true|false` env var (`config/runtime.exs`) overrides it per start without editing `dev.exs`.
 
 ### Beads Dispatch Partitioning via Label Gate (opt-IN semantics)
 
