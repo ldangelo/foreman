@@ -483,7 +483,7 @@ defmodule ForemanServer.Jobsite.Engine do
         completion_signals: signals,
         intent_fun: intent_fun,
         run_id: ctx.jobsite_id,
-        cwd: (ctx.sandbox && ctx.sandbox.sandbox_repo_path) || (ctx.worktree && ctx.worktree.path)
+        cwd: (ctx.worktree && ctx.worktree.path) || (ctx.sandbox && ctx.sandbox.worktree.path)
       ]
       |> put_launch(step.opts)
 

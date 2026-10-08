@@ -207,7 +207,7 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   defp scripted_launch(agent, prompt, sandbox, opts) do
     with {:ok, prompt_path} <- materialize_prompt(prompt) do
       timeout_ms = Keyword.get(opts, :idle_timeout_ms, @default_idle_timeout_ms)
-      cwd = Keyword.get(opts, :cwd) || (sandbox && sandbox.sandbox_repo_path)
+      cwd = Keyword.get(opts, :cwd) || (sandbox && sandbox.worktree.path)
       run_id = Keyword.get(opts, :run_id) || (sandbox && sandbox.jobsite_id)
 
       {:ok,

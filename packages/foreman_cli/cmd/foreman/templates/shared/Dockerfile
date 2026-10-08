@@ -16,16 +16,18 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git curl ca-certificates gnupg \
   && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends gh nodejs npm \
-  && npm install -g @mariozechner/pi @anthropic-ai/claude-code \
+  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get install -y --no-install-recommends gh nodejs \
+  && npm install -g @earendil-works/pi-coding-agent @anthropic-ai/claude-code \
   && rm -rf /var/lib/apt/lists/*
 
 # Adjust to the agent CLI(s) you actually use; both are installed above so
 # either `Agents.pi/2` or `Agents.claude/2` works out of the box.
 
-RUN groupadd -g "${AGENT_GID}" agent \
-  && useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" agent
+# -o: the host's GID/UID may collide with one the base image already has
+# (macOS staff is GID 20, which is `dialout` in Debian).
+RUN groupadd -o -g "${AGENT_GID}" agent \
+  && useradd -o -m -u "${AGENT_UID}" -g "${AGENT_GID}" agent
 
 USER agent
 WORKDIR /workspace

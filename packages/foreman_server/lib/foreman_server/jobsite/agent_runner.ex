@@ -91,7 +91,11 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     attrs = [
       prompt: prompt,
       provider: agent.provider,
-      cwd: sandbox.sandbox_repo_path,
+      # The harness spawns the agent CLI (the sandbox's shim) as a HOST process and
+      # validates that this directory exists on the host. The in-container path
+      # (`sandbox_repo_path`, e.g. /workspace) does not; the Docker shim sets it
+      # itself with `exec -w`.
+      cwd: sandbox.worktree.path,
       model: agent.model,
       reasoning_effort: agent.effort,
       provider_session_id: provider_session_id,

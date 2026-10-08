@@ -53,15 +53,33 @@ defmodule ForemanServerWeb.JobsiteController do
   end
 
   # GET /api/jobsites
-  def index(conn, _params), do: json(conn, %{jobsites: Jobsite.list()})
+  def index(conn, _params), do: json(conn, %{jobsites: json_safe(Jobsite.list())})
 
   # GET /api/jobsites/:id
   def show(conn, %{"id" => id}) do
     case Jobsite.get(id) do
       nil -> error_response(conn, not_found(id))
-      jobsite -> json(conn, jobsite)
+      jobsite -> json(conn, json_safe(jobsite))
     end
   end
+
+  # A failed jobsite's `last_error.details` carries whatever the agent runtime
+  # returned, including structs (`Jido.Harness.Error`) and tuples that Jason
+  # cannot encode, so the status route would answer 500 for exactly the jobsites
+  # an operator most needs to inspect. Convert at this boundary; the stored
+  # projection is untouched.
+  @passthrough_structs [DateTime, NaiveDateTime, Date, Time]
+
+  defp json_safe(%mod{} = struct) when mod in @passthrough_structs, do: struct
+  defp json_safe(%_{} = struct), do: struct |> Map.from_struct() |> json_safe()
+  defp json_safe(map) when is_map(map), do: Map.new(map, fn {k, v} -> {json_safe_key(k), json_safe(v)} end)
+  defp json_safe(list) when is_list(list), do: Enum.map(list, &json_safe/1)
+  defp json_safe(value) when is_binary(value), do: if(String.valid?(value), do: value, else: inspect(value))
+  defp json_safe(value) when is_atom(value) or is_number(value), do: value
+  defp json_safe(other), do: inspect(other)
+
+  defp json_safe_key(key) when is_binary(key) or is_atom(key) or is_number(key), do: key
+  defp json_safe_key(key), do: inspect(key)
 
   # POST /api/jobsites/:id/pause
   def pause(conn, %{"id" => id}), do: control(conn, id, :pause)

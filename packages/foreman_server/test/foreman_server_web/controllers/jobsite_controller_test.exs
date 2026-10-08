@@ -221,6 +221,36 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       listed = authed() |> get("/api/jobsites") |> json_response(200)
       assert Enum.any?(listed["jobsites"], &(&1["jobsite_id"] == id or &1["id"] == id))
     end
+
+    test "a failed jobsite whose error details hold structs and tuples is still readable, not a 500" do
+      %{"id" => id} = authed() |> post_json("/api/jobsites", spec()) |> json_response(202)
+      await_terminal(id)
+
+      # What an agent runtime failure looks like once it reaches the projection:
+      # structs and tuples, none of which Jason can encode.
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "JobsiteFailed",
+                   payload: %{
+                     jobsite_id: id,
+                     code: "agent_failed",
+                     message: "boom",
+                     details: %{
+                       error: struct(Jido.Harness.Error, message: "provider rejected"),
+                       pair: {:exit, 1}
+                     }
+                   }
+                 }
+               ])
+
+      shown = authed() |> get("/api/jobsites/#{id}") |> json_response(200)
+      assert shown["last_error"]["code"] == "agent_failed"
+      assert shown["last_error"]["details"]["error"]["message"] == "provider rejected"
+      assert shown["last_error"]["details"]["pair"] == "{:exit, 1}"
+
+      assert authed() |> get("/api/jobsites") |> json_response(200)
+    end
   end
 
   describe "read, pause, cancel, resume on ids that cannot take the action" do
