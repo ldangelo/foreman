@@ -21,7 +21,8 @@
 # and refuses otherwise. A conflicting branch is reported and left for a manual
 # merge; it does not abort the batch.
 
-Code.require_file("foreman_client.exs", __DIR__)
+# Pin `ref: "<tag or sha>"` here to stop following the default branch.
+Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || raise "FOREMAN_PROJECT_ID is not set"
 into = System.get_env("FOREMAN_MERGE_INTO") || raise "FOREMAN_MERGE_INTO is not set"

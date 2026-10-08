@@ -14,7 +14,8 @@
 # (`config :foreman_server, :jobsites, allow_host_sandbox: true`). Leave
 # "sandbox" out to use the default, `docker`.
 
-Code.require_file("foreman_client.exs", __DIR__)
+# Pin `ref: "<tag or sha>"` here to stop following the default branch.
+Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || raise "FOREMAN_PROJECT_ID is not set"
 client = Foreman.Client.new()

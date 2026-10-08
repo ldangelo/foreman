@@ -6,9 +6,13 @@ two kinds, and the script's header says which it is.
 
 ## Client scripts: `basic`, `iterate`, `parallel`
 
-These drive a **running `foreman_server`** over HTTP through
-`foreman_client.exs` (a single file with no dependencies beyond Erlang/OTP 27+).
-They run with plain Elixir: no Foreman checkout, no database, no `mix`.
+These drive a **running `foreman_server`** over HTTP through the
+`foreman_client` package (`packages/foreman_client` in the Foreman repo),
+which each script loads with `Mix.install`. The package has no dependencies
+beyond Erlang/OTP 27+, and nothing is copied into your project: the script
+names the package, Mix fetches and caches it, so a server API change reaches
+every script by updating one reference. No Foreman checkout, database or
+project `mix.exs` is needed; run them with plain `elixir`.
 
 ```bash
 export FOREMAN_API_TOKEN=...           # the server's bearer token
@@ -42,8 +46,6 @@ working directory.
 ## Layout
 
 - `<name>.exs` — the script.
-- `foreman_client.exs` — the HTTP client the client scripts load (unused by
-  `review` and `triage`).
 - `prompts/` — prompt files the scripts read. Client scripts send the prompt as
   text, so any `{{PLACEHOLDER}}` is filled in by the script itself.
 - `Dockerfile` — optional sandbox image for the `docker` sandbox, built on the

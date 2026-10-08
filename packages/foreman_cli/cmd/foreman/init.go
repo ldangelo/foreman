@@ -126,8 +126,7 @@ type templateFile struct {
 }
 
 // templateFiles lists every file a named template writes: the shared files
-// (README, Dockerfile, .gitignore, and the standalone `foreman_client.exs` the
-// HTTP-driven scripts load — the .gitignore's embedded source is named
+// (README, Dockerfile, .gitignore — the .gitignore's embedded source is named
 // "gitignore" without a leading dot so `//go:embed templates` doesn't need
 // to special-case dotfile globbing) plus everything under the template's
 // own embedded directory (its `.exs` script and any `prompts/*.md` it
@@ -137,7 +136,6 @@ func templateFiles(name string) ([]templateFile, error) {
 		{src: "templates/shared/README.md", dest: "README.md"},
 		{src: "templates/shared/Dockerfile", dest: "Dockerfile"},
 		{src: "templates/shared/gitignore", dest: ".gitignore"},
-		{src: "templates/shared/foreman_client.exs", dest: "foreman_client.exs"},
 	}
 
 	root := "templates/" + name

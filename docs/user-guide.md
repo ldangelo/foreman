@@ -967,8 +967,8 @@ audit stream with the caller's TCP address (the proxy's, behind one; requests
 refused with `401` are not recorded).
 
 Scripts: `foreman init --template basic|iterate|parallel` scaffold scripts that
-use `.foreman/foreman_client.exs`, a single-file client needing only Erlang/OTP
-27+ (no Foreman checkout, no database). Set `FOREMAN_API_TOKEN` and
+load the `foreman_client` package (`packages/foreman_client`, via `Mix.install`;
+needs only Erlang/OTP 27+, no Foreman checkout, no database). Set `FOREMAN_API_TOKEN` and
 `FOREMAN_PROJECT_ID` (and `FOREMAN_API_URL` if the server is not local), then
 `elixir .foreman/<name>.exs`. `review` and `triage` still run inside a booted
 server app with `mix run`.

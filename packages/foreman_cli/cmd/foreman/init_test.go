@@ -113,7 +113,7 @@ func TestInitTemplateScaffoldsWithNoServer(t *testing.T) {
 		t.Fatalf("requests = %d, want 0 (template scaffold must not touch the server)", requests)
 	}
 
-	for _, rel := range []string{"README.md", "Dockerfile", ".gitignore", "foreman_client.exs", "basic.exs", "prompts/basic.md"} {
+	for _, rel := range []string{"README.md", "Dockerfile", ".gitignore", "basic.exs", "prompts/basic.md"} {
 		path := filepath.Join(dir, ".foreman", rel)
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s to exist: %v", path, err)

@@ -14,7 +14,8 @@
 #   docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) \
 #     -t "foreman-jobsite:$(basename "$PWD")" .foreman
 
-Code.require_file("foreman_client.exs", __DIR__)
+# Pin `ref: "<tag or sha>"` here to stop following the default branch.
+Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || raise "FOREMAN_PROJECT_ID is not set"
 client = Foreman.Client.new()

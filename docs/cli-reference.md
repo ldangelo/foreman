@@ -186,7 +186,7 @@ This flag **is** implemented and does what its name says — it is the one
 piece of the inaccurate prose above that is now literally true, for the
 scaffold it produces. `--template <name>` (`basic`, `iterate`, `parallel`,
 `review`, or `triage`) scaffolds a repo-local `<dir>/.foreman/` (default
-`<dir>` is `.`): shared `README.md`/`Dockerfile`/`.gitignore`/`foreman_client.exs`
+`<dir>` is `.`): shared `README.md`/`Dockerfile`/`.gitignore`
 plus the named template's runnable `.exs` script and its `prompts/*.md` file(s). It is a
 pure local file write — no HTTP request, no running server required — and
 never overwrites an existing file (a second invocation reports every file
@@ -205,8 +205,9 @@ foreman init --template review --force               # scaffold AND refresh inst
 | `--dir <path>` | Directory to scaffold `.foreman/` into (default `.`) |
 
 The scaffolded scripts come in two kinds. `basic`, `iterate` and `parallel`
-drive a **running** `foreman_server` over HTTP through the scaffolded
-`foreman_client.exs`; they run with plain `elixir` (Erlang/OTP 27+, no Foreman
+drive a **running** `foreman_server` over HTTP through the `foreman_client`
+package (`packages/foreman_client`, loaded by the script with `Mix.install`;
+nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27+, no Foreman
 checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
 (see the user guide's Remote Jobsite API section for the server-side config).
 `review` and `triage` call `ForemanServer.Jobsite` directly and must run inside

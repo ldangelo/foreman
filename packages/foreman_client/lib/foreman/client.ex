@@ -1,12 +1,12 @@
-# .foreman/foreman_client.exs — a standalone client for a running foreman_server.
+# A standalone client for a running foreman_server's /api/jobsites.
 #
-# Load it from a script with:
+# Load it from a script with
 #
-#     Code.require_file("foreman_client.exs", __DIR__)
+#     Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 #
-# and run the script with plain `elixir` (no Foreman checkout, no database, no
-# `mix`). It needs Erlang/OTP 27 or newer (it uses the built-in `:json`) and
-# nothing else: HTTP is OTP's `:httpc`.
+# and run the script with plain `elixir` (no Foreman checkout, no database). It
+# needs Erlang/OTP 27 or newer (it uses the built-in `:json`) and nothing else:
+# HTTP is OTP's `:httpc`.
 #
 # Configuration, read once by `Foreman.Client.new/1`:
 #
@@ -35,7 +35,7 @@ defmodule Foreman.Client do
   @terminal ["completed", "failed", "cancelled"]
   @not_found_grace_ms 10_000
 
-  @doc "Build a client from options or the environment (see the file header)."
+  @doc "Build a client from options or the environment (see the top of this file)."
   def new(opts \\ []) do
     {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
@@ -136,8 +136,11 @@ defmodule Foreman.Client do
 
     http_request =
       case method do
-        :get -> {String.to_charlist(url), headers}
-        :post -> {String.to_charlist(url), headers, ~c"application/json", IO.iodata_to_binary(:json.encode(body || %{}))}
+        :get ->
+          {String.to_charlist(url), headers}
+
+        :post ->
+          {String.to_charlist(url), headers, ~c"application/json", IO.iodata_to_binary(:json.encode(body || %{}))}
       end
 
     case :httpc.request(method, http_request, http_options(url), body_format: :binary) do
