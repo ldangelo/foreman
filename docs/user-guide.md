@@ -959,6 +959,18 @@ start.
 | `allow_host_sandbox` | off | The `host` sandbox runs agents as the server user with no isolation; the default is `docker` |
 | `agent_env_allowlist` | `[]` | Environment variable names a request may set on the agent |
 
+The token and the two on/off keys can be set from the environment when the
+server boots (`config/runtime.exs`; it applies to `mix phx.server`, `mix run`
+and releases, not to `mix test`):
+
+| Variable | Sets |
+|---|---|
+| `FOREMAN_API_TOKEN` | `:api_bearer_token` |
+| `FOREMAN_JOBSITES_ALLOW_REMOTE_START` | `allow_remote_start` (only the exact value `true` enables it) |
+| `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
+
+A variable that is unset changes nothing, so the API stays off by default.
+
 These routes fail closed: with no `:api_bearer_token` configured every request is
 `401` (unlike `/api/commands`, which is open when no token is set). Put TLS in
 front of the server before exposing it beyond localhost. Every start, pause,
