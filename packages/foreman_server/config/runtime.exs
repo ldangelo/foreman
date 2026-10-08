@@ -9,6 +9,7 @@ import Config
 #   FOREMAN_JOBSITES_ALLOW_REMOTE_START=true allow POST /api/jobsites to start a jobsite
 #   FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true allow `"sandbox": "host"` (the agent runs unsandboxed
 #                                            on this machine; the default is docker)
+#   FOREMAN_START_BEADS_WATCHER=true|false   start/stop BeadsWatcher auto-dispatch (dev.exs defaults to true)
 #
 # Only the exact string `true` enables a flag. The test environment is left
 # alone so a developer's shell cannot change a test's outcome.
@@ -27,4 +28,11 @@ if config_env() != :test do
         do: {key, System.get_env(var) == "true"}
 
   if jobsite_flags != [], do: config(:foreman_server, :jobsites, jobsite_flags)
+
+  # Unlike the flags above this one may switch BeadsWatcher off as well as on,
+  # because dev.exs turns it on by default.
+  case System.get_env("FOREMAN_START_BEADS_WATCHER") do
+    nil -> :ok
+    value -> config :foreman_server, :start_beads_watcher?, value == "true"
+  end
 end
