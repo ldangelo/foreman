@@ -639,9 +639,22 @@ defmodule ForemanServer.Jobsite.Executor do
       effort: Aggregate.get(agent_map, :effort) |> to_existing_atom(),
       provider_options: Aggregate.get(agent_map, :provider_options, %{}),
       binary: Aggregate.get(agent_map, :binary),
-      approval_mode: Aggregate.get(agent_map, :approval_mode) |> to_existing_atom()
+      approval_mode: Aggregate.get(agent_map, :approval_mode) |> approval_mode_from_state()
     }
   end
+
+  # Explicit table, not String.to_existing_atom/1: on a cold resume (fresh VM) these
+  # atoms may not be loaded yet.
+  @approval_modes %{
+    "default" => :default,
+    "prompt" => :prompt,
+    "auto_edit" => :auto_edit,
+    "auto_approve" => :auto_approve
+  }
+
+  defp approval_mode_from_state(nil), do: nil
+  defp approval_mode_from_state(mode) when is_atom(mode), do: mode
+  defp approval_mode_from_state(mode) when is_binary(mode), do: Map.fetch!(@approval_modes, mode)
 
   defp to_existing_atom(nil), do: nil
   defp to_existing_atom(value) when is_atom(value), do: value

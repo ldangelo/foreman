@@ -136,6 +136,8 @@ defmodule ForemanServer.Jobsite.Prompt do
 
     original_matches
     |> Enum.map(fn {_full, cmd} ->
+      # Both substitutions are total: `check_reserved`/`substitute` already validated
+      # every key in the file text, which is all a command span can reference.
       # `full` is how the span reads in the substituted text (raw values); only the
       # command actually executed gets shell-quoted values.
       {:ok, raw_sub} = substitute(cmd, vars)
