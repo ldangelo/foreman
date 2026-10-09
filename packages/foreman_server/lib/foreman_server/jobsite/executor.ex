@@ -654,20 +654,11 @@ defmodule ForemanServer.Jobsite.Executor do
     end
   end
 
-  # Explicit table, not String.to_existing_atom/1: on a cold resume (fresh VM) these
-  # atoms may not be loaded yet.
-  @approval_modes %{
-    "default" => :default,
-    "prompt" => :prompt,
-    "auto_edit" => :auto_edit,
-    "auto_approve" => :auto_approve
-  }
-
   defp approval_mode_from_state(nil), do: {:ok, nil}
   defp approval_mode_from_state(mode) when is_atom(mode), do: {:ok, mode}
 
   defp approval_mode_from_state(mode) when is_binary(mode) do
-    case Map.fetch(@approval_modes, mode) do
+    case ForemanServer.Jobsite.Agent.parse_approval_mode(mode) do
       {:ok, atom} ->
         {:ok, atom}
 

@@ -166,7 +166,7 @@ defmodule ForemanServer.Jobsite.Engine do
   # built from run state) without the program having to know it up front.
   @spec start_step(Step.t(), Context.t(), module(), term()) ::
           {:ok, Step.t(), term()} | {:error, Error.t(), term()}
-  defp start_step(step, ctx, observer, observer_state) do
+  defp start_step(%Step{} = step, ctx, observer, observer_state) do
     case observer.step_started(step, ctx, observer_state) do
       {:ok, observer_state2} ->
         {:ok, step, observer_state2}
@@ -185,7 +185,13 @@ defmodule ForemanServer.Jobsite.Engine do
 
   @spec run_step(Step.t(), Context.t(), module(), term(), (-> :none | {atom(), String.t()})) ::
           step_outcome()
-  defp run_step(%Step{kind: :worktree} = step, ctx, observer, observer_state, _intent_fun) do
+  defp run_step(
+         %Step{kind: :worktree} = step,
+         %Context{} = ctx,
+         observer,
+         observer_state,
+         _intent_fun
+       ) do
     with {:ok, step, observer_state} <- start_step(step, ctx, observer, observer_state) do
       case {Map.get(step.opts, :provided), ctx.worktree} do
         {%Worktree{} = worktree, _} ->
@@ -234,7 +240,13 @@ defmodule ForemanServer.Jobsite.Engine do
   # :sandbox
   # ---------------------------------------------------------------------
 
-  defp run_step(%Step{kind: :sandbox} = step, ctx, observer, observer_state, _intent_fun) do
+  defp run_step(
+         %Step{kind: :sandbox} = step,
+         %Context{} = ctx,
+         observer,
+         observer_state,
+         _intent_fun
+       ) do
     with {:ok, step, observer_state} <- start_step(step, ctx, observer, observer_state) do
       provider = Map.fetch!(step.opts, :provider)
       config = Map.get(step.opts, :config, %{})
@@ -432,7 +444,16 @@ defmodule ForemanServer.Jobsite.Engine do
   # durable marker resume detects. Whatever the observer returns as
   # overrides applies to this iteration's step, which is what the runner
   # reads.
-  defp iterate_agent(step, ctx, observer, observer_state, intent_fun, prompt, index, acc) do
+  defp iterate_agent(
+         %Step{} = step,
+         ctx,
+         observer,
+         observer_state,
+         intent_fun,
+         prompt,
+         index,
+         acc
+       ) do
     resume_session = if index == 1, do: Map.get(step.opts, :resume_session), else: ctx.session_id
 
     iteration_step = %Step{
@@ -457,8 +478,8 @@ defmodule ForemanServer.Jobsite.Engine do
   end
 
   defp run_agent_iteration(
-         step,
-         ctx,
+         %Step{} = step,
+         %Context{} = ctx,
          observer,
          observer_state,
          intent_fun,
@@ -567,7 +588,15 @@ defmodule ForemanServer.Jobsite.Engine do
     end
   end
 
-  defp extract_output(step, ctx, observer, observer_state, spec, iterations, attempt) do
+  defp extract_output(
+         %Step{} = step,
+         %Context{} = ctx,
+         observer,
+         observer_state,
+         spec,
+         iterations,
+         attempt
+       ) do
     last = List.last(iterations)
 
     case Output.extract(spec, last.text) do

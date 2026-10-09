@@ -152,7 +152,7 @@ defmodule ForemanServer.Aggregates.JobsiteTest do
 
       cmd = %{type: "jobsite.iteration.start", payload: %{jobsite_id: "js-1", index: 2}}
 
-      assert {:error, {:iteration_not_open, 1}} = Jobsite.handle_command(state, cmd)
+      assert {:error, {:iteration_already_open, 1}} = Jobsite.handle_command(state, cmd)
     end
 
     test "accepts the first iteration in order" do

@@ -175,8 +175,12 @@ defmodule ForemanServer.Jobsite.AgentRunner do
         send(parent, {:text, acc_text})
 
         case find_signal(acc_text, signals) do
-          nil -> acc_text
-          matched -> send(parent, {:signal, matched}) && acc_text
+          nil ->
+            acc_text
+
+          matched ->
+            send(parent, {:signal, matched})
+            acc_text
         end
       end)
     end)

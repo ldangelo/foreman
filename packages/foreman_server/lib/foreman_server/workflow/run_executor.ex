@@ -475,7 +475,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp run_phases(state) do
     case Enum.at(state.phase_specs, state.resume_from) do
       nil ->
-        # Resuming a run whose every phase already completed.
+        # Resuming a run whose every phase already completed. This executor started
+        # from a fresh state, so the two values AutoPR derives its PR from (the base
+        # branch and the run's head branch) were never loaded; without them
+        # `finalize_run/1` fails `:auto_pr_base_branch_unresolved`.
+        state =
+          state
+          |> remember_run_base_branch()
+          |> remember_worktree(Map.get(state, :run_worktree))
+
         case finalize_run(state) do
           {:ok, finalized_state} -> {:noreply, finalized_state}
           {:error, reason} -> initialization_failed(state, reason)
@@ -1185,11 +1193,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # and no atom is minted from caller input.
   defp maybe_put_approval_mode(driver_opts, phase_spec) do
     case Map.get(phase_spec, :approval_mode) do
-      nil -> driver_opts
-      "default" -> Keyword.put(driver_opts, :approval_mode, :default)
-      "prompt" -> Keyword.put(driver_opts, :approval_mode, :prompt)
-      "auto_edit" -> Keyword.put(driver_opts, :approval_mode, :auto_edit)
-      "auto_approve" -> Keyword.put(driver_opts, :approval_mode, :auto_approve)
+      nil ->
+        driver_opts
+
+      name ->
+        {:ok, mode} = ForemanServer.Jobsite.Agent.parse_approval_mode(name)
+        Keyword.put(driver_opts, :approval_mode, mode)
     end
   end
 

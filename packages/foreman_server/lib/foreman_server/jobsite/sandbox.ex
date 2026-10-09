@@ -241,12 +241,20 @@ defmodule ForemanServer.Jobsite.Sandbox do
   @spec close(t()) ::
           {:ok, %{preserved_path: String.t() | nil, merged?: boolean()}} | {:error, Error.t()}
   def close(%__MODULE__{} = sandbox) do
-    with :ok <- sandbox.provider.close(sandbox.state) do
+    # Both cleanups always run; a provider failure is reported ahead of the
+    # worktree's result so a failed container removal is never masked.
+    provider_result = sandbox.provider.close(sandbox.state)
+
+    worktree_result =
       if sandbox.owns_worktree? do
         Worktree.close(sandbox.worktree)
       else
         {:ok, %{preserved_path: nil, merged?: false}}
       end
+
+    case {provider_result, worktree_result} do
+      {:ok, result} -> result
+      {{:error, _} = error, _} -> error
     end
   end
 end

@@ -19,9 +19,7 @@ defmodule ForemanServer.Jobsite.Sandboxes.Host do
 
   @impl true
   def create(_config, worktree) do
-    state_dir = Path.join(worktree.path, ".foreman/state")
-    File.mkdir_p!(state_dir)
-    {:ok, %{worktree_path: worktree.path, state_dir: state_dir}, worktree.path, nil}
+    {:ok, %{worktree_path: worktree.path}, worktree.path, nil}
   end
 
   @impl true

@@ -29,7 +29,10 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
     gid = get(config, :gid) || host_id("-g")
     mounts = get(config, :mounts, [])
     network = get(config, :network)
-    state_dir = Path.join(worktree.path, ".foreman/state")
+    # Holds agent.env (credentials) and the exec shim, so it must live outside the
+    # worktree: Foreman commits everything in the worktree and may push the branch.
+    state_dir =
+      Path.join(System.tmp_dir!(), "foreman-jobsite-#{System.unique_integer([:positive])}")
 
     with :ok <- ensure_image(binary, image) do
       File.mkdir_p!(state_dir)
@@ -129,6 +132,7 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
   def close(state) do
     case System.cmd(state.binary, ["rm", "-f", state.container], stderr_to_stdout: true) do
       {_output, 0} ->
+        File.rm_rf(state.state_dir)
         :ok
 
       {output, _code} ->

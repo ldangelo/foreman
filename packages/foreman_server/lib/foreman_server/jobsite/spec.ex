@@ -48,7 +48,6 @@ defmodule ForemanServer.Jobsite.Spec do
 
   @agent_keys ~w(provider model effort approval_mode env)
 
-  @approval_modes ~w(default prompt auto_edit auto_approve)
   @efforts ~w(minimal low medium high xhigh)
 
   @hook_targets ~w(sandbox)
@@ -357,27 +356,15 @@ defmodule ForemanServer.Jobsite.Spec do
       {:ok, nil} ->
         {:ok, nil}
 
-      {:ok, "default"} ->
-        {:ok, :default}
-
-      {:ok, "prompt"} ->
-        {:ok, :prompt}
-
-      {:ok, "auto_edit"} ->
-        {:ok, :auto_edit}
-
-      {:ok, "auto_approve"} ->
-        {:ok, :auto_approve}
-
       {:ok, other} ->
-        {:error,
-         Error.new(
-           :spec_approval_mode_invalid,
-           "agent.approval_mode must be one of #{Enum.join(@approval_modes, ", ")}",
-           %{
-             approval_mode: other
-           }
-         )}
+        with :error <- Agent.parse_approval_mode(other) do
+          {:error,
+           Error.new(
+             :spec_approval_mode_invalid,
+             "agent.approval_mode must be one of #{Enum.join(Agent.approval_mode_names(), ", ")}",
+             %{approval_mode: other}
+           )}
+        end
     end
   end
 

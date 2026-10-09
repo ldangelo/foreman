@@ -518,7 +518,7 @@ defmodule ForemanServer.Aggregates.Jobsite do
   defp require_iteration_closed(%State{iteration_open?: false}), do: :ok
 
   defp require_iteration_closed(%State{iteration_open?: true, iteration_index: idx}),
-    do: {:error, {:iteration_not_open, idx}}
+    do: {:error, {:iteration_already_open, idx}}
 
   defp require_iteration_open(%State{iteration_open?: true, iteration_index: idx}, idx), do: :ok
 
