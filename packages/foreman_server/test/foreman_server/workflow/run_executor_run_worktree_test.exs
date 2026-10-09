@@ -769,7 +769,7 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   # `RunControl.cancel_agent/1` has nothing to interrupt) must still stop the
   # run before the next phase starts — not silently run that phase to
   # completion while the intent sits unconsumed in the ETS table.
-  describe "run_single_phase/3 honours RunControl.intent/1 before a phase starts" do
+  describe "run_phases/1 honours RunControl.intent/1 before a phase starts" do
     setup do
       run_id = "run-between-#{System.unique_integer([:positive])}"
       on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
@@ -780,19 +780,8 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
          %{repo: repo, run_id: run_id} do
       :ok = ForemanServer.RunControl.request(run_id, :pause)
 
-      state = %{
-        run_id: run_id,
-        plan_context: %{"project_root" => repo},
-        task: %{task_id: run_id},
-        status: :in_progress
-      }
-
-      assert {:stopped, %{status: :paused}} =
-               RunExecutor.__run_single_phase_for_test__(
-                 state,
-                 %{"command" => "/skill:never-runs"},
-                 0
-               )
+      assert {:stop, :normal, %{status: :paused}} =
+               RunExecutor.__run_phases_for_test__(never_runs_state(repo, run_id))
 
       worktrees = git!(repo, ["worktree", "list", "--porcelain"])
 
@@ -804,19 +793,8 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
          %{repo: repo, run_id: run_id} do
       :ok = ForemanServer.RunControl.request(run_id, :cancel)
 
-      state = %{
-        run_id: run_id,
-        plan_context: %{"project_root" => repo},
-        task: %{task_id: run_id},
-        status: :in_progress
-      }
-
-      assert {:stopped, %{status: :cancelled}} =
-               RunExecutor.__run_single_phase_for_test__(
-                 state,
-                 %{"command" => "/skill:never-runs"},
-                 0
-               )
+      assert {:stop, :normal, %{status: :cancelled}} =
+               RunExecutor.__run_phases_for_test__(never_runs_state(repo, run_id))
 
       worktrees = git!(repo, ["worktree", "list", "--porcelain"])
 
@@ -825,13 +803,13 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
-  # The gap `run_single_phase/3`'s check alone cannot close: when the LAST
-  # phase completes, `handle_cast({:advance_to, ...})` finalizes the run
-  # (`finalize_run/1`) DIRECTLY, without ever routing through
-  # `start_phase_at_index/2`/`run_single_phase/3`. A pause/cancel racing that
-  # last phase's completion must still stop the run before it finalizes —
-  # not let `maybe_complete_task`, AutoPR, and `RunCompleted` fire anyway.
-  describe "handle_cast({:advance_to, ...}) honours RunControl.intent/1 before finalizing" do
+  # The gap `run_phases/1`'s between-phases check alone cannot close: when the
+  # LAST phase completes the engine has nothing left to start, so
+  # `finish_phases/1` finalizes the run (`finalize_run/1`) DIRECTLY. A
+  # pause/cancel racing that last phase's completion must still stop the run
+  # before it finalizes — not let `maybe_complete_task`, AutoPR, and
+  # `RunCompleted` fire anyway.
+  describe "finish_phases/1 honours RunControl.intent/1 before finalizing" do
     setup do
       run_id = "run-finalize-race-#{System.unique_integer([:positive])}"
       on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
@@ -841,20 +819,46 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     test "pause stops before the run finalizes", %{run_id: run_id} do
       :ok = ForemanServer.RunControl.request(run_id, :pause)
 
-      state = %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress}
+      state = %{
+        run_id: run_id,
+        task: %{task_id: run_id},
+        status: :in_progress,
+        completed: [0],
+        phase_specs: [%{}]
+      }
 
-      assert {:stop, :normal, %{status: :paused}} =
-               RunExecutor.__handle_cast_advance_to_for_test__(state, 0)
+      assert {:stop, :normal, %{status: :paused}} = RunExecutor.__finish_phases_for_test__(state)
     end
 
     test "cancel stops before the run finalizes", %{run_id: run_id} do
       :ok = ForemanServer.RunControl.request(run_id, :cancel)
 
-      state = %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress}
+      state = %{
+        run_id: run_id,
+        task: %{task_id: run_id},
+        status: :in_progress,
+        completed: [0],
+        phase_specs: [%{}]
+      }
 
       assert {:stop, :normal, %{status: :cancelled}} =
-               RunExecutor.__handle_cast_advance_to_for_test__(state, 0)
+               RunExecutor.__finish_phases_for_test__(state)
     end
+  end
+
+  # The executor state `run_phases/1` needs to reach its first interruptible
+  # step: one phase that must never run, and no worktree declared.
+  defp never_runs_state(repo, run_id) do
+    %{
+      run_id: run_id,
+      plan_context: %{"project_root" => repo},
+      task: %{task_id: run_id},
+      status: :in_progress,
+      phase_specs: [%{name: "never-runs", action: :command, command: "/skill:never-runs"}],
+      resume_from: 0,
+      completed: [],
+      worktree_spec: nil
+    }
   end
 
   defp count_commits(repo, base, branch) do

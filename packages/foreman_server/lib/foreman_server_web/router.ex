@@ -19,7 +19,26 @@ defmodule ForemanServerWeb.Router do
     plug(ForemanServerWeb.Plugs.RequireAuthenticated)
   end
 
+  # Fail-closed JSON pipeline: unlike `:api` (BearerAuth, open when no token is
+  # configured), `RequireAuthenticated` answers 401 until an operator sets one.
+  pipeline :jobsite_api do
+    plug(:accepts, ["json"])
+    plug(ForemanServerWeb.Plugs.RequireAuthenticated)
+  end
+
   forward("/mcp", ForemanServerWeb.MCPRouter, [])
+
+  scope "/api/jobsites", ForemanServerWeb do
+    pipe_through(:jobsite_api)
+
+    post("/", JobsiteController, :create)
+    get("/", JobsiteController, :index)
+    get("/:id", JobsiteController, :show)
+    post("/:id/pause", JobsiteController, :pause)
+    post("/:id/cancel", JobsiteController, :cancel)
+    post("/:id/resume", JobsiteController, :resume)
+    post("/:id/merge", JobsiteController, :merge)
+  end
 
   scope "/api", ForemanServerWeb do
     pipe_through(:api)

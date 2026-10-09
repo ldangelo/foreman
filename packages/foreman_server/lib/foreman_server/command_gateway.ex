@@ -753,7 +753,8 @@ defmodule ForemanServer.CommandGateway do
         ImplementationContext.build(%{
           project_id: get_value(task_projection, :project_id),
           workflow_type: workflow_type,
-          trd_path: get_value(task_projection, :trd_path)
+          trd_path: get_value(task_projection, :trd_path),
+          external_id: get_value(task_projection, :external_id)
         })
 
       with {:ok, context} <- build do

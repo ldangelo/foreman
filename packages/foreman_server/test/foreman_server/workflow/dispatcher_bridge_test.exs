@@ -157,24 +157,56 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     )
   end
 
-  defp wait_for_active_run_reservation(project_id, run_id) do
+  # The task enters `in_progress` at task.dispatch and leaves it when the run
+  # ends. This test points the project at a non-git temp dir, so the run can
+  # fail in less than one poll interval; a poll for `in_progress` alone then
+  # misses the transient state. Any post-dispatch status proves the bridge ran.
+  defp wait_for_dispatched(task_id) do
     poll_until(
       fn ->
-        active_runs = ProjectionStore.list_projects_with_active_runs()
+        case ProjectionStore.task_projection(task_id) do
+          %{status: status} = task when status in ["in_progress", "failed", "completed"] ->
+            {:ok, task}
 
-        case Enum.find(active_runs, fn {listed_project_id, run_ids} ->
-               listed_project_id == project_id and run_id in run_ids
-             end) do
-          {^project_id, run_ids} ->
-            {:ok, run_ids}
+          %{status: other} ->
+            {:error, {:status, other}}
 
           nil ->
-            {:error, active_runs}
+            {:error, :missing}
         end
       end,
-      "active run reservation #{project_id}/#{run_id}"
+      "task #{task_id} dispatched"
     )
   end
+
+  # The run in this fixture fails almost immediately (its project path is not a git
+  # repo), and finishing a run releases its reservation. Polling the LIVE reservation
+  # list therefore races: under load the poll can first look after the release and
+  # see nothing (`{:error, []}`). The recorded `ProjectRunReserved` event is
+  # permanent, so wait for that instead.
+  defp wait_for_run_reservation(project_id, run_id) do
+    poll_until(
+      fn ->
+        case ForemanServer.EventStore.read_stream_forward("project:#{project_id}", 0, 1_000) do
+          {:ok, events} ->
+            if Enum.any?(events, &reserved_event_for?(&1, run_id)),
+              do: {:ok, run_id},
+              else: {:error, Enum.map(events, & &1.event_type)}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end,
+      "ProjectRunReserved event #{project_id}/#{run_id}"
+    )
+  end
+
+  defp reserved_event_for?(%{event_type: "ProjectRunReserved", data: data}, run_id) do
+    data = if is_struct(data), do: Map.from_struct(data), else: data
+    Map.new(data, fn {key, value} -> {to_string(key), value} end)["run_id"] == run_id
+  end
+
+  defp reserved_event_for?(_event, _run_id), do: false
 
   defp wait_for_run(run_id) do
     poll_until(
@@ -257,10 +289,9 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
 
       run_id = approved.run_id
 
-      reserved_runs = wait_for_active_run_reservation(project_id, run_id)
-      assert run_id in reserved_runs
+      assert ^run_id = wait_for_run_reservation(project_id, run_id)
 
-      dispatched = wait_for_status(task_id, "in_progress")
+      dispatched = wait_for_dispatched(task_id)
       assert dispatched.run_id == run_id
 
       run = wait_for_run(run_id)
@@ -268,6 +299,13 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
 
       refute is_nil(run.status) or run.status == "",
              "run #{run_id} should have a status, got: #{inspect(run)}"
+
+      # The fixture's project path is not a git repo, so the run always ends
+      # `failed` for exactly that reason. Any other failure reason would mean
+      # dispatch itself broke, which this test must not tolerate.
+      if dispatched.status == "failed" do
+        assert dispatched.failure_reason =~ "not_a_git_repo"
+      end
     end
   end
 

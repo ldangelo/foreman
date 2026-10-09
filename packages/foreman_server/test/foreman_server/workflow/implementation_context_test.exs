@@ -2,6 +2,7 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.ImplementationContext
 
@@ -300,6 +301,95 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       assert ctx.beads_database_path == nil
       refute Map.has_key?(ImplementationContext.to_payload(ctx), "beads_database_path")
     end
+
+    test "non-beads workflow returns bead_id: nil even when external_id is present", %{
+      repo: repo
+    } do
+      :sys.replace_state(ProjectionStore, fn state ->
+        put_in(state.projects["proj-1"], %{project_id: "proj-1", path: repo, status: "active"})
+      end)
+
+      assert {:ok, ctx} =
+               ImplementationContext.build(%{
+                 project_id: "proj-1",
+                 workflow_type: "implement-trd",
+                 trd_path: "docs/TRD/x.md",
+                 external_id: "foreman-bead-1"
+               })
+
+      assert ctx.bead_id == nil
+      refute Map.has_key?(ImplementationContext.to_payload(ctx), "bead_id")
+    end
+  end
+
+  describe "build/1 bead_id resolution (TRD-002)" do
+    setup do
+      suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+      repo = Path.join(System.tmp_dir!(), "ic-bead-#{suffix}")
+      File.rm_rf!(repo)
+      File.mkdir_p!(Path.join(repo, "docs/TRD"))
+      File.write!(Path.join([repo, "docs", "TRD", "x.md"]), "# TRD\n")
+      {_, 0} = System.cmd("git", ["init", "-q", "--initial-branch=main"], cd: repo)
+      {_, 0} = System.cmd("git", ["config", "user.email", "t@t"], cd: repo)
+      {_, 0} = System.cmd("git", ["config", "user.name", "t"], cd: repo)
+      {_, 0} = System.cmd("git", ["add", "."], cd: repo)
+      {_, 0} = System.cmd("git", ["commit", "-q", "-m", "init"], cd: repo)
+
+      ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(repo) end)
+
+      :sys.replace_state(ProjectionStore, fn state ->
+        put_in(state.projects["proj-bead"], %{
+          project_id: "proj-bead",
+          path: repo,
+          status: "active"
+        })
+      end)
+
+      :ok =
+        TaskProviderRegistry.register_for_project(
+          "proj-bead",
+          ForemanServer.TaskProviders.BeadsAdapter,
+          %{"database_path" => Path.join(repo, ".beads/test.db")}
+        )
+
+      ExUnit.Callbacks.on_exit(fn ->
+        _ = TaskProviderRegistry.unregister_for_project("proj-bead", :test_cleanup)
+      end)
+
+      %{repo: repo}
+    end
+
+    test "bead_id resolves correctly from external_id (AC-003-1)" do
+      assert {:ok, ctx} =
+               ImplementationContext.build(%{
+                 project_id: "proj-bead",
+                 workflow_type: "implement-trd-beads",
+                 trd_path: "docs/TRD/x.md",
+                 external_id: "foreman-xyz9"
+               })
+
+      assert ctx.bead_id == "foreman-xyz9"
+      assert ImplementationContext.to_payload(ctx)["bead_id"] == "foreman-xyz9"
+    end
+
+    test "unresolvable bead_id fails loudly, no silent fallback (AC-003-2)" do
+      assert {:error, {:implementation_context_failed, :bead_id_missing}} =
+               ImplementationContext.build(%{
+                 project_id: "proj-bead",
+                 workflow_type: "implement-trd-beads",
+                 trd_path: "docs/TRD/x.md"
+               })
+    end
+
+    test "blank external_id fails loudly the same as absent (AC-003-2)" do
+      assert {:error, {:implementation_context_failed, :bead_id_missing}} =
+               ImplementationContext.build(%{
+                 project_id: "proj-bead",
+                 workflow_type: "implement-trd-beads",
+                 trd_path: "docs/TRD/x.md",
+                 external_id: ""
+               })
+    end
   end
 
   describe "to_payload/1" do
@@ -334,6 +424,20 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
 
       payload = ImplementationContext.to_payload(ctx)
       assert payload["beads_database_path"] == "/abs/path/adb"
+    end
+
+    test "includes bead_id only when set" do
+      ctx = %ImplementationContext{
+        trd_path: "docs/TRD/x.md",
+        trd_path_argument: ~s("docs/TRD/x.md"),
+        project_root: "/tmp/proj",
+        source_revision: String.duplicate("a", 40),
+        implementation_key: String.duplicate("b", 64),
+        bead_id: "foreman-xyz9"
+      }
+
+      payload = ImplementationContext.to_payload(ctx)
+      assert payload["bead_id"] == "foreman-xyz9"
     end
   end
 

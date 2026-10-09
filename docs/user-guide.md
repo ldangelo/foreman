@@ -261,6 +261,13 @@ Phases have no default execution timeout: a workflow's `timeout_minutes:`
 Declare a positive `timeout_minutes:` on a phase to opt it back into a
 deadline.
 
+A phase can set `approval_mode:` (`default`, `prompt`, `auto_edit`,
+`auto_approve`) to control the agent's permission mode. Without it, Claude
+cannot write files headlessly; the phase then fails with
+`{:permission_denied, [tools]}` rather than completing with no changes. Report
+paths using `{task.projectReportsDir}` resolve under the run's worktree (or the
+task/project directory), not the server's working directory.
+
 ### Agent command assets
 
 `foreman commands` generates agent-native Foreman shortcuts for Claude Code plus copyable generate-only assets for Pi/OMP, Codex, and OpenCode. The assets were thin shell wrappers over `foreman task create`, `foreman run submit`, `foreman run list`, `foreman run get`, and `foreman task get`; the `task create`/`task get` wrappers are REMOVED (TRD-018, 2026-09-13) along with the CLI verbs they wrapped, so those two generated shortcuts now fail with an "unknown command" error until the generator is updated. The `run submit`/`run list`/`run get` wrappers are unaffected. Generated files inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN` instead of embedding secrets.
@@ -291,6 +298,9 @@ Support states:
 | OpenCode | Generate-only | Prints/writes copyable Markdown and marks native install unsupported until a stable native contract is verified. |
 
 ## 2. Operator API surface
+
+(Jobsite has its own, separate surface under `/api/jobsites`; see
+[Remote Jobsite API](#remote-jobsite-api).)
 
 All external domain mutations go through `POST /api/commands`. The
 operator allowlist (`ForemanServer.CommandGateway.@allowed_operator_types`)
@@ -863,6 +873,118 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   2026-09-13); see §4 for what's unchanged internally and what isn't.
   Never mutate the provider issue by hand while Foreman still owns
   it.
+
+## 11. Jobsite: scripted agent runs
+
+`ForemanServer.Jobsite` is a separate, event-sourced engine for scripted
+agent runs that is not a Foreman workflow phase: a run gets its own git
+worktree, an optional container sandbox, and loops an agent for up to
+`max_iterations` turns until it emits a completion signal or the budget is
+exhausted. It lives in its own `jobsite:<id>` aggregate stream
+(`ForemanServer.Aggregates.Jobsite`) and is driven by
+`ForemanServer.Jobsite.Executor`, a `GenServer` under
+`ForemanServer.Jobsite.Supervisor` — independent of `RunExecutor` and the
+`run:<id>`/`phase:<id>` streams workflow phases use.
+
+Use `foreman init --template <name>` (see
+[CLI Reference](./cli-reference.md#foreman-init---template-name-real-current))
+to scaffold a runnable `.foreman/<name>.exs` script against this API —
+`basic` (one agent, one iteration), `iterate` (loops to a completion
+signal), `parallel` (fans out across worktrees, merges sequentially),
+`review` (implement, then host-verified test-and-fix loop), and `triage`
+(pulls a ready Beads issue and works it). Resume after a crash or an
+explicit pause with `ForemanServer.Jobsite.resume/1`, which rehydrates
+authoritative state from the event stream (never from the projection or
+process memory) and continues the same agent session.
+
+**Unattended Claude runs need `approval_mode`.** The agent constructors take
+`approval_mode:` (`:default | :prompt | :auto_edit | :auto_approve`, default
+unset). Left unset, Claude runs in its interactive permission mode and cannot
+write files or run commands headlessly — it replies that it is waiting for
+approval and the run ends with no changes. Use `:auto_edit` to allow edits or
+`:auto_approve` to bypass prompts, the latter ideally only inside a container
+sandbox: `Agents.claude("claude-sonnet-4-6", approval_mode: :auto_approve)`.
+An agent that fails outright (rejected credentials, bad model, non-zero exit)
+fails the jobsite with `:agent_failed`; it does not report a completed run.
+If `ANTHROPIC_API_KEY` is set in the environment it takes precedence over a
+`claude` login, so an exhausted API key fails the run even when the login works.
+
+Workflow phases run on this same engine. `ForemanServer.Workflow.RunExecutor`
+no longer has a phase loop of its own: `ForemanServer.Workflow.Lowering`
+compiles a manifest's phase list into a `Program` (a `:worktree` step for the
+first phase, then per phase an `:agent`, an optional `:gate` for
+`requiredFile:`, and a `:commit`), and `ForemanServer.Jobsite.Engine` runs it
+with `ForemanServer.Workflow.JobsiteObserver` emitting the `phase.*` lifecycle
+commands. Operator-visible behavior is unchanged — pause and cancel, resume,
+durable run logs, stall detection, phase PRs and the worktree contract behave
+as before — with one difference: a `bash:` phase (parsed and validated at load
+but never executable) is now refused when the run starts, before any worktree
+is provisioned, rather than failing the run at that phase.
+
+### Remote Jobsite API
+
+A running server can start and manage jobsites over HTTP, so a script can run on
+your machine while the agent runs on the server. The server never runs code from
+the script: the body is validated data, the repo is a **registered
+`project_id`** (never a path on your machine), and the prompt is sent as text.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}` |
+| `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`) |
+| `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite in the background (same flag and cap as start) |
+| `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
+
+Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
+`approval_mode`), `strategy` (`"head"` or `{"branch": name}`), `sandbox`,
+`name`, `max_iterations`, `completion_signal`, `idle_timeout_seconds`,
+`completion_timeout_seconds`, `hooks.sandbox`, `exclude_paths`,
+`copy_to_worktree`, `resume_session`, `push`. Unknown keys are rejected.
+`push: true` publishes the branch to `origin` after the commit and needs a
+branch strategy; if the push fails the jobsite fails with `push_failed` and the
+commits stay on the server's local branch.
+
+Status codes: `400` missing/malformed input, `401` bad or missing token, `403`
+forbidden by policy, `404` unknown id or project, `409` wrong state, `422`
+invalid spec, `429` too many running jobsites, `502` the executor could not
+start.
+
+**Operator configuration** (`config :foreman_server, :jobsites, ...`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `allow_remote_start` | off | Must be exactly `true` for `POST /api/jobsites` and `POST /api/jobsites/:id/resume` to start anything (otherwise `403`) |
+| `max_concurrent_jobsites` | `3` | Running jobsites above this return `429` |
+| `allow_host_sandbox` | off | The `host` sandbox runs agents as the server user with no isolation; the default is `docker` |
+| `agent_env_allowlist` | `[]` | Environment variable names a request may set on the agent. Values are not persisted, so a resumed jobsite runs without them |
+
+The token and the two on/off keys can be set from the environment when the
+server boots (`config/runtime.exs`; it applies to `mix phx.server`, `mix run`
+and releases, not to `mix test`):
+
+| Variable | Sets |
+|---|---|
+| `FOREMAN_API_TOKEN` | `:api_bearer_token` |
+| `FOREMAN_JOBSITES_ALLOW_REMOTE_START` | `allow_remote_start` (only the exact value `true` enables it) |
+| `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
+| `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
+
+A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).
+
+These routes fail closed: with no `:api_bearer_token` configured every request is
+`401` (unlike `/api/commands`, which is open when no token is set). Put TLS in
+front of the server before exposing it beyond localhost. Every start, pause,
+cancel, resume and merge request, accepted or rejected, is recorded in an
+audit stream with the caller's TCP address (the proxy's, behind one; requests
+refused with `401` are not recorded).
+
+Scripts: `foreman init --template basic|iterate|parallel` scaffold scripts that
+load the `foreman_client` package (`packages/foreman_client`, via `Mix.install`;
+needs only Erlang/OTP 27+, no Foreman checkout, no database). Set `FOREMAN_API_TOKEN` and
+`FOREMAN_PROJECT_ID` (and `FOREMAN_API_URL` if the server is not local), then
+`elixir .foreman/<name>.exs`. `review` and `triage` still run inside a booted
+server app with `mix run`.
 
 ## Day-to-day workflow
 

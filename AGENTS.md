@@ -110,7 +110,11 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-RunExecutor phase completion rules: (1) A phase deadline bounds how long the executor waits for `{:worker_result, _}`; it does not invalidate a non-empty `{:ok, output}` success already in the mailbox — that success stays authoritative even if final lifecycle dispatch crosses the wall-clock deadline, while a queued error may still be rejected as `:worker_timeout`. (2) Every timeout return path MUST drain any `{:worker_result, _}` left in the mailbox before returning: `handle_info/2` has no such clause (no permissive catch-all, §5.2), so an undispatched result would be matched by the NEXT phase and committed as its artifact. (3) A worker that died without producing a result is always `:worker_died_no_result`, even past the deadline; `:worker_timeout` means "deadline elapsed, result unknown", never "crash" (§5.3).
+RunExecutor phase completion rules (these now live in `ForemanServer.Jobsite.Runners.Overwatch.wait_for_worker_result/4`, the wait every manifest phase goes through; `RunExecutor` itself holds no phase loop — see "Phase execution runs on the Jobsite engine" below): (1) A phase deadline bounds how long the executor waits for `{:worker_result, _}`; it does not invalidate a non-empty `{:ok, output}` success already in the mailbox — that success stays authoritative even if final lifecycle dispatch crosses the wall-clock deadline, while a queued error may still be rejected as `:worker_timeout`. (2) Every timeout return path MUST drain any `{:worker_result, _}` left in the mailbox before returning: `handle_info/2` has no such clause (no permissive catch-all, §5.2), so an undispatched result would be matched by the NEXT phase and committed as its artifact. (3) A worker that died without producing a result is always `:worker_died_no_result`, even past the deadline; `:worker_timeout` means "deadline elapsed, result unknown", never "crash" (§5.3).
+
+**Phase execution runs on the Jobsite engine (cutover, 2026-10).** `RunExecutor` no longer walks phases itself. `handle_kickoff_ready/1` calls `run_phases/1`, which compiles the manifest's phases with `Workflow.Lowering.lower/2` into one `Jobsite.Program` and runs it on `Jobsite.Engine.run_program/3` with `Workflow.JobsiteObserver`; the executor's own state map is the observer's state and comes back in the engine's outcome. What was the per-phase loop is now: the engine's `:intent` check before each phase's FIRST step (`RunControl.intent/1`, pause/cancel between phases); `RunExecutor.phase_begin/3` (`phase.start` + the run's worktree, reused with `base_ref` refreshed on every phase after the first); `phase_launch/4` + the Overwatch runner (agent dispatch, `HeartbeatLease`, the wait); `ArtifactTemplate.write/4`; `enforce_required_file/4` (the `:gate` step); the engine's `:commit` step (`Jobsite.Git.commit_all/3`); `phase_finish/5` (`phase.complete`); and `step_failed/4` → `handle_phase_body_error/6` (pause commits partial work, cancel stops clean, otherwise `phase.fail`). `finish_phases/1` is the one place that still checks intent before `finalize_run/1`. A `bash:` phase, or a `command:` phase with no command, is now refused when the program is built — before any worktree exists — instead of mid-run. Deleted with the loop: `run_single_phase/3`, `handle_cast({:advance_to, _})` and the public `RunExecutor.advance_to/2`, `start_phase_at_index/2`, `execute_agent/4`, `dispatch_agent/5` (its pre-launch half is `prepare_agent_launch/5`), `wait_for_worker_result/4` (moved to the runner), `emit_phase_blocked/3`, and `Workflow.StepSequencer` (its halt-on-`:blocked`/`:failed` branch could never be reached: `phase_statuses` only ever holds `:completed`). Do not reintroduce a second phase loop: two live phase implementations is the duplication this cutover removed.
+
+**Remote Jobsite API (`/api/jobsites`, 2026-10).** A second front-end onto `Jobsite.run_async/1`: scripts run on the CLIENT and call JSON routes on a running server (`JobsiteController`; `POST /api/jobsites`, `GET /api/jobsites[/:id]`, `POST /api/jobsites/:id/{pause,cancel,resume,merge}`). The body is validated by `Jobsite.Spec.from_json/2` — a string-keyed whitelist that rejects `on_event`/`reply_to`/`prompt_file`/`repo_path`/unknown keys and never mints atoms — so the server never evaluates caller code. Rules that must not be relaxed: (1) the routes sit behind `RequireAuthenticated`, which FAILS CLOSED (401 when no `:api_bearer_token` is configured), unlike `BearerAuth` on `/api`, which is open when unset; (2) starting AND resuming (`POST /:id/resume` starts an executor too) also need `config :foreman_server, :jobsites, allow_remote_start: true` (exactly `true`, default off) (or `FOREMAN_JOBSITES_ALLOW_REMOTE_START=true`; `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` and `FOREMAN_API_TOKEN` likewise — all read by `config/runtime.exs`, never in the test env, only when the variable is present) and is capped by `max_concurrent_jobsites` (default 3, counted from `Jobsite.Registry`; check-then-start, so two simultaneous requests can both pass at max-1); (3) `hooks.host.*` is FORBIDDEN (`:spec_hooks_forbidden`) because `Hooks.run_host/3` runs `sh -c` on the server — only `hooks.sandbox.*` is accepted; (4) the sandbox defaults to `docker`, `host` only when `:jobsites, allow_host_sandbox: true`; `agent.env` is refused unless every key is in `:jobsites, agent_env_allowlist`; `agent.env` values are NEVER written to `JobsiteStarted` (they would sit in the event store in clear text), so a resumed jobsite runs without them — `approval_mode` IS persisted; (5) the repo is a registered `project_id`, never a client path; (6) every start/pause/cancel/resume/merge request, accepted or rejected, is recorded on the single stream `jobsite_audit:global` (`Aggregates.JobsiteAudit`, system-only command `jobsite.audit.record`, event `JobsiteRequestAudited`) with the TCP peer address — behind a proxy that is the proxy's address, the shared token has no per-user identity, and requests rejected by the auth plug (401) are not audited. `push: true` publishes the branch to the fixed remote `origin` after the commit and requires a `{"branch": name}` strategy (`:spec_push_requires_branch`); a failed push fails the jobsite with `:push_failed` and keeps the commits on the local branch. `push` is persisted on `JobsiteStarted` and the aggregate (`push?`) because resume rebuilds from events and is given no options — without that a resumed run silently skips its push. `Control.request/2` only writes an ETS intent and checks nothing, so the controller verifies a live executor before pause/cancel and `Jobsite.resume_async/1` verifies aggregate state before resuming (the Executor reports a rejected resume only to `reply_to`, which a background resume lacks). `Jobsite.merge_into/2` merges a COMPLETED jobsite's branch only into the branch currently checked out in the repo (caller names it; mismatch is 409) and reads `repo_path` from the event stream because the projection has none. Templates `basic`/`iterate`/`parallel` drive this API through the `foreman_client` package (`packages/foreman_client`, loaded with `Mix.install`; `:httpc` + OTP `:json`, needs OTP 27+; it is NOT copied into projects, so `foreman init` cannot leave a stale copy behind); `review`/`triage` still call `ForemanServer.Jobsite` directly under `mix run` because they drive a live sandbox the API does not expose.
 
 ## 4. Goal-Driven Execution
 
@@ -160,7 +164,16 @@ phase PR record after that phase's commit decision, targeting the recorded run
 base branch from the same Foreman run branch. Absent or false preserves default
 final-AutoPR behavior. `PhaseSpec.@fields` plus `commit`/`stack_pr`, plus the
 workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
-is the complete declarable vocabulary. `timeout_minutes:` (alias `timeoutMinutes:`) is a
+is the complete declarable vocabulary. `approval_mode:` is a phase field
+(`default | prompt | auto_edit | auto_approve`, validated by
+`Interpreter.validate_phase_approval_modes!/2`) that `RunExecutor` appends to the
+agent's `driver_opts`. Left unset, Claude runs in its interactive permission mode
+and cannot write headlessly; such a phase now FAILS with
+`{:permission_denied, [tool_names]}` (from the structured `permission_denials` in
+the harness result, `JidoHarness.RunResult.normalize/1`) instead of completing
+with no changes. `{task.projectReportsDir}` resolves against the run worktree,
+then the task's working directory, then the registered project path — never the
+server's cwd. `timeout_minutes:` (alias `timeoutMinutes:`) is a
 non-negative integer phase execution timeout in minutes. When the key is
 present — `0` included — it is authoritative and nothing below overrides it:
 `RunExecutor` passes `timeout_ms: :infinity` for `0` and
@@ -392,9 +405,9 @@ dispatched process: run-d6cdefe69706087e6bce5b1a10b95384's pi transcript runs
 `test -n "$FOREMAN_PRD_PATH" && … || echo 'FOREMAN_PRD_PATH unset/empty'` at msg
 #45 and gets `unset/empty` back at msg #47.
 
-**A `command:` phase has no in-prompt channel at all.** `dispatch_agent/5`
-substitutes the rendered command string for the rendered prompt
-(`run_executor.ex:470-477`); `request.prompt` survives only as the fallback for
+**A `command:` phase has no in-prompt channel at all.** `prepare_agent_launch/5`
+(formerly `dispatch_agent/5`) substitutes the rendered command string for the rendered prompt
+(`prepare_agent_launch/5`); `request.prompt` survives only as the fallback for
 a command that renders to nil, so for any real command phase it is discarded.
 Built-in `prd`/`fix` command phases keep those command prompt bytes unchanged;
 Foreman-owned inbox progress guidance rides separately through worker
@@ -856,8 +869,9 @@ module. Every multi-phase run — `plan.yaml` included —
 crashed the executor on the phase 1 -> phase 2 transition instead of advancing,
 which means `create-trd` had never once executed. The compiler emitted the
 warning on every build for the entire life of the bug and nothing failed on it,
-so the crash was repeatedly re-diagnosed as a workflow or agent problem. The
-alias now carries a comment saying exactly this (`run_executor.ex:43-47`).
+so the crash was repeatedly re-diagnosed as a workflow or agent problem. (That
+module, and the loop that called it, were deleted in the Jobsite engine cutover
+— the lesson stands, the code does not.)
 Treat `undefined module`, `undefined function`, and unused-alias warnings as
 build failures to be read, not scrolled past: this section's whole point is that
 the compiler already knew.
@@ -1001,6 +1015,11 @@ environmental problems that block `devbox run test:langfuse`:
    default on a fresh clone (where this would need a follow-up).
    Tracked in beads issue `foreman-w4b`. Remove the workaround once
    devbox pins 1.18.4 natively or `br close foreman-w4b`.
+
+A third change: the `init_hook` no longer sources the litellm-langfuse stack's
+whole `.env` (that leaked its `ANTHROPIC_API_KEY` into every dev shell and
+overrode the operator's own credentials). It exports only `LITELLM_MASTER_KEY`;
+`test:langfuse`/`test:all` source the stack `.env` themselves.
 
 ---
 
@@ -1911,7 +1930,8 @@ also `:malformed`; an absent `description` is fine (title-only prompt).
 :start_beads_watcher?, false`) — set it to `true` (dev-only; do not commit a
 default flip to `main`'s `config/dev.exs`) to run one watcher per registered
 project, tailing its JSONL and auto-dispatching per the mapping above. See
-`docs/user-guide.md`'s "Inbound sync" note for the config key.
+`docs/user-guide.md`'s "Inbound sync" note for the config key; the
+`FOREMAN_START_BEADS_WATCHER=true|false` env var (`config/runtime.exs`) overrides it per start without editing `dev.exs`.
 
 ### Beads Dispatch Partitioning via Label Gate (opt-IN semantics)
 

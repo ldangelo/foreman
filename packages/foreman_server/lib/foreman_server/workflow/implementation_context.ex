@@ -20,7 +20,14 @@ defmodule ForemanServer.Workflow.ImplementationContext do
     * `beads_database_path` — for `implement-trd-beads` only, the
       absolute path of the registered task provider's database; never
       rediscovered from the worktree
-
+    * `bead_id` — for `implement-trd-beads` only, the id of the bead
+      that triggered this task (`task_projection.external_id`,
+      threaded through from the Beads-watcher-created task). Required
+      for every `implement-trd-beads` task regardless of origin: the
+      workflow's dispatch command needs it to target the right bead,
+      so an `implement-trd-beads` task with no resolvable bead id
+      fails context build loudly rather than rendering a blank
+      argument.
   All fields are reserved. They cannot be overridden by the operator
   payload, the workflow YAML context, or runtime contexts. Re-approval
   of the same `task_id` + `approval_id` reuses the persisted snapshot
@@ -40,7 +47,8 @@ defmodule ForemanServer.Workflow.ImplementationContext do
   @type build_input :: %{
           :project_id => String.t(),
           optional(:workflow_type) => String.t() | nil,
-          optional(:trd_path) => String.t() | nil
+          optional(:trd_path) => String.t() | nil,
+          optional(:external_id) => String.t() | nil
         }
 
   @type t :: %__MODULE__{
@@ -49,7 +57,8 @@ defmodule ForemanServer.Workflow.ImplementationContext do
           project_root: String.t(),
           source_revision: String.t(),
           implementation_key: String.t(),
-          beads_database_path: String.t() | nil
+          beads_database_path: String.t() | nil,
+          bead_id: String.t() | nil
         }
 
   @enforce_keys [
@@ -64,7 +73,8 @@ defmodule ForemanServer.Workflow.ImplementationContext do
             project_root: nil,
             source_revision: nil,
             implementation_key: nil,
-            beads_database_path: nil
+            beads_database_path: nil,
+            bead_id: nil
 
   @doc "Returns true when the workflow selector requires a Beads database path."
   @spec beads_workflow?(String.t() | nil) :: boolean()
@@ -86,6 +96,7 @@ defmodule ForemanServer.Workflow.ImplementationContext do
   def build(%{project_id: project_id} = input) when is_binary(project_id) and project_id != "" do
     workflow_type = Map.get(input, :workflow_type)
     trd_path = Map.get(input, :trd_path)
+    external_id = Map.get(input, :external_id)
 
     with {:ok, project} <- fetch_project(project_id),
          {:ok, canonical_root} <- canonicalize_root(project),
@@ -94,6 +105,7 @@ defmodule ForemanServer.Workflow.ImplementationContext do
          :ok <- assert_regular_file_under(canonical_root, normalized),
          :ok <- assert_tracked_regular_blob(source_revision, canonical_root, normalized),
          {:ok, key} <- implementation_key(project_id, normalized),
+         {:ok, bead_id} <- bead_id_for(workflow_type, external_id),
          {:ok, beads_db} <- beads_database_path_for(workflow_type, project_id) do
       {:ok,
        %__MODULE__{
@@ -102,7 +114,8 @@ defmodule ForemanServer.Workflow.ImplementationContext do
          project_root: canonical_root,
          source_revision: source_revision,
          implementation_key: key,
-         beads_database_path: beads_db
+         beads_database_path: beads_db,
+         bead_id: bead_id
        }}
     end
   end
@@ -120,9 +133,15 @@ defmodule ForemanServer.Workflow.ImplementationContext do
       "implementation_key" => ctx.implementation_key
     }
 
-    case ctx.beads_database_path do
+    payload =
+      case ctx.beads_database_path do
+        nil -> payload
+        path -> Map.put(payload, "beads_database_path", path)
+      end
+
+    case ctx.bead_id do
       nil -> payload
-      path -> Map.put(payload, "beads_database_path", path)
+      bead_id -> Map.put(payload, "bead_id", bead_id)
     end
   end
 
@@ -431,6 +450,23 @@ defmodule ForemanServer.Workflow.ImplementationContext do
 
         {:error, _} ->
           {:error, {:implementation_context_failed, :beads_database_path_missing}}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  # The triggering bead's id (`task_projection.external_id`, threaded
+  # through by the caller). implement-trd-beads's dispatch command
+  # needs it to target the right bead regardless of how the task was
+  # created, so an implement-trd-beads task with no resolvable bead
+  # id fails loudly here rather than silently building a context with
+  # `bead_id: nil` that would later render a blank command argument.
+  defp bead_id_for(workflow_type, external_id) do
+    if beads_workflow?(workflow_type) do
+      case external_id do
+        id when is_binary(id) and id != "" -> {:ok, id}
+        _ -> {:error, {:implementation_context_failed, :bead_id_missing}}
       end
     else
       {:ok, nil}

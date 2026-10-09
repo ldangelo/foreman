@@ -359,7 +359,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessIntegrationTest do
     end)
   end
 
-  defp restore_env(_app, _key, nil), do: :ok
+  # A nil original means the key was UNSET; leaving the test value in place would leak
+  # stub providers into every later test (e.g. Jobsite agents resolving :pi).
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 
   defp restore_path(nil), do: System.delete_env("PATH")
