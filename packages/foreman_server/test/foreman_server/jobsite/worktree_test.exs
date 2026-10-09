@@ -77,6 +77,16 @@ defmodule ForemanServer.Jobsite.WorktreeTest do
       assert File.dir?(wt.path)
     end
 
+    test "refuses the branch checked out in the repo's main worktree" do
+      repo = tmp_repo!()
+      assert {:ok, main} = Git.current_branch(repo)
+
+      assert {:error, %Error{code: :worktree_create_failed, message: message}} =
+               Worktree.create(repo_path: repo, strategy: {:branch, main})
+
+      assert message =~ "main worktree"
+    end
+
     test "reuses an already-registered worktree for the same branch" do
       repo = tmp_repo!()
 
@@ -98,7 +108,11 @@ defmodule ForemanServer.Jobsite.WorktreeTest do
       {_output, 0} = System.cmd("git", ["-C", repo, "commit", "-q", "-m", "add beads"])
 
       assert {:ok, wt} =
-               Worktree.create(repo_path: repo, strategy: {:branch, "agent/exclude"}, exclude_paths: ["/.beads/"])
+               Worktree.create(
+                 repo_path: repo,
+                 strategy: {:branch, "agent/exclude"},
+                 exclude_paths: ["/.beads/"]
+               )
 
       refute File.exists?(Path.join(wt.path, ".beads"))
       refute Git.dirty?(wt.path)

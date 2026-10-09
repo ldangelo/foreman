@@ -144,13 +144,19 @@ defmodule ForemanServer.Aggregates.Jobsite do
     }
   end
 
+  # A resume provisions a fresh sandbox and then runs iteration `iteration_index + 1`,
+  # which can exceed the limit the jobsite started with (a pause or crash during the
+  # last iteration). The executor widens its own bound by the same rule, so the
+  # aggregate must too, or it rejects the resumed iteration as over the limit and the
+  # accepted resume ends `failed`. Derived from replayed state, so it stays deterministic.
   defp apply_typed(%State{} = state, %JobsiteSandboxProvisioned{} = e) do
     %State{
       state
       | sandbox_provider: e.provider,
         sandbox_repo_path: e.sandbox_repo_path,
         container_id: e.container_id,
-        sandbox_attempt: e.attempt || state.sandbox_attempt + 1
+        sandbox_attempt: e.attempt || state.sandbox_attempt + 1,
+        max_iterations: max(state.max_iterations, state.iteration_index + 1)
     }
   end
 

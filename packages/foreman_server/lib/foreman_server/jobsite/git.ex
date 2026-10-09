@@ -118,13 +118,20 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
+  # A `git status` that cannot run (corrupt index, lock, permissions) is NOT evidence of
+  # a clean tree. The caller uses this to decide whether a worktree may be deleted, so
+  # the unknown case answers true: keep the directory rather than destroy unsaved work.
   @spec dirty?(String.t()) :: boolean()
   def dirty?(path) do
+    File.dir?(path) and status_porcelain_dirty?(path)
+  end
+
+  defp status_porcelain_dirty?(path) do
     case System.cmd("git", ["-C", path, "status", "--porcelain", "--untracked-files=all"],
            stderr_to_stdout: true
          ) do
       {output, 0} -> String.trim(output) != ""
-      {_output, _code} -> false
+      {_output, _code} -> true
     end
   end
 
@@ -229,10 +236,47 @@ defmodule ForemanServer.Jobsite.Git do
           {:ok, String.t()} | {:error, {:merge_conflict, String.t()}}
   def merge(repo, branch) do
     case run(["-C", repo, "merge", "--no-ff", "--no-edit", branch]) do
-      {:ok, output} -> {:ok, output}
-      {:error, output} -> {:error, {:merge_conflict, output}}
+      {:ok, output} ->
+        {:ok, output}
+
+      {:error, output} ->
+        # A non-zero exit is a CONFLICT only when git left a merge in progress. Anything
+        # else (locked or corrupt index, missing object, `--no-ff` refused by policy)
+        # is a failure the operator must diagnose, not a conflict to resolve by hand.
+        if merge_in_progress?(repo),
+          do: {:error, {:merge_conflict, output}},
+          else: {:error, {:merge_failed, output}}
     end
   end
+
+  defp merge_in_progress?(repo) do
+    match?({:ok, _}, run(["-C", repo, "rev-parse", "-q", "--verify", "MERGE_HEAD"]))
+  end
+
+  @doc """
+  Turn a failed `merge/2` into the `Error` a caller reports, aborting a conflicted
+  merge first. If the abort itself fails the merge is still in place, so that is
+  reported (`:merge_failed`, carrying the conflict output) instead of a conflict
+  claim that implies the repo was restored.
+  """
+  @spec merge_error(String.t(), String.t(), {:merge_conflict | :merge_failed, String.t()}) ::
+          Error.t()
+  def merge_error(repo, branch, {:merge_conflict, output}) do
+    case merge_abort(repo) do
+      :ok ->
+        Error.new(:merge_conflict, "merge produced conflicts", %{branch: branch, output: output})
+
+      {:error, %Error{} = abort} ->
+        Error.new(:merge_failed, "merge conflicted and could not be aborted", %{
+          branch: branch,
+          output: output,
+          abort: abort.message
+        })
+    end
+  end
+
+  def merge_error(_repo, branch, {:merge_failed, output}),
+    do: Error.new(:merge_failed, "git merge failed", %{branch: branch, output: output})
 
   @doc """
   Publish `branch` to `remote` from the checkout at `path`. The remote name is

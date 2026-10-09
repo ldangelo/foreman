@@ -72,9 +72,15 @@ defmodule ForemanServerWeb.JobsiteController do
 
   defp json_safe(%mod{} = struct) when mod in @passthrough_structs, do: struct
   defp json_safe(%_{} = struct), do: struct |> Map.from_struct() |> json_safe()
-  defp json_safe(map) when is_map(map), do: Map.new(map, fn {k, v} -> {json_safe_key(k), json_safe(v)} end)
+
+  defp json_safe(map) when is_map(map),
+    do: Map.new(map, fn {k, v} -> {json_safe_key(k), json_safe(v)} end)
+
   defp json_safe(list) when is_list(list), do: Enum.map(list, &json_safe/1)
-  defp json_safe(value) when is_binary(value), do: if(String.valid?(value), do: value, else: inspect(value))
+
+  defp json_safe(value) when is_binary(value),
+    do: if(String.valid?(value), do: value, else: inspect(value))
+
   defp json_safe(value) when is_atom(value) or is_number(value), do: value
   defp json_safe(other), do: inspect(other)
 
@@ -88,17 +94,19 @@ defmodule ForemanServerWeb.JobsiteController do
   def cancel(conn, %{"id" => id}), do: control(conn, id, :cancel)
 
   # POST /api/jobsites/:id/resume
+  # Resuming starts an executor (worktree, container, agent spend) exactly as a
+  # start does, so it is held to the same operator flag and concurrency cap.
   def resume(conn, %{"id" => id}) do
-    case Jobsite.resume_async(id) do
-      {:ok, ^id} ->
-        audit(conn, "accepted", nil, id)
+    with :ok <- check_enabled(),
+         :ok <- check_capacity(),
+         {:ok, ^id} <- Jobsite.resume_async(id) do
+      audit(conn, "accepted", nil, id)
 
-        conn
-        |> put_status(:accepted)
-        |> json(%{id: id})
-
-      {:error, %Error{} = error} ->
-        reject(conn, error, id)
+      conn
+      |> put_status(:accepted)
+      |> json(%{id: id})
+    else
+      {:error, %Error{} = error} -> reject(conn, error, id)
     end
   end
 
@@ -245,7 +253,7 @@ defmodule ForemanServerWeb.JobsiteController do
        do: :conflict
 
   defp status_for(code) when code in [:into_missing, :into_invalid], do: :bad_request
-  defp status_for(:git_failed), do: :internal_server_error
+  defp status_for(code) when code in [:git_failed, :merge_failed], do: :internal_server_error
 
   defp status_for(:jobsite_capacity_reached), do: :too_many_requests
   defp status_for(:dispatch_rejected), do: :bad_gateway

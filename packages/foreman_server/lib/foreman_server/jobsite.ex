@@ -141,11 +141,8 @@ defmodule ForemanServer.Jobsite do
           {:ok, output}
         end
 
-      {:error, {:merge_conflict, output}} ->
-        Git.merge_abort(repo_path)
-
-        {:error,
-         Error.new(:merge_conflict, "merge produced conflicts", %{branch: branch, output: output})}
+      {:error, failure} ->
+        {:error, Git.merge_error(repo_path, branch, failure)}
     end
   end
 

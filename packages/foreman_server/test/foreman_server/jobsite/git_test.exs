@@ -1,7 +1,7 @@
 defmodule ForemanServer.Jobsite.GitTest do
   use ExUnit.Case, async: true
 
-  alias ForemanServer.Jobsite.Git
+  alias ForemanServer.Jobsite.{Error, Git}
 
   defp tmp_repo! do
     path = Path.join(System.tmp_dir!(), "jobsite-git-#{System.unique_integer([:positive])}")
@@ -47,6 +47,32 @@ defmodule ForemanServer.Jobsite.GitTest do
     test "an unreadable directory returns {:error, %Error{}}, never a skip" do
       assert {:error, %ForemanServer.Jobsite.Error{}} =
                Git.commit_all("/nonexistent/path/#{System.unique_integer([:positive])}", "msg")
+    end
+  end
+
+  describe "dirty?/1" do
+    test "a status that cannot run is dirty, never clean" do
+      path = tmp_repo!()
+      File.write!(Path.join([path, ".git", "index"]), "not an index")
+
+      assert Git.dirty?(path)
+    end
+
+    test "a directory that no longer exists has nothing to lose" do
+      refute Git.dirty?(
+               Path.join(System.tmp_dir!(), "gone-#{System.unique_integer([:positive])}")
+             )
+    end
+  end
+
+  describe "merge/2" do
+    test "a merge that fails without leaving a merge in progress is :merge_failed, not a conflict" do
+      path = tmp_repo!()
+
+      assert {:error, {:merge_failed, _output}} = Git.merge(path, "no-such-branch")
+
+      assert %Error{code: :merge_failed} =
+               Git.merge_error(path, "no-such-branch", {:merge_failed, "x"})
     end
   end
 

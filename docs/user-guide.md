@@ -954,7 +954,7 @@ start.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `allow_remote_start` | off | Must be exactly `true` for `POST /api/jobsites` to start anything (otherwise `403`) |
+| `allow_remote_start` | off | Must be exactly `true` for `POST /api/jobsites` and `POST /api/jobsites/:id/resume` to start anything (otherwise `403`) |
 | `max_concurrent_jobsites` | `3` | Running jobsites above this return `429` |
 | `allow_host_sandbox` | off | The `host` sandbox runs agents as the server user with no isolation; the default is `docker` |
 | `agent_env_allowlist` | `[]` | Environment variable names a request may set on the agent |

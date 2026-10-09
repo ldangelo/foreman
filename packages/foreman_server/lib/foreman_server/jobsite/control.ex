@@ -10,30 +10,35 @@ defmodule ForemanServer.Jobsite.Control do
   `intent_fun` through to `Jobsite.AgentRunner.run/4`, which polls it via a
   periodic self-tick so a pause/cancel also interrupts an iteration already
   in flight, not only the gap between iterations.
+
+
+  The table is owned by this supervised GenServer (like `ForemanServer.RunControl`),
+  not created lazily by whichever short-lived process asks first: a table owned by an
+  HTTP request process or an executor vanishes when that process exits, taking every
+  other jobsite's pending intent with it. Public functions never create the table; if
+  the owner is down they fail until the supervisor restarts it.
   """
+
+  use GenServer
 
   @table __MODULE__
 
-  @spec ensure_table() :: :ok
-  def ensure_table do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
-    end
+  def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
-    :ok
+  @impl true
+  def init(_opts) do
+    :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
+    {:ok, %{}}
   end
 
   @spec request(String.t(), {:pause, String.t()} | {:cancel, String.t()}) :: :ok
   def request(jobsite_id, intent) do
-    ensure_table()
     :ets.insert(@table, {jobsite_id, intent})
     :ok
   end
 
   @spec intent(String.t()) :: {:pause, String.t()} | {:cancel, String.t()} | :none
   def intent(jobsite_id) do
-    ensure_table()
-
     case :ets.lookup(@table, jobsite_id) do
       [{^jobsite_id, intent}] -> intent
       [] -> :none
@@ -42,7 +47,6 @@ defmodule ForemanServer.Jobsite.Control do
 
   @spec clear(String.t()) :: :ok
   def clear(jobsite_id) do
-    ensure_table()
     :ets.delete(@table, jobsite_id)
     :ok
   end

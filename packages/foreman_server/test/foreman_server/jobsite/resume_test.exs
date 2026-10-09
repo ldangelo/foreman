@@ -161,11 +161,69 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     assert length(result.iterations) >= 1
   end
 
+  test "pause during the final iteration of a default (max_iterations: 1) run resumes to completion" do
+    repo = tmp_repo!()
+
+    fake_agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{
+          "FAKE_AGENT_TEXT" => "did some work",
+          "FAKE_AGENT_SLEEP_ON_RUN" => "1",
+          "FAKE_AGENT_SLEEP_SECS" => "5"
+        }
+      )
+
+    {:ok, id} =
+      Jobsite.run_async(
+        repo_path: repo,
+        strategy: :merge_to_head,
+        sandbox: Sandboxes.host(),
+        agent: fake_agent,
+        prompt: "go",
+        completion_signal: "NEVER"
+      )
+
+    wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+    assert :ok = Jobsite.pause(id, "pause at the cap")
+    wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
+
+    # The resumed iteration is #2, past the limit the jobsite started with. The
+    # aggregate used to reject it, ending an accepted resume as `failed`.
+    assert {:ok, result} = Jobsite.resume(id)
+    assert Enum.map(result.iterations, & &1.index) |> List.last() == 2
+    wait_until(fn -> Jobsite.get(id).status == "completed" end)
+  end
+
+  test "a pause/cancel intent left by a previous run of the same id does not hit the new run" do
+    repo = tmp_repo!()
+    id = "js-stale-intent-#{System.unique_integer([:positive])}"
+
+    ForemanServer.Jobsite.Control.request(id, {:cancel, "left over"})
+
+    {:ok, _pid} =
+      ForemanServer.Jobsite.Supervisor.start_jobsite(id,
+        reply_to: self(),
+        repo_path: repo,
+        strategy: :merge_to_head,
+        sandbox: Sandboxes.host(),
+        agent: Agents.pi("x", binary: @fake_agent, env: %{"FAKE_AGENT_TEXT" => "ok"}),
+        prompt: "go",
+        completion_signal: "NEVER"
+      )
+
+    assert_receive {:jobsite, ^id, {:ok, %{iterations: [_ | _]}}}, 10_000
+    wait_until(fn -> Jobsite.get(id).status == "completed" end)
+  end
+
   test "signal: the loop stops as soon as the completion signal is seen" do
     repo = tmp_repo!()
 
     fake_agent =
-      Agents.pi("x", binary: @fake_agent, env: %{"FAKE_AGENT_TEXT" => "<promise>COMPLETE</promise>"})
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{"FAKE_AGENT_TEXT" => "<promise>COMPLETE</promise>"}
+      )
 
     assert {:ok, result} =
              Jobsite.run(

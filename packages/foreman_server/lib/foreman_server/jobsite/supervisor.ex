@@ -21,6 +21,12 @@ defmodule ForemanServer.Jobsite.Supervisor do
 
   @spec start_jobsite(String.t(), keyword()) :: DynamicSupervisor.on_start_child()
   def start_jobsite(jobsite_id, opts) do
+    # An intent left behind by a previous run of this id (an executor that exited
+    # between the last check and its clear) would pause or cancel this one the moment
+    # it starts. No executor is registered yet, so the controller cannot be adding a
+    # fresh intent for this id concurrently.
+    ForemanServer.Jobsite.Control.clear(jobsite_id)
+
     child_spec = %{
       id: Executor,
       start: {Executor, :start_link, [jobsite_id, opts]},

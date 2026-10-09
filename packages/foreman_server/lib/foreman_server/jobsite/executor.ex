@@ -262,13 +262,18 @@ defmodule ForemanServer.Jobsite.Executor do
         result -> result.index
       end
 
-    sandbox.provider.close(sandbox.state)
+    # A pause recorded before the engine reached its sandbox step interrupts with no
+    # sandbox yet: there is nothing to close or release then, only the worktree to keep.
+    if sandbox do
+      sandbox.provider.close(sandbox.state)
 
-    dispatch(jobsite_id, "jobsite.sandbox.release", "sandbox-release", %{
-      container_id: sandbox.container_id
-    })
+      dispatch(jobsite_id, "jobsite.sandbox.release", "sandbox-release", %{
+        container_id: sandbox.container_id
+      })
+    end
 
-    dispatch(jobsite_id, "jobsite.pause", "terminal", %{
+    # A jobsite can be paused again after a resume, so each pause needs its own id.
+    dispatch(jobsite_id, "jobsite.pause", "pause-#{System.unique_integer([:positive])}", %{
       reason: reason,
       iteration_index: last_index
     })
@@ -731,7 +736,10 @@ defmodule ForemanServer.Jobsite.Executor do
   defp dispatch(jobsite_id, type, suffix, payload) do
     command = %{
       type: type,
-      command_id: "jobsite:#{jobsite_id}:#{suffix}",
+      # The command type is part of the id: `CommandRouter` deduplicates by command_id,
+      # and a shared "terminal" suffix let a pause swallow the `jobsite.complete` /
+      # `jobsite.fail` / `jobsite.cancel` of the resumed run, leaving it `paused` forever.
+      command_id: "jobsite:#{jobsite_id}:#{type}:#{suffix}",
       aggregate_id: "jobsite:#{jobsite_id}",
       payload: Map.put(payload, :jobsite_id, jobsite_id)
     }

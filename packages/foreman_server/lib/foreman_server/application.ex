@@ -108,6 +108,7 @@ defmodule ForemanServer.Application do
           # scripted event-sourced jobsite engine: one Executor per
           # jobsite id, registered via `{:via, Registry, {Jobsite.Registry, id}}`.
           {Registry, keys: :unique, name: ForemanServer.Jobsite.Registry},
+          ForemanServer.Jobsite.Control,
           ForemanServer.Jobsite.Supervisor,
           # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched
           # AND terminal run events (RunCancelled, RunFlaggedStuck, RunCompleted,

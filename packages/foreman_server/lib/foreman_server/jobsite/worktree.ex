@@ -99,7 +99,21 @@ defmodule ForemanServer.Jobsite.Worktree do
   defp do_create(repo_path, {:branch, name} = strategy, opts) do
     with {:ok, existing} <- Git.worktree_list(repo_path),
          {:ok, target_branch} <- Git.current_branch(repo_path) do
+      main_path = existing |> List.first() |> then(&(&1 && &1.path))
+
       case Enum.find(existing, fn w -> w.branch == name end) do
+        %{path: path} when path == main_path ->
+          # Reusing a branch's linked worktree is how `{:branch, name}` runs share work,
+          # but the branch checked out in the repo's MAIN worktree is the operator's live
+          # checkout: handing it to an agent (and, in docker, mounting it read-write) would
+          # let the run edit, commit and push there instead of in an isolated worktree.
+          {:error,
+           Error.new(
+             :worktree_create_failed,
+             "branch #{inspect(name)} is checked out in the repository's main worktree; name a branch that is not",
+             %{branch: name, path: path}
+           )}
+
         %{path: path} ->
           with {:ok, base_sha} <- Git.head_sha(repo_path) do
             {:ok,
@@ -159,7 +173,8 @@ defmodule ForemanServer.Jobsite.Worktree do
     end
   end
 
-  @spec close(t()) :: {:ok, %{preserved_path: String.t() | nil, merged?: boolean()}} | {:error, Error.t()}
+  @spec close(t()) ::
+          {:ok, %{preserved_path: String.t() | nil, merged?: boolean()}} | {:error, Error.t()}
   def close(%__MODULE__{strategy: :head}), do: {:ok, %{preserved_path: nil, merged?: false}}
 
   def close(%__MODULE__{strategy: :merge_to_head} = wt) do
@@ -170,9 +185,8 @@ defmodule ForemanServer.Jobsite.Worktree do
           {:ok, %{preserved_path: nil, merged?: true}}
         end
 
-      {:error, {:merge_conflict, output}} ->
-        Git.merge_abort(wt.repo_path)
-        {:error, Error.new(:merge_conflict, "merge produced conflicts", %{branch: wt.branch, output: output})}
+      {:error, failure} ->
+        {:error, Git.merge_error(wt.repo_path, wt.branch, failure)}
     end
   end
 
@@ -199,7 +213,9 @@ defmodule ForemanServer.Jobsite.Worktree do
         File.cp_r!(source, dest)
         {:cont, :ok}
       else
-        {:halt, {:error, Error.new(:copy_failed, "copy_to_worktree source does not exist", %{path: source})}}
+        {:halt,
+         {:error,
+          Error.new(:copy_failed, "copy_to_worktree source does not exist", %{path: source})}}
       end
     end)
   end
