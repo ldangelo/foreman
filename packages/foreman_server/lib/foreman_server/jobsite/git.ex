@@ -11,6 +11,7 @@ defmodule ForemanServer.Jobsite.Git do
 
   @type commit :: %{sha: String.t(), subject: String.t()}
 
+  @doc "Name of the branch checked out in `repo`."
   @spec current_branch(String.t()) :: {:ok, String.t()} | {:error, Error.t()}
   def current_branch(repo) do
     # `symbolic-ref --quiet --short HEAD`, not `rev-parse --abbrev-ref HEAD`,
@@ -20,6 +21,7 @@ defmodule ForemanServer.Jobsite.Git do
     |> tag_error(:git_failed)
   end
 
+  @doc "Full SHA of `repo`'s HEAD."
   @spec head_sha(String.t()) :: {:ok, String.t()} | {:error, Error.t()}
   def head_sha(repo) do
     run(["-C", repo, "rev-parse", "HEAD"])
@@ -27,6 +29,7 @@ defmodule ForemanServer.Jobsite.Git do
     |> tag_error(:git_failed)
   end
 
+  @doc "Whether local branch `branch` exists in `repo`."
   @spec branch_exists?(String.t(), String.t()) :: boolean()
   def branch_exists?(repo, branch) do
     case System.cmd(
@@ -39,6 +42,7 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
+  @doc "Add a linked worktree at `path` on `branch`, creating the branch from `base` when it does not exist yet."
   @spec worktree_add(String.t(), String.t(), String.t(), String.t()) :: :ok | {:error, Error.t()}
   def worktree_add(repo, path, branch, base) do
     args =
@@ -51,6 +55,7 @@ defmodule ForemanServer.Jobsite.Git do
     run(args) |> as_ok() |> tag_error(:worktree_create_failed)
   end
 
+  @doc "Remove the linked worktree at `path` and prune its metadata."
   @spec worktree_remove(String.t(), String.t()) :: :ok | {:error, Error.t()}
   def worktree_remove(repo, path) do
     with {:ok, _} <- run(["-C", repo, "worktree", "remove", path]),
@@ -62,6 +67,7 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
+  @doc "List the repository's worktrees (main first) with their checked-out branch, if any."
   @spec worktree_list(String.t()) ::
           {:ok, [%{path: String.t(), branch: String.t() | nil}]} | {:error, Error.t()}
   def worktree_list(repo) do
@@ -101,6 +107,7 @@ defmodule ForemanServer.Jobsite.Git do
     |> Enum.filter(&(&1.path != nil))
   end
 
+  @doc "Exclude `patterns` from the worktree at `path` via sparse-checkout. An empty list is a no-op."
   @spec sparse_exclude(String.t(), [String.t()]) :: :ok | {:error, Error.t()}
   def sparse_exclude(_path, []), do: :ok
 
@@ -155,6 +162,7 @@ defmodule ForemanServer.Jobsite.Git do
   # commit cannot fail on a checkout with no `user.email`/`user.name` set;
   # `--no-verify` so a repository pre-commit hook cannot fail the commit or
   # rewrite the agent's output.
+  @doc "Stage and commit everything in `path`. A clean tree is `{:ok, :nothing_to_commit}` and creates no commit."
   @spec commit_all(String.t(), String.t(), keyword()) ::
           {:ok, :nothing_to_commit} | {:ok, :committed} | {:error, Error.t()}
   def commit_all(path, message, opts \\ []) do
@@ -210,6 +218,7 @@ defmodule ForemanServer.Jobsite.Git do
   defp commit_error(stage, reason),
     do: Error.new(:commit_failed, "git #{stage} failed", %{stage: stage, reason: reason})
 
+  @doc "Commits reachable from `head_ref` but not from `base_sha`."
   @spec commits_between(String.t(), String.t(), String.t()) ::
           {:ok, [commit()]} | {:error, Error.t()}
   def commits_between(path, base_sha, head_ref) do
@@ -232,6 +241,7 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
+  @doc "Merge `branch` into the branch checked out in `repo` (`--no-ff`). Failures are `{:merge_conflict, output}` only when a merge was left in progress, otherwise `{:merge_failed, output}`."
   @spec merge(String.t(), String.t()) ::
           {:ok, String.t()} | {:error, {:merge_conflict, String.t()}}
   def merge(repo, branch) do
@@ -304,11 +314,13 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
+  @doc "Abort an in-progress merge in `repo`."
   @spec merge_abort(String.t()) :: :ok | {:error, Error.t()}
   def merge_abort(repo) do
     run(["-C", repo, "merge", "--abort"]) |> as_ok() |> tag_error(:merge_failed)
   end
 
+  @doc "Force-delete local branch `branch` from `repo`."
   @spec delete_branch(String.t(), String.t()) :: :ok | {:error, Error.t()}
   def delete_branch(repo, branch) do
     run(["-C", repo, "branch", "-D", branch]) |> as_ok() |> tag_error(:git_failed)
