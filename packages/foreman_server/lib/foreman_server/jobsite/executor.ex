@@ -536,8 +536,8 @@ defmodule ForemanServer.Jobsite.Executor do
   # text itself, so a resumed iteration sends a plain continuation prompt
   # and relies on `resume_session` for the agent's own conversation memory.
   defp resume_from_state(jobsite_id, agg_state, opts) do
-    with {:ok, sandbox_provider} <- Sandboxes.resolve(agg_state.sandbox_provider) do
-      agent = agent_from_state(agg_state.agent)
+    with {:ok, sandbox_provider} <- Sandboxes.resolve(agg_state.sandbox_provider),
+         {:ok, agent} <- agent_from_state(agg_state.agent) do
       sandbox_config = agg_state.sandbox_config || %{}
 
       worktree = %Worktree{
@@ -633,14 +633,18 @@ defmodule ForemanServer.Jobsite.Executor do
   end
 
   defp agent_from_state(agent_map) do
-    %ForemanServer.Jobsite.Agent{
-      provider: Aggregate.get(agent_map, :provider) |> to_existing_atom(),
-      model: Aggregate.get(agent_map, :model),
-      effort: Aggregate.get(agent_map, :effort) |> to_existing_atom(),
-      provider_options: Aggregate.get(agent_map, :provider_options, %{}),
-      binary: Aggregate.get(agent_map, :binary),
-      approval_mode: Aggregate.get(agent_map, :approval_mode) |> approval_mode_from_state()
-    }
+    with {:ok, approval_mode} <-
+           approval_mode_from_state(Aggregate.get(agent_map, :approval_mode)) do
+      {:ok,
+       %ForemanServer.Jobsite.Agent{
+         provider: Aggregate.get(agent_map, :provider) |> to_existing_atom(),
+         model: Aggregate.get(agent_map, :model),
+         effort: Aggregate.get(agent_map, :effort) |> to_existing_atom(),
+         provider_options: Aggregate.get(agent_map, :provider_options, %{}),
+         binary: Aggregate.get(agent_map, :binary),
+         approval_mode: approval_mode
+       }}
+    end
   end
 
   # Explicit table, not String.to_existing_atom/1: on a cold resume (fresh VM) these
@@ -652,9 +656,21 @@ defmodule ForemanServer.Jobsite.Executor do
     "auto_approve" => :auto_approve
   }
 
-  defp approval_mode_from_state(nil), do: nil
-  defp approval_mode_from_state(mode) when is_atom(mode), do: mode
-  defp approval_mode_from_state(mode) when is_binary(mode), do: Map.fetch!(@approval_modes, mode)
+  defp approval_mode_from_state(nil), do: {:ok, nil}
+  defp approval_mode_from_state(mode) when is_atom(mode), do: {:ok, mode}
+
+  defp approval_mode_from_state(mode) when is_binary(mode) do
+    case Map.fetch(@approval_modes, mode) do
+      {:ok, atom} ->
+        {:ok, atom}
+
+      :error ->
+        {:error,
+         Error.new(:resume_state_invalid, "persisted agent approval_mode is not recognised", %{
+           approval_mode: mode
+         })}
+    end
+  end
 
   defp to_existing_atom(nil), do: nil
   defp to_existing_atom(value) when is_atom(value), do: value
