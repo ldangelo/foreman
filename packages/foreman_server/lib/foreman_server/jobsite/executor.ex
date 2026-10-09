@@ -629,6 +629,13 @@ defmodule ForemanServer.Jobsite.Executor do
             )
         end
       end
+    else
+      # Persisted state that cannot be rebuilt (unknown sandbox provider or agent
+      # field) never becomes resumable by retrying, so end the jobsite rather than
+      # leaving it `paused` with a resume that fails the same way forever.
+      {:error, %Error{} = error} ->
+        dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+        {:error, error}
     end
   end
 
