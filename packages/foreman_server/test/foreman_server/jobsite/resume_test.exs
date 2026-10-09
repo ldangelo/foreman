@@ -195,7 +195,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     wait_until(fn -> Jobsite.get(id).status == "completed" end)
   end
 
-  test "a resumed jobsite reads as running again once its sandbox is provisioned" do
+  test "a resumed jobsite reads as running again, and can then be cancelled" do
     repo = tmp_repo!()
 
     fake_agent =
@@ -203,7 +203,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
         binary: @fake_agent,
         env: %{
           "FAKE_AGENT_TEXT" => "did some work",
-          "FAKE_AGENT_SLEEP_ON_RUN" => "2",
+          "FAKE_AGENT_SLEEP_ON_RUN" => "1",
           "FAKE_AGENT_SLEEP_SECS" => "5"
         }
       )
@@ -226,7 +226,8 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     assert {:ok, ^id} = Jobsite.resume_async(id)
     wait_until(fn -> Jobsite.get(id).status == "running" end)
 
-    wait_until(fn -> Jobsite.get(id).status == "completed" end, 15_000)
+    assert :ok = Jobsite.cancel(id, "stop")
+    wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 15_000)
   end
 
   test "a pause/cancel intent left by a previous run of the same id does not hit the new run" do
