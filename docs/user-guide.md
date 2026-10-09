@@ -933,7 +933,7 @@ the script: the body is validated data, the repo is a **registered
 | `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}` |
 | `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
-| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite in the background |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite in the background (same flag and cap as start) |
 | `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
 
 Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
