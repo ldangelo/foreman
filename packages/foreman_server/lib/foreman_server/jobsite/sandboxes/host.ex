@@ -40,7 +40,11 @@ defmodule ForemanServer.Jobsite.Sandboxes.Host do
         {:ok, %ExecResult{stdout: output, stderr: "", exit_code: code}}
 
       {:error, :timeout} ->
-        {:error, Error.new(:sandbox_exec_failed, "command timed out", %{command: command, timeout_ms: timeout_ms})}
+        {:error,
+         Error.new(:sandbox_exec_failed, "command timed out", %{
+           command: command,
+           timeout_ms: timeout_ms
+         })}
     end
   end
 

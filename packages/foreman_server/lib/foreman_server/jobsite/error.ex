@@ -25,7 +25,8 @@ defmodule ForemanServer.Jobsite.Error do
   defstruct [:code, :message, details: %{}]
 
   @spec new(atom(), String.t(), map()) :: t()
-  def new(code, message, details \\ %{}) when is_atom(code) and is_binary(message) and is_map(details) do
+  def new(code, message, details \\ %{})
+      when is_atom(code) and is_binary(message) and is_map(details) do
     %__MODULE__{code: code, message: message, details: details}
   end
 end

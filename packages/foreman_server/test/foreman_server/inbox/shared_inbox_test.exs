@@ -41,6 +41,7 @@ defmodule ForemanServer.Inbox.SharedInboxTest do
         value -> Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, value)
       end
     end)
+
     :ok
   end
 

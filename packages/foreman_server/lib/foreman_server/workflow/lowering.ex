@@ -97,7 +97,10 @@ defmodule ForemanServer.Workflow.Lowering do
       worktree = if first_with_worktree?, do: [worktree_step(index, number)], else: []
 
       steps =
-        (worktree ++ [agent_step] ++ gate_step(phase_spec, index, number) ++ [commit_step(phase_spec, index, number, run_id)])
+        (worktree ++
+           [agent_step] ++
+           gate_step(phase_spec, index, number) ++
+           [commit_step(phase_spec, index, number, run_id)])
         |> mark_uninterruptible()
 
       {:ok, steps}
@@ -106,7 +109,12 @@ defmodule ForemanServer.Workflow.Lowering do
 
   # Only a phase's first step may be preceded by an intent check.
   defp mark_uninterruptible([first | rest]) do
-    [first | Enum.map(rest, fn %Step{opts: opts} = step -> %Step{step | opts: Map.put(opts, :uninterruptible, true)} end)]
+    [
+      first
+      | Enum.map(rest, fn %Step{opts: opts} = step ->
+          %Step{step | opts: Map.put(opts, :uninterruptible, true)}
+        end)
+    ]
   end
 
   defp worktree_step(index, number) do
@@ -116,7 +124,12 @@ defmodule ForemanServer.Workflow.Lowering do
   defp agent_step(phase_spec, index, number) do
     case Map.get(phase_spec, :action) do
       :bash ->
-        refuse(phase_spec, index, {:unsupported_phase_action, :bash}, "bash phases are not supported")
+        refuse(
+          phase_spec,
+          index,
+          {:unsupported_phase_action, :bash},
+          "bash phases are not supported"
+        )
 
       :command ->
         command = Map.get(phase_spec, :command)
@@ -124,7 +137,12 @@ defmodule ForemanServer.Workflow.Lowering do
         if is_binary(command) and command != "" do
           {:ok, build_agent_step(phase_spec, index, number, command)}
         else
-          refuse(phase_spec, index, {:invalid_phase_command, Map.get(phase_spec, :name) || ""}, "command phase has no command")
+          refuse(
+            phase_spec,
+            index,
+            {:invalid_phase_command, Map.get(phase_spec, :name) || ""},
+            "command phase has no command"
+          )
         end
 
       _prompt ->
@@ -152,7 +170,12 @@ defmodule ForemanServer.Workflow.Lowering do
   end
 
   defp refuse(phase_spec, index, reason, message) do
-    {:error, Error.new(:unsupported_phase_action, message, %{index: index, phase: Map.get(phase_spec, :name), reason: reason})}
+    {:error,
+     Error.new(:unsupported_phase_action, message, %{
+       index: index,
+       phase: Map.get(phase_spec, :name),
+       reason: reason
+     })}
   end
 
   # The runner dispatches from the observer's `launch`, so this agent is

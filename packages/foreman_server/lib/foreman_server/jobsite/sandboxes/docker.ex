@@ -58,7 +58,10 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
 
         {output, code} ->
           {:error,
-           Error.new(:sandbox_create_failed, "docker run failed", %{exit_code: code, output: String.trim(output)})}
+           Error.new(:sandbox_create_failed, "docker run failed", %{
+             exit_code: code,
+             output: String.trim(output)
+           })}
       end
     end
   end
@@ -79,8 +82,15 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
       )
 
     case result do
-      {:ok, {output, code}} -> {:ok, %ExecResult{stdout: output, stderr: "", exit_code: code}}
-      {:error, :timeout} -> {:error, Error.new(:sandbox_exec_failed, "command timed out", %{command: command, timeout_ms: timeout_ms})}
+      {:ok, {output, code}} ->
+        {:ok, %ExecResult{stdout: output, stderr: "", exit_code: code}}
+
+      {:error, :timeout} ->
+        {:error,
+         Error.new(:sandbox_exec_failed, "command timed out", %{
+           command: command,
+           timeout_ms: timeout_ms
+         })}
     end
   end
 
@@ -118,15 +128,22 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
   @impl true
   def close(state) do
     case System.cmd(state.binary, ["rm", "-f", state.container], stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, _code} -> {:error, Error.new(:sandbox_exec_failed, "docker rm failed", %{output: String.trim(output)})}
+      {_output, 0} ->
+        :ok
+
+      {output, _code} ->
+        {:error,
+         Error.new(:sandbox_exec_failed, "docker rm failed", %{output: String.trim(output)})}
     end
   end
 
   defp docker_cp(state, source, dest) do
     case System.cmd(state.binary, ["cp", source, dest], stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, _code} -> {:error, Error.new(:copy_failed, "docker cp failed", %{output: String.trim(output)})}
+      {_output, 0} ->
+        :ok
+
+      {output, _code} ->
+        {:error, Error.new(:copy_failed, "docker cp failed", %{output: String.trim(output)})}
     end
   end
 

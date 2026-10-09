@@ -97,8 +97,11 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
     %{phase: phase, executor: executor} = state
 
     case RunExecutor.enforce_required_file(executor, phase.spec, phase.number, phase.record) do
-      {:ok, executor} -> {:ok, ctx, %{state | executor: executor}}
-      {:error, reason} -> {:error, failure(:required_file_failed, "the phase's required file gate failed", reason)}
+      {:ok, executor} ->
+        {:ok, ctx, %{state | executor: executor}}
+
+      {:error, reason} ->
+        {:error, failure(:required_file_failed, "the phase's required file gate failed", reason)}
     end
   end
 
@@ -106,12 +109,23 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
     %{phase: phase, executor: executor} = state
 
     if outcome == :deferred and phase.record != nil do
-      Logger.info("RunExecutor #{executor.run_id} phase #{phase.number} declares commit: false, deferring")
+      Logger.info(
+        "RunExecutor #{executor.run_id} phase #{phase.number} declares commit: false, deferring"
+      )
     end
 
-    case RunExecutor.phase_finish(executor, phase.spec, phase.idx, phase.record, phase.artifact_path) do
-      {:ok, executor} -> {:ok, ctx, %{state | executor: executor, phase: nil}}
-      {:error, reason} -> {:error, failure(:phase_finish_failed, "recording the phase's completion failed", reason)}
+    case RunExecutor.phase_finish(
+           executor,
+           phase.spec,
+           phase.idx,
+           phase.record,
+           phase.artifact_path
+         ) do
+      {:ok, executor} ->
+        {:ok, ctx, %{state | executor: executor, phase: nil}}
+
+      {:error, reason} ->
+        {:error, failure(:phase_finish_failed, "recording the phase's completion failed", reason)}
     end
   end
 
@@ -151,7 +165,15 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
   defp fresh_phase(executor, idx) do
     spec = Enum.at(executor.phase_specs, idx)
-    %{idx: idx, spec: spec, number: PhaseSpec.number(spec, idx), record: nil, body?: false, artifact_path: nil}
+
+    %{
+      idx: idx,
+      spec: spec,
+      number: PhaseSpec.number(spec, idx),
+      record: nil,
+      body?: false,
+      artifact_path: nil
+    }
   end
 
   # The failing step's phase: the one in flight when it matches, else one the
@@ -162,7 +184,12 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   # The engine's `:worktree` step takes the worktree the observer provisioned;
   # it never provisions one itself for a manifest run.
   defp provide_worktree(%{phase: %{record: nil}}) do
-    {:error, Error.new(:worktree_create_failed, "a worktree step was lowered for a workflow that disables its worktree", %{})}
+    {:error,
+     Error.new(
+       :worktree_create_failed,
+       "a worktree step was lowered for a workflow that disables its worktree",
+       %{}
+     )}
   end
 
   defp provide_worktree(%{phase: %{record: record}} = state) do
@@ -179,8 +206,11 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
   defp launch_agent(%{executor: executor, phase: phase} = state) do
     case RunExecutor.phase_launch(executor, phase.spec, phase.idx, phase.record) do
-      {:ok, launch} -> {:ok, state, %{launch: launch}}
-      {:error, reason} -> {:error, failure(:agent_start_failed, "the phase's agent could not be launched", reason)}
+      {:ok, launch} ->
+        {:ok, state, %{launch: launch}}
+
+      {:error, reason} ->
+        {:error, failure(:agent_start_failed, "the phase's agent could not be launched", reason)}
     end
   end
 
@@ -194,10 +224,22 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   # reason or the lifecycle dispatch's own failure — both are the reason the
   # run reports.
   defp body_failure(%{executor: executor} = state, phase, reason) do
-    case RunExecutor.handle_phase_body_error(executor, phase.spec, phase.number, phase.record, reason, {:error, reason}) do
-      {:stopped, %{status: :paused} = executor} -> {:interrupted, :pause, "paused", %{state | executor: executor}}
-      {:stopped, %{status: :cancelled} = executor} -> {:interrupted, :cancel, "cancelled", %{state | executor: executor}}
-      {:error, reported} -> {:error, phase_failure(reported, phase), state}
+    case RunExecutor.handle_phase_body_error(
+           executor,
+           phase.spec,
+           phase.number,
+           phase.record,
+           reason,
+           {:error, reason}
+         ) do
+      {:stopped, %{status: :paused} = executor} ->
+        {:interrupted, :pause, "paused", %{state | executor: executor}}
+
+      {:stopped, %{status: :cancelled} = executor} ->
+        {:interrupted, :cancel, "cancelled", %{state | executor: executor}}
+
+      {:error, reported} ->
+        {:error, phase_failure(reported, phase), state}
     end
   end
 
@@ -223,8 +265,11 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   # Runner and observer errors carry it in `details.reason`; a commit failure
   # from the engine's `:commit` step is mapped back onto the two tuples the
   # executor's own commit path produces, which say which git step failed.
-  defp failure_reason(%Error{code: :commit_failed, details: %{stage: :status, reason: reason}}, phase),
-    do: {:phase_commit_status_failed, phase.record.worktree_path, reason}
+  defp failure_reason(
+         %Error{code: :commit_failed, details: %{stage: :status, reason: reason}},
+         phase
+       ),
+       do: {:phase_commit_status_failed, phase.record.worktree_path, reason}
 
   defp failure_reason(%Error{code: :commit_failed, details: %{reason: reason}}, phase),
     do: {:phase_commit_failed, phase.record.worktree_path, reason}

@@ -11,10 +11,13 @@ defmodule ForemanServer.Workflow.LoweringTest do
   @manifests_dir Path.join([:code.priv_dir(:foreman_server), "defaults", "workflows"])
   @bundled_manifests ~w(assess fix implement-trd implement-trd-beads prd review)
 
-  defp ctx(overrides \\ %{}), do: Map.merge(%{run_id: "run-test-1", worktree_spec: nil}, overrides)
+  defp ctx(overrides \\ %{}),
+    do: Map.merge(%{run_id: "run-test-1", worktree_spec: nil}, overrides)
 
   defp lower!(phases, overrides \\ %{}) do
-    assert {:ok, %Program{steps: steps}} = phases |> PhaseSpec.normalize_all() |> Lowering.lower(ctx(overrides))
+    assert {:ok, %Program{steps: steps}} =
+             phases |> PhaseSpec.normalize_all() |> Lowering.lower(ctx(overrides))
+
     steps
   end
 
@@ -37,7 +40,11 @@ defmodule ForemanServer.Workflow.LoweringTest do
       # A phase's steps are contiguous and ordered agent -> [gate] -> commit.
       for {phase_spec, index} <- Enum.with_index(phase_specs) do
         phase_steps = Enum.filter(steps, &(&1.opts.phase_idx == index))
-        expected = [:agent] ++ if(Map.has_key?(phase_spec, :required_file), do: [:gate], else: []) ++ [:commit]
+
+        expected =
+          [:agent] ++
+            if(Map.has_key?(phase_spec, :required_file), do: [:gate], else: []) ++ [:commit]
+
         assert kinds(phase_steps) -- [:worktree] == expected
       end
 
@@ -52,7 +59,8 @@ defmodule ForemanServer.Workflow.LoweringTest do
 
       # A commit step defers exactly when its phase says `commit: false`; an
       # absent key commits.
-      for {phase_spec, commit_step} <- Enum.zip(phase_specs, Enum.filter(steps, &(&1.kind == :commit))) do
+      for {phase_spec, commit_step} <-
+            Enum.zip(phase_specs, Enum.filter(steps, &(&1.kind == :commit))) do
         assert commit_step.opts.defer? == (Map.get(phase_spec, :commit) == false)
       end
     end
@@ -97,13 +105,17 @@ defmodule ForemanServer.Workflow.LoweringTest do
 
   describe "worktree step" do
     test "worktree: enabled: false emits none" do
-      steps = lower!([%{"name" => "p1", "prompt" => "do work"}], %{worktree_spec: %{enabled: false}})
+      steps =
+        lower!([%{"name" => "p1", "prompt" => "do work"}], %{worktree_spec: %{enabled: false}})
 
       refute :worktree in kinds(steps)
     end
 
     test "a declared worktree block that leaves it enabled still emits one" do
-      steps = lower!([%{"name" => "p1", "prompt" => "do work"}], %{worktree_spec: %{enabled: true, cleanup: "never"}})
+      steps =
+        lower!([%{"name" => "p1", "prompt" => "do work"}], %{
+          worktree_spec: %{enabled: true, cleanup: "never"}
+        })
 
       assert [:worktree, :agent, :commit] = kinds(steps)
     end
@@ -127,7 +139,11 @@ defmodule ForemanServer.Workflow.LoweringTest do
 
   describe "commit step" do
     test "carries the message RunExecutor's pause path commits with, keyed by the phase's number" do
-      steps = lower!([%{"name" => "p1", "prompt" => "one"}, %{"name" => "p2", "prompt" => "two", "index" => 7}])
+      steps =
+        lower!([
+          %{"name" => "p1", "prompt" => "one"},
+          %{"name" => "p2", "prompt" => "two", "index" => 7}
+        ])
 
       assert ["Foreman run run-test-1 phase 1", "Foreman run run-test-1 phase 7"] =
                steps |> Enum.filter(&(&1.kind == :commit)) |> Enum.map(& &1.opts.message)
@@ -136,15 +152,21 @@ defmodule ForemanServer.Workflow.LoweringTest do
     end
 
     test "commit: false defers and an absent key does not" do
-      steps = lower!([%{"name" => "p1", "prompt" => "one", "commit" => false}, %{"name" => "p2", "prompt" => "two"}])
+      steps =
+        lower!([
+          %{"name" => "p1", "prompt" => "one", "commit" => false},
+          %{"name" => "p2", "prompt" => "two"}
+        ])
 
-      assert [true, false] = steps |> Enum.filter(&(&1.kind == :commit)) |> Enum.map(& &1.opts.defer?)
+      assert [true, false] =
+               steps |> Enum.filter(&(&1.kind == :commit)) |> Enum.map(& &1.opts.defer?)
     end
   end
 
   describe "gate step" do
     test "required_file lowers to a gate between the agent and the commit carrying the key" do
-      steps = lower!([%{"name" => "p1", "prompt" => "do work", "required_file" => "planning.prd_path"}])
+      steps =
+        lower!([%{"name" => "p1", "prompt" => "do work", "required_file" => "planning.prd_path"}])
 
       assert [:worktree, :agent, :gate, :commit] = kinds(steps)
       assert %Step{opts: %{key: "planning.prd_path"}} = Enum.find(steps, &(&1.kind == :gate))
@@ -159,9 +181,15 @@ defmodule ForemanServer.Workflow.LoweringTest do
 
   describe "refused phases" do
     test "a bash phase is refused before any step is built, naming the phase and the reason" do
-      phase_specs = PhaseSpec.normalize_all([%{"name" => "ok", "prompt" => "fine"}, %{"name" => "shell", "bash" => "echo hi"}])
+      phase_specs =
+        PhaseSpec.normalize_all([
+          %{"name" => "ok", "prompt" => "fine"},
+          %{"name" => "shell", "bash" => "echo hi"}
+        ])
 
-      assert {:error, %Error{code: :unsupported_phase_action, details: details}} = Lowering.lower(phase_specs, ctx())
+      assert {:error, %Error{code: :unsupported_phase_action, details: details}} =
+               Lowering.lower(phase_specs, ctx())
+
       assert details.index == 1
       assert details.reason == {:unsupported_phase_action, :bash}
     end
@@ -174,7 +202,11 @@ defmodule ForemanServer.Workflow.LoweringTest do
     end
 
     test "a phase before start_index is not validated" do
-      phase_specs = PhaseSpec.normalize_all([%{"name" => "shell", "bash" => "echo hi"}, %{"name" => "ok", "prompt" => "fine"}])
+      phase_specs =
+        PhaseSpec.normalize_all([
+          %{"name" => "shell", "bash" => "echo hi"},
+          %{"name" => "ok", "prompt" => "fine"}
+        ])
 
       assert {:ok, %Program{}} = Lowering.lower(phase_specs, ctx(%{start_index: 1}))
     end

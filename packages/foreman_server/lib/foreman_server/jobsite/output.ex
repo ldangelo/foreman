@@ -11,7 +11,12 @@ defmodule ForemanServer.Jobsite.Output do
 
   @enforce_keys [:kind, :tag]
   @type kind :: :object | :string
-  @type t :: %__MODULE__{kind: kind(), tag: String.t(), schema: Zoi.schema() | nil, max_retries: non_neg_integer()}
+  @type t :: %__MODULE__{
+          kind: kind(),
+          tag: String.t(),
+          schema: Zoi.schema() | nil,
+          max_retries: non_neg_integer()
+        }
   defstruct [:kind, :tag, :schema, max_retries: 0]
 
   @doc "A JSON object extracted from `<tag>…</tag>` and validated against `schema` (a Zoi schema)."
@@ -28,7 +33,11 @@ defmodule ForemanServer.Jobsite.Output do
   @doc "Raw text extracted from `<tag>…</tag>`, trimmed, with no further decoding."
   @spec string(keyword()) :: t()
   def string(opts) do
-    %__MODULE__{kind: :string, tag: Keyword.fetch!(opts, :tag), max_retries: Keyword.get(opts, :max_retries, 0)}
+    %__MODULE__{
+      kind: :string,
+      tag: Keyword.fetch!(opts, :tag),
+      max_retries: Keyword.get(opts, :max_retries, 0)
+    }
   end
 
   @spec extract(t(), String.t()) :: {:ok, term()} | {:error, Error.t()}
@@ -54,7 +63,11 @@ defmodule ForemanServer.Jobsite.Output do
     else
       {:error, reason} ->
         {:error,
-         Error.new(:output_invalid, "output failed validation", %{tag: tag, raw_matched: captured, reason: inspect(reason)})}
+         Error.new(:output_invalid, "output failed validation", %{
+           tag: tag,
+           raw_matched: captured,
+           reason: inspect(reason)
+         })}
     end
   end
 

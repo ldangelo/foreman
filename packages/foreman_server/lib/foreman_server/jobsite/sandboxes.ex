@@ -29,6 +29,11 @@ defmodule ForemanServer.Jobsite.Sandboxes do
   def resolve("docker"), do: {:ok, Docker}
 
   def resolve(name) do
-    {:error, ForemanServer.Jobsite.Error.new(:sandbox_create_failed, "unknown sandbox provider #{name}", %{name: name})}
+    {:error,
+     ForemanServer.Jobsite.Error.new(
+       :sandbox_create_failed,
+       "unknown sandbox provider #{name}",
+       %{name: name}
+     )}
   end
 end

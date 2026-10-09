@@ -1036,7 +1036,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
 
-    repo_dir = Path.join(System.tmp_dir!(), "foreman-resume-#{System.unique_integer([:positive])}")
+    repo_dir =
+      Path.join(System.tmp_dir!(), "foreman-resume-#{System.unique_integer([:positive])}")
+
     File.rm_rf!(repo_dir)
     File.mkdir_p!(repo_dir)
     run_git!(["-C", repo_dir, "init", "--initial-branch=main"])
@@ -1081,7 +1083,13 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     LifecycleStore.put("#{script_key}-1", %{test_pid: test_pid})
     LifecycleStore.put("#{script_key}-2", %{test_pid: test_pid})
 
-    seed_feature_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, database_path)
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
 
     expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: ^task_id}}, _cfg, opts ->
       send(test_pid, {:runner_cmd, :close})
@@ -1183,7 +1191,14 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     }
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
-    seed_feature_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, database_path)
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
 
     expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", ^task_id]}}, _cfg, opts ->
       send(test_pid, {:runner_cmd, :claim})
@@ -1220,7 +1235,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     branch = "foreman/#{task_id}/#{run_id}"
     subjects = run_git!(["-C", repo_dir, "log", "--format=%s", branch])
     assert subjects =~ "Foreman run #{run_id} phase 1"
-    assert run_git!(["-C", repo_dir, "ls-tree", "-r", "--name-only", branch]) =~ "partial-work.txt"
+
+    assert run_git!(["-C", repo_dir, "ls-tree", "-r", "--name-only", branch]) =~
+             "partial-work.txt"
   end
 
   test "initialization failure retries run.fail dispatch instead of silently stopping" do

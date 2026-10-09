@@ -59,7 +59,9 @@ defmodule ForemanServer.Jobsite.Sandbox do
     agent = Keyword.fetch!(opts, :agent)
     max_iterations = Keyword.get(opts, :max_iterations, 1)
     signals = normalize_signals(Keyword.get(opts, :completion_signal, @default_completion_signal))
-    idle_timeout_ms = Keyword.get(opts, :idle_timeout_seconds, @default_idle_timeout_seconds) * 1000
+
+    idle_timeout_ms =
+      Keyword.get(opts, :idle_timeout_seconds, @default_idle_timeout_seconds) * 1000
 
     completion_timeout_ms =
       Keyword.get(opts, :completion_timeout_seconds, @default_completion_timeout_seconds) * 1000
@@ -69,12 +71,33 @@ defmodule ForemanServer.Jobsite.Sandbox do
 
     with {:ok, prompt_text} <- Prompt.resolve(opts, sandbox, %{}) do
       sandbox
-      |> iterate(agent, prompt_text, 1, max_iterations, signals, idle_timeout_ms, completion_timeout_ms, resume_session, [])
+      |> iterate(
+        agent,
+        prompt_text,
+        1,
+        max_iterations,
+        signals,
+        idle_timeout_ms,
+        completion_timeout_ms,
+        resume_session,
+        []
+      )
       |> finalize(sandbox, agent, output_opts, idle_timeout_ms, completion_timeout_ms)
     end
   end
 
-  defp iterate(sandbox, agent, prompt, index, max_iterations, signals, idle_ms, completion_ms, resume_session, acc) do
+  defp iterate(
+         sandbox,
+         agent,
+         prompt,
+         index,
+         max_iterations,
+         signals,
+         idle_ms,
+         completion_ms,
+         resume_session,
+         acc
+       ) do
     runner_opts = [
       index: index,
       resume_session: resume_session,
@@ -95,7 +118,18 @@ defmodule ForemanServer.Jobsite.Sandbox do
             {:ok, acc}
 
           true ->
-            iterate(sandbox, agent, prompt, index + 1, max_iterations, signals, idle_ms, completion_ms, result.session_id, acc)
+            iterate(
+              sandbox,
+              agent,
+              prompt,
+              index + 1,
+              max_iterations,
+              signals,
+              idle_ms,
+              completion_ms,
+              result.session_id,
+              acc
+            )
         end
 
       {:error, _} = err ->
@@ -103,13 +137,23 @@ defmodule ForemanServer.Jobsite.Sandbox do
     end
   end
 
-  defp finalize({:error, _} = err, _sandbox, _agent, _output_opts, _idle_ms, _completion_ms), do: err
+  defp finalize({:error, _} = err, _sandbox, _agent, _output_opts, _idle_ms, _completion_ms),
+    do: err
 
   defp finalize({:ok, iterations}, sandbox, agent, output_opts, idle_ms, completion_ms) do
     last = List.last(iterations)
 
     with {:ok, output, iterations, last} <-
-           extract_output(output_opts, sandbox, agent, iterations, last, idle_ms, completion_ms, 0) do
+           extract_output(
+             output_opts,
+             sandbox,
+             agent,
+             iterations,
+             last,
+             idle_ms,
+             completion_ms,
+             0
+           ) do
       {:ok,
        %Result{
          jobsite_id: sandbox.jobsite_id,
@@ -125,10 +169,28 @@ defmodule ForemanServer.Jobsite.Sandbox do
     end
   end
 
-  defp extract_output(nil, _sandbox, _agent, iterations, last, _idle_ms, _completion_ms, _attempt),
-    do: {:ok, nil, iterations, last}
+  defp extract_output(
+         nil,
+         _sandbox,
+         _agent,
+         iterations,
+         last,
+         _idle_ms,
+         _completion_ms,
+         _attempt
+       ),
+       do: {:ok, nil, iterations, last}
 
-  defp extract_output(%Output{} = spec, sandbox, agent, iterations, last, idle_ms, completion_ms, attempt) do
+  defp extract_output(
+         %Output{} = spec,
+         sandbox,
+         agent,
+         iterations,
+         last,
+         idle_ms,
+         completion_ms,
+         attempt
+       ) do
     case Output.extract(spec, last.text) do
       {:ok, value} ->
         {:ok, value, iterations, last}
@@ -147,7 +209,16 @@ defmodule ForemanServer.Jobsite.Sandbox do
 
         case AgentRunner.run(agent, retry_prompt, sandbox, runner_opts) do
           {:ok, %IterationResult{} = retried} ->
-            extract_output(spec, sandbox, agent, iterations ++ [retried], retried, idle_ms, completion_ms, attempt + 1)
+            extract_output(
+              spec,
+              sandbox,
+              agent,
+              iterations ++ [retried],
+              retried,
+              idle_ms,
+              completion_ms,
+              attempt + 1
+            )
 
           {:error, _} = err ->
             err
@@ -167,7 +238,8 @@ defmodule ForemanServer.Jobsite.Sandbox do
   worktree (merge/preserve per its branch strategy); otherwise only the
   container (or, for the host provider, nothing) is released.
   """
-  @spec close(t()) :: {:ok, %{preserved_path: String.t() | nil, merged?: boolean()}} | {:error, Error.t()}
+  @spec close(t()) ::
+          {:ok, %{preserved_path: String.t() | nil, merged?: boolean()}} | {:error, Error.t()}
   def close(%__MODULE__{} = sandbox) do
     with :ok <- sandbox.provider.close(sandbox.state) do
       if sandbox.owns_worktree? do

@@ -35,7 +35,9 @@ defmodule ForemanServer.Jobsite.OutputTest do
 
       text = ~s(<result>{"value": "not a number"}</result>)
 
-      assert {:error, %Error{code: :output_invalid, details: %{raw_matched: raw}}} = Output.extract(spec, text)
+      assert {:error, %Error{code: :output_invalid, details: %{raw_matched: raw}}} =
+               Output.extract(spec, text)
+
       assert raw == ~s({"value": "not a number"})
     end
 
@@ -43,7 +45,8 @@ defmodule ForemanServer.Jobsite.OutputTest do
       schema = Zoi.object(%{value: Zoi.integer()})
       spec = Output.object(tag: "result", schema: schema)
 
-      assert {:error, %Error{code: :output_invalid}} = Output.extract(spec, "<result>not json</result>")
+      assert {:error, %Error{code: :output_invalid}} =
+               Output.extract(spec, "<result>not json</result>")
     end
   end
 

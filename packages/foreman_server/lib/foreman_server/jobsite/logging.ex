@@ -21,7 +21,8 @@ defmodule ForemanServer.Jobsite.Logging do
   `logging_spec` is `{:file, path} | :stdout | nil` (`nil` uses the default
   file path).
   """
-  @spec build(term(), String.t(), String.t(), (map() -> any()) | nil) :: {String.t() | nil, (map() -> :ok)}
+  @spec build(term(), String.t(), String.t(), (map() -> any()) | nil) ::
+          {String.t() | nil, (map() -> :ok)}
   def build(logging_spec, repo_path, name_or_id, user_on_event) do
     {target, path} = resolve_target(logging_spec, repo_path, name_or_id)
 
@@ -36,7 +37,8 @@ defmodule ForemanServer.Jobsite.Logging do
 
   defp resolve_target(:stdout, _repo_path, _name_or_id), do: {:stdout, nil}
 
-  defp resolve_target({:file, path}, _repo_path, _name_or_id), do: {{:file, open_file!(path)}, path}
+  defp resolve_target({:file, path}, _repo_path, _name_or_id),
+    do: {{:file, open_file!(path)}, path}
 
   defp resolve_target(nil, repo_path, name_or_id) do
     path = default_path(repo_path, name_or_id)
@@ -70,7 +72,10 @@ defmodule ForemanServer.Jobsite.Logging do
     :ok
   rescue
     error ->
-      Logger.error("Jobsite logging on_event callback raised: #{Exception.format(:error, error, __STACKTRACE__)}")
+      Logger.error(
+        "Jobsite logging on_event callback raised: #{Exception.format(:error, error, __STACKTRACE__)}"
+      )
+
       :ok
   end
 end

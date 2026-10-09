@@ -299,6 +299,7 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
 
       refute is_nil(run.status) or run.status == "",
              "run #{run_id} should have a status, got: #{inspect(run)}"
+
       # The fixture's project path is not a git repo, so the run always ends
       # `failed` for exactly that reason. Any other failure reason would mean
       # dispatch itself broke, which this test must not tolerate.

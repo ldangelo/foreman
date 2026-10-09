@@ -16,6 +16,11 @@ defmodule ForemanServer.Jobsite.Runner do
   alias ForemanServer.Jobsite.{Agent, Error, IterationResult, Sandbox}
 
   @callback capabilities() :: %{iterations: :one | :many, live_stream: boolean()}
-  @callback run(agent :: Agent.t(), prompt :: String.t(), sandbox :: Sandbox.t(), opts :: keyword()) ::
+  @callback run(
+              agent :: Agent.t(),
+              prompt :: String.t(),
+              sandbox :: Sandbox.t(),
+              opts :: keyword()
+            ) ::
               {:ok, IterationResult.t()} | {:error, Error.t()}
 end

@@ -819,7 +819,13 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     test "pause stops before the run finalizes", %{run_id: run_id} do
       :ok = ForemanServer.RunControl.request(run_id, :pause)
 
-      state = %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress, completed: [0], phase_specs: [%{}]}
+      state = %{
+        run_id: run_id,
+        task: %{task_id: run_id},
+        status: :in_progress,
+        completed: [0],
+        phase_specs: [%{}]
+      }
 
       assert {:stop, :normal, %{status: :paused}} = RunExecutor.__finish_phases_for_test__(state)
     end
@@ -827,9 +833,16 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     test "cancel stops before the run finalizes", %{run_id: run_id} do
       :ok = ForemanServer.RunControl.request(run_id, :cancel)
 
-      state = %{run_id: run_id, task: %{task_id: run_id}, status: :in_progress, completed: [0], phase_specs: [%{}]}
+      state = %{
+        run_id: run_id,
+        task: %{task_id: run_id},
+        status: :in_progress,
+        completed: [0],
+        phase_specs: [%{}]
+      }
 
-      assert {:stop, :normal, %{status: :cancelled}} = RunExecutor.__finish_phases_for_test__(state)
+      assert {:stop, :normal, %{status: :cancelled}} =
+               RunExecutor.__finish_phases_for_test__(state)
     end
   end
 

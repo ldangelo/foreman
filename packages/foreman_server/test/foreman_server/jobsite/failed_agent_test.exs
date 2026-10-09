@@ -27,7 +27,11 @@ defmodule ForemanServer.Jobsite.FailedAgentTest do
   test "an agent that dies fails the jobsite instead of completing it" do
     repo = tmp_repo!()
 
-    agent = Agents.pi("x", binary: @fake_agent, env: %{"FAKE_AGENT_FAIL_WITH" => "Credit balance is too low"})
+    agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{"FAKE_AGENT_FAIL_WITH" => "Credit balance is too low"}
+      )
 
     assert {:error, %Error{code: :agent_failed}} =
              Jobsite.run(
@@ -47,7 +51,11 @@ defmodule ForemanServer.Jobsite.FailedAgentTest do
 
     # The fake agent writes a file but does not commit. A wrapper that commits
     # it reproduces what real agents do.
-    wrapper = Path.join(System.tmp_dir!(), "self-committing-agent-#{System.unique_integer([:positive])}.sh")
+    wrapper =
+      Path.join(
+        System.tmp_dir!(),
+        "self-committing-agent-#{System.unique_integer([:positive])}.sh"
+      )
 
     File.write!(wrapper, """
     #!/bin/sh

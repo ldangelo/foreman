@@ -2044,121 +2044,186 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "JobsiteWorktreeProvisioned", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      jobsite
-      |> Map.put(:status, "running")
-      |> Map.put(:worktree_path, get(payload, :path))
-      |> Map.put(:branch, get(payload, :branch))
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        jobsite
+        |> Map.put(:status, "running")
+        |> Map.put(:worktree_path, get(payload, :path))
+        |> Map.put(:branch, get(payload, :branch))
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteSandboxProvisioned", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      Map.put(jobsite, :container_id, get(payload, :container_id))
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :container_id, get(payload, :container_id))
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteIterationStarted", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      Map.put(jobsite, :iteration_index, get(payload, :index))
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :iteration_index, get(payload, :index))
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteIterationCompleted", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      record = %{
-        index: get(payload, :index),
-        status: get(payload, :status),
-        text: get(payload, :text),
-        session_id: get(payload, :session_id),
-        signalled?: get(payload, :signalled?, false),
-        matched_signal: get(payload, :matched_signal)
-      }
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        record = %{
+          index: get(payload, :index),
+          status: get(payload, :status),
+          text: get(payload, :text),
+          session_id: get(payload, :session_id),
+          signalled?: get(payload, :signalled?, false),
+          matched_signal: get(payload, :matched_signal)
+        }
 
-      jobsite
-      |> Map.put(:iterations, (Map.get(jobsite, :iterations) || []) ++ [record])
-      |> Map.put(:session_id, get(payload, :session_id) || Map.get(jobsite, :session_id))
-    end)
+        jobsite
+        |> Map.put(:iterations, (Map.get(jobsite, :iterations) || []) ++ [record])
+        |> Map.put(:session_id, get(payload, :session_id) || Map.get(jobsite, :session_id))
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteIterationFailed", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      record = %{
-        index: get(payload, :index),
-        status: "failed",
-        code: get(payload, :code),
-        message: get(payload, :message)
-      }
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        record = %{
+          index: get(payload, :index),
+          status: "failed",
+          code: get(payload, :code),
+          message: get(payload, :message)
+        }
 
-      jobsite
-      |> Map.put(:iterations, (Map.get(jobsite, :iterations) || []) ++ [record])
-      |> Map.put(:last_error, %{
-        code: get(payload, :code),
-        message: get(payload, :message),
-        details: get(payload, :details)
-      })
-    end)
+        jobsite
+        |> Map.put(:iterations, (Map.get(jobsite, :iterations) || []) ++ [record])
+        |> Map.put(:last_error, %{
+          code: get(payload, :code),
+          message: get(payload, :message),
+          details: get(payload, :details)
+        })
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteCommitsRecorded", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      Map.put(jobsite, :commits, get(payload, :commits) || [])
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :commits, get(payload, :commits) || [])
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteOutputCaptured", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      Map.put(jobsite, :output, %{tag: get(payload, :tag), value: get(payload, :value)})
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :output, %{tag: get(payload, :tag), value: get(payload, :value)})
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteSandboxReleased", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      Map.put(jobsite, :container_id, nil)
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :container_id, nil)
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteWorktreeReleased", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      jobsite
-      |> Map.put(:merged?, get(payload, :merged?, false))
-      |> Map.put(:preserved_path, get(payload, :preserved_path))
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        jobsite
+        |> Map.put(:merged?, get(payload, :merged?, false))
+        |> Map.put(:preserved_path, get(payload, :preserved_path))
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteCompleted", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      jobsite
-      |> Map.put(:status, "completed")
-      |> Map.put(:terminal?, true)
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        jobsite
+        |> Map.put(:status, "completed")
+        |> Map.put(:terminal?, true)
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteFailed", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      jobsite
-      |> Map.put(:status, "failed")
-      |> Map.put(:terminal?, true)
-      |> Map.put(:last_error, %{
-        code: get(payload, :code),
-        message: get(payload, :message),
-        details: get(payload, :details)
-      })
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        jobsite
+        |> Map.put(:status, "failed")
+        |> Map.put(:terminal?, true)
+        |> Map.put(:last_error, %{
+          code: get(payload, :code),
+          message: get(payload, :message),
+          details: get(payload, :details)
+        })
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsitePaused", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      Map.put(jobsite, :status, "paused")
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :status, "paused")
+      end
+    )
   end
 
   defp apply_event_by_type(state, "JobsiteCancelled", payload) do
-    update_jobsite_projection(state, get(payload, :jobsite_id), payload_event_at_ms(payload), fn jobsite ->
-      jobsite
-      |> Map.put(:status, "cancelled")
-      |> Map.put(:terminal?, true)
-    end)
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        jobsite
+        |> Map.put(:status, "cancelled")
+        |> Map.put(:terminal?, true)
+      end
+    )
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state

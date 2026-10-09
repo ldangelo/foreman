@@ -70,10 +70,17 @@ defmodule ForemanServer.Jobsite.Hooks do
 
         {:ok, code, output} ->
           {:halt,
-           {:error, Error.new(:hook_failed, "hook exited non-zero", %{command: cmd, exit_code: code, output: output})}}
+           {:error,
+            Error.new(:hook_failed, "hook exited non-zero", %{
+              command: cmd,
+              exit_code: code,
+              output: output
+            })}}
 
         {:error, reason} ->
-          {:halt, {:error, Error.new(:hook_failed, "hook failed to run", %{command: cmd, reason: reason})}}
+          {:halt,
+           {:error,
+            Error.new(:hook_failed, "hook failed to run", %{command: cmd, reason: reason})}}
       end
     end)
   end

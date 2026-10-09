@@ -34,7 +34,9 @@ defmodule ForemanServer.Jobsite.Observer do
   @callback step_completed(Step.t(), Context.t(), result :: term(), state :: term()) ::
               {:ok, Context.t(), term()} | {:error, Error.t()}
   @callback step_failed(Step.t(), Error.t(), Context.t(), state :: term()) ::
-              {:ok, term()} | {:error, Error.t(), term()} | {:interrupted, atom(), String.t(), term()}
+              {:ok, term()}
+              | {:error, Error.t(), term()}
+              | {:interrupted, atom(), String.t(), term()}
 
   @optional_callbacks step_failed: 4
 end

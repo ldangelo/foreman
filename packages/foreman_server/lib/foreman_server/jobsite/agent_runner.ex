@@ -29,15 +29,25 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     fork_session = Keyword.get(opts, :fork_session)
     idle_timeout_ms = Keyword.get(opts, :idle_timeout_ms, @default_idle_timeout_ms)
     runtime_timeout_ms = Keyword.get(opts, :runtime_timeout_ms, :infinity)
-    completion_timeout_ms = Keyword.get(opts, :completion_timeout_ms, @default_completion_timeout_ms)
+
+    completion_timeout_ms =
+      Keyword.get(opts, :completion_timeout_ms, @default_completion_timeout_ms)
+
     signals = Keyword.get(opts, :completion_signals, [])
     on_event = Keyword.get(opts, :on_event)
     intent_fun = Keyword.get(opts, :intent_fun)
 
     env = merged_env(agent, sandbox)
-    {provider_session_id, fork_provider_options} = resolve_session_opts(agent.provider, resume_session, fork_session)
 
-    with {:ok, cli_path} <- sandbox.provider.agent_cli_path(sandbox.state, agent.binary || to_string(agent.provider), env),
+    {provider_session_id, fork_provider_options} =
+      resolve_session_opts(agent.provider, resume_session, fork_session)
+
+    with {:ok, cli_path} <-
+           sandbox.provider.agent_cli_path(
+             sandbox.state,
+             agent.binary || to_string(agent.provider),
+             env
+           ),
          {:ok, request} <-
            build_request(
              agent,
@@ -51,8 +61,11 @@ defmodule ForemanServer.Jobsite.AgentRunner do
              env
            ) do
       case Run.start(agent.provider, request) do
-        {:ok, run_id} -> run_iteration(run_id, index, signals, completion_timeout_ms, on_event, intent_fun)
-        {:error, reason} -> {:error, Error.new(:agent_start_failed, "failed to start agent run", %{reason: reason})}
+        {:ok, run_id} ->
+          run_iteration(run_id, index, signals, completion_timeout_ms, on_event, intent_fun)
+
+        {:error, reason} ->
+          {:error, Error.new(:agent_start_failed, "failed to start agent run", %{reason: reason})}
       end
     end
   end
@@ -72,17 +85,29 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     {resume_session, %{}}
   end
 
-  defp resolve_session_opts(:pi, nil, fork_session) when is_binary(fork_session) and fork_session != "" do
+  defp resolve_session_opts(:pi, nil, fork_session)
+       when is_binary(fork_session) and fork_session != "" do
     {nil, %{fork_session: fork_session}}
   end
 
-  defp resolve_session_opts(:claude, nil, fork_session) when is_binary(fork_session) and fork_session != "" do
+  defp resolve_session_opts(:claude, nil, fork_session)
+       when is_binary(fork_session) and fork_session != "" do
     {fork_session, %{fork_session: true}}
   end
 
   defp resolve_session_opts(_provider, _resume_session, _fork_session), do: {nil, %{}}
 
-  defp build_request(agent, prompt, sandbox, provider_session_id, fork_opts, cli_path, idle_ms, runtime_ms, env) do
+  defp build_request(
+         agent,
+         prompt,
+         sandbox,
+         provider_session_id,
+         fork_opts,
+         cli_path,
+         idle_ms,
+         runtime_ms,
+         env
+       ) do
     provider_options =
       agent.provider_options
       |> Map.merge(fork_opts)
@@ -105,11 +130,17 @@ defmodule ForemanServer.Jobsite.AgentRunner do
       provider_options: provider_options
     ]
 
-    attrs = if agent.approval_mode, do: Keyword.put(attrs, :approval_mode, agent.approval_mode), else: attrs
+    attrs =
+      if agent.approval_mode,
+        do: Keyword.put(attrs, :approval_mode, agent.approval_mode),
+        else: attrs
 
     case RunRequest.new(attrs) do
-      {:ok, request} -> {:ok, request}
-      {:error, reason} -> {:error, Error.new(:agent_start_failed, "invalid run request", %{reason: reason})}
+      {:ok, request} ->
+        {:ok, request}
+
+      {:error, reason} ->
+        {:error, Error.new(:agent_start_failed, "invalid run request", %{reason: reason})}
     end
   end
 
@@ -130,7 +161,8 @@ defmodule ForemanServer.Jobsite.AgentRunner do
         result
 
       {:error, reason} ->
-        {:error, Error.new(:agent_start_failed, "failed to attach to run stream", %{reason: reason})}
+        {:error,
+         Error.new(:agent_start_failed, "failed to attach to run stream", %{reason: reason})}
     end
   end
 
@@ -157,8 +189,9 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     end)
   end
 
-  defp event_text(%{type: type, payload: %{"text" => text}}) when type in [:output_text_delta, :output_text_final] and is_binary(text),
-    do: text
+  defp event_text(%{type: type, payload: %{"text" => text}})
+       when type in [:output_text_delta, :output_text_final] and is_binary(text),
+       do: text
 
   defp event_text(_event), do: ""
 
@@ -182,7 +215,14 @@ defmodule ForemanServer.Jobsite.AgentRunner do
         wait(run_id, index, completion_timeout_ms, text, matched_signal, intent_fun)
 
       {:signal, matched} ->
-        wait(run_id, index, completion_timeout_ms, latest_text, matched_signal || matched, intent_fun)
+        wait(
+          run_id,
+          index,
+          completion_timeout_ms,
+          latest_text,
+          matched_signal || matched,
+          intent_fun
+        )
 
       # A harness result carries its own failure in `status: :failed` +
       # `error` — it is NOT an `{:error, _}` return — so without this clause a
@@ -218,7 +258,10 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   # The harness reports an idle/runtime timeout as a failed result whose
   # error category is `:timeout`; keep that distinct from any other failure.
   defp failed_result_error(%RunResult{error: %{category: :timeout} = error} = result) do
-    Error.new(:agent_idle_timeout, error.message, %{reason: error, session_id: result.provider_session_id})
+    Error.new(:agent_idle_timeout, error.message, %{
+      reason: error,
+      session_id: result.provider_session_id
+    })
   end
 
   defp failed_result_error(%RunResult{error: error} = result) do
@@ -230,7 +273,9 @@ defmodule ForemanServer.Jobsite.AgentRunner do
 
   defp poll_timeout(nil, _completion_timeout_ms, nil), do: :infinity
   defp poll_timeout(nil, _completion_timeout_ms, _intent_fun), do: @intent_poll_ms
-  defp poll_timeout(_matched_signal, completion_timeout_ms, _intent_fun), do: completion_timeout_ms
+
+  defp poll_timeout(_matched_signal, completion_timeout_ms, _intent_fun),
+    do: completion_timeout_ms
 
   defp intent_check(nil), do: :none
   defp intent_check(fun) when is_function(fun, 0), do: fun.()

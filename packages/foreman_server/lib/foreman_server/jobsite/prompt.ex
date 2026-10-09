@@ -22,14 +22,29 @@ defmodule ForemanServer.Jobsite.Prompt do
 
     case {prompt, prompt_file} do
       {nil, nil} ->
-        {:error, Error.new(:prompt_source_missing, "exactly one of :prompt or :prompt_file is required", %{})}
+        {:error,
+         Error.new(
+           :prompt_source_missing,
+           "exactly one of :prompt or :prompt_file is required",
+           %{}
+         )}
 
       {p, f} when not is_nil(p) and not is_nil(f) ->
-        {:error, Error.new(:prompt_source_conflict, "only one of :prompt or :prompt_file may be given", %{})}
+        {:error,
+         Error.new(
+           :prompt_source_conflict,
+           "only one of :prompt or :prompt_file may be given",
+           %{}
+         )}
 
       {p, nil} ->
         if map_size(prompt_args) > 0 do
-          {:error, Error.new(:prompt_source_conflict, "prompt_args is not supported with an inline :prompt", %{})}
+          {:error,
+           Error.new(
+             :prompt_source_conflict,
+             "prompt_args is not supported with an inline :prompt",
+             %{}
+           )}
         else
           {:ok, p}
         end
@@ -46,7 +61,11 @@ defmodule ForemanServer.Jobsite.Prompt do
       # Expansion candidates are located in the ORIGINAL file text, before
       # substitution — never in the substituted text — so a value passed
       # through `prompt_args` cannot introduce a new `` !`cmd` `` span.
-      original_matches = @expansion_pattern |> Regex.scan(text) |> Enum.map(fn [full, cmd] -> {full, cmd} end) |> Enum.uniq()
+      original_matches =
+        @expansion_pattern
+        |> Regex.scan(text)
+        |> Enum.map(fn [full, cmd] -> {full, cmd} end)
+        |> Enum.uniq()
 
       with {:ok, substituted} <- substitute(text, vars) do
         expand(substituted, original_matches, vars, sandbox)
@@ -67,13 +86,23 @@ defmodule ForemanServer.Jobsite.Prompt do
 
   defp read_file(path) do
     case File.read(path) do
-      {:ok, text} -> {:ok, text}
-      {:error, reason} -> {:error, Error.new(:prompt_source_missing, "could not read prompt_file", %{path: path, reason: reason})}
+      {:ok, text} ->
+        {:ok, text}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:prompt_source_missing, "could not read prompt_file", %{
+           path: path,
+           reason: reason
+         })}
     end
   end
 
   defp build_vars(context, prompt_args, sandbox) do
-    builtins = %{"SOURCE_BRANCH" => sandbox.worktree.branch, "TARGET_BRANCH" => sandbox.worktree.target_branch || sandbox.worktree.branch}
+    builtins = %{
+      "SOURCE_BRANCH" => sandbox.worktree.branch,
+      "TARGET_BRANCH" => sandbox.worktree.target_branch || sandbox.worktree.branch
+    }
 
     context
     |> normalize_vars()
@@ -93,7 +122,10 @@ defmodule ForemanServer.Jobsite.Prompt do
         {:ok, Regex.replace(@var_pattern, text, fn _, k -> Map.fetch!(vars, k) end)}
 
       missing ->
-        {:error, Error.new(:prompt_arg_missing, "prompt references undefined key #{missing}", %{key: missing})}
+        {:error,
+         Error.new(:prompt_arg_missing, "prompt references undefined key #{missing}", %{
+           key: missing
+         })}
     end
   end
 
@@ -111,11 +143,17 @@ defmodule ForemanServer.Jobsite.Prompt do
     |> Enum.reduce_while({:ok, substituted_text}, &reduce_expansion/2)
   end
 
-  defp reduce_expansion({:ok, {full, _cmd, {:ok, %ExecResult{exit_code: 0, stdout: out}}}}, {:ok, acc}) do
+  defp reduce_expansion(
+         {:ok, {full, _cmd, {:ok, %ExecResult{exit_code: 0, stdout: out}}}},
+         {:ok, acc}
+       ) do
     {:cont, {:ok, String.replace(acc, full, String.trim_trailing(out, "\n"), global: true)}}
   end
 
-  defp reduce_expansion({:ok, {full, cmd, {:ok, %ExecResult{exit_code: code, stdout: out}}}}, _acc) do
+  defp reduce_expansion(
+         {:ok, {full, cmd, {:ok, %ExecResult{exit_code: code, stdout: out}}}},
+         _acc
+       ) do
     {:halt,
      {:error,
       Error.new(:prompt_expansion_failed, "prompt expansion command exited non-zero", %{

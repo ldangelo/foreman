@@ -62,7 +62,9 @@ defmodule ForemanServer.Jobsite.Sandboxes.DockerTest do
     assert {:ok, state, _sandbox_path, _container} = Docker.create(%{image: @image}, worktree)
     on_exit(fn -> Docker.close(state) end)
 
-    assert {:ok, shim_path} = Docker.agent_cli_path(state, "env", %{"JOBSITE_TEST_VAR" => "shim-value"})
+    assert {:ok, shim_path} =
+             Docker.agent_cli_path(state, "env", %{"JOBSITE_TEST_VAR" => "shim-value"})
+
     assert File.exists?(shim_path)
     assert Bitwise.band(File.stat!(shim_path).mode, 0o111) != 0
 

@@ -135,7 +135,9 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
       # Floor of 0: once the deadline has elapsed, the driver gets no
       # additional budget, so the FailurePolicy deadline is honoured even
       # when admission/dispatch already consumed it.
-      Logger.warning("[#{launch.run_id}] phase #{launch.phase_index} deadline exhausted before worker activation")
+      Logger.warning(
+        "[#{launch.run_id}] phase #{launch.phase_index} deadline exhausted before worker activation"
+      )
 
       {:error, :worker_timeout}
     else
@@ -186,18 +188,29 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   end
 
   defp to_iteration_result({:error, :worker_already_started = reason}, launch, _index) do
-    {:error, Error.new(:agent_start_failed, "worker already started", %{reason: reason, run_id: launch.run_id})}
+    {:error,
+     Error.new(:agent_start_failed, "worker already started", %{
+       reason: reason,
+       run_id: launch.run_id
+     })}
   end
 
   defp to_iteration_result({:error, {:overwatch_start_failed, _} = reason}, launch, _index) do
-    {:error, Error.new(:agent_start_failed, "overwatch start_phase failed", %{reason: reason, run_id: launch.run_id})}
+    {:error,
+     Error.new(:agent_start_failed, "overwatch start_phase failed", %{
+       reason: reason,
+       run_id: launch.run_id
+     })}
   end
 
   defp to_iteration_result({:error, reason}, launch, _index) do
-    {:error, Error.new(:agent_failed, "agent run failed", %{reason: reason, run_id: launch.run_id})}
+    {:error,
+     Error.new(:agent_failed, "agent run failed", %{reason: reason, run_id: launch.run_id})}
   end
 
-  defp put_timeout(details, %{timeout_ms: timeout_ms}), do: Map.put(details, :timeout_ms, timeout_ms)
+  defp put_timeout(details, %{timeout_ms: timeout_ms}),
+    do: Map.put(details, :timeout_ms, timeout_ms)
+
   defp put_timeout(details, _launch), do: details
 
   # ---------------------------------------------------------------------
@@ -217,7 +230,8 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
          phase_index: Keyword.get(opts, :index, 1),
          deadline_ms: deadline_from(timeout_ms),
          timeout_ms: timeout_ms,
-         activation_timeout_ms: Keyword.get(opts, :activation_timeout_ms, @default_activation_timeout_ms),
+         activation_timeout_ms:
+           Keyword.get(opts, :activation_timeout_ms, @default_activation_timeout_ms),
          lease: nil,
          driver_opts: fn remaining_ms ->
            [timeout: remaining_ms, await_timeout: remaining_ms, cwd: cwd]
@@ -238,19 +252,28 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   end
 
   defp materialize_prompt(prompt) do
-    path = Path.join(System.tmp_dir!(), "jobsite-overwatch-prompt-#{System.unique_integer([:positive])}.md")
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "jobsite-overwatch-prompt-#{System.unique_integer([:positive])}.md"
+      )
 
     case File.write(path, prompt) do
-      :ok -> {:ok, path}
-      {:error, reason} -> {:error, Error.new(:agent_start_failed, "failed to materialize prompt file", %{reason: reason})}
+      :ok ->
+        {:ok, path}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:agent_start_failed, "failed to materialize prompt file", %{reason: reason})}
     end
   end
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp provider_options_list(%{provider_options: options}) when is_map(options) and map_size(options) > 0,
-    do: Map.to_list(options)
+  defp provider_options_list(%{provider_options: options})
+       when is_map(options) and map_size(options) > 0,
+       do: Map.to_list(options)
 
   defp provider_options_list(_agent), do: []
 

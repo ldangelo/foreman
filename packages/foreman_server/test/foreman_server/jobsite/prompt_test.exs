@@ -36,7 +36,9 @@ defmodule ForemanServer.Jobsite.PromptTest do
   describe "resolve/3 — inline :prompt" do
     test "passes through byte-identical, {{X}} intact" do
       sandbox = sandbox!()
-      assert {:ok, "do the thing {{NOT_SUBSTITUTED}}"} = Prompt.resolve([prompt: "do the thing {{NOT_SUBSTITUTED}}"], sandbox, %{})
+
+      assert {:ok, "do the thing {{NOT_SUBSTITUTED}}"} =
+               Prompt.resolve([prompt: "do the thing {{NOT_SUBSTITUTED}}"], sandbox, %{})
     end
 
     test "rejects prompt_args alongside an inline :prompt" do
@@ -54,7 +56,13 @@ defmodule ForemanServer.Jobsite.PromptTest do
       File.write!(file, "Implement issue {{ISSUE_NUMBER}} on {{SOURCE_BRANCH}}")
       on_exit(fn -> File.rm(file) end)
 
-      assert {:ok, text} = Prompt.resolve([prompt_file: file, prompt_args: %{"ISSUE_NUMBER" => "42"}], sandbox, %{})
+      assert {:ok, text} =
+               Prompt.resolve(
+                 [prompt_file: file, prompt_args: %{"ISSUE_NUMBER" => "42"}],
+                 sandbox,
+                 %{}
+               )
+
       assert text =~ "Implement issue 42 on"
       assert text =~ sandbox.worktree.branch
     end
@@ -65,7 +73,8 @@ defmodule ForemanServer.Jobsite.PromptTest do
       File.write!(file, "{{UNDEFINED_KEY}}")
       on_exit(fn -> File.rm(file) end)
 
-      assert {:error, %Error{code: :prompt_arg_missing}} = Prompt.resolve([prompt_file: file], sandbox, %{})
+      assert {:error, %Error{code: :prompt_arg_missing}} =
+               Prompt.resolve([prompt_file: file], sandbox, %{})
     end
 
     test "prompt_args setting a reserved key is :prompt_arg_reserved" do
@@ -75,7 +84,11 @@ defmodule ForemanServer.Jobsite.PromptTest do
       on_exit(fn -> File.rm(file) end)
 
       assert {:error, %Error{code: :prompt_arg_reserved}} =
-               Prompt.resolve([prompt_file: file, prompt_args: %{"SOURCE_BRANCH" => "evil"}], sandbox, %{})
+               Prompt.resolve(
+                 [prompt_file: file, prompt_args: %{"SOURCE_BRANCH" => "evil"}],
+                 sandbox,
+                 %{}
+               )
     end
   end
 
@@ -96,7 +109,8 @@ defmodule ForemanServer.Jobsite.PromptTest do
       File.write!(file, "!`exit 7`")
       on_exit(fn -> File.rm(file) end)
 
-      assert {:error, %Error{code: :prompt_expansion_failed}} = Prompt.resolve([prompt_file: file], sandbox, %{})
+      assert {:error, %Error{code: :prompt_expansion_failed}} =
+               Prompt.resolve([prompt_file: file], sandbox, %{})
     end
 
     test "expansion scans only the file's text, never a substituted value" do
@@ -106,7 +120,11 @@ defmodule ForemanServer.Jobsite.PromptTest do
       on_exit(fn -> File.rm(file) end)
 
       assert {:ok, text} =
-               Prompt.resolve([prompt_file: file, prompt_args: %{"PAYLOAD" => "!`echo injected`"}], sandbox, %{})
+               Prompt.resolve(
+                 [prompt_file: file, prompt_args: %{"PAYLOAD" => "!`echo injected`"}],
+                 sandbox,
+                 %{}
+               )
 
       assert text == "payload: !`echo injected`"
     end

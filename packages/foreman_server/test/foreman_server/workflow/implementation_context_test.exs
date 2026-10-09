@@ -338,7 +338,11 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(repo) end)
 
       :sys.replace_state(ProjectionStore, fn state ->
-        put_in(state.projects["proj-bead"], %{project_id: "proj-bead", path: repo, status: "active"})
+        put_in(state.projects["proj-bead"], %{
+          project_id: "proj-bead",
+          path: repo,
+          status: "active"
+        })
       end)
 
       :ok =

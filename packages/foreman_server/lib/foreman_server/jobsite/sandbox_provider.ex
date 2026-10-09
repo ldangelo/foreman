@@ -16,7 +16,8 @@ defmodule ForemanServer.Jobsite.SandboxProvider do
   @callback kind() :: :bind_mount | :isolated
 
   @callback create(config :: map(), worktree :: Worktree.t()) ::
-              {:ok, state :: term(), sandbox_repo_path :: String.t(), container_id :: String.t() | nil}
+              {:ok, state :: term(), sandbox_repo_path :: String.t(),
+               container_id :: String.t() | nil}
               | {:error, Error.t()}
 
   @callback exec(state :: term(), command :: String.t(), opts :: keyword()) ::
