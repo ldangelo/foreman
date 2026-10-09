@@ -2063,7 +2063,9 @@ defmodule ForemanServer.ProjectionStore do
       get(payload, :jobsite_id),
       payload_event_at_ms(payload),
       fn jobsite ->
-        Map.put(jobsite, :container_id, get(payload, :container_id))
+        jobsite
+        |> Map.put(:status, "running")
+        |> Map.put(:container_id, get(payload, :container_id))
       end
     )
   end

@@ -113,6 +113,20 @@ defmodule ForemanServer.Jobsite.PromptTest do
                Prompt.resolve([prompt_file: file], sandbox, %{})
     end
 
+    test "values substituted into an expansion command are shell-quoted" do
+      sandbox = sandbox!()
+      file = Path.join(System.tmp_dir!(), "prompt-#{System.unique_integer([:positive])}.md")
+      File.write!(file, "got: !`printf %s {{ARG}}`")
+      on_exit(fn -> File.rm(file) end)
+
+      arg = "a b; echo pwned $(echo x) 'q'"
+
+      assert {:ok, text} =
+               Prompt.resolve([prompt_file: file, prompt_args: %{"ARG" => arg}], sandbox, %{})
+
+      assert text == "got: " <> arg
+    end
+
     test "expansion scans only the file's text, never a substituted value" do
       sandbox = sandbox!()
       file = Path.join(System.tmp_dir!(), "prompt-#{System.unique_integer([:positive])}.md")

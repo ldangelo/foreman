@@ -36,6 +36,23 @@ defmodule ForemanServer.Jobsite.WorktreeTest do
       refute File.dir?(wt.path)
     end
 
+    test "discard/1 never merges: the work is dropped, the host branch is untouched" do
+      repo = tmp_repo!()
+      {:ok, host_branch} = Git.current_branch(repo)
+      {:ok, before_sha} = Git.head_sha(repo)
+
+      assert {:ok, wt} = Worktree.create(repo_path: repo, strategy: :merge_to_head)
+      File.write!(Path.join(wt.path, "unfinished.txt"), "work")
+      assert {:ok, :committed} = Git.commit_all(wt.path, "unfinished")
+
+      assert :ok = Worktree.discard(wt)
+
+      assert {:ok, ^before_sha} = Git.head_sha(repo)
+      assert {:ok, ^host_branch} = Git.current_branch(repo)
+      refute Git.branch_exists?(repo, wt.branch)
+      refute File.dir?(wt.path)
+    end
+
     test "a conflicting merge preserves the worktree and leaves the host repo clean" do
       repo = tmp_repo!()
 

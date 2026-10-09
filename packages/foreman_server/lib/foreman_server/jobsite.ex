@@ -211,9 +211,28 @@ defmodule ForemanServer.Jobsite do
         else: &Supervisor.start_jobsite/2
 
     case start_fun.(jobsite_id, opts) do
-      {:ok, _pid} ->
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+
         receive do
-          {:jobsite, ^jobsite_id, outcome} -> outcome
+          {:jobsite, ^jobsite_id, outcome} ->
+            Process.demonitor(ref, [:flush])
+            outcome
+
+          {:DOWN, ^ref, :process, ^pid, reason} ->
+            # The executor reports to us before it exits; drain that message if it
+            # raced ahead of the DOWN, otherwise the executor died without reporting.
+            receive do
+              {:jobsite, ^jobsite_id, outcome} -> outcome
+            after
+              0 ->
+                {:error,
+                 Error.new(
+                   :executor_exited,
+                   "jobsite executor exited before reporting a result",
+                   %{reason: inspect(reason)}
+                 )}
+            end
         end
 
       {:error, reason} ->

@@ -152,7 +152,8 @@ defmodule ForemanServer.Aggregates.Jobsite do
   defp apply_typed(%State{} = state, %JobsiteSandboxProvisioned{} = e) do
     %State{
       state
-      | sandbox_provider: e.provider,
+      | status: "running",
+        sandbox_provider: e.provider,
         sandbox_repo_path: e.sandbox_repo_path,
         container_id: e.container_id,
         sandbox_attempt: e.attempt || state.sandbox_attempt + 1,

@@ -481,12 +481,12 @@ defmodule ForemanServer.Jobsite.Executor do
     end
 
     if worktree do
-      case Worktree.close(worktree) do
-        {:ok, _} ->
+      case Worktree.discard(worktree) do
+        :ok ->
           :ok
 
         {:error, reason} ->
-          Logger.warning("Jobsite cleanup: worktree close failed: #{inspect(reason)}")
+          Logger.warning("Jobsite cleanup: worktree discard failed: #{inspect(reason)}")
       end
     end
 
@@ -637,9 +637,9 @@ defmodule ForemanServer.Jobsite.Executor do
       provider: Aggregate.get(agent_map, :provider) |> to_existing_atom(),
       model: Aggregate.get(agent_map, :model),
       effort: Aggregate.get(agent_map, :effort) |> to_existing_atom(),
-      env: Aggregate.get(agent_map, :env, %{}),
       provider_options: Aggregate.get(agent_map, :provider_options, %{}),
-      binary: Aggregate.get(agent_map, :binary)
+      binary: Aggregate.get(agent_map, :binary),
+      approval_mode: Aggregate.get(agent_map, :approval_mode) |> to_existing_atom()
     }
   end
 
@@ -709,7 +709,7 @@ defmodule ForemanServer.Jobsite.Executor do
         model: spec.agent.model,
         effort: spec.agent.effort && Atom.to_string(spec.agent.effort),
         binary: spec.agent.binary,
-        env: spec.agent.env,
+        approval_mode: spec.agent.approval_mode && Atom.to_string(spec.agent.approval_mode),
         provider_options: spec.agent.provider_options
       },
       sandbox_provider: spec.sandbox_provider.name(),

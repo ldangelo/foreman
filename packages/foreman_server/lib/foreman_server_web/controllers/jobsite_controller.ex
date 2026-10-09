@@ -185,7 +185,17 @@ defmodule ForemanServerWeb.JobsiteController do
   # requests can both pass at max-1. Acceptable for the single trusted operator
   # this API targets; a hard bound would need a reservation in the supervisor.
   defp check_capacity do
-    max = config(:max_concurrent_jobsites, @default_max_concurrent)
+    case config(:max_concurrent_jobsites, @default_max_concurrent) do
+      max when is_integer(max) and max >= 0 ->
+        check_capacity(max)
+
+      other ->
+        raise ArgumentError,
+              ":jobsites max_concurrent_jobsites must be a non-negative integer, got: #{inspect(other)}"
+    end
+  end
+
+  defp check_capacity(max) do
     running = Registry.count(ForemanServer.Jobsite.Registry)
 
     if running < max do

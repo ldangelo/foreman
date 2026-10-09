@@ -5,7 +5,9 @@ defmodule ForemanServer.Jobsite.Prompt do
   then `` !`command` `` expansion, in that order — so
   `` !`gh issue view {{ISSUE_NUMBER}}` `` works, and expansion scans only the
   file's own text, never a substituted value, so a value passed through
-  `prompt_args` cannot inject a command).
+  `prompt_args` cannot inject a command). Values substituted into an expansion
+  command are single-quoted for the shell, so write `` !`gh issue view {{N}}` ``
+  and not `"{{N}}"`.
   """
 
   alias ForemanServer.Jobsite.{Error, ExecResult, Sandbox}
@@ -130,10 +132,15 @@ defmodule ForemanServer.Jobsite.Prompt do
   end
 
   defp expand(substituted_text, original_matches, vars, sandbox) do
+    quoted_vars = Map.new(vars, fn {k, v} -> {k, shell_quote(v)} end)
+
     original_matches
     |> Enum.map(fn {_full, cmd} ->
-      {:ok, cmd_sub} = substitute(cmd, vars)
-      {"!`" <> cmd_sub <> "`", cmd_sub}
+      # `full` is how the span reads in the substituted text (raw values); only the
+      # command actually executed gets shell-quoted values.
+      {:ok, raw_sub} = substitute(cmd, vars)
+      {:ok, cmd_sub} = substitute(cmd, quoted_vars)
+      {"!`" <> raw_sub <> "`", cmd_sub}
     end)
     |> Enum.uniq()
     |> Task.async_stream(fn {full, cmd} -> {full, cmd, Sandbox.exec(sandbox, cmd)} end,
@@ -142,6 +149,10 @@ defmodule ForemanServer.Jobsite.Prompt do
     )
     |> Enum.reduce_while({:ok, substituted_text}, &reduce_expansion/2)
   end
+
+  # Values substituted into a shell command are single-quoted so a value such as
+  # `1; rm -rf ~` stays one argument instead of becoming more shell.
+  defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
   defp reduce_expansion(
          {:ok, {full, _cmd, {:ok, %ExecResult{exit_code: 0, stdout: out}}}},

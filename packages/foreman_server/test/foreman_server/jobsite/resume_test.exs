@@ -195,6 +195,40 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     wait_until(fn -> Jobsite.get(id).status == "completed" end)
   end
 
+  test "a resumed jobsite reads as running again once its sandbox is provisioned" do
+    repo = tmp_repo!()
+
+    fake_agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{
+          "FAKE_AGENT_TEXT" => "did some work",
+          "FAKE_AGENT_SLEEP_ON_RUN" => "2",
+          "FAKE_AGENT_SLEEP_SECS" => "5"
+        }
+      )
+
+    {:ok, id} =
+      Jobsite.run_async(
+        repo_path: repo,
+        strategy: :merge_to_head,
+        sandbox: Sandboxes.host(),
+        agent: fake_agent,
+        prompt: "go",
+        max_iterations: 3,
+        completion_signal: "NEVER"
+      )
+
+    wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+    assert :ok = Jobsite.pause(id, "pause")
+    wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
+
+    assert {:ok, ^id} = Jobsite.resume_async(id)
+    wait_until(fn -> Jobsite.get(id).status == "running" end)
+
+    wait_until(fn -> Jobsite.get(id).status == "completed" end, 15_000)
+  end
+
   test "a pause/cancel intent left by a previous run of the same id does not hit the new run" do
     repo = tmp_repo!()
     id = "js-stale-intent-#{System.unique_integer([:positive])}"

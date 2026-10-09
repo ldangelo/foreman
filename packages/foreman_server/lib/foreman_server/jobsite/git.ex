@@ -55,10 +55,15 @@ defmodule ForemanServer.Jobsite.Git do
     run(args) |> as_ok() |> tag_error(:worktree_create_failed)
   end
 
-  @doc "Remove the linked worktree at `path` and prune its metadata."
-  @spec worktree_remove(String.t(), String.t()) :: :ok | {:error, Error.t()}
-  def worktree_remove(repo, path) do
-    with {:ok, _} <- run(["-C", repo, "worktree", "remove", path]),
+  @doc """
+  Remove the linked worktree at `path` and prune its metadata. `force: true`
+  also removes a worktree holding modified or untracked files.
+  """
+  @spec worktree_remove(String.t(), String.t(), keyword()) :: :ok | {:error, Error.t()}
+  def worktree_remove(repo, path, opts \\ []) do
+    force = if Keyword.get(opts, :force, false), do: ["--force"], else: []
+
+    with {:ok, _} <- run(["-C", repo, "worktree", "remove"] ++ force ++ [path]),
          {:ok, _} <- run(["-C", repo, "worktree", "prune"]) do
       :ok
     else

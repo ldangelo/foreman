@@ -201,6 +201,24 @@ defmodule ForemanServer.Jobsite.Worktree do
     end
   end
 
+  @doc """
+  Release a worktree whose run failed or was cancelled. Unlike `close/1` this
+  never merges: a `:merge_to_head` run's temporary worktree and branch are
+  deleted, so unfinished work cannot land on the caller's branch. `:head` and
+  `{:branch, name}` behave as in `close/1` (nothing to discard / keep a dirty
+  branch checkout).
+  """
+  @spec discard(t()) :: :ok | {:error, Error.t()}
+  def discard(%__MODULE__{strategy: :merge_to_head} = wt) do
+    with :ok <- Git.worktree_remove(wt.repo_path, wt.path, force: true) do
+      Git.delete_branch(wt.repo_path, wt.branch)
+    end
+  end
+
+  def discard(%__MODULE__{} = wt) do
+    with {:ok, _} <- close(wt), do: :ok
+  end
+
   defp copy_files(_worktree, []), do: :ok
 
   defp copy_files(worktree, entries) do
