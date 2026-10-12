@@ -68,8 +68,8 @@ defmodule ForemanServer.Jobsite do
   `:jobsite_not_found`, a terminal one `:not_resumable`, one whose Executor is
   alive `:already_running`.
   """
-  @spec resume_async(String.t()) :: {:ok, String.t()} | {:error, Error.t()}
-  def resume_async(jobsite_id) do
+  @spec resume_async(String.t(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
+  def resume_async(jobsite_id, opts \\ []) do
     {state, _version} =
       ForemanServer.Aggregate.load(ForemanServer.Aggregates.Jobsite, "jobsite:" <> jobsite_id)
 
@@ -94,7 +94,7 @@ defmodule ForemanServer.Jobsite do
          })}
 
       true ->
-        case Supervisor.resume_jobsite(jobsite_id, []) do
+        case Supervisor.resume_jobsite(jobsite_id, Keyword.take(opts, [:max_concurrent])) do
           {:ok, _pid} -> {:ok, jobsite_id}
           {:error, reason} -> {:error, start_failed_error(reason)}
         end
@@ -238,6 +238,13 @@ defmodule ForemanServer.Jobsite do
       {:error, reason} ->
         {:error, start_failed_error(reason)}
     end
+  end
+
+  defp start_failed_error({:capacity_reached, running, max}) do
+    Error.new(:jobsite_capacity_reached, "#{running} jobsites already running (max #{max})", %{
+      running: running,
+      max: max
+    })
   end
 
   defp start_failed_error(reason) do

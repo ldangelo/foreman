@@ -465,8 +465,13 @@ defmodule ForemanServer.Workflow.ImplementationContext do
   defp bead_id_for(workflow_type, external_id) do
     if beads_workflow?(workflow_type) do
       case external_id do
-        id when is_binary(id) and id != "" -> {:ok, id}
-        _ -> {:error, {:implementation_context_failed, :bead_id_missing}}
+        id when is_binary(id) ->
+          if String.trim(id) == "",
+            do: {:error, {:implementation_context_failed, :bead_id_missing}},
+            else: {:ok, id}
+
+        _ ->
+          {:error, {:implementation_context_failed, :bead_id_missing}}
       end
     else
       {:ok, nil}

@@ -19,8 +19,37 @@ defmodule ForemanServer.Jobsite.Supervisor do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
   end
 
+  @doc """
+  Start an Executor for `jobsite_id`.
+
+  With `max_concurrent: n` in `opts`, the live-executor count is checked and the
+  child started under one lock, so simultaneous callers cannot both pass at
+  `n - 1`. Executors register their id in `init`-time `start_link`, before
+  `start_child` returns, so the next caller's count already includes this one.
+  Over the cap is `{:error, {:capacity_reached, running, max}}`.
+  """
   @spec start_jobsite(String.t(), keyword()) :: DynamicSupervisor.on_start_child()
   def start_jobsite(jobsite_id, opts) do
+    {max, opts} = Keyword.pop(opts, :max_concurrent)
+
+    if is_nil(max) do
+      do_start(jobsite_id, opts)
+    else
+      :global.trans({{__MODULE__, :admission}, self()}, fn -> admit(jobsite_id, opts, max) end, [
+        node()
+      ])
+    end
+  end
+
+  defp admit(jobsite_id, opts, max) do
+    running = Registry.count(ForemanServer.Jobsite.Registry)
+
+    if running < max,
+      do: do_start(jobsite_id, opts),
+      else: {:error, {:capacity_reached, running, max}}
+  end
+
+  defp do_start(jobsite_id, opts) do
     # An intent left behind by a previous run of this id (an executor that exited
     # between the last check and its clear) would pause or cancel this one the moment
     # it starts. No executor is registered yet, so the controller cannot be adding a

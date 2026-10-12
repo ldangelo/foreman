@@ -297,14 +297,17 @@ defmodule ForemanServer.Jobsite.Git do
   Publish `branch` to `remote` from the checkout at `path`. The remote name is
   chosen by the server (never a caller) and prompts are disabled so missing
   credentials fail rather than hang waiting for a terminal that does not exist.
-  Not time-bounded: a remote that accepts the connection and then stalls blocks
-  the caller until git gives up.
+  Bounded by `:timeout_ms` (default #{120_000} ms): on expiry the git process is
+  killed with SIGKILL and the result is a `:push_failed` error with
+  `timed_out: true`. (`System.cmd/3` has no timeout option, so git runs under a
+  port whose OS pid can be killed.)
   """
-  @spec push(String.t(), String.t(), String.t()) :: :ok | {:error, Error.t()}
-  def push(path, remote, branch) do
+  @spec push(String.t(), String.t(), String.t(), keyword()) :: :ok | {:error, Error.t()}
+  def push(path, remote, branch, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, 120_000)
     args = ["-C", path, "push", remote, "refs/heads/#{branch}:refs/heads/#{branch}"]
 
-    case System.cmd("git", args, stderr_to_stdout: true, env: [{"GIT_TERMINAL_PROMPT", "0"}]) do
+    case cmd_with_deadline(args, timeout_ms) do
       {_output, 0} ->
         :ok
 
@@ -314,8 +317,39 @@ defmodule ForemanServer.Jobsite.Git do
            remote: remote,
            branch: branch,
            exit_code: code,
+           timed_out: code == :timeout,
            output: String.trim(output)
          })}
+    end
+  end
+
+  # `git` under a port so the deadline can kill the OS process; prompts disabled.
+  defp cmd_with_deadline(args, timeout_ms) do
+    port =
+      Port.open({:spawn_executable, System.find_executable("git")}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        :hide,
+        args: args,
+        env: [{~c"GIT_TERMINAL_PROMPT", ~c"0"}]
+      ])
+
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [])
+  end
+
+  defp collect(port, os_pid, deadline, acc) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} -> collect(port, os_pid, deadline, [acc, data])
+      {^port, {:exit_status, status}} -> {IO.iodata_to_binary(acc), status}
+    after
+      remaining ->
+        System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+        Port.close(port)
+        {IO.iodata_to_binary(acc) <> "push timed out", :timeout}
     end
   end
 

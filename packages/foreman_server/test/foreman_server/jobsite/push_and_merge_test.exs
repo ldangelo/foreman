@@ -106,6 +106,23 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
 
       assert output != ""
     end
+
+    test "a remote that stalls is killed at the deadline and reported as timed out" do
+      %{repo: repo, bare: bare} = repo_with_origin!()
+      git!(repo, ["checkout", "-q", "-b", "feature"])
+
+      stall = Path.join(Path.dirname(bare), "stall-#{System.unique_integer([:positive])}.sh")
+      File.write!(stall, "#!/bin/sh\nexec sleep 5\n")
+      File.chmod!(stall, 0o755)
+      git!(repo, ["config", "remote.origin.receivepack", stall])
+
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, %Error{code: :push_failed, details: %{timed_out: true}}} =
+               Git.push(repo, "origin", "feature", timeout_ms: 300)
+
+      assert System.monotonic_time(:millisecond) - started < 3_000
+    end
   end
 
   describe "push: true on a fresh run" do

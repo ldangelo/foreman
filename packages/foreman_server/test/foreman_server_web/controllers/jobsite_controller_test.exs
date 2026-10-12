@@ -297,24 +297,15 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       assert %{"error" => "jobsite_not_found"} = json_response(conn, 404)
     end
 
-    test "resume is held to the remote-start flag and the capacity cap, audited" do
+    test "resume is held to the remote-start flag, audited" do
       Application.put_env(:foreman_server, :jobsites, [])
       conn = post_json(authed(), "/api/jobsites/js-any/resume", %{})
       assert %{"error" => "remote_start_disabled"} = json_response(conn, 403)
-
-      Application.put_env(:foreman_server, :jobsites,
-        allow_remote_start: true,
-        max_concurrent_jobsites: 0
-      )
-
-      conn = post_json(authed(), "/api/jobsites/js-any/resume", %{})
-      assert %{"error" => "jobsite_capacity_reached"} = json_response(conn, 429)
 
       codes =
         for e <- audit_events(), e["route"] == "/api/jobsites/js-any/resume", do: e["error_code"]
 
       assert "remote_start_disabled" in codes
-      assert "jobsite_capacity_reached" in codes
     end
 
     test "a rejected pause is audited" do

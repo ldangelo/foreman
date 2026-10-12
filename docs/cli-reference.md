@@ -15,7 +15,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
-> foreman init              --force   # --force is REQUIRED
+> foreman init              --force   # --force is REQUIRED without --template (installs runtime workflows/prompts)
+> foreman init              --template <basic|iterate|parallel|review|triage> --dir --force   # scaffolds <dir>/.foreman/; --force optional, additionally refreshes the installed runtime
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format

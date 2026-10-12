@@ -38,20 +38,27 @@ repo_path = Path.expand("..", __DIR__)
   )
 
 final =
-  Enum.reduce_while(1..3, :never_tested, fn attempt, _acc ->
+  Enum.reduce_while(1..4, :never_tested, fn attempt, _acc ->
     {:ok, tests} = Sandbox.exec(sandbox, "mix test")
 
-    if tests.exit_code == 0 do
-      IO.puts("green")
-      {:halt, :green}
-    else
-      {:ok, _} =
-        Sandbox.run(sandbox,
-          agent: Agents.claude("claude-sonnet-4-6", approval_mode: :auto_approve),
-          prompt: "Attempt #{attempt}. The last test run failed:\n#{tests.stdout}"
-        )
+    cond do
+      tests.exit_code == 0 ->
+        IO.puts("green")
+        {:halt, :green}
 
-      {:cont, :red}
+      # Three fix passes have run and the test after the last one is still red:
+      # report it rather than starting a fourth fix that nothing would test.
+      attempt == 4 ->
+        {:halt, :red}
+
+      true ->
+        {:ok, _} =
+          Sandbox.run(sandbox,
+            agent: Agents.claude("claude-sonnet-4-6", approval_mode: :auto_approve),
+            prompt: "Attempt #{attempt}. The last test run failed:\n#{tests.stdout}"
+          )
+
+        {:cont, :red}
     end
   end)
 

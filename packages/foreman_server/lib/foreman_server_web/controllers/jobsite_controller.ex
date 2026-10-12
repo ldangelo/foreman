@@ -39,9 +39,9 @@ defmodule ForemanServerWeb.JobsiteController do
   # POST /api/jobsites
   def create(conn, _params) do
     with :ok <- check_enabled(),
-         :ok <- check_capacity(),
+         {:ok, max} <- max_concurrent(),
          {:ok, opts} <- Spec.from_json(conn.body_params),
-         {:ok, id} <- Jobsite.run_async(opts) do
+         {:ok, id} <- Jobsite.run_async(Keyword.put(opts, :max_concurrent, max)) do
       audit(conn, "accepted", nil, id)
 
       conn
@@ -98,8 +98,8 @@ defmodule ForemanServerWeb.JobsiteController do
   # start does, so it is held to the same operator flag and concurrency cap.
   def resume(conn, %{"id" => id}) do
     with :ok <- check_enabled(),
-         :ok <- check_capacity(),
-         {:ok, ^id} <- Jobsite.resume_async(id) do
+         {:ok, max} <- max_concurrent(),
+         {:ok, ^id} <- Jobsite.resume_async(id, max_concurrent: max) do
       audit(conn, "accepted", nil, id)
 
       conn
@@ -181,31 +181,17 @@ defmodule ForemanServerWeb.JobsiteController do
     end
   end
 
-  # Counted from the live-executor registry, read-then-start: two simultaneous
-  # requests can both pass at max-1. Acceptable for the single trusted operator
-  # this API targets; a hard bound would need a reservation in the supervisor.
-  defp check_capacity do
+  # The cap itself is enforced atomically by `Jobsite.Supervisor` (count and start
+  # under one lock); this only validates the configured value, so a bad one
+  # cannot silently disable the limit.
+  defp max_concurrent do
     case config(:max_concurrent_jobsites, @default_max_concurrent) do
       max when is_integer(max) and max >= 0 ->
-        check_capacity(max)
+        {:ok, max}
 
       other ->
         raise ArgumentError,
               ":jobsites max_concurrent_jobsites must be a non-negative integer, got: #{inspect(other)}"
-    end
-  end
-
-  defp check_capacity(max) do
-    running = Registry.count(ForemanServer.Jobsite.Registry)
-
-    if running < max do
-      :ok
-    else
-      {:error,
-       Error.new(:jobsite_capacity_reached, "#{running} jobsites already running (max #{max})", %{
-         running: running,
-         max: max
-       })}
     end
   end
 

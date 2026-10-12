@@ -38,14 +38,21 @@ case Jason.decode!(ready.stdout) do
       "Implement bead #{bead["id"]}:\n#{bead["title"]}\n#{bead["description"]}\n\n" <>
         "When genuinely complete, end your final message with exactly:\n<promise>COMPLETE</promise>"
 
-    {:ok, _} =
+    {:ok, iterations} =
       Sandbox.run(sandbox,
         agent: Agents.claude("claude-opus-4-8", approval_mode: :auto_approve),
         prompt: prompt,
         max_iterations: 5
       )
 
-    {:ok, _} = Sandbox.exec(sandbox, "br close #{bead["id"]} --reason 'Implemented by jobsite'")
+    # Close the bead only when the agent emitted the completion signal, and quote
+    # its id: it comes from `br` output and is interpolated into a shell command.
+    if List.last(iterations).signalled? do
+      quoted_id = "'" <> String.replace(bead["id"], "'", "'\\''") <> "'"
+      {:ok, _} = Sandbox.exec(sandbox, "br close #{quoted_id} --reason 'Implemented by jobsite'")
+    else
+      IO.puts("bead #{bead["id"]} not complete after 5 iterations; left open")
+    end
 end
 
 {:ok, _} = Sandbox.close(sandbox)
