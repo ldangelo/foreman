@@ -79,6 +79,19 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
     end
   end
 
+  defp wait_for_pidfile(_path, 0), do: flunk("receive-pack stub never started")
+
+  defp wait_for_pidfile(path, n) do
+    case File.read(path) do
+      {:ok, content} when content != "" ->
+        :ok
+
+      _ ->
+        Process.sleep(50)
+        wait_for_pidfile(path, n - 1)
+    end
+  end
+
   describe "Git.push/3" do
     test "publishes exactly the named branch" do
       %{repo: repo, bare: bare} = repo_with_origin!()
@@ -118,11 +131,15 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
       git!(repo, ["config", "remote.origin.receivepack", stall])
 
       started = System.monotonic_time(:millisecond)
+      push = Task.async(fn -> Git.push(repo, "origin", "feature", timeout_ms: 1_500) end)
+
+      # The deadline only means something once the stalled child is running.
+      wait_for_pidfile(pidfile, 50)
 
       assert {:error, %Error{code: :push_failed, details: %{timed_out: true}}} =
-               Git.push(repo, "origin", "feature", timeout_ms: 300)
+               Task.await(push, 10_000)
 
-      assert System.monotonic_time(:millisecond) - started < 3_000
+      assert System.monotonic_time(:millisecond) - started < 5_000
 
       # The stalled receive-pack child is gone too, not just git.
       stalled = pidfile |> File.read!() |> String.trim()

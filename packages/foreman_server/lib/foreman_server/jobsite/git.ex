@@ -368,7 +368,18 @@ defmodule ForemanServer.Jobsite.Git do
           ArgumentError -> :ok
         end
 
+        drain_port_messages(port)
         {IO.iodata_to_binary(acc) <> "push timed out", :timeout}
+    end
+  end
+
+  # Output and exit status already queued for the dead port would otherwise stay
+  # in the caller's mailbox for good.
+  defp drain_port_messages(port) do
+    receive do
+      {^port, _} -> drain_port_messages(port)
+    after
+      0 -> :ok
     end
   end
 
