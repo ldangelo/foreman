@@ -12,6 +12,7 @@
 # The sandbox image must exist on the SERVER's Docker, built once from that
 # project's repo root via:
 #   docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) \
+#     --build-context ensemble=<your ensemble checkout> \
 #     -t "foreman-jobsite:$(basename "$PWD")" .foreman
 
 # Pin `ref: "<tag or sha>"` here to stop following the default branch.

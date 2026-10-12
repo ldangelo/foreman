@@ -50,7 +50,7 @@ working directory.
   text, so any `{{PLACEHOLDER}}` is filled in by the script itself.
 - `Dockerfile` — optional sandbox image for the `docker` sandbox, built on the
   machine that runs the server:
-  `docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) -t foreman-jobsite:<name> .foreman`.
+  `docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) --build-context ensemble=<your ensemble checkout> -t foreman-jobsite:<name> .foreman`. The image installs ensemble into both pi and Claude Code from that checkout (`packages/pi` and the `ensemble-full` plugin), plus `br` and `bv`.
 - `logs/`, `state/`, `worktrees/`, `runs/` — reserved, gitignored working
   directories Jobsite writes into at run time. `runs/` in particular is
   reserved for future per-run artifact output; do not create files there by

@@ -2,6 +2,7 @@
 #
 # Build with:
 #   docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) \
+#     --build-context ensemble=<path to your ensemble checkout> \
 #     -t foreman-jobsite:<name> .foreman
 #
 # AGENT_UID/AGENT_GID must match the host user running Foreman so that files
@@ -37,5 +38,16 @@ RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/ma
 RUN groupadd -o -g "${AGENT_GID}" agent \
   && useradd -o -m -u "${AGENT_UID}" -g "${AGENT_GID}" agent
 
+# Ensemble is the base component both agents load. Until it is published, it is
+# installed from a local checkout passed as the named build context `ensemble`
+# (see the build command above): the pi extension and the Claude Code plugins.
+COPY --from=ensemble .claude-plugin /opt/ensemble/.claude-plugin
+COPY --from=ensemble packages /opt/ensemble/packages
+
 USER agent
+
+RUN pi install /opt/ensemble/packages/pi \
+  && claude plugin marketplace add /opt/ensemble \
+  && claude plugin install ensemble-full@ensemble
+
 WORKDIR /workspace
