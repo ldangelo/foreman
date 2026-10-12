@@ -64,6 +64,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResult do
           {:ok, String.t(), %{required(:provider) => atom(), required(:adapter) => :jido_harness}}
           | ErrorCodes.code()
           | {:error, :failed_without_detail}
+          | {:error, {:permission_denied, [String.t()]}}
 
   @doc """
   Normalizes a `%Jido.Harness.RunResult{}` into the
@@ -77,7 +78,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResult do
   """
   @spec normalize(Jido.Harness.RunResult.t()) :: normalized()
   def normalize(%Jido.Harness.RunResult{status: :completed, error: nil} = result) do
-    {:ok, result.text, %{provider: result.provider, adapter: :jido_harness}}
+    case denied_tools(result.events) do
+      [] -> {:ok, result.text, %{provider: result.provider, adapter: :jido_harness}}
+      tools -> {:error, {:permission_denied, tools}}
+    end
   end
 
   def normalize(%Jido.Harness.RunResult{status: status, error: error}) do
@@ -85,6 +89,24 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResult do
       {:error, _code} = err -> err
       nil -> status_code(status)
     end
+  end
+
+  # A Claude run whose tool call was refused by the permission system still
+  # ends `status: :completed` with exit 0: the model just reports that it needs
+  # approval and stops. The terminal `result` record's `permission_denials`
+  # (kept on the event's in-memory `raw`) is the only structured signal, and
+  # it is verified against a real run. Treating that as success made an
+  # unattended phase "complete" having written nothing.
+  defp denied_tools(events) when is_list(events) do
+    events
+    |> Enum.flat_map(fn
+      %{raw: %{"permission_denials" => [_ | _] = denials}} ->
+        for %{"tool_name" => name} when is_binary(name) <- denials, do: name
+
+      _ ->
+        []
+    end)
+    |> Enum.uniq()
   end
 
   # `nil` is the only term that yields no code from `ErrorCodes.map/1`;

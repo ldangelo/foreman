@@ -33,7 +33,8 @@ defmodule ForemanServer.MCP.ToolsTest do
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       works: %{},
-      inbox_threads: %{}
+      inbox_threads: %{},
+      jobsites: %{}
     }
 
     :sys.replace_state(ProjectionStore, fn _ -> Map.merge(base, overrides) end)

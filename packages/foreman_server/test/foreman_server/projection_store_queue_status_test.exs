@@ -4,6 +4,7 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
   alias EventStore.EventData
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @run_slots_stream "run_slots:global"
 
@@ -77,22 +78,7 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
   end
 
   defp reset_projection_store do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{
-        projects: %{},
-        runs: %{},
-        tasks: %{},
-        phases: %{},
-        pr_associations: %{},
-        scheduler_intents: %{},
-        worktrees: %{},
-        worktree_create_orphans: %{},
-        subscribers: Map.get(state, :subscribers, %{}),
-        run_slots: %{capacity: 0, holders: %{}, waiters: []},
-        works: %{},
-        project_active_runs: %{}
-      }
-    end)
+    ProjectionStoreReset.reset!(keep_subscribers: true)
   end
 
   defp append_and_apply(stream_uuid, expected_version, event_type, payload) do

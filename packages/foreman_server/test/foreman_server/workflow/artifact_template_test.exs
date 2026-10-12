@@ -54,4 +54,27 @@ defmodule ForemanServer.Workflow.ArtifactTemplateTest do
   after
     File.rm_rf!(Path.join(System.tmp_dir!(), "foreman-artifact-"))
   end
+
+  describe "{task.projectReportsDir}" do
+    @spec_with_dir %{artifact_template: "{task.projectReportsDir}/REPORT.md"}
+
+    test "resolves inside the run's worktree, not the server's cwd" do
+      state =
+        state_with("run-1", "beads:p:t-1", "/unused")
+        |> Map.put(:run_worktree, %{worktree_path: "/work/tree"})
+
+      assert ArtifactTemplate.path(state, @spec_with_dir, 1) ==
+               "/work/tree/docs/reports/foreman-beads:p:t-1/REPORT.md"
+    end
+
+    test "without a worktree it uses the task's own directory" do
+      state = %{
+        state_with("run-1", "t-1", "/unused")
+        | task: %{task_id: "t-1", working_directory: "/the/project"}
+      }
+
+      assert ArtifactTemplate.path(state, @spec_with_dir, 1) ==
+               "/the/project/docs/reports/foreman-t-1/REPORT.md"
+    end
+  end
 end

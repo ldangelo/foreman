@@ -219,7 +219,17 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         send(pid, {:adapter_env, env})
       end
 
-      {:ok, "artifact body"}
+      if Map.get(context, "pause_then_fail?") == true and is_binary(working_directory) do
+        # An operator pause that lands MID-phase reaches the executor as the
+        # agent's death (the dispatcher kills the harness run), with the pause
+        # already recorded in `RunControl`. The agent leaves unfinished work
+        # behind, uncommitted.
+        File.write!(Path.join(working_directory, "partial-work.txt"), "unfinished")
+        :ok = ForemanServer.RunControl.request(Keyword.fetch!(state, :run_id), :pause)
+        {:error, :agent_interrupted}
+      else
+        {:ok, "artifact body"}
+      end
     end
 
     defp git!(cwd, args) do
@@ -1004,6 +1014,230 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     # Wait for the close dispatch before exit so Mox sees the close expect fire.
     assert_receive {:runner_cmd, :close}, @poll_timeout_ms
+  end
+
+  test "a run resumed at phase N lowers and runs only the remaining phases" do
+    # `resume_from` only chooses where the lowered program starts: phases before
+    # it are not lowered, so they are not started, dispatched or committed
+    # again, and the worktree step moves to the first phase that does run. The
+    # task is not re-claimed (`resuming?`), so the only provider call is the
+    # close at finalize.
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    repo_dir =
+      Path.join(System.tmp_dir!(), "foreman-resume-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(repo_dir)
+    File.mkdir_p!(repo_dir)
+    run_git!(["-C", repo_dir, "init", "--initial-branch=main"])
+    run_git!(["-C", repo_dir, "config", "user.email", "resume@test"])
+    run_git!(["-C", repo_dir, "config", "user.name", "Resume Test"])
+    File.write!(Path.join(repo_dir, "README.md"), "seed")
+    run_git!(["-C", repo_dir, "add", "."])
+    run_git!(["-C", repo_dir, "commit", "--no-gpg-sign", "-m", "seed"])
+    head_sha = run_git!(["-C", repo_dir, "rev-parse", "HEAD"]) |> String.trim()
+    on_exit(fn -> File.rm_rf(repo_dir) end)
+
+    phase = fn index, command ->
+      %{
+        name: String.to_atom("resume_phase_#{index}"),
+        action: :command,
+        command: command,
+        index: index,
+        phase_id: Identity.phase_id(run_id, index),
+        artifact_template: %{path: Path.join([artifact_dir, "{run_id}-{task_id}-#{index}.md"])},
+        context: %{"script_key" => "#{script_key}-#{index}"}
+      }
+    end
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      implementation: %{
+        project_root: repo_dir,
+        source_revision: head_sha,
+        implementation_key: String.duplicate("b", 64),
+        trd_path: "TRD-RESUME.md",
+        beads_database_path: database_path
+      },
+      worktree: %{enabled: true, path: "implement-trd-beads", cleanup: "always"},
+      phases: [
+        phase.(1, "/skill:resume-phase-one --foreman"),
+        phase.(2, "/skill:resume-phase-two --foreman")
+      ]
+    }
+
+    LifecycleStore.put("#{script_key}-1", %{test_pid: test_pid})
+    LifecycleStore.put("#{script_key}-2", %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: ^task_id}}, _cfg, opts ->
+      send(test_pid, {:runner_cmd, :close})
+      assert opts == [timeout_ms: 30_000]
+      close_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task, [resume_from: 1]]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+
+    assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
+    assert prompt =~ "resume-phase-two"
+    assert context["script_key"] == "#{script_key}-2"
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.phase_projection(Identity.phase_id(run_id, 2)) do
+                   %{status: "completed"} = completed -> {:ok, completed}
+                   other -> {:error, other}
+                 end
+               end,
+               "resumed phase 2 completed"
+             )
+
+    # Phase 1 belongs to the attempt before the resume: this run never started it.
+    assert ProjectionStore.phase_projection(Identity.phase_id(run_id, 1)) == nil
+    refute_received {:adapter_execute, _prompt, %{"script_key" => _}}
+
+    assert_receive {:runner_cmd, :close}, @poll_timeout_ms
+  end
+
+  test "an operator pause landing mid-phase commits the partial work and stops the run without failing it" do
+    # The pause arrives as the agent's death with `RunControl` already holding
+    # the intent: the observer's `step_failed/4` must fold that into a pause
+    # (commit what the agent left behind, stop clean), not a `phase.fail` — and
+    # the engine must report it as an interruption, not a failure.
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    repo_dir = Path.join(System.tmp_dir!(), "foreman-pause-#{System.unique_integer([:positive])}")
+    File.rm_rf!(repo_dir)
+    File.mkdir_p!(repo_dir)
+    run_git!(["-C", repo_dir, "init", "--initial-branch=main"])
+    run_git!(["-C", repo_dir, "config", "user.email", "pause@test"])
+    run_git!(["-C", repo_dir, "config", "user.name", "Pause Test"])
+    File.write!(Path.join(repo_dir, "README.md"), "seed")
+    run_git!(["-C", repo_dir, "add", "."])
+    run_git!(["-C", repo_dir, "commit", "--no-gpg-sign", "-m", "seed"])
+    head_sha = run_git!(["-C", repo_dir, "rev-parse", "HEAD"]) |> String.trim()
+    on_exit(fn -> File.rm_rf(repo_dir) end)
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      implementation: %{
+        project_root: repo_dir,
+        source_revision: head_sha,
+        implementation_key: String.duplicate("c", 64),
+        trd_path: "TRD-PAUSE.md",
+        beads_database_path: database_path
+      },
+      worktree: %{enabled: true, path: "implement-trd-beads", cleanup: "never"},
+      phases: [
+        %{
+          name: :pause_phase,
+          action: :command,
+          command: "/skill:pause-phase --foreman",
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{path: Path.join([artifact_dir, "{run_id}-{task_id}-pause.md"])},
+          context: %{"script_key" => script_key, "pause_then_fail?" => true}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", ^task_id]}}, _cfg, opts ->
+      send(test_pid, {:runner_cmd, :claim})
+      assert opts == [timeout_ms: 30_000]
+      claim_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    ref = Process.monitor(run_pid)
+
+    # `:normal` — an interruption stops the executor cleanly. A failure would
+    # have finalized through the terminal-dispatch helper instead.
+    assert_receive {:DOWN, ^ref, :process, ^run_pid, :normal}, @poll_timeout_ms
+
+    # The run was neither failed nor completed: it is resumable.
+    assert %{status: status} = ProjectionStore.phase_projection(Identity.phase_id(run_id, 1))
+    refute status in ["failed", "completed"]
+
+    run = ProjectionStore.run(run_id)
+    refute run && run.status in ["failed", "completed"]
+
+    # The agent's uncommitted work landed on the run branch in Foreman's own
+    # phase commit.
+    branch = "foreman/#{task_id}/#{run_id}"
+    subjects = run_git!(["-C", repo_dir, "log", "--format=%s", branch])
+    assert subjects =~ "Foreman run #{run_id} phase 1"
+
+    assert run_git!(["-C", repo_dir, "ls-tree", "-r", "--name-only", branch]) =~
+             "partial-work.txt"
   end
 
   test "initialization failure retries run.fail dispatch instead of silently stopping" do

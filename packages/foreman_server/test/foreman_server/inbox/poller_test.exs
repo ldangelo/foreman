@@ -15,6 +15,16 @@ defmodule ForemanServer.Inbox.PollerTest do
   end
 
   setup do
+    original_window = Application.get_env(:foreman_server, :inbox_dedupe_window_seconds)
+    Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 60)
+
+    on_exit(fn ->
+      case original_window do
+        nil -> Application.delete_env(:foreman_server, :inbox_dedupe_window_seconds)
+        value -> Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, value)
+      end
+    end)
+
     case Process.whereis(Poller) do
       nil ->
         {:ok, _pid} = Poller.start_link([])

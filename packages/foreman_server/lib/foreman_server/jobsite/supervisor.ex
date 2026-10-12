@@ -1,0 +1,84 @@
+defmodule ForemanServer.Jobsite.Supervisor do
+  @moduledoc """
+  DynamicSupervisor that manages one `ForemanServer.Jobsite.Executor` per
+  jobsite id. Restart is `:temporary` — a crash is never auto-restarted
+  (`:transient` would restart on any abnormal exit, including `:killed`,
+  re-running `jobsite.start` against an already-started aggregate, which the
+  aggregate's `require_absent` guard would then reject). Recovery is always
+  an explicit `resume/1` call: whoever observes the crash (the caller blocked
+  on `reply_to` gets no reply and times out, or an operator notices the
+  jobsite stuck non-terminal) invokes `resume/1`.
+  """
+
+  use DynamicSupervisor
+
+  alias ForemanServer.Jobsite.Executor
+
+  @spec start_link(term()) :: GenServer.on_start()
+  def start_link(init_arg \\ []) do
+    DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
+  end
+
+  @doc """
+  Start an Executor for `jobsite_id`.
+
+  With `max_concurrent: n` in `opts`, the live-executor count is checked and the
+  child started under one lock, so simultaneous callers cannot both pass at
+  `n - 1`. Executors register their id in `init`-time `start_link`, before
+  `start_child` returns, so the next caller's count already includes this one.
+  Over the cap is `{:error, {:capacity_reached, running, max}}`.
+  """
+  @spec start_jobsite(String.t(), keyword()) :: DynamicSupervisor.on_start_child()
+  def start_jobsite(jobsite_id, opts) do
+    {max, opts} = Keyword.pop(opts, :max_concurrent)
+
+    if is_nil(max) do
+      do_start(jobsite_id, opts)
+    else
+      :global.trans({{__MODULE__, :admission}, self()}, fn -> admit(jobsite_id, opts, max) end, [
+        node()
+      ])
+    end
+  end
+
+  defp admit(jobsite_id, opts, max) do
+    running = Registry.count(ForemanServer.Jobsite.Registry)
+
+    if running < max,
+      do: do_start(jobsite_id, opts),
+      else: {:error, {:capacity_reached, running, max}}
+  end
+
+  defp do_start(jobsite_id, opts) do
+    case Registry.lookup(ForemanServer.Jobsite.Registry, jobsite_id) do
+      [{pid, _}] -> {:error, {:already_started, pid}}
+      [] -> do_start_new(jobsite_id, opts)
+    end
+  end
+
+  defp do_start_new(jobsite_id, opts) do
+    # An intent left behind by a previous run of this id (an executor that exited
+    # between the last check and its clear) would pause or cancel this one the moment
+    # it starts. No executor is registered yet, so the controller cannot be adding a
+    # fresh intent for this id concurrently.
+    ForemanServer.Jobsite.Control.clear(jobsite_id)
+
+    child_spec = %{
+      id: Executor,
+      start: {Executor, :start_link, [jobsite_id, opts]},
+      restart: :temporary,
+      shutdown: 5_000,
+      type: :worker
+    }
+
+    DynamicSupervisor.start_child(__MODULE__, child_spec)
+  end
+
+  @spec resume_jobsite(String.t(), keyword()) :: DynamicSupervisor.on_start_child()
+  def resume_jobsite(jobsite_id, opts) do
+    start_jobsite(jobsite_id, Keyword.put(opts, :resume?, true))
+  end
+
+  @impl true
+  def init(_init_arg), do: DynamicSupervisor.init(strategy: :one_for_one)
+end

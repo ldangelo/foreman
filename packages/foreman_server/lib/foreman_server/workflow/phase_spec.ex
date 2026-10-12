@@ -34,6 +34,7 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     {:index, [:index, "index"]},
     {:models, [:models, "models"]},
     {:provider, [:provider, "provider"]},
+    {:approval_mode, [:approval_mode, "approval_mode"]},
     {:timeout_minutes, [:timeout_minutes, "timeout_minutes", "timeoutMinutes"]},
     {:mail, [:mail, "mail"]},
     {:context, [:context, "context"]},
@@ -71,6 +72,20 @@ defmodule ForemanServer.Workflow.PhaseSpec do
   @spec normalize_all([map()]) :: [map()]
   def normalize_all(phases) when is_list(phases) do
     Enum.map(phases, &normalize/1)
+  end
+
+  @doc """
+  The phase's 1-based number: its declared `:index` when that is a positive
+  integer, else its position in the list plus one. The single definition —
+  `RunExecutor` (lifecycle events, artifact paths, prompt rendering) and
+  `Lowering` (commit messages, step ids) must agree on it.
+  """
+  @spec number(map(), non_neg_integer()) :: pos_integer()
+  def number(phase_spec, index) when is_map(phase_spec) and is_integer(index) do
+    case Map.get(phase_spec, :index) do
+      value when is_integer(value) and value >= 1 -> value
+      _ -> index + 1
+    end
   end
 
   @doc """

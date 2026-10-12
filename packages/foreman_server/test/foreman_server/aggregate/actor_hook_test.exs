@@ -105,12 +105,15 @@ defmodule ForemanServer.ActorHookTest do
     end)
   end
 
-  defp take_append_message do
+  # Scoped to the task's own stream: other processes may park unrelated
+  # appends (e.g. ProjectRunReservationReleased) in the suspended router.
+  defp take_append_message(task_id) do
     pid = Process.whereis(CommandRouter)
     {:messages, mailbox} = :erlang.process_info(pid, :messages)
+    stream = stream_id_for_task(task_id)
 
     Enum.find(mailbox, fn
-      {:append, _, _, _, _, _} -> true
+      {:append, ^stream, _, _, _, _} -> true
       _ -> false
     end)
   end
@@ -408,7 +411,7 @@ defmodule ForemanServer.ActorHookTest do
       # Wait until CommandRouter has the queued {:append, ...} from the actor.
       append_msg =
         Enum.reduce_while(1..200, nil, fn _, _ ->
-          case take_append_message() do
+          case take_append_message(ids.task_id) do
             nil ->
               Process.sleep(10)
               {:cont, nil}
@@ -467,7 +470,7 @@ defmodule ForemanServer.ActorHookTest do
 
       append_msg =
         Enum.reduce_while(1..200, nil, fn _, _ ->
-          case take_append_message() do
+          case take_append_message(ids.task_id) do
             nil ->
               Process.sleep(10)
               {:cont, nil}
@@ -556,15 +559,23 @@ defmodule ForemanServer.ActorHookTest do
       # Wait for BOTH {:append, ...} messages in CommandRouter mailbox.
       router_pid = Process.whereis(CommandRouter)
 
+      # Only this test's appends count: a stray append from another process
+      # (any aggregate) in the suspended router's mailbox must not satisfy or
+      # break the "exactly two" assertion.
+      own_streams = ["task:#{ids1.task_id}", "task:#{ids2.task_id}"]
+
+      own_appends = fn ->
+        {:messages, mailbox} = :erlang.process_info(router_pid, :messages)
+
+        Enum.filter(mailbox, fn
+          {:append, agg, _, _, _, _} -> agg in own_streams
+          _ -> false
+        end)
+      end
+
       appends =
         Enum.reduce_while(1..300, [], fn _, acc ->
-          {:messages, mailbox} = :erlang.process_info(router_pid, :messages)
-
-          found =
-            Enum.filter(mailbox, fn
-              {:append, _, _, _, _, _} -> true
-              _ -> false
-            end)
+          found = own_appends.()
 
           if length(found) >= 2 do
             {:halt, found}
@@ -575,7 +586,9 @@ defmodule ForemanServer.ActorHookTest do
         end)
 
       assert length(appends) == 2,
-             "expected 2 concurrent {:append, ...} messages queued in CommandRouter mailbox"
+             "expected 2 {:append, ...} messages for #{inspect(own_streams)} in the CommandRouter " <>
+               "mailbox; saw #{length(own_appends.())}, router alive?=#{Process.alive?(router_pid)}, " <>
+               "still registered?=#{Process.whereis(CommandRouter) == router_pid}"
 
       external_ids =
         Enum.map(appends, fn msg ->

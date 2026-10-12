@@ -552,6 +552,24 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       assert hd(workflow["phases"])["timeout_minutes"] == 15
     end
 
+    test "accepts each approval_mode and carries it through PhaseSpec.normalize/1" do
+      for mode <- ["default", "prompt", "auto_edit", "auto_approve"] do
+        path = commit_manifest([{"a", "    approval_mode: #{mode}\n"}])
+
+        assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+        spec = ForemanServer.Workflow.PhaseSpec.normalize(hd(workflow["phases"]))
+        assert spec.approval_mode == mode
+      end
+    end
+
+    test "rejects an unknown approval_mode instead of letting the harness default apply" do
+      path = commit_manifest([{"a", "    approval_mode: yolo\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"approval_mode\" must be one of default, prompt, auto_edit, auto_approve/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
     test "accepts camelCase timeoutMinutes" do
       path = commit_manifest([{"a", "    timeoutMinutes: 20\n"}])
 

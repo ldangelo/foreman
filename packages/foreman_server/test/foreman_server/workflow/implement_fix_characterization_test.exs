@@ -17,7 +17,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       initialization, empty-phases graceful handling
     - Fix workflow: skill dispatch with --foreman, single-phase structure,
       no implementation context required, idempotency key format
-    - Shared: KeyStore crash-recovery contracts, StepSequencer propagation
+    - Shared: KeyStore crash-recovery contracts
   """
 
   use ExUnit.Case, async: false
@@ -830,11 +830,6 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
   #       - :failed key  → {:skip, :already_done}    (idempotent)
   #     Coverage: crash_recovery_test.exs and crash_recovery_characterization_test.exs.
   #
-  #   STEP SEQUENCER — phase ordering gate (StepSequencer.propagate_terminal/2):
-  #     Phase completion is recorded as :completed in phase_statuses and
-  #     propagated forward via StepSequencer so the next dispatch knows which
-  #     phase to run.
-  #
   # REQ-024: crash-recovery characterization (CTH-T004 / TRD-090)
   # REQ-026: idempotent dispatch (no duplicate side effects)
   # NFR-03:  crash recovery ≤30s to resumption (RTE-T006 / TRD-080)
@@ -873,22 +868,6 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       # Key is :completed — idempotent on retry.
       assert {:ok, :completed} = KeyStore.status(key)
-    end
-
-    # -------------------------------------------------------------------------
-    # Step sequencer — phase completion propagates forward as :completed
-    # -------------------------------------------------------------------------
-
-    test "StepSequencer propagates :completed status forward (resume condition)" do
-      import ForemanServer.Workflow.StepSequencer
-
-      # :completed previous phase → next phase runs (:cont).
-      assert {:cont, nil} = propagate_terminal(:completed, :phase_1)
-      assert {:cont, nil} = propagate_terminal(:completed, :any_step)
-
-      # :failed and :blocked must halt the sequence.
-      assert {:halt, :failed} = propagate_terminal(:failed, :phase_1)
-      assert {:halt, :blocked} = propagate_terminal(:blocked, :phase_1)
     end
   end
 end

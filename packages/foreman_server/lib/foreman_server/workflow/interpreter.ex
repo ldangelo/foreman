@@ -50,6 +50,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_worktree!(workflow, path)
     validate_phase_prs!(workflow, path)
     validate_phase_providers!(workflow, path)
+    validate_phase_approval_modes!(workflow, path)
     validate_phase_models!(workflow, path)
     validate_phase_timeouts!(workflow, path)
     validate_commits!(workflow, path)
@@ -464,6 +465,37 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_phase_provider_value!(_phase, _index, _path), do: :ok
+
+  # `approval_mode:` is the harness's tool-approval mode for the phase's agent.
+  # Absent leaves the harness default, which for Claude is interactive: an
+  # unattended run cannot write files and reports itself blocked. The allowed
+  # values are exactly `Jido.Harness.Run.Request`'s normalized set, and
+  # `RunExecutor.maybe_put_approval_mode/2` is the one place that maps them to atoms.
+  @approval_modes ForemanServer.Jobsite.Agent.approval_mode_names()
+
+  defp validate_phase_approval_modes!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_approval_mode_value!(phase, index, path) end)
+  end
+
+  defp validate_approval_mode_value!(phase, index, path) when is_map(phase) do
+    case Map.get(phase, "approval_mode") do
+      nil ->
+        :ok
+
+      value when value in @approval_modes ->
+        :ok
+
+      other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"approval_mode\" must be one of #{Enum.join(@approval_modes, ", ")} (got #{inspect(other)})"
+    end
+  end
+
+  defp validate_approval_mode_value!(_phase, _index, _path), do: :ok
 
   defp validate_phase_models!(workflow, path) do
     workflow

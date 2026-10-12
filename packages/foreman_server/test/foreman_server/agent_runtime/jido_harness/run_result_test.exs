@@ -134,7 +134,43 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResultTest do
     end
   end
 
+  describe "normalize/1 — completed run whose tool calls were denied" do
+    # Captured from a real `claude` run in default permission mode: the run
+    # ends `:completed`, the model says it needs approval, and the terminal
+    # `result` record's `permission_denials` names the refused tool.
+    test "errors with the denied tool names instead of reporting success" do
+      result =
+        build_result(
+          status: :completed,
+          text: "The Write tool call needs your approval.",
+          events: [
+            denial_event([
+              %{"tool_name" => "Write"},
+              %{"tool_name" => "Bash"},
+              %{"tool_name" => "Write"}
+            ])
+          ]
+        )
+
+      assert {:error, {:permission_denied, ["Write", "Bash"]}} = RunResult.normalize(result)
+    end
+
+    test "an empty permission_denials list is a normal success" do
+      result = build_result(status: :completed, text: "done", events: [denial_event([])])
+
+      assert {:ok, "done", _} = RunResult.normalize(result)
+    end
+  end
+
   ## Helpers
+
+  defp denial_event(denials) do
+    Jido.Harness.Event.new!(%{
+      type: :run_completed,
+      provider: :claude,
+      raw: %{"type" => "result", "permission_denials" => denials}
+    })
+  end
 
   # Builds a valid `%Jido.Harness.RunResult{}` struct using the upstream
   # schema's constructor. Required attrs: `:run_id`, `:provider`, `:status`.
@@ -145,7 +181,8 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResultTest do
       provider: :pi,
       status: :completed,
       text: "",
-      error: nil
+      error: nil,
+      events: []
     }
 
     Jido.Harness.RunResult.new!(Map.merge(base, Map.new(attrs)))

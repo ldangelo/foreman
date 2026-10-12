@@ -3,6 +3,7 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
 
   alias EventStore.EventData
   alias ForemanServer.{EventStore, ProjectionStore, RunAdmission}
+  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @run_slots_stream "run_slots:global"
   @lease_path "/tmp/trd-006-slot-gate.db"
@@ -173,9 +174,11 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
     Application.put_env(:foreman_server, :max_concurrent_runs, capacity)
   end
 
+  # Deleting the stream alone leaves a live `run_slots:global` actor holding
+  # another test's in-memory holders/waiters, so the gate can see free slots
+  # the test just filled. The shared helper also kills the actor.
   defp cleanup_run_slots_stream do
-    _ = EventStore.delete_stream(@run_slots_stream, :any_version, :hard)
-    :ok
+    ForemanServer.TestSupport.RunSlotsReset.reset!()
   end
 
   defp cleanup_lease_stream do
@@ -215,22 +218,7 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
   end
 
   defp reset_projection_store do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{
-        projects: %{},
-        runs: %{},
-        tasks: %{},
-        phases: %{},
-        pr_associations: %{},
-        scheduler_intents: %{},
-        worktrees: %{},
-        worktree_create_orphans: %{},
-        subscribers: Map.get(state, :subscribers, %{}),
-        run_slots: %{capacity: 0, holders: %{}, waiters: []},
-        works: %{},
-        project_active_runs: %{}
-      }
-    end)
+    ProjectionStoreReset.reset!(keep_subscribers: true)
   end
 
   defp unique_id(prefix) do

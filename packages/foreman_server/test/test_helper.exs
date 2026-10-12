@@ -15,7 +15,7 @@ GenServer.stop(conn)
 Logger.put_application_level(:eventstore, :warning)
 
 ExUnit.configure(
-  exclude: [:langfuse, :external_llm],
+  exclude: [:langfuse, :external_llm, :docker],
   assert_receive_timeout: 1_000
 )
 

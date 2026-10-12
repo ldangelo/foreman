@@ -36,7 +36,7 @@
       "done",
       "export LITELLM_LANGFUSE_STACK=\"${LITELLM_LANGFUSE_STACK:-$HOME/Development/Sunstone/litellm-langfuse-stack}\"",
       "[ -f .env ] && set -a && . ./.env && set +a || true",
-      "[ -f \"$LITELLM_LANGFUSE_STACK/.env\" ] && set -a && . \"$LITELLM_LANGFUSE_STACK/.env\" && set +a || true",
+      "if [ -f \"$LITELLM_LANGFUSE_STACK/.env\" ]; then export LITELLM_MASTER_KEY=\"$(sed -n 's/^LITELLM_MASTER_KEY=//p' \"$LITELLM_LANGFUSE_STACK/.env\" | head -1)\"; fi",
       "# Use a quick 'foreman' alias that points mix at the right host.",
       "export FOREMAN_API_URL=\"${FOREMAN_API_URL:-http://127.0.0.1:4766}\"",
       "# Tell Elixir to print a banner on shell entry so the operator knows which fork they're in.",
@@ -187,13 +187,13 @@
         "cd packages/foreman_server && mix test"
       ],
       "test:langfuse": [
-        "cd packages/foreman_server && mix test --only langfuse"
+        "set -a && . \"$LITELLM_LANGFUSE_STACK/.env\" && set +a && cd packages/foreman_server && mix test --only langfuse"
       ],
       "test:unit": [
         "cd packages/foreman_server && mix test --exclude langfuse"
       ],
       "test:all": [
-        "cd packages/foreman_server && mix test --include langfuse"
+        "set -a && . \"$LITELLM_LANGFUSE_STACK/.env\" && set +a && cd packages/foreman_server && mix test --include langfuse"
       ]
     }
   },
