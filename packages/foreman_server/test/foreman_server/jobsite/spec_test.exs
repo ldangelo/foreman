@@ -260,6 +260,13 @@ defmodule ForemanServer.Jobsite.SpecTest do
         :spec_approval_mode_invalid
       )
 
+      for bad <- [5, true, ["auto_edit"]] do
+        assert_error(
+          Spec.from_json(put_in(base(), ["agent", "approval_mode"], bad)),
+          :spec_approval_mode_invalid
+        )
+      end
+
       assert_error(
         Spec.from_json(put_in(base(), ["agent", "effort"], "ludicrous")),
         :spec_agent_invalid

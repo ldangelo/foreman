@@ -53,6 +53,8 @@ defmodule ForemanServer.Jobsite.Agent do
   def approval_mode_names, do: Enum.map(@approval_mode_list, &elem(&1, 0))
 
   @doc "Resolve a mode name to its atom, or `:error` for an unknown name."
-  @spec parse_approval_mode(String.t()) :: {:ok, atom()} | :error
+  @spec parse_approval_mode(term()) :: {:ok, atom()} | :error
   def parse_approval_mode(name) when is_binary(name), do: Map.fetch(@approval_modes, name)
+  # Callers pass untrusted JSON (`5`, `true`); a non-string is an unknown mode, not a crash.
+  def parse_approval_mode(_other), do: :error
 end
