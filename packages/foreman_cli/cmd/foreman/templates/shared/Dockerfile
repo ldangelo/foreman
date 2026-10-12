@@ -21,6 +21,8 @@ RUN apt-get update \
   && npm install -g @earendil-works/pi-coding-agent @anthropic-ai/claude-code \
   && rm -rf /var/lib/apt/lists/*
 
+# The default iterate prompt drives beads: install `br` and `bv` in this image
+# (or edit the prompt for another tracker).
 # Adjust to the agent CLI(s) you actually use; both are installed above so
 # either `Agents.pi/2` or `Agents.claude/2` works out of the box.
 
