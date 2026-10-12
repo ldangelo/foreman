@@ -30,7 +30,7 @@ defmodule ForemanServer.Jobsite.CapacityTest do
       agent:
         Agents.pi("x",
           binary: @fake_agent,
-          env: %{"FAKE_AGENT_SLEEP_ON_RUN" => "1", "FAKE_AGENT_SLEEP_SECS" => "4"}
+          env: %{"FAKE_AGENT_SLEEP_ON_RUN" => "1", "FAKE_AGENT_SLEEP_SECS" => "15"}
         ),
       prompt: "go",
       max_iterations: 1
