@@ -21,8 +21,13 @@ RUN apt-get update \
   && npm install -g @earendil-works/pi-coding-agent @anthropic-ai/claude-code \
   && rm -rf /var/lib/apt/lists/*
 
-# The default iterate prompt drives beads: install `br` and `bv` in this image
-# (or edit the prompt for another tracker).
+# The default iterate prompt drives beads, so the image carries `br` and `bv`
+# (installed system-wide as root). Drop this for another tracker.
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh \
+    | bash -s -- --dest=/usr/local/bin --easy-mode --no-gum \
+  && curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh \
+    | INSTALL_DIR=/usr/local/bin bash
+
 # Adjust to the agent CLI(s) you actually use; both are installed above so
 # either `Agents.pi/2` or `Agents.claude/2` works out of the box.
 
