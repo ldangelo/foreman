@@ -16,7 +16,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > subcommand switches and flag sets in that package, is:
 >
 > foreman init              --force   # --force is REQUIRED without --template (installs runtime workflows/prompts)
-> foreman init              --template <basic|iterate|parallel|review|triage> --dir --force   # scaffolds <dir>/.foreman/; --force optional, additionally refreshes the installed runtime
+> foreman init              --template <basic|beads|iterate|parallel|review|triage> --dir --force   # scaffolds <dir>/.foreman/; --force optional, additionally refreshes the installed runtime
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
@@ -185,8 +185,8 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 This flag **is** implemented and does what its name says — it is the one
 piece of the inaccurate prose above that is now literally true, for the
-scaffold it produces. `--template <name>` (`basic`, `iterate`, `parallel`,
-`review`, or `triage`) scaffolds a repo-local `<dir>/.foreman/` (default
+scaffold it produces. `--template <name>` (`basic`, `beads`, `iterate`,
+`parallel`, `review`, or `triage`) scaffolds a repo-local `<dir>/.foreman/` (default
 `<dir>` is `.`): shared `README.md`/`Dockerfile`/`.gitignore`
 plus the named template's runnable `.exs` script and its `prompts/*.md` file(s). It is a
 pure local file write — no HTTP request, no running server required — and
@@ -202,10 +202,10 @@ foreman init --template review --force               # scaffold AND refresh inst
 
 | Option | Description |
 |--------|-------------|
-| `--template <name>` | Scaffold `.foreman/` from a bundled template: `basic`, `iterate`, `parallel`, `review`, `triage`. Unknown name is a usage error. |
+| `--template <name>` | Scaffold `.foreman/` from a bundled template: `basic`, `beads`, `iterate`, `parallel`, `review`, `triage`. Unknown name is a usage error. |
 | `--dir <path>` | Directory to scaffold `.foreman/` into (default `.`) |
 
-The scaffolded scripts come in two kinds. `basic`, `iterate` and `parallel`
+The scaffolded scripts come in two kinds. `basic`, `beads`, `iterate` and `parallel`
 drive a **running** `foreman_server` over HTTP through the `foreman_client`
 package (`packages/foreman_client`, loaded by the script with `Mix.install`;
 nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27+, no Foreman

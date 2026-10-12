@@ -14,7 +14,7 @@ import (
 //go:embed templates
 var templateFS embed.FS
 
-var knownTemplateNames = []string{"basic", "iterate", "parallel", "review", "triage"}
+var knownTemplateNames = []string{"basic", "beads", "iterate", "parallel", "review", "triage"}
 
 // runInit is the operator-facing "refresh bundled assets" / "scaffold a
 // Jobsite script" entry point.
@@ -41,7 +41,7 @@ var knownTemplateNames = []string{"basic", "iterate", "parallel", "review", "tri
 func runInit(c *client.Client, args []string) error {
 	fs := newFlagSet("init")
 	force := fs.Bool("force", false, "Confirm refresh of installed runtime prompts and workflows")
-	template := fs.String("template", "", "Scaffold a repo-local .foreman/ directory from a bundled template (basic, iterate, parallel, review, triage)")
+	template := fs.String("template", "", "Scaffold a repo-local .foreman/ directory from a bundled template (basic, beads, iterate, parallel, review, triage)")
 	dir := fs.String("dir", ".", "Directory to scaffold the .foreman/ directory into")
 	if err := fs.parse(args); err != nil {
 		return err
@@ -66,7 +66,7 @@ func runInit(c *client.Client, args []string) error {
 	if !knownTemplate(*template) {
 		return usageError(
 			fs,
-			"foreman init: unknown template %q (known: basic, iterate, parallel, review, triage)",
+			"foreman init: unknown template %q (known: basic, beads, iterate, parallel, review, triage)",
 			*template,
 		)
 	}

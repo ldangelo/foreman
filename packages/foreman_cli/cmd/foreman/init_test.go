@@ -130,7 +130,7 @@ func TestInitTemplateScaffoldsWithNoServer(t *testing.T) {
 func TestEveryScaffoldedScriptFindsTheFilesItLoads(t *testing.T) {
 	loads := regexp.MustCompile(`(?:Code\.require_file|Path\.join)\((?:__DIR__, )?"([^"]+)"(?:, __DIR__)?\)`)
 
-	for _, name := range []string{"basic", "iterate", "parallel", "review", "triage"} {
+	for _, name := range []string{"basic", "beads", "iterate", "parallel", "review", "triage"} {
 		dir := t.TempDir()
 		c := &client.Client{BaseURL: "http://unused.invalid"}
 		if err := runInit(c, []string{"--template", name, "--dir", dir}); err != nil {

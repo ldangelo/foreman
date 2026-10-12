@@ -4,7 +4,7 @@ This directory was scaffolded by `foreman init --template <name>`. Each
 `.foreman/<name>.exs` file is a complete, runnable Jobsite script. There are
 two kinds, and the script's header says which it is.
 
-## Client scripts: `basic`, `iterate`, `parallel`
+## Client scripts: `basic`, `beads`, `iterate`, `parallel`
 
 These drive a **running `foreman_server`** over HTTP through the
 `foreman_client` package (`packages/foreman_client` in the Foreman repo),

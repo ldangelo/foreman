@@ -979,11 +979,18 @@ cancel, resume and merge request, accepted or rejected, is recorded in an
 audit stream with the caller's TCP address (the proxy's, behind one; requests
 refused with `401` are not recorded).
 
-Scripts: `foreman init --template basic|iterate|parallel` scaffold scripts that
+Scripts: `foreman init --template basic|beads|iterate|parallel` scaffold scripts that
 load the `foreman_client` package (`packages/foreman_client`, via `Mix.install`;
 needs only Erlang/OTP 27+, no Foreman checkout, no database). Set `FOREMAN_API_TOKEN` and
 `FOREMAN_PROJECT_ID` (and `FOREMAN_API_URL` if the server is not local), then
-`elixir .foreman/<name>.exs`. `review` and `triage` still run inside a booted
+`elixir .foreman/<name>.exs`. `beads` works every open bead labeled `foreman-exec` in
+dependency order: each round it takes the first item of every track from
+`bv --robot-plan --label foreman-exec`, runs those jobsites in parallel, merges
+each completed branch into `FOREMAN_MERGE_INTO` one at a time, then closes the
+bead with `br close` and re-plans. It needs `br` and `bv` on the machine that runs
+the script plus `FOREMAN_MERGE_INTO`; a bead whose agent never signalled
+completion, failed, or conflicted on merge is reported, left open, and skipped
+(`FOREMAN_BEADS_DRY_RUN=1` prints round 1 without calling the server). `review` and `triage` still run inside a booted
 server app with `mix run`.
 
 ## Day-to-day workflow
