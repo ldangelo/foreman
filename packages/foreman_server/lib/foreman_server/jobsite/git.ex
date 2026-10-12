@@ -341,6 +341,9 @@ defmodule ForemanServer.Jobsite.Git do
 
   # git spawns helpers (receive-pack, ssh) that outlive a kill of git alone, so
   # signal the descendants first, then git itself.
+  # Known limit: the descendant snapshot (`pgrep -P`) is not atomic, so a helper
+  # git forks after it can outlive the kill. A process group (`setsid`) would close
+  # that, but macOS ships no `setsid` binary, so it is not used.
   defp kill_tree(os_pid) do
     pid = Integer.to_string(os_pid)
 
