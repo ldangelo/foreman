@@ -391,7 +391,19 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
                })
     end
 
-    test "whitespace-only external_id is rejected, a padded real id is kept as-is" do
+    test "a padded real external_id is kept exactly as given" do
+      assert {:ok, ctx} =
+               ImplementationContext.build(%{
+                 project_id: "proj-bead",
+                 workflow_type: "implement-trd-beads",
+                 trd_path: "docs/TRD/x.md",
+                 external_id: " bead-1 "
+               })
+
+      assert ctx.bead_id == " bead-1 "
+    end
+
+    test "whitespace-only external_id is rejected like a missing one" do
       for blank <- [" ", "\t\n"] do
         assert {:error, {:implementation_context_failed, :bead_id_missing}} =
                  ImplementationContext.build(%{

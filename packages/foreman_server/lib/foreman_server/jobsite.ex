@@ -247,6 +247,10 @@ defmodule ForemanServer.Jobsite do
     })
   end
 
+  defp start_failed_error({:already_started, _pid}) do
+    Error.new(:already_running, "jobsite executor is already running", %{})
+  end
+
   defp start_failed_error(reason) do
     Error.new(:dispatch_rejected, "failed to start jobsite executor", %{reason: reason})
   end

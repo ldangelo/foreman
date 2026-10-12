@@ -49,7 +49,11 @@ case Jason.decode!(ready.stdout) do
     # its id: it comes from `br` output and is interpolated into a shell command.
     if List.last(iterations).signalled? do
       quoted_id = "'" <> String.replace(bead["id"], "'", "'\\''") <> "'"
-      {:ok, _} = Sandbox.exec(sandbox, "br close #{quoted_id} --reason 'Implemented by jobsite'")
+      {:ok, closed} =
+        Sandbox.exec(sandbox, "br close #{quoted_id} --reason 'Implemented by jobsite'")
+
+      if closed.exit_code != 0,
+        do: IO.puts("br close failed (exit #{closed.exit_code}): #{closed.stdout}")
     else
       IO.puts("bead #{bead["id"]} not complete after 5 iterations; left open")
     end

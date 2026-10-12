@@ -339,6 +339,19 @@ defmodule ForemanServer.Jobsite.Git do
     collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [])
   end
 
+  # git spawns helpers (receive-pack, ssh) that outlive a kill of git alone, so
+  # signal the descendants first, then git itself.
+  defp kill_tree(os_pid) do
+    pid = Integer.to_string(os_pid)
+
+    case System.cmd("pgrep", ["-P", pid], stderr_to_stdout: true) do
+      {out, 0} -> out |> String.split() |> Enum.each(&kill_tree(String.to_integer(&1)))
+      _ -> :ok
+    end
+
+    System.cmd("kill", ["-KILL", pid], stderr_to_stdout: true)
+  end
+
   defp collect(port, os_pid, deadline, acc) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
@@ -347,8 +360,14 @@ defmodule ForemanServer.Jobsite.Git do
       {^port, {:exit_status, status}} -> {IO.iodata_to_binary(acc), status}
     after
       remaining ->
-        System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
-        Port.close(port)
+        kill_tree(os_pid)
+        # Killing git closes the port on its own; closing again can race it.
+        try do
+          Port.close(port)
+        rescue
+          ArgumentError -> :ok
+        end
+
         {IO.iodata_to_binary(acc) <> "push timed out", :timeout}
     end
   end

@@ -112,7 +112,8 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
       git!(repo, ["checkout", "-q", "-b", "feature"])
 
       stall = Path.join(Path.dirname(bare), "stall-#{System.unique_integer([:positive])}.sh")
-      File.write!(stall, "#!/bin/sh\nexec sleep 5\n")
+      pidfile = stall <> ".pid"
+      File.write!(stall, "#!/bin/sh\necho $$ > #{pidfile}\nexec sleep 5\n")
       File.chmod!(stall, 0o755)
       git!(repo, ["config", "remote.origin.receivepack", stall])
 
@@ -122,6 +123,12 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
                Git.push(repo, "origin", "feature", timeout_ms: 300)
 
       assert System.monotonic_time(:millisecond) - started < 3_000
+
+      # The stalled receive-pack child is gone too, not just git.
+      stalled = pidfile |> File.read!() |> String.trim()
+      Process.sleep(200)
+      assert {_, status} = System.cmd("kill", ["-0", stalled], stderr_to_stdout: true)
+      assert status != 0
     end
   end
 

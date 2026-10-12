@@ -50,6 +50,13 @@ defmodule ForemanServer.Jobsite.Supervisor do
   end
 
   defp do_start(jobsite_id, opts) do
+    case Registry.lookup(ForemanServer.Jobsite.Registry, jobsite_id) do
+      [{pid, _}] -> {:error, {:already_started, pid}}
+      [] -> do_start_new(jobsite_id, opts)
+    end
+  end
+
+  defp do_start_new(jobsite_id, opts) do
     # An intent left behind by a previous run of this id (an executor that exited
     # between the last check and its clear) would pause or cancel this one the moment
     # it starts. No executor is registered yet, so the controller cannot be adding a
