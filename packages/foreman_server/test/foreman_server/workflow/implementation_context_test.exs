@@ -381,8 +381,8 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
                })
     end
 
-    test "blank external_id fails loudly the same as absent (AC-003-2)" do
-      assert {:error, {:implementation_context_failed, :bead_id_missing}} =
+    test "blank external_id fails loudly as malformed, distinct from absent (AC-003-2)" do
+      assert {:error, {:implementation_context_failed, :bead_id_malformed}} =
                ImplementationContext.build(%{
                  project_id: "proj-bead",
                  workflow_type: "implement-trd-beads",
@@ -403,9 +403,9 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       assert ctx.bead_id == " bead-1 "
     end
 
-    test "whitespace-only external_id is rejected like a missing one" do
-      for blank <- [" ", "\t\n"] do
-        assert {:error, {:implementation_context_failed, :bead_id_missing}} =
+    test "whitespace-only and non-string external_id are malformed" do
+      for blank <- [" ", "\t\n", 42] do
+        assert {:error, {:implementation_context_failed, :bead_id_malformed}} =
                  ImplementationContext.build(%{
                    project_id: "proj-bead",
                    workflow_type: "implement-trd-beads",
