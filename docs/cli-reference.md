@@ -211,6 +211,7 @@ package (`packages/foreman_client`, loaded by the script with `Mix.install`;
 nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27+, no Foreman
 checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
 (see the user guide's Remote Jobsite API section for the server-side config).
+`iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` (positive integer, default 20) and `FOREMAN_AGENT_ENV` (comma-separated names of shell variables passed to the agent; the server must allowlist them, see the user guide).
 `review` and `triage` call `ForemanServer.Jobsite` directly and must run inside
 a booted `foreman_server` app (`mix run`, not `mix run --no-start`), e.g. from a
 Foreman checkout: `cd packages/foreman_server && mix run ../../.foreman/review.exs`.

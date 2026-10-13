@@ -2,6 +2,7 @@
 #
 # Build with:
 #   docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) \
+#     --build-context ensemble=<path to your ensemble checkout> \
 #     -t foreman-jobsite:<name> .foreman
 #
 # AGENT_UID/AGENT_GID must match the host user running Foreman so that files
@@ -21,6 +22,16 @@ RUN apt-get update \
   && npm install -g @earendil-works/pi-coding-agent @anthropic-ai/claude-code \
   && rm -rf /var/lib/apt/lists/*
 
+# The default iterate prompt drives beads, so the image carries `br` and `bv`
+# (installed system-wide as root; br (v0.7.4) and bv are pinned to reviewed commits). Drop this
+# for another tracker.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/3956ebb8417414eba883e2446a4cefafa07d0b75/install.sh \
+    | bash -s -- --version v0.7.4 --dest=/usr/local/bin --easy-mode --no-gum \
+  && curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/a43b8e85a39664381566abdfd85dc8fcbfdcb773/install.sh \
+    | INSTALL_DIR=/usr/local/bin bash \
+  && command -v br && command -v bv
+
 # Adjust to the agent CLI(s) you actually use; both are installed above so
 # either `Agents.pi/2` or `Agents.claude/2` works out of the box.
 
@@ -29,5 +40,16 @@ RUN apt-get update \
 RUN groupadd -o -g "${AGENT_GID}" agent \
   && useradd -o -m -u "${AGENT_UID}" -g "${AGENT_GID}" agent
 
+# Ensemble is the base component both agents load. Until it is published, it is
+# installed from a local checkout passed as the named build context `ensemble`
+# (see the build command above): the pi extension and the Claude Code plugins.
+COPY --from=ensemble .claude-plugin /opt/ensemble/.claude-plugin
+COPY --from=ensemble packages /opt/ensemble/packages
+
 USER agent
+
+RUN pi install /opt/ensemble/packages/pi \
+  && claude plugin marketplace add /opt/ensemble \
+  && claude plugin install ensemble-full@ensemble
+
 WORKDIR /workspace

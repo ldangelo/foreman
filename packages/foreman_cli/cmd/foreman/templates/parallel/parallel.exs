@@ -13,6 +13,7 @@
 # The sandbox image must exist on the SERVER's Docker, built once from that
 # project's repo root via:
 #   docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) \
+#     --build-context ensemble=<your ensemble checkout> \
 #     -t "foreman-jobsite:$(basename "$PWD")" .foreman
 #
 # Merges are **sequential** even though the agents run in parallel: a merge

@@ -10,6 +10,7 @@
 #
 # Requires the sandbox image built once from the repo root via:
 #   docker build --build-arg AGENT_UID=$(id -u) --build-arg AGENT_GID=$(id -g) \
+#     --build-context ensemble=<your ensemble checkout> \
 #     -t "foreman-jobsite:$(basename "$PWD")" .foreman
 #
 # The test verdict comes from the host running `mix test` inside the
