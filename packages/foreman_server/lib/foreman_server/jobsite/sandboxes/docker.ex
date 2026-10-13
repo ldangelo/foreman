@@ -39,6 +39,15 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
 
       args =
         ["run", "-d", "--rm", "-v", "#{worktree.path}:#{sandbox_path}"] ++
+          [
+            "-e",
+            "GIT_CONFIG_COUNT=1",
+            "-e",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "-e",
+            "GIT_CONFIG_VALUE_0=*"
+          ] ++
+          git_mount_args(worktree.path) ++
           mount_args(mounts) ++
           ["-w", sandbox_path, "-u", "#{uid}:#{gid}"] ++
           network_args(network) ++
@@ -66,6 +75,27 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
              output: String.trim(output)
            })}
       end
+    end
+  end
+
+  # A linked worktree's `.git` is a FILE holding an absolute host path
+  # (`gitdir: <repo>/.git/worktrees/<name>`). Without that path inside the
+  # container every git command fails and an agent is left to `git init` a new,
+  # unrelated history. Mount the repo's git dir at the SAME path so the pointer
+  # resolves. A `.git` directory (the :head strategy) is already in the worktree.
+  @doc false
+  def git_mount_args(worktree_path) do
+    with true <- File.regular?(Path.join(worktree_path, ".git")),
+         {out, 0} <-
+           System.cmd(
+             "git",
+             ["-C", worktree_path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+             stderr_to_stdout: true
+           ) do
+      dir = String.trim(out)
+      ["-v", "#{dir}:#{dir}"]
+    else
+      _ -> []
     end
   end
 
