@@ -462,7 +462,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   defp safe_from_task_projection(task_proj) do
     {:ok, RunPayload.from_task_projection(task_proj)}
   rescue
-    e in [FunctionClauseError, MatchError, KeyError, BadMapError, BadStructError] ->
+    e in [FunctionClauseError, MatchError, KeyError, BadMapError] ->
       {:error, Exception.format(:error, e, __STACKTRACE__)}
   end
 
