@@ -83,7 +83,9 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
       case System.cmd(
              "git",
              ["-C", worktree_path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-             stderr_to_stdout: true
+             stderr_to_stdout: true,
+             # An inherited GIT_DIR/GIT_COMMON_DIR would override the repo `-C` selects.
+             env: [{"GIT_DIR", nil}, {"GIT_COMMON_DIR", nil}, {"GIT_WORK_TREE", nil}]
            ) do
         {out, 0} ->
           case String.trim(out) do

@@ -1,6 +1,7 @@
 defmodule ForemanServer.Jobsite.Sandboxes.DockerGitMountTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
+  alias ForemanServer.Jobsite.Error
   alias ForemanServer.Jobsite.Sandboxes.Docker
 
   defp git!(dir, args), do: {_, 0} = System.cmd("git", ["-C", dir | args], stderr_to_stdout: true)
@@ -43,7 +44,22 @@ defmodule ForemanServer.Jobsite.Sandboxes.DockerGitMountTest do
     File.mkdir_p!(wt)
     File.write!(Path.join(wt, ".git"), "gitdir: #{root}/does-not-exist\n")
 
-    assert {:error, %{code: :sandbox_create_failed}} = Docker.git_mount_args(wt, "/workspace")
+    assert {:error, %Error{code: :sandbox_create_failed}} =
+             Docker.git_mount_args(wt, "/workspace")
+  end
+
+  test "inherited GIT_DIR / GIT_COMMON_DIR do not redirect the lookup", %{root: root, repo: repo} do
+    wt = Path.join(root, "wt2")
+    git!(repo, ["worktree", "add", "-q", "-b", "agent/y", wt])
+    other = Path.join(root, "other")
+    File.mkdir_p!(other)
+    git!(other, ["init", "-q"])
+
+    for k <- ["GIT_DIR", "GIT_COMMON_DIR"], do: System.put_env(k, Path.join(other, ".git"))
+    on_exit(fn -> for k <- ["GIT_DIR", "GIT_COMMON_DIR"], do: System.delete_env(k) end)
+
+    git_dir = Path.join(realpath(repo), ".git")
+    assert {:ok, ["-v", _], [_, ^git_dir]} = Docker.git_mount_args(wt, "/workspace")
   end
 
   defp realpath(path) do
