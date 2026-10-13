@@ -959,7 +959,7 @@ start.
 | `allow_host_sandbox` | off | The `host` sandbox runs agents as the server user with no isolation; the default is `docker` |
 | `agent_env_allowlist` | `[]` | Environment variable names a request may set on the agent. Values are not persisted, so a resumed jobsite runs without them |
 
-The token and the two on/off keys can be set from the environment when the
+The token, the two on/off keys and the agent env allowlist can be set from the environment when the
 server boots (`config/runtime.exs`; it applies to `mix phx.server`, `mix run`
 and releases, not to `mix test`):
 
@@ -968,6 +968,7 @@ and releases, not to `mix test`):
 | `FOREMAN_API_TOKEN` | `:api_bearer_token` |
 | `FOREMAN_JOBSITES_ALLOW_REMOTE_START` | `allow_remote_start` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
+| `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST` | `agent_env_allowlist` (comma-separated names, e.g. `ANTHROPIC_BASE_URL,ANTHROPIC_API_KEY`; blank entries are dropped) |
 | `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
 
 A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).
@@ -983,7 +984,7 @@ Scripts: `foreman init --template basic|iterate|parallel` scaffold scripts that
 load the `foreman_client` package (`packages/foreman_client`, via `Mix.install`;
 needs only Erlang/OTP 27+, no Foreman checkout, no database). Set `FOREMAN_API_TOKEN` and
 `FOREMAN_PROJECT_ID` (and `FOREMAN_API_URL` if the server is not local), then
-`elixir .foreman/<name>.exs`. `review` and `triage` still run inside a booted
+`elixir .foreman/<name>.exs`. `iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` and `FOREMAN_AGENT_ENV` (names of shell variables to pass to the agent as `agent.env`, e.g. `ANTHROPIC_API_KEY`; the server must list them in `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST`). `review` and `triage` still run inside a booted
 server app with `mix run`.
 
 ## Day-to-day workflow

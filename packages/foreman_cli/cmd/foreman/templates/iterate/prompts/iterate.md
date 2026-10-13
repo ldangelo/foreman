@@ -5,9 +5,10 @@ Linear, ...), replace the `br`/`bv` commands.
 
 Each turn:
 
-1. Run `bv --robot-next` (or `bv --robot-plan --label foreman-exec` and take the
-   first item of a track). Only pick issues labeled `foreman-exec`. If none are
-   actionable, you are finished: go to Completion.
+1. Run `bv --robot-next --label foreman-exec`. ALWAYS pass `--label
+   foreman-exec`: without it bv returns the highest-ranked issue in the whole
+   repository, which is usually not yours to work on. Work only on the issue it
+   returns. If it returns no issue, you are finished: go to Completion.
 2. Read it with `br show <id> --json` and route on its type. Pass the issue's
    title and description as the skill's input, plus `--foreman`:
    - `bug`, `task`: invoke the `ensemble-fix-issue` skill (Claude Code plugin
