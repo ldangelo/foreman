@@ -38,6 +38,12 @@ agent_env =
     {name, System.get_env(name) || raise("#{name} is listed in FOREMAN_AGENT_ENV but is not set")}
   end)
 
+max_iterations =
+  case Integer.parse(System.get_env("FOREMAN_MAX_ITERATIONS", "20")) do
+    {n, ""} when n > 0 -> n
+    _ -> raise "FOREMAN_MAX_ITERATIONS must be a positive integer"
+  end
+
 agent = %{
   "provider" => "claude",
   "model" => System.get_env("FOREMAN_AGENT_MODEL", "claude-opus-4-8"),
@@ -52,7 +58,7 @@ spec = %{
   "sandbox" => "docker",
   "agent" => agent,
   "prompt" => File.read!(Path.join(__DIR__, "prompts/iterate.md")),
-  "max_iterations" => String.to_integer(System.get_env("FOREMAN_MAX_ITERATIONS", "20")),
+  "max_iterations" => max_iterations,
   "completion_signal" => "<promise>COMPLETE</promise>"
 }
 
