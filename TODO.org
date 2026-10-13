@@ -3,3 +3,52 @@
 :END:
 * TODO Create LICENSE file for foreman (and ensemble)
 * TODO Remove homebrew tap from foreman's install instructions.
+* TODO Add new PR monitoring
+
+Foreman should watch for new PR's, when one is detected it should run a workflow mapped to PR's.
+
+The worklow should perform the following functions.
+
+** Checkout the PR into a worktree
+** Run the build
+*** Verify the build is clean (no errors or warnings)
+** Verify all tests pass
+*** Unit Tests
+*** Integration Tests
+*** E2E Tests
+*** Playright Tests
+*** Failing tests should be identified and the PR should be marked 'Changes Requested' with reasoning.
+** Verify Code Review Findings are clean
+*** Any findings should be addressed
+*** Update the PR
+** Verify Documentation has been updated
+*** Missing or Out of date documentation should mark the PR 'Changes Requested' with reasoning.
+* TODO Add PR update monitoring
+
+Monitor PR's for updates.  If a PR has been marked 'Changes Requested' run the mapped workflow.
+
+** fix-issue
+
+Run the 'fix-issue' command with each supplied comment.
+
+** Stack a commit onto the PR
+** Mark PR 'Ready for Review'
+* TODO Add the ability to monitor PR requests/updates via a webhook
+
+The PR types should map to workflows
+
+** opened
+
+Should map to a workflow that waits for CI results, ensures they are green, checks that documentation has been provided, test coverage hasn't slipped, etc...
+It should add comments on the PR which will then get dispatched via the 'edited' hook.
+
+If All checks pass it should merge the PR.
+
+** edited
+
+Should call fix-issue with each successive comment added to the PR by the open hook.
+When done it should stack changes onto the existing PR which should trigger the 'syncronize' hook.
+
+** Syncronize
+
+Should map to the same workflow as the opened type.
