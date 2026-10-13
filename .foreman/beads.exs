@@ -29,6 +29,13 @@
 # left open, and skipped for the rest of this run; the beads that depend on it
 # stay blocked, so they are not started either.
 #
+# The agent defaults to provider claude, model claude-opus-4-8. Override with
+# FOREMAN_AGENT_PROVIDER (claude|pi), FOREMAN_AGENT_MODEL, and
+# FOREMAN_AGENT_ENV=A,B (names of shell variables to pass to the sandboxed agent,
+# e.g. its API key and base URL; the server must list them in
+# FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST). The sandbox has no host credentials or
+# ~/.pi config, so the agent can authenticate only through these variables.
+#
 # `br close` rewrites .beads/ in the checkout you run this from; commit that
 # yourself. The sandbox image must exist on the SERVER's Docker (see README.md).
 
@@ -96,12 +103,31 @@ template = File.read!(Path.join(__DIR__, "prompts/beads.md"))
      System.get_env("FOREMAN_MERGE_INTO") || raise("FOREMAN_MERGE_INTO is not set")}
   end
 
+# FOREMAN_AGENT_ENV names variables in THIS shell to pass to the agent as agent.env;
+# the server must allowlist them via FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST.
+agent_env =
+  "FOREMAN_AGENT_ENV"
+  |> System.get_env("")
+  |> String.split(",", trim: true)
+  |> Map.new(fn name ->
+    name = String.trim(name)
+    {name, System.get_env(name) || raise("#{name} is listed in FOREMAN_AGENT_ENV but is not set")}
+  end)
+
+agent = %{
+  "provider" => System.get_env("FOREMAN_AGENT_PROVIDER", "claude"),
+  "model" => System.get_env("FOREMAN_AGENT_MODEL", "claude-opus-4-8"),
+  "approval_mode" => "auto_approve"
+}
+
+agent = if agent_env == %{}, do: agent, else: Map.put(agent, "env", agent_env)
+
 dispatch = fn bead ->
   spec = %{
     "project_id" => project_id,
     "strategy" => %{"branch" => "agent/#{bead["id"]}"},
     "sandbox" => "docker",
-    "agent" => %{"provider" => "claude", "model" => "claude-opus-4-8", "approval_mode" => "auto_approve"},
+    "agent" => agent,
     "prompt" => Beads.prompt(template, bead),
     "max_iterations" => 5,
     "completion_signal" => "<promise>COMPLETE</promise>"
