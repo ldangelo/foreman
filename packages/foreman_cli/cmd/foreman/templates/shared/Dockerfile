@@ -25,10 +25,12 @@ RUN apt-get update \
 # The default iterate prompt drives beads, so the image carries `br` and `bv`
 # (installed system-wide as root; bv is pinned to a reviewed commit). Drop this
 # for another tracker.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh \
     | bash -s -- --dest=/usr/local/bin --easy-mode --no-gum \
   && curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/a43b8e85a39664381566abdfd85dc8fcbfdcb773/install.sh \
-    | INSTALL_DIR=/usr/local/bin bash
+    | INSTALL_DIR=/usr/local/bin bash \
+  && command -v br && command -v bv
 
 # Adjust to the agent CLI(s) you actually use; both are installed above so
 # either `Agents.pi/2` or `Agents.claude/2` works out of the box.

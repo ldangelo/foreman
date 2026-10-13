@@ -15,7 +15,7 @@
 #                                      agent as agent.env (e.g. ANTHROPIC_BASE_URL,ANTHROPIC_API_KEY);
 #                                      the server must allowlist them via
 #                                      FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST
-#   FOREMAN_MAX_ITERATIONS=<n>         turn limit (default 5)
+#   FOREMAN_MAX_ITERATIONS=<n>         turn limit (default 20)
 #
 # The sandbox image must exist on the SERVER's Docker, built once from that
 # project's repo root via:
@@ -52,7 +52,7 @@ spec = %{
   "sandbox" => "docker",
   "agent" => agent,
   "prompt" => File.read!(Path.join(__DIR__, "prompts/iterate.md")),
-  "max_iterations" => String.to_integer(System.get_env("FOREMAN_MAX_ITERATIONS", "5")),
+  "max_iterations" => String.to_integer(System.get_env("FOREMAN_MAX_ITERATIONS", "20")),
   "completion_signal" => "<promise>COMPLETE</promise>"
 }
 
