@@ -393,8 +393,16 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
 
   defp stop_schema_cache do
     case Process.whereis(@cache_name) do
-      nil -> :ok
-      pid -> GenServer.stop(pid)
+      nil ->
+        :ok
+
+      # The cache can exit between whereis/1 and stop/1; either way it is stopped.
+      pid ->
+        try do
+          GenServer.stop(pid)
+        catch
+          :exit, {:noproc, _} -> :ok
+        end
     end
   end
 
