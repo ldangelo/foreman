@@ -34,20 +34,14 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
     state_dir =
       Path.join(System.tmp_dir!(), "foreman-jobsite-#{System.unique_integer([:positive])}")
 
-    with :ok <- ensure_image(binary, image) do
+    with :ok <- ensure_image(binary, image),
+         {:ok, git_args, safe_dirs} <- git_mount_args(worktree.path, sandbox_path) do
       File.mkdir_p!(state_dir)
 
       args =
         ["run", "-d", "--rm", "-v", "#{worktree.path}:#{sandbox_path}"] ++
-          [
-            "-e",
-            "GIT_CONFIG_COUNT=1",
-            "-e",
-            "GIT_CONFIG_KEY_0=safe.directory",
-            "-e",
-            "GIT_CONFIG_VALUE_0=*"
-          ] ++
-          git_mount_args(worktree.path) ++
+          git_args ++
+          safe_directory_args(safe_dirs) ++
           mount_args(mounts) ++
           ["-w", sandbox_path, "-u", "#{uid}:#{gid}"] ++
           network_args(network) ++
@@ -84,19 +78,45 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
   # unrelated history. Mount the repo's git dir at the SAME path so the pointer
   # resolves. A `.git` directory (the :head strategy) is already in the worktree.
   @doc false
-  def git_mount_args(worktree_path) do
-    with true <- File.regular?(Path.join(worktree_path, ".git")),
-         {out, 0} <-
-           System.cmd(
+  def git_mount_args(worktree_path, sandbox_path) do
+    if File.regular?(Path.join(worktree_path, ".git")) do
+      case System.cmd(
              "git",
              ["-C", worktree_path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
              stderr_to_stdout: true
            ) do
-      dir = String.trim(out)
-      ["-v", "#{dir}:#{dir}"]
+        {out, 0} ->
+          case String.trim(out) do
+            "" -> git_dir_error(worktree_path, "empty git common dir")
+            dir -> {:ok, ["-v", "#{dir}:#{dir}"], [sandbox_path, dir]}
+          end
+
+        {out, code} ->
+          git_dir_error(worktree_path, "git exited #{code}: #{String.trim(out)}")
+      end
     else
-      _ -> []
+      {:ok, [], [sandbox_path]}
     end
+  end
+
+  defp git_dir_error(worktree_path, detail) do
+    {:error,
+     Error.new(:sandbox_create_failed, "cannot resolve the worktree's git dir", %{
+       worktree: worktree_path,
+       detail: detail
+     })}
+  end
+
+  # Trust only the mounted paths, not every path (`*`).
+  defp safe_directory_args(dirs) do
+    pairs =
+      dirs
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {dir, i} ->
+        ["-e", "GIT_CONFIG_KEY_#{i}=safe.directory", "-e", "GIT_CONFIG_VALUE_#{i}=#{dir}"]
+      end)
+
+    ["-e", "GIT_CONFIG_COUNT=#{length(dirs)}"] ++ pairs
   end
 
   @impl true

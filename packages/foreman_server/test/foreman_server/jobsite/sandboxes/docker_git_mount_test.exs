@@ -26,12 +26,24 @@ defmodule ForemanServer.Jobsite.Sandboxes.DockerGitMountTest do
     wt = Path.join(root, "wt")
     git!(repo, ["worktree", "add", "-q", "-b", "agent/x", wt])
 
-    git_dir = Path.join(Path.expand(repo) |> realpath(), ".git")
-    assert Docker.git_mount_args(wt) == ["-v", "#{git_dir}:#{git_dir}"]
+    git_dir = Path.join(realpath(repo), ".git")
+
+    assert {:ok, ["-v", mount], ["/workspace", ^git_dir]} =
+             Docker.git_mount_args(wt, "/workspace")
+
+    assert mount == "#{git_dir}:#{git_dir}"
   end
 
   test "a checkout whose .git is a directory needs no extra mount", %{repo: repo} do
-    assert Docker.git_mount_args(repo) == []
+    assert {:ok, [], ["/workspace"]} = Docker.git_mount_args(repo, "/workspace")
+  end
+
+  test "a .git file pointing at a missing gitdir is an error, not 'no mount'", %{root: root} do
+    wt = Path.join(root, "broken")
+    File.mkdir_p!(wt)
+    File.write!(Path.join(wt, ".git"), "gitdir: #{root}/does-not-exist\n")
+
+    assert {:error, %{code: :sandbox_create_failed}} = Docker.git_mount_args(wt, "/workspace")
   end
 
   defp realpath(path) do
