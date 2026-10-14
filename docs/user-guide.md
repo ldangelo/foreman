@@ -737,6 +737,16 @@ Without this entry, `:litellm` is not in `models.json`, the `:litellm`
 provider will fail quickly. See the pi coding agent docs for the full
 models.json schema.
 
+The bundled `assess`, `fix`, `prd` and `review` workflows run their pi review
+phases on `litellm-stack/smart_router`: pi provider `litellm-stack`, model
+`smart_router`, which the LiteLLM proxy resolves to a concrete model by
+request complexity. Add that provider to `models.json` pointing at the proxy
+that defines `smart_router` (the `litellm-langfuse-stack` proxy, `baseUrl`
+`http://127.0.0.1:4000/v1`, with its master key as `apiKey`). Without it the
+pi catalog preflight fails with `model_not_found`. A proxy that does not
+define `smart_router` returns `400 Invalid model name` instead. After editing
+bundled workflows run `foreman init --force` to refresh the installed copies.
+
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 
 Local stack topology:

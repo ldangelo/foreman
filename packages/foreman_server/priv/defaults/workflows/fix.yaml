@@ -32,7 +32,7 @@ phases:
     prompt: review-coderabbit.md
     provider: pi
     models:
-      default: minimax/MiniMax-M2.7
+      default: litellm-stack/smart_router
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
     commit: true
   # `stack_pr: true` is what makes PR creation an explicit workflow step:
@@ -44,7 +44,7 @@ phases:
     prompt: review-repo-rules.md
     provider: pi
     models:
-      default: minimax/MiniMax-M2.7
+      default: litellm-stack/smart_router
     artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
     commit: true
     stack_pr: true

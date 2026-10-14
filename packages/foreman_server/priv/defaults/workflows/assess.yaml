@@ -5,7 +5,7 @@ phases:
     prompt: assess.md
     provider: pi
     models:
-      default: minimax/MiniMax-M2.7
+      default: litellm-stack/smart_router
     artifact: "{task.projectReportsDir}/ASSESS_REPORT.md"
     mail:
       onStart: true
