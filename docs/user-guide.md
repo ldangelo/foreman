@@ -323,8 +323,6 @@ is exactly:
 - `project.update`
 - `project.archive`
 - `project.reactivate`
-- `merge_approve`
-- `run.pr.merge`
 - `task.create`
 - `task.approve`
 - `task.retry`
@@ -334,6 +332,8 @@ is exactly:
 - `run.resume`
 - `run.remove`
 - `run.reset`
+- `merge_approve`
+- `run.pr.merge`
 - `inbox.send`
 
 `CommandController` derives or verifies `aggregate_id` before calling
