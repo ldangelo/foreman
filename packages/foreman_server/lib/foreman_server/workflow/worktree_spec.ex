@@ -37,7 +37,7 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
       used and a declared `base` is resolved against the project root.
     * `branch` — branch template. `{task_id}` and `{run_id}` are substituted.
       `{task_id}` resolves via `RunExecutor.worktree_task_id/1`'s precedence:
-      the task's `external_id`, then `task_id`, then `work_id`, then `id`,
+      the task's `external_id`, then `task_id`, then `id`,
       then falls back to `run_id` itself if none of those is a non-empty
       binary. When a task's provider `external_id` differs from its
       internal `task_id`, the worktree path and branch name are keyed on

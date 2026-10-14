@@ -128,7 +128,6 @@ defmodule ForemanServer.Workflow.RunExecutorAutoPRTaskMetadataTest do
         %{
           run_id: "run-no-task",
           task: %{},
-          source: :work_request,
           current_phase: nil,
           phase_specs: [],
           plan_context: %{"project_root" => "/tmp/foreman-autopr-no-task"},

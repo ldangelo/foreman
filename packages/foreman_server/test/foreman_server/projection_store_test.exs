@@ -49,6 +49,27 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert :ok = ProjectionStore.subscribe(replay_existing: false)
   end
 
+  # The work-request surface was deleted, but an event store written before
+  # that may still hold these events. Projecting one must skip it, not crash
+  # `ProjectionStore` (which rebuilds from the whole log at boot).
+  test "a legacy WorkSubmitted event is ignored and later events still project" do
+    project_id = "project-after-legacy-#{System.unique_integer([:positive])}"
+
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "WorkSubmitted",
+                 payload: %{work_id: "work-legacy", run_id: "run-legacy", project_id: "p"}
+               },
+               %{
+                 event_type: "ProjectRegistered",
+                 payload: %{project_id: project_id, path: "/tmp/#{project_id}", name: "After"}
+               }
+             ])
+
+    assert %{project_id: ^project_id} = ProjectionStore.project(project_id)
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 

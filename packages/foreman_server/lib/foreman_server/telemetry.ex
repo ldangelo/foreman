@@ -34,8 +34,6 @@ defmodule ForemanServer.Telemetry do
   @run_stop [:foreman, :dispatch, :run, :stop]
   @mcp_tool_call [:foreman_server, :mcp, :tool, :call]
   @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
-  @work_submitted [:foreman_server, :work, :submitted]
-  @work_terminal [:foreman_server, :work, :terminal]
   @dispatcher_admission_failed [:foreman_server, :dispatcher, :admission_failed]
   @run_slots_acquired [:foreman_server, :run_slots, :acquired]
   @run_slots_queued [:foreman_server, :run_slots, :queued]
@@ -68,8 +66,6 @@ defmodule ForemanServer.Telemetry do
     @run_stop,
     @mcp_tool_call,
     @mcp_policy_refused,
-    @work_submitted,
-    @work_terminal,
     @dispatcher_admission_failed,
     @run_slots_acquired,
     @run_slots_queued,
@@ -379,27 +375,6 @@ defmodule ForemanServer.Telemetry do
   end
 
   @doc """
-  Emits `[:foreman_server, :work, :submitted]`.
-  Metadata whitelist: `work_id`, `run_id`, `workflow`, `project_id`, `prompt_bytes` —
-  never the prompt body.
-  """
-  @spec work_submitted(String.t(), String.t(), String.t(), String.t(), non_neg_integer()) :: :ok
-  def work_submitted(work_id, run_id, workflow, project_id, prompt_bytes)
-      when is_binary(work_id) and is_binary(run_id) and is_binary(workflow) and
-             is_binary(project_id) and is_integer(prompt_bytes) and prompt_bytes >= 0 do
-    execute(
-      @work_submitted,
-      %{prompt_bytes: prompt_bytes},
-      %{
-        work_id: work_id,
-        run_id: run_id,
-        workflow: workflow,
-        project_id: project_id
-      }
-    )
-  end
-
-  @doc """
   Emits `[:foreman_server, :dispatcher, :admission_failed]`.
   Metadata: `task_id`, `reason`.
   """
@@ -485,25 +460,6 @@ defmodule ForemanServer.Telemetry do
       @run_slots_reconciled,
       %{holders_dropped: holders_dropped, waiters_dropped: waiters_dropped},
       %{phase: phase}
-    )
-  end
-
-  @doc """
-  Emits `[:foreman_server, :work, :terminal]`.
-  Metadata: `work_id`, `run_id`, `status`.
-  """
-  @spec work_terminal(String.t(), String.t(), atom(), non_neg_integer()) :: :ok
-  def work_terminal(work_id, run_id, status, duration_us)
-      when is_binary(work_id) and is_binary(run_id) and is_atom(status) and
-             is_integer(duration_us) and duration_us >= 0 do
-    execute(
-      @work_terminal,
-      %{duration_us: duration_us},
-      %{
-        work_id: work_id,
-        run_id: run_id,
-        status: status
-      }
     )
   end
 end

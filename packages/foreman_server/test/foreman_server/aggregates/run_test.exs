@@ -136,9 +136,8 @@ defmodule ForemanServer.Aggregates.RunTest do
   # `:task_id` is deliberately NOT in this table: commit ac72149f ("fix
   # (aggregate): relax task_id and source for work-flow events") relaxed
   # both `RunStarted.@enforce_keys` and this handler to `optional_binary`
-  # for task_id because `work.submit`-sourced runs
-  # (`RunPayload.from_work_projection/1`) legitimately start with no
-  # task_id. See the "accepts a missing task_id" test below.
+  # for task_id because a run may legitimately start with no task_id. See the
+  # "accepts a missing task_id" test below.
   for {field, bad_payload} <- [
         {:project_id,
          %{run_id: "run-missing-project", task_id: "task-x", workflow_snapshot: %{}}},

@@ -356,7 +356,11 @@ explicit `--base-branch` override is still NOT consumed server-side. (The
 `work.*` command ingress described in this passage was retired in favor of
 the unified task path — see "Unify Foreman work dispatch onto the task
 path" — but the `--base-branch` non-consumption caveat carries over
-unchanged to `task.create`.)
+unchanged to `task.create`. The residual work-request code — the `WorkRequest`
+aggregate, the `Work*` events and their projection, `GET /api/work/:id`, the
+`foreman_work_get` MCP tool and the executor's `:work_request` source — was
+deleted; a persisted `WorkSubmitted` event now falls through
+`ProjectionStore`'s unknown-event clause and is ignored.)
 
 **Artifact path is a two-repo contract.** `ArtifactTemplate` expects the phase
 artifact at `<artifact_base>/<run_id>/phase-<index>.md` when the phase declares
@@ -1639,7 +1643,7 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 derives its registry from that directory at compile time, so
 `EventCodec.registered/0` always lists every event. The table below is a
 **curated subset** for orientation, not an inventory — it is deliberately not
-exhaustive (there are currently 66 event structs). Do not treat a missing row
+exhaustive (there are currently 87 event structs). Do not treat a missing row
 as "this event does not exist", and do not try to keep the table in one-to-one
 sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 

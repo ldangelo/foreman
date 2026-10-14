@@ -152,16 +152,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
              ) == "task-1"
     end
 
-    test "falls through empty external_id and task_id to work_id" do
-      assert RunExecutor.__worktree_task_id_for_test__(
-               %{external_id: "", task_id: "", work_id: "work-1"},
-               "run-1"
-             ) == "work-1"
-    end
-
     test "falls back to run_id only when no candidate is a non-empty binary" do
       assert RunExecutor.__worktree_task_id_for_test__(
-               %{external_id: "", task_id: nil, work_id: "", id: nil},
+               %{external_id: "", task_id: nil, id: nil},
                "run-1"
              ) == "run-1"
 
@@ -281,11 +274,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
   # CodeRabbit flagged that create_run_worktree/2 validated project_id and
   # the task segment but not state.run_id itself. In production, run_id is
   # always Identity.run_id/2's deterministic sha256 hex output ("run-" <>
-  # 32 lowercase hex chars) EXCEPT one path: ForemanServer.Aggregates.WorkRequest
-  # accepts `cmd.run_id` verbatim when present, bypassing the safe derivation
-  # entirely (`run_id = cmd.run_id || Identity.run_id(cmd.work_id, submission_id)`).
-  # A traversal-bearing run_id from that path would otherwise reach
-  # Path.join/1 in run_worktree_path/3 unvalidated.
+  # 32 lowercase hex chars), but the identifier guard must not rely on that:
+  # a traversal-bearing run_id would otherwise reach Path.join/1 in
+  # run_worktree_path/3 unvalidated.
   describe "create_run_worktree/2 validates state.run_id" do
     test "a traversal-bearing run_id is rejected before filesystem path construction" do
       state = %{
@@ -315,11 +306,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
 
     # CodeRabbit review on PR #484: assert_safe_path_identifier/1 accepted
-    # "", and WorkRequest accepts `cmd.run_id` verbatim
-    # (`cmd.run_id || Identity.run_id(...)`) — an empty string is truthy in
-    # Elixir, so an empty run_id bypassed safe generation entirely, colliding
-    # every such run on the same "wt-" operation id and dropping the run
-    # component from the worktree path.
+    # "". An empty string is truthy in Elixir, so an empty run_id bypassed the
+    # safe-generation fallback, colliding every such run on the same "wt-"
+    # operation id and dropping the run component from the worktree path.
     test "an empty run_id is rejected before filesystem path construction" do
       state = %{
         task: %{project_id: "proj-1", task_id: "task-1"},

@@ -79,19 +79,19 @@ defmodule ForemanServer.MCP.AuthTest do
 
       log =
         capture_log(fn ->
-          assert Auth.verify_request("wrong-token", "foreman_work_get", %{work_id: "work-123"}) ==
+          assert Auth.verify_request("wrong-token", "foreman_run_get", %{run_id: "run-123"}) ==
                    {:error, :invalid_token}
 
-          ForemanServer.Telemetry.mcp_tool_call(10, "foreman_work_get", :error)
+          ForemanServer.Telemetry.mcp_tool_call(10, "foreman_run_get", :error)
         end)
 
-      assert log =~ "authentication failed for tool foreman_work_get"
+      assert log =~ "authentication failed for tool foreman_run_get"
       refute log =~ "wrong-token"
       refute log =~ "super-secret-token"
-      refute log =~ "work-123"
+      refute log =~ "run-123"
 
       assert_receive {:telemetry_event, [:foreman_server, :mcp, :tool, :call], %{duration_us: 10},
-                      %{tool: "foreman_work_get", outcome: :error}}
+                      %{tool: "foreman_run_get", outcome: :error}}
     end
   end
 end
