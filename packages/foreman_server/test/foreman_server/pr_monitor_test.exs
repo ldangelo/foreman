@@ -150,6 +150,17 @@ defmodule ForemanServer.PrMonitorTest do
       assert urls == Enum.sort([ctx.pr_url, second_url])
     end
 
+    test "a retargeted base branch at the same head is a new observation", ctx do
+      stub_for(ctx.pr_url, {:ok, status(base_branch: "main")})
+      assert PrMonitor.poll_now() == 1
+
+      stub_for(ctx.pr_url, {:ok, status(base_branch: "release")})
+      assert PrMonitor.poll_now() == 1
+
+      bases = ctx.run_id |> pr_updated_events() |> Enum.map(& &1.data.base_branch)
+      assert bases == ["main", "release"]
+    end
+
     test "a fetch failure appends nothing and is counted as an error", ctx do
       stub_for(ctx.pr_url, {:error, {:gh_failed, 1, "boom"}})
 

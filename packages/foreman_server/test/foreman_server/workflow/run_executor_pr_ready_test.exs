@@ -96,6 +96,19 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
     assert ready.data.head_sha == chosen_sha
   end
 
+  test "a work-request run (work_id, no task_id) still engages the merge gate", %{
+    repo: repo,
+    run_id: run_id
+  } do
+    st =
+      state(repo, run_id)
+      |> Map.put(:source, :work_request)
+      |> Map.put(:task, %{work_id: "work-pr-ready", project_id: "project-pr-ready"})
+
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(st, @pr_url)
+    assert MergeGate.pending_for_key?("run:#{run_id}")
+  end
+
   test "an unresolvable head branch fails loudly and never engages the gate", %{
     repo: repo,
     run_id: run_id

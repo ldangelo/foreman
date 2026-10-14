@@ -1564,7 +1564,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
              %{
                run_id: state.run_id,
                project_id: project_id(state),
-               task_id: task_id(state),
+               task_id: pr_ready_identity(state),
                pr_url: pr_url,
                branch_name: head_branch,
                head_sha: head_sha,
@@ -1580,6 +1580,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
         )
     end
   end
+
+  # A work-request run carries `work_id` and no `task_id`/`id`, so `task_id/1`
+  # yields "" and the aggregate refuses `run.pr.ready` (task_id is required).
+  defp pr_ready_identity(%{source: :work_request} = state), do: work_id(state)
+  defp pr_ready_identity(state), do: task_id(state)
 
   defp maybe_auto_pr(state) do
     if phase_pr_created_or_reused?(state.run_id) do
