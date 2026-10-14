@@ -1554,7 +1554,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # repeated dispatch a no-op rather than a second `PrReady`.
   defp signal_pr_ready(state, pr_url) do
     with {:ok, base_branch} <- run_base_branch(state),
-         {:ok, head_branch} <- run_head_branch(state),
+         {:ok, head_branch} <- AutoPR.resolve_head_branch(auto_pr_context(state, base_branch)),
          {:ok, head_sha} <- resolve_revision(vcs_working_directory(state), head_branch),
          {:ok, _} <-
            dispatch_system_command(

@@ -37,7 +37,7 @@ defmodule ForemanServer.PrUpdate do
         {:ok,
          %{
            type: "run.pr.update",
-           command_id: "pr_update:#{run_id}:#{pr.status}:#{pr.head_sha}",
+           command_id: "pr_update:#{run_id}:#{pr_url}:#{pr.status}:#{pr.head_sha}",
            aggregate_id: "run:#{run_id}",
            payload: %{
              run_id: run_id,

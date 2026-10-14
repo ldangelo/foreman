@@ -136,6 +136,20 @@ defmodule ForemanServer.PrMonitorTest do
       assert [_, _] = pr_updated_events(ctx.run_id)
     end
 
+    test "a second PR URL on the same run is observed even at an identical status and head",
+         ctx do
+      second_url = ctx.pr_url <> "9"
+      stub_for(ctx.pr_url, {:ok, status()})
+      assert PrMonitor.poll_now() == 1
+
+      {:ok, _} = PrAssociate.store(ctx.run_id, second_url)
+      stub_for(second_url, {:ok, status()})
+      assert PrMonitor.poll_now() == 1
+
+      urls = ctx.run_id |> pr_updated_events() |> Enum.map(& &1.data.pr_url) |> Enum.sort()
+      assert urls == Enum.sort([ctx.pr_url, second_url])
+    end
+
     test "a fetch failure appends nothing and is counted as an error", ctx do
       stub_for(ctx.pr_url, {:error, {:gh_failed, 1, "boom"}})
 

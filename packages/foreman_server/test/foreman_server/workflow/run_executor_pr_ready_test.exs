@@ -70,6 +70,32 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
            "a repeated signal must not append a second PrReady (it would re-pend an approved gate)"
   end
 
+  test "PrReady records the head AutoPR resolves from the artifact's FOREMAN_BRANCH override", %{
+    repo: repo,
+    run_id: run_id
+  } do
+    git!(repo, ["branch", "agent/chosen"])
+    git!(repo, ["checkout", "--quiet", "agent/chosen"])
+    File.write!(Path.join(repo, "chosen.txt"), "x")
+    git!(repo, ["add", "."])
+    git!(repo, ["commit", "--no-gpg-sign", "-m", "on chosen", "--quiet"])
+    chosen_sha = git!(repo, ["rev-parse", "agent/chosen"]) |> String.trim()
+    refute chosen_sha == git!(repo, ["rev-parse", "foreman/run-branch"]) |> String.trim()
+
+    artifact = Path.join(repo, "artifact.md")
+    File.write!(artifact, "done\nFOREMAN_BRANCH=agent/chosen\n")
+
+    st = %{state(repo, run_id) | current_phase: 0, phase_specs: [%{artifact_template: artifact}]}
+
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(st, @pr_url)
+
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
+
+    assert ready.data.branch_name == "agent/chosen"
+    assert ready.data.head_sha == chosen_sha
+  end
+
   test "an unresolvable head branch fails loudly and never engages the gate", %{
     repo: repo,
     run_id: run_id
@@ -106,7 +132,9 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
       task: %{task_id: "task-pr-ready", project_id: "project-pr-ready"},
       plan_context: %{"project_root" => repo},
       run_base_branch: {:ok, "main"},
-      last_worktree: %{branch: "foreman/run-branch"}
+      last_worktree: %{branch: "foreman/run-branch"},
+      current_phase: nil,
+      phase_specs: []
     }
   end
 
