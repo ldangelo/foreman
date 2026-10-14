@@ -137,6 +137,14 @@ defmodule ForemanServer.Identity do
   end
 
   @doc """
+  System command ID for signalling that a run's PR reached the merge gate.
+  """
+  @spec run_pr_ready_command_id(String.t()) :: String.t()
+  def run_pr_ready_command_id(run_id) when is_binary(run_id) and run_id != "" do
+    "workflow:" <> run_id <> ":pr_ready"
+  end
+
+  @doc """
   System command ID for failing a run.
   """
   @spec run_fail_command_id(String.t()) :: String.t()

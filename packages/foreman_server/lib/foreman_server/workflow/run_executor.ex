@@ -84,7 +84,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
           status: :ready | :in_progress | :completed | :failed | :blocked | :paused | :cancelled,
           artifact_base: String.t(),
           plan_context: map() | nil,
-          source: :task | :work_request | :unknown,
           resume_from: non_neg_integer(),
           resuming?: boolean()
         }
@@ -308,18 +307,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, reason} -> %{__plan_context_error__: reason}
       end
 
-    source =
-      cond do
-        Map.get(task_projection, :task_id) || Map.get(task_projection, "task_id") ->
-          :task
-
-        Map.get(task_projection, :work_id) || Map.get(task_projection, "work_id") ->
-          :work_request
-
-        true ->
-          :unknown
-      end
-
     resume_from = Keyword.get(opts, :resume_from, 0)
 
     state = %{
@@ -333,7 +320,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       status: :ready,
       artifact_base: default_artifact_base(),
       plan_context: plan_context,
-      source: source,
       resume_from: resume_from,
       resuming?: Keyword.get(opts, :resume_from) != nil
     }
@@ -377,7 +363,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               reason: inspect(failures)
             )
 
-            _ = dispatch_execution_fail(state, {:provider_model_preflight_failed, failures})
+            _ = dispatch_task_execution_fail(state, {:provider_model_preflight_failed, failures})
             finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
 
           :ok ->
@@ -745,40 +731,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     failures = Enum.reverse(reversed_failures)
     if failures == [], do: :ok, else: {:error, failures}
-  end
-
-  # `dispatch_task_execution_fail/2` assumes a task-provider-tracked run.
-  # A `:work_request` (non-task) run has no task to fail — it must route
-  # through `dispatch_work_execution_fail/2` instead, exactly like the
-  # existing source-aware branch in `maybe_fail_task/4` (used at in-flight
-  # phase failure) already does for that class of dispatch. The preflight
-  # runs before any phase or task-claim exists, so it needs this same
-  # source check at its own call site rather than reusing `maybe_fail_task/4`,
-  # which expects a phase_spec/phase_index that do not exist yet here.
-  #
-  # The two other unconditional `dispatch_task_execution_fail/2` call sites in
-  # `handle_info(:kickoff, state)` — `:plan_context_error` and `:claim_failure`
-  # — look like the same bug at a glance, but are NOT: both are structurally
-  # unreachable for `:work_request` runs, so they need no equivalent fix.
-  # `maybe_claim_task/1` returns `:ok` immediately when `state.source ==
-  # :work_request`, so `:claim_failure` can never fire for that source.
-  # `plan_context_error/1` only surfaces a `{:error, reason}` that
-  # `plan_context_for/1` stored from `PlanContext.build/1`'s own `{:error,
-  # _}` clause; `fetch_plan_base/1` maps `PlanContext.build/1`'s
-  # `:not_applicable` result (returned for every `work.submit`/work_request
-  # task_projection) to `{:ok, %{}}`, and `merge_implementation_context/2`
-  # has no `{:error, _}` clause at all — it always returns `{:ok, _}`. So
-  # `:plan_context_error` is reachable only through a real `PlanContext.build/1`
-  # failure, which by definition only happens on the task-provider-tracked
-  # path. Preflight (this function) has no such structural exemption: every
-  # run, `:work_request` included, has phase_specs with provider/model
-  # declarations, so it needed the fix; the other two did not.
-  defp dispatch_execution_fail(state, reason) do
-    if state.source == :work_request do
-      dispatch_work_execution_fail(state, reason)
-    else
-      dispatch_task_execution_fail(state, reason)
-    end
   end
 
   defp phase_provider_and_model_check(phase_spec, cache) do
@@ -1478,6 +1430,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           {:ok, pr_url} ->
             Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
             record_pr_association(state.run_id, pr_url)
+            signal_pr_ready(state, pr_url)
 
           {:error, reason} ->
             # The run produced commits but no PR. Logging at warning previously
@@ -1539,6 +1492,43 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Logger.error(
           "RunExecutor #{run_id} finalize_run: PR #{pr_url} created but NOT recorded " <>
             "on the run read model: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # run.pr.ready is what puts a finished run's PR into the merge gate
+  # (`merge_gate: :pending`). The aggregate handler, the `PrReady` event and the
+  # MergeGate approval machinery all existed, but nothing dispatched the command,
+  # so `merge_gate` stayed nil and `run.pr.merge` was refused for every run.
+  #
+  # Like `record_pr_association/2`, a failure here must not fail the run: the PR
+  # is already open and the work succeeded. The deterministic command id makes a
+  # repeated dispatch a no-op rather than a second `PrReady`.
+  defp signal_pr_ready(state, pr_url) do
+    with {:ok, base_branch} <- run_base_branch(state),
+         {:ok, head_branch} <- AutoPR.resolve_head_branch(auto_pr_context(state, base_branch)),
+         {:ok, head_sha} <- resolve_revision(vcs_working_directory(state), head_branch),
+         {:ok, _} <-
+           dispatch_system_command(
+             "run.pr.ready",
+             Identity.run_pr_ready_command_id(state.run_id),
+             "run:#{state.run_id}",
+             %{
+               run_id: state.run_id,
+               project_id: project_id(state),
+               task_id: task_id(state),
+               pr_url: pr_url,
+               branch_name: head_branch,
+               head_sha: head_sha,
+               base_branch: base_branch
+             }
+           ) do
+      :ok
+    else
+      {:error, reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} finalize_run: PR #{pr_url} created but run.pr.ready " <>
+            "was NOT signalled, so the merge gate never engages: #{inspect(reason)}"
         )
     end
   end
@@ -2509,12 +2499,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # hierarchy or cause shell/path interpretation issues.
   defp assert_safe_path_identifier(identifier) do
     cond do
-      # Reject an empty identifier: `WorkRequest` accepts `cmd.run_id`
-      # verbatim (`cmd.run_id || Identity.run_id(...)`), and an empty
-      # string is truthy in Elixir, so `""` bypasses that safe-generation
-      # fallback entirely and would otherwise collide every such run on
-      # the same `wt-` operation id and drop the run component from the
-      # worktree path (CodeRabbit review).
+      # Reject an empty identifier: an empty run_id would collide every such
+      # run on the same `wt-` operation id, and any empty segment would drop a
+      # component from the worktree path (CodeRabbit review).
       identifier == "" ->
         {:error, {:unsafe_path_identifier, identifier, "empty identifier"}}
 
@@ -3224,7 +3211,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp task_identity(task) do
-    Enum.find_value([:external_id, :task_id, :work_id, :id], fn field ->
+    Enum.find_value([:external_id, :task_id, :id], fn field ->
       case task_identity_field(task, field) do
         {:found, value} ->
           {:found, value}
@@ -3353,6 +3340,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)
+
+  @doc false
+  def __signal_pr_ready_for_test__(state, pr_url), do: signal_pr_ready(state, pr_url)
 
   @doc false
   def __handle_phase_body_error_for_test__(
@@ -3493,70 +3483,55 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # For work-sourced runs there is no task to claim — skip the callback entirely.
   defp maybe_claim_task(state) do
-    if state.source == :work_request do
-      :ok
-    else
-      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
-        true ->
-          claim(project_id(state), provider_task_id(state), task_provider_actor(), state.run_id)
-          |> to_lifecycle_result()
+    case provider_tracked?(state) and provider_enabled?(project_id(state)) do
+      true ->
+        claim(project_id(state), provider_task_id(state), task_provider_actor(), state.run_id)
+        |> to_lifecycle_result()
 
-        false ->
-          :ok
-      end
+      false ->
+        :ok
     end
   end
 
-  # For work-sourced runs: no TaskProvider callback, dispatch directly to WorkRequest.
   defp maybe_complete_task(state) do
-    if state.source == :work_request do
-      dispatch_work_execution_complete(state)
-    else
-      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
-        true ->
-          case complete(
-                 project_id(state),
-                 provider_task_id(state),
-                 state.run_id,
-                 completion_artifact_path(state)
-               ) do
-            {:ok, :already_terminal} -> :ok
-            {:ok, _issue} -> dispatch_task_execution_complete(state)
-            {:error, reason} -> {:error, reason}
-          end
+    case provider_tracked?(state) and provider_enabled?(project_id(state)) do
+      true ->
+        case complete(
+               project_id(state),
+               provider_task_id(state),
+               state.run_id,
+               completion_artifact_path(state)
+             ) do
+          {:ok, :already_terminal} -> :ok
+          {:ok, _issue} -> dispatch_task_execution_complete(state)
+          {:error, reason} -> {:error, reason}
+        end
 
-        false ->
-          dispatch_task_execution_complete(state)
-      end
+      false ->
+        dispatch_task_execution_complete(state)
     end
   end
 
-  # For work-sourced runs: no TaskProvider callback, dispatch directly to WorkRequest.
   defp maybe_fail_task(state, phase_spec, index, reason) do
-    if state.source == :work_request do
-      dispatch_work_execution_fail(state, reason)
-    else
-      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
-        true ->
-          failure_reason =
-            merge_failure_reason(reason, %{
-              artifact_path: ArtifactTemplate.path(state, phase_spec, index)
-            })
+    case provider_tracked?(state) and provider_enabled?(project_id(state)) do
+      true ->
+        failure_reason =
+          merge_failure_reason(reason, %{
+            artifact_path: ArtifactTemplate.path(state, phase_spec, index)
+          })
 
-          fail_with_retry(
-            state,
-            project_id(state),
-            provider_task_id(state),
-            state.run_id,
-            reason,
-            failure_reason
-          )
+        fail_with_retry(
+          state,
+          project_id(state),
+          provider_task_id(state),
+          state.run_id,
+          reason,
+          failure_reason
+        )
 
-        false ->
-          dispatch_task_execution_fail(state, reason)
-      end
+      false ->
+        dispatch_task_execution_fail(state, reason)
     end
   end
 
@@ -3578,36 +3553,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       %{task_id: task_id(state), run_id: state.run_id, reason: inspect(reason)}
     )
     |> to_dispatch_result()
-  end
-
-  # WorkRequest aggregate dispatchers — used when state.source == :work_request.
-  defp dispatch_work_execution_complete(state) do
-    work_id = work_id(state)
-
-    dispatch_system_command(
-      "work.execution_complete",
-      Identity.task_complete_command_id(state.run_id),
-      "work:#{work_id}",
-      %{work_id: work_id, run_id: state.run_id}
-    )
-    |> to_dispatch_result()
-  end
-
-  defp dispatch_work_execution_fail(state, reason) do
-    work_id = work_id(state)
-
-    dispatch_system_command(
-      "work.execution_fail",
-      Identity.task_fail_command_id(state.run_id),
-      "work:#{work_id}",
-      %{work_id: work_id, run_id: state.run_id, reason: inspect(reason)}
-    )
-    |> to_dispatch_result()
-  end
-
-  defp work_id(state) do
-    Map.get(state.task, :work_id) || Map.get(state.task, "work_id") ||
-      raise("work_id unavailable in RunExecutor state — expected source=:work_request")
   end
 
   defp dispatch_run_complete(state) do

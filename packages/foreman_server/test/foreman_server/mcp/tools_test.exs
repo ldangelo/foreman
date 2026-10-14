@@ -45,7 +45,6 @@ defmodule ForemanServer.MCP.ToolsTest do
       tools = Tools.list_tools()
 
       assert Enum.map(tools, & &1.name) == [
-               "foreman_work_get",
                "foreman_run_get",
                "foreman_run_status",
                "foreman_queue_status",
@@ -137,22 +136,6 @@ defmodule ForemanServer.MCP.ToolsTest do
       refute Map.has_key?(tool.inputSchema.properties, :task_id)
       refute Map.has_key?(tool.inputSchema.properties, :provider_issue_id)
       refute Map.has_key?(tool.inputSchema.properties, :body)
-    end
-  end
-
-  describe "foreman_work_get" do
-    test "returns work when found" do
-      work = %{work_id: "work-1", status: "submitted"}
-      replace_state(%{works: %{"work-1" => work}})
-
-      assert Tools.call_tool("foreman_work_get", %{work_id: "work-1"}) == {:ok, work}
-    end
-
-    test "returns NOT_FOUND when not found" do
-      replace_state(%{works: %{}})
-
-      assert Tools.call_tool("foreman_work_get", %{work_id: "nonexistent"}) ==
-               {:error, %ToolError{code: "NOT_FOUND", message: "Work not found"}}
     end
   end
 

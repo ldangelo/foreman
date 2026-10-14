@@ -26,6 +26,12 @@ defmodule ForemanServerWeb.Router do
     plug(ForemanServerWeb.Plugs.RequireAuthenticated)
   end
 
+  # GitHub authenticates a delivery with an HMAC over the raw body rather than a
+  # bearer token. Fails closed: with no secret configured, nothing is accepted.
+  pipeline :github_webhook do
+    plug(ForemanServerWeb.Plugs.VerifyGithubSignature)
+  end
+
   forward("/mcp", ForemanServerWeb.MCPRouter, [])
 
   scope "/api/jobsites", ForemanServerWeb do
@@ -52,8 +58,6 @@ defmodule ForemanServerWeb.Router do
     get("/runs/:id", RunController, :show)
     get("/queue", QueueController, :index)
 
-    get("/work/:id", WorkController, :show)
-
     scope "/admin" do
       post("/workflows/install", WorkflowInstallController, :install)
       post("/workflows/remove", WorkflowInstallController, :remove)
@@ -61,8 +65,13 @@ defmodule ForemanServerWeb.Router do
   end
 
   scope "/webhooks", ForemanServerWeb do
-    post("/external_trigger", WebhookController, :external_trigger)
+    pipe_through(:github_webhook)
+
     post("/github", GithubWebhookController, :github)
+  end
+
+  scope "/webhooks", ForemanServerWeb do
+    post("/external_trigger", WebhookController, :external_trigger)
     post("/operator/ingest", WebhookController, :operator_ingest)
   end
 

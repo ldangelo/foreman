@@ -392,7 +392,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
   # earlier id and collide with a pre-restart attempt in the reconstructed
   # attempts map (CodeRabbit review) — use a UUID, restart-safe by
   # construction, matching this repo's existing convention for durable ids
-  # (see RunExecutor.generate_session_id/0, WorkRequest.handle_command/2).
+  # (see RunExecutor.generate_session_id/0).
   defp attempt_id(%Notification{notification_id: id}) do
     id <> ":attempt-" <> EventStore.UUID.uuid4()
   end

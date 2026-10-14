@@ -30,7 +30,7 @@ defmodule ForemanServer.Agents.OtelSpanEmitterTest do
 
   test "emit_cmd_span/3 guards on bad input" do
     assert_raise FunctionClauseError, fn ->
-      OtelSpanEmitter.emit_cmd_span(:not_a_binary, "action", 100)
+      apply(OtelSpanEmitter, :emit_cmd_span, [:not_a_binary, "action", 100])
     end
   end
 end

@@ -36,7 +36,7 @@ defmodule ForemanServer.Actions.GitStatusActionTest do
 
     test "to_tool/0 returns an LLM-compatible tool description" do
       tool = GitStatusAction.to_tool()
-      assert is_map(tool) or is_list(tool)
+      assert is_map(tool)
     end
   end
 

@@ -356,7 +356,11 @@ explicit `--base-branch` override is still NOT consumed server-side. (The
 `work.*` command ingress described in this passage was retired in favor of
 the unified task path — see "Unify Foreman work dispatch onto the task
 path" — but the `--base-branch` non-consumption caveat carries over
-unchanged to `task.create`.)
+unchanged to `task.create`. The residual work-request code — the `WorkRequest`
+aggregate, the `Work*` events and their projection, `GET /api/work/:id`, the
+`foreman_work_get` MCP tool and the executor's `:work_request` source — was
+deleted; a persisted `WorkSubmitted` event now falls through
+`ProjectionStore`'s unknown-event clause and is ignored.)
 
 **Artifact path is a two-repo contract.** `ArtifactTemplate` expects the phase
 artifact at `<artifact_base>/<run_id>/phase-<index>.md` when the phase declares
@@ -709,6 +713,33 @@ checked-in template at `priv/defaults/workflows/prompts/implement.md`, which
 legitimately contains an unrendered `{{artifact_path}}` because it is the
 source template. Do not re-chase it as a rendering defect.
 
+**The merge gate is reachable by an operator only — never add an agent path (2026-10).**
+`run.pr.ready` had a complete aggregate handler and no producer, and `merge_approve` /
+`run.pr.merge` were in neither operator allowlist, so no run could ever merge. Now:
+`RunExecutor.signal_pr_ready/2` dispatches `run.pr.ready` after AutoPR creates the final PR
+(a run whose PRs are all `stack_pr` phase PRs reaches `maybe_auto_pr` as `:noop`, so its
+gate never engages); `merge_approve` and `run.pr.merge` are operator commands on
+`POST /api/commands` and `foreman run approve-merge|merge`. The real GitHub merge runs in
+`ForemanServer.RunPrMerge`, called from `CommandGateway.dispatch_operator/2` BEFORE the
+command is dispatched and never inside the aggregate — the actor re-runs `handle_command/2`
+on a version conflict, which would repeat a real merge. `RunPrMerge` reads the gate from the
+event-sourced aggregate (not the ETS `MergeGate`), pins `gh pr merge --squash
+--match-head-commit` to the head SHA stored in `PrReady`, skips `gh` for a PR that is
+already merged at that same head (merged at any other head is `head_moved_since_approval`), and REPLACES the caller's payload wholesale. `approver_identity` is a
+client-supplied string checked against `ApproverAuthorizer`'s hardcoded
+`["github:ldangelo"]`; the API bearer token is the real trust boundary. So do NOT add an MCP
+tool for either command: an agent with write MCP could approve and merge its own PR
+(`MergeToolRefuser` exists for the same reason).
+
+`PrMonitor` (opt-in, `FOREMAN_PR_MONITOR_ENABLED=true`) and `POST /webhooks/github` both
+build `run.pr.update` through the one `ForemanServer.PrUpdate` builder, so the same
+observation dedupes by `command_id`. Both only append `PrUpdated`; `ProjectionStore` folds
+neither `PrUpdated` nor `PrMerged`, so neither changes task or run read-model state. The
+webhook fails closed on `X-Hub-Signature-256` (`503` with no `FOREMAN_GITHUB_WEBHOOK_SECRET`,
+`401` for a missing/malformed/wrong signature) and attributes events by PR URL, never by a
+payload field. `/webhooks/external_trigger` and `/webhooks/operator/ingest` still have no
+authentication.
+
 ## 5. Typed Boundaries, Loud Failures
 
 **Make the compiler catch it. If it can't, fail loudly. Never degrade to a plausible-looking success.**
@@ -999,24 +1030,38 @@ shape; safe but cosmetic. Will be addressed in a follow-up.
 
 ---
 
-### Known environmental workarounds in devbox.json
+### Toolchain pin and environmental workarounds in devbox.json
 
-Two `init_hook` lines in `devbox.json` carry interim workarounds for
-environmental problems that block `devbox run test:langfuse`:
+**Toolchain: Elixir 1.20.4 on Erlang/OTP 28**, pinned natively in
+`devbox.json` (`beam28Packages.elixir_1_20@1.20.4` + `erlang_28@latest`,
+resolved in `devbox.lock`) and mirrored in `.github/workflows/ci.yml` and
+`jido-upstream-upgrade.yml` (`elixir-version: '1.20.4'`, `otp-version: '28'`).
+Change all three together. The `mix.exs` floor stays `~> 1.18`; the pin is what
+CI and devbox run, not a compatibility claim. Elixir 1.20's type checker is
+stricter than 1.18's, and `mix test --warnings-as-errors` (the CI command)
+treats its warnings as failures — a toolchain bump is not done until that
+command is green under the new pin, so verify with
+`devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'`
+rather than whichever `elixir` is first on `PATH` (a Homebrew Elixir 1.20.4 on
+OTP 29 is not CI's toolchain).
+
+The agent-container images (`.foreman/Dockerfile`, the `foreman_cli` templates'
+`Dockerfile`) are deliberately NOT part of this pin: they are `elixir:1.18-otp-27-slim`
+and run the jobsite scripts, which need only OTP 27+. Do not bump them as a side
+effect of a devbox/CI toolchain change.
+
+The former interim workaround — a `/nix/store/*-elixir-1.18.4` PATH override
+for the broken 1.18.1 devbox-search resolved (`foreman-w4b`) — is deleted;
+nothing replaces it.
+
+One `init_hook` line still carries an environmental workaround for
+`devbox run test:langfuse`:
 
 1. **`SHELL` export** — `erlexec` (transitive dep) starts an `:exec` port
    driver at app boot that requires `SHELL` in env. Defaulted to
    `/bin/sh` if unset.
-2. **Elixir 1.18.4 PATH override** — `devbox-search` resolves
-   `elixir_1_18@latest` to 1.18.1, which has a deterministic
-   `Module.ParallelChecker.cache_module/2` crash on `telemetry_metrics`
-   compile. The hook scans `/nix/store/*-elixir-1.18.4` and prepends
-   the first match to PATH, falling through to the broken 1.18.1
-   default on a fresh clone (where this would need a follow-up).
-   Tracked in beads issue `foreman-w4b`. Remove the workaround once
-   devbox pins 1.18.4 natively or `br close foreman-w4b`.
 
-A third change: the `init_hook` no longer sources the litellm-langfuse stack's
+A second change: the `init_hook` no longer sources the litellm-langfuse stack's
 whole `.env` (that leaked its `ANTHROPIC_API_KEY` into every dev shell and
 overrode the operator's own credentials). It exports only `LITELLM_MASTER_KEY`;
 `test:langfuse`/`test:all` source the stack `.env` themselves.
@@ -1225,6 +1270,8 @@ foreman run pause --id <run-id> --reason "reason"   # stop now; keep the run res
 foreman run resume --id <run-id>                      # continue a paused run
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
+foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>
+foreman run merge --id <run-id>                       # squash-merge the approved PR
 ```
 
 **Unattended-run-control (2026-09).** `run cancel` no longer just marks the
@@ -1261,6 +1308,8 @@ foreman run pause --id <id> --reason <text>  # stop now, resumable
 foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
+foreman run approve-merge --id <id> --approver <name> --identity <github:login>  # open the merge gate
+foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head)
 foreman project list         # List projects
 foreman project get <id>     # Fetch project
 
@@ -1594,7 +1643,7 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 derives its registry from that directory at compile time, so
 `EventCodec.registered/0` always lists every event. The table below is a
 **curated subset** for orientation, not an inventory — it is deliberately not
-exhaustive (there are currently 66 event structs). Do not treat a missing row
+exhaustive (there are currently 87 event structs). Do not treat a missing row
 as "this event does not exist", and do not try to keep the table in one-to-one
 sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 
@@ -2020,6 +2069,8 @@ foreman run pause --id <id> --reason <text>  # stop now, resumable
 foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
+foreman run approve-merge --id <id> --approver <name> --identity <github:login>  # open the merge gate
+foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head)
 ```
 
 ### Triage & Discovery (br/bv)

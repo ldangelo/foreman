@@ -88,8 +88,11 @@ defmodule ForemanServer.Workflow.CommitDeferralTest do
     end
 
     test "a non-list raises: there is no safe answer for input it cannot read" do
-      assert_raise FunctionClauseError, fn -> CommitDeferral.pending_phase(nil) end
-      assert_raise FunctionClauseError, fn -> CommitDeferral.pending_phase(%{"phases" => []}) end
+      assert_raise FunctionClauseError, fn -> apply(CommitDeferral, :pending_phase, [nil]) end
+
+      assert_raise FunctionClauseError, fn ->
+        apply(CommitDeferral, :pending_phase, [%{"phases" => []}])
+      end
     end
   end
 
@@ -108,8 +111,8 @@ defmodule ForemanServer.Workflow.CommitDeferralTest do
     end
 
     test "a non-map raises: 'this phase commits' is not a safe default to invent" do
-      assert_raise FunctionClauseError, fn -> CommitDeferral.deferred?("phase") end
-      assert_raise FunctionClauseError, fn -> CommitDeferral.deferred?(nil) end
+      assert_raise FunctionClauseError, fn -> apply(CommitDeferral, :deferred?, ["phase"]) end
+      assert_raise FunctionClauseError, fn -> apply(CommitDeferral, :deferred?, [nil]) end
     end
   end
 end
