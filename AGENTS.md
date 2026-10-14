@@ -999,24 +999,38 @@ shape; safe but cosmetic. Will be addressed in a follow-up.
 
 ---
 
-### Known environmental workarounds in devbox.json
+### Toolchain pin and environmental workarounds in devbox.json
 
-Two `init_hook` lines in `devbox.json` carry interim workarounds for
-environmental problems that block `devbox run test:langfuse`:
+**Toolchain: Elixir 1.20.4 on Erlang/OTP 28**, pinned natively in
+`devbox.json` (`beam28Packages.elixir_1_20@1.20.4` + `erlang_28@latest`,
+resolved in `devbox.lock`) and mirrored in `.github/workflows/ci.yml` and
+`jido-upstream-upgrade.yml` (`elixir-version: '1.20.4'`, `otp-version: '28'`).
+Change all three together. The `mix.exs` floor stays `~> 1.18`; the pin is what
+CI and devbox run, not a compatibility claim. Elixir 1.20's type checker is
+stricter than 1.18's, and `mix test --warnings-as-errors` (the CI command)
+treats its warnings as failures — a toolchain bump is not done until that
+command is green under the new pin, so verify with
+`devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'`
+rather than whichever `elixir` is first on `PATH` (a Homebrew Elixir 1.20.4 on
+OTP 29 is not CI's toolchain).
+
+The agent-container images (`.foreman/Dockerfile`, the `foreman_cli` templates'
+`Dockerfile`) are deliberately NOT part of this pin: they are `elixir:1.18-otp-27-slim`
+and run the jobsite scripts, which need only OTP 27+. Do not bump them as a side
+effect of a devbox/CI toolchain change.
+
+The former interim workaround — a `/nix/store/*-elixir-1.18.4` PATH override
+for the broken 1.18.1 devbox-search resolved (`foreman-w4b`) — is deleted;
+nothing replaces it.
+
+One `init_hook` line still carries an environmental workaround for
+`devbox run test:langfuse`:
 
 1. **`SHELL` export** — `erlexec` (transitive dep) starts an `:exec` port
    driver at app boot that requires `SHELL` in env. Defaulted to
    `/bin/sh` if unset.
-2. **Elixir 1.18.4 PATH override** — `devbox-search` resolves
-   `elixir_1_18@latest` to 1.18.1, which has a deterministic
-   `Module.ParallelChecker.cache_module/2` crash on `telemetry_metrics`
-   compile. The hook scans `/nix/store/*-elixir-1.18.4` and prepends
-   the first match to PATH, falling through to the broken 1.18.1
-   default on a fresh clone (where this would need a follow-up).
-   Tracked in beads issue `foreman-w4b`. Remove the workaround once
-   devbox pins 1.18.4 natively or `br close foreman-w4b`.
 
-A third change: the `init_hook` no longer sources the litellm-langfuse stack's
+A second change: the `init_hook` no longer sources the litellm-langfuse stack's
 whole `.env` (that leaked its `ANTHROPIC_API_KEY` into every dev shell and
 overrode the operator's own credentials). It exports only `LITELLM_MASTER_KEY`;
 `test:langfuse`/`test:all` source the stack `.env` themselves.

@@ -114,7 +114,7 @@ defmodule ForemanServer.MCP.TransportTest do
         Application.delete_env(:foreman_server, :api_bearer_token)
       end)
 
-      http_frame = %Frame{
+      http_frame = %{
         Frame.new()
         | context: %Context{headers: %{"authorization" => "Bearer s3cret"}}
       }
@@ -123,7 +123,7 @@ defmodule ForemanServer.MCP.TransportTest do
                MCP.handle_tool_call("foreman_workflow_list", %{}, http_frame)
 
       {:ok, stdio_frame} =
-        Stdio.init(nil, %Frame{
+        Stdio.init(nil, %{
           Frame.new()
           | context: %Context{init_meta: %{"authorization" => "Bearer s3cret"}}
         })
@@ -148,7 +148,7 @@ defmodule ForemanServer.MCP.TransportTest do
         Application.delete_env(:foreman_server, :api_bearer_token)
       end)
 
-      http_frame = %Frame{
+      http_frame = %{
         Frame.new()
         | context: %Context{headers: %{"authorization" => "Bearer wrong"}}
       }
@@ -157,7 +157,7 @@ defmodule ForemanServer.MCP.TransportTest do
                MCP.handle_tool_call("foreman_workflow_list", %{}, http_frame)
 
       assert {:error, %Anubis.MCP.Error{code: "UNAUTHORIZED"}} =
-               Stdio.init(nil, %Frame{
+               Stdio.init(nil, %{
                  Frame.new()
                  | context: %Context{init_meta: %{"authorization" => "Bearer wrong"}}
                })

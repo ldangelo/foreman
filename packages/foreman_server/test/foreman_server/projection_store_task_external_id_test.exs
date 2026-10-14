@@ -119,11 +119,11 @@ defmodule ForemanServer.ProjectionStoreTaskExternalIdTest do
 
     # Empty / malformed option lists are rejected.
     assert_raise ArgumentError, fn ->
-      ProjectionStore.get_task([])
+      apply(ProjectionStore, :get_task, [[]])
     end
 
     assert_raise ArgumentError, fn ->
-      ProjectionStore.get_task(project_id: "p-1")
+      apply(ProjectionStore, :get_task, [[project_id: "p-1"]])
     end
   end
 

@@ -73,10 +73,7 @@ defmodule ForemanServer.MCPSupervisorTest do
 
   describe "supervisor integration" do
     test "Anubis.Server module is available" do
-      # Code.ensure_loaded? returns true if already loaded, {:module, module} if just loaded,
-      # or {:error, reason} if it couldn't be loaded
-      result = Code.ensure_loaded?(Anubis.Server)
-      assert result == true or match?({:module, Anubis.Server}, result)
+      assert Code.ensure_loaded?(Anubis.Server)
     end
   end
 end

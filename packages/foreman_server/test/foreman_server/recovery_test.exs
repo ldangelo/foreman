@@ -109,7 +109,7 @@ defmodule ForemanServer.RecoveryTest do
 
     test "returns error for non-binary intent_id" do
       assert_raise FunctionClauseError, fn ->
-        Recovery.record_intent(123, %{intent_id: "x"})
+        apply(Recovery, :record_intent, [123, %{intent_id: "x"}])
       end
     end
   end

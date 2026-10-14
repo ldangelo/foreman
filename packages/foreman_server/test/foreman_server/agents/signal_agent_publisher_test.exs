@@ -54,7 +54,7 @@ defmodule ForemanServer.Agents.SignalAgentPublisherTest do
       {:ok, _bus} = Jido.Signal.Bus.start_link(name: bus_name)
 
       assert_raise FunctionClauseError, fn ->
-        SignalAgentPublisher.publish(bus_name, 123, %{note: "x"})
+        apply(SignalAgentPublisher, :publish, [bus_name, 123, %{note: "x"}])
       end
     end
   end
