@@ -179,7 +179,6 @@ defmodule ForemanServer.MCP.TransportTest do
 
     test "both transports expose the complete required tool set" do
       required = [
-        "foreman_work_get",
         "foreman_run_get",
         "foreman_run_status",
         "foreman_queue_status",

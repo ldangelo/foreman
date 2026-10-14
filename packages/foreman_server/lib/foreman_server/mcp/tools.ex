@@ -110,18 +110,6 @@ defmodule ForemanServer.MCP.Tools do
     "claude" => :claude
   }
 
-  @schema_foreman_work_get %{
-    name: "foreman_work_get",
-    description: "Get work details by work_id",
-    inputSchema: %{
-      type: "object",
-      properties: %{
-        work_id: %{type: "string", description: "The work ID"}
-      },
-      required: ["work_id"]
-    }
-  }
-
   @schema_foreman_run_get %{
     name: "foreman_run_get",
     description: "Get run details by run_id",
@@ -525,7 +513,6 @@ defmodule ForemanServer.MCP.Tools do
   }
 
   @tools [
-    @schema_foreman_work_get,
     @schema_foreman_run_get,
     @schema_foreman_run_status,
     @schema_foreman_queue_status,
@@ -644,18 +631,6 @@ defmodule ForemanServer.MCP.Tools do
              }}
         end
     end
-  end
-
-  defp tool_foreman_work_get(%{work_id: work_id}) do
-    start_us = System.monotonic_time(:microsecond)
-    result = ProjectionStore.work_projection(work_id)
-    duration_us = System.monotonic_time(:microsecond) - start_us
-    outcome = if result, do: :ok, else: :not_found
-    Telemetry.mcp_tool_call(duration_us, "foreman_work_get", outcome)
-
-    if result,
-      do: {:ok, result},
-      else: {:error, %ToolError{code: "NOT_FOUND", message: "Work not found"}}
   end
 
   defp tool_foreman_run_get(%{run_id: run_id}) do

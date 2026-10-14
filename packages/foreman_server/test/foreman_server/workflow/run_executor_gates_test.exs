@@ -26,7 +26,7 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
                PlanContext.build(%{task_type: "plan", project_id: "tf-1", run_id: "run-abcdef"})
     end
 
-    test "the work.submit snapshot's workflow key routes to the planning path" do
+    test "the legacy `workflow` snapshot key routes to the planning path" do
       assert {:error, {:project_not_found, "tf-2"}} =
                PlanContext.build(%{
                  task_type: "feature",

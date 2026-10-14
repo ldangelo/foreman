@@ -58,8 +58,6 @@ defmodule ForemanServerWeb.Router do
     get("/runs/:id", RunController, :show)
     get("/queue", QueueController, :index)
 
-    get("/work/:id", WorkController, :show)
-
     scope "/admin" do
       post("/workflows/install", WorkflowInstallController, :install)
       post("/workflows/remove", WorkflowInstallController, :remove)

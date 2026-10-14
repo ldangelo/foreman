@@ -364,11 +364,6 @@ Other ingress paths are separate:
 
 Read endpoints are projection-only:
 
-- `GET /api/work/{id}` returns the (legacy, read-only) work projection
-  for a historical `work.submit` request, or `{error: "work_not_found"}`
-  with `404`. The `work.*` write ingress was retired in favor of the
-  task path (below); this endpoint remains only so pre-existing work
-  records stay inspectable.
 - `GET /api/runs/{id}` returns `{run: ...}` with stringified keys, or
   `{error: "run_not_found", run_id: "..."}` with `404`. Every projected
   run carries `pr_url` — the URL of the PR the run opened, or `null`
@@ -765,7 +760,7 @@ and behavior cannot diverge.
 **Read tools** are always advertised: `foreman_doctor`,
 `foreman_queue_status`, `foreman_project_list`, `foreman_project_get`,
 `foreman_workflow_list`, `foreman_workflow_get`,
-`foreman_workflow_validate`, `foreman_prompt_get`, `foreman_work_get`,
+`foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
 `foreman_task_list`, `foreman_task_get`.

@@ -1219,7 +1219,7 @@ when a Foreman server is already running.
 Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_project_list`, `foreman_project_get`, `foreman_workflow_list`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
-`foreman_work_get`, `foreman_run_get`, `foreman_run_status`,
+`foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
 `foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`.
 
