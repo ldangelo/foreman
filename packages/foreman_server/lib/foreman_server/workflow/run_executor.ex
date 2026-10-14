@@ -1478,6 +1478,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           {:ok, pr_url} ->
             Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
             record_pr_association(state.run_id, pr_url)
+            signal_pr_ready(state, pr_url)
 
           {:error, reason} ->
             # The run produced commits but no PR. Logging at warning previously
@@ -1539,6 +1540,43 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Logger.error(
           "RunExecutor #{run_id} finalize_run: PR #{pr_url} created but NOT recorded " <>
             "on the run read model: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # run.pr.ready is what puts a finished run's PR into the merge gate
+  # (`merge_gate: :pending`). The aggregate handler, the `PrReady` event and the
+  # MergeGate approval machinery all existed, but nothing dispatched the command,
+  # so `merge_gate` stayed nil and `run.pr.merge` was refused for every run.
+  #
+  # Like `record_pr_association/2`, a failure here must not fail the run: the PR
+  # is already open and the work succeeded. The deterministic command id makes a
+  # repeated dispatch a no-op rather than a second `PrReady`.
+  defp signal_pr_ready(state, pr_url) do
+    with {:ok, base_branch} <- run_base_branch(state),
+         {:ok, head_branch} <- run_head_branch(state),
+         {:ok, head_sha} <- resolve_revision(vcs_working_directory(state), head_branch),
+         {:ok, _} <-
+           dispatch_system_command(
+             "run.pr.ready",
+             Identity.run_pr_ready_command_id(state.run_id),
+             "run:#{state.run_id}",
+             %{
+               run_id: state.run_id,
+               project_id: project_id(state),
+               task_id: task_id(state),
+               pr_url: pr_url,
+               branch_name: head_branch,
+               head_sha: head_sha,
+               base_branch: base_branch
+             }
+           ) do
+      :ok
+    else
+      {:error, reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} finalize_run: PR #{pr_url} created but run.pr.ready " <>
+            "was NOT signalled, so the merge gate never engages: #{inspect(reason)}"
         )
     end
   end
@@ -3353,6 +3391,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)
+
+  @doc false
+  def __signal_pr_ready_for_test__(state, pr_url), do: signal_pr_ready(state, pr_url)
 
   @doc false
   def __handle_phase_body_error_for_test__(

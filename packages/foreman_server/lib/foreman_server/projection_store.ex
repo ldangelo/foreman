@@ -335,6 +335,17 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:pr_association, run_id})
   end
 
+  @doc """
+  Return the ids of every run whose recorded PR association is `pr_url`, sorted.
+
+  More than one run can be associated with one PR (a retried run that reuses it),
+  so this answers with a list; `[]` means no run owns that PR.
+  """
+  @spec run_ids_for_pr_url(String.t()) :: [String.t()]
+  def run_ids_for_pr_url(pr_url) when is_binary(pr_url) and pr_url != "" do
+    GenServer.call(__MODULE__, {:run_ids_for_pr_url, pr_url})
+  end
+
   @doc "Return the projected state for a project, or nil if not found."
   @spec project_projection(String.t()) :: map() | nil
   def project_projection(project_id) when is_binary(project_id) do
@@ -717,6 +728,14 @@ defmodule ForemanServer.ProjectionStore do
       nil -> {:reply, {:error, :not_found}, state}
       assoc -> {:reply, {:ok, assoc}, state}
     end
+  end
+
+  @impl true
+  def handle_call({:run_ids_for_pr_url, pr_url}, _from, state) do
+    run_ids =
+      for {run_id, %{pr_url: ^pr_url}} <- state.pr_associations, do: run_id
+
+    {:reply, Enum.sort(run_ids), state}
   end
 
   @impl true

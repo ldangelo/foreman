@@ -709,6 +709,33 @@ checked-in template at `priv/defaults/workflows/prompts/implement.md`, which
 legitimately contains an unrendered `{{artifact_path}}` because it is the
 source template. Do not re-chase it as a rendering defect.
 
+**The merge gate is reachable by an operator only — never add an agent path (2026-10).**
+`run.pr.ready` had a complete aggregate handler and no producer, and `merge_approve` /
+`run.pr.merge` were in neither operator allowlist, so no run could ever merge. Now:
+`RunExecutor.signal_pr_ready/2` dispatches `run.pr.ready` after AutoPR creates the final PR
+(a run whose PRs are all `stack_pr` phase PRs reaches `maybe_auto_pr` as `:noop`, so its
+gate never engages); `merge_approve` and `run.pr.merge` are operator commands on
+`POST /api/commands` and `foreman run approve-merge|merge`. The real GitHub merge runs in
+`ForemanServer.RunPrMerge`, called from `CommandGateway.dispatch_operator/2` BEFORE the
+command is dispatched and never inside the aggregate — the actor re-runs `handle_command/2`
+on a version conflict, which would repeat a real merge. `RunPrMerge` reads the gate from the
+event-sourced aggregate (not the ETS `MergeGate`), pins `gh pr merge --squash
+--match-head-commit` to the head SHA stored in `PrReady`, skips `gh` for a PR that is
+already merged, and REPLACES the caller's payload wholesale. `approver_identity` is a
+client-supplied string checked against `ApproverAuthorizer`'s hardcoded
+`["github:ldangelo"]`; the API bearer token is the real trust boundary. So do NOT add an MCP
+tool for either command: an agent with write MCP could approve and merge its own PR
+(`MergeToolRefuser` exists for the same reason).
+
+`PrMonitor` (opt-in, `FOREMAN_PR_MONITOR_ENABLED=true`) and `POST /webhooks/github` both
+build `run.pr.update` through the one `ForemanServer.PrUpdate` builder, so the same
+observation dedupes by `command_id`. Both only append `PrUpdated`; `ProjectionStore` folds
+neither `PrUpdated` nor `PrMerged`, so neither changes task or run read-model state. The
+webhook fails closed on `X-Hub-Signature-256` (`503` with no `FOREMAN_GITHUB_WEBHOOK_SECRET`,
+`401` for a missing/malformed/wrong signature) and attributes events by PR URL, never by a
+payload field. `/webhooks/external_trigger` and `/webhooks/operator/ingest` still have no
+authentication.
+
 ## 5. Typed Boundaries, Loud Failures
 
 **Make the compiler catch it. If it can't, fail loudly. Never degrade to a plausible-looking success.**
@@ -1239,6 +1266,8 @@ foreman run pause --id <run-id> --reason "reason"   # stop now; keep the run res
 foreman run resume --id <run-id>                      # continue a paused run
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
+foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>
+foreman run merge --id <run-id>                       # squash-merge the approved PR
 ```
 
 **Unattended-run-control (2026-09).** `run cancel` no longer just marks the
@@ -1275,6 +1304,8 @@ foreman run pause --id <id> --reason <text>  # stop now, resumable
 foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
+foreman run approve-merge --id <id> --approver <name> --identity <github:login>  # open the merge gate
+foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head)
 foreman project list         # List projects
 foreman project get <id>     # Fetch project
 
@@ -2034,6 +2065,8 @@ foreman run pause --id <id> --reason <text>  # stop now, resumable
 foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
+foreman run approve-merge --id <id> --approver <name> --identity <github:login>  # open the merge gate
+foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head)
 ```
 
 ### Triage & Discovery (br/bv)

@@ -236,6 +236,8 @@ foreman run pause --id <run-id> --reason operator_pause
 foreman run resume --id <run-id>
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
+foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>
+foreman run merge --id <run-id>
 ```
 
 - `run cancel` marks the run terminal (`cancelled`) and kills the
@@ -254,6 +256,17 @@ foreman run reset --id <run-id>
 - `run reset` clears a **failed or stuck** run's projection state so it
   can be resubmitted fresh; cancelled or completed runs are rejected
   with `{:run_not_resettable, "<status>"}`.
+- `run approve-merge` opens the run's merge gate once its PR is ready. The
+  server accepts it only for an allowlisted approver identity
+  (`ApproverAuthorizer`); anyone else gets `unauthorized_approver`. The
+  identity is a claim made by whoever holds the API token — the token is the
+  trust boundary — which is why there is deliberately no MCP tool for it.
+- `run merge` squash-merges the approved PR on GitHub (`gh pr merge --squash
+  --match-head-commit`). It refuses before approval (`pr_not_acceptable`)
+  and if the PR head is no longer the approved commit
+  (`head_moved_since_approval`), so nothing pushed after approval is merged
+  unreviewed. A PR that is already merged is recorded without calling `gh`
+  again, so a retry is safe. The server host needs an authenticated `gh`.
 
 Phases have no default execution timeout: a workflow's `timeout_minutes:`
 (alias `timeoutMinutes:`) is optional, and `0` or an absent key both mean
@@ -339,8 +352,10 @@ Other ingress paths are separate:
 
 - Workflow install/remove: `POST /api/admin/workflows/install` and
   `POST /api/admin/workflows/remove`.
-- Webhooks: `/webhooks/external_trigger`, `/webhooks/github`,
-  `/webhooks/operator/ingest`.
+- Webhooks: `/webhooks/github` (HMAC-signed; see
+  [PR creation and merge reconciliation](#pr-creation-and-merge-reconciliation)),
+  `/webhooks/external_trigger` and `/webhooks/operator/ingest` (both currently
+  unauthenticated — do not expose them beyond a trusted network).
 - MCP: `/mcp` (also stdio; see [MCP tool integration](#9-mcp-tool-integration)).
 - Dev-only dashboards: `/debug/*` (dev env only).
 - Bearer-token guarded dashboards (every env): `/dashboard` for the Jido live dashboard and `/dashboard/runs` for operator run management.
@@ -1065,12 +1080,19 @@ option. `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called from
 `RunExecutor.finalize_run/1`, derives the PR from run state instead: it
 checks `git rev-list --count base..head > 0` against the branch
 recorded when the run's first phase started, publishes with `git push
--u origin <head>`, and calls `gh pr create`. The server separately
-reconciles PR state in the background: if GitHub reports the PR merged
-or closed, Foreman records that on the run and updates the associated
-task. `POST /webhooks/github` accepts GitHub `pull_request` webhook
-events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`) as a real-time
-optimization; polling remains the fallback.
+-u origin <head>`, and calls `gh pr create`. When that final PR is created the
+run signals `run.pr.ready`, which puts the PR into the merge gate: Foreman will
+not merge it until an operator runs `foreman run approve-merge` and then
+`foreman run merge` (see the run commands above). The server can also follow
+the PR's state on GitHub in two opt-in ways, each appending a `PrUpdated`
+event to the run (neither changes task status or the PR fields `foreman run
+get` shows yet): `POST /webhooks/github`, which needs
+`FOREMAN_GITHUB_WEBHOOK_SECRET` — every delivery must carry a valid
+`X-Hub-Signature-256`, a missing or wrong signature gets `401`, and with no
+secret configured the endpoint answers `503` to everything — and a polling
+fallback (`FOREMAN_PR_MONITOR_ENABLED=true`) that reads each PR with `gh pr
+view`. Deliveries are attributed to runs by PR URL; a PR no run owns is
+accepted and ignored.
 
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's

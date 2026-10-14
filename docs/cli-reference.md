@@ -38,6 +38,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run resume        --id
 > foreman run remove        --id
 > foreman run reset         --id
+> foreman run approve-merge --approver --id --identity
+> foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
@@ -539,6 +541,28 @@ foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
 
+### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>`
+
+Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`). Sends the `merge_approve` operator command. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut.
+
+The identity is a claim made by whoever holds the API token, not an authenticated login: the token is the trust boundary. For the same reason there is deliberately no MCP tool for this command; an agent must not be able to approve its own PR.
+
+| Option | Description |
+|--------|-------------|
+| `--id <run-id>` | Run ID (required). |
+| `--approver <name>` | Approver name, recorded on the approval (required). |
+| `--identity <github:login>` | Approver identity checked against the allowlist (required). |
+
+### `foreman run merge --id <run-id>`
+
+Squash-merges the run's PR on GitHub with `gh pr merge --squash --match-head-commit <sha>`. Sends the `run.pr.merge` operator command; only the run id is sent, because the server builds the rest from the run's stored `PrReady` event and ignores any other payload field.
+
+It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless the PR head is still the commit that was approved (`head_moved_since_approval`), so commits pushed after approval are never merged unreviewed. A closed or conflicted PR fails with `pr_closed` or `pr_conflicted`, and a failing `gh` with `gh_merge_failed`. A PR that is already merged is recorded without calling `gh` again, so retrying after a partial failure is safe. The `gh` CLI must be installed and authenticated on the server host.
+
+| Option | Description |
+|--------|-------------|
+| `--id <run-id>` | Run ID (required). |
+
 
 ---
 
@@ -837,7 +861,7 @@ foreman server stop               # Stop server started by Foreman
 
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns aggregate-validated commands/events/projections/recovery/security/overwatch and all database access, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases, stream worker events, emit authoritative terminal run/task events, stream Pi SDK tool calls/assistant messages as ordered worker events, expose typed Foreman tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`), and ask Elixir overwatch to approve/deny tool calls before execution. Node workers and CLI clients do not connect directly to the database; they use Elixir HTTP commands/projections and do not drain DB-backed merge queues from inside the worker. Raw log files are compatibility/debug projections of the worker event stream. The launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; that fallback may parse the final worker output to avoid stale phase attribution, but authoritative worker terminal events remain preferred. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
-The Elixir server also includes a PR monitor. For runs with recorded GitHub PR URLs, it periodically runs GitHub PR inspection from the registered project path, records merged PR metadata on the run, and updates the associated task to `merged` when GitHub reports `MERGED`. A GitHub closed-but-unmerged PR records the run PR state as closed and closes the associated task. As a real-time optimization, the server exposes `POST /webhooks/github` for GitHub `pull_request` webhook events (HMAC-SHA256 verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback. `foreman server doctor` reports whether the webhook secret is configured.
+The Elixir server can follow a run's PR on GitHub in two opt-in ways; each appends a `PrUpdated` event to the run's stream, and neither changes task status or adds merge metadata to `foreman run get` (nothing folds `PrUpdated` into the read model yet). A PR monitor (`FOREMAN_PR_MONITOR_ENABLED=true`; off by default) reads the PR of every run with a recorded association using `gh pr view`, so the `gh` CLI must be installed and authenticated on the server host; an unchanged PR adds nothing on later polls. `POST /webhooks/github` is the real-time path for `pull_request` events: every delivery must carry a valid `X-Hub-Signature-256` HMAC-SHA256 of the raw body, keyed by `FOREMAN_GITHUB_WEBHOOK_SECRET`. It fails closed: with no secret configured every delivery gets `503`, and a missing, malformed or wrong signature gets `401`. Deliveries are attributed to runs by PR URL; a PR no run owns is accepted and ignored. There is no `foreman server doctor` check for the secret (`server` is not a routed command).
 
 
 ### `foreman reset`

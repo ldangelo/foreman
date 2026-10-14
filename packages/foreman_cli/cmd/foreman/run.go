@@ -20,11 +20,11 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>\n  foreman run merge --id <run-id>\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (list, get, cancel, pause, resume, remove, reset, submit)",
+			"foreman run: missing subcommand (list, get, cancel, pause, resume, remove, reset, approve-merge, merge, submit)",
 			usage,
 		)
 	}
@@ -44,6 +44,10 @@ func runRun(c *client.Client, args []string) error {
 		return runRemove(c, args[1:])
 	case "reset":
 		return runReset(c, args[1:])
+	case "approve-merge":
+		return runApproveMerge(c, args[1:])
+	case "merge":
+		return runMerge(c, args[1:])
 	case "submit":
 		return runSubmit(c, args[1:])
 	default:
@@ -166,6 +170,53 @@ func runResume(c *client.Client, args []string) error {
 	}
 
 	return postCommand(c, commandEnvelope{Type: "run.resume", Payload: map[string]any{"run_id": *runID}})
+}
+
+// runApproveMerge opens a run's merge gate. The server accepts it only from an
+// allowlisted approver identity; the identity is a claim made by whoever holds the
+// API token, not an authenticated login.
+func runApproveMerge(c *client.Client, args []string) error {
+	fs := newFlagSet("run approve-merge")
+	runID := fs.String("id", "", "Run ID (required)")
+	approver := fs.String("approver", "", "Approver name (required)")
+	identity := fs.String("identity", "", "Approver identity, e.g. github:<login> (required)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run approve-merge: --id is required")
+	}
+	if *approver == "" {
+		return usageError(fs, "foreman run approve-merge: --approver is required")
+	}
+	if *identity == "" {
+		return usageError(fs, "foreman run approve-merge: --identity is required")
+	}
+
+	payload := map[string]any{
+		"run_id":            *runID,
+		"approver":          *approver,
+		"approver_identity": *identity,
+	}
+
+	return postCommand(c, commandEnvelope{Type: "merge_approve", Payload: payload})
+}
+
+// runMerge squash-merges the PR of an approved run. The server builds the whole
+// payload itself from the approved PrReady event, so only the run id is sent.
+func runMerge(c *client.Client, args []string) error {
+	fs := newFlagSet("run merge")
+	runID := fs.String("id", "", "Run ID (required)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run merge: --id is required")
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.pr.merge", Payload: map[string]any{"run_id": *runID}})
 }
 
 func runRemove(c *client.Client, args []string) error {

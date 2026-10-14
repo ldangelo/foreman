@@ -66,6 +66,8 @@ config :foreman_server, :start_beads_watcher?, false
 config :foreman_server, :start_lifecycle_reconciler?, false
 config :foreman_server, :start_boot_reconciliation?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
+config :foreman_server, :pr_monitor_enabled, false
+config :foreman_server, :trigger_poll_enabled, false
 # JHA-T002: the in-process JidoHarnessAdapter is the production
 # default after the JHA migration, but tests that exercise adapter
 # routing assert the empty catalog from `adapters: []` above, so

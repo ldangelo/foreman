@@ -127,6 +127,8 @@ defmodule ForemanServer.Application do
         ] ++
         maybe_messaging_dispatcher_child() ++
         maybe_stuck_detector_child() ++
+        maybe_pr_monitor_child() ++
+        maybe_trigger_poller_child() ++
         maybe_lifecycle_reconciler_child() ++
         maybe_jido_signal_bus_child() ++
         maybe_signal_journal_child() ++
@@ -517,6 +519,18 @@ defmodule ForemanServer.Application do
     else
       stuck
     end
+  end
+
+  # Both pollers were fully implemented and tested but listed in no child spec, so
+  # no server could ever run them. Each is gated on the `enabled?/0` flag it already
+  # owned (default false), so a stock boot — and the test suite — starts neither.
+  # They start after CommandRouter and ProjectionStore, which they dispatch into.
+  defp maybe_pr_monitor_child do
+    if ForemanServer.PrMonitor.enabled?(), do: [ForemanServer.PrMonitor], else: []
+  end
+
+  defp maybe_trigger_poller_child do
+    if ForemanServer.TriggerPoller.enabled?(), do: [ForemanServer.TriggerPoller], else: []
   end
 
   # Gated on :start_lifecycle_reconciler? config so the test suite
