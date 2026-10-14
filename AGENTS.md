@@ -721,7 +721,7 @@ command is dispatched and never inside the aggregate — the actor re-runs `hand
 on a version conflict, which would repeat a real merge. `RunPrMerge` reads the gate from the
 event-sourced aggregate (not the ETS `MergeGate`), pins `gh pr merge --squash
 --match-head-commit` to the head SHA stored in `PrReady`, skips `gh` for a PR that is
-already merged, and REPLACES the caller's payload wholesale. `approver_identity` is a
+already merged at that same head (merged at any other head is `head_moved_since_approval`), and REPLACES the caller's payload wholesale. `approver_identity` is a
 client-supplied string checked against `ApproverAuthorizer`'s hardcoded
 `["github:ldangelo"]`; the API bearer token is the real trust boundary. So do NOT add an MCP
 tool for either command: an agent with write MCP could approve and merge its own PR

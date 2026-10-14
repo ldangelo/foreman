@@ -265,8 +265,8 @@ foreman run merge --id <run-id>
   --match-head-commit`). It refuses before approval (`pr_not_acceptable`)
   and if the PR head is no longer the approved commit
   (`head_moved_since_approval`), so nothing pushed after approval is merged
-  unreviewed. A PR that is already merged is recorded without calling `gh`
-  again, so a retry is safe. The server host needs an authenticated `gh`.
+  unreviewed. A PR that is already merged at the approved head is recorded without
+  calling `gh` again, so a retry is safe. The server host needs an authenticated `gh`.
 
 Phases have no default execution timeout: a workflow's `timeout_minutes:`
 (alias `timeoutMinutes:`) is optional, and `0` or an absent key both mean
@@ -323,6 +323,8 @@ is exactly:
 - `project.update`
 - `project.archive`
 - `project.reactivate`
+- `merge_approve`
+- `run.pr.merge`
 - `task.create`
 - `task.approve`
 - `task.retry`

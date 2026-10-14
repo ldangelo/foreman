@@ -557,7 +557,7 @@ The identity is a claim made by whoever holds the API token, not an authenticate
 
 Squash-merges the run's PR on GitHub with `gh pr merge --squash --match-head-commit <sha>`. Sends the `run.pr.merge` operator command; only the run id is sent, because the server builds the rest from the run's stored `PrReady` event and ignores any other payload field.
 
-It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless the PR head is still the commit that was approved (`head_moved_since_approval`), so commits pushed after approval are never merged unreviewed. A closed or conflicted PR fails with `pr_closed` or `pr_conflicted`, and a failing `gh` with `gh_merge_failed`. A PR that is already merged is recorded without calling `gh` again, so retrying after a partial failure is safe. The `gh` CLI must be installed and authenticated on the server host.
+It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless the PR head is still the commit that was approved (`head_moved_since_approval`), so commits pushed after approval are never merged unreviewed. A closed or conflicted PR fails with `pr_closed` or `pr_conflicted`, and a failing `gh` with `gh_merge_failed`. A PR that is already merged at the approved head is recorded without calling `gh` again, so retrying after a partial failure is safe; one merged at any other head is refused with `head_moved_since_approval`. The `gh` CLI must be installed and authenticated on the server host.
 
 | Option | Description |
 |--------|-------------|

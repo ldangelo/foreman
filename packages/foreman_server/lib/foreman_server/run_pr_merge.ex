@@ -90,6 +90,9 @@ defmodule ForemanServer.RunPrMerge do
 
       {:error, :stream_not_found} ->
         {:error, {:run_not_found, run_id}}
+
+      {:error, reason} ->
+        {:error, {:pr_ready_read_failed, reason}}
     end
   end
 
@@ -104,7 +107,11 @@ defmodule ForemanServer.RunPrMerge do
     end)
   end
 
-  defp merge_unless_done(%PrStatus{status: :merged}, _ready), do: :ok
+  # A PR already merged is recorded only if what landed is what was approved: a
+  # merge of some other head must not be attributed to this approval.
+  defp merge_unless_done(%PrStatus{status: :merged, head_sha: head}, %{head_sha: approved}) do
+    if head == approved, do: :ok, else: {:error, {:head_moved_since_approval, approved, head}}
+  end
 
   defp merge_unless_done(%PrStatus{status: :open, head_sha: head}, %{head_sha: approved} = ready) do
     if head == approved do

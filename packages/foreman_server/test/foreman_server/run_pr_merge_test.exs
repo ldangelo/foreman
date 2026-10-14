@@ -188,6 +188,24 @@ defmodule ForemanServer.RunPrMergeTest do
       assert [_one] = events(run_id, "PrMerged")
     end
 
+    test "a PR merged at some other head is not recorded as this approval's merge", %{
+      run_id: run_id
+    } do
+      stub_gh(
+        view: %{
+          "state" => "MERGED",
+          "mergeable" => "UNKNOWN",
+          "headRefOid" => "pushedafterapproval"
+        }
+      )
+
+      assert {:error, {:head_moved_since_approval, @approved_sha, "pushedafterapproval"}} =
+               merge(run_id)
+
+      assert gh_merge_calls() == []
+      assert events(run_id, "PrMerged") == []
+    end
+
     test "a closed or conflicted PR is refused with its own reason", %{run_id: run_id} do
       stub_gh(view: %{"state" => "CLOSED", "mergeable" => "UNKNOWN"})
       assert {:error, {:pr_closed, @pr_url}} = merge(run_id)
