@@ -38,8 +38,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: '1.18.4'
-          otp-version: '27.3'
+          elixir-version: '1.20.4'
+          otp-version: '28'
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
       - name: Install inotify-tools
@@ -97,8 +97,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: '1.18.4'
-          otp-version: '27.3'
+          elixir-version: '1.20.4'
+          otp-version: '28'
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
       - name: Cache deps

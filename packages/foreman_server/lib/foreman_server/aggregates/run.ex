@@ -589,10 +589,13 @@ defmodule ForemanServer.Aggregates.Run do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- ensure_merge_gate_pending(state),
-         approver when is_binary(approver) <-
-           Aggregate.get(payload, :approver),
-         approver_identity when is_binary(approver_identity) <-
-           Aggregate.get(payload, :approver_identity),
+         {:ok, approver} <-
+           Aggregate.required_binary(Aggregate.get(payload, :approver), :approver),
+         {:ok, approver_identity} <-
+           Aggregate.required_binary(
+             Aggregate.get(payload, :approver_identity),
+             :approver_identity
+           ),
          :ok <- ApproverAuthorizer.authorize(approver_identity) do
       :ok = PrGate.record_approved(run_id, approver, approver_identity)
 

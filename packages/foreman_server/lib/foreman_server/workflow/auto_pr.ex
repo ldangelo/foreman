@@ -149,8 +149,15 @@ defmodule ForemanServer.Workflow.AutoPR do
   # Internal
   # ------------------------------------------------------------------
 
-  # Artifact override wins; otherwise use the branch Foreman created.
-  defp resolve_head_branch(context) do
+  @doc """
+  The branch `maybe_create_pr/1` pushes and opens the PR from: the artifact's
+  `FOREMAN_BRANCH=` override when present, otherwise `context.head_branch`.
+
+  Public so a caller that must name the PR's head (the merge gate's `PrReady`)
+  resolves it exactly as AutoPR does rather than re-deriving it.
+  """
+  @spec resolve_head_branch(map()) :: {:ok, String.t()} | {:error, :no_head_branch}
+  def resolve_head_branch(context) do
     override =
       case read_artifact(Map.get(context, :artifact_path)) do
         {:ok, content} -> branch_override(content)

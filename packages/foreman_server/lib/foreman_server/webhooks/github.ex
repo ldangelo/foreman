@@ -1,130 +1,133 @@
 defmodule ForemanServer.Webhooks.Github do
   @moduledoc """
-  TRD-017: Adapter that turns GitHub webhook payloads into
+  TRD-017: Adapter that turns GitHub `pull_request` webhook payloads into
   `run.pr.update` commands and dispatches them through
-  `ForemanServer.CommandRouter`.
+  `ForemanServer.CommandGateway`.
 
-  ## Supported events
+  Only payloads whose signature `ForemanServerWeb.Plugs.VerifyGithubSignature`
+  already verified reach this module.
 
-    * `pull_request` action `closed` + `merged: true`  — PR merged.
-    * `pull_request` action `closed` + `merged: false` — PR closed.
-    * `pull_request` action `reopened`                 — PR back to open.
-    * `pull_request` with `mergeable_state` `dirty`/`blocked` — sync conflict.
+  A delivery is attributed to runs by PR URL: every run whose recorded PR
+  association is the delivery's `pull_request.html_url` receives the update. GitHub
+  sends events for every PR in the repository, so a PR no run owns is `:ignored`
+  (HTTP 202), not an error. Nothing in the payload names a run, and nothing the
+  sender controls selects one.
 
-  ## Example
+  Handled `pull_request` actions:
 
-      iex> Webhooks.Github.process(%{
-      ...>   "action" => "closed",
-      ...>   "pull_request" => %{"merged" => true, "html_url" => "...", "head" => %{"sha" => "abc"}, "base" => %{"ref" => "main"}}
-      ...> })
-      :ok
+    * `closed` with `merged: true`  — `:merged`.
+    * `closed` with `merged: false` — `:closed`.
+    * `reopened`                    — `:open`.
+    * any action while `mergeable_state` is `dirty` — `:conflicted`.
+
+  `blocked` is deliberately not a conflict: it means required checks or reviews are
+  pending, which is the normal state of a healthy open PR.
+
+  The command is built by `ForemanServer.PrUpdate`, shared with `PrMonitor`. Its id
+  is derived from the observed status and head SHA, so a redelivery (GitHub retries)
+  and a poll reporting the same state are deduplicated by the router.
   """
 
   alias ForemanServer.CommandGateway
+  alias ForemanServer.GitHub.PrStatus
+  alias ForemanServer.PrUpdate
+  alias ForemanServer.ProjectionStore
 
-  @merged_status :merged
-  @closed_status :closed
-  @open_status :open
-  @conflicted_status :conflicted
+  @type result :: :ok | :ignored | {:error, term()}
 
   @doc """
-  Translate a GitHub webhook payload into a `run.pr.update` command
-  and dispatch it through the CommandRouter.
+  Translate a verified webhook payload and dispatch one `run.pr.update` per owning
+  run.
 
-  Returns one of:
-
-    * `:ok` — payload successfully routed (or was not actionable).
-    * `:ignored` — payload was missing required fields (`run_id`/`pr_url`)
-      and was discarded (typically because the webhook fired before the
-      run was associated).
-    * `{:error, reason}` — dispatcher returned an error tuple.
+  Returns `:ok` when every dispatch succeeded, `:ignored` when the payload is not a
+  handled event or no run owns the PR, and `{:error, reason}` for the first failure.
   """
+  @spec process(term()) :: result()
   def process(payload) when is_map(payload) do
-    case build_command(payload) do
-      {:ok, command} ->
-        case CommandGateway.dispatch_system(command) do
-          {:ok, _event_spec} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      :ignored ->
-        :ignored
+    case build_commands(payload) do
+      {:ok, commands} -> dispatch_all(commands)
+      :ignored -> :ignored
+      {:error, _reason} = error -> error
     end
   end
 
-  def process(_), do: :ignored
+  def process(_other), do: :ignored
 
   @doc """
-  Pure-translation variant that returns the command map without
-  dispatching. Useful for tests and for batched ingestion paths.
+  Pure-translation variant that returns the commands without dispatching.
   """
-  def build_command(payload) when is_map(payload) do
-    case extract(payload) do
-      {:ok, fields} ->
-        {:ok,
-         %{
-           type: "run.pr.update",
-           aggregate_id: "run:#{fields.run_id}",
-           payload: fields
-         }}
-
-      :ignore ->
-        :ignore
-
-      :missing ->
-        :ignored
+  @spec build_commands(term()) :: {:ok, [map()]} | :ignored | {:error, term()}
+  def build_commands(%{"action" => action, "pull_request" => %{"html_url" => pr_url} = pr})
+      when is_binary(pr_url) and pr_url != "" do
+    case status(action, pr) do
+      nil -> :ignored
+      status -> commands_for(pr_url, status, pr)
     end
   end
 
-  defp extract(%{"action" => action, "pull_request" => pr} = payload) do
-    case derive_status(action, pr) do
-      nil ->
-        :ignore
+  def build_commands(_other), do: :ignored
 
-      status ->
-        case required_fields(payload, pr) do
-          {:ok, run_id} ->
-            {:ok,
-             %{
-               run_id: run_id,
-               pr_url: pr["html_url"],
-               pr_status: status,
-               head_sha: get_in(pr, ["head", "sha"]),
-               base_branch: get_in(pr, ["base", "ref"]),
-               phase: status_to_phase(status)
-             }}
+  defp commands_for(pr_url, status, pr) do
+    with {:ok, observed} <- observation(status, pr) do
+      case ProjectionStore.run_ids_for_pr_url(pr_url) do
+        [] ->
+          :ignored
 
-          :missing ->
-            :missing
-        end
+        run_ids ->
+          run_ids
+          |> Enum.map(&PrUpdate.command(&1, pr_url, observed))
+          |> collect()
+      end
     end
   end
 
-  defp extract(_), do: :ignore
-
-  defp derive_status("closed", %{"merged" => true}), do: @merged_status
-  defp derive_status("closed", _), do: @closed_status
-  defp derive_status("reopened", _), do: @open_status
-
-  defp derive_status(_action, %{"mergeable_state" => state})
-       when state in ["dirty", "blocked"],
-       do: @conflicted_status
-
-  defp derive_status(_action, _), do: nil
-
-  defp required_fields(payload, pr) do
-    cond do
-      not is_binary(pr["html_url"]) -> :missing
-      true -> {:ok, find_run_id(payload)}
+  # GitHub always sends these on a `pull_request` event; one missing is a payload
+  # we do not understand, reported by name rather than guessed.
+  defp observation(status, pr) do
+    with {:ok, head_sha} <- required(pr, ["head", "sha"], :head_sha),
+         {:ok, head_branch} <- required(pr, ["head", "ref"], :head_branch),
+         {:ok, base_branch} <- required(pr, ["base", "ref"], :base_branch) do
+      {:ok,
+       %PrStatus{
+         status: status,
+         head_sha: head_sha,
+         head_branch: head_branch,
+         base_branch: base_branch
+       }}
     end
   end
 
-  defp find_run_id(%{"run_id" => id}) when is_binary(id), do: id
-  defp find_run_id(%{"sender" => %{"login" => login}}) when is_binary(login), do: "run:#{login}"
-  defp find_run_id(_), do: nil
+  defp required(pr, path, name) do
+    case get_in(pr, path) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, {:pr_payload_missing, name}}
+    end
+  end
 
-  defp status_to_phase(:merged), do: "merge_pending"
-  defp status_to_phase(:open), do: "pr_open"
-  defp status_to_phase(:closed), do: "pr_closed"
-  defp status_to_phase(:conflicted), do: "pr_conflict"
+  defp collect(results) do
+    Enum.reduce_while(results, {:ok, []}, fn
+      {:ok, command}, {:ok, acc} -> {:cont, {:ok, [command | acc]}}
+      {:error, _} = error, _acc -> {:halt, error}
+    end)
+    |> case do
+      {:ok, commands} -> {:ok, Enum.reverse(commands)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp dispatch_all(commands) do
+    Enum.reduce_while(commands, :ok, fn command, :ok ->
+      case CommandGateway.dispatch_system(command) do
+        {:ok, _event_spec} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+        {:error, reason, _detail} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp status("closed", %{"merged" => true}), do: :merged
+  defp status("closed", _pr), do: :closed
+  defp status("reopened", _pr), do: :open
+  defp status(_action, %{"mergeable_state" => "dirty"}), do: :conflicted
+  defp status(_action, _pr), do: nil
 end

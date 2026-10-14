@@ -1,18 +1,22 @@
 defmodule ForemanServer.PrMonitor do
   @moduledoc """
   TRD-017: Polling fallback for PR state when webhooks are missed or
-  reordered. Periodically fetches the current PR status for every
-  associated run and emits `run.pr.update` commands through the
-  `CommandRouter` so the run projection reflects the canonical state.
+  reordered. Periodically reads the current PR state from GitHub
+  (`ForemanServer.GitHub.PrStatus`) for every associated run and dispatches a
+  `run.pr.update` command, which appends `PrUpdated` to the run's stream. A
+  repeated poll that observes the same status and head SHA reuses one
+  deterministic `command_id`, so the router deduplicates it instead of
+  appending an event per poll.
 
   ## Configuration
 
     * `:pr_monitor_interval_ms` — poll cadence (default 5 minutes).
     * `:pr_monitor_enabled` — when false, the GenServer starts but does
       not schedule the recurring poll (useful for tests / dev).
-    * `:pr_monitor_fetch_fun` — a 1-arity `fetch_fun(pr_url)` returning
-      one of `{:ok, status}`, `{:error, :not_found}`, or
-      `{:error, :transient}`.
+
+  The fetch function is not a config key: tests inject one with
+  `set_fetch_fun/1`; it receives a `pr_url` and returns
+  `{:ok, %ForemanServer.GitHub.PrStatus{}}` or `{:error, reason}`.
 
   ## Example
 
@@ -26,6 +30,8 @@ defmodule ForemanServer.PrMonitor do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.PrAssociate
   alias ForemanServer.CommandGateway
+  alias ForemanServer.GitHub.PrStatus
+  alias ForemanServer.PrUpdate
 
   require Logger
 
@@ -49,8 +55,8 @@ defmodule ForemanServer.PrMonitor do
 
   @doc """
   Inject the fetch function used by the poller. Must accept a single
-  `pr_url` argument and return `{:ok, status}` where status is an
-  atom (`:open`, `:merged`, `:closed`, `:conflicted`, `:reopened`).
+  `pr_url` argument and return `{:ok, %ForemanServer.GitHub.PrStatus{}}`
+  or `{:error, reason}`.
   """
   def set_fetch_fun(fun) when is_function(fun, 1) do
     :persistent_term.put({__MODULE__, :fetch_fun}, fun)
@@ -118,11 +124,18 @@ defmodule ForemanServer.PrMonitor do
     {count, errors} =
       Enum.reduce(associations, {0, 0}, fn assoc, {ok, err} ->
         case safe_fetch(fun, assoc.pr_url) do
-          {:ok, status} ->
-            dispatch_update(assoc, status)
-            {ok + 1, err}
+          {:ok, %PrStatus{} = pr} ->
+            case dispatch_update(assoc, pr) do
+              :ok -> {ok + 1, err}
+              {:error, _} -> {ok, err + 1}
+            end
 
-          {:error, _} ->
+          {:error, reason} ->
+            Logger.warning(
+              "PrMonitor.fetch failed run_id=#{assoc.run_id} url=#{assoc.pr_url}: " <>
+                inspect(reason)
+            )
+
             {ok, err + 1}
         end
       end)
@@ -158,40 +171,31 @@ defmodule ForemanServer.PrMonitor do
       {:error, :fetch_crashed}
   end
 
-  defp dispatch_update(assoc, status) do
-    {:ok, run_id} = Map.fetch(assoc, :run_id)
-    {:ok, pr_url} = Map.fetch(assoc, :pr_url)
+  # The payload contract and the deduplicating command id live in
+  # `ForemanServer.PrUpdate`, shared with the webhook. A rejected dispatch was
+  # once swallowed and counted as a success; it is now an error in the poll's tally.
+  defp dispatch_update(assoc, %PrStatus{} = pr) do
+    run_id = assoc.run_id
 
-    command = %{
-      type: "run.pr.update",
-      aggregate_id: "run:#{run_id}",
-      payload: %{
-        run_id: run_id,
-        pr_url: pr_url,
-        pr_status: status,
-        head_sha: Map.get(assoc, :head_sha),
-        base_branch: Map.get(assoc, :base_branch),
-        phase: status_to_phase(status),
-        last_polled_at: System.system_time(:millisecond)
-      }
-    }
-
-    case CommandGateway.dispatch_system(command) do
-      {:ok, _event_spec} -> :ok
-      {:error, _} -> :error
+    with {:ok, command} <- PrUpdate.command(run_id, assoc.pr_url, pr) do
+      case CommandGateway.dispatch_system(command) do
+        {:ok, _event_spec} -> :ok
+        {:error, reason} -> report_dispatch_failure(run_id, reason)
+        {:error, reason, _detail} -> report_dispatch_failure(run_id, reason)
+      end
+    else
+      {:error, reason} -> report_dispatch_failure(run_id, reason)
     end
   end
 
-  defp status_to_phase(:merged), do: "merge_pending"
-  defp status_to_phase(:open), do: "pr_open"
-  defp status_to_phase(:closed), do: "pr_closed"
-  defp status_to_phase(:conflicted), do: "pr_conflict"
-  defp status_to_phase(:reopened), do: "pr_open"
-  defp status_to_phase(_), do: "pr_open"
+  defp report_dispatch_failure(run_id, reason) do
+    Logger.error("PrMonitor run.pr.update rejected run_id=#{run_id}: #{inspect(reason)}")
+    {:error, reason}
+  end
 
   defp schedule_poll(interval) when interval > 0 do
     Process.send_after(self(), :poll, interval)
   end
 
-  defp default_fetch(_url), do: {:error, :not_configured}
+  defp default_fetch(url), do: PrStatus.fetch(url)
 end

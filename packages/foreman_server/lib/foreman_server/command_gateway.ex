@@ -8,8 +8,11 @@ defmodule ForemanServer.CommandGateway do
       `project.register`, `project.update`, `project.archive`,
       `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
       `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
-      `run.reset`, and `inbox.send`. The command must carry `command_id`,
-      `type`, and a `payload` map.
+      `run.reset`, `merge_approve`, `run.pr.merge`, and `inbox.send`. The
+      command must carry `command_id`, `type`, and a `payload` map.
+      `run.pr.merge` performs the real GitHub merge (see
+      `ForemanServer.RunPrMerge`) before dispatching and replaces the caller's
+      payload wholesale.
       `aggregate_id` is required except for `task.create` in no-id mode
       (where both `aggregate_id` and `payload.task_id` are absent); in that
       case the gateway resolves the backend issue ID automatically.
@@ -45,8 +48,9 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
+  alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset inbox.send)
+  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset merge_approve run.pr.merge inbox.send)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -67,9 +71,10 @@ defmodule ForemanServer.CommandGateway do
     with {:ok, normalized} <- normalize_operator_envelope(command),
          {:ok, prepared} <- prepare_operator_command(normalized),
          :ok <- validate_aggregate_id(prepared),
-         {:ok, enriched} <- enrich_operator_command(prepared) do
-      case dispatch_and_emit_project_telemetry(enriched, timeout) do
-        {:ok, _} = result -> maybe_auto_approve(enriched, result, timeout)
+         {:ok, enriched} <- enrich_operator_command(prepared),
+         {:ok, effected} <- perform_operator_side_effects(enriched) do
+      case dispatch_and_emit_project_telemetry(effected, timeout) do
+        {:ok, _} = result -> maybe_auto_approve(effected, result, timeout)
         other -> other
       end
     end
@@ -125,6 +130,22 @@ defmodule ForemanServer.CommandGateway do
       dispatch_and_emit_project_telemetry(enriched, timeout)
     end
   end
+
+  # `run.pr.merge` is the one operator command with an external effect: the real
+  # GitHub merge. It runs here, before dispatch, and never inside the aggregate
+  # (the actor re-runs `handle_command/2` on a version conflict, which would
+  # repeat it). The returned payload replaces the caller's wholesale — it is built
+  # from the stored `PrReady`, so a client cannot retarget the merge. Every other
+  # type passes through untouched.
+  defp perform_operator_side_effects(%{type: "run.pr.merge", payload: payload} = command) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+
+    with {:ok, merge_payload} <- RunPrMerge.execute(run_id) do
+      {:ok, %{command | payload: merge_payload}}
+    end
+  end
+
+  defp perform_operator_side_effects(command), do: {:ok, command}
 
   # ---------------------------------------------------------------------------
   # Operator envelope
@@ -384,7 +405,15 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
-       when type in ["run.cancel", "run.pause", "run.resume", "run.remove", "run.reset"] do
+       when type in [
+              "run.cancel",
+              "run.pause",
+              "run.resume",
+              "run.remove",
+              "run.reset",
+              "merge_approve",
+              "run.pr.merge"
+            ] do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
 
     cond do

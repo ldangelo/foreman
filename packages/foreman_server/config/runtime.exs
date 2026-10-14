@@ -12,6 +12,8 @@ import Config
 #   FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST=A,B comma-separated names a request may set in `agent.env`
 #                                            (e.g. ANTHROPIC_API_KEY); empty/unset leaves the list as configured
 #   FOREMAN_START_BEADS_WATCHER=true|false   start/stop BeadsWatcher auto-dispatch (dev.exs defaults to true)
+#   FOREMAN_PR_MONITOR_ENABLED=true          poll GitHub for PR state of every run with an associated PR
+#   FOREMAN_GITHUB_WEBHOOK_SECRET=<secret>   authenticate POST /webhooks/github (HMAC-SHA256); unset = endpoint refuses all deliveries
 #
 # Only the exact string `true` enables a flag. The test environment is left
 # alone so a developer's shell cannot change a test's outcome.
@@ -45,5 +47,17 @@ if config_env() != :test do
   case System.get_env("FOREMAN_START_BEADS_WATCHER") do
     nil -> :ok
     value -> config :foreman_server, :start_beads_watcher?, value == "true"
+  end
+
+  # Opt-in: only the exact string `true` starts the PR monitor.
+  if System.get_env("FOREMAN_PR_MONITOR_ENABLED") == "true" do
+    config :foreman_server, :pr_monitor_enabled, true
+  end
+
+  # The shared secret configured on the GitHub webhook. Without it the endpoint
+  # answers 503 to everything (fail closed).
+  case System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET") do
+    secret when secret in [nil, ""] -> :ok
+    secret -> config :foreman_server, :github_webhook_secret, secret
   end
 end
