@@ -2499,9 +2499,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # hierarchy or cause shell/path interpretation issues.
   defp assert_safe_path_identifier(identifier) do
     cond do
-      # Reject an empty identifier: `task_id/1` falls back to "", and an empty
-      # string would collide every such run on the same `wt-` operation id and
-      # drop the run component from the worktree path (CodeRabbit review).
+      # Reject an empty identifier: an empty run_id would collide every such
+      # run on the same `wt-` operation id, and any empty segment would drop a
+      # component from the worktree path (CodeRabbit review).
       identifier == "" ->
         {:error, {:unsafe_path_identifier, identifier, "empty identifier"}}
 
