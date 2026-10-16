@@ -503,17 +503,21 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   `adhoc-<hex>` when omitted, so the server's no-id `task.create` flow
   (which resolves the ID through the task provider) is never triggered for
   an untracked task.
-- `--backend` (optional) — CLI-side flag accepted by `foreman run submit`
-  (`pi`, `claude`, `codex`, `opencode`; default `pi`). **It is forwarded in the
-  `task.create` payload and then dropped:** nothing server-side reads it, so it
-  never selects an adapter or a harness provider — the runtime's configured
-  `:jido_harness, :providers` list and each phase's `provider:` decide that.
-  Accepting a value here is therefore NOT evidence that a backend is installed,
-  ready, or reachable — the `foreman_doctor` MCP tool reports `jido_harness`
-  provider readiness; `foreman doctor` on the CLI does not route at all. The
-  Jido.Harness providers the runtime supports are `:pi` and `:claude` —
+- `--backend` (optional) — accepted by `foreman run submit`, validated
+  client-side against `pi`, `claude`, `codex`, `opencode` (default `pi`;
+  `run.go` rejects anything else before the request is sent). When it is not
+  the `pi` default it travels in the `task.create` payload, and **nothing
+  server-side reads that key**: neither `Task`'s `handle_command/2` nor
+  `CommandGateway` consumes a `backend` field, so the flag selects no adapter
+  and no harness provider. What actually decides the backend is the runtime's
+  configured `:jido_harness, :providers` adapter list plus each phase's
+  `provider:` (`:pi` or `:claude` only, `JidoHarness.@supported_providers`) —
   `:litellm` is a model dispatcher reached through one of those providers, not
-  one itself.
+  one itself. Accepting a value here is therefore NOT evidence that a backend
+  is installed, ready, or reachable: `foreman_doctor` (MCP) reports
+  `jido_harness` provider readiness, and `foreman doctor` does not route at all.
+  AgentRuntime's own `:backend` opt is a separate, internal manual-strategy
+  parameter with no CLI surface.
 - `--base-branch <branch>` (optional, half-consumed per
   [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
   — parent branch for the new task's worktree and PR. **The default now
