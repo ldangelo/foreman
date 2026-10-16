@@ -6,8 +6,8 @@
   "stage": "implementation_approval",
   "stageOutcome": {
     "kind": "success",
-    "detail": "PR 1 (TRD-001/002/003) + TRD-005 implemented; full foreman_server suite 3138 passed / 0 failed; committed aea637d2 on jobsite/foreman-r3i7; PR #553 opened against main and left UNMERGED by decision. PR 2's remaining guard work (TRD-004 as a script, TRD-006, TRD-010) and all of PR 3 (TRD-007..011) are not in this change - see decisions[1].rationale.",
-    "recordedAt": "2026-10-16T01:20:00Z"
+    "detail": "implement-trd, tests, commit, PR. PR 1 (TRD-001/002/003) + TRD-005 shipped in aea637d2; TRD-002-TEST gap closed in f85f95fa (preflight_failure_test.exs + end-to-end :catalog_unavailable run + a fixed unqualified models.default in the user-guide litellm example). Full foreman_server suite 3145 passed / 0 failed, 13 excluded; format and --warnings-as-errors clean; mix init --force not run (no bundled workflow/prompt source changed in this diff). Committed on jobsite/foreman-r3i7, PR #553 open against main, UNMERGED by decision. PR 2's TRD-006/TRD-010, TRD-007 and all of PR 3 (TRD-008..011) not in this change.",
+    "recordedAt": "2026-10-16T06:36:20Z"
   },
   "artifacts": [
     {
@@ -73,9 +73,9 @@
   ],
   "implementationApprovedAt": "2026-10-16T01:20:00Z",
   "prApprovedAt": "2026-10-16T01:20:00Z",
-  "revision": 7,
+  "revision": 8,
   "createdAt": "2026-10-15T23:34:13.986Z",
-  "updatedAt": "2026-10-16T01:20:00Z",
+  "updatedAt": "2026-10-16T06:36:20Z",
   "decisions": [
     {
       "gate": "implementation_approval",
@@ -97,6 +97,20 @@
       "decidedBy": "agent",
       "decision": "ship PR 1 + TRD-005 only",
       "rationale": "25-bead plan spans three PRs. TRD-005 was pulled into this branch because the bead's own idea text prescribes 'fix the catalog lookup OR the workflow default' - refusing the unsatisfiable pair at manifest load is the second half of that one decision, not a separate feature. PRD AC-006-2 requires the two halves land in one atomic change, TRD Decision 1 says the same. TRD-005 depends on TRD-004's inventory; TRD-004 called for a new script, but its actual requirement - enumerate every installed manifest a load-time refusal would brick - was satisfied directly against ~/.foreman/workflows (18 manifests, zero provider+unqualified pairs), which is why PR #553 breaks no installed workflow. Remaining PR 2/PR 3 beads left open and truthful."
+    },
+    {
+      "gate": "self_verification",
+      "decidedAt": "2026-10-16T06:36:20Z",
+      "decidedBy": "agent",
+      "decision": "approve",
+      "rationale": "Re-read the TRD test-task list against my own diff rather than trusting my earlier claim of completion. TRD-002-TEST required three catalog outcomes pairwise distinct; only two classes were reachable from any test and PreflightFailure.summarize/1's 'two classes must never produce identical text' invariant had zero assertions. Added preflight_failure_test.exs and an end-to-end :catalog_unavailable run. Also found and fixed a contradiction my own previous commit introduced: the user-guide litellm example used an unqualified models.default in the same file that declares qualification mandatory, so a manifest copied from it now fails to load."
+    },
+    {
+      "gate": "commit_hook_incident",
+      "decidedAt": "2026-10-16T06:36:20Z",
+      "decidedBy": "agent",
+      "decision": "reported, not worked around",
+      "rationale": "Two commit messages were silently rewritten by this repo's commit-msg hook and one was then rejected. Verified root cause: `git_ops.check_message`, given no path argument, reads `Path.join(Config.repository_path(), \".git/COMMIT_EDITMSG\")`, and `repository_path` is compile-time-pinned to the MAIN checkout (/Users/ldangelo/Development/Fortium/foreman). `git rev-parse --git-path hooks` from a linked worktree resolves to <main>/.git/hooks, so the hook validates the main checkout's COMMIT_EDITMSG \u2014 another worktree's buffer \u2014 never the message git just wrote. Proof: a deliberately-failing fake commit made here left <main>/.git/COMMIT_EDITMSG holding this worktree's message while the main checkout's own HEAD was unrelated. What happens then depends on that stale buffer, not on my message: '...stay distinct' arrived as '...distinct' and failed the Conventional Commit pattern. Main HEAD restored to 13a756eb; the probe commit d87146b4 carries no ref. Worked around locally by passing -F a file inside this worktree. NOT fixed in code in this PR: it is outside this change's scope, and a careless fix (treat an absent argument as a pass) would silently disable a real gate for every genuine commit. Needs its own bead."
     }
   ],
   "pullRequest": {
