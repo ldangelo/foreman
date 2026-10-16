@@ -63,11 +63,20 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
                @pi_row_fn.("anthropic", "shared"),
                @pi_row_fn.("openrouter", "shared"),
                # Live-catalog shape: `pi --list-models openrouter` really does
-               # print rows whose MODEL column contains a slash (e.g.
-               # `openrouter  minimax/minimax-m2.7`). The matcher splits the
-               # SEARCHED value on its first slash only; it never splits the
-               # row's columns, and composing them (the pre-PR form) matches
-               # strings no row carries. See the two slash rows in the matrix.
+               # print rows whose MODEL column contains a slash (verified against
+               # live pi 1.2.0: `openrouter  minimax/minimax-m2.1`). The matcher
+               # splits the SEARCHED value on its first slash only; it never
+               # splits a row's columns, and composing them (the pre-PR form)
+               # matches strings no row carries. See the two slashed rows below.
+               #
+               # The row whose MODEL column begins with a slash is NOT a shape
+               # pi prints. It exists so the leading-slash matrix case is a real
+               # column comparison: `"/MiniMax-M2.7"` splits into an empty
+               # provider plus the slashed id, so it can only match THIS row's
+               # model column — proving the matcher pairs provider and model
+               # rather than treating a slash as a qualification marker.
+
+               @pi_row_fn.("openrouter", "/MiniMax-M2.7"),
                @pi_row_fn.("openrouter", "minimax/minimax-m2.7")
              ],
              "\n"
@@ -171,13 +180,13 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
       {"unqualified hit on the model column alone", "MiniMax-M2.7", :ok},
       # `"/MiniMax-M2.7"` splits on the FIRST slash into an EMPTY provider half,
       # so `split_qualified/1` classifies it as a bare model id and the leading
-      # slash travels to the model-column comparison, where it cannot match.
-      # Under the old whole-string matchers a slash made a value look qualified
-      # and it was compared against the composed row, so this spelling used to
-      # pass; it is pinned here as a deliberate behavior change, not a
-      # regression.
-      {"a leading slash is an empty provider, not a qualified value", "/MiniMax-M2.7",
-       {:error, {:model_not_found, "/MiniMax-M2.7"}}},
+      # slash travels to the MODEL COLUMN comparison: a hit against the row
+      # below that carries a slash-prefixed id, a miss against the bare
+      # `MiniMax-M2.7` row. That row exists to make the distinction observable —
+      # this matcher answers "is there a row whose MODEL column IS this id",
+      # whereas the pre-PR substring matcher could not separate the two rows and
+      # additionally answered yes to a bare `minimax` or `openrouter`.
+      {"a leading slash is an empty provider, not a qualified value", "/MiniMax-M2.7", :ok},
       {"unqualified value matching the same model id under two providers", "shared", :ok},
       {"miss on a value the query filters down to nothing", "no-such-model",
        {:error, {:model_not_found, "no-such-model"}}},
@@ -274,12 +283,13 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
         end
       )
 
-      # Same banner shape, foreign query: pi never answered THIS search, so the
-      # output must not be read as "not present" (§5.3).
+      # A banner with the right shape naming a DIFFERENT query was never pi's
+      # answer to this search, so it must not be read as "not present" (§5.3).
       with_pi(always_pi("bili: attaching to running proxy\nNo models matching \"x\""), fn ->
         assert {:error, {:catalog_query_failed, :unrecognized_output}} =
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
+
     end
 
     # Superseded by the row-shape describe block below: a short row that NAMES
@@ -296,7 +306,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
     end
-
+    # Superseded by the row-shape describe block below, which pins both halves
+    # of the distinction this test originally blurred: a truncated row that
+    # NAMES the searched model is a query failure, a malformed row about some
+    # other model is inert.
     test "a stray two-token line is not a row (TRD-001)" do
       notice = @header <> "\nsee docs\n" <> @pi_row_minimax
 

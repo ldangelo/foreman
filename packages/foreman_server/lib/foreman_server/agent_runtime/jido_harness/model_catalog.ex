@@ -116,16 +116,14 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
     end
   end
 
-  # Malformed, then hit, then miss. A truncated ROW about the searched model
-  # could be either, and "absent" is the one answer it must never be allowed to
-  # give: the truncation means the catalog's own statement about that model is
-  # unreadable. A malformed row about some OTHER model stays inert — the
-  # searched model's presence is still answered by the complete rows — and
-  # "complete" here means pi's six columns, so one-token stdout noise is never
-  # a candidate at all: `row_pair?/2` itself requires two tokens to name a
-  # provider/model pair, which is why a prose line whose second token happens
-  # to equal a searched bare model id ("see docs" under the search `docs`) is
-  # read as a truncated row rather than as an answer either way.
+  # Malformed, then hit, then miss. A line is a candidate if its first two
+  # tokens name the searched provider/model pair — `row_pair?/2` requires two
+  # tokens for that, so one-word stdout noise is never a candidate and cannot
+  # fail a query. If any candidate is a COMPLETE row the catalog answered:
+  # present. If every candidate is truncated, readability is in question and the
+  # answer is a query failure, never a false "not present" (§5.3). A truncated
+  # row about some OTHER model is not a candidate, so it cannot poison a clean
+  # hit.
   defp classify_rows(rows, model) do
     candidates = Enum.filter(rows, &row_pair?(&1, model))
 
