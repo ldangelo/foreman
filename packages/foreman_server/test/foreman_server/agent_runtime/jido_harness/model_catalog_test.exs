@@ -289,7 +289,6 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
         assert {:error, {:catalog_query_failed, :unrecognized_output}} =
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
-
     end
 
     # Superseded by the row-shape describe block below: a short row that NAMES
@@ -306,6 +305,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
     end
+
     # Superseded by the row-shape describe block below, which pins both halves
     # of the distinction this test originally blurred: a truncated row that
     # NAMES the searched model is a query failure, a malformed row about some
@@ -325,6 +325,31 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
         # a line of prose.
         assert {:error, {:catalog_query_failed, {:malformed_row, "see docs"}}} =
                  ModelCatalog.check(:pi, "docs")
+      end)
+    end
+
+    # pi's header is the fixed six-name `headers` object from `list-models.ts`,
+    # so a line that stops after `provider model context max` is a truncated
+    # header, not pi's table. The parser anchors on the first header it finds and
+    # reads everything below it as that table's rows, so accepting a fragment
+    # would let a line that was never a table own the search and report whatever
+    # it happens to contain as pi's answer.
+    test "a truncated header is not a table (TRD-001)" do
+      with_pi(always_pi("provider  model  context  max"), fn ->
+        assert {:error, {:catalog_query_failed, :unrecognized_output}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+
+      # A row beneath it is not rescued either: it is not under a real header,
+      # so it is not a row of any table. The catalog was never read.
+      with_pi(always_pi("provider  model  context  max\n" <> @pi_row_minimax), fn ->
+        assert {:error, {:catalog_query_failed, :unrecognized_output}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+
+      # …while the same row under pi's real header is read normally.
+      with_pi(always_pi(@header <> "\n" <> @pi_row_minimax), fn ->
+        assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
       end)
     end
 

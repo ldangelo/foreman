@@ -171,10 +171,26 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
          String.contains?(line, "\"" <> model <> "\""))
   end
 
-  # pi's header line is the six column names padEnd-joined by two spaces; the
-  # first two tokens are the stable "pi printed a table here" discriminator.
+  # pi's header is `list-models.ts`'s fixed `headers` object, padEnd-joined by
+  # two spaces — six column names, of which `max-out` is ONE token (hyphenated,
+  # not two columns). All six have to appear, in order. A line that merely starts
+  # `provider  model` is a truncated header: `parse_table/2` anchors on the first
+  # header it finds and reads everything below it as that table's rows, so
+  # accepting such a line lets a fragment of pi's own column header own the
+  # search and silently mask the answer (§5.3).
+  #
+  # PREFIX comparison, not whole-line equality: column widths are computed from
+  # the rows (`Math.max(headers.x.length, ...rows.map(...))`), so only `images`,
+  # the final column, can carry padding a caller then truncates. The five names
+  # before it are matched exactly.
   defp table_header?(line) do
-    String.split(line) |> Enum.take(2) == ["provider", "model"]
+    case String.split(line) do
+      ["provider", "model", "context", "max-out", "thinking" | rest] ->
+        Enum.any?(rest, &String.contains?(&1, "images"))
+
+      _not_a_header ->
+        false
+    end
   end
 
   # A pi row is the provider and model columns plus four capability columns,
