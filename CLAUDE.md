@@ -144,8 +144,10 @@ ForemanServer.AgentRuntime.execute(prompt, context,
 
 `ForemanServer.AgentRuntime.JidoHarness` is the supported-provider
 source of truth for the Jido Harness adapter. It currently accepts
-`:pi`, `:claude`, and `:litellm`; string provider keys from decoded
-workflow context are normalized at this boundary.
+`:pi` and `:claude` (`@supported_providers`); string provider keys from
+decoded workflow context are normalized at this boundary. A LiteLLM
+proxy is a model dispatcher reached through one of those providers,
+not a provider itself — `:litellm` is not a valid `provider:` value.
 
 Workflow phase `models.default` becomes `context.model`, and
 `JidoHarnessAdapter` forwards it as the harness `:model` option for the

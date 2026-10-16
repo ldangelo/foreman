@@ -503,17 +503,21 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   `adhoc-<hex>` when omitted, so the server's no-id `task.create` flow
   (which resolves the ID through the task provider) is never triggered for
   an untracked task.
-- `--backend` (optional) — backend to use. Valid atoms are
-  `:jido_harness` (the production default, dispatched via the
-  `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
-  entry is currently ready), or the registered `name/0` of any
-  adapter module registered with the catalog (for example `:pi` for
-  the legacy `PiAdapter`). The only Jido.Harness providers the
-  runtime currently supports are `:pi`, `:claude`, and `:litellm` — `:codex`,
-  `:opencode`, and other unlisted atoms return
-  `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
-  the JidoHarnessAdapter is in the runtime's adapter list; falls back
-  to the first available adapter in the list otherwise.
+- `--backend` (optional) — accepted by `foreman run submit`, validated
+  client-side against `pi`, `claude`, `codex`, `opencode` (default `pi`;
+  `run.go` rejects anything else before the request is sent). When it is not
+  the `pi` default it travels in the `task.create` payload, and **nothing
+  server-side reads that key**: neither `Task`'s `handle_command/2` nor
+  `CommandGateway` consumes a `backend` field, so the flag selects no adapter
+  and no harness provider. What actually decides the backend is the runtime's
+  configured `:jido_harness, :providers` adapter list plus each phase's
+  `provider:` (`:pi` or `:claude` only, `JidoHarness.@supported_providers`) —
+  `:litellm` is a model dispatcher reached through one of those providers, not
+  one itself. Accepting a value here is therefore NOT evidence that a backend
+  is installed, ready, or reachable: `foreman_doctor` (MCP) reports
+  `jido_harness` provider readiness, and `foreman doctor` does not route at all.
+  AgentRuntime's own `:backend` opt is a separate, internal manual-strategy
+  parameter with no CLI surface.
 - `--base-branch <branch>` (optional, half-consumed per
   [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
   — parent branch for the new task's worktree and PR. **The default now
