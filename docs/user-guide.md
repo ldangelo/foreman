@@ -694,8 +694,13 @@ no `provider:`, stays legal and matches on the model column only.
 ### Provider/model preflight
 
 Before a run's first phase dispatches, every phase that declares a `provider:`
-or a `models.default` is checked against the live catalog. A run that fails
-stops with zero dispatched phases and its terminal reason is
+or a `models.default` is checked. Two of those checks are universal and one is
+not: provider support (`:provider_unsupported`) and CLI presence
+(`:provider_not_installed`) are evaluated for every declared provider, but the
+live model-existence query is implemented for `pi` only — a `claude` phase
+whose model the harness cannot load passes this preflight and fails later at
+dispatch. A run that fails stops with zero dispatched phases and its terminal
+reason is
 `{:provider_model_preflight_failed, [%ForemanServer.Workflow.PreflightFailure{}]}`
 — one struct per offending phase, carrying `phase`, `provider`, `model` and a
 `class` that distinguishes four causes:

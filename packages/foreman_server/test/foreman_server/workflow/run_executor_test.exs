@@ -3076,6 +3076,28 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute task.failure_reason =~ "class: :model_not_found"
     assert task.failure_reason =~ "catalog registry unreachable"
 
+    # The task read model is one projection; the RUN is the other, and an
+    # operator reading `foreman run get` reads the second. Assert the run's own
+    # terminal outcome and the reason recorded on it, so a failure that reaches
+    # the task but not the run — or reaches the run with the wrong class —
+    # cannot pass. This also pins the projection invariant: `phase.fail`
+    # without `run.fail` would leave the run `in_progress`.
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{status: "failed", terminal?: true} = r -> {:ok, r}
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed + terminal"
+      )
+
+    assert run.failure_reason =~ ":provider_model_preflight_failed"
+    assert run.failure_reason =~ "class: :catalog_unavailable"
+    refute run.failure_reason =~ "class: :model_not_found"
+    assert run.failure_reason =~ "catalog registry unreachable"
+
     refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
     refute_received {:adapter_execute, _, _}
 
