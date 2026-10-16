@@ -36,6 +36,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
   # `list-models` row, padEnd-joined.
   @row_columns 6
 
+  # pi's header whitespace-split, from `list-models.ts`'s own `headers` object.
+  # `max-out` is ONE hyphenated token, so this is six tokens, the same count as
+  # @row_columns. Fixtures spell the joined form identically; keep the two in step.
+  @header_columns ~w(provider model context max-out thinking images)
+
   @spec check(atom(), String.t() | nil) :: :ok | :unchecked | {:error, term()}
   def check(_provider, nil), do: :unchecked
   def check(:pi, model) when is_binary(model), do: pi_model_exists?(model)
@@ -179,18 +184,14 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
   # accepting such a line lets a fragment of pi's own column header own the
   # search and silently mask the answer (§5.3).
   #
-  # PREFIX comparison, not whole-line equality: column widths are computed from
-  # the rows (`Math.max(headers.x.length, ...rows.map(...))`), so only `images`,
-  # the final column, can carry padding a caller then truncates. The five names
-  # before it are matched exactly.
+  # Six tokens, in order, no more and no less: `String.split/1` drops the
+  # trailing padding, so pi's header is exactly `provider model context max-out
+  # thinking images` once split. Matching the whole list rather than a prefix
+  # keeps this predicate strict in both directions — it rejects a truncated
+  # header, which is the point, and would also reject a line that led with these
+  # six names and carried a seventh, which pi never prints.
   defp table_header?(line) do
-    case String.split(line) do
-      ["provider", "model", "context", "max-out", "thinking" | rest] ->
-        Enum.any?(rest, &String.contains?(&1, "images"))
-
-      _not_a_header ->
-        false
-    end
+    String.split(line) == @header_columns
   end
 
   # A pi row is the provider and model columns plus four capability columns,
