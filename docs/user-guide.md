@@ -638,19 +638,19 @@ config :foreman_server, :agent_runtime,
 
 The adapter routes through `ForemanServer.AgentRuntime.JidoHarness` and
 the vendored `Jido.Harness` package. Supported upstream providers are
-`:pi`, `:claude`, and `:litellm`.
+`:pi` and `:claude` (`JidoHarness.@supported_providers`).
 
 Provider semantics:
 
 - Requests default to `:pi` unless runtime context sets
-  `provider: :claude` (or `:litellm`).
-- `:litellm` requires a provider entry with `baseUrl` configured in
-  `~/.pi/agent/models.json` (the pi coding agent reads this file for
-  custom provider definitions). Configure your LiteLLM proxy there,
-  e.g. providers.create then config then model_selection below.
-
-- Requests default to `:pi` unless runtime context sets
   `provider: :claude`.
+- A LiteLLM proxy is NOT a provider here: it is a model dispatcher
+  reached *through* the `:pi` (or `:claude`) provider by declaring a model
+  name the proxy serves. `:litellm` is not a valid `provider:` value —
+  it returns `:unsupported_provider`. To route through a proxy, configure
+  the provider entry with its `baseUrl` in `~/.pi/agent/models.json` (the
+  pi coding agent reads that file for custom provider definitions) and
+  reference one of its models, qualified, in `models.default`.
 - Unknown providers return `:unsupported_provider`.
 - A selected but unavailable provider returns `:backend_unavailable`
   without falling back to another provider.
@@ -669,11 +669,13 @@ phases:
   - name: assess
     prompt: assess.md
     models:
-      default: litellm/claude-3-5-sonnet
+      default: minimax/MiniMax-M2.7
 ```
 A phase may also declare `provider:` in its `context:` block to select
-`:litellm` (routes through `~/.pi/agent/models.json` configured
-`baseUrl`) or `:claude` instead of the default `:pi`.
+`:claude` instead of the default `:pi`. A model served by a LiteLLM proxy is
+reached through the `:pi` provider with the proxy's model name, qualified
+(`litellm-stack/smart_router` means pi provider `litellm-stack`, model
+`smart_router`) — never `provider: :litellm`, which is not a provider (§7).
 
 Foreman does NOT route model selection based on the model name itself —
 it passes the declared model string verbatim to the selected provider's
@@ -719,23 +721,27 @@ without re-running the dispatch.
 
 ## 7.3 pi provider configuration
 
-The `:litellm` provider requires operator-side configuration in
+Models served by a LiteLLM proxy are reachable through the `:pi` provider only
+when pi itself knows the proxy — a provider entry in
 `~/.pi/agent/models.json` (or `$PI_CODING_AGENT_DIR/models.json`):
 
 ```jsonc
 {
   "providers": {
-    "litellm": {
-      "baseUrl": "http://localhost:4000",
-      "api": "openai-completions"
+    "litellm-stack": {
+      "baseUrl": "http://127.0.0.1:4000/v1",
+      "api": "openai-completions",
+      "apiKey": "<the proxy master key>"
     }
   }
 }
 ```
 
-Without this entry, `:litellm` is not in `models.json`, the `:litellm`
-provider will fail quickly. See the pi coding agent docs for the full
-models.json schema.
+Without that entry, `pi --list-models <provider>/<model>` finds nothing, a
+phase declaring e.g. `models.default: litellm-stack/smart_router` fails the
+model preflight with `:model_not_found` (§7.2). The provider key is pi-side
+configuration — it is NOT a Foreman `provider:` value; Foreman still runs the
+`:pi` provider. See the pi coding agent docs for the full models.json schema.
 
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 

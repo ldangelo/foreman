@@ -194,8 +194,9 @@ The current default adapter is
 `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter` (TRD-2026-4212be7e
 JHA-T002 / JCR-T001), which delegates to the vendored
 `Jido.Harness` package under `packages/jido_harness/`. Adapters for
-`:pi`, `:claude`, and `:litellm` ship through Jido Harness; readiness
-is checked at every `execute/3` call, and workflow phase `models.default`
+`:pi` and `:claude` ship through Jido Harness (`:litellm` is a model
+dispatcher reached through one of them, not a provider). Readiness is
+checked on every `execute/3` call, and workflow-phase `models.default`
 values are forwarded to the selected provider as the run model (see
 `CLAUDE.md` §1–§9).
 

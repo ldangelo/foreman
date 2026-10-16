@@ -393,8 +393,11 @@ evidence that any agent received it.
 
 **Jido Harness provider/model selection is explicit.**
 `ForemanServer.AgentRuntime.JidoHarness` is the source of truth for supported
-providers (`:pi`, `:claude`, `:litellm`) and normalizes string provider keys
-from workflow context. `RunExecutor` maps phase `models.default` to
+providers (`@supported_providers == [:pi, :claude]`) and normalizes string
+provider keys from workflow context. A LiteLLM proxy is NOT a harness
+provider — it is a model dispatcher reached *through* the `:pi` provider (or
+`:claude`) by pointing the harness at a proxy-served model name; there is no
+`:litellm` atom. `RunExecutor` maps phase `models.default` to
 `context.model` / `FOREMAN_MODEL`, and `JidoHarnessAdapter` forwards that model
 to the selected provider. Never infer provider from model name.
 

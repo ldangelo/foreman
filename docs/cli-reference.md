@@ -507,10 +507,11 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   `:jido_harness` (the production default, dispatched via the
   `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
   entry is currently ready), or the registered `name/0` of any
-  adapter module registered with the catalog (for example `:pi` for
-  the legacy `PiAdapter`). The only Jido.Harness providers the
-  runtime currently supports are `:pi`, `:claude`, and `:litellm` — `:codex`,
-  `:opencode`, and other unlisted atoms return
+  adapter module registered with the catalog (for example `:pi` for the
+  legacy Pi adapter). The Jido.Harness providers the runtime currently
+  supports are `:pi` and `:claude` (`JidoHarness.@supported_providers`) —
+  `:litellm` is a model dispatcher reached through one of those providers, not
+  one itself; `:codex`, `:opencode`, and other unlisted atoms return
   `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
   the JidoHarnessAdapter is in the runtime's adapter list; falls back
   to the first available adapter in the list otherwise.
