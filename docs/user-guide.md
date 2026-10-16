@@ -680,6 +680,36 @@ it passes the declared model string verbatim to the selected provider's
 command line. The operator decides which provider ships which model
 via `models.json` configuration.
 
+### Qualified model strings
+
+When a phase declares `provider:` and `models.default` together, `models.default`
+MUST be the qualified `"<upstream-provider>/<model-id>"` form the provider's own
+catalog prints (e.g. `minimax/MiniMax-M2.7`) — not a bare vendor or model name.
+A manifest that pairs a `provider:` with an unqualified `models.default` is
+refused at load time, naming the phase index, the offending value, and the
+expected shape; the two declarations would otherwise describe different things
+and could never resolve to a catalog row. Declaring `models.default` alone, with
+no `provider:`, stays legal and matches on the model column only.
+
+### Provider/model preflight
+
+Before a run's first phase dispatches, every phase that declares a `provider:`
+or a `models.default` is checked against the live catalog. A run that fails
+stops with zero dispatched phases and its terminal reason is
+`{:provider_model_preflight_failed, [%ForemanServer.Workflow.PreflightFailure{}]}`
+— one struct per offending phase, carrying `phase`, `provider`, `model` and a
+`class` that distinguishes four causes:
+
+| `class` | Meaning |
+| --- | --- |
+| `:provider_unsupported` | not a provider Foreman supports |
+| `:provider_not_installed` | supported, but its CLI is absent from this host |
+| `:model_not_found` | the catalog was asked and answered: not present |
+| `:catalog_unavailable` | the catalog could not be asked (timeout, non-zero exit, or `pi` missing from `PATH`) |
+
+An unanswered query is never reported as an absent model — `:catalog_unavailable`
+says "we don't know", `:model_not_found` says "it isn't there".
+
 ## 7.3 pi provider configuration
 
 The `:litellm` provider requires operator-side configuration in

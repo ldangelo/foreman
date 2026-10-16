@@ -512,7 +512,7 @@ defmodule ForemanServer.Workflow.Interpreter do
       %{"default" => default} = models when is_binary(default) and default != "" ->
         case Map.keys(models) -- ["default"] do
           [] ->
-            :ok
+            assert_default_qualified(phase, index, path, default)
 
           extra_keys ->
             raise Workflow.MissingRequiredPhaseError,
@@ -538,6 +538,44 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_phase_models_value!(_phase, _index, _path), do: :ok
+
+  # A phase that names its provider must also name its model in the qualified
+  # `"<provider>/<model-id>"` form the catalog is keyed by, or the two
+  # declarations describe different things: `ModelCatalog` matches a qualified
+  # value on BOTH catalog columns, so `provider: pi` plus `default: MiniMax`
+  # is a value that can never match any row and fails the run at dispatch time,
+  # after the worktree and the agent session are already paid for.
+  #
+  # Refusing it here is what turns that into a manifest error. This is
+  # deliberately narrower than "reject unqualified values everywhere": with no
+  # `provider:` declared, an unqualified value is the documented model-column
+  # lookup and matches legitimately, so a broader rule would break manifests
+  # that work today for no gain.
+  defp assert_default_qualified(phase, index, path, default) do
+    case Map.get(phase, "provider") do
+      provider when is_binary(provider) and provider != "" ->
+        if qualified_model?(default) do
+          :ok
+        else
+          raise Workflow.MissingRequiredPhaseError,
+            message:
+              "workflow template #{path} phase #{index} \"models.default\" must be the qualified \"<provider>/<model-id>\" form when the phase also declares \"provider\" (got #{inspect(default)}; expected #{inspect(provider)}/<model-id>)"
+        end
+
+      _no_provider_declared ->
+        :ok
+    end
+  end
+
+  # Both halves must be non-empty: `"/MiniMax-M2.7"` and `"minimax/"` are not
+  # qualified values, and treating them as one would let the exact defect above
+  # through with a slash for camouflage.
+  defp qualified_model?(value) do
+    case String.split(value, "/", parts: 2) do
+      [provider, model_id] -> provider != "" and model_id != ""
+      _other -> false
+    end
+  end
 
   # `timeout_minutes:` is PHASE-level and intentionally expressed in minutes,
   # not milliseconds, so workflow authors do not encode runtime internals in

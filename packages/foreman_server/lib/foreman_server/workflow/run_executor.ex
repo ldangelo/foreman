@@ -48,6 +48,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
+  alias ForemanServer.Workflow.PreflightFailure
   alias ForemanServer.Jobsite.Context, as: JobsiteContext
   alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
   alias ForemanServer.Jobsite.Error, as: JobsiteError
@@ -354,8 +355,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       :ok ->
         case preflight_providers_and_models(state) do
           {:error, failures} ->
+            # `PreflightFailure.summarize/1` renders one clause per refusal as
+            # the stable phrase an operator (or a log grep) keys on. The class
+            # atoms the struct carries name the same four causes, so both
+            # appear: the phrase is the human-facing contract, the struct is
+            # what the run's terminal reason persists.
+            summaries = Enum.map_join(failures, "; ", &PreflightFailure.summarize/1)
+
             Logger.warning(
-              "RunExecutor provider/model preflight for #{state.run_id} rejected: #{inspect(failures)}",
+              "RunExecutor provider/model preflight for #{state.run_id} rejected: #{summaries}",
               run_id: state.run_id,
               task_id: task_id(state),
               operation: "run_executor.provider_model_preflight",
@@ -720,12 +728,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # for the upfront check, and a run with ANY invalid phase fails once,
   # before phase 1, naming every bad phase — not one at a time, deep into
   # the run.
+  #
+  # This runs before `handle_kickoff_ready/1`, so before any worktree, branch,
+  # or phase exists: a refused run executes zero phases by construction (see
+  # `PreflightFailure` for why each refusal is its own class).
   defp preflight_providers_and_models(state) do
     {reversed_failures, _cache} =
       Enum.reduce(state.phase_specs, {[], %{}}, fn phase_spec, {failures, cache} ->
         case phase_provider_and_model_check(phase_spec, cache) do
           {:ok, cache} -> {failures, cache}
-          {{:error, reason}, cache} -> {[reason | failures], cache}
+          {{:error, %PreflightFailure{} = failure}, cache} -> {[failure | failures], cache}
         end
       end)
 
@@ -745,10 +757,23 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       cond do
         provider not in JidoHarness.providers() ->
-          {{:error, {:phase_provider_unsupported, name, provider}}, cache}
+          {{:error,
+            %PreflightFailure{
+              phase: name,
+              provider: provider,
+              model: model,
+              class: :provider_unsupported
+            }}, cache}
 
         not ReadinessCheck.installed?(provider) ->
-          {{:error, {:phase_provider_not_installed, name, provider}}, cache}
+          {{:error,
+            %PreflightFailure{
+              phase: name,
+              provider: provider,
+              model: model,
+              class: :provider_not_installed,
+              detail: ReadinessCheck.install_hint(provider)
+            }}, cache}
 
         true ->
           {result, cache} = cached_model_check(cache, provider, model)
@@ -760,8 +785,37 @@ defmodule ForemanServer.Workflow.RunExecutor do
             :unchecked ->
               {:ok, cache}
 
-            {:error, reason} ->
-              {{:error, {:phase_model_invalid, name, provider, model, reason}}, cache}
+            {:error, {:model_not_found, _}} ->
+              {{:error,
+                %PreflightFailure{
+                  phase: name,
+                  provider: provider,
+                  model: model,
+                  class: :model_not_found
+                }}, cache}
+
+            # The catalog could not be asked. Reported as its own class, never
+            # folded into `:model_not_found`: an unanswered query is not
+            # evidence of absence (§5.3).
+            {:error, {:catalog_query_failed, detail}} ->
+              {{:error,
+                %PreflightFailure{
+                  phase: name,
+                  provider: provider,
+                  model: model,
+                  class: :catalog_unavailable,
+                  detail: detail
+                }}, cache}
+
+            {:error, other} ->
+              {{:error,
+                %PreflightFailure{
+                  phase: name,
+                  provider: provider,
+                  model: model,
+                  class: :catalog_unavailable,
+                  detail: {:unrecognized_catalog_result, other}
+                }}, cache}
           end
       end
     end

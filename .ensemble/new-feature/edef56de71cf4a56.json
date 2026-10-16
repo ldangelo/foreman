@@ -71,9 +71,18 @@
     "foreman-armo",
     "foreman-5ffs"
   ],
-  "implementationApprovedAt": null,
+  "implementationApprovedAt": "2026-10-16T01:20:00Z",
   "prApprovedAt": null,
-  "revision": 5,
+  "revision": 6,
   "createdAt": "2026-10-15T23:34:13.986Z",
-  "updatedAt": "2026-10-16T00:09:26.916Z"
+  "updatedAt": "2026-10-16T01:20:00Z",
+  "decisions": [
+    {
+      "gate": "implementation_approval",
+      "decidedAt": "2026-10-16T01:20:00Z",
+      "decidedBy": "agent",
+      "decision": "approve",
+      "rationale": "No human available (per prompt). TRD-001..003 and TRD-005 implemented and verified: full foreman_server suite 3138 passed / 0 failed under DATABASE_URL=foreman_test, mix compile --warnings-as-errors clean, mix format --check-formatted clean. Scope limited to PR 1 (catalog matcher + preflight structuring + load-time qualified-model guard). TRD-004's installed-workflow inventory was verified directly (18 installed manifests, zero provider+unqualified pairs) instead of as a new script."
+    }
+  ]
 }

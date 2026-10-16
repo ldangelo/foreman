@@ -54,24 +54,55 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
     result
   end
 
+  # One decomposition of the searched value, total over both shapes, instead
+  # of composing a candidate string and comparing it. The previous form built
+  # `"#{row_provider}/#{row_model}"` whenever the searched value happened to
+  # contain a `/`, so a vendor-qualified workflow default (`MiniMax`) was
+  # compared against composed row keys (`minimax/MiniMax-M2.7`) and could never
+  # match — the failure reported for run-0381b526.
+  #
+  # Splitting on the FIRST `/` only:
+  #
+  #   * qualified `"<provider>/<model-id>"` — a row matches iff BOTH its
+  #     provider column and its model column equal the two halves, so a
+  #     `MiniMax` model id under an `anthropic` provider no longer satisfies a
+  #     search for `minimax/MiniMax`;
+  #   * unqualified `<model-id>` — a row matches on the model column alone,
+  #     the provider-scoped-absent case documented in the moduledoc.
+  #
+  # Comparison stays case-exact: `pi --list-models` is a substring filter, so
+  # the caller's own string already drove the row set, and relaxing case here
+  # would make the check looser than the query it is validating.
   defp parse_result(output, model) do
     found? =
       output
       |> String.split("\n", trim: true)
       |> Enum.drop(1)
-      |> Enum.any?(fn line ->
-        case String.split(line) do
-          [row_provider, row_model | _] ->
-            candidate =
-              if String.contains?(model, "/"), do: "#{row_provider}/#{row_model}", else: row_model
-
-            candidate == model
-
-          _ ->
-            false
-        end
-      end)
+      |> Enum.any?(&row_matches?(&1, model))
 
     if found?, do: :ok, else: {:error, {:model_not_found, model}}
+  end
+
+  defp row_matches?(line, model) do
+    case String.split(line) do
+      [row_provider, row_model | _rest] ->
+        case split_qualified(model) do
+          {provider, model_id} -> row_provider == provider and row_model == model_id
+          :unqualified -> row_model == model
+        end
+
+      _other ->
+        false
+    end
+  end
+
+  # A value with no `/`, an empty half (`"/x"`, `"x/"`), or no `/` at all is
+  # treated as a bare model id and matched on the model column — never as a
+  # prefix that matches every provider's rows.
+  defp split_qualified(model) do
+    case String.split(model, "/", parts: 2) do
+      [provider, model_id] when provider != "" and model_id != "" -> {provider, model_id}
+      _other -> :unqualified
+    end
   end
 end

@@ -87,7 +87,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   # Deterministic stand-in for `Jido.Harness.Adapters.Claude` — reports
   # `installed: false` regardless of the real environment, so the
   # provider/model preflight's `not ReadinessCheck.installed?(provider)`
-  # branch (`phase_provider_not_installed`) is exercised without depending
+  # branch (`class: :provider_not_installed`) is exercised without depending
   # on whether `claude` happens to be on PATH in whatever environment the
   # suite runs in. Mirrors the `PiStub`/`ClaudeStub` shape already used in
   # test/foreman_server_web/mcp/tools/doctor_test.exs.
@@ -2898,8 +2898,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert task.status == "failed"
     assert is_binary(task.failure_reason)
+    # The class lives in the run's terminal reason as
+    # %PreflightFailure{class: :provider_unsupported}, not as the old
+    # `:phase_provider_unsupported` tuple atom that TRD-002 replaced.
     assert task.failure_reason =~ ":provider_model_preflight_failed"
-    assert task.failure_reason =~ ":phase_provider_unsupported"
+    assert task.failure_reason =~ "class: :provider_unsupported"
 
     assert run.status == "failed"
     assert run.terminal? == true
@@ -2980,8 +2983,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert task.status == "failed"
     assert is_binary(task.failure_reason)
+    # The class lives in the run's terminal reason as
+    # %PreflightFailure{class: :provider_not_installed}, not as the old
+    # `:phase_provider_not_installed` tuple atom that TRD-002 replaced.
     assert task.failure_reason =~ ":provider_model_preflight_failed"
-    assert task.failure_reason =~ ":phase_provider_not_installed"
+    assert task.failure_reason =~ "class: :provider_not_installed"
 
     assert run.status == "failed"
     assert run.terminal? == true
