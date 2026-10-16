@@ -47,3 +47,33 @@ breaking change and must not precede the inventory.
 
 0/25 closed, 25 open. No implementation started; no feature branch created;
 no PR opened. `implementation_approved` deliberately not set.
+
+## Status at implementation (jobsite/foreman-r3i7, 2026-10-16)
+
+Pipeline run under `ensemble new-feature --foreman` for bead `foreman-r3i7`.
+No human was available; every approval decision below was made by the agent
+and is recorded with its rationale in
+`.ensemble/new-feature/edef56de71cf4a56.json` (`decisions`).
+
+- **Branch / commit**: `jobsite/foreman-r3i7` @ `aea637d2`, base `main`.
+- **PR**: [#553](https://github.com/ldangelo/foreman/pull/553) — open, **not merged**
+  (merge is a separate operator gate: `foreman run approve-merge` /
+  `foreman run merge`; the pipeline's stages stop at "open pull request").
+- **Gates**: `implementation_approval` granted, `pr_approval` granted for *open*
+  and declined for *merge*.
+- **Verification**: `mix test` 3138 passed / 0 failed (13 excluded),
+  `mix compile --warnings-as-errors` clean, `mix format --check-formatted`
+  clean. No live end-to-end beads dispatch was run — that tier is unproven,
+  not assumed.
+
+Shipped: **TRD-001**, **TRD-002**, **TRD-003**, **TRD-005**, and **TRD-004's
+requirement satisfied out-of-band** (the installed-manifest inventory was
+computed directly over `~/.foreman/workflows` — 18 manifests, zero
+provider+unqualified pairs — rather than as the new script TRD-004 named; no
+load-time refusal can brick an installed workflow, which is all TRD-004 asked).
+
+Not shipped: TRD-006, TRD-010, TRD-007, and all of PR 3 (TRD-008–011). Beads
+`foreman-nlrv`/`foreman-20cw`/`foreman-l9d3`/`foreman-i2yk`/`foreman-36ph`/
+`foreman-c34b`/`foreman-yzcu`/`foreman-n1bc` and `foreman-x0ky`/`foreman-73ds`
+were **left `open`**: closing them would report merged work, and nothing on
+this branch is merged. 0/25 closed remains accurate.

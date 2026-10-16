@@ -6,8 +6,8 @@
   "stage": "implementation_approval",
   "stageOutcome": {
     "kind": "success",
-    "detail": "beads_plan succeeded: epic foreman-pfta, 3 PR stories (foreman-7b8b foreman-k9zf foreman-btpo), 22 task beads (11 impl + 11 explicit -TEST siblings, synthesizedTests 0), 45/45 dependency edges wired, bv cycle_count 0, all task beads labeled foreman-exec. Plan summary at .ensemble/plans/trd-2026-44b49f94-beads-watcher-model-preflight-plan.md",
-    "recordedAt": "2026-10-15T23:55:00Z"
+    "detail": "PR 1 (TRD-001/002/003) + TRD-005 implemented; full foreman_server suite 3138 passed / 0 failed; committed aea637d2 on jobsite/foreman-r3i7; PR #553 opened against main and left UNMERGED by decision. PR 2's remaining guard work (TRD-004 as a script, TRD-006, TRD-010) and all of PR 3 (TRD-007..011) are not in this change - see decisions[1].rationale.",
+    "recordedAt": "2026-10-16T01:20:00Z"
   },
   "artifacts": [
     {
@@ -72,8 +72,8 @@
     "foreman-5ffs"
   ],
   "implementationApprovedAt": "2026-10-16T01:20:00Z",
-  "prApprovedAt": null,
-  "revision": 6,
+  "prApprovedAt": "2026-10-16T01:20:00Z",
+  "revision": 7,
   "createdAt": "2026-10-15T23:34:13.986Z",
   "updatedAt": "2026-10-16T01:20:00Z",
   "decisions": [
@@ -83,6 +83,29 @@
       "decidedBy": "agent",
       "decision": "approve",
       "rationale": "No human available (per prompt). TRD-001..003 and TRD-005 implemented and verified: full foreman_server suite 3138 passed / 0 failed under DATABASE_URL=foreman_test, mix compile --warnings-as-errors clean, mix format --check-formatted clean. Scope limited to PR 1 (catalog matcher + preflight structuring + load-time qualified-model guard). TRD-004's installed-workflow inventory was verified directly (18 installed manifests, zero provider+unqualified pairs) instead of as a new script."
+    },
+    {
+      "gate": "pr_approval",
+      "decidedAt": "2026-10-16T01:20:00Z",
+      "decidedBy": "agent",
+      "decision": "approve-open, decline-merge",
+      "rationale": "Prompt's pipeline ends at 'open pull request'; PR creation approved and done. Merge deliberately not self-approved: the repo models it as a distinct operator gate (run approve-merge / run merge, RunPrMerge, approver identity allowlist) and self-merging is not a pipeline stage. PR #553 left open."
+    },
+    {
+      "gate": "scope",
+      "decidedAt": "2026-10-16T01:20:00Z",
+      "decidedBy": "agent",
+      "decision": "ship PR 1 + TRD-005 only",
+      "rationale": "25-bead plan spans three PRs. TRD-005 was pulled into this branch because the bead's own idea text prescribes 'fix the catalog lookup OR the workflow default' - refusing the unsatisfiable pair at manifest load is the second half of that one decision, not a separate feature. PRD AC-006-2 requires the two halves land in one atomic change, TRD Decision 1 says the same. TRD-005 depends on TRD-004's inventory; TRD-004 called for a new script, but its actual requirement - enumerate every installed manifest a load-time refusal would brick - was satisfied directly against ~/.foreman/workflows (18 manifests, zero provider+unqualified pairs), which is why PR #553 breaks no installed workflow. Remaining PR 2/PR 3 beads left open and truthful."
     }
-  ]
+  ],
+  "pullRequest": {
+    "number": 553,
+    "url": "https://github.com/ldangelo/foreman/pull/553",
+    "base": "main",
+    "head": "jobsite/foreman-r3i7",
+    "merged": false,
+    "mergeDecision": "not approved - merge is a separate operator gate, outside the pipeline's stages",
+    "recordedAt": "2026-10-16T01:20:00Z"
+  }
 }
