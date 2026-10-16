@@ -88,3 +88,9 @@
 # Stray worktree test-fixture snapshots dropped at repo root by some
 # workflow/RunExecutor tests
 /.worktrees/
+# Foreman/Jobsite-dispatched agents run with the repository root as their cwd,
+# so the ensemble tooling's per-run scratch (run index, active locks, working
+# plans) lands here. It is machine-local runtime state, never review material:
+# jobsite run js-b6e1438582585cf6 committed three such files into a feature
+# branch as a side effect of writing the PRD/TRD the run was asked for.
+/.ensemble/new-feature/

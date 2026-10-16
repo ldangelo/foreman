@@ -1,26 +1,45 @@
 defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
   @moduledoc """
-  Live model-catalog lookup for dispatch providers that expose one.
+  Checks whether a requested model id actually exists for a provider, before a
+  phase is dispatched. Foreman refuses to pay for a worktree and an agent
+  session on a model the harness cannot load, so a wrong `models.default` is a
+  manifest/preflight error, not a runtime crash.
 
-  Only `:pi` exposes a non-interactive catalog query today
-  (`pi --list-models <term>`, confirmed against a live pi 0.84.2 install:
-  a matching term prints a `provider  model  ...` table, a non-matching term
-  prints `No models matching "<term>"`, both at exit 0). `:claude` (Claude
-  Code CLI) has no equivalent flag — `check/2` returns `:unchecked` for it
-  rather than silently accepting or guessing at validity.
-
-  For `:pi`, pass `models.default` as the fully-qualified `"<pi-provider>/<model-id>"`
-  string the catalog itself prints (e.g. `"minimax/MiniMax-M2.7"`) — confirmed
-  working end-to-end with `pi --model minimax/MiniMax-M2.7`, no separate
-  `--provider` flag required. A bare (unqualified) id is also accepted and
-  matches on the `model` column alone, which can match more than one
+  `:pi` is queried directly: `pi --list-models "<pattern>"` prints a table
+  whose rows carry the PROVIDER name and the MODEL id in separate columns.
+  The searched value is decomposed on its FIRST `/`: with both halves
+  non-empty it is a `"<provider>/<model-id>"` pair and matches a row only when
+  BOTH columns equal the two halves; otherwise the whole value is a bare model
+  id and matches on the `model` column alone. Provider-scoping is what makes
+  `minimax/MiniMax` fail when only `anthropic` carries a `MiniMax` model,
+  instead of matching any provider's row. The qualified form is also exactly
+  the string the catalog itself prints (e.g. `"minimax/MiniMax-M2.7"`) —
+  confirmed working end-to-end with `pi --model minimax/MiniMax-M2.7`, no
+  separate `--provider` flag required. A bare (unqualified) id is also accepted
+  and matches on the `model` column alone, which can match more than one
   upstream provider's catalog entry; that is a real existence check, just not
   provider-scoped.
+
+  Outcomes stay distinct, because `PreflightFailure` classifies on them and
+  §5.3 forbids collapsing an unanswered question into a negative answer:
+  `:ok` (the catalog answered, and a row matches), `:model_not_found` (the
+  catalog ANSWERED, and nothing matches), and
+  `{:error, {:catalog_query_failed, _}}` (the catalog could NOT be asked:
+  non-zero exit, timeout, `pi` unreadable, empty output, output that is not
+  pi's, or a row about the searched model that is too truncated to read).
   """
 
   alias ForemanServer.Telemetry
 
   @query_timeout_ms 5_000
+  # provider, model, context, max-out, thinking, images — pi 1.2.0's
+  # `list-models` row, padEnd-joined.
+  @row_columns 6
+
+  # pi's header whitespace-split, from `list-models.ts`'s own `headers` object.
+  # `max-out` is ONE hyphenated token, so this is six tokens, the same count as
+  # @row_columns. Fixtures spell the joined form identically; keep the two in step.
+  @header_columns ~w(provider model context max-out thinking images)
 
   @spec check(atom(), String.t() | nil) :: :ok | :unchecked | {:error, term()}
   def check(_provider, nil), do: :unchecked
@@ -54,24 +73,139 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
     result
   end
 
+  # pi 1.2.0's `list-models` exits 0 in exactly four shapes
+  # (`dist/cli/list-models.js` + `core/auth-guidance.js`): a column table;
+  # `No models matching "<x>"`; `No models available. …` (the
+  # formatNoModelsAvailableMessage lead, when zero models are configured); or,
+  # when models.json failed to LOAD, a `Warning:` on STDERR with stdout EMPTY.
+  # Anything else reaching a match decision was not pi answering the query and
+  # must not be reported as a negative answer (§5.3) — an `Enum.any?` default
+  # of "not found" over garbage stdout would be exactly that lie.
+  #
+  # Classification is line-scanned, not first-line-only: a host `pi` wrapper
+  # can print its own notice to stdout ahead of pi's output (observed in the
+  # wild: "bili: attaching to running proxy ..."), and a first-line-only
+  # classifier would turn pi's real answer into `:unrecognized_output`.
+  # The table path is the authority; a negative banner is only ever the
+  # fallback for output that is NOT a table, which is why the check lives in
+  # `parse_table/2` and not above it: pi's own table can legitimately contain a
+  # line that begins with a banner prefix, and a wrapper notice that
+  # incidentally spells one must not overwrite the answer the table gives.
   defp parse_result(output, model) do
-    found? =
-      output
-      |> String.split("\n", trim: true)
-      |> Enum.drop(1)
-      |> Enum.any?(fn line ->
-        case String.split(line) do
-          [row_provider, row_model | _] ->
-            candidate =
-              if String.contains?(model, "/"), do: "#{row_provider}/#{row_model}", else: row_model
+    if String.trim(output) == "" do
+      {:error, {:catalog_query_failed, :empty_output}}
+    else
+      parse_table(String.split(output, "\n", trim: true), model)
+    end
+  end
 
-            candidate == model
-
-          _ ->
-            false
+  defp parse_table(lines, model) do
+    case Enum.find_index(lines, &table_header?/1) do
+      nil ->
+        # No table. A complete negative banner naming THIS search is pi having
+        # answered; anything else is output that was never an answer.
+        if Enum.any?(lines, &negative_banner?(&1, model)) do
+          {:error, {:model_not_found, model}}
+        else
+          {:error, {:catalog_query_failed, :unrecognized_output}}
         end
-      end)
 
-    if found?, do: :ok, else: {:error, {:model_not_found, model}}
+      header_index ->
+        rows = Enum.slice(lines, (header_index + 1)..-1//1)
+
+        case classify_rows(rows, model) do
+          {:malformed_row, line} -> {:error, {:catalog_query_failed, {:malformed_row, line}}}
+          :hit -> :ok
+          :miss -> {:error, {:model_not_found, model}}
+        end
+    end
+  end
+
+  # Malformed, then hit, then miss. A line is a candidate if its first two
+  # tokens name the searched provider/model pair — `row_pair?/2` requires two
+  # tokens for that, so one-word stdout noise is never a candidate and cannot
+  # fail a query. If any candidate is a COMPLETE row the catalog answered:
+  # present. If every candidate is truncated, readability is in question and the
+  # answer is a query failure, never a false "not present" (§5.3). A truncated
+  # row about some OTHER model is not a candidate, so it cannot poison a clean
+  # hit.
+  defp classify_rows(rows, model) do
+    candidates = Enum.filter(rows, &row_pair?(&1, model))
+
+    cond do
+      Enum.any?(candidates, &row_complete?/1) ->
+        :hit
+
+      candidates != [] ->
+        {:malformed_row, hd(candidates)}
+
+      true ->
+        :miss
+    end
+  end
+
+  # "Could this line be about the model that was searched?", ignoring how many
+  # further columns the line carries: pi's provider and model columns are the
+  # first two fields, so the pair is decided on the first two tokens no matter
+  # what trails them.
+  defp row_pair?(line, model) do
+    case String.split(line) do
+      [row_provider, row_model | _rest] ->
+        case split_qualified(model) do
+          {provider, model_id} -> row_provider == provider and row_model == model_id
+          :unqualified -> row_model == model
+        end
+
+      _short ->
+        false
+    end
+  end
+
+  # pi's negative answers. `list-models.ts` writes
+  # `No models matching "${search}"` with the caller's own search string
+  # interpolated, so the searched value has to appear inside the banner before
+  # the line is read as an answer to THIS query. Anything else carrying that
+  # prefix is truncation or a foreign query, and §5.3 keeps "the catalog says
+  # no" apart from "this was never an answer". The other negative — no models
+  # configured at all — carries no query, so it answers every search. Both
+  # prefixes are matched loosely so upstream wording drift makes them refuse to
+  # classify rather than over-classify.
+  defp negative_banner?(line, model) do
+    String.starts_with?(line, "No models available.") or
+      (String.starts_with?(line, "No models matching ") and
+         String.contains?(line, "\"" <> model <> "\""))
+  end
+
+  # pi's header is `list-models.ts`'s fixed `headers` object, padEnd-joined by
+  # two spaces — six column names, of which `max-out` is ONE token (hyphenated,
+  # not two columns). All six have to appear, in order. A line that merely starts
+  # `provider  model` is a truncated header: `parse_table/2` anchors on the first
+  # header it finds and reads everything below it as that table's rows, so
+  # accepting such a line lets a fragment of pi's own column header own the
+  # search and silently mask the answer (§5.3).
+  #
+  # Six tokens, in order, no more and no less: `String.split/1` drops the
+  # trailing padding, so pi's header is exactly `provider model context max-out
+  # thinking images` once split. Matching the whole list rather than a prefix
+  # keeps this predicate strict in both directions — it rejects a truncated
+  # header, which is the point, and would also reject a line that led with these
+  # six names and carried a seventh, which pi never prints.
+  defp table_header?(line) do
+    String.split(line) == @header_columns
+  end
+
+  # A pi row is the provider and model columns plus four capability columns,
+  # space-joined. Takes the raw line so one predicate serves every caller
+  # instead of forcing each to split first.
+  defp row_complete?(line), do: line |> String.split() |> length() >= @row_columns
+
+  # A value with no `/`, an empty half (`"/x"`, `"x/"`), or no `/` at all is
+  # treated as a bare model id and matched on the model column — never as a
+  # prefix that matches every provider's rows.
+  defp split_qualified(model) do
+    case String.split(model, "/", parts: 2) do
+      [provider, model_id] when provider != "" and model_id != "" -> {provider, model_id}
+      _other -> :unqualified
+    end
   end
 end

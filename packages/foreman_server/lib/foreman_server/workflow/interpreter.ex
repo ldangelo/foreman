@@ -444,8 +444,16 @@ defmodule ForemanServer.Workflow.Interpreter do
     |> Enum.each(fn {phase, index} -> validate_phase_provider_value!(phase, index, path) end)
   end
 
+  # `PhaseSpec.fetch/2` is the accepted-spellings table (§5.4): the loader's
+  # YAML is string-keyed, but `load/1` output can reach validation through a
+  # `Catalog`-decorated (hybrid-key) or JSON-round-tripped path, and a
+  # per-read `Map.get(m, "k") || Map.get(m, :k)` hedge is the drift §5.4
+  # forbids. The `nil` clause below therefore means "absent or explicit
+  # null", not "not a string key" — `Validator`, which runs before
+  # normalization, already refuses phases without an action outright
+  # (`{:missing_phase_action, index}`), so nothing silently skips this check.
   defp validate_phase_provider_value!(phase, index, path) when is_map(phase) do
-    case Map.get(phase, "provider") do
+    case PhaseSpec.fetch(phase, :provider) do
       nil ->
         :ok
 
@@ -512,7 +520,7 @@ defmodule ForemanServer.Workflow.Interpreter do
       %{"default" => default} = models when is_binary(default) and default != "" ->
         case Map.keys(models) -- ["default"] do
           [] ->
-            :ok
+            assert_default_qualified(phase, index, path, default)
 
           extra_keys ->
             raise Workflow.MissingRequiredPhaseError,
@@ -538,6 +546,45 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_phase_models_value!(_phase, _index, _path), do: :ok
+
+  # A phase that names its provider must also name its model in the qualified
+  # `"<provider>/<model-id>"` form the catalog is keyed by, or the two
+  # declarations describe different things: `ModelCatalog` matches a qualified
+  # value on BOTH catalog columns, so `provider: pi` plus `default: MiniMax`
+  # is a value that can never match any row and fails the run at dispatch time,
+  # after the worktree and the agent session are already paid for.
+  #
+  # Refusing it here is what turns that into a manifest error. This is
+  # deliberately narrower than "reject unqualified values everywhere": with no
+  # `provider:` declared, an unqualified value is the documented model-column
+  # lookup and matches legitimately, so a broader rule would break manifests
+  # that work today for no gain.
+  # Same discipline: read via the one accepted-spellings table, not a hedge.
+  defp assert_default_qualified(phase, index, path, default) do
+    case PhaseSpec.fetch(phase, :provider) do
+      provider when is_binary(provider) and provider != "" ->
+        if qualified_model?(default) do
+          :ok
+        else
+          raise Workflow.MissingRequiredPhaseError,
+            message:
+              "workflow template #{path} phase #{index} \"models.default\" must be the qualified \"<provider>/<model-id>\" form when the phase also declares \"provider\" (got #{inspect(default)}; expected #{inspect(provider)}/<model-id>)"
+        end
+
+      _no_provider_declared ->
+        :ok
+    end
+  end
+
+  # Both halves must be non-empty: `"/MiniMax-M2.7"` and `"minimax/"` are not
+  # qualified values, and treating them as one would let the exact defect above
+  # through with a slash for camouflage.
+  defp qualified_model?(value) do
+    case String.split(value, "/", parts: 2) do
+      [provider, model_id] -> provider != "" and model_id != ""
+      _other -> false
+    end
+  end
 
   # `timeout_minutes:` is PHASE-level and intentionally expressed in minutes,
   # not milliseconds, so workflow authors do not encode runtime internals in

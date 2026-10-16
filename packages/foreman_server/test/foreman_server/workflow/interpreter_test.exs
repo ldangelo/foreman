@@ -858,6 +858,109 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end
   end
 
+  describe "models.default must be qualified when the phase declares a provider (TRD-005)" do
+    # The defect this refuses: `provider:` paired with an unqualified
+    # `models.default` is individually valid and jointly unsatisfiable, because
+    # ModelCatalog matches a value with no `/` on the model column alone - so a
+    # search for `MiniMax` is compared against the composed row key
+    # `minimax/MiniMax-M2.7` and can never hit. Every bundled manifest already
+    # declares both correctly; this guard protects hand-authored copies.
+    test "rejects a provider-declaring phase with a bare model value" do
+      path = write_temp_yaml!(model_manifest("MiniMax", "pi"))
+      assert_raise Workflow.MissingRequiredPhaseError, fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "the refusal names the offending value, the phase, and the expected shape" do
+      message =
+        try do
+          Workflow.Interpreter.load!(write_temp_yaml!(model_manifest("MiniMax", "pi")))
+          flunk("expected load!/1 to raise")
+        rescue
+          e in Workflow.MissingRequiredPhaseError -> e.message
+        end
+
+      assert message =~ ~s(got "MiniMax")
+      assert message =~ ~s(expected "pi"/<model-id>)
+      assert message =~ "phase 0"
+    end
+
+    test "accepts the qualified form on the same phase" do
+      path = write_temp_yaml!(model_manifest("minimax/MiniMax-M2.7", "pi"))
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert hd(workflow["phases"])["models"]["default"] == "minimax/MiniMax-M2.7"
+    end
+
+    # Deliberately NOT refused. With no `provider:` declared, an unqualified
+    # value is the documented model-column lookup and matches legitimately, so a
+    # broader rule would break manifests that work today for no gain.
+    test "leaves an unqualified value legal on a phase declaring no provider" do
+      path = write_temp_yaml!(model_manifest("MiniMax", nil))
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "a slash with an empty half is not treated as qualified" do
+      refusals =
+        for value <- ["/MiniMax-M2.7", "minimax/"] do
+          try do
+            Workflow.Interpreter.load!(write_temp_yaml!(model_manifest(value, "pi")))
+            :loaded
+          rescue
+            Workflow.MissingRequiredPhaseError -> :refused
+          end
+        end
+
+      assert refusals == [:refused, :refused]
+    end
+
+    test "only the first slash separates provider from model id" do
+      # String.split(value, "/", parts: 2): a second slash belongs to the model
+      # id, so this reads as qualified rather than malformed.
+      path = write_temp_yaml!(model_manifest("minimax/MiniMax-M2.7/v2", "pi"))
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "every bundled manifest still loads under the qualified-model rule" do
+      # Guards the one failure mode that would make this validator a load-time
+      # brick: a bundled workflow that stops loading once it ships. The set is
+      # discovered from disk, not listed (AGENTS.md 5.5), so a manifest added
+      # later is covered without editing this test.
+      root = Application.app_dir(:foreman_server, "priv/defaults/workflows")
+
+      loaded =
+        for file <-
+              root |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".yaml")) |> Enum.sort() do
+          try do
+            Workflow.Interpreter.load!(Path.join(root, file)) && :ok
+          rescue
+            Workflow.MissingRequiredPhaseError -> {:refused, file}
+          end
+        end
+
+      assert loaded == List.duplicate(:ok, length(loaded))
+      assert length(loaded) > 0
+    end
+  end
+
+  # Builds a single-phase manifest for the TRD-005 qualified-model cases. The
+  # provider line is spliced in by concatenation rather than interpolated inside
+  # the heredoc: interpolating nil there would emit the text "provider: ",
+  # which YAML parses as the empty string rather than as absence.
+  defp model_manifest(model, provider) do
+    provider_line = if is_binary(provider), do: "    provider: #{provider}\n", else: ""
+
+    """
+    name: model-manifest
+    phases:
+      - name: work
+        command: "/skill:x"
+    """ <>
+      provider_line <>
+      """
+          models:
+            default: #{model}
+      """
+  end
+
   defp write_temp_yaml!(contents) do
     directory =
       Path.join(System.tmp_dir!(), "workflow-interpreter-#{System.unique_integer([:positive])}")

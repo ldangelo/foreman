@@ -87,7 +87,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   # Deterministic stand-in for `Jido.Harness.Adapters.Claude` — reports
   # `installed: false` regardless of the real environment, so the
   # provider/model preflight's `not ReadinessCheck.installed?(provider)`
-  # branch (`phase_provider_not_installed`) is exercised without depending
+  # branch (`class: :provider_not_installed`) is exercised without depending
   # on whether `claude` happens to be on PATH in whatever environment the
   # suite runs in. Mirrors the `PiStub`/`ClaudeStub` shape already used in
   # test/foreman_server_web/mcp/tools/doctor_test.exs.
@@ -2898,8 +2898,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert task.status == "failed"
     assert is_binary(task.failure_reason)
+    # The class lives in the run's terminal reason as
+    # %PreflightFailure{class: :provider_unsupported}, not as the old
+    # `:phase_provider_unsupported` tuple atom that TRD-002 replaced.
     assert task.failure_reason =~ ":provider_model_preflight_failed"
-    assert task.failure_reason =~ ":phase_provider_unsupported"
+    assert task.failure_reason =~ "class: :provider_unsupported"
 
     assert run.status == "failed"
     assert run.terminal? == true
@@ -2980,14 +2983,122 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert task.status == "failed"
     assert is_binary(task.failure_reason)
+    # The class lives in the run's terminal reason as
+    # %PreflightFailure{class: :provider_not_installed}, not as the old
+    # `:phase_provider_not_installed` tuple atom that TRD-002 replaced.
     assert task.failure_reason =~ ":provider_model_preflight_failed"
-    assert task.failure_reason =~ ":phase_provider_not_installed"
+    assert task.failure_reason =~ "class: :provider_not_installed"
 
     assert run.status == "failed"
     assert run.terminal? == true
 
     refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
 
+    refute_received {:adapter_execute, _, _}
+
+    assert {:error, :stream_not_found} =
+             EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
+  end
+
+  # AC-007-1, end to end. "Catalog could not be asked" is an infrastructure
+  # defect, not evidence that the model is absent, and the two must not reach
+  # the operator as one reason (§5.3). `preflight_failure_test.exs` proves the
+  # classes render distinctly; this proves the run record itself carries the
+  # unanswered-catalog cause — a non-zero `pi` exit plus its stderr — rather
+  # than the `:model_not_found` the old code collapsed it into. A fake `pi`
+  # that always fails is staged ahead of the real one; `check(:pi, nil)`
+  # returns `:unchecked` without invoking it, so a phase declaring no model
+  # still exercises install-probing against the real binary.
+  test "a catalog that cannot answer fails the run as catalog_unavailable, not model_not_found" do
+    start_schema_cache!()
+    original_path = System.get_env("PATH")
+    bin_dir = Path.join(System.tmp_dir!(), unique_id("preflight-ku-bin"))
+    File.mkdir_p!(bin_dir)
+
+    File.write!(
+      Path.join(bin_dir, "pi"),
+      "#!/bin/sh\necho 'catalog registry unreachable' 1>&2\nexit 7\n"
+    )
+
+    File.chmod!(Path.join(bin_dir, "pi"), 0o755)
+    System.put_env("PATH", bin_dir <> ":" <> (original_path || ""))
+
+    on_exit(fn ->
+      case original_path do
+        nil -> System.delete_env("PATH")
+        path -> System.put_env("PATH", path)
+      end
+
+      File.rm_rf!(bin_dir)
+    end)
+
+    project_id = unique_id("preflight-ku-project")
+    task_id = unique_id("preflight-ku-task")
+    run_id = unique_id("preflight-ku-run")
+    script_key = unique_id("preflight-ku-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("preflight-ku-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    bad_phase =
+      phase_spec(script_key, artifact_dir)
+      |> Map.put(:provider, "pi")
+      |> Map.put(:models, %{"default" => "minimax/NoSuchModel"})
+
+    workflow_snapshot = snapshot([bad_phase])
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+    LifecycleStore.put(script_key, %{test_pid: self()})
+    start_run_executor!(run_id, task_id)
+
+    task =
+      poll_until(
+        fn ->
+          case ProjectionStore.task_projection(task_id) do
+            %{} = t -> if t.status == "failed", do: {:ok, t}, else: nil
+            _ -> nil
+          end
+        end,
+        "task projection to reach failed"
+      )
+
+    assert task.status == "failed"
+    assert task.failure_reason =~ ":provider_model_preflight_failed"
+    assert task.failure_reason =~ "class: :catalog_unavailable"
+    refute task.failure_reason =~ "class: :model_not_found"
+    assert task.failure_reason =~ "catalog registry unreachable"
+
+    # The task read model is one projection; the RUN is the other, and an
+    # operator reading `foreman run get` reads the second. Assert the run's own
+    # terminal outcome and the reason recorded on it, so a failure that reaches
+    # the task but not the run — or reaches the run with the wrong class —
+    # cannot pass. This also pins the projection invariant: `phase.fail`
+    # without `run.fail` would leave the run `in_progress`.
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{status: "failed", terminal?: true} = r -> {:ok, r}
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed + terminal"
+      )
+
+    assert run.failure_reason =~ ":provider_model_preflight_failed"
+    assert run.failure_reason =~ "class: :catalog_unavailable"
+    refute run.failure_reason =~ "class: :model_not_found"
+    assert run.failure_reason =~ "catalog registry unreachable"
+
+    refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
     refute_received {:adapter_execute, _, _}
 
     assert {:error, :stream_not_found} =

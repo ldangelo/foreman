@@ -669,7 +669,7 @@ phases:
   - name: assess
     prompt: assess.md
     models:
-      default: claude-3-5-sonnet
+      default: litellm/claude-3-5-sonnet
 ```
 A phase may also declare `provider:` in its `context:` block to select
 `:litellm` (routes through `~/.pi/agent/models.json` configured
@@ -679,6 +679,43 @@ Foreman does NOT route model selection based on the model name itself —
 it passes the declared model string verbatim to the selected provider's
 command line. The operator decides which provider ships which model
 via `models.json` configuration.
+
+### Qualified model strings
+
+When a phase declares `provider:` and `models.default` together, `models.default`
+MUST be the qualified `"<upstream-provider>/<model-id>"` form the provider's own
+catalog prints (e.g. `minimax/MiniMax-M2.7`) — not a bare vendor or model name.
+A manifest that pairs a `provider:` with an unqualified `models.default` is
+refused at load time, naming the phase index, the offending value, and the
+expected shape; the two declarations would otherwise describe different things
+and could never resolve to a catalog row. Declaring `models.default` alone, with
+no `provider:`, stays legal and matches on the model column only.
+
+### Provider/model preflight
+
+Before a run's first phase dispatches, every phase that declares a `provider:`
+or a `models.default` is checked. Two of those checks are universal and one is
+not: provider support (`:provider_unsupported`) and CLI presence
+(`:provider_not_installed`) are evaluated for every declared provider, but the
+live model-existence query is implemented for `pi` only — a `claude` phase
+whose model the harness cannot load passes this preflight and fails later at
+dispatch. A run that fails stops with zero dispatched phases and its terminal
+reason is
+`{:provider_model_preflight_failed, [%ForemanServer.Workflow.PreflightFailure{}]}`
+— one struct per offending phase, carrying `phase`, `provider`, `model` and a
+`class` that distinguishes four causes:
+
+| `class` | Meaning |
+| --- | --- |
+| `:provider_unsupported` | not a provider Foreman supports |
+| `:provider_not_installed` | supported, but its CLI is absent from this host |
+| `:model_not_found` | the catalog was asked and answered: not present |
+| `:catalog_unavailable` | the catalog could not be asked (timeout, non-zero exit, or `pi` missing from `PATH`) |
+
+An unanswered query is never reported as an absent model — `:catalog_unavailable`
+says "we don't know", `:model_not_found` says "it isn't there". The class lands
+in the run record, so a failure is diagnosable from `foreman run get <run-id>`
+without re-running the dispatch.
 
 ## 7.3 pi provider configuration
 
