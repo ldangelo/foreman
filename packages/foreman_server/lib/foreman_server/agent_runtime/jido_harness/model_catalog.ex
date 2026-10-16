@@ -16,6 +16,12 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
   matches on the `model` column alone, which can match more than one
   upstream provider's catalog entry; that is a real existence check, just not
   provider-scoped.
+
+  Three outcomes stay distinct, because `PreflightFailure` classifies on them
+  and §5.3 forbids collapsing an unanswered question into a negative answer: a
+  table with a matching row, `:model_not_found` (the catalog answered:
+  absent), and `{:error, {:catalog_query_failed, _}}` (the catalog could not be
+  asked: non-zero exit, timeout, or `pi` unreadable).
   """
 
   alias ForemanServer.Telemetry

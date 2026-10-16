@@ -3000,6 +3000,89 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
   end
 
+  # AC-007-1, end to end. "Catalog could not be asked" is an infrastructure
+  # defect, not evidence that the model is absent, and the two must not reach
+  # the operator as one reason (§5.3). `preflight_failure_test.exs` proves the
+  # classes render distinctly; this proves the run record itself carries the
+  # unanswered-catalog cause — a non-zero `pi` exit plus its stderr — rather
+  # than the `:model_not_found` the old code collapsed it into. A fake `pi`
+  # that always fails is staged ahead of the real one; `check(:pi, nil)`
+  # returns `:unchecked` without invoking it, so a phase declaring no model
+  # still exercises install-probing against the real binary.
+  test "a catalog that cannot answer fails the run as catalog_unavailable, not model_not_found" do
+    start_schema_cache!()
+    original_path = System.get_env("PATH")
+    bin_dir = Path.join(System.tmp_dir!(), unique_id("preflight-ku-bin"))
+    File.mkdir_p!(bin_dir)
+
+    File.write!(
+      Path.join(bin_dir, "pi"),
+      "#!/bin/sh\necho 'catalog registry unreachable' 1>&2\nexit 7\n"
+    )
+
+    File.chmod!(Path.join(bin_dir, "pi"), 0o755)
+    System.put_env("PATH", bin_dir <> ":" <> (original_path || ""))
+
+    on_exit(fn ->
+      case original_path do
+        nil -> System.delete_env("PATH")
+        path -> System.put_env("PATH", path)
+      end
+
+      File.rm_rf!(bin_dir)
+    end)
+
+    project_id = unique_id("preflight-ku-project")
+    task_id = unique_id("preflight-ku-task")
+    run_id = unique_id("preflight-ku-run")
+    script_key = unique_id("preflight-ku-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("preflight-ku-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    bad_phase =
+      phase_spec(script_key, artifact_dir)
+      |> Map.put(:provider, "pi")
+      |> Map.put(:models, %{"default" => "minimax/NoSuchModel"})
+
+    workflow_snapshot = snapshot([bad_phase])
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+    LifecycleStore.put(script_key, %{test_pid: self()})
+    start_run_executor!(run_id, task_id)
+
+    task =
+      poll_until(
+        fn ->
+          case ProjectionStore.task_projection(task_id) do
+            %{} = t -> if t.status == "failed", do: {:ok, t}, else: nil
+            _ -> nil
+          end
+        end,
+        "task projection to reach failed"
+      )
+
+    assert task.status == "failed"
+    assert task.failure_reason =~ ":provider_model_preflight_failed"
+    assert task.failure_reason =~ "class: :catalog_unavailable"
+    refute task.failure_reason =~ "class: :model_not_found"
+    assert task.failure_reason =~ "catalog registry unreachable"
+
+    refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
+    refute_received {:adapter_execute, _, _}
+
+    assert {:error, :stream_not_found} =
+             EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
+  end
+
   test "provider-facing lifecycle calls use the task's external_id, not the Foreman task_id" do
     start_schema_cache!()
     test_pid = self()

@@ -669,7 +669,7 @@ phases:
   - name: assess
     prompt: assess.md
     models:
-      default: claude-3-5-sonnet
+      default: litellm/claude-3-5-sonnet
 ```
 A phase may also declare `provider:` in its `context:` block to select
 `:litellm` (routes through `~/.pi/agent/models.json` configured
@@ -708,7 +708,9 @@ stops with zero dispatched phases and its terminal reason is
 | `:catalog_unavailable` | the catalog could not be asked (timeout, non-zero exit, or `pi` missing from `PATH`) |
 
 An unanswered query is never reported as an absent model — `:catalog_unavailable`
-says "we don't know", `:model_not_found` says "it isn't there".
+says "we don't know", `:model_not_found` says "it isn't there". The class lands
+in the run record, so a failure is diagnosable from `foreman run get <run-id>`
+without re-running the dispatch.
 
 ## 7.3 pi provider configuration
 
