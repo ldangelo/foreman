@@ -1987,7 +1987,10 @@ project, tailing its JSONL and auto-dispatching per the mapping above. See
 **BeadsWatcher implements label-based partitioning with opt-IN semantics** to route beads between Foreman and external processors (e.g., human operators, external automation). Only beads tagged with the `"foreman-exec"` label dispatch to Foreman; all others skip and route to external processes.
 
 **Operator workflow:**
-- Include a bead in Foreman dispatch: `br update <bead-id> --labels foreman-exec`
+- Include a bead in Foreman dispatch: `br update <bead-id> --add-label foreman-exec`
+  (NEVER `--labels`: it is an alias of `--set-labels` and REPLACES every existing
+  label — verified on br 0.6.0, where `--labels foreman-exec` dropped `alpha,beta`
+  while `--add-label gamma` appended)
 - Exclude a bead from Foreman dispatch: Omit the flag (default behavior; routes externally)
 
 **Mechanics:**

@@ -887,7 +887,8 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   **Dispatch partitioning via label gate (opt-IN).** By default, only Beads
   tagged with the `"foreman-exec"` label dispatch to Foreman; all others skip
   and route to external processors. Operator workflow: `br update <bead-id>
-  --labels foreman-exec` to include in Foreman dispatch; omit the label to
+  --add-label foreman-exec` to include in Foreman dispatch (never `--labels`,
+  which is an alias of `--set-labels` and replaces all existing labels); omit the label to
   route externally (default). Labels are Beads-native; use `br show <id>
   --json` to verify a bead's labels before claiming. A bead whose `labels`
   field is absent, or is a list without `"foreman-exec"`, routes externally
