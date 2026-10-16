@@ -444,8 +444,16 @@ defmodule ForemanServer.Workflow.Interpreter do
     |> Enum.each(fn {phase, index} -> validate_phase_provider_value!(phase, index, path) end)
   end
 
+  # `PhaseSpec.fetch/2` is the accepted-spellings table (§5.4): the loader's
+  # YAML is string-keyed, but `load/1` output can reach validation through a
+  # `Catalog`-decorated (hybrid-key) or JSON-round-tripped path, and a
+  # per-read `Map.get(m, "k") || Map.get(m, :k)` hedge is the drift §5.4
+  # forbids. The `nil` clause below therefore means "absent or explicit
+  # null", not "not a string key" — `Validator`, which runs before
+  # normalization, already refuses phases without an action outright
+  # (`{:missing_phase_action, index}`), so nothing silently skips this check.
   defp validate_phase_provider_value!(phase, index, path) when is_map(phase) do
-    case Map.get(phase, "provider") do
+    case PhaseSpec.fetch(phase, :provider) do
       nil ->
         :ok
 
@@ -551,8 +559,9 @@ defmodule ForemanServer.Workflow.Interpreter do
   # `provider:` declared, an unqualified value is the documented model-column
   # lookup and matches legitimately, so a broader rule would break manifests
   # that work today for no gain.
+  # Same discipline: read via the one accepted-spellings table, not a hedge.
   defp assert_default_qualified(phase, index, path, default) do
-    case Map.get(phase, "provider") do
+    case PhaseSpec.fetch(phase, :provider) do
       provider when is_binary(provider) and provider != "" ->
         if qualified_model?(default) do
           :ok

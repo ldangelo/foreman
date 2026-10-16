@@ -61,7 +61,14 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
                @pi_row_fn.("minimax", "MiniMax-M3"),
                @pi_row_fn.("anthropic", "sonnet"),
                @pi_row_fn.("anthropic", "shared"),
-               @pi_row_fn.("openrouter", "shared")
+               @pi_row_fn.("openrouter", "shared"),
+               # Live-catalog shape: `pi --list-models openrouter` really does
+               # print rows whose MODEL column contains a slash (e.g.
+               # `openrouter  minimax/minimax-m2.7`). The matcher splits the
+               # SEARCHED value on its first slash only; it never splits the
+               # row's columns, and composing them (the pre-PR form) matches
+               # strings no row carries. See the two slash rows in the matrix.
+               @pi_row_fn.("openrouter", "minimax/minimax-m2.7")
              ],
              "\n"
            )
@@ -166,7 +173,16 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
       {"miss on a value the query filters down to nothing", "no-such-model",
        {:error, {:model_not_found, "no-such-model"}}},
       {"value whose halves are compared case-exactly", "MiniMax/miniMax-m2.7",
-       {:error, {:model_not_found, "MiniMax/miniMax-m2.7"}}}
+       {:error, {:model_not_found, "MiniMax/miniMax-m2.7"}}},
+      # A qualified value whose MODEL half contains a slash is not a legal
+      # `<provider>/<model-id>` spelling of the `openrouter` row it
+      # superficially resembles: split on the FIRST slash pairs provider
+      # `minimax` with model `minimax-m2.7`, and no row carries that pair.
+      {"qualified value cannot re-partition a slashed model column", "minimax/minimax-m2.7",
+       {:error, {:model_not_found, "minimax/minimax-m2.7"}}},
+      # The exact spelling of that row, matched on both columns.
+      {"qualified hit on a row whose model column contains a slash",
+       "openrouter/minimax/minimax-m2.7", :ok}
     ]
 
     for {label, searched, expected} <- tests do
@@ -191,18 +207,116 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
       end)
     end
 
-    test "empty output is a miss, not a crash (TRD-001)" do
-      with_pi(always_pi(""), fn ->
+    test "exit-0 output pi never prints fails closed (TRD-001)" do
+      # §5.3: "I could not read the catalog" and "the model is not in it" are
+      # different answers. `parse_result/2` classifies the whole line set and
+      # refuses `:model_not_found` unless something identifiable as pi's
+      # output was seen, so no garbage can be reported as a negative answer.
+      # The `defp`s below are module-level: ExUnit forbids them inside
+      # `describe`.
+      with_pi(always_pi("Fatal: could not read models.json"), fn ->
+        assert {:error, {:catalog_query_failed, :unrecognized_output}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+    end
+
+    test "empty stdout is a query failure, not an existence answer (TRD-001)" do
+      # `stderr_to_stdout: true` merges the streams, so the ONLY way stdout is
+      # empty at this point is that pi printed nothing at all (e.g. it was
+      # killed before producing output, or a wrapper swallowed it). Either
+      # way the catalog never answered, and §5.3 forbids reporting that as
+      # "model not found".
+      with_pi("#!/bin/sh\nexit 0\n", fn ->
+        assert {:error, {:catalog_query_failed, :empty_output}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+    end
+
+    test "pi's negative banners answer \"not present\" (TRD-001)" do
+      for banner <- ["No models matching \"minimax/MiniMax-M2.7\"", "No models available."] do
+        with_pi(always_pi(banner), fn ->
+          assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+                   ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+        end)
+      end
+    end
+
+    test "a host wrapper notice cannot mask pi's answer (TRD-001)" do
+      # Observed in the wild: a `pi` wrapper prepends
+      # "bili: attaching to running proxy ..." to stdout. Classification is
+      # line-scanned, so the table underneath is still read.
+      wrapper = "bili: attaching to running proxy http://127.0.0.1:4000\n" <> @catalog
+
+      with_pi(always_pi(wrapper), fn ->
+        assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
+      end)
+
+      with_pi(always_pi("bili: attaching to running proxy\nNo models matching \"x\""), fn ->
         assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
     end
 
-    test "a row too short to have two columns is skipped, not matched (TRD-001)" do
-      noisy = @header <> "\n" <> @pi_row_minimax <> "\ntruncated-row"
+    test "a row with fewer than pi's six columns is skipped, not matched (TRD-001)" do
+      # pi's rows carry six whitespace-separated columns. This line has the
+      # right provider/model pair but only five fields, so it is NOT a row pi
+      # printed and must never satisfy a search — otherwise a truncated or
+      # unrelated two/four-token line on stdout could pass as a hit.
+      short = @header <> "\nminimax  MiniMax-M2.7  128k  8k  no"
 
-      with_pi(always_pi(noisy), fn ->
+      with_pi(always_pi(short), fn ->
+        assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+    end
+
+    test "a stray two-token line is not a row (TRD-001)" do
+      notice = @header <> "\nsee docs\n" <> @pi_row_minimax
+
+      with_pi(always_pi(notice), fn ->
+        # The real row still matches the qualified search…
         assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
+
+        # …and a search whose halves the NOTICE happens to spell (its second
+        # token equals the searched model id) is refused: a two-token line is
+        # not a row, so it can never satisfy the bare-model clause either.
+        assert {:error, {:model_not_found, "docs"}} = ModelCatalog.check(:pi, "docs")
+      end)
+    end
+
+    test "a matching row ABOVE the header cannot be reached (TRD-001)" do
+      rows_only = @pi_row_minimax <> "\n" <> @header
+
+      with_pi(always_pi(rows_only), fn ->
+        assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+    end
+  end
+
+  defp row_with_columns(provider, model, extra_columns) do
+    String.pad_trailing(provider, 10) <> String.pad_trailing(model, 20) <> extra_columns
+  end
+
+  describe "row shape (TRD-001)" do
+    test "the guard is a floor, not an equality: an eight-column row still matches" do
+      padded =
+        row_with_columns("minimax", "MiniMax-M2.7", "  128k  8k  no  yes  extra  more")
+
+      with_pi(always_pi(@header <> "\n" <> padded), fn ->
+        assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
+      end)
+    end
+
+    # The same helper with one fewer column must NOT match — the negative of
+    # the case above, so neither `length(rest) == 4` nor a laxer guard can
+    # quietly replace `>= 4`.
+    test "a five-column row built by the same helper does not match" do
+      short = row_with_columns("minimax", "MiniMax-M2.7", "  128k  8k  no")
+
+      with_pi(always_pi(@header <> "\n" <> short), fn ->
+        assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+                 ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
     end
   end
