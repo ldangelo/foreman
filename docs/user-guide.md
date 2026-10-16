@@ -645,12 +645,16 @@ Provider semantics:
 - Requests default to `:pi` unless runtime context sets
   `provider: :claude`.
 - A LiteLLM proxy is NOT a provider here: it is a model dispatcher
-  reached *through* the `:pi` (or `:claude`) provider by declaring a model
-  name the proxy serves. `:litellm` is not a valid `provider:` value —
-  it returns `:unsupported_provider`. To route through a proxy, configure
-  the provider entry with its `baseUrl` in `~/.pi/agent/models.json` (the
-  pi coding agent reads that file for custom provider definitions) and
-  reference one of its models, qualified, in `models.default`.
+  reached *through* the `:pi` provider by declaring a model name the proxy
+  serves. `:litellm` is not a valid `provider:` value — it returns
+  `:unsupported_provider`. To route through a proxy, configure the provider
+  entry with its `baseUrl` and an explicit `models` array in
+  `~/.pi/agent/models.json` (the pi coding agent reads that file for custom
+  provider definitions; pi 1.2.0 does not discover models from `baseUrl`
+  alone) and reference one of its models, qualified, in `models.default`.
+  Routing a proxy through `:claude` instead requires that endpoint to be
+  configured on the claude side (`ANTHROPIC_BASE_URL` via the adapter's env),
+  which `~/.pi/agent/models.json` does not affect.
 - Unknown providers return `:unsupported_provider`.
 - A selected but unavailable provider returns `:backend_unavailable`
   without falling back to another provider.
@@ -731,7 +735,13 @@ when pi itself knows the proxy — a provider entry in
     "litellm-stack": {
       "baseUrl": "http://127.0.0.1:4000/v1",
       "api": "openai-completions",
-      "apiKey": "<the proxy master key>"
+      "apiKey": "<the proxy master key>",
+      // pi 1.2.0 does not discover models from `baseUrl` alone: an omitted
+      // `models` array is an EMPTY list, so name every model you intend to
+      // reference or `pi --list-models` returns no rows for this provider.
+      "models": [
+        { "id": "smart_router" }
+      ]
     }
   }
 }
