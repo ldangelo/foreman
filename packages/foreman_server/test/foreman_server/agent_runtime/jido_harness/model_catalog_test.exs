@@ -169,6 +169,15 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
       {"qualified hit is not satisfied by a bare vendor prefix", "minimax/MiniMax",
        {:error, {:model_not_found, "minimax/MiniMax"}}},
       {"unqualified hit on the model column alone", "MiniMax-M2.7", :ok},
+      # `"/MiniMax-M2.7"` splits on the FIRST slash into an EMPTY provider half,
+      # so `split_qualified/1` classifies it as a bare model id and the leading
+      # slash travels to the model-column comparison, where it cannot match.
+      # Under the old whole-string matchers a slash made a value look qualified
+      # and it was compared against the composed row, so this spelling used to
+      # pass; it is pinned here as a deliberate behavior change, not a
+      # regression.
+      {"a leading slash is an empty provider, not a qualified value", "/MiniMax-M2.7",
+       {:error, {:model_not_found, "/MiniMax-M2.7"}}},
       {"unqualified value matching the same model id under two providers", "shared", :ok},
       {"miss on a value the query filters down to nothing", "no-such-model",
        {:error, {:model_not_found, "no-such-model"}}},
@@ -251,21 +260,39 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
         assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
       end)
 
+      # The banner must name the search pi was actually handed — `check/2`
+      # passes `model` to the CLI, and `list-models.ts` echoes it back. A
+      # banner naming a DIFFERENT search is not an answer to this one, so the
+      # second case below is the one that pins that distinction.
+      with_pi(
+        always_pi(
+          "bili: attaching to running proxy\nNo models matching \"minimax/MiniMax-M2.7\""
+        ),
+        fn ->
+          assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+                   ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+        end
+      )
+
+      # Same banner shape, foreign query: pi never answered THIS search, so the
+      # output must not be read as "not present" (§5.3).
       with_pi(always_pi("bili: attaching to running proxy\nNo models matching \"x\""), fn ->
-        assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+        assert {:error, {:catalog_query_failed, :unrecognized_output}} =
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
     end
 
+    # Superseded by the row-shape describe block below: a short row that NAMES
+    # the searched model is now classified `{:catalog_query_failed,
+    # {:malformed_row, _}}`, not `:model_not_found`. The case where the short
+    # line is about some OTHER model is pinned by "a stray two-token line is
+    # not a row" and by "an unrelated truncated row does not poison a clean
+    # hit", which is what this test originally proved.
     test "a row with fewer than pi's six columns is skipped, not matched (TRD-001)" do
-      # pi's rows carry six whitespace-separated columns. This line has the
-      # right provider/model pair but only five fields, so it is NOT a row pi
-      # printed and must never satisfy a search — otherwise a truncated or
-      # unrelated two/four-token line on stdout could pass as a hit.
       short = @header <> "\nminimax  MiniMax-M2.7  128k  8k  no"
 
       with_pi(always_pi(short), fn ->
-        assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+        assert {:error, {:catalog_query_failed, {:malformed_row, _}}} =
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
       end)
     end
@@ -277,10 +304,14 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
         # The real row still matches the qualified search…
         assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
 
-        # …and a search whose halves the NOTICE happens to spell (its second
-        # token equals the searched model id) is refused: a two-token line is
-        # not a row, so it can never satisfy the bare-model clause either.
-        assert {:error, {:model_not_found, "docs"}} = ModelCatalog.check(:pi, "docs")
+        # …and under the bare search `docs`, the NOTICE carries the searched
+        # model id in its second token and fewer than pi's six columns. It is
+        # not a row, but neither is its readability in question — the honest
+        # answer is "I could not read this output", never "the catalog says
+        # this model is absent" (§5.3): a false negative would fail a run over
+        # a line of prose.
+        assert {:error, {:catalog_query_failed, {:malformed_row, "see docs"}}} =
+                 ModelCatalog.check(:pi, "docs")
       end)
     end
 
@@ -308,15 +339,25 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalogTest do
       end)
     end
 
-    # The same helper with one fewer column must NOT match — the negative of
-    # the case above, so neither `length(rest) == 4` nor a laxer guard can
-    # quietly replace `>= 4`.
-    test "a five-column row built by the same helper does not match" do
+    # A truncated row ABOUT THE SEARCHED MODEL is unreadable output, not a
+    # negative answer (§5.3): the catalog did not say "this model is absent",
+    # it said something we could not parse. The same helper's rows for OTHER
+    # models stay inert — see "an unrelated truncated row does not poison a
+    # clean hit" below.
+    test "a five-column row naming the searched model is a query failure" do
       short = row_with_columns("minimax", "MiniMax-M2.7", "  128k  8k  no")
 
       with_pi(always_pi(@header <> "\n" <> short), fn ->
-        assert {:error, {:model_not_found, "minimax/MiniMax-M2.7"}} =
+        assert {:error, {:catalog_query_failed, {:malformed_row, ^short}}} =
                  ModelCatalog.check(:pi, "minimax/MiniMax-M2.7")
+      end)
+    end
+
+    test "an unrelated truncated row does not poison a clean hit" do
+      noise = row_with_columns("minimax", "MiniMax-M3", "  128k  8k  no")
+
+      with_pi(always_pi(@header <> "\n" <> noise <> "\n" <> @pi_row_minimax), fn ->
+        assert ModelCatalog.check(:pi, "minimax/MiniMax-M2.7") == :ok
       end)
     end
   end
