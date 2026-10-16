@@ -379,8 +379,8 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 > `foreman run submit`" — the first two verbs were deleted on
 > 2026-09-13 (see the note at the top of this file). Start work today
 > by creating or opening a bead (`br create`, or `br update <id>
-> --status=open`) and labeling it for Foreman (`br update <id> --labels
-> foreman-exec`) — BeadsWatcher dispatches the internal `task.create` +
+> --status=open`) and labeling it for Foreman (`br update <id> --add-label
+> foreman-exec` — `--labels` would REPLACE all existing labels) — BeadsWatcher dispatches the internal `task.create` +
 > `task.approve` commands automatically for open, labeled beads; unlabeled
 > beads are left for external processors (see the label gate in
 > [`docs/user-guide.md`](../docs/user-guide.md)).
