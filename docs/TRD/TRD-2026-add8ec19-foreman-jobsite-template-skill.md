@@ -39,7 +39,8 @@ Jobsite API's accepted shape, auth, or operator gates.
 
 - **D1 — skill location (PRD A1).** Ship at
   `.claude/skills/foreman-jobsite-template/` in this repo (repo-local discovery
-  in Claude Code sessions opened on Foreman). `.claude/` is not gitignored.
+  in Claude Code sessions opened on Foreman). No `.gitignore` rule in this
+  repository matches `.claude/`, so files placed there are tracked normally.
   Packaging into the ensemble plugin (so the jobsite Docker image has it) is a
   follow-up, not this slice. [NEEDS CLARIFICATION: confirm repo-local is
   sufficient for acceptance.]
@@ -53,10 +54,13 @@ Jobsite API's accepted shape, auth, or operator gates.
   sandbox enabled, `claude` provider. [NEEDS CLARIFICATION: confirm provider and
   model for the recorded smoke run.]
 - **Provider list source.** PRD REQ-007 lists `pi`/`claude`/`litellm` from
-  CLAUDE.md §5.1, but `JidoHarness.providers/0` currently returns
-  `[:pi, :claude]`. The contract takes providers from code, and the drift test
-  pins it there. CLAUDE.md §5.1's `litellm` mention is a pre-existing doc
-  discrepancy to flag in TRD-008, not to fix by widening the list.
+  `CLAUDE.md` §5.1, but `JidoHarness.providers/0` returns `[:pi, :claude]`
+  (`packages/foreman_server/lib/foreman_server/agent_runtime/jido_harness.ex`,
+  `@supported_providers`) — verified against source on the branch this TRD is
+  proposed for, and against `origin/main`. The contract takes providers from
+  code, and the drift test pins it there. `CLAUDE.md` §5.1's `litellm` mention
+  is a pre-existing doc discrepancy to flag in TRD-008, not to fix by widening
+  the list.
 
 ## Architecture Decision
 
