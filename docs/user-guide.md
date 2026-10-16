@@ -763,6 +763,23 @@ pi catalog preflight fails with `model_not_found`. A proxy that does not
 define `smart_router` returns `400 Invalid model name` instead. After editing
 bundled workflows run `foreman init --force` to refresh the installed copies.
 
+### 7.4 Bundled skills
+
+Skills bundled at
+`packages/foreman_server/priv/defaults/skills/<name>/SKILL.md` are installed to
+`~/.foreman/skills/<name>/` by `ForemanServer.Skills.Installer`, which the
+workflow catalog invokes at server boot when that directory holds no skill yet.
+The install is once-only by design: an existing `SKILL.md` is never overwritten,
+so an operator edit survives restarts. To refresh installed skills after editing
+a bundled one, delete the installed directory (or the whole `~/.foreman/skills`
+directory) and restart the server; `foreman init --force` refreshes workflows
+and prompts only, not skills.
+
+`foreman-jobsite-template` is the bundled skill for authoring Remote Jobsite
+scripts: it turns a natural-language description into a `Jobsite.Spec.from_json/2`
+whitelist-compliant spec plus its `.exs` runner, and its `scripts/validate_spec.py`
+checks the spec offline against the same key rules the server enforces.
+
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 
 Local stack topology:

@@ -146,6 +146,9 @@ defmodule ForemanServer.Workflow.Catalog do
 
     state = %{catalog: catalog, manifests: %{}, prompts: %{}, type_to_workflow: %{}}
     state = ensure_installed(state)
+
+    _ = ForemanServer.Skills.Installer.maybe_install()
+
     state = load_manifests(state)
     state = load_prompts(state)
     schedule_poll()
