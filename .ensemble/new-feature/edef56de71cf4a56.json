@@ -1,0 +1,79 @@
+{
+  "runId": "edef56de71cf4a56",
+  "projectRoot": "/Users/ldangelo/Development/Fortium/foreman/.foreman/worktrees/jobsite-foreman-r3i7",
+  "idea": "BeadsWatcher run fails preflight: minimax/MiniMax-M2.7 model_not_found\n\nBug: BeadsWatcher-dispatched run fails preflight with :provider_model_preflight_failed / :model_not_found for `minimax/MiniMax-M2.7` (observed run-0381b526... for bead foreman-8qge).\n\nReproduce: start server with FOREMAN_START_BEADS_WATCHER=true, a registered project with a bead labeled foreman-exec, status open, issue_type task/bug; watch the run fail in `foreman run get <id>`.\nInvestigate: which provider/model catalog (pi) lacks minimax/MiniMax-M2.7 vs what the workflow's models.default selects; fix the catalog lookup or the workflow default. Root cause not yet determined.",
+  "status": "active",
+  "stage": "implementation_approval",
+  "stageOutcome": {
+    "kind": "success",
+    "detail": "beads_plan succeeded: epic foreman-pfta, 3 PR stories (foreman-7b8b foreman-k9zf foreman-btpo), 22 task beads (11 impl + 11 explicit -TEST siblings, synthesizedTests 0), 45/45 dependency edges wired, bv cycle_count 0, all task beads labeled foreman-exec. Plan summary at .ensemble/plans/trd-2026-44b49f94-beads-watcher-model-preflight-plan.md",
+    "recordedAt": "2026-10-15T23:55:00Z"
+  },
+  "artifacts": [
+    {
+      "type": "prd",
+      "path": "docs/PRD/PRD-2026-44b49f94-beads-watcher-model-preflight.md",
+      "documentId": "PRD-2026-44b49f94",
+      "version": "1.0.0",
+      "producingStage": "prd_create",
+      "recordedAt": "2026-10-15T23:36:00Z"
+    },
+    {
+      "type": "prd",
+      "path": "docs/PRD/PRD-2026-44b49f94-beads-watcher-model-preflight.md",
+      "documentId": "PRD-2026-44b49f94",
+      "version": "1.0.1",
+      "producingStage": "prd_refine",
+      "recordedAt": "2026-10-15T23:38:00Z"
+    },
+    {
+      "type": "trd",
+      "path": "docs/TRD/TRD-2026-44b49f94-beads-watcher-model-preflight.md",
+      "documentId": "TRD-2026-44b49f94",
+      "version": "1.0.0",
+      "producingStage": "trd_create",
+      "recordedAt": "2026-10-15T23:40:00Z"
+    },
+    {
+      "type": "trd",
+      "path": "docs/TRD/TRD-2026-44b49f94-beads-watcher-model-preflight.md",
+      "documentId": "TRD-2026-44b49f94",
+      "version": "1.0.1",
+      "producingStage": "trd_refine",
+      "recordedAt": "2026-10-15T23:48:30Z"
+    }
+  ],
+  "beadRefs": [
+    "foreman-pfta",
+    "foreman-7b8b",
+    "foreman-k9zf",
+    "foreman-btpo",
+    "foreman-nlrv",
+    "foreman-20cw",
+    "foreman-l9d3",
+    "foreman-i2yk",
+    "foreman-36ph",
+    "foreman-c34b",
+    "foreman-x0ky",
+    "foreman-73ds",
+    "foreman-yzcu",
+    "foreman-n1bc",
+    "foreman-e69d",
+    "foreman-aj2b",
+    "foreman-88us",
+    "foreman-7uxo",
+    "foreman-s4kk",
+    "foreman-ihe2",
+    "foreman-95pt",
+    "foreman-03wi",
+    "foreman-54zt",
+    "foreman-7bm7",
+    "foreman-armo",
+    "foreman-5ffs"
+  ],
+  "implementationApprovedAt": null,
+  "prApprovedAt": null,
+  "revision": 5,
+  "createdAt": "2026-10-15T23:34:13.986Z",
+  "updatedAt": "2026-10-16T00:09:26.916Z"
+}
