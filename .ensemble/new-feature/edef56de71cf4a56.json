@@ -73,9 +73,9 @@
   ],
   "implementationApprovedAt": "2026-10-16T01:20:00Z",
   "prApprovedAt": "2026-10-16T01:20:00Z",
-  "revision": 8,
+  "revision": 9,
   "createdAt": "2026-10-15T23:34:13.986Z",
-  "updatedAt": "2026-10-16T06:36:20Z",
+  "updatedAt": "2026-10-16T06:38:48Z",
   "decisions": [
     {
       "gate": "implementation_approval",
@@ -111,6 +111,13 @@
       "decidedBy": "agent",
       "decision": "reported, not worked around",
       "rationale": "Two commit messages were silently rewritten by this repo's commit-msg hook and one was then rejected. Verified root cause: `git_ops.check_message`, given no path argument, reads `Path.join(Config.repository_path(), \".git/COMMIT_EDITMSG\")`, and `repository_path` is compile-time-pinned to the MAIN checkout (/Users/ldangelo/Development/Fortium/foreman). `git rev-parse --git-path hooks` from a linked worktree resolves to <main>/.git/hooks, so the hook validates the main checkout's COMMIT_EDITMSG \u2014 another worktree's buffer \u2014 never the message git just wrote. Proof: a deliberately-failing fake commit made here left <main>/.git/COMMIT_EDITMSG holding this worktree's message while the main checkout's own HEAD was unrelated. What happens then depends on that stale buffer, not on my message: '...stay distinct' arrived as '...distinct' and failed the Conventional Commit pattern. Main HEAD restored to 13a756eb; the probe commit d87146b4 carries no ref. Worked around locally by passing -F a file inside this worktree. NOT fixed in code in this PR: it is outside this change's scope, and a careless fix (treat an absent argument as a pass) would silently disable a real gate for every genuine commit. Needs its own bead."
+    },
+    {
+      "gate": "beads_session_protocol",
+      "decidedAt": "2026-10-16T06:38:48Z",
+      "decidedBy": "agent",
+      "decision": "abort sync, report to operator",
+      "rationale": "br sync --flush-only exits 7 in this worktree and the coverage gate reports drift (db 941 vs jsonl 913, workspace_health degraded, dirty_count 0, jsonl_newer true). Refused --flush-only --force: 28 DB-only issues predate this task (my diff stages no .beads change), dirty_count 0 means the DB already believes it is fully exported, and jsonl_newer true locates the divergence in the file rather than the DB \u2014 so a DB-authoritative force-push would export another branch's beads into this branch. --reconcile --dry-run (lossless) reports Create: 0 Update: 0, 5 tombstone-protected, 28 DB-only untouched. Count-based gate cannot tell 'belongs here' from 'belongs to another session', and AGENTS.md records a --force-jsonl run that destroyed ~580 issues. Escalated to the operator, posted on PR #553. No br recovery command executed."
     }
   ],
   "pullRequest": {
