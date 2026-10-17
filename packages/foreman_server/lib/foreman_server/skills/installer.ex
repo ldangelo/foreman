@@ -45,7 +45,8 @@ defmodule ForemanServer.Skills.Installer do
 
   # The bundled tree lives in the application's `priv/`, which a Mix release ships even when
   # it does not ship the source tree — so the RUNTIME path is resolved through
-  # `Application.priv_dir/2` (`priv_dir/0` below), never from `__DIR__`. `__DIR__` is baked at
+  # `Application.app_dir(:foreman_server, "priv/defaults/skills")` (`bundled_skills_source/1`
+  # below), never from `__DIR__`: a `__DIR__` path is baked at
   # compile time and would name a path that does not exist in a release, in which case
   # `list_skill_dirs/1` reads a missing directory as an empty bundle and the install reports a
   # successful-looking no-op with zero skills installed (§5.2). The compile-time attributes
@@ -217,6 +218,10 @@ defmodule ForemanServer.Skills.Installer do
   # `install/1` (an explicit `:source_dir` the caller named) reports `:source_dir_missing`, and
   # the auto-install path reports `:bundled_skills_missing` so the boot hook can say which
   # bundle it looked in.
+  # The first code has no production caller today: the only caller of `install/1` is the boot
+  # hook, which resolves the bundle itself, and no CLI flag or MCP tool sets a skills
+  # `:source_dir` (`workflow.go:72` sets one for the *workflow* installer, a different module).
+  # It is kept because §5.3 wants the two causes separable if such a caller is added.
   #
   # Empty stays `{:ok, []}` on both paths. It is a different fact from absent, and it is a
   # legitimate configuration rather than a defect: `Workflow.Install`'s own boot guard is
