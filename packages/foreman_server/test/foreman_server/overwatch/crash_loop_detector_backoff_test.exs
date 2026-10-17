@@ -61,8 +61,14 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
   end
 
   defp wait_until(fun, timeout_ms \\ 1_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(fun, System.monotonic_time(:millisecond) + timeout_ms)
+  end
 
+  # The deadline must be threaded through the recursion. Passing `0` as the second argument
+  # and recomputing `deadline` on every re-entry means the budget is spent before the first
+  # retry is attempted, so this returned after a single 5 ms sleep regardless of the
+  # `timeout_ms` the caller asked for.
+  defp do_wait(fun, deadline) do
     if fun.() do
       :ok
     else
@@ -70,7 +76,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
         flunk("wait_until timed out")
       else
         Process.sleep(5)
-        wait_until(fun, 0)
+        do_wait(fun, deadline)
       end
     end
   end
@@ -137,11 +143,19 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
 
-        # Verify attempt counter increments per attempt.
-        attempt_count = CrashLoopDetector.attempt_count(detector)
-        assert Map.get(attempt_count, {worker_id, run_id}) == attempt
+        # The counter is written by the detector's `handle_cast`, reached only after
+        # `Process.exit` is delivered to Tracker, Tracker's `:DOWN` `handle_info` runs, and
+        # `Tracker.notify_crash_loop_detector/2` casts to the detector. Three async handoffs,
+        # so the observable must be awaited, never assumed after a fixed sleep.
+        wait_until(
+          fn ->
+            Map.get(CrashLoopDetector.attempt_count(detector), {worker_id, run_id}) == attempt
+          end,
+          2_000
+        )
+
+        assert Map.get(CrashLoopDetector.attempt_count(detector), {worker_id, run_id}) == attempt
 
         status = CrashLoopDetector.status(detector)
 
