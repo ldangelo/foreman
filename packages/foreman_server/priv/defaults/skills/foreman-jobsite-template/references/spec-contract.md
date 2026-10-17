@@ -126,3 +126,15 @@ Fan-out ("decompose into N jobsites, merge results") lives in the `.exs` script:
 start N specs, poll, merge. It cannot be expressed in one spec, because the
 event/reply plumbing (`on_event`, `reply_to`) is forbidden on the remote path by
 design. See `templates/parallel.exs`.
+
+`Jobsite.merge_into/2` merges a completed jobsite's branch **only into the branch
+currently checked out in the server's copy of the repo**, and names the result:
+`{:ok, %{jobsite_id:, branch:, merged_into:}}`. A mismatch is a 409, never a silent
+target switch. The target is therefore server state the spec does not control, so
+`templates/parallel.exs` reads it from `FOREMAN_MERGE_INTO` and raises when unset —
+defaulting it to `main` would merge a fan-out into whatever branch the server
+happened to be sitting on.
+
+The bundled `parallel` template at
+`packages/foreman_cli/cmd/foreman/templates/parallel/parallel.exs` is the same
+shape and reads the same `FOREMAN_MERGE_INTO` name.

@@ -230,6 +230,12 @@ nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27
 checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
 (see the user guide's Remote Jobsite API section for the server-side config).
 `iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` (positive integer, default 20) and `FOREMAN_AGENT_ENV` (comma-separated names of shell variables passed to the agent; the server must allowlist them, see the user guide).
+`parallel` additionally reads `FOREMAN_MERGE_INTO` — the branch the merge step
+targets, which must be the branch currently checked out in the *server's* copy of
+the repo, since `Jobsite.merge_into/2` refuses any other target (409). Unlike
+`FOREMAN_PROJECT_ID` it has no default, so an unset value fails the script only
+after the fan-out completes, not at start.
+
 `review` and `triage` call `ForemanServer.Jobsite` directly and must run inside
 a booted `foreman_server` app (`mix run`, not `mix run --no-start`), e.g. from a
 Foreman checkout: `cd packages/foreman_server && mix run ../../.foreman/review.exs`.
