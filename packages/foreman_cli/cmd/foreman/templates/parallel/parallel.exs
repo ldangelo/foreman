@@ -57,6 +57,14 @@ start_one = fn task ->
   end
 end
 
+# `timeout:` is per worker, not aggregate: fast items still land on their own arms
+# while a slow one is killed (verified: 3 fast workers under `timeout: 700` return
+# normally alongside one `{:exit, :timeout}`). `:infinity`, which this used to carry,
+# never returns at all -- a hung request blocks the script forever rather than
+# reporting a failure. 30 s matches `:httpc`'s own timeouts
+# (foreman_client/lib/foreman/client.ex:167), so a killed worker is one the transport
+# had already given up on.
+
 # async_stream is ordered, so result N belongs to task N — including when a worker is
 # killed, where the stream yields `{:exit, reason}` with no task to echo. Pairing
 # positionally (not by what the worker returned) is what keeps a timeout attributable.

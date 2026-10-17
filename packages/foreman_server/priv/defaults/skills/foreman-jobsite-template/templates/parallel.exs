@@ -59,7 +59,7 @@ specs =
 # The `fn` closes over `client` directly rather than via `&`/`&1`: a bare
 # `&name(a, &1)` resolves `name` to a *function*, never a same-named variable, and
 # `Function.capture/3` rejects anonymous functions outright.
-#
+
 start_trapped = fn spec ->
   try do
     Foreman.Client.start(client, spec)
@@ -72,23 +72,20 @@ end
 # concurrency cap, so starting serially and waiting per-item wastes the fan-out.
 #
 # `Task.async_stream/3` yields `{:ok, inner}` per item, where `inner` is
-# `Foreman.Client.start/2`'s
-# `{:ok, id} | {:error, why}`. Server refusals (`{:error, {status, body}}` from a 4xx) and
-# transport
-# failures (`{:error, {:transport, reason}}`) both land on the `{:error, why}` arm; matching
-# only the
-# two success-shaped arms in a reduce is what made the previous version raise `MatchError`
-# and take
-# the whole fan-out down for one item.
+# `Foreman.Client.start/2`'s `{:ok, id} | {:error, why}`. Server refusals
+# (`{:error, {status, body}}` from a 4xx) and transport failures
+# (`{:error, {:transport, reason}}`, produced at client.ex:148) both land on the
+# `{:error, why}` arm; matching only the two success-shaped arms in a reduce is what
+# made the previous version raise `MatchError` and take the whole fan-out down for
+# one item.
 #
-# `timeout:` is per worker, not aggregate. The 5_000 ms default would report a merely slow
-# server as
-# a start failure, so it is raised to 30 s to match `:httpc`'s own connect/read timeout
-# (client.ex:139).
-# `on_timeout: :kill_task` stops an abandoned worker from lingering. A killed worker yields
-# `{:exit, :timeout}` and cannot name itself, so results are zipped positionally with
-# `items` below (async_stream
-# preserves input order), which is what makes a timeout attributable to a fan-out unit.
+# `timeout:` is per worker, not aggregate, so fast items still land on their own arms
+# while a slow one is killed. Its 5_000 ms default would report a merely slow server as
+# a start failure, so it is raised to 30 s to match `:httpc`'s own timeouts
+# (client.ex:167; HTTPS adds ssl options at :156-157). `on_timeout: :kill_task` stops an
+# abandoned worker from lingering. A killed worker cannot name itself, so results are
+# zipped positionally with `items` below -- async_stream preserves input order -- which
+# is what makes a timeout attributable to a specific fan-out unit.
 start_results =
   Task.async_stream(specs, start_trapped,
     max_concurrency: length(specs),
