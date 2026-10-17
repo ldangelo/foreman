@@ -1,3 +1,28 @@
+defmodule ForemanServer.Skills.Digest do
+  @moduledoc false
+
+  @doc """
+  The bundled-skills fingerprint digest: `md5` of `"name\\0SKILL.md-body"` for each skill,
+  with the read error in place of the body when a `SKILL.md` is absent or unreadable — so a
+  vanished file is a change too, not a silent no-op.
+
+  Digesting CONTENT rather than names is what lets `__mix_recompile__?/0` tell a bundle EDIT
+  from a bundle RENAME. Individual `@external_resource` declarations are not a substitute for
+  it: they do not cover a directory being added or removed.
+  """
+  @spec digest([String.t()], Path.t()) :: binary()
+  def digest(names, source_dir) do
+    names
+    |> Enum.map_join("\n", fn name ->
+      case File.read(Path.join([source_dir, name, "SKILL.md"])) do
+        {:ok, body} -> "#{name}\0#{body}"
+        {:error, reason} -> "#{name}\0#{inspect(reason)}"
+      end
+    end)
+    |> then(&:erlang.md5/1)
+  end
+end
+
 defmodule ForemanServer.Skills.Installer do
   @moduledoc """
   Installs bundled skill files from `priv/defaults/skills/` into the operator's
@@ -18,53 +43,84 @@ defmodule ForemanServer.Skills.Installer do
   overwrites everything in its source.
   """
 
-  @bundled_skills_source Path.join([
-                           __DIR__,
-                           "..",
-                           "..",
-                           "..",
-                           "priv",
-                           "defaults",
-                           "skills"
-                         ])
+  # The bundled tree lives in the application's `priv/`, which a Mix release ships even when
+  # it does not ship the source tree — so the RUNTIME path is resolved through
+  # `Application.priv_dir/2` (`priv_dir/0` below), never from `__DIR__`. `__DIR__` is baked at
+  # compile time and would name a path that does not exist in a release, in which case
+  # `list_skill_dirs/1` reads a missing directory as an empty bundle and the install reports a
+  # successful-looking no-op with zero skills installed (§5.2). The compile-time attributes
+  # below still use `__DIR__`, and correctly so: they only run during compilation, where the
+  # source tree exists by definition.
+  @source_tree_bundled_dir Path.join([
+                             __DIR__,
+                             "..",
+                             "..",
+                             "..",
+                             "priv",
+                             "defaults",
+                             "skills"
+                           ])
 
-  @bundled_skill_dirs @bundled_skills_source
+  # The fingerprint digest itself lives in `ForemanServer.Skills.Digest`, defined at the top of
+  # this file, because a module attribute cannot call a `def` of its OWN module: attributes are
+  # evaluated during body expansion, before the function table exists, so
+  # `@fingerprint skills_digest(...)` fails with "undefined function skills_digest/2 (there is
+  # no such import)" regardless of where the `def` sits. A separate `defmodule` IS compiled at
+  # its definition point, so calling into one works. Both this attribute and
+  # `__mix_recompile__?/0` go through that one function, so the two can never disagree about
+  # what "changed" means — a divergence would silently stop the recompile check from seeing
+  # content edits, which is the bug this digest exists to prevent.
+  # Compile-time only, deliberately sourced from `@source_tree_bundled_dir`: this list and the
+  # fingerprint below exist to make Mix recompile the module when the bundled tree changes.
+  # They never run in a release, so the source-tree path is the correct input here. Runtime
+  # resolution is `bundled_skills_source/0`.
+  @bundled_skill_dirs @source_tree_bundled_dir
                       |> File.ls!()
                       |> Enum.filter(fn name ->
-                        File.dir?(Path.join(@bundled_skills_source, name))
+                        File.dir?(Path.join(@source_tree_bundled_dir, name))
                       end)
                       |> Enum.sort()
 
   for dir <- @bundled_skill_dirs do
-    skill_md = Path.join([@bundled_skills_source, dir, "SKILL.md"])
+    skill_md = Path.join([@source_tree_bundled_dir, dir, "SKILL.md"])
     if File.regular?(skill_md), do: @external_resource(skill_md)
   end
 
-  # Digests the CONTENT of every SKILL.md, not just the directory names. A
-  # name-list fingerprint could not tell a bundle edit from a bundle rename, and
-  # `__mix_recompile__?/0` returning false is what let a stale `@bundled_skill_dirs`
-  # survive into a released binary (AGENTS.md §5.5). Individual `@external_resource`
-  # declarations are not a substitute: they do not cover a directory being added or
-  # removed, which is what this list is derived from.
-  @bundled_skills_fingerprint :erlang.md5(
-                                Enum.map_join(@bundled_skill_dirs, "\n", fn dir ->
-                                  case File.read(
-                                         Path.join([@bundled_skills_source, dir, "SKILL.md"])
-                                       ) do
-                                    {:ok, body} -> "#{dir}\0#{body}"
-                                    {:error, reason} -> "#{dir}\0#{inspect(reason)}"
-                                  end
-                                end)
+  @bundled_skills_fingerprint ForemanServer.Skills.Digest.digest(
+                                @bundled_skill_dirs,
+                                @source_tree_bundled_dir
                               )
+
+  @doc """
+  The directory bundled skills are copied FROM at runtime.
+
+  `Application.app_dir/2`, the same idiom `Workflow.Install.bundled_source_dir/0` uses for the
+  bundled workflows (`workflow/install.ex:186`): a Mix release ships the application's `priv/`
+  even when it does not ship the source tree, so this is the only path that resolves in both
+  `mix`/`iex -S mix` and a release. Under `mix`, `app_dir` already points at `_build/<env>/lib/foreman_server`,
+  whose `priv` is the symlink Mix creates to the checkout's `priv/`, so the release path exists
+  there too.
+
+  The source-tree path is kept as a fallback for a bare-`:code` load where the app directory
+  has no `priv` (for instance `mix run --no-mix-exs` or an unusual `--path`), because
+  `list_skill_dirs/1` reads a missing directory as an EMPTY BUNDLE and would report a
+  successful-looking no-op with zero skills installed (§5.2). It is a fallback, not the
+  mechanism: `__DIR__` is baked at compile time and does not exist in a sourceless release.
+  """
+  @spec bundled_skills_source() :: Path.t()
+  def bundled_skills_source do
+    release = Application.app_dir(:foreman_server, "priv/defaults/skills")
+    if File.dir?(release), do: release, else: @source_tree_bundled_dir
+  end
 
   @doc false
   def __mix_recompile__? do
     current =
-      case File.ls(@bundled_skills_source) do
+      case File.ls(@source_tree_bundled_dir) do
         {:ok, entries} ->
           entries
           |> Enum.filter(fn name ->
-            File.dir?(Path.join(@bundled_skills_source, name))
+            File.dir?(Path.join(@source_tree_bundled_dir, name))
           end)
           |> Enum.sort()
 
@@ -72,15 +128,8 @@ defmodule ForemanServer.Skills.Installer do
           []
       end
 
-    digest =
-      Enum.map_join(current, "\n", fn dir ->
-        case File.read(Path.join([@bundled_skills_source, dir, "SKILL.md"])) do
-          {:ok, body} -> "#{dir}\0#{body}"
-          {:error, reason} -> "#{dir}\0#{inspect(reason)}"
-        end
-      end)
-
-    :erlang.md5(digest) != @bundled_skills_fingerprint
+    ForemanServer.Skills.Digest.digest(current, @source_tree_bundled_dir) !=
+      @bundled_skills_fingerprint
   end
 
   @type option ::
@@ -91,7 +140,7 @@ defmodule ForemanServer.Skills.Installer do
 
   @spec install([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def install(opts \\ []) when is_list(opts) do
-    source_dir = Keyword.get(opts, :source_dir, @bundled_skills_source)
+    source_dir = Keyword.get(opts, :source_dir, bundled_skills_source())
     dest_dir = target_dir(opts)
 
     with :ok <- File.mkdir_p(dest_dir),
@@ -132,7 +181,7 @@ defmodule ForemanServer.Skills.Installer do
   @spec maybe_install([option()]) :: {:ok, [Path.t()] | :noop} | {:error, term()}
   def maybe_install(opts \\ []) do
     dest_dir = target_dir(opts)
-    source_dir = Keyword.get(opts, :source_dir, @bundled_skills_source)
+    source_dir = Keyword.get(opts, :source_dir, bundled_skills_source())
 
     case list_skill_dirs(source_dir) do
       {:ok, names} ->

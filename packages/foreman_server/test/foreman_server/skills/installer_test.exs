@@ -375,13 +375,17 @@ defmodule ForemanServer.Skills.InstallerTest do
              Installer.maybe_install(source_dir: file_as_dir, home_dir: dest_home)
   end
 
-  # The recompile fingerprint digests SKILL.md CONTENT, not just the directory listing, so a
-  # bundle edit cannot survive into a released binary as a stale `@bundled_skill_dirs`.
-  # `__mix_recompile__?/0` reads the real bundled tree, so this pins the digest FUNCTION rather
-  # than its live value: two trees differing only in file BODY must digest differently. A
-  # fingerprint over names alone makes both comparisons equal and this test fails.
-  test "the recompile fingerprint digests skill content, not just skill names" do
-    build = fn base, label, name, body ->
+  # `ForemanServer.Skills.Digest.digest/2` is the function BOTH `@bundled_skills_fingerprint`
+  # and `__mix_recompile__?/0` are computed from (installer.ex:90 and :132), so exercising it
+  # here exercises the shipped fingerprint rather than a copy of its logic. It digests SKILL.md
+  # CONTENT, not the directory listing: a names-only digest assigns the same value to two trees
+  # that differ only in file body, which is why `__mix_recompile__?/0` answering `false` after a
+  # bundle edit let a stale `@bundled_skill_dirs` ship in a release. Replacing the body
+  # expression with `name` must make this fail -- that is the proof it discriminates.
+  test "the skills digest fingerprints skill content, not just skill names" do
+    base = make_temp_dir!("skills-fingerprint")
+
+    build = fn label, name, body ->
       dir = Path.join(base, label)
       skill = Path.join(dir, name)
       File.mkdir_p!(skill)
@@ -389,34 +393,35 @@ defmodule ForemanServer.Skills.InstallerTest do
       if body do
         File.write!(Path.join(skill, "SKILL.md"), body)
       else
-        File.write!(Path.join(skill, "NOTES.md"), "no SKILL.md here")
+        File.write!(Path.join(skill, "NOTES.md"), "a skill directory with no SKILL.md")
       end
 
       dir
     end
 
-    digest_over = fn dir ->
+    over = fn dir ->
       dir
       |> File.ls!()
       |> Enum.sort()
-      |> Enum.map_join("\n", fn name ->
-        case File.read(Path.join([dir, name, "SKILL.md"])) do
-          {:ok, body} -> "#{name}\0#{body}"
-          {:error, reason} -> "#{name}\0#{inspect(reason)}"
-        end
-      end)
-      |> then(&:erlang.md5/1)
+      |> then(&ForemanServer.Skills.Digest.digest(&1, dir))
     end
 
-    base = make_temp_dir!("skills-fingerprint")
-    pristine = build.(base, "pristine", "alpha-skill", "---\nname: alpha\n---\noriginal\n")
-    edited = build.(base, "edited", "alpha-skill", "---\nname: alpha\n---\nchanged\n")
-    stripped = build.(base, "stripped", "alpha-skill", nil)
+    pristine = build.("pristine", "alpha-skill", "---\nname: alpha\n---\noriginal body\n")
+    edited = build.("edited", "alpha-skill", "---\nname: alpha\n---\nchanged body\n")
+    stripped = build.("stripped", "alpha-skill", nil)
+    untouched_copy = build.("identical", "alpha-skill", "---\nname: alpha\n---\noriginal body\n")
 
-    # Same directory listing, different content -> must differ (names-only would not).
-    assert digest_over.(pristine) != digest_over.(edited)
-    # A skill whose SKILL.md vanished is a change, not a silent no-op.
-    assert digest_over.(pristine) != digest_over.(stripped)
+    # Same skill NAMES, different content -> different digest. This is the regression: a
+    # names-only digest makes this equality hold and the bundle edit never recompiles.
+    assert over.(pristine) != over.(edited)
+
+    # A SKILL.md that vanished is a change too, not a silent no-op.
+    assert over.(pristine) != over.(stripped)
+
+    # The digest is a pure function of the tree, so a byte-identical tree is stable. Without
+    # this the two inequalities above could be satisfied by anything that varies per call.
+    assert over.(pristine) == over.(untouched_copy)
+    assert is_binary(over.(pristine))
   end
 
   defp make_temp_dir!(prefix) do

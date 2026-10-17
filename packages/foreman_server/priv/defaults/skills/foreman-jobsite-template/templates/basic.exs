@@ -47,7 +47,11 @@ client = Foreman.Client.new()
 
 case Foreman.Client.run(client, spec) do
   {:ok, jobsite} ->
-    IO.puts("jobsite_id=#{jobsite["id"]}")
+    # `jobsite_id`, not `id`: `Foreman.Client.run/2` resolves the jobsite through
+    # `wait/2` -> `GET /api/jobsites/:id`, and that projection's key is `jobsite_id`
+    # (`projection_store.ex:1912`). `"id"` exists only in the `POST /api/jobsites` response that
+    # `start/2` already unwrapped and discarded, so `jobsite["id"]` here would print nil.
+    IO.puts("jobsite_id=#{jobsite["jobsite_id"]}")
     IO.puts("status=#{jobsite["status"]}")
     IO.puts("branch=#{jobsite["branch"]} commits=#{length(jobsite["commits"] || [])}")
 

@@ -260,10 +260,10 @@ client = Foreman.Client.new()
 # Reads FOREMAN_API_TOKEN and FOREMAN_API_URL from env.
 
 # Start + poll to completion (blocking):
-{:ok, jobsite} | {:error, reason} = Foreman.Client.run(client, spec)
-
+# `start/2` returns the bare id; `run/2`/`get/2` hand back the projection keyed `jobsite_id`.
+{:ok, jobsite} = Foreman.Client.run(client, spec)
 # Lower-level:
-{:ok, %{"jobsite_id" => id}} = Foreman.Client.start(client, spec)
+{:ok, id}                      = Foreman.Client.start(client, spec)   # a bare id, not a map
 {:ok, jobsite}               = Foreman.Client.get(client, id)
 {:ok, _}                     = Foreman.Client.merge(client, id, into_branch)
 {:ok, _}                     = Foreman.Client.cancel(client, id, "reason")
