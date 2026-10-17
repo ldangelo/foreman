@@ -779,9 +779,13 @@ The bundle source is resolved at runtime through `Application.app_dir/2`, not th
 compile-time `__DIR__`, so a Mix release that ships `priv/` without the source tree still finds
 its skills. When the install finds nothing to copy, the reason is reported rather than left as a
 silent success: an absent bundle directory is `{:error, {:bundled_skills_missing, path}}`, a
-caller-named `--source-dir` that is absent is `{:error, {:source_dir_missing, path}}`, and a
+`:source_dir` passed explicitly to `install/1` is `{:error, {:source_dir_missing, path}}`, and a
 directory that exists but holds no skills is a plain `{:ok, :noop}`. Either error is logged at
-`error` with the path that was looked in.
+`error` with the path that was looked in. The second code has no production caller today — the
+boot hook resolves the bundle itself and no CLI flag or MCP tool sets a skills `:source_dir` —
+so it exists for direct `Installer.install/1` callers and tests, and to keep the two causes from
+collapsing into one if such a caller is added.
+
 Two boundaries worth stating plainly: `~/.foreman/skills` is computed by
 `ForemanServer.Skills.Installer.target_dir/1` and is NOT a directory the `pi`/`omp` CLIs scan
 for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill files under
