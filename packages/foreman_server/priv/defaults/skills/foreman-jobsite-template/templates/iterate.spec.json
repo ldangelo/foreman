@@ -1,0 +1,16 @@
+{
+  "project_id": "REPLACE-WITH-A-REGISTERED-PROJECT-ID",
+  "name": "my-loop",
+  "prompt": "Describe work that needs several turns, and state the signal the agent must print when every check passes: <promise>COMPLETE</promise>. The jobsite keeps re-prompting the same session until that signal appears or max_iterations is hit.",
+  "strategy": {
+    "branch": "agent/my-loop"
+  },
+  "sandbox": "docker",
+  "max_iterations": 20,
+  "completion_signal": "<promise>COMPLETE</promise>",
+  "agent": {
+    "provider": "pi",
+    "model": "REPLACE-WITH-A-MODEL",
+    "approval_mode": "auto_approve"
+  }
+}

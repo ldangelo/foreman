@@ -166,22 +166,38 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 > declares `--force`, which is **required** for this path — bare
 > `foreman init` returns `--force is required to refresh the installed
 > runtime copy`. `-n`/`--name` and `--wizard` do not exist, and `init` takes
-> no positional name.
+> no positional name. What it DOES take is `--template` and `--dir`
+> (`init.go:44-45`), neither of which reaches the HTTP path.
 
-Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, installs bundled Pi skills to `~/.pi/agent/skills/`, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
+Initializes Foreman in a project. Which half runs depends on `--template`: with
+it, the verb writes a repo-local `.foreman/` scaffold entirely client-side,
+with no HTTP request at all; without it, it POSTs the asset refresh the note
+above describes. Either way it does **not** install or refresh skills --
+bundled skills are installed by `ForemanServer.Skills.Installer` to
+`~/.foreman/skills/` when the server boots (see `docs/user-guide.md` §7.4), so
+after editing a bundled skill you delete the installed copy and restart the
+server; re-running `init` changes nothing there. The CLI does not run Postgres
+migrations or open a database connection.
 
 ```bash
-foreman init                      # Initialize with auto-detected name
-foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Reinstall prompt, workflow, and bundled skill files after source edits
-foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
+foreman init                      # REFUSED: --force is required to refresh the runtime copy
+foreman init --force              # POSTs /api/admin/workflows/install (asset refresh only)
+foreman init --template NAME      # Client-side repo-local .foreman/ scaffold, no HTTP -- see below
+foreman init --template NAME --dir PATH   # Same, scaffolded into PATH instead of the cwd
 ```
+
+Two of the verbs this section previously listed never existed. `foreman init -n my-project` and
+`foreman init --wizard` have no route: `init.go:43-45` declares exactly three flags — `--force`,
+`--template` and `--dir` — with no project-name flag and no positional name, and there is no
+wizard code path anywhere in `packages/foreman_cli`. `--wizard` additionally carried a table row
+describing interactive behaviour it does not have. AGENTS.md names both of these as known-bad
+claims, so they are annotated rather than left to read as intended design.
 
 | Option | Description |
 |--------|-------------|
-| `-n, --name <name>` | Project name (default: directory name) |
-| `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
-| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
+| `-n, --name <name>` | **Does not exist.** `init.go:43-45` declares `--force`, `--template` and `--dir` only; there is no project-name flag and no positional name. |
+| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. It has no effect on skills: `foreman init` never reads or writes `~/.foreman/skills`, which the server installs at boot via `ForemanServer.Skills.Installer`. |
+| `--wizard` | **Does not exist** — never has; no wizard code path is present anywhere in the Go CLI. |
 
 #### `foreman init --template <name>` (real, current)
 
@@ -214,6 +230,12 @@ nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27
 checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
 (see the user guide's Remote Jobsite API section for the server-side config).
 `iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` (positive integer, default 20) and `FOREMAN_AGENT_ENV` (comma-separated names of shell variables passed to the agent; the server must allowlist them, see the user guide).
+`parallel` additionally reads `FOREMAN_MERGE_INTO` — the branch the merge step
+targets, which must be the branch currently checked out in the *server's* copy of
+the repo, since `Jobsite.merge_into/2` refuses any other target (409). Unlike
+`FOREMAN_PROJECT_ID` it has no default, so an unset value fails the script only
+after the fan-out completes, not at start.
+
 `review` and `triage` call `ForemanServer.Jobsite` directly and must run inside
 a booted `foreman_server` app (`mix run`, not `mix run --no-start`), e.g. from a
 Foreman checkout: `cd packages/foreman_server && mix run ../../.foreman/review.exs`.

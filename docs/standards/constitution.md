@@ -181,7 +181,7 @@ foreman/
           aggregates/       # Event-sourced aggregates (Task, Run, Project, etc.)
           commands/        # Command structs
           events/          # Typed domain events
-          workflow/        # RunExecutor, StepSequencer, AutoPR
+          workflow/        # RunExecutor, Lowering, JobsiteObserver, AutoPR
           mcp/             # MCP server and tools
           task_providers/  # BeadsAdapter, KataAdapter
       priv/

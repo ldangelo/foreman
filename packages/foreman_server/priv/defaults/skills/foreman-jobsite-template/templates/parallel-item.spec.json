@@ -1,0 +1,15 @@
+{
+  "project_id": "REPLACE-WITH-A-REGISTERED-PROJECT-ID",
+  "name": "my-task-please-add-a-feature-to-the-parser",
+  "prompt": "Implement exactly this and nothing else: please add a feature to the parser. Work in the checked-out tree, run the tests, leave them passing.",
+  "strategy": {
+    "branch": "agent/my-task-please-add-a-feature-to-the-pa"
+  },
+  "sandbox": "docker",
+  "push": true,
+  "agent": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-6",
+    "approval_mode": "auto_approve"
+  }
+}

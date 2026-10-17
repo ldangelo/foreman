@@ -763,6 +763,41 @@ pi catalog preflight fails with `model_not_found`. A proxy that does not
 define `smart_router` returns `400 Invalid model name` instead. After editing
 bundled workflows run `foreman init --force` to refresh the installed copies.
 
+### 7.4 Bundled skills
+
+Skills bundled at
+`packages/foreman_server/priv/defaults/skills/<name>/SKILL.md` are installed to
+`~/.foreman/skills/<name>/` by `ForemanServer.Skills.Installer`, which the
+`ForemanServer.Workflow.Catalog` GenServer invokes from `init/1` at server boot. Every boot
+it copies only the bundled skills not already present there, so a skill added to the bundle in
+a later release reaches an operator who already has one installed, while an existing
+`SKILL.md` is never overwritten — an operator edit survives restarts. To refresh an installed
+skill after editing a bundled one, delete that installed directory (or the whole
+`~/.foreman/skills` directory) and restart the server.
+
+The bundle source is resolved at runtime through `Application.app_dir/2`, not through a
+compile-time `__DIR__`, so a Mix release that ships `priv/` without the source tree still finds
+its skills. When the install finds nothing to copy, the reason is reported rather than left as a
+silent success: an absent bundle directory is `{:error, {:bundled_skills_missing, path}}`, a
+`:source_dir` passed explicitly to `install/1` is `{:error, {:source_dir_missing, path}}`, and a
+directory that exists but holds no skills is a plain `{:ok, :noop}`. Either error is logged at
+`error` with the path that was looked in. The second code has no production caller today — the
+boot hook resolves the bundle itself and no CLI flag or MCP tool sets a skills `:source_dir` —
+so it exists for direct `Installer.install/1` callers and tests, and to keep the two causes from
+collapsing into one if such a caller is added.
+
+Two boundaries worth stating plainly: `~/.foreman/skills` is computed by
+`ForemanServer.Skills.Installer.target_dir/1` and is NOT a directory the `pi`/`omp` CLIs scan
+for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill files under
+`.pi/agent/skills` instead), and `foreman init --force` refreshes workflows and prompts only,
+never skills. A skill placed anywhere other than `~/.foreman/skills` is invisible to
+`maybe_install/1`'s missing-skill check.
+
+`foreman-jobsite-template` is the bundled skill for authoring Remote Jobsite
+scripts: it turns a natural-language description into a `Jobsite.Spec.from_json/2`
+whitelist-compliant spec plus its `.exs` runner, and its `scripts/validate_spec.py`
+checks the spec offline against the same key rules the server enforces.
+
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 
 Local stack topology:

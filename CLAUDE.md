@@ -323,6 +323,14 @@ Telemetry: `[:foreman_server, :workflow, :installed]`,
 `[:foreman_server, :workflow, :prompt, :loaded | :reload, :ok |
 :reload, :error | :removed]`.
 
+Skills boot-install emits `[:foreman_server, :skills, :installed]`
+(`%{count: files_copied}` / `%{paths: [...]}`) and
+`[:foreman_server, :skills, :install, :error]` (`%{reason: term()}`);
+the result is never discarded (§5.2). `Skills.Installer.maybe_install/1`
+copies only the bundled skills missing from `~/.foreman/skills`, so a
+skill added to the bundle in a later release reaches an operator who
+already has one installed without clobbering their edits.
+
 Operator-facing CLI: `foreman workflow install --target PATH [--source PATH | --remote URL]`
 (see `docs/cli-reference.md`). The CLI is a thin shell around the
 HTTP admin endpoint and is **not** an alternate write path to the

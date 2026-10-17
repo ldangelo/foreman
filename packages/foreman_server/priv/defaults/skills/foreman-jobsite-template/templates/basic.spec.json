@@ -1,0 +1,19 @@
+{
+  "project_id": "REPLACE-WITH-A-REGISTERED-PROJECT-ID",
+  "name": "my-feature",
+  "prompt": "Describe the single change to make. The agent runs once, in a Docker sandbox on the server's checkout of project_id, on its own branch. Leave the tree with the change written; Foreman commits it.",
+  "strategy": {
+    "branch": "agent/my-feature"
+  },
+  "sandbox": "docker",
+  "agent": {
+    "provider": "claude",
+    "model": "REPLACE-WITH-A-MODEL",
+    "approval_mode": "auto_approve",
+    "env": {
+      "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
+      "ANTHROPIC_API_KEY": "FROM-YOUR-SHELL",
+      "ANTHROPIC_MODEL": "claude-sonnet-4-6"
+    }
+  }
+}

@@ -1378,7 +1378,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       artifact_bytes: artifact.bytes
     }
 
-    # Track phase completion in executor state for StepSequencer
+    # Record this phase's completion on the run before advancing.
     new_phase_statuses = Map.put(state.phase_statuses, phase_index, :completed)
 
     case dispatch_system(
