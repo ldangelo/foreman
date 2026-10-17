@@ -7,7 +7,7 @@
 #
 #   export FOREMAN_API_TOKEN=...
 #   export FOREMAN_PROJECT_ID=...
-#   export FOREMAN_INTO_BRANCH=...   # the branch the server has checked out
+#   export FOREMAN_MERGE_INTO=...     # the branch the server has checked out
 #   elixir this-script.exs
 #
 # Concurrency is capped server-side by max_concurrent_jobsites (default 3): an
@@ -18,7 +18,13 @@
 Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || "REPLACE-WITH-A-REGISTERED-PROJECT-ID"
-into_branch = System.get_env("FOREMAN_INTO_BRANCH") || raise "FOREMAN_INTO_BRANCH: the branch the server has checked out; merge refuses anything else"
+
+into =
+  System.get_env("FOREMAN_MERGE_INTO") ||
+    raise(
+      "FOREMAN_MERGE_INTO is not set: the merge target must be the branch the " <>
+        "server currently has checked out (Jobsite.merge_into/2 refuses any other)"
+    )
 
 # REPLACE this list. One entry per unit of independent work; each must be
 # doable without the others, or you have decomposed into a merge conflict.
@@ -38,30 +44,67 @@ specs =
       "strategy" => %{"branch" => "agent/fan-#{item["slug"]}"},
       "sandbox" => "docker",
       "push" => true,
-      "agent" => %{"provider" => "pi", "model" => "REPLACE-WITH-A-MODEL",
-                   "approval_mode" => "auto_approve"}
+      "agent" => %{
+        "provider" => "pi",
+        "model" => "REPLACE-WITH-A-MODEL",
+        "approval_mode" => "auto_approve"
+      }
     }
   end)
+
+# A raise inside the stream worker is NOT collected: async_stream links the worker,
+# so the exception exits the whole stream and the runner dies with the jobsites that
+# already started still running on the server. `catch` converts it into one failure.
+#
+# The `fn` closes over `client` directly rather than via `&`/`&1`: a bare
+# `&name(a, &1)` resolves `name` to a *function*, never a same-named variable, and
+# `Function.capture/3` rejects anonymous functions outright.
+#
+start_trapped = fn spec ->
+  try do
+    Foreman.Client.start(client, spec)
+  catch
+    kind, reason -> {:error, {:raised, kind, Exception.format(kind, reason, __STACKTRACE__)}}
+  end
+end
 
 # Start every jobsite up front, then wait: Foreman queues the ones past the
 # concurrency cap, so starting serially and waiting per-item wastes the fan-out.
 #
-# `Task.async_stream/3` yields `{:ok, inner}` per item, where `inner` is itself
-# `Foreman.Client.start/2`'s `{:ok, id} | {:error, term}`; a stream worker that
-# dies yields `{:exit, why}`. The three arms below cover all of that. Matching
-# only `{:ok, {:ok, id}}` and `{:ok, {:error, why}}` in a reduce is what made the
-# previous version raise `MatchError`: a refused start landed on a clause that
-# did not exist, crashing the whole fan-out instead of reporting one item.
+# `Task.async_stream/3` yields `{:ok, inner}` per item, where `inner` is
+# `Foreman.Client.start/2`'s
+# `{:ok, id} | {:error, why}`. Server refusals (`{:error, {status, body}}` from a 4xx) and
+# transport
+# failures (`{:error, {:transport, reason}}`) both land on the `{:error, why}` arm; matching
+# only the
+# two success-shaped arms in a reduce is what made the previous version raise `MatchError`
+# and take
+# the whole fan-out down for one item.
+#
+# `timeout:` is per worker, not aggregate. The 5_000 ms default would report a merely slow
+# server as
+# a start failure, so it is raised to 30 s to match `:httpc`'s own connect/read timeout
+# (client.ex:139).
+# `on_timeout: :kill_task` stops an abandoned worker from lingering. A killed worker yields
+# `{:exit, :timeout}` and cannot name itself, so results are zipped positionally with
+# `items` below (async_stream
+# preserves input order), which is what makes a timeout attributable to a fan-out unit.
 start_results =
-  Task.async_stream(specs, &Foreman.Client.start(client, &1), max_concurrency: length(specs))
+  Task.async_stream(specs, start_trapped,
+    max_concurrency: length(specs),
+    timeout: 30_000,
+    on_timeout: :kill_task
+  )
   |> Enum.map(fn
     {:ok, {:ok, id}} -> {:ok, id}
     {:ok, {:error, why}} -> {:error, {:start, why}}
+    {:exit, :timeout} -> {:error, :start_timed_out}
     {:exit, why} -> {:error, {:stream_exit, why}}
   end)
+  |> then(&Enum.zip(items, &1))
 
-started = for({:ok, id} <- start_results, do: id)
-failed = for({:error, why} <- start_results, do: why)
+started = for({_, {:ok, id}} <- start_results, do: id)
+failed = for({item, {:error, why}} <- start_results, do: {item["slug"], why})
 
 # A partial start is not a clean failure: the jobsites that DID start are
 # already running on the server against the repo. Abandoning them silently is
@@ -69,7 +112,7 @@ failed = for({:error, why} <- start_results, do: why)
 # exits nonzero at the end.
 if failed != [] do
   IO.puts(:stderr, "could not start #{length(failed)} of #{length(start_results)} jobsites:")
-  Enum.each(failed, fn why -> IO.puts(:stderr, "  #{inspect(why)}") end)
+  Enum.each(failed, fn {slug, why} -> IO.puts(:stderr, "  #{slug}: #{inspect(why)}") end)
 
   if started == [], do: System.halt(1)
   IO.puts(:stderr, "waiting on the #{length(started)} that did start; then exiting nonzero")
@@ -92,11 +135,14 @@ Enum.each(results, fn
   {id, {:ok, %{"status" => "completed"} = j}} ->
     IO.puts("completed #{id} branch=#{j["branch"]}")
 
-    case Foreman.Client.merge(client, id, into_branch) do
+    case Foreman.Client.merge(client, id, into) do
       # `Jobsite.merge_into/2` answers `{:ok, %{jobsite_id:, branch:, merged_into:}}`, so the
       # outcome is named rather than the whole map dumped.
-      {:ok, body} -> IO.puts("  merged #{inspect(body["branch"])} into #{inspect(body["merged_into"])}")
-      {:error, why} -> IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
+      {:ok, body} ->
+        IO.puts("  merged #{inspect(body["branch"])} into #{inspect(body["merged_into"])}")
+
+      {:error, why} ->
+        IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
     end
 
   {id, {:ok, other}} ->

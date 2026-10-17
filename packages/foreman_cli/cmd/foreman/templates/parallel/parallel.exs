@@ -34,25 +34,45 @@ template = File.read!(Path.join(__DIR__, "prompts/parallel.md"))
 
 # The server takes the prompt as literal text, so `{{TASK}}` is filled in here.
 render = fn task -> String.replace(template, "{{TASK}}", task) end
+# A raise inside a stream worker is not collected: async_stream links the worker, so
+# the exception takes the whole stream down and this script dies with the jobsites
+# that already started still running on the server. `catch` turns one into a failure.
+start_one = fn task ->
+  spec = %{
+    "project_id" => project_id,
+    "strategy" => %{"branch" => "agent/#{task}"},
+    "sandbox" => "docker",
+    "agent" => %{
+      "provider" => "claude",
+      "model" => "claude-sonnet-4-6",
+      "approval_mode" => "auto_approve"
+    },
+    "prompt" => render.(task)
+  }
 
+  try do
+    Foreman.Client.run(client, spec)
+  catch
+    kind, reason -> {:error, {:raised, kind, Exception.format(kind, reason, __STACKTRACE__)}}
+  end
+end
+
+# async_stream is ordered, so result N belongs to task N — including when a worker is
+# killed, where the stream yields `{:exit, reason}` with no task to echo. Pairing
+# positionally (not by what the worker returned) is what keeps a timeout attributable.
 results =
   tasks
-  |> Task.async_stream(
-    fn task ->
-      spec = %{
-        "project_id" => project_id,
-        "strategy" => %{"branch" => "agent/#{task}"},
-        "sandbox" => "docker",
-        "agent" => %{"provider" => "claude", "model" => "claude-sonnet-4-6", "approval_mode" => "auto_approve"},
-        "prompt" => render.(task)
-      }
-
-      {task, Foreman.Client.run(client, spec)}
-    end,
-    max_concurrency: 3,
-    timeout: :infinity
+  |> Task.async_stream(start_one,
+    max_concurrency: length(tasks),
+    timeout: 30_000,
+    on_timeout: :kill_task
   )
-  |> Enum.map(fn {:ok, pair} -> pair end)
+  |> Enum.map(fn
+    {:ok, outcome} -> outcome
+    {:exit, :timeout} -> {:error, :run_timed_out}
+    {:exit, why} -> {:error, {:stream_exit, why}}
+  end)
+  |> then(&Enum.zip(tasks, &1))
 
 for {task, outcome} <- results do
   case outcome do
