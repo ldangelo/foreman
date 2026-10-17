@@ -174,23 +174,40 @@ tasks = ["task-a", "task-b", "task-c"]  # replace with actual items
 into  = System.get_env("FOREMAN_MERGE_INTO") || raise "FOREMAN_MERGE_INTO is not set"
 template = File.read!(Path.join(__DIR__, "prompts/<name>.md"))
 
+# A raise inside a stream worker is NOT collected as {:exit, _}: async_stream links the
+# worker, so the exception exits the stream and the script dies with the jobsites that
+# already started still running on the server. `catch` makes it one reported failure.
+start_one = fn task ->
+  spec = %{
+    "project_id" => project_id,
+    "strategy" => %{"branch" => "agent/#{task}"},
+    "sandbox" => "docker",
+    "agent" => %{"provider" => "claude", "model" => "claude-sonnet-4-6", "approval_mode" => "auto_approve"},
+    "prompt" => String.replace(template, "{{TASK}}", task)
+  }
+
+  try do
+    Foreman.Client.run(client, spec)
+  catch
+    kind, reason -> {:error, {:raised, kind, Exception.format(kind, reason, __STACKTRACE__)}}
+  end
+end
+
+# `timeout:` is per worker, not aggregate. `:infinity` never yields a failure at all: a
+# hung request blocks the script forever. 30 s matches :httpc's own timeouts
+# (client.ex:167), so a killed worker is one the transport had already given up on.
+# Results are zipped with `tasks` positionally -- async_stream preserves input order --
+# because a killed worker cannot echo its own task, and {:error, :run_timed_out} is a
+# 2-tuple that `for {task, outcome} <- results` would otherwise bind as task = :error.
 results =
   tasks
-  |> Task.async_stream(
-    fn task ->
-      spec = %{
-        "project_id" => project_id,
-        "strategy" => %{"branch" => "agent/#{task}"},
-        "sandbox" => "docker",
-        "agent" => %{"provider" => "claude", "model" => "claude-sonnet-4-6", "approval_mode" => "auto_approve"},
-        "prompt" => String.replace(template, "{{TASK}}", task)
-      }
-      {task, Foreman.Client.run(client, spec)}
-    end,
-    max_concurrency: 3,
-    timeout: :infinity
-  )
-  |> Enum.map(fn {:ok, pair} -> pair end)
+  |> Task.async_stream(start_one, max_concurrency: length(tasks), timeout: 30_000, on_timeout: :kill_task)
+  |> Enum.map(fn
+    {:ok, outcome} -> outcome
+    {:exit, :timeout} -> {:error, :run_timed_out}
+    {:exit, why} -> {:error, {:stream_exit, why}}
+  end)
+  |> then(&Enum.zip(tasks, &1))
 
 for {task, outcome} <- results do
   case outcome do
