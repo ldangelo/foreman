@@ -68,13 +68,19 @@ defmodule ForemanServer.Skills.InstallerTest do
     source_dir = make_temp_dir!("skills-installer-source")
     target_dir = make_temp_dir!("skills-installer-custom-target")
 
-    File.mkdir_p!(Path.join(source_dir, "my-custom-skill"))
+    File.mkdir_p!(Path.join([source_dir, "my-custom-skill", "scripts"]))
     File.write!(Path.join([source_dir, "my-custom-skill", "SKILL.md"]), "# My Skill\n")
 
-    assert {:ok, installed_paths} = Installer.install(source_dir: source_dir, target_dir: target_dir)
+    File.write!(Path.join([source_dir, "my-custom-skill", "scripts", "run.exs"]), "# runner\n")
 
-    assert length(installed_paths) == 1
-    assert hd(installed_paths) =~ "my-custom-skill/SKILL.md"
+    assert {:ok, installed_paths} =
+             Installer.install(source_dir: source_dir, target_dir: target_dir)
+
+    assert length(installed_paths) == 2
+
+    assert Enum.any?(installed_paths, &String.ends_with?(&1, "my-custom-skill/SKILL.md"))
+
+    assert Enum.any?(installed_paths, &String.ends_with?(&1, "my-custom-skill/scripts/run.exs"))
   end
 
   test "install/1 returns empty list when source has no skill directories" do
@@ -90,6 +96,12 @@ defmodule ForemanServer.Skills.InstallerTest do
 
     assert {:ok, installed_paths} = Installer.maybe_install(home_dir: home_dir)
     assert Enum.any?(installed_paths, &String.contains?(&1, "foreman-jobsite-template"))
+
+    # The returned paths alone are not proof: a bug that reports paths without
+    # writing them would still satisfy the assertions above.
+    assert File.regular?(
+             Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template", "SKILL.md"])
+           )
   end
 
   test "maybe_install/1 does not overwrite an existing skill" do
