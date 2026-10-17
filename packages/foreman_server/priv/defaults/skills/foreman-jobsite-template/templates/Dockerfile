@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid ${AGENT_GID} agent 2>/dev/null || true \
-    && useradd --uid ${AGENT_UID} --gid ${AGENT_GID} -m agent 2>/dev/null || true
+RUN getent group "$AGENT_GID" >/dev/null 2>&1 || groupadd --gid "$AGENT_GID" agent \
+ && id -u agent >/dev/null 2>&1 || useradd --uid "$AGENT_UID" --gid "$AGENT_GID" -m agent
 
 # The sandbox bind-mounts the worktree and, for a linked worktree, the repo's git dir, both
 # read-write at the same host paths. Foreman injects `safe.directory` for exactly those paths

@@ -10,7 +10,6 @@
   "agent": {
     "provider": "claude",
     "model": "claude-sonnet-4-6",
-    "approval_mode": "auto_approve",
-    "_comment_env": "Keys must be in the server's FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST; values are never persisted on JobsiteStarted, so a RESUMED jobsite runs without them. On the docker sandbox this env-file is the agent's ONLY credential channel (the container cannot read the host ~/.claude or ~/.pi auth, so a spec with no env fails 'Not logged in'). A host sandbox inherits the server BEAM's environment instead."
+    "approval_mode": "auto_approve"
   }
 }

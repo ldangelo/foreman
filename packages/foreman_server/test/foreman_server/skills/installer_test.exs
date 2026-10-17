@@ -57,6 +57,24 @@ defmodule ForemanServer.Skills.InstallerTest do
     assert content =~ "Jobsite.Spec.from_json"
     assert content =~ "on_event"
     assert content =~ "hooks.host"
+
+    # Prove the recursive copy (File.cp_r) installs nested assets, not just SKILL.md.
+    nested_rel = Path.join(["scripts", "validate_spec.py"])
+
+    installed_nested =
+      Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template"])
+      |> Path.join(nested_rel)
+
+    source_nested =
+      Installer.bundled_skills_source()
+      |> Path.join("foreman-jobsite-template")
+      |> Path.join(nested_rel)
+
+    assert File.regular?(installed_nested),
+           "expected nested asset #{nested_rel} to be installed recursively"
+
+    assert File.read!(installed_nested) == File.read!(source_nested),
+           "nested asset content must match source bytes"
   end
 
   test "install/1 with a custom target_dir writes skills there" do

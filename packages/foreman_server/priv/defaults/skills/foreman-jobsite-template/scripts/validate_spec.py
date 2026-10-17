@@ -101,8 +101,6 @@ def check_agent(spec, env_keys):
     if not isinstance(agent, dict) or isinstance(agent, bool):
         raise Fail("spec_agent_invalid", "agent must be an object")
     for key in agent:
-        if isinstance(key, str) and key.startswith("_comment"):
-            continue
         if key not in AGENT_KEYS:
             raise Fail("spec_agent_invalid", f"unknown agent key {key!r}")
 
@@ -127,8 +125,10 @@ def check_agent(spec, env_keys):
 
     if "env" in agent:
         env = agent["env"]
-        if not isinstance(env, dict) or not all(isinstance(k, str) for k in env):
-            raise Fail("spec_agent_invalid", "agent.env must be an object of string keys")
+        if not isinstance(env, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+        ):
+            raise Fail("spec_agent_invalid", "agent.env must be an object mapping strings to strings")
         for key in env:
             if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
                 raise Fail("spec_env_not_allowed",
