@@ -80,16 +80,18 @@ end
 # one item.
 #
 # `timeout:` is per worker, not aggregate, so fast items still land on their own arms
-# while a slow one is killed. Its 5_000 ms default would report a merely slow server as
-# a start failure, so it is raised to 30 s to match `:httpc`'s own timeouts
-# (client.ex:167; HTTPS adds ssl options at :156-157). `on_timeout: :kill_task` stops an
-# abandoned worker from lingering. A killed worker cannot name itself, so results are
-# zipped positionally with `items` below -- async_stream preserves input order -- which
-# is what makes a timeout attributable to a specific fan-out unit.
+# while a slow one is killed. It MUST strictly exceed the HTTP deadline it wraps, not match
+# it: `Foreman.Client.start/2` is a POST that `:httpc` aborts at 30 s (client.ex:167; HTTPS
+# adds ssl options at :156-157) and returns `{:error, {:transport, _}}` (client.ex:148). A
+# 30 s stream timeout is a race against that, so a slow-but-real transport failure can be
+# killed first and mislabeled `:start_timed_out`. Set to 40 s so a slow start reports its
+# true cause; `on_timeout: :kill_task` stays the backstop for a worker hung past HTTP. A
+# killed worker cannot name itself, so results zip positionally with `items` below --
+# async_stream preserves input order -- making a timeout attributable to a fan-out unit.
 start_results =
   Task.async_stream(specs, start_trapped,
     max_concurrency: length(specs),
-    timeout: 30_000,
+    timeout: 40_000,
     on_timeout: :kill_task
   )
   |> Enum.map(fn

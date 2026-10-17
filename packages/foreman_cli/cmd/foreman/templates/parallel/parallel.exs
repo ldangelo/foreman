@@ -61,9 +61,12 @@ end
 # while a slow one is killed (verified: 3 fast workers under `timeout: 700` return
 # normally alongside one `{:exit, :timeout}`). `:infinity`, which this used to carry,
 # never returns at all -- a hung request blocks the script forever rather than
-# reporting a failure. 30 s matches `:httpc`'s own timeouts
-# (foreman_client/lib/foreman/client.ex:167), so a killed worker is one the transport
-# had already given up on.
+# reporting a failure. `Foreman.Client.run` drives a jobsite to completion -- create +
+# poll -- and `wait` defaults to a one-hour deadline (`timeout_ms` default 3_600_000,
+# client.ex:82). So this stream timeout is set just above THAT, not `:httpc`'s 30 s
+# per-request ceiling: value between them would kill workers during an ordinary multi-minute
+# run and mislabel it `run_timed_out`. `on_timeout: :kill_task` bounds a worker wedged past
+# even the hour.
 
 # async_stream is ordered, so result N belongs to task N — including when a worker is
 # killed, where the stream yields `{:exit, reason}` with no task to echo. Pairing
@@ -72,7 +75,7 @@ results =
   tasks
   |> Task.async_stream(start_one,
     max_concurrency: length(tasks),
-    timeout: 30_000,
+    timeout: 3_700_000,
     on_timeout: :kill_task
   )
   |> Enum.map(fn
