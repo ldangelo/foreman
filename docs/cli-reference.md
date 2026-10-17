@@ -166,18 +166,22 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 > declares `--force`, which is **required** for this path — bare
 > `foreman init` returns `--force is required to refresh the installed
 > runtime copy`. `-n`/`--name` and `--wizard` do not exist, and `init` takes
-> no positional name.
+> no positional name. What it DOES take is `--template` and `--dir`
+> (`init.go:44-45`), neither of which reaches the HTTP path.
 
-Initializes Foreman in a project: creates `.foreman/`, installs the default workflow configs
-and prompts, and registers the project with the Elixir backend. It does **not** install or
-refresh skills — bundled skills are installed by `ForemanServer.Skills.Installer` to
-`~/.foreman/skills/` when the server boots (see `docs/user-guide.md` §7.4), so after editing a
-bundled skill you delete the installed copy and restart the server; re-running `init` changes
-nothing there. The CLI does not run Postgres migrations or open a database connection.
+Initializes Foreman in a project. Which half runs depends on `--template`: with
+it, the verb writes a repo-local `.foreman/` scaffold entirely client-side,
+with no HTTP request at all; without it, it POSTs the asset refresh the note
+above describes. Either way it does **not** install or refresh skills --
+bundled skills are installed by `ForemanServer.Skills.Installer` to
+`~/.foreman/skills/` when the server boots (see `docs/user-guide.md` §7.4), so
+after editing a bundled skill you delete the installed copy and restart the
+server; re-running `init` changes nothing there. The CLI does not run Postgres
+migrations or open a database connection.
 
 ```bash
-foreman init                      # REFUSED: --force is required to refresh the installed runtime copy
-foreman init --force              # POSTs the workflow/prompt asset refresh (never touches skills)
+foreman init                      # REFUSED: --force is required to refresh the runtime copy
+foreman init --force              # POSTs /api/admin/workflows/install (asset refresh only)
 foreman init --template NAME      # Client-side repo-local .foreman/ scaffold, no HTTP -- see below
 foreman init --template NAME --dir PATH   # Same, scaffolded into PATH instead of the cwd
 ```
