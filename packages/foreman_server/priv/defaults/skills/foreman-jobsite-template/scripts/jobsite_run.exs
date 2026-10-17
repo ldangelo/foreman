@@ -19,6 +19,10 @@
 
 defmodule Runner do
   @terminal ["completed", "failed", "cancelled", "paused"]
+  # Same grace `Foreman.Client` allows for a just-created jobsite to become readable
+  # (`packages/foreman_client/lib/foreman/client.ex:36`), so the fallback runner does not
+  # behave differently from the primary one.
+  @not_found_grace_s 10
 
   def run(base, token, spec, timeout_s) do
     headers = [
@@ -26,14 +30,23 @@ defmodule Runner do
       {~c"accept", ~c"application/json"}
     ]
 
-    req = {String.to_charlist(base <> "/api/jobsites"), headers, ~c"application/json", IO.iodata_to_binary(:json.encode(spec))}
+    req =
+      {String.to_charlist(base <> "/api/jobsites"), headers, ~c"application/json",
+       IO.iodata_to_binary(:json.encode(spec))}
 
     case :httpc.request(:post, req, [timeout: 30_000], body_format: :binary) do
       {:ok, {{_, status, _}, _, resp}} when status in 200..299 ->
         case decode(resp) do
           %{"id" => id} ->
             IO.puts("started #{id}")
-            wait(base, headers, id, System.monotonic_time(:second) + timeout_s)
+
+            wait(
+              base,
+              headers,
+              id,
+              System.monotonic_time(:second) + timeout_s,
+              System.monotonic_time(:second)
+            )
 
           other ->
             IO.puts(:stderr, "accepted but no id in the response: #{inspect(other)}")
@@ -51,25 +64,32 @@ defmodule Runner do
     end
   end
 
-  defp wait(base, headers, id, deadline) do
+  defp wait(base, headers, id, deadline, started_at) do
     req = {String.to_charlist(base <> "/api/jobsites/#{id}"), headers}
 
     case :httpc.request(:get, req, [timeout: 30_000], body_format: :binary) do
       {:ok, {{_, 200, _}, _, resp}} ->
         case decode(resp) do
           %{"status" => s} = j when s in @terminal ->
-            IO.puts("status=#{s} branch=#{inspect(Map.get(j, "branch"))} commits=#{length(Map.get(j, "commits") || [])}")
+            IO.puts(
+              "status=#{s} branch=#{inspect(Map.get(j, "branch"))} commits=#{length(Map.get(j, "commits") || [])}"
+            )
+
             if e = Map.get(j, "last_error"), do: IO.puts(:stderr, "last_error: #{inspect(e)}")
             if o = Map.get(j, "output"), do: IO.puts("--- output ---\n#{o}")
             if(s == "completed", do: 0, else: 1)
 
           %{"status" => s} ->
             if System.monotonic_time(:second) >= deadline do
-              IO.puts(:stderr, "timed out while #{s} (the jobsite is still running on the server: #{id})")
+              IO.puts(
+                :stderr,
+                "timed out while #{s} (the jobsite is still running on the server: #{id})"
+              )
+
               1
             else
               Process.sleep(2_000)
-              wait(base, headers, id, deadline)
+              wait(base, headers, id, deadline, started_at)
             end
 
           other ->
@@ -77,9 +97,24 @@ defmodule Runner do
             1
         end
 
-      # a just-created jobsite is not in the read model for a moment
+      # A just-created jobsite is not in the read model for a moment, so a 404 is retried --
+      # but only for the grace window. Without the cap, a mistyped or already-purged id is
+      # polled for the FULL timeout (1800 s by default) and then exits 1 having printed
+      # nothing at all, which reads as a hang rather than as "no such jobsite".
       {:ok, {{_, 404, _}, _, _}} ->
-        if System.monotonic_time(:second) >= deadline, do: 1, else: (Process.sleep(2_000); wait(base, headers, id, deadline))
+        cond do
+          System.monotonic_time(:second) - started_at >= @not_found_grace_s ->
+            IO.puts(:stderr, "no such jobsite: #{id} (404 persisted past the grace window)")
+            1
+
+          System.monotonic_time(:second) >= deadline ->
+            IO.puts(:stderr, "timed out before jobsite #{id} became readable")
+            1
+
+          true ->
+            Process.sleep(2_000)
+            wait(base, headers, id, deadline, started_at)
+        end
 
       {:ok, {{_, status, _}, _, resp}} ->
         IO.puts(:stderr, "HTTP #{status} while polling: #{inspect(decode(resp))}")
@@ -114,6 +149,8 @@ spec =
 
 base = String.trim_trailing(System.get_env("FOREMAN_API_URL") || "http://127.0.0.1:4766", "/")
 token = System.get_env("FOREMAN_API_TOKEN") || raise ArgumentError, "FOREMAN_API_TOKEN is not set"
-timeout_s = rest |> List.first() |> then(&(if is_nil(&1), do: "1800", else: &1)) |> String.to_integer()
+
+timeout_s =
+  rest |> List.first() |> then(&if is_nil(&1), do: "1800", else: &1) |> String.to_integer()
 
 System.halt(Runner.run(base, token, spec, timeout_s))

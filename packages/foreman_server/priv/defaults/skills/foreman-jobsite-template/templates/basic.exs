@@ -3,8 +3,8 @@
 #
 # Run with plain `elixir` (OTP 27+). No Foreman checkout, no database, nothing in
 # the project's mix.exs: Mix fetches foreman_client and that is the whole dep.
-# Use the repo's own copy while iterating: change the Mix.install tuple above to
-# {:foreman_client, path: "/path/to/foreman/packages/foreman_client"}.
+# Use the repo's own copy while iterating: replace the `github:` tuple in the
+# `Mix.install` below with `{:foreman_client, path: "..."}` (see the note at `Mix.install`).
 #
 #   export FOREMAN_API_TOKEN=...      # the server's bearer token (required)
 #   export FOREMAN_PROJECT_ID=...     # optional: overrides the baked-in project_id
@@ -61,8 +61,17 @@ case Foreman.Client.run(client, spec) do
 
   {:error, {:jobsite, jobsite}} ->
     IO.puts(:stderr, "jobsite did not complete: status=#{inspect(jobsite["status"])}")
-    IO.puts(:stderr, "detail: #{inspect(Map.get(jobsite, "error") || Map.get(jobsite, "failure") || jobsite)}")
-    IO.puts(:stderr, "branch=#{inspect(jobsite["branch"])} -- inspect the worktree before retrying")
+
+    IO.puts(
+      :stderr,
+      "detail: #{inspect(Map.get(jobsite, "error") || Map.get(jobsite, "failure") || jobsite)}"
+    )
+
+    IO.puts(
+      :stderr,
+      "branch=#{inspect(jobsite["branch"])} -- inspect the worktree before retrying"
+    )
+
     System.halt(1)
 
   {:error, {:transport, reason}} ->
@@ -70,7 +79,12 @@ case Foreman.Client.run(client, spec) do
     # clause MUST precede the HTTP one. Ordered the other way, every unreachable server is
     # reported as "HTTP transport" and `:json.encode/1` is handed an atom.
     IO.puts(:stderr, "cannot reach the server: #{inspect(reason)}")
-    IO.puts(:stderr, "FOREMAN_API_URL=#{System.get_env("FOREMAN_API_URL", "http://127.0.0.1:4766")}")
+
+    IO.puts(
+      :stderr,
+      "FOREMAN_API_URL=#{System.get_env("FOREMAN_API_URL", "http://127.0.0.1:4766")}"
+    )
+
     IO.puts(:stderr, "is foreman_server running, and is jobsites.allow_remote_start true?")
     System.halt(1)
 
@@ -81,7 +95,6 @@ case Foreman.Client.run(client, spec) do
     IO.puts(:stderr, "server rejected the request: HTTP #{status}")
     IO.puts(:stderr, :json.encode(body))
     System.halt(1)
-
 
   {:error, reason} ->
     IO.puts(:stderr, "unexpected failure: #{inspect(reason)}")
