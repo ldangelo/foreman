@@ -45,8 +45,8 @@ defmodule ForemanServer.Skills.Installer do
 
   # The bundled tree lives in the application's `priv/`, which a Mix release ships even when
   # it does not ship the source tree — so the RUNTIME path is resolved through
-  # `Application.app_dir(:foreman_server, "priv/defaults/skills")` (`bundled_skills_source/1`
-  # below), never from `__DIR__`: a `__DIR__` path is baked at
+  # `Application.app_dir/2` (`bundled_skills_source/0`, line 112 — it takes an optional opts
+  # arg, so its real arity is 0 or 1), never from `__DIR__`. A `__DIR__` path is baked at
   # compile time and would name a path that does not exist in a release, in which case
   # `list_skill_dirs/1` reads a missing directory as an empty bundle and the install reports a
   # successful-looking no-op with zero skills installed (§5.2). The compile-time attributes
@@ -74,7 +74,7 @@ defmodule ForemanServer.Skills.Installer do
   # Compile-time only, deliberately sourced from `@source_tree_bundled_dir`: this list and the
   # fingerprint below exist to make Mix recompile the module when the bundled tree changes.
   # They never run in a release, so the source-tree path is the correct input here. Runtime
-  # resolution is `bundled_skills_source/0`.
+  # resolution is `bundled_skills_source/0` or `/1` (optional opts arg).
   @bundled_skill_dirs @source_tree_bundled_dir
                       |> File.ls!()
                       |> Enum.filter(fn name ->
