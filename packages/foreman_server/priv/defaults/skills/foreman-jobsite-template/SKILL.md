@@ -194,14 +194,17 @@ start_one = fn task ->
 end
 
 # `timeout:` is per worker, not aggregate. `:infinity` never yields a failure at all: a
-# hung request blocks the script forever. 30 s matches :httpc's own timeouts
-# (client.ex:167), so a killed worker is one the transport had already given up on.
+# hung request blocks the script forever. `Foreman.Client.run` drives a jobsite to
+# completion (create + wait), and `wait`'s default deadline is 3_600_000 (client.ex:82), so
+# this stream timeout sits just above THAT, not `:httpc`'s 30 s per-request ceiling: a
+# value between them would kill a run still progressing normally and mislabel it
+# `:run_timed_out`. `on_timeout: :kill_task` bounds a worker wedged past even the hour.
 # Results are zipped with `tasks` positionally -- async_stream preserves input order --
 # because a killed worker cannot echo its own task, and {:error, :run_timed_out} is a
 # 2-tuple that `for {task, outcome} <- results` would otherwise bind as task = :error.
 results =
   tasks
-  |> Task.async_stream(start_one, max_concurrency: length(tasks), timeout: 30_000, on_timeout: :kill_task)
+  |> Task.async_stream(start_one, max_concurrency: length(tasks), timeout: 3_700_000, on_timeout: :kill_task)
   |> Enum.map(fn
     {:ok, outcome} -> outcome
     {:exit, :timeout} -> {:error, :run_timed_out}
