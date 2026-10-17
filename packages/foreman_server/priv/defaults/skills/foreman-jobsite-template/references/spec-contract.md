@@ -16,7 +16,7 @@ this page.
 | `strategy` | `"head"` \| `{"branch": name}` \| `{"type": "branch", "name": name}` | default is the engine default, not `head` |
 | `sandbox` | `"docker"` \| `"host"` | `host` refused unless the server allows host sandboxes |
 | `name` | non-empty string | label for the jobsite |
-| `max_iterations` | integer ≥ 0 | the `iterate` loop bound |
+| `max_iterations` | positive integer — `optional_pos_int` requires `is_integer(n) and n > 0`, so `0` is refused, never clamped | the `iterate` loop bound; default `1` |
 | `completion_signal` | non-empty string or non-empty list of them | e.g. `<promise>COMPLETE</promise>` |
 | `idle_timeout_seconds` | integer | |
 | `completion_timeout_seconds` | integer | |
@@ -45,7 +45,7 @@ Exactly these keys: `provider`, `model`, `effort`, `approval_mode`, `env`.
 
 - `provider` — string, one of `JidoHarness.providers()`. **Do not hardcode this
   set:** the source has `@supported_providers [:pi, :claude]`, while AGENTS.md
-  names `litellm` as supported too. The server rejects anything outside its own
+  names `litellm` as a supported provider. The server rejects anything outside its own
   list and returns the live set in the error `details` — read that rather than
   trusting either doc.
 - `model` — non-empty string, required. **Never infer the provider from the

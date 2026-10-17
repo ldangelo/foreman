@@ -15,14 +15,14 @@
 # The AGENT runs on the server, in the server's checkout of the registered
 # project. This script only sends the spec and waits.
 
-Mix.install([{:foreman_client, github: "Sunstone-Partners/foreman", sparse: "packages/foreman_client"}])
-# NOTE: the bundled templates under
-# packages/foreman_cli/cmd/foreman/templates/ use github:
-# "ldangelo/foreman" for the same package. `ldangelo/foreman` is where this
-# session's Mix fetch resolved; the org remote named in AGENTS.md is
-# Sunstone-Partners/foreman. Both were never verified side by side — if the
-# fetch fails, try the other, or point at a checkout with
-# {:foreman_client, path: ".../packages/foreman_client"}.
+Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
+# Points at the repository that actually resolves for this package: the
+# `Sunstone-Partners/foreman` org remote named in AGENTS.md 404s to
+# `gh api repos/Sunstone-Partners/foreman/contents/packages/foreman_client`, and
+# `foreman_cli`'s own bundled templates already use this URL. `sparse:` is
+# required; the package has no hex publish. To run against a local checkout,
+# replace the `github:` tuple with
+# `{:foreman_client, path: "/abs/path/to/packages/foreman_client"}`.
 
 # Fill in every REPLACE-WITH-* value below before running; an unfilled
 # placeholder is refused by the server as spec_project_not_found or
@@ -61,7 +61,16 @@ case Foreman.Client.run(client, spec) do
     IO.puts(:stderr, "branch=#{inspect(jobsite["branch"])} -- inspect the worktree before retrying")
     System.halt(1)
 
-  {:error, {status, body}} ->
+  {:error, {:transport, reason}} ->
+    # A transport failure is `{:error, {:transport, term}}`, which is also a 2-tuple, so this
+    # clause MUST precede the HTTP one. Ordered the other way, every unreachable server is
+    # reported as "HTTP transport" and `:json.encode/1` is handed an atom.
+    IO.puts(:stderr, "cannot reach the server: #{inspect(reason)}")
+    IO.puts(:stderr, "FOREMAN_API_URL=#{System.get_env("FOREMAN_API_URL", "http://127.0.0.1:4766")}")
+    IO.puts(:stderr, "is foreman_server running, and is jobsites.allow_remote_start true?")
+    System.halt(1)
+
+  {:error, {status, body}} when is_integer(status) ->
     # A spec rejected by Jobsite.Spec.from_json lands here: the body carries the
     # server's error code (spec_unknown_key, spec_push_requires_branch, ...).
     # A 401 means the request never reached the validator.
@@ -69,11 +78,6 @@ case Foreman.Client.run(client, spec) do
     IO.puts(:stderr, :json.encode(body))
     System.halt(1)
 
-  {:error, {:transport, reason}} ->
-    IO.puts(:stderr, "cannot reach the server: #{inspect(reason)}")
-    IO.puts(:stderr, "FOREMAN_API_URL=#{System.get_env("FOREMAN_API_URL", "http://127.0.0.1:4766")}")
-    IO.puts(:stderr, "is foreman_server running, and is jobsites.allow_remote_start true?")
-    System.halt(1)
 
   {:error, reason} ->
     IO.puts(:stderr, "unexpected failure: #{inspect(reason)}")

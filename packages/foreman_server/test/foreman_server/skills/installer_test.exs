@@ -1,5 +1,8 @@
 defmodule ForemanServer.Skills.InstallerTest do
-  use ExUnit.Case, async: true
+  # `async: false`: two of these tests call `Workflow.Catalog.init/1`, which boots the whole
+  # workflow catalog against a temp root. The other `Catalog` suites in this project are also
+  # `async: false` for the same reason.
+  use ExUnit.Case, async: false
 
   alias ForemanServer.Skills.Installer
 
@@ -112,6 +115,264 @@ defmodule ForemanServer.Skills.InstallerTest do
 
     assert {:ok, :noop} = Installer.maybe_install(home_dir: home_dir)
     assert File.read!(Path.join(skill_dir, "SKILL.md")) == "# operator edited\n"
+  end
+
+  # The pre-fix gate asked "is anything in the destination?" rather than "is
+  # everything the bundle ships there?", so once an operator had any skill
+  # installed, a skill added to the bundle in a later release never reached them.
+  # With one bundled skill today this cannot fail against `priv/defaults/skills`
+  # (`@bundled_skill_dirs` == ["foreman-jobsite-template"]), so the source is
+  # faked to two skills.
+  test "maybe_install/1 installs a skill added to the bundle when another is present" do
+    source_dir = make_temp_dir!("skills-installer-two-source")
+    home_dir = make_temp_dir!("skills-installer-two-home")
+
+    for name <- ["alpha-skill", "beta-skill"] do
+      File.mkdir_p!(Path.join(source_dir, name))
+      File.write!(Path.join([source_dir, name, "SKILL.md"]), "# #{name}\n")
+    end
+
+    dest_skills = Path.join([home_dir, ".foreman", "skills"])
+    installed_dir = Path.join(dest_skills, "alpha-skill")
+    File.mkdir_p!(installed_dir)
+    File.write!(Path.join(installed_dir, "SKILL.md"), "# operator edited\n")
+
+    assert {:ok, installed_paths} =
+             Installer.maybe_install(source_dir: source_dir, home_dir: home_dir)
+
+    assert Enum.any?(installed_paths, &String.ends_with?(&1, "beta-skill/SKILL.md")),
+           "the new skill must install even though alpha-skill was already present"
+
+    assert File.dir?(Path.join(dest_skills, "beta-skill"))
+
+    # The installing pass must not clobber the operator's edits to the skill
+    # that already existed.
+    assert File.read!(Path.join(installed_dir, "SKILL.md")) == "# operator edited\n"
+  end
+
+  test "maybe_install/1 is a no-op when every bundled skill is present" do
+    source_dir = make_temp_dir!("skills-installer-all-source")
+    home_dir = make_temp_dir!("skills-installer-all-home")
+    dest_skills = Path.join([home_dir, ".foreman", "skills"])
+
+    for name <- ["alpha-skill", "beta-skill"] do
+      File.mkdir_p!(Path.join(source_dir, name))
+      File.write!(Path.join([source_dir, name, "SKILL.md"]), "# #{name}\n")
+      File.mkdir_p!(Path.join(dest_skills, name))
+      File.write!(Path.join([dest_skills, name, "SKILL.md"]), "# operator edited\n")
+    end
+
+    assert {:ok, :noop} = Installer.maybe_install(source_dir: source_dir, home_dir: home_dir)
+
+    assert File.read!(Path.join([dest_skills, "alpha-skill", "SKILL.md"])) ==
+             "# operator edited\n"
+
+    assert File.read!(Path.join([dest_skills, "beta-skill", "SKILL.md"])) ==
+             "# operator edited\n"
+  end
+
+  # Guards the restrict step, which is easy to drop while touching either function: without
+  # it `maybe_install/1` reaches `install/1` with no `:install_skills` and force-copies the
+  # whole bundle, overwriting the operator's edits (`File.cp_r/2` overwrites destination
+  # files — verified, not assumed).
+  test "install/1 with :install_skills copies only the named skills" do
+    source_dir = make_temp_dir!("skills-restrict-source")
+    target_dir = make_temp_dir!("skills-restrict-target")
+
+    for name <- ["alpha-skill", "beta-skill"] do
+      File.mkdir_p!(Path.join(source_dir, name))
+      File.write!(Path.join([source_dir, name, "SKILL.md"]), "# #{name}\n")
+      File.mkdir_p!(Path.join(target_dir, name))
+      File.write!(Path.join([target_dir, name, "SKILL.md"]), "# operator edited\n")
+    end
+
+    assert {:ok, installed_paths} =
+             Installer.install(
+               source_dir: source_dir,
+               target_dir: target_dir,
+               install_skills: ["beta-skill"]
+             )
+
+    assert Enum.any?(installed_paths, &String.ends_with?(&1, "beta-skill/SKILL.md"))
+    refute Enum.any?(installed_paths, &String.ends_with?(&1, "alpha-skill/SKILL.md"))
+
+    assert File.read!(Path.join([target_dir, "alpha-skill", "SKILL.md"])) ==
+             "# operator edited\n"
+
+    assert File.read!(Path.join([target_dir, "beta-skill", "SKILL.md"])) == "# beta-skill\n"
+  end
+
+  # An empty allowlist must mean "nothing", never "everything": `Keyword.get/2` cannot tell
+  # an absent option from `[]`, so a caller that passes an empty list must not get a full
+  # reinstall of skills the operator has edited.
+  test "install/1 with an empty :install_skills copies nothing" do
+    source_dir = make_temp_dir!("skills-restrict-empty-source")
+    target_dir = make_temp_dir!("skills-restrict-empty-target")
+
+    File.mkdir_p!(Path.join(source_dir, "alpha-skill"))
+    File.write!(Path.join([source_dir, "alpha-skill", "SKILL.md"]), "# alpha-skill\n")
+
+    assert {:ok, []} =
+             Installer.install(source_dir: source_dir, target_dir: target_dir, install_skills: [])
+
+    refute File.dir?(Path.join(target_dir, "alpha-skill"))
+  end
+
+  # The boot hook used to discard the result with `_ =`, so a skill install that failed was
+  # indistinguishable from one that never needed to run.
+  #
+  # `Catalog.init/1` is called directly rather than via `start_supervised!/2`. Booting a second
+  # `Catalog` process installs every bundled workflow and schedules a poll timer; in this shared
+  # `async: false` file that starves the other GenServers, and a boot can then land after the
+  # test that started it has exited — which is what made the mailbox-based version flake under a
+  # full-suite run. Same producer (`init/1`), same consumer (telemetry), no scheduler pressure.
+  #
+  # The counts are read from a per-invocation `:counters` ref written by a handler that runs
+  # inline in the emitting process, so they are settled the moment `init/1` returns. Events are
+  # also forwarded to the test process so `refute_receive` remains meaningful in both directions.
+  defp boot_catalog(skills_opts) do
+    counts = :counters.new(2, [])
+    handler_base = "skills-hook-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    test_pid = self()
+
+    attach = fn suffix, event, index, key ->
+      :ok =
+        :telemetry.attach(
+          handler_base <> suffix,
+          event,
+          fn _event, measurements, metadata, _config ->
+            :counters.add(counts, index, 1)
+            send(test_pid, {key, if(key == :skills_installed, do: measurements, else: metadata)})
+          end,
+          nil
+        )
+    end
+
+    attach.("-installed", [:foreman_server, :skills, :installed], 1, :skills_installed)
+    attach.("-error", [:foreman_server, :skills, :install, :error], 2, :skills_install_error)
+
+    on_exit(fn ->
+      :telemetry.detach(handler_base <> "-installed")
+      :telemetry.detach(handler_base <> "-error")
+    end)
+
+    root = make_temp_dir!("skills-catalog-hook-workflows")
+    File.mkdir_p!(Path.join(root, "prompts"))
+
+    # `AssetCatalog.new/1`, not a bare `%AssetCatalog{}`: `prompts_dir` defaults to `nil` and
+    # `load_prompts/1` then crashes in `File.ls/1` before `init/1` returns.
+    {:ok, _state} =
+      ForemanServer.Workflow.Catalog.init(
+        [catalog: ForemanServer.Workflow.AssetCatalog.new(root)] ++ skills_opts
+      )
+
+    %{installed: :counters.get(counts, 1), errors: :counters.get(counts, 2)}
+  end
+
+  test "Catalog boot hook reports a successful skills install" do
+    skills_dir = make_temp_dir!("skills-catalog-hook-target")
+
+    assert %{installed: installed, errors: 0} = boot_catalog(skills_target_dir: skills_dir)
+    assert installed > 0
+    assert File.regular?(Path.join([skills_dir, "foreman-jobsite-template", "SKILL.md"]))
+
+    # `count` is the number of FILES the installer copied, so it is larger than the one
+    # `installed` event the counter records; the file on disk is the real assertion.
+    assert_receive {:skills_installed, %{count: copied}}
+    assert copied > 0
+    refute_receive {:skills_install_error, _}
+  end
+
+  # A destination that cannot hold skills must be reported, not swallowed — the `_ =` this
+  # replaced discarded exactly that case.
+  test "Catalog boot hook reports a failed skills install" do
+    blocked = Path.join(make_temp_dir!("skills-catalog-hook-blocked"), "not-a-dir")
+    File.write!(blocked, "a regular file cannot hold skills")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert %{installed: 0, errors: errors} = boot_catalog(skills_target_dir: blocked)
+        assert errors > 0
+      end)
+
+    # Loud in both channels: telemetry, which reaches only a process that attached a handler,
+    # and `Logger`, which is what an operator actually sees.
+    assert log =~ "Skills boot-install failed"
+    assert log =~ blocked
+    assert_receive {:skills_install_error, %{reason: reason}}
+    assert reason != nil
+    refute_receive {:skills_installed, _}
+  end
+
+  # `skills_home_dir:` must reach the installer as `:home_dir`, which is what
+  # `Installer.target_dir/1` resolves against `System.user_home!()`. The `skills_`-prefix
+  # mapping table in `Catalog.init/1` is otherwise unasserted — deleting that one pair would
+  # leave the whole skills hook writing into the operator's real home — so this pins it.
+  test "Catalog boot hook defaults the skills target to the user home" do
+    home_dir = make_temp_dir!("skills-catalog-hook-default-home")
+
+    assert %{installed: installed, errors: 0} = boot_catalog(skills_home_dir: home_dir)
+    assert installed > 0
+
+    assert File.regular?(
+             Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template", "SKILL.md"])
+           )
+  end
+
+  # `Installer.maybe_install/1` no longer calls `File.ls/1` on the destination at all — it asks
+  # `skill_installed?/2` per bundled name — so an absent destination reaches `install/1` only
+  # because `restrict(names, nil)` returns every name. Returning `[]` for `nil` instead (i.e.
+  # swapping the order of the two `restrict/2` clauses) would make every boot a silent no-op.
+  test "maybe_install/1 with no :install_skills installs every bundled skill" do
+    source_dir = make_temp_dir!("skills-restrict-absent-option-source")
+    home_dir = make_temp_dir!("skills-restrict-absent-option-home")
+
+    for name <- ["alpha-skill", "beta-skill"] do
+      File.mkdir_p!(Path.join(source_dir, name))
+      File.write!(Path.join([source_dir, name, "SKILL.md"]), "# #{name}\n")
+    end
+
+    assert {:ok, installed_paths} =
+             Installer.maybe_install(source_dir: source_dir, home_dir: home_dir)
+
+    assert Enum.any?(installed_paths, &String.ends_with?(&1, "alpha-skill/SKILL.md"))
+    assert Enum.any?(installed_paths, &String.ends_with?(&1, "beta-skill/SKILL.md"))
+  end
+
+  # `target_dir/1` must treat a PRESENT `nil` exactly as an absent key. The `skills_*` option
+  # translation in `Catalog.init/1` names keys the caller may not have set, and
+  # `Keyword.get/3`'s default fires only on ABSENCE, so a forwarded `home_dir: nil` has to
+  # resolve to the fallback rather than raise in `Path.join/1` and crash catalog boot.
+  # `Keyword.get/2` + `||` is the discriminator: swap it for the 3-arity default form and the
+  # nil cases below raise instead of matching.
+  test "Installer.target_dir/1 treats a present nil option as absent" do
+    user_home_skills = Path.join([System.user_home!(), ".foreman", "skills"])
+
+    assert Installer.target_dir([]) == user_home_skills
+    assert Installer.target_dir(home_dir: nil) == user_home_skills
+    assert Installer.target_dir(home_dir: nil, target_dir: nil) == user_home_skills
+    assert Installer.target_dir(target_dir: nil) == user_home_skills
+
+    # A real value still wins over both nils, and `:target_dir` wins over `:home_dir`.
+    assert Installer.target_dir(home_dir: "/h", target_dir: "/t") == "/t"
+    assert Installer.target_dir(home_dir: "/h") == "/h/.foreman/skills"
+  end
+
+  # A source directory that does not exist yet yields no skills to copy, which the fold reports
+  # as `{:ok, :noop}`. An unreadable source is still an error, and this distinguishes the two
+  # (§5.3): a mutant that folds `:enoent` into the error clause fails the first case, one that
+  # folds both into `{:ok, []}` fails the second.
+  test "maybe_install/1 treats a missing source as empty but an unreadable source as an error" do
+    missing_source = Path.join(make_temp_dir!("skills-source-missing"), "nope")
+    dest_home = make_temp_dir!("skills-source-missing-home")
+
+    assert {:ok, :noop} = Installer.maybe_install(source_dir: missing_source, home_dir: dest_home)
+
+    file_as_dir = Path.join(make_temp_dir!("skills-source-blocked"), "not-a-dir")
+    File.write!(file_as_dir, "a regular file is not a directory")
+
+    assert {:error, {:list_skills_failed, ^file_as_dir, :enotdir}} =
+             Installer.maybe_install(source_dir: file_as_dir, home_dir: dest_home)
   end
 
   defp make_temp_dir!(prefix) do

@@ -1634,6 +1634,15 @@ Telemetry:
 `[:foreman_server, :workflow, :manifest, :loaded | :reload, :ok | :reload, :error | :removed]`,
 `[:foreman_server, :workflow, :prompt, :loaded | :reload, :ok | :reload, :error | :removed]`.
 
+`[:foreman_server, :skills, :installed]` (measurements `%{count: files_copied}`, metadata
+`%{paths: [...]}`) and `[:foreman_server, :skills, :install, :error]` (metadata
+`%{reason: term()}`) are emitted by `ForemanServer.Workflow.Catalog`'s boot hook, which
+forwards `:skills_home_dir` / `:skills_target_dir` / `:skills_source_dir` (prefixed so they
+cannot collide with the workflow-root options the same GenServer accepts) to
+`ForemanServer.Skills.Installer.maybe_install/1`. Nothing swallows the result: `{:ok, :noop}`
+emits no event, a list of copied paths emits `:installed`, and `{:error, reason}` emits
+`:install, :error` — the `_ =` this replaced made a failed skill boot-install invisible (§5.2).
+
 ---
 
 ## Domain Events

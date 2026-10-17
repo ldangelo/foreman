@@ -168,19 +168,24 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 > runtime copy`. `-n`/`--name` and `--wizard` do not exist, and `init` takes
 > no positional name.
 
-Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, installs bundled Pi skills to `~/.pi/agent/skills/`, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
+Initializes Foreman in a project: creates `.foreman/`, installs the default workflow configs
+and prompts, and registers the project with the Elixir backend. It does **not** install or
+refresh skills — bundled skills are installed by `ForemanServer.Skills.Installer` to
+`~/.foreman/skills/` when the server boots (see `docs/user-guide.md` §7.4), so after editing a
+bundled skill you delete the installed copy and restart the server; re-running `init` changes
+nothing there. The CLI does not run Postgres migrations or open a database connection.
 
 ```bash
 foreman init                      # Initialize with auto-detected name
 foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Reinstall prompt, workflow, and bundled skill files after source edits
+foreman init --force              # Reinstall prompt and workflow files after source edits (not skills)
 foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
-| `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
+| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. It has no effect on skills: `foreman init` never reads or writes `~/.foreman/skills`, which the server installs at boot via `ForemanServer.Skills.Installer`. |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
 #### `foreman init --template <name>` (real, current)

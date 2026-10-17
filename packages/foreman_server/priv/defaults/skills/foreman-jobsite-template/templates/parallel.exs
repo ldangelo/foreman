@@ -7,6 +7,7 @@
 #
 #   export FOREMAN_API_TOKEN=...
 #   export FOREMAN_PROJECT_ID=...
+#   export FOREMAN_INTO_BRANCH=...   # the branch the server has checked out
 #   elixir this-script.exs
 #
 # Concurrency is capped server-side by max_concurrent_jobsites (default 3): an
@@ -14,7 +15,7 @@
 # publishes to the remote named origin (fixed, never caller-chosen) and requires
 # the named-branch strategy below.
 
-Mix.install([{:foreman_client, github: "Sunstone-Partners/foreman", sparse: "packages/foreman_client"}])
+Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || "REPLACE-WITH-A-REGISTERED-PROJECT-ID"
 into_branch = System.get_env("FOREMAN_INTO_BRANCH") || raise "FOREMAN_INTO_BRANCH: the branch the server has checked out; merge refuses anything else"
@@ -44,37 +45,63 @@ specs =
 
 # Start every jobsite up front, then wait: Foreman queues the ones past the
 # concurrency cap, so starting serially and waiting per-item wastes the fan-out.
-{:ok, ids} =
-  with_args = Task.async_stream(specs, &Foreman.Client.start(client, &1), max_concurrency: length(specs))
-  Enum.reduce_while(with_args, {:ok, []}, fn
-    {:ok, {:ok, id}}, {:ok, acc} -> {:cont, {:ok, acc ++ [id]}}
-    {:ok, {:error, why}}, _ -> {:halt, {:error, why}}
-    :exit, _ -> {:halt, {:error, :stream_exit}}
+#
+# `Task.async_stream/3` yields `{:ok, inner}` per item, where `inner` is itself
+# `Foreman.Client.start/2`'s `{:ok, id} | {:error, term}`; a stream worker that
+# dies yields `{:exit, why}`. The three arms below cover all of that. Matching
+# only `{:ok, {:ok, id}}` and `{:ok, {:error, why}}` in a reduce is what made the
+# previous version raise `MatchError`: a refused start landed on a clause that
+# did not exist, crashing the whole fan-out instead of reporting one item.
+start_results =
+  Task.async_stream(specs, &Foreman.Client.start(client, &1), max_concurrency: length(specs))
+  |> Enum.map(fn
+    {:ok, {:ok, id}} -> {:ok, id}
+    {:ok, {:error, why}} -> {:error, {:start, why}}
+    {:exit, why} -> {:error, {:stream_exit, why}}
   end)
 
-case ids do
-  list when is_list(list) ->
-    results =
-      Enum.map(list, fn id -> {id, Foreman.Client.wait(client, id, timeout_ms: :infinity)} end)
+started = for({:ok, id} <- start_results, do: id)
+failed = for({:error, why} <- start_results, do: why)
 
-    Enum.each(results, fn
-      {id, {:ok, %{"status" => "completed"} = j}} ->
-        IO.puts("completed #{id} branch=#{j["branch"]}")
-        # merge one at a time: each merge changes the checkout every later merge
-        # reads as "the branch currently checked out".
-        case Foreman.Client.merge(client, id, into_branch) do
-          {:ok, body} -> IO.puts("  merged: #{inspect(body)}")
-          {:error, why} -> IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
-        end
+# A partial start is not a clean failure: the jobsites that DID start are
+# already running on the server against the repo. Abandoning them silently is
+# the worse outcome, so they are waited on and reported, and the script still
+# exits nonzero at the end.
+if failed != [] do
+  IO.puts(:stderr, "could not start #{length(failed)} of #{length(start_results)} jobsites:")
+  Enum.each(failed, fn why -> IO.puts(:stderr, "  #{inspect(why)}") end)
 
-      {id, {:ok, other}} ->
-        IO.puts(:stderr, "jobsite #{id} ended #{inspect(other["status"])}: #{inspect(other)}")
-
-      {id, {:error, why}} ->
-        IO.puts(:stderr, "jobsite #{id} could not be read: #{inspect(why)}")
-    end)
-
-  {:error, why} ->
-    IO.puts(:stderr, "could not start every jobsite: #{inspect(why)}")
-    System.halt(1)
+  if started == [], do: System.halt(1)
+  IO.puts(:stderr, "waiting on the #{length(started)} that did start; then exiting nonzero")
 end
+
+if started == [] do
+  IO.puts(:stderr, "no jobsite started -- nothing to wait on")
+  System.halt(1)
+end
+
+# Wait for every jobsite, then merge the completed ones SERIALLY. Each merge
+# changes the checkout that every later merge reads as "the branch currently
+# checked out", so merging concurrently would have them merge into a moving
+# target. This ordering is a script-level concern, which is why it lives here
+# rather than in `Foreman.Client`.
+results =
+  Enum.map(started, fn id -> {id, Foreman.Client.wait(client, id, timeout_ms: :infinity)} end)
+
+Enum.each(results, fn
+  {id, {:ok, %{"status" => "completed"} = j}} ->
+    IO.puts("completed #{id} branch=#{j["branch"]}")
+
+    case Foreman.Client.merge(client, id, into_branch) do
+      {:ok, body} -> IO.puts("  merged: #{inspect(body)}")
+      {:error, why} -> IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
+    end
+
+  {id, {:ok, other}} ->
+    IO.puts(:stderr, "jobsite #{id} ended #{inspect(other["status"])}: #{inspect(other)}")
+
+  {id, {:error, why}} ->
+    IO.puts(:stderr, "jobsite #{id} could not be read: #{inspect(why)}")
+end)
+
+if failed != [], do: System.halt(1)

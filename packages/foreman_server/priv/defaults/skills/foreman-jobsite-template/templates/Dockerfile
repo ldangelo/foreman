@@ -21,8 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid ${AGENT_GID} agent 2>/dev/null || true \
     && useradd --uid ${AGENT_UID} --gid ${AGENT_GID} -m agent 2>/dev/null || true
 
-# The sandbox bind-mounts the worktree and the repo's git dir read-write at the
-# same host paths, and Foreman sets git safe.directory for exactly those two.
-# Do not add further safe.directory entries here.
+# The sandbox bind-mounts the worktree and, for a linked worktree, the repo's git dir, both
+# read-write at the same host paths. Foreman injects `safe.directory` for exactly those paths
+# into `docker run` itself (`safe_directory_args/1` and `git_mount_args/2` in
+# lib/foreman_server/jobsite/sandboxes/docker.ex), and `agent_cli_path/3` re-injects them on
+# every `docker exec` through an `--env-file` under the system tmp dir. Neither path reads the
+# image's own environment, so an `ENV GIT_CONFIG_*` here is silently overridden -- and a
+# `safe.directory=*` here would widen trust beyond the two mounted paths, which is deliberate:
+# "Trust only the mounted paths, not every path (`*`)" at docker.ex:112. Do not add
+# safe.directory entries to this image. If git refuses a directory, the gap is in the server's
+# mount list, not here.
 USER agent
 WORKDIR /workspace

@@ -28,8 +28,8 @@ Output target: `.foreman/<name>.exs` and `.foreman/prompts/<name>.md`.
 | `strategy` | string or map | Recommended: `%{"branch" => name}`. |
 | `sandbox` | string | `"docker"` (default) or `"host"` (server must opt in). |
 | `name` | string | 1–128 chars of `[A-Za-z0-9._-]`. |
-| `max_iterations` | integer | Positive. Required when `completion_signal` is set. |
-| `completion_signal` | string or list | Non-empty. Required when `max_iterations` is set. |
+| `max_iterations` | integer | **Positive** — the server refuses `0` (`optional_pos_int` in `spec.ex`). Optional; default `1`. Independent of `completion_signal`. |
+| `completion_signal` | string or list | Non-empty string, or non-empty list of them. Optional. Nothing requires an iteration count. |
 | `idle_timeout_seconds` | integer | Positive. Optional. |
 | `completion_timeout_seconds` | integer | Positive. Optional. |
 | `resume_session` | string | Non-empty. Optional. |
@@ -42,7 +42,7 @@ Output target: `.foreman/<name>.exs` and `.foreman/prompts/<name>.md`.
 
 | Key | Type | Notes |
 |-----|------|-------|
-| `provider` | string | **Required.** One of: `"claude"`, `"pi"`, `"litellm"`. |
+| `provider` | string | **Required.** One of `JidoHarness.providers()` — currently `"pi"` or `"claude"`. A LiteLLM proxy is reached *through* `pi`, not as its own provider. |
 | `model` | string | **Required.** Non-empty model name. |
 | `effort` | string | Optional. One of: `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`. |
 | `approval_mode` | string | Optional. One of: `"auto_edit"`, `"auto_approve"`, `"default"`. |
@@ -234,11 +234,13 @@ Before emitting the final `.exs` file, verify each item:
 
 - [ ] No forbidden keys: `on_event`, `reply_to`, `logging`, `resume?`, `resume`, `repo_path`, `path`, `base`, `prompt_file`
 - [ ] No `hooks.host.*` entries — only `hooks.sandbox.*`
-- [ ] `agent.provider` is one of: `"claude"`, `"pi"`, `"litellm"`
+- [ ] `agent.provider` is in `JidoHarness.providers()` (currently `"pi"` or `"claude"`) — never
+      a hardcoded copy of that list in the script; the server's rejection `details` carries the live set
 - [ ] `agent.model` is a non-empty string
 - [ ] `prompt` is loaded via `File.read!/1`, never a hardcoded multi-line string in the spec map
 - [ ] If `push: true`, strategy is `%{"branch" => name}` (not `"head"`)
-- [ ] If `max_iterations` is set, `completion_signal` is also set (and vice-versa)
+- [ ] `max_iterations`, if set, is a **positive** integer — `0` is refused as `spec_option_invalid`,
+      not clamped to a single pass. It is independent of `completion_signal`; neither requires the other.
 - [ ] If `agent.env` is set, add a comment that keys must appear in the server's `agent_env_allowlist`
 - [ ] Branch name matches `~r/\A[A-Za-z0-9][A-Za-z0-9._\/-]*\z/` — no `..`, no trailing `.lock`, `/`, or `.`
 - [ ] `sandbox` is `"docker"` unless `"host"` is explicitly required and documented in the header comment

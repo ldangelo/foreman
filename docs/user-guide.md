@@ -768,12 +768,19 @@ bundled workflows run `foreman init --force` to refresh the installed copies.
 Skills bundled at
 `packages/foreman_server/priv/defaults/skills/<name>/SKILL.md` are installed to
 `~/.foreman/skills/<name>/` by `ForemanServer.Skills.Installer`, which the
-workflow catalog invokes at server boot when that directory holds no skill yet.
-The install is once-only by design: an existing `SKILL.md` is never overwritten,
-so an operator edit survives restarts. To refresh installed skills after editing
-a bundled one, delete the installed directory (or the whole `~/.foreman/skills`
-directory) and restart the server; `foreman init --force` refreshes workflows
-and prompts only, not skills.
+`ForemanServer.Workflow.Catalog` GenServer invokes from `init/1` at server boot. Every boot
+it copies only the bundled skills not already present there, so a skill added to the bundle in
+a later release reaches an operator who already has one installed, while an existing
+`SKILL.md` is never overwritten — an operator edit survives restarts. To refresh an installed
+skill after editing a bundled one, delete that installed directory (or the whole
+`~/.foreman/skills` directory) and restart the server.
+
+Two boundaries worth stating plainly: `~/.foreman/skills` is computed by
+`ForemanServer.Skills.Installer.target_dir/1` and is NOT a directory the `pi`/`omp` CLIs scan
+for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill files under
+`.pi/agent/skills` instead), and `foreman init --force` refreshes workflows and prompts only,
+never skills. A skill placed anywhere other than `~/.foreman/skills` is invisible to
+`maybe_install/1`'s missing-skill check.
 
 `foreman-jobsite-template` is the bundled skill for authoring Remote Jobsite
 scripts: it turns a natural-language description into a `Jobsite.Spec.from_json/2`

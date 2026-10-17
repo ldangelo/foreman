@@ -29,7 +29,7 @@ FORBIDDEN = {
     "path", "base",
 }
 AGENT_KEYS = {"provider", "model", "effort", "approval_mode", "env"}
-PROVIDERS = {"pi", "claude", "litellm"}
+PROVIDERS = {"pi", "claude"}  # JidoHarness.providers(); a LiteLLM proxy is reached through `pi`
 EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 APPROVAL_MODES = {"default", "prompt", "auto_edit", "auto_approve"}
 SANDBOXES = {"docker", "host"}
@@ -176,7 +176,15 @@ def validate_branch(name):
 
 
 def check_numbers(spec):
-    for key in ("max_iterations", "idle_timeout_seconds", "completion_timeout_seconds"):
+    # `max_iterations` mirrors the server's own guard: `optional_pos_int` in
+    # lib/foreman_server/jobsite/spec.ex requires `is_integer(n) and n > 0`, so 0 is
+    # REFUSED as spec_option_invalid, never clamped to a single pass. The timeout keys are
+    # guarded as non-negative integers, hence the split.
+    if "max_iterations" in spec:
+        v = spec["max_iterations"]
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise Fail("spec_option_invalid", "max_iterations must be a positive integer")
+    for key in ("idle_timeout_seconds", "completion_timeout_seconds"):
         if key in spec:
             v = spec[key]
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
@@ -287,15 +295,22 @@ def main():
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 def strip_comments(obj):
-    """Remove `_comment*` keys so a template can be POSTed as-is."""
+    """Remove `_comment*` keys at ANY depth so a template can be POSTed as-is.
+
+    The server's whitelist (`@allowed_keys` plus the `agent` sub-whitelist in
+    lib/foreman_server/jobsite/spec.ex) rejects an unknown key at EVERY level, so
+    the escape hatch has to be recursive; a top-level-only strip left
+    `agent._comment` in the payload and the spec was refused as spec_agent_invalid.
+    See SKILL.md Step 3.
+    """
     if isinstance(obj, dict):
         return {k: strip_comments(v) for k, v in obj.items()
                 if not (isinstance(k, str) and k.startswith("_comment"))}
     if isinstance(obj, list):
         return [strip_comments(x) for x in obj]
     return obj
+
+
+if __name__ == "__main__":
+    sys.exit(main())

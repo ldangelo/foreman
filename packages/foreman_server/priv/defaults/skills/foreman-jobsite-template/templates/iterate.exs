@@ -8,10 +8,13 @@
 #   export FOREMAN_PROJECT_ID=...
 #   elixir this-script.exs
 
-Mix.install([{:foreman_client, github: "Sunstone-Partners/foreman", sparse: "packages/foreman_client"}])
+Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || "REPLACE-WITH-A-REGISTERED-PROJECT-ID"
-max_iterations = System.get_env("FOREMAN_MAX_ITERATIONS", "20") |> String.to_integer()
+# Floored at 1: the server's `optional_pos_int` refuses `0` outright
+# (spec_option_invalid), so an env override of "0" must not be forwarded as if it
+# meant "a single pass".
+max_iterations = max(1, System.get_env("FOREMAN_MAX_ITERATIONS", "20") |> String.to_integer())
 
 # agent.env is refused unless EVERY key is allowlisted on the server via
 # FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST. Names are listed here, values are read

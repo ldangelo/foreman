@@ -39,6 +39,10 @@ defmodule ForemanServer.Workflow.Catalog do
 
   use GenServer
 
+  # Telemetry is the machine-readable channel for the skills boot-install; Logger is the
+  # operator-readable one, so a failed install shows up in the server log and not only to a
+  # process that attached a `:telemetry` handler.
+  require Logger
   alias ForemanServer.Workflow.AssetCatalog
   alias ForemanServer.Workflow.Catalog.Doctor
   alias ForemanServer.Workflow.Interpreter
@@ -137,7 +141,7 @@ defmodule ForemanServer.Workflow.Catalog do
   ## GenServer
 
   @impl true
-  def init(opts) do
+  def init(opts \\ []) do
     catalog =
       case Keyword.get(opts, :catalog) do
         %AssetCatalog{} = c -> c
@@ -147,12 +151,55 @@ defmodule ForemanServer.Workflow.Catalog do
     state = %{catalog: catalog, manifests: %{}, prompts: %{}, type_to_workflow: %{}}
     state = ensure_installed(state)
 
-    _ = ForemanServer.Skills.Installer.maybe_install()
+    # The options are `skills_`-prefixed so they cannot collide with the workflow-root options
+    # this GenServer also accepts: a bare `:target_dir` here means the WORKFLOW directory
+    # (`AssetCatalog.default/0`), while a bare `:target_dir` on `Skills.Installer` means the
+    # SKILLS directory. Absent keys are dropped rather than forwarded as `nil`, so
+    # `Installer.target_dir/1` keeps its `~/.foreman/skills` fallback.
+    install_skills(
+      for {from, to} <- [
+            {:skills_home_dir, :home_dir},
+            {:skills_target_dir, :target_dir},
+            {:skills_source_dir, :source_dir}
+          ],
+          value = Keyword.get(opts, from),
+          value != nil,
+          do: {to, value}
+    )
 
     state = load_manifests(state)
     state = load_prompts(state)
     schedule_poll()
     {:ok, state}
+  end
+
+  # Skill boot-install must be loud, not discarded (§5.2). `ensure_installed/1` above emits
+  # `[:foreman_server, :workflow, :installed]` / `:install, :error` for the same reason; the
+  # `_ =` this replaced turned a failed skill install into an invisible one.
+  defp install_skills(opts) do
+    case ForemanServer.Skills.Installer.maybe_install(opts) do
+      {:ok, paths} when is_list(paths) ->
+        :telemetry.execute(
+          [:foreman_server, :skills, :installed],
+          %{count: length(paths)},
+          %{paths: paths}
+        )
+
+      {:ok, :noop} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "Skills boot-install failed: #{inspect(reason)} — bundled skills are NOT installed in " <>
+            "#{inspect(ForemanServer.Skills.Installer.target_dir(opts))}"
+        )
+
+        :telemetry.execute(
+          [:foreman_server, :skills, :install, :error],
+          %{},
+          %{reason: reason}
+        )
+    end
   end
 
   @impl true
