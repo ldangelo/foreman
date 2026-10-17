@@ -107,10 +107,19 @@ defmodule ForemanServer.Skills.Installer do
   successful-looking no-op with zero skills installed (§5.2). It is a fallback, not the
   mechanism: `__DIR__` is baked at compile time and does not exist in a sourceless release.
   """
-  @spec bundled_skills_source() :: Path.t()
-  def bundled_skills_source do
-    release = Application.app_dir(:foreman_server, "priv/defaults/skills")
-    if File.dir?(release), do: release, else: @source_tree_bundled_dir
+  @spec bundled_skills_source(keyword()) :: Path.t()
+  def bundled_skills_source(opts \\ []) do
+    # `:bundled_skills_dir` exists so the release scenario this resolver guards -- `priv/`
+    # shipped WITHOUT the skills subtree -- is exercisable from a test instead of only inside a
+    # real release build.
+    case Keyword.get(opts, :bundled_skills_dir) do
+      nil ->
+        release = Application.app_dir(:foreman_server, "priv/defaults/skills")
+        if File.dir?(release), do: release, else: @source_tree_bundled_dir
+
+      override ->
+        override
+    end
   end
 
   @doc false
@@ -140,11 +149,11 @@ defmodule ForemanServer.Skills.Installer do
 
   @spec install([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def install(opts \\ []) when is_list(opts) do
-    source_dir = Keyword.get(opts, :source_dir, bundled_skills_source())
+    source_dir = Keyword.get_lazy(opts, :source_dir, fn -> bundled_skills_source(opts) end)
     dest_dir = target_dir(opts)
 
     with :ok <- File.mkdir_p(dest_dir),
-         {:ok, skill_names} <- list_skill_dirs(source_dir) do
+         {:ok, skill_names} <- list_skill_dirs(source_dir, opts) do
       skill_names = restrict(skill_names, Keyword.get(opts, :install_skills))
 
       skill_names
@@ -181,9 +190,9 @@ defmodule ForemanServer.Skills.Installer do
   @spec maybe_install([option()]) :: {:ok, [Path.t()] | :noop} | {:error, term()}
   def maybe_install(opts \\ []) do
     dest_dir = target_dir(opts)
-    source_dir = Keyword.get(opts, :source_dir, bundled_skills_source())
+    source_dir = Keyword.get_lazy(opts, :source_dir, fn -> bundled_skills_source(opts) end)
 
-    case list_skill_dirs(source_dir) do
+    case list_skill_dirs(source_dir, opts) do
       {:ok, names} ->
         case Enum.reject(names, &skill_installed?(dest_dir, &1)) do
           [] -> {:ok, :noop}
@@ -199,7 +208,32 @@ defmodule ForemanServer.Skills.Installer do
     File.regular?(Path.join([dest_dir, name, "SKILL.md"]))
   end
 
-  defp list_skill_dirs(source_dir) do
+  # CodeRabbit #3: a missing source directory must not read as an empty bundle.
+  #
+  # `File.ls/1` reports an EMPTY directory as `{:ok, []}` and an ABSENT one as
+  # `{:error, :enoent}`, so the two causes are distinguishable right here; folding them together
+  # (AGENTS.md 5.3) is exactly what let a broken bundle source install zero skills and report a
+  # successful no-op. Absent is now an error, with its own code, on both entry points:
+  # `install/1` (an explicit `:source_dir` the caller named) reports `:source_dir_missing`, and
+  # the auto-install path reports `:bundled_skills_missing` so the boot hook can say which
+  # bundle it looked in.
+  #
+  # Empty stays `{:ok, []}` on both paths. It is a different fact from absent, and it is a
+  # legitimate configuration rather than a defect: `Workflow.Install`'s own boot guard is
+  # `bundled_templates_available?/1`, which is `File.dir? && manifest_filenames != []`
+  # (`workflow/install.ex:201`) — an existing-but-empty directory takes the "already installed"
+  # branch there, so erroring on empty here would make this installer disagree with the sibling
+  # subsystem about the same situation. `maybe_install/1` already returns `{:ok, :noop}` for an
+  # empty bundle via that guard, so no operator-visible behavior depends on the fold.
+  defp list_skill_dirs(source_dir, opts) do
+    # Only a caller that NAMED a path can be told it named a bad one; when the path was resolved
+    # from the bundle, its absence is a packaging problem instead (§5.3).
+    named? =
+      case Keyword.fetch(opts, :source_dir) do
+        {:ok, value} when is_binary(value) -> true
+        _ -> false
+      end
+
     case File.ls(source_dir) do
       {:ok, entries} ->
         dirs =
@@ -210,11 +244,18 @@ defmodule ForemanServer.Skills.Installer do
         {:ok, dirs}
 
       {:error, :enoent} ->
-        {:ok, []}
+        {:error, missing_source_error(named?, source_dir)}
 
       {:error, reason} ->
         {:error, {:list_skills_failed, source_dir, reason}}
     end
+  end
+
+  # `:source_dir` present means the caller named a directory explicitly, so its absence is a
+  # defect in THAT argument; absent `:source_dir` means the auto-detected bundle resolved to a
+  # path that is not there, which is a packaging problem.
+  defp missing_source_error(named?, source_dir) do
+    if named?, do: {:source_dir_missing, source_dir}, else: {:bundled_skills_missing, source_dir}
   end
 
   defp copy_skill(source_dir, dest_dir, skill_name) do

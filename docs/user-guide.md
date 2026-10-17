@@ -775,6 +775,13 @@ a later release reaches an operator who already has one installed, while an exis
 skill after editing a bundled one, delete that installed directory (or the whole
 `~/.foreman/skills` directory) and restart the server.
 
+The bundle source is resolved at runtime through `Application.app_dir/2`, not through a
+compile-time `__DIR__`, so a Mix release that ships `priv/` without the source tree still finds
+its skills. When the install finds nothing to copy, the reason is reported rather than left as a
+silent success: an absent bundle directory is `{:error, {:bundled_skills_missing, path}}`, a
+caller-named `--source-dir` that is absent is `{:error, {:source_dir_missing, path}}`, and a
+directory that exists but holds no skills is a plain `{:ok, :noop}`. Either error is logged at
+`error` with the path that was looked in.
 Two boundaries worth stating plainly: `~/.foreman/skills` is computed by
 `ForemanServer.Skills.Installer.target_dir/1` and is NOT a directory the `pi`/`omp` CLIs scan
 for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill files under

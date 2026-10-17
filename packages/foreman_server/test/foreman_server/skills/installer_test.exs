@@ -358,21 +358,60 @@ defmodule ForemanServer.Skills.InstallerTest do
     assert Installer.target_dir(home_dir: "/h") == "/h/.foreman/skills"
   end
 
-  # A source directory that does not exist yet yields no skills to copy, which the fold reports
-  # as `{:ok, :noop}`. An unreadable source is still an error, and this distinguishes the two
-  # (§5.3): a mutant that folds `:enoent` into the error clause fails the first case, one that
-  # folds both into `{:ok, []}` fails the second.
-  test "maybe_install/1 treats a missing source as empty but an unreadable source as an error" do
+  # CodeRabbit #3: an ABSENT source is an error, not an empty bundle. `File.ls/1` distinguishes
+  # the two causes (`{:ok, []}` vs `{:error, :enoent}`), so folding them let a broken bundle
+  # source install zero skills and report a successful no-op (§5.3). An EMPTY directory stays
+  # `{:ok, :noop}` -- that is a configuration, not a defect, and it is the ordinary case once
+  # the bundle is already installed.
+  # CodeRabbit #3: an ABSENT source directory is an error, not an empty bundle. `File.ls/1`
+  # distinguishes the two causes -- `{:ok, []}` for an existing-but-empty directory,
+  # `{:error, :enoent}` for one that is not there -- so folding them together (§5.3) is what let
+  # a broken bundle source install ZERO skills while reporting a successful no-op. An empty
+  # directory still means "nothing to copy": that is a configuration, not a defect, and it is the
+  # ordinary state once the bundle is already installed.
+  test "maybe_install/1 errors on an absent source but noops on an empty one" do
     missing_source = Path.join(make_temp_dir!("skills-source-missing"), "nope")
     dest_home = make_temp_dir!("skills-source-missing-home")
 
-    assert {:ok, :noop} = Installer.maybe_install(source_dir: missing_source, home_dir: dest_home)
+    assert {:error, {:source_dir_missing, ^missing_source}} =
+             Installer.maybe_install(source_dir: missing_source, home_dir: dest_home)
 
+    empty_source = make_temp_dir!("skills-source-empty")
+
+    assert {:ok, :noop} = Installer.maybe_install(source_dir: empty_source, home_dir: dest_home)
+
+    # Absent and unreadable are also distinct from each other (§5.3), and absent is distinct from
+    # the `:bundled_skills_missing` the auto-detected path reports -- see
+    # `test "the auto-detected bundle reports a missing subtree as a bundle problem"` below.
     file_as_dir = Path.join(make_temp_dir!("skills-source-blocked"), "not-a-dir")
     File.write!(file_as_dir, "a regular file is not a directory")
 
     assert {:error, {:list_skills_failed, ^file_as_dir, :enotdir}} =
              Installer.maybe_install(source_dir: file_as_dir, home_dir: dest_home)
+  end
+
+  # The auto-detected bundle is the case CodeRabbit's finding was actually about: a release that
+  # ships `priv/` without `priv/defaults/skills` used to install nothing and say nothing. It gets
+  # its own error code because the cause is a packaging defect, not a bad operator argument.
+  # Reached by pointing `ForemanServer.Skills.Digest`'s sibling resolver at a tree that is not
+  # there, which is what `bundled_skills_source/0` does in a release.
+  test "the auto-detected bundle reports a missing subtree as a bundle problem" do
+    dest_home = make_temp_dir!("skills-bundle-missing-home")
+    gone = Path.join(make_temp_dir!("skills-bundle-missing"), "priv/defaults/skills")
+    refute File.exists?(gone)
+
+    # No `:source_dir` key, so the resolver decides the path -- and `:bundled_skills_dir` is the
+    # one override that lets the release scenario (priv/ shipped WITHOUT the skills subtree) be
+    # exercised here instead of only inside a real release build.
+    assert {:error, {:bundled_skills_missing, ^gone}} =
+             Installer.maybe_install(home_dir: dest_home, bundled_skills_dir: gone)
+
+    # A bundle directory that EXISTS but holds no skills is the other fact: nothing to install,
+    # not a failure. This is the distinction the finding asked for.
+    present = make_temp_dir!("skills-bundle-present")
+
+    assert {:ok, :noop} =
+             Installer.maybe_install(home_dir: dest_home, bundled_skills_dir: present)
   end
 
   # `ForemanServer.Skills.Digest.digest/2` is the function BOTH `@bundled_skills_fingerprint`

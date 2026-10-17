@@ -176,17 +176,24 @@ bundled skill you delete the installed copy and restart the server; re-running `
 nothing there. The CLI does not run Postgres migrations or open a database connection.
 
 ```bash
-foreman init                      # Initialize with auto-detected name
-foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Reinstall prompt and workflow files after source edits (not skills)
-foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
+foreman init                      # REFUSED: --force is required to refresh the installed runtime copy
+foreman init --force              # POSTs the workflow/prompt asset refresh (never touches skills)
+foreman init --template NAME      # Client-side repo-local .foreman/ scaffold, no HTTP -- see below
+foreman init --template NAME --dir PATH   # Same, scaffolded into PATH instead of the cwd
 ```
+
+Two of the verbs this section previously listed never existed. `foreman init -n my-project` and
+`foreman init --wizard` have no route: `init.go:43-45` declares exactly three flags — `--force`,
+`--template` and `--dir` — with no project-name flag and no positional name, and there is no
+wizard code path anywhere in `packages/foreman_cli`. `--wizard` additionally carried a table row
+describing interactive behaviour it does not have. AGENTS.md names both of these as known-bad
+claims, so they are annotated rather than left to read as intended design.
 
 | Option | Description |
 |--------|-------------|
-| `-n, --name <name>` | Project name (default: directory name) |
+| `-n, --name <name>` | **Does not exist.** `init.go:43-45` declares `--force`, `--template` and `--dir` only; there is no project-name flag and no positional name. |
 | `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. It has no effect on skills: `foreman init` never reads or writes `~/.foreman/skills`, which the server installs at boot via `ForemanServer.Skills.Installer`. |
-| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
+| `--wizard` | **Does not exist** — never has; no wizard code path is present anywhere in the Go CLI. |
 
 #### `foreman init --template <name>` (real, current)
 
