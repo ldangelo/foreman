@@ -130,25 +130,34 @@ end
 results =
   Enum.map(started, fn id -> {id, Foreman.Client.wait(client, id, timeout_ms: :infinity)} end)
 
-Enum.each(results, fn
-  {id, {:ok, %{"status" => "completed"} = j}} ->
-    IO.puts("completed #{id} branch=#{j["branch"]}")
+merge_outcomes =
+  Enum.map(results, fn
+    {id, {:ok, %{"status" => "completed"} = j}} ->
+      IO.puts("completed #{id} branch=#{j["branch"]}")
 
-    case Foreman.Client.merge(client, id, into) do
-      # `Jobsite.merge_into/2` answers `{:ok, %{jobsite_id:, branch:, merged_into:}}`, so the
-      # outcome is named rather than the whole map dumped.
-      {:ok, body} ->
-        IO.puts("  merged #{inspect(body["branch"])} into #{inspect(body["merged_into"])}")
+      case Foreman.Client.merge(client, id, into) do
+        # `Jobsite.merge_into/2` answers `{:ok, %{jobsite_id:, branch:, merged_into:}}`, so the
+        # outcome is named rather than the whole map dumped.
+        {:ok, body} ->
+          IO.puts("  merged #{inspect(body["branch"])} into #{inspect(body["merged_into"])}")
+          :ok
 
-      {:error, why} ->
-        IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
-    end
+        {:error, why} ->
+          IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
+          {:error, {:merge_refused, id, why}}
+      end
 
-  {id, {:ok, other}} ->
-    IO.puts(:stderr, "jobsite #{id} ended #{inspect(other["status"])}: #{inspect(other)}")
+    {id, {:ok, other}} ->
+      IO.puts(:stderr, "jobsite #{id} ended #{inspect(other["status"])}: #{inspect(other)}")
+      {:error, {:not_completed, id, other["status"]}}
 
-  {id, {:error, why}} ->
-    IO.puts(:stderr, "jobsite #{id} could not be read: #{inspect(why)}")
-end)
+    {id, {:error, why}} ->
+      IO.puts(:stderr, "jobsite #{id} could not be read: #{inspect(why)}")
+      {:error, {:unreadable, id, why}}
+  end)
 
-if failed != [], do: System.halt(1)
+# Merge refusals / non-completed / unreadable jobsites are failures too, not just start
+# failures. `failed` above tracks only items that never started; without this second
+# accumulator the script exits 0 when a started jobsite fails to merge.
+merge_failed = Enum.count(merge_outcomes, &match?({:error, _}, &1))
+if failed != [] || merge_failed > 0, do: System.halt(1)

@@ -11,10 +11,15 @@
 Mix.install([{:foreman_client, github: "ldangelo/foreman", sparse: "packages/foreman_client"}])
 
 project_id = System.get_env("FOREMAN_PROJECT_ID") || "REPLACE-WITH-A-REGISTERED-PROJECT-ID"
-# Floored at 1: the server's `optional_pos_int` refuses `0` outright
-# (spec_option_invalid), so an env override of "0" must not be forwarded as if it
-# meant "a single pass".
-max_iterations = max(1, System.get_env("FOREMAN_MAX_ITERATIONS", "20") |> String.to_integer())
+# Parsed, not floored: the server's `optional_pos_int` refuses `0` outright
+# (spec_option_invalid), and `String.to_integer/1` crashes on malformed input with no
+# clear message. Require a positive integer; reject anything else with a named error.
+raw_max = System.get_env("FOREMAN_MAX_ITERATIONS", "20")
+max_iterations =
+  case Integer.parse(raw_max) do
+    {n, rest} when n >= 1 and rest in ["", "\n"] -> n
+    _ -> raise "FOREMAN_MAX_ITERATIONS must be a positive integer, got: #{inspect(raw_max)}"
+  end
 
 # agent.env is refused unless EVERY key is allowlisted on the server via
 # FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST. Names are listed here, values are read
