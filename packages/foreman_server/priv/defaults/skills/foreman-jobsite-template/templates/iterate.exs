@@ -51,15 +51,29 @@ client = Foreman.Client.new()
 
 case Foreman.Client.run(client, spec) do
   {:ok, jobsite} ->
-    IO.puts("status=#{jobsite["status"]} iterations=#{inspect(jobsite["iterations"] || length(jobsite["iteration_results"] || []))}")
+    # The read model's iteration fields are `iterations` (a list of per-iteration
+    # records) and `iteration_index` (the 0-based index of the current/last one) --
+    # `projection_store.ex:1973,1994` and the `%{jobsite_id: ...}` initial projection at
+    # `:2493`, serialized by `JobsiteController.json_safe/1`. There is no
+    # `iteration_count` and no `iteration_results`; asking for one yields nil and prints
+    # "iterations=nil" as if the loop never ran. len(iterations) is the number of turns
+    # actually taken, which is the number to compare against max_iterations.
+    iters = jobsite["iterations"] || []
+    IO.puts("status=#{jobsite["status"]} turns=#{length(iters)}/#{spec["max_iterations"]} last_index=#{inspect(jobsite["iteration_index"])}")
     IO.puts("branch=#{jobsite["branch"]}")
 
   {:error, {:jobsite, %{"status" => "failed"} = jobsite}} ->
     # max_iterations exhausted without the signal: the work is real, the loop
     # just did not converge. Inspect, then re-run with a higher bound or a
     # sharpened prompt rather than accepting this as "done".
-    IO.puts(:stderr, "loop ended without the completion signal: #{inspect(Map.get(jobsite, "error"))}")
-    IO.puts(:stderr, "branch=#{inspect(jobsite["branch"])} iterations=#{inspect(jobsite["iteration_count"])}")
+    IO.puts(:stderr, "loop ended without the completion signal: #{inspect(Map.get(jobsite, "last_error") || Map.get(jobsite, "error"))}")
+    IO.puts(:stderr, "branch=#{inspect(jobsite["branch"])} turns=#{length(jobsite["iterations"] || [])}/#{spec["max_iterations"]}")
+    System.halt(1)
+
+  {:error, {:transport, reason}} ->
+    # Ordered BEFORE the 2-tuple arm: a transport error is itself a 2-tuple, so the
+    # looser clause would swallow it and `:json.encode/1` would be handed an atom.
+    IO.puts(:stderr, "cannot reach the server: #{inspect(reason)}")
     System.halt(1)
 
   {:error, other} ->

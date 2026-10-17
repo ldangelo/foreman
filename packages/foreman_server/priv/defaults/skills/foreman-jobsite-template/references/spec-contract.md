@@ -18,8 +18,8 @@ this page.
 | `name` | non-empty string | label for the jobsite |
 | `max_iterations` | positive integer — `optional_pos_int` requires `is_integer(n) and n > 0`, so `0` is refused, never clamped | the `iterate` loop bound; default `1` |
 | `completion_signal` | non-empty string or non-empty list of them | e.g. `<promise>COMPLETE</promise>` |
-| `idle_timeout_seconds` | integer | |
-| `completion_timeout_seconds` | integer | |
+| `idle_timeout_seconds` | positive integer (`optional_pos_int`, so `0` refused) | agent-stall window |
+| `completion_timeout_seconds` | positive integer (`optional_pos_int`, so `0` refused) | grace window after the signal |
 | `hooks` | object, `sandbox` target only | see below |
 | `exclude_paths` | list of relative paths | must stay inside the project (no `..`) |
 | `copy_to_worktree` | list of relative paths | same |

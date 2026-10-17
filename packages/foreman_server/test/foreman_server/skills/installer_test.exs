@@ -375,6 +375,50 @@ defmodule ForemanServer.Skills.InstallerTest do
              Installer.maybe_install(source_dir: file_as_dir, home_dir: dest_home)
   end
 
+  # The recompile fingerprint digests SKILL.md CONTENT, not just the directory listing, so a
+  # bundle edit cannot survive into a released binary as a stale `@bundled_skill_dirs`.
+  # `__mix_recompile__?/0` reads the real bundled tree, so this pins the digest FUNCTION rather
+  # than its live value: two trees differing only in file BODY must digest differently. A
+  # fingerprint over names alone makes both comparisons equal and this test fails.
+  test "the recompile fingerprint digests skill content, not just skill names" do
+    build = fn base, label, name, body ->
+      dir = Path.join(base, label)
+      skill = Path.join(dir, name)
+      File.mkdir_p!(skill)
+
+      if body do
+        File.write!(Path.join(skill, "SKILL.md"), body)
+      else
+        File.write!(Path.join(skill, "NOTES.md"), "no SKILL.md here")
+      end
+
+      dir
+    end
+
+    digest_over = fn dir ->
+      dir
+      |> File.ls!()
+      |> Enum.sort()
+      |> Enum.map_join("\n", fn name ->
+        case File.read(Path.join([dir, name, "SKILL.md"])) do
+          {:ok, body} -> "#{name}\0#{body}"
+          {:error, reason} -> "#{name}\0#{inspect(reason)}"
+        end
+      end)
+      |> then(&:erlang.md5/1)
+    end
+
+    base = make_temp_dir!("skills-fingerprint")
+    pristine = build.(base, "pristine", "alpha-skill", "---\nname: alpha\n---\noriginal\n")
+    edited = build.(base, "edited", "alpha-skill", "---\nname: alpha\n---\nchanged\n")
+    stripped = build.(base, "stripped", "alpha-skill", nil)
+
+    # Same directory listing, different content -> must differ (names-only would not).
+    assert digest_over.(pristine) != digest_over.(edited)
+    # A skill whose SKILL.md vanished is a change, not a silent no-op.
+    assert digest_over.(pristine) != digest_over.(stripped)
+  end
+
   defp make_temp_dir!(prefix) do
     directory = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(directory)

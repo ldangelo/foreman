@@ -176,19 +176,15 @@ def validate_branch(name):
 
 
 def check_numbers(spec):
-    # `max_iterations` mirrors the server's own guard: `optional_pos_int` in
-    # lib/foreman_server/jobsite/spec.ex requires `is_integer(n) and n > 0`, so 0 is
-    # REFUSED as spec_option_invalid, never clamped to a single pass. The timeout keys are
-    # guarded as non-negative integers, hence the split.
-    if "max_iterations" in spec:
-        v = spec["max_iterations"]
-        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
-            raise Fail("spec_option_invalid", "max_iterations must be a positive integer")
-    for key in ("idle_timeout_seconds", "completion_timeout_seconds"):
+    # All three go through the SAME server guard: `optional_pos_int` in
+    # lib/foreman_server/jobsite/spec.ex requires `is_integer(n) and n > 0`. So `0` is
+    # REFUSED for each, never clamped, and a bool is not an integer. A non-negative check
+    # here would bless a spec the server rejects.
+    for key in ("max_iterations", "idle_timeout_seconds", "completion_timeout_seconds"):
         if key in spec:
             v = spec[key]
-            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-                raise Fail("spec_option_invalid", f"{key} must be a non-negative integer")
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise Fail("spec_option_invalid", f"{key} must be a positive integer")
     cs = spec.get("completion_signal")
     if cs is not None:
         ok = (isinstance(cs, str) and cs) or (isinstance(cs, list) and cs

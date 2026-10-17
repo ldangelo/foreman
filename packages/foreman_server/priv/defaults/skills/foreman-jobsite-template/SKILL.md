@@ -30,8 +30,8 @@ Output target: `.foreman/<name>.exs` and `.foreman/prompts/<name>.md`.
 | `name` | string | 1–128 chars of `[A-Za-z0-9._-]`. |
 | `max_iterations` | integer | **Positive** — the server refuses `0` (`optional_pos_int` in `spec.ex`). Optional; default `1`. Independent of `completion_signal`. |
 | `completion_signal` | string or list | Non-empty string, or non-empty list of them. Optional. Nothing requires an iteration count. |
-| `idle_timeout_seconds` | integer | Positive. Optional. |
-| `completion_timeout_seconds` | integer | Positive. Optional. |
+| `idle_timeout_seconds` | integer | **Positive** — same `optional_pos_int` guard refuses `0`. Optional. |
+| `completion_timeout_seconds` | integer | **Positive** — same `optional_pos_int` guard refuses `0`. Optional. |
 | `resume_session` | string | Non-empty. Optional. |
 | `push` | boolean | `true` **requires** `strategy: %{"branch" => name}`. |
 | `exclude_paths` | list | Relative paths only — no `..` segments. |
@@ -239,8 +239,13 @@ Before emitting the final `.exs` file, verify each item:
 - [ ] `agent.model` is a non-empty string
 - [ ] `prompt` is loaded via `File.read!/1`, never a hardcoded multi-line string in the spec map
 - [ ] If `push: true`, strategy is `%{"branch" => name}` (not `"head"`)
-- [ ] `max_iterations`, if set, is a **positive** integer — `0` is refused as `spec_option_invalid`,
-      not clamped to a single pass. It is independent of `completion_signal`; neither requires the other.
+- [ ] `max_iterations`, `idle_timeout_seconds` and `completion_timeout_seconds`, if set, are
+      **positive** integers — all three go through the one `optional_pos_int` guard, so `0` is
+      refused as `spec_option_invalid`, never clamped. `max_iterations` is independent of
+      `completion_signal`; neither requires the other.
+- [ ] Iteration progress is read from `jobsite["iterations"]` (a list of per-iteration records)
+      and `jobsite["iteration_index"]` — never `iteration_count` / `iteration_results`, which do
+      not exist on the read model and print as `nil`
 - [ ] If `agent.env` is set, add a comment that keys must appear in the server's `agent_env_allowlist`
 - [ ] Branch name matches `~r/\A[A-Za-z0-9][A-Za-z0-9._\/-]*\z/` — no `..`, no trailing `.lock`, `/`, or `.`
 - [ ] `sandbox` is `"docker"` unless `"host"` is explicitly required and documented in the header comment
