@@ -93,7 +93,9 @@ Enum.each(results, fn
     IO.puts("completed #{id} branch=#{j["branch"]}")
 
     case Foreman.Client.merge(client, id, into_branch) do
-      {:ok, body} -> IO.puts("  merged: #{inspect(body)}")
+      # `Jobsite.merge_into/2` answers `{:ok, %{jobsite_id:, branch:, merged_into:}}`, so the
+      # outcome is named rather than the whole map dumped.
+      {:ok, body} -> IO.puts("  merged #{inspect(body["branch"])} into #{inspect(body["merged_into"])}")
       {:error, why} -> IO.puts(:stderr, "  merge refused for #{id}: #{inspect(why)}")
     end
 
