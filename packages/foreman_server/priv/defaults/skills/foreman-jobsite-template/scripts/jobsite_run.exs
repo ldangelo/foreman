@@ -151,6 +151,9 @@ base = String.trim_trailing(System.get_env("FOREMAN_API_URL") || "http://127.0.0
 token = System.get_env("FOREMAN_API_TOKEN") || raise ArgumentError, "FOREMAN_API_TOKEN is not set"
 
 timeout_s =
-  rest |> List.first() |> then(&if is_nil(&1), do: "1800", else: &1) |> String.to_integer()
+  case rest |> List.first() |> then(&if is_nil(&1), do: "1800", else: &1) |> Integer.parse() do
+    {n, ""} when is_integer(n) and n > 0 -> n
+    _ -> raise ArgumentError, "timeout argument must be a positive integer number of seconds"
+  end
 
 System.halt(Runner.run(base, token, spec, timeout_s))

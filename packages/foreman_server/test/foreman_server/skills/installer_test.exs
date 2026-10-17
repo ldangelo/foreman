@@ -358,11 +358,6 @@ defmodule ForemanServer.Skills.InstallerTest do
     assert Installer.target_dir(home_dir: "/h") == "/h/.foreman/skills"
   end
 
-  # CodeRabbit #3: an ABSENT source is an error, not an empty bundle. `File.ls/1` distinguishes
-  # the two causes (`{:ok, []}` vs `{:error, :enoent}`), so folding them let a broken bundle
-  # source install zero skills and report a successful no-op (§5.3). An EMPTY directory stays
-  # `{:ok, :noop}` -- that is a configuration, not a defect, and it is the ordinary case once
-  # the bundle is already installed.
   # CodeRabbit #3: an ABSENT source directory is an error, not an empty bundle. `File.ls/1`
   # distinguishes the two causes -- `{:ok, []}` for an existing-but-empty directory,
   # `{:error, :enoent}` for one that is not there -- so folding them together (§5.3) is what let

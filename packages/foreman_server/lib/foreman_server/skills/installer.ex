@@ -233,11 +233,7 @@ defmodule ForemanServer.Skills.Installer do
   defp list_skill_dirs(source_dir, opts) do
     # Only a caller that NAMED a path can be told it named a bad one; when the path was resolved
     # from the bundle, its absence is a packaging problem instead (§5.3).
-    named? =
-      case Keyword.fetch(opts, :source_dir) do
-        {:ok, value} when is_binary(value) -> true
-        _ -> false
-      end
+    named? = Keyword.get(opts, :source_dir) != nil
 
     case File.ls(source_dir) do
       {:ok, entries} ->

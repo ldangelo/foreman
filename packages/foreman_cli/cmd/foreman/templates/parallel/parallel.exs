@@ -64,7 +64,7 @@ end
 # reporting a failure. `Foreman.Client.run` drives a jobsite to completion -- create +
 # poll -- and `wait` defaults to a one-hour deadline (`timeout_ms` default 3_600_000,
 # client.ex:82). So this stream timeout is set just above THAT, not `:httpc`'s 30 s
-# per-request ceiling: value between them would kill workers during an ordinary multi-minute
+# per-request ceiling: if set between them, it would kill workers during an ordinary multi-minute
 # run and mislabel it `run_timed_out`. `on_timeout: :kill_task` bounds a worker wedged past
 # even the hour.
 
