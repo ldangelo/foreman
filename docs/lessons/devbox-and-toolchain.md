@@ -1,6 +1,6 @@
 # Devbox, otel-collector, SigNoz, toolchain pin
 
-> Archived verbatim from the former monolithic `AGENTS.md` (2026-10-18) to keep the always-loaded agent context small. `devbox run` catalog and Elixir/OTP pin.
+> Archived from the former monolithic `AGENTS.md` (2026-10-18), with accuracy corrections from the PR #561 review, to keep the always-loaded agent context small. `devbox run` catalog and Elixir/OTP pin.
 > Section-number references inside (e.g. "section 4", "§5.4") point at the pre-split `AGENTS.md`; the §5 rules are summarised in `AGENTS.md` and full text is in `typed-boundaries-full.md`.
 
 ## Devbox — single entry point for the full dev environment
@@ -63,7 +63,10 @@ devbox run env:list         # current env vars + endpoints
    litellm + langfuse-web + langfuse-worker + headroom + postgres + redis
    - clickhouse + minio. (Host ports already pre-remapped in the stack repo
    to avoid analytics-postgres on 5432 and analytics-redis on 6379.)
-3. Waits up to 60 s for `http://127.0.0.1:3000/api/public/health`.
+3. Polls `http://127.0.0.1:3000/api/public/health` up to 30 times (each
+   attempt `curl -m 2`, then `sleep 2` after a failure — roughly 120 s worst
+   case). If every attempt fails the loop does not abort: startup still
+   proceeds to the collector.
 4. `cd $DEVBOX_PROJECT_ROOT && docker compose -f ops/otel-collector/docker-compose.yml up -d --build`
    — brings up the in-repo OTel collector (Foreman -> collector -> Langfuse).
 5. `devbox run ps` — final status.

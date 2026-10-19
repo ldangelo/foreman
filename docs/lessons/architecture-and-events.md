@@ -1,6 +1,6 @@
 # Architecture, domain events, idempotency, CLI boundaries, tests, TaskProvider, execution safety
 
-> Archived verbatim from the former monolithic `AGENTS.md` (2026-10-18) to keep the always-loaded agent context small. Stack, command flow, actor lifecycle, aggregate design, event structs, idempotency, TaskProvider behaviour.
+> Archived from the former monolithic `AGENTS.md` (2026-10-18), with accuracy corrections from the PR #561 review, to keep the always-loaded agent context small. Stack, command flow, actor lifecycle, aggregate design, event structs, idempotency, TaskProvider behaviour.
 > Section-number references inside (e.g. "section 4", "§5.4") point at the pre-split `AGENTS.md`; the §5 rules are summarised in `AGENTS.md` and full text is in `typed-boundaries-full.md`.
 
 ## Architecture
@@ -60,10 +60,13 @@ Actor calls aggregate_module.apply_event/2  ◄── state updated after confir
 - **Conflict recovery (bounded retry)**: on `{:error, :wrong_expected_version}` the actor
   reloads state via `Aggregate.load/2`, re-decides via `handle_command/2`, and retries the
   append with the new `expected_stream_version`. Retry is bounded by
-  `@max_conflict_retries` (default 3). On exhaustion the actor returns
-  `{:telemetry, {:error, :wrong_expected_version}, %{append_latency_ms: latency}}` and
-  leaves state unchanged. A re-decision that returns `{:error, _}` (e.g.
-  `:phase_terminal`) terminates the retry without appending.
+  `@max_conflict_retries` (default 3). On exhaustion the actor replies with the telemetry
+  tuple `{:telemetry, {:error, {:wrong_expected_version, version}}, %{append_latency_ms: latency}}`
+  (`version` is the actor's current stream version); `CommandRouter` unwraps it, so callers
+  of `CommandRouter.dispatch/2` receive `{:error, {:wrong_expected_version, version}}`. The
+  aggregate state is left unchanged (only the in-flight Beads cache is compensated). A
+  re-decision that returns `{:error, _}` (e.g. `:phase_terminal`) terminates the retry
+  without appending; the actor replies with that plain error, not a telemetry tuple.
 - **Crash + eager restart**: `Aggregator` supervisor restarts the actor immediately
   (`restart: :permanent`). Restarted actor rehydrates via `Aggregate.load/2` before
   processing the next command.
@@ -114,10 +117,13 @@ not add an aggregate whose state is a plain map.
 
 ### Phoenix Is the Sole HTTP Ingress
 
-Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
-Phoenix dispatches to `CommandRouter.dispatch/1`. No other module (worker, Go CLI,
-or other Elixir code) writes to the event store directly. All mutations route
-through Phoenix → CommandRouter.
+Phoenix receives all HTTP commands from Go CLI via `POST /api/commands` and
+dispatches them through `CommandGateway.dispatch_operator/2`, which ends at
+`CommandRouter.dispatch/2`. Internal (non-HTTP) mutations come from trusted OTP
+code via `CommandGateway.dispatch_system/2`, which calls `CommandRouter`
+directly and does not pass through Phoenix. No other module (worker, Go CLI,
+or other Elixir code) writes to the event store directly: every append goes
+through `CommandRouter`.
 
 ### Architecture Test
 
@@ -128,8 +134,8 @@ adapter dispatch functions. Module declarations (`defmodule … do; use EventSto
 
 ### CQRS Invariant
 
-- **Commands** mutate state via `CommandRouter`. All state mutations go through
-  Phoenix → CommandRouter.
+- **Commands** mutate state via `CommandRouter`. HTTP mutations go through
+  Phoenix → CommandRouter; internal OTP mutations go through `dispatch_system/2` → CommandRouter.
 - **Queries** read from the projection store (read model). No writes on the query path.
 
 ### Workflow Catalog Hot-Reload
@@ -182,7 +188,7 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 
 **Source of truth: `lib/foreman_server/events/`.** `ForemanServer.EventCodec`
 derives its registry from that directory at compile time, so
-`EventCodec.registered/0` always lists every event. The table below is a
+`EventCodec.registered/0` always lists every event struct. The table below is a
 **curated subset** for orientation, not an inventory — it is deliberately not
 exhaustive (there are currently 87 event structs). Do not treat a missing row
 as "this event does not exist", and do not try to keep the table in one-to-one
@@ -197,7 +203,7 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `TaskApproved` | `Task.handle_command/2` | Transitions task to ready, triggers dispatch |
 | `TaskRetried` | `Task.handle_command/2` | Resets task for retry |
 | `TaskRunTerminated` | `Task.handle_command/2` | Marks task run-level terminal |
-| `TaskDispatched` | `Dispatcher` | Records dispatch on task |
+| `TaskDispatched` | `Task.handle_command/2` | Records dispatch on task (`Dispatcher` issues the `task.dispatch` command) |
 | `ProjectRunReserved` | `Project.handle_command/2` | Implementation key reservation |
 | `RunStarted` | `Run.handle_command/2` | Creates run projection, spawns worker |
 | `RunCancelled` | `Run.handle_command/2` | Marks run cancelled; `Dispatcher` also kills the dispatched agent via `RunControl.cancel_agent/1` |
@@ -208,7 +214,7 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `RunReset`\* | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
 | `RunCompleted` | `Run.handle_command/2` | Marks run terminal success |
 | `RunFailed` | `Run.handle_command/2` | Marks run terminal failure |
-| `RunFlaggedStuck` | `StuckDetector` | Flags run as stuck |
+| `RunFlaggedStuck` | `Run.handle_command/2` | Flags run as stuck (`StuckDetector` issues `run.flag_stuck`) |
 | `WorktreeCreated` | `Run.handle_command/2` | Worktree created |
 | `WorktreeCleaned` | `Run.handle_command/2` | Worktree cleaned |
 | `WorktreeCreateOrphanRecorded` | `Run.handle_command/2` | Records orphan worktree at creation |
@@ -217,7 +223,7 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `PrMerged`\* | `Run.handle_command/2` | Aggregate replay only (no `ProjectionStore` handler found) — treat as unverified read-model effect |
 | `PhaseStarted` | `Phase.handle_command/2` | Updates run phase |
 | `PhaseCompleted` | `Phase.handle_command/2` | Updates run phase |
-| `WorkerHeartbeat` | `worker.event` command | Updates worker projection |
+| `WorkerHeartbeat` | `Worker.handle_command/2` | Updates worker projection (`Tracker.heartbeat/3` dispatches the `worker.record` command) |
 | `ToolCallFinished` | `ToolCall.handle_command/2` | Records the tool-call decision (approve/deny in one event) |
 | `VcsOperationStarted` / `VcsOperationCompleted` / `VcsOperationFailed` | `VcsOperation.handle_command/2` | Records VCS operation lifecycle (three events, not one) |
 | `BeadsDbLeaseAcquired` | `BeadsDbLease.handle_command/2` | Holder takes the per-DB Beads lease |
@@ -314,8 +320,10 @@ produce no additional events. Domain idempotency (e.g. rejecting a second
 stream has moved past the expected version, append fails with `{:error, :wrong_expected_version}`.
 The Actor's bounded retry path intercepts the conflict, reloads the aggregate state via
 `Aggregate.load/2`, re-decides via `handle_command/2`, and retries with the new version
-(see **Actor lifecycle → Conflict recovery**). On retry exhaustion the actor returns
-`{:error, :wrong_expected_version}` and state is unchanged; on a re-decision that
+(see **Actor lifecycle → Conflict recovery**). On retry exhaustion the actor replies with
+`{:telemetry, {:error, {:wrong_expected_version, version}}, ...}`, which `CommandRouter`
+unwraps to `{:error, {:wrong_expected_version, version}}` for callers, and the aggregate state
+is unchanged; on a re-decision that
 rejects (e.g. `:phase_terminal`) the retry terminates without appending — preserving
 exactly-once.
 

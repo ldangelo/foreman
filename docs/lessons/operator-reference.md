@@ -1,6 +1,6 @@
 # Operator reference — server, projects, task lifecycle, CLI, workflows
 
-> Archived verbatim from the former monolithic `AGENTS.md` (2026-10-18) to keep the always-loaded agent context small. Starting/stopping the server, task lifecycle, Go CLI surface, workflow install.
+> Archived from the former monolithic `AGENTS.md` (2026-10-18), with accuracy corrections from the PR #561 review, to keep the always-loaded agent context small. Starting/stopping the server, task lifecycle, Go CLI surface, workflow install.
 > Section-number references inside (e.g. "section 4", "§5.4") point at the pre-split `AGENTS.md`; the §5 rules are summarised in `AGENTS.md` and full text is in `typed-boundaries-full.md`.
 
 ## Operator Reference
@@ -62,9 +62,9 @@ list/get/cancel/pause/resume/remove/reset` are unaffected. This does NOT remove 
 / `task.approve` / `task.retry` domain command types dispatched through
 `CommandGateway`/`CommandRouter` — those still exist and are the mechanism
 BeadsWatcher's TRD-007 auto-approval (`dispatch_new_bead/2`) uses internally
-the moment a bead transitions to `status: open`. What changed is the
+the moment a bead labeled `foreman-exec` transitions to `status: open`. What changed is the
 OPERATOR-FACING entry point: Beads (`br create`, or hand-editing a bead to
-`status: open`) is now the sole task creation interface, not a CLI verb. The
+`status: open` with the `foreman-exec` label) is now the sole task creation interface, not a CLI verb. The
 step-by-step CLI examples below predate that change and are kept, annotated,
 because the aggregate-level prerequisites and guard behavior they describe
 (dependency checks, idempotent-retry exemption, archived-project checks) are
@@ -74,7 +74,9 @@ task <verb>` invocation syntax no longer works.
 #### 1. Create a task — REMOVED, see note above
 
 `foreman task create` no longer exists. A task is now created by a bead
-transitioning to `status: open`; BeadsWatcher's status gate (TRD-004) and
+transitioning to `status: open` **and** carrying the `foreman-exec` label
+(BeadsWatcher's label gate skips beads with no labels or without
+`foreman-exec`, leaving them open with no task created); BeadsWatcher's status gate (TRD-004) and
 workflow-selection wiring (TRD-005) dispatch the internal `task.create`
 command automatically. The flag/behavior notes below describe that internal
 command's semantics, not a CLI you can invoke:

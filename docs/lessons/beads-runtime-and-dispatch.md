@@ -1,14 +1,19 @@
 # Beads runtime, dispatch partitioning, bv sidecar, task lifecycle, git policy
 
-> Archived verbatim from the former monolithic `AGENTS.md` (2026-10-18) to keep the always-loaded agent context small. Current Beads quickstart, label-gate dispatch partitioning, `bv` usage, session protocol, git policy.
+> Archived from the former monolithic `AGENTS.md` (2026-10-18), with accuracy corrections from the PR #561 review, to keep the always-loaded agent context small. Current Beads quickstart, label-gate dispatch partitioning, `bv` usage, session protocol, git policy.
 > Section-number references inside (e.g. "section 4", "§5.4") point at the pre-split `AGENTS.md`; the §5 rules are summarised in `AGENTS.md` and full text is in `typed-boundaries-full.md`.
 
 ## Beads Workflow Integration
 
 This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported JSONL files, so agents should use `br`/`bv` commands instead of hard-coding a single filename.
 **Beads is now this repo's primary task creation interface (TRD-2026-d99cd90d,
-2026-09-13).** A bead transitioning to `status: open` is what creates a task —
-BeadsWatcher's status gate (TRD-004), workflow-selection wiring (TRD-005), and
+2026-09-13).** A bead that reaches `status: open` is the trigger for task
+creation, but it dispatches only if it also carries the `foreman-exec` label
+(label gate) and its `issue_type` maps to a workflow via a manifest's
+`task_types:` (see the workflow-selection paragraph below): otherwise the
+watcher skips it (`:skip_labels`) or holds it `:transient` (`:unmapped_type`)
+and no task is created. When all gates pass, BeadsWatcher's status gate
+(TRD-004), workflow-selection wiring (TRD-005), and
 auto-approval (TRD-007) dispatch the internal `task.create` + `task.approve`
 commands automatically; no CLI call is needed or possible. `foreman task
 create`/`approve`/`retry`/`get`/`list`/`update` were deleted from the Go CLI
@@ -22,16 +27,16 @@ control a dispatched run.
 **Workflow-selection (TRD-005) coverage is currently narrow — most issue
 types are inert under BeadsWatcher.** `Catalog.type_to_workflow/1` resolves
 an `issue_type` to a workflow only via a manifest's own `task_types:`
-declaration; as of this writing only three bundled workflows declare one:
+declaration; as of this writing only four bundled workflows declare one:
 `implement-trd.yaml` (`task_types: [implement_trd]`),
-`implement-trd-beads.yaml` (`task_types: [implement_trd_beads]`), and
-`fix.yaml` (`task_types: [bug]`). A bead whose `issue_type` is anything else
-— including `task`, `feature`, `epic`, or any other bundled workflow's own
-name (`assess.yaml`, `discover.yaml`, `implement.yaml`, `plan.yaml`,
-`prd.yaml`, `release.yaml`, `review.yaml`, `trd.yaml`, `verify.yaml` declare
+`implement-trd-beads.yaml` (`task_types: [implement_trd_beads]`),
+`fix.yaml` (`task_types: [bug]`), and `prd.yaml` (`task_types: [feature]`).
+A bead whose `issue_type` is anything else
+— including `task`, `epic`, or any other bundled workflow's own
+name (`assess.yaml` and `review.yaml` declare
 no `task_types:` at all) — resolves to `{:error, :unmapped_type}` and the
-watcher holds the bead at `:transient`, retrying every poll indefinitely
-rather than ever creating a task. This is not a bug: it is the intended
+watcher returns `:transient` for that line (the line is re-processed on later
+polls) rather than ever creating a task. This is not a bug: it is the intended
 fail-closed behavior (TRD-005 REQ), but it means adding a new issue type to
 the auto-dispatch surface requires an explicit `task_types:` entry in the
 target workflow's manifest (and a matching `foreman init --force` to refresh
@@ -64,7 +69,7 @@ project, tailing its JSONL and auto-dispatching per the mapping above. See
 
 ### Beads Dispatch Partitioning via Label Gate (opt-IN semantics)
 
-**BeadsWatcher implements label-based partitioning with opt-IN semantics** to route beads between Foreman and external processors (e.g., human operators, external automation). Only beads tagged with the `"foreman-exec"` label dispatch to Foreman; all others skip and route to external processes.
+**BeadsWatcher implements label-based partitioning with opt-IN semantics** to route beads between Foreman and external processors (e.g., human operators, external automation). Only beads tagged with the `"foreman-exec"` label dispatch to Foreman; beads with no labels field or a label list lacking `"foreman-exec"` skip and route to external processes, while a labels field that is not a list is rejected as `:malformed` (see Mechanics).
 
 **Operator workflow:**
 - Include a bead in Foreman dispatch: `br update <bead-id> --add-label foreman-exec`
@@ -80,7 +85,7 @@ project, tailing its JSONL and auto-dispatching per the mapping above. See
   - Present labels field with `"foreman-exec"` → `:ok` (Foreman dispatch allowed)
   - Present labels field without `"foreman-exec"` → `:skip_labels` outcome (external routing)
   - Present labels field that is not a list — a string, a `null`, any non-list (type violation) → `:malformed` outcome (data integrity error; must be fixed manually)
-- **Dedupe & ordering**: The label gate prevents duplicate dispatch attempts within Foreman; status-to-`in_progress` transition on the task side prevents duplicate dispatch across sessions
+- **Dedupe & ordering**: Routing is not the dedupe mechanism — `process_line/2` runs `check_dedupe/2` before the status and label gates. That check calls `ProjectionStore.get_task(external_id: bead_id)`: no existing task → proceed; an existing task still at `status: "open"` (created but never approved) → retry `task.approve` without a new `task.create`; an existing task past `"open"` → `:reconciled` with no new `task.create`. The label gate itself only decides external-vs-Foreman routing.
 - **Telemetry**: The `:no_labels` and `:not_foreman_exec` skip branches emit `[:foreman_server, :task_provider, :beads, :watcher, :label_gate, :skipped]` events. A malformed labels field emits no bespoke event: every malformed path in the pipeline returns `{:malformed, cause}` and `process_line/2` funnels all of them through one `emit_malformed/3`, which fires the pipeline's existing `@malformed_event` with the cause in its `reason` metadata key (e.g. `{:labels_not_a_list, "foreman-exec"}`). Events carry the watcher's configured `project_id` from its state, not the parsed bead record (bead JSONL lines carry no `project_id` field). The outcome is logged once, at `info`, by the pipeline's existing per-line log line.
 
 **Rationale**: Operator discipline on label assignment enforces cooperation without requiring locks, separate aggregates, or ensemble modifications. Beads API natively supports labels; they are queryable via `br show --json` and filterable via `br list --label`.
@@ -139,7 +144,8 @@ bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
 
 Task creation is now driven by Beads, not a CLI verb — `foreman task create/
 approve/retry/get` were deleted (TRD-018, 2026-09-13). Create work with `br
-create` (or transition an existing bead to `status: open`); BeadsWatcher
+create` (or transition an existing bead to `status: open`) and give it the
+`foreman-exec` label with a mapped `issue_type`; BeadsWatcher
 observes the transition and dispatches the internal `task.create` +
 `task.approve` command pair automatically. `foreman run *` remains the way to
 inspect or control the resulting dispatched run:
@@ -181,7 +187,7 @@ br sync --status --json       # VERIFY: `coverage_drift` must be false
 ### Workflow Pattern
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Create via `br create` (or `br update <id> --status=open` on an existing draft bead) — BeadsWatcher dispatches `task.create` internally
+2. **Claim**: Create via `br create` (or `br update <id> --status=open` on an existing draft bead) — the bead also needs the `foreman-exec` label and a mapped `issue_type` (`implement_trd`, `implement_trd_beads`, `bug`, `feature`); BeadsWatcher then dispatches `task.create` internally
 3. **Dispatch**: Auto-approval (TRD-007) dispatches `task.approve` internally the moment the task is created; no separate operator action
 4. **Complete**: Task auto-closes when run completes; re-open the bead (`br update <id> --status=open`) to retry if the run was cancelled
 5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
