@@ -5,6 +5,11 @@ defmodule ForemanServer.RecoveryTest do
   alias ForemanServer.TestSupport.{ProjectionStoreReset, RunSlotsReset}
   alias ForemanServer.ProjectionStore
 
+  # `scan_now/0` pins the scan this far past the seeded run; the staleness
+  # threshold is half of it. See `scan_now/0` for why neither may be 0.
+  @scan_ahead_ms 60_000
+  @stale_after_ms 30_000
+
   setup do
     RunSlotsReset.reset!()
     ProjectionStoreReset.reset!()
@@ -27,14 +32,14 @@ defmodule ForemanServer.RecoveryTest do
 
       update_run_status(run_id, "completed", terminal?: true)
 
-      assert {:ok, 0} = Recovery.do_detect(stale_after_ms: 0)
+      assert {:ok, 0} = Recovery.do_detect(now: scan_now(), stale_after_ms: @stale_after_ms)
     end
 
     test "emits a run.recovery_event for stale non-terminal runs" do
       run_id = fresh_run_id()
       start_run(run_id)
 
-      assert {:ok, count} = Recovery.do_detect(stale_after_ms: 0)
+      assert {:ok, count} = Recovery.do_detect(now: scan_now(), stale_after_ms: @stale_after_ms)
       assert count >= 1
     end
 
@@ -151,6 +156,21 @@ defmodule ForemanServer.RecoveryTest do
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  # `Recovery.do_detect/1` measures staleness as `now - last_event_at_ms`, but the
+  # two sides come from different clocks: `now` defaults to `DateTime.utc_now/0`
+  # (the OS clock) while `ProjectionStore` stamps `last_event_at_ms` from
+  # `System.system_time/1` (the Erlang clock). They only agree to within the read
+  # gap between the two calls, and not even that while the OS clock is being
+  # slewed (macOS `timed` applies an `adjtime` of tens of ms about every 22
+  # minutes): the Erlang clock then briefly leads by ~0.1 ms, so a run seeded
+  # "just now" reads as newer than `now`. With `stale_after_ms: 0` and the default
+  # `now`, `diff_ms >= 0` went false, `do_detect` returned `{:ok, 0}` and
+  # `assert count >= 1` failed for a few seconds at a time, on any seed (and the
+  # terminal-run test passed vacuously). Pin the scan time a full `@scan_ahead_ms`
+  # after the seed so staleness no longer depends on how two clocks round against
+  # each other.
+  defp scan_now, do: DateTime.add(DateTime.utc_now(), @scan_ahead_ms, :millisecond)
 
   # `RunAdmission.start/2` routes through the shared, capacity-limited
   # `run_slots:global` singleton (default capacity 3, contended by every
