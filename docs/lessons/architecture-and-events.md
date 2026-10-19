@@ -22,7 +22,10 @@
 Go CLI
     │
     ▼
-Phoenix POST /api/commands
+Phoenix POST /api/commands  ◄── CommandController.create/2
+    │
+    ▼
+CommandGateway.dispatch_operator(command)  ◄── enriches the operator command
     │
     ▼
 CommandRouter.dispatch(command)  ◄── CommandRouter.dispatch/1
@@ -135,7 +138,7 @@ adapter dispatch functions. Module declarations (`defmodule … do; use EventSto
 ### CQRS Invariant
 
 - **Commands** mutate state via `CommandRouter`. HTTP mutations go through
-  Phoenix → CommandRouter; internal OTP mutations go through `dispatch_system/2` → CommandRouter.
+  Phoenix → `CommandGateway.dispatch_operator/2` → CommandRouter; internal OTP mutations go through `dispatch_system/2` → CommandRouter.
 - **Queries** read from the projection store (read model). No writes on the query path.
 
 ### Workflow Catalog Hot-Reload

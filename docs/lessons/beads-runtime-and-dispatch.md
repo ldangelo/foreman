@@ -189,7 +189,7 @@ br sync --status --json       # VERIFY: `coverage_drift` must be false
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
 2. **Claim**: Create via `br create` (or `br update <id> --status=open` on an existing draft bead) — the bead also needs the `foreman-exec` label and a mapped `issue_type` (`implement_trd`, `implement_trd_beads`, `bug`, `feature`); BeadsWatcher then dispatches `task.create` internally
 3. **Dispatch**: Auto-approval (TRD-007) dispatches `task.approve` internally the moment the task is created; no separate operator action
-4. **Complete**: Task auto-closes when run completes; re-open the bead (`br update <id> --status=open`) to retry if the run was cancelled
+4. **Complete**: Task auto-closes when run completes. To retry a cancelled run, submit `task.retry` via `POST /api/commands`: `CommandGateway` validates that the task's bound run is terminal and attaches `acknowledged_run_id`. Re-opening the bead (`br update <id> --status=open`) does not retry: once the task is past `"open"`, `BeadsWatcher` dedupes and reconciles it (`check_dedupe/2` → `:reconcile`) instead of dispatching again
 5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
    (`set -euo pipefail`), not as separate steps — the coverage gate must run
    ONLY after a flush that actually succeeded, since a failed flush leaves an
