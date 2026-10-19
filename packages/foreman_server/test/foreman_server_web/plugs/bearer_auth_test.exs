@@ -61,6 +61,12 @@ defmodule ForemanServerWeb.Plugs.BearerAuthTest do
       assert_unauthorized(run(Plug.Test.conn(:get, "/api/x")), %{"error" => "unauthorized"})
     end
 
+    test "a non-binary ?token[]= value is rejected, not a crash" do
+      conn = Plug.Test.conn(:get, "/api/x?token[]=#{@token}") |> run()
+
+      assert_unauthorized(conn, %{"error" => "unauthorized"})
+    end
+
     test "opt-in does not weaken a configured token" do
       Application.put_env(:foreman_server, :api, allow_insecure_local: true)
 

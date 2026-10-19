@@ -68,10 +68,17 @@ defmodule ForemanServerWeb.Plugs.BearerAuth do
   end
 
   defp token_matches?(conn, expected) do
-    header_token = extract_header_token(conn)
-    query_token = conn.query_params["token"]
-    header_token == expected or query_token == expected
+    secure_equal?(extract_header_token(conn), expected) or
+      secure_equal?(conn.query_params["token"], expected)
   end
+
+  # Constant-time, like `MCP.Auth`. A non-binary candidate (absent header, or a
+  # `?token[]=x` list/map) is simply not a match; `secure_compare/2` only takes
+  # binaries.
+  defp secure_equal?(candidate, expected) when is_binary(candidate),
+    do: Plug.Crypto.secure_compare(candidate, expected)
+
+  defp secure_equal?(_candidate, _expected), do: false
 
   defp extract_header_token(conn) do
     case get_req_header(conn, "authorization") do
