@@ -16,7 +16,10 @@ defmodule ForemanServer.Jobsite.Error do
     * `:agent_start_failed` / `:agent_failed` / `:agent_idle_timeout` — `Jobsite.AgentRunner`
     * `:resume_with_iterations` / `:output_tag_missing` / `:output_invalid` /
       `:output_with_iterations` — `Jobsite.Output` / `Jobsite.Options`
-    * `:jobsite_not_found` / `:not_resumable` — `Jobsite.resume/1`
+    * `:jobsite_not_found` / `:not_resumable` — `Jobsite.resume/1`,
+      `Jobsite.resume_async/2`, via `Jobsite.Executor.check_resumable/1`
+      (`:not_resumable` covers a terminal jobsite and one that never
+      provisioned a worktree)
     * `:dispatch_rejected` — `Jobsite.Executor`
     * `:runner_capability` / `:unsupported_phase_action` — `Workflow.Lowering`
     * `:executor_lost` / `:boot_recovery_failed` — `Jobsite.BootRecovery`
