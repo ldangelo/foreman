@@ -72,8 +72,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > which is not hypothetical. REQ-007 of
 > `docs/PRD/PRD-2026-d306444f-phase-commit-control.md` was specified against the
 > `foreman inbox` surface documented below as though it worked, and had to be
-> dropped once the aggregate behind it turned out to be unreachable. AGENTS.md's
-> Documentation Discipline warns against trusting a stale build artifact over
+> dropped once the aggregate behind it turned out to be unreachable. `docs/lessons/documentation-discipline-history.md`
+> warns against trusting a stale build artifact over
 > source; this is the same failure with the roles reversed, where the *document*
 > is the stale artifact.
 >
@@ -86,8 +86,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > approve`, `task get`, `task retry`, `task list`, and `task update` used to
 > round out that list; TRD-018 (2026-09-13) deleted them — along with `task
 > create`, which did have a section below — from the Go CLI (see the
-> corrected inventory above). The block above is authoritative; AGENTS.md's
-> Operator Reference (Task Lifecycle / Go CLI Commands) reflects the same
+> corrected inventory above). The block above is authoritative; `docs/lessons/operator-reference.md`
+> (Task Lifecycle / Go CLI Commands) reflects the same
 > TRD-018 removal and remains accurate against the Go source.
 >
 > Web dashboard note: the operator run-management surface is not a CLI verb.
@@ -113,7 +113,7 @@ foreman <command> --help    # Show command-specific help
 
 > **INCORRECT.** Neither `devbox run dev:up` nor `devbox run db:up` exists.
 > `devbox.json` defines 22 scripts; the stack is brought up with `devbox run up`
-> (see AGENTS.md, Devbox). Database scripts are `db:migrate`, `db:reset`,
+> (see `docs/lessons/devbox-and-toolchain.md`). Database scripts are `db:migrate`, `db:reset`,
 > `db:rollback`, `db:console`.
 
 This repository's Devbox/direnv setup starts Docker Compose services before you run Foreman locally. `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. `.envrc` sources `.env`, and Foreman CLI/server commands use `DATABASE_URL` from `.env` or the process environment. If `DATABASE_URL` is unset, the compose-managed Foreman database is exposed on `127.0.0.1:55432` by default; Hindsight uses a separate `hindsight` database in the same container.
@@ -190,7 +190,7 @@ Two of the verbs this section previously listed never existed. `foreman init -n 
 `foreman init --wizard` have no route: `init.go:43-45` declares exactly three flags — `--force`,
 `--template` and `--dir` — with no project-name flag and no positional name, and there is no
 wizard code path anywhere in `packages/foreman_cli`. `--wizard` additionally carried a table row
-describing interactive behaviour it does not have. AGENTS.md names both of these as known-bad
+describing interactive behaviour it does not have. `docs/lessons/documentation-discipline-history.md` names both of these as known-bad
 claims, so they are annotated rather than left to read as intended design.
 
 | Option | Description |
@@ -428,12 +428,12 @@ Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orch
 > --status=open` with the `foreman-exec` label (the label gate skips an
 > open bead that lacks it).
 
-Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation; Elixir Overwatch rejects Graphify tools so worker discovery does not create slow generated worktree artifacts. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation; Elixir Overwatch rejects Graphify tools so worker discovery does not create slow generated worktree artifacts. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
 Workflow PR/merge behavior is not driven by `create-pr`, `pr-wait`, or `merge` phases — no such phase is implemented or dispatched, and a phase declaring none of `command`/`prompt`/`bash` fails to load with `{:missing_phase_action, index}`. A run still has one Foreman branch, defaulting to `foreman/<task-id>/<run-id>` for unique branches per retry, but a phase can now declare `stack_pr: true` to create or reuse a phase PR from that run branch to the recorded run base branch after that phase's commit decision. Task-backed final AutoPRs use exact task metadata (`Task.title` as PR title, `Task.description` as PR body); ad-hoc no-task runs keep the legacy generated run/artifact PR text. Top-level `merge:` and `pr:` YAML tags remain invalid, and there is no `stacked:` or `checkpointPr` setting. A phase-level `commit:` boolean controls only whether that phase commits its work; `stack_pr:` does not force a commit. A phase may also declare `timeout_minutes: <positive integer>` (camelCase `timeoutMinutes:` also accepted) to set its execution timeout in minutes; omitting it routes the deadline through app-config `failure_policies` /
 `default_timeout_ms` and then the built-in `:infinity` default (no wall-clock deadline
 unless one is configured; a BEAM that still applies a fixed ceiling after #510 is a
-stale runtime or unshipped override, not this code path — see AGENTS.md §3). Created/reused phase PR records suppress final AutoPR; no-op phase PR records do not. When reusing an open phase PR, Foreman pushes the run branch before recording reuse so the provider diff cannot remain stuck on an older head. `foreman run get <id>` JSON includes `run.phase_prs` when phase records exist. See "PR creation and merge reconciliation" in the User Guide.
+stale runtime or unshipped override, not this code path — see `docs/lessons/phase-execution-and-pr-mechanics.md`). Created/reused phase PR records suppress final AutoPR; no-op phase PR records do not. When reusing an open phase PR, Foreman pushes the run branch before recording reuse so the provider diff cannot remain stuck on an older head. `foreman run get <id>` JSON includes `run.phase_prs` when phase records exist. See "PR creation and merge reconciliation" in the User Guide.
 
 Run `foreman init --force` after editing bundled workflow YAML or prompts. `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime prompts/workflows are stale, so scheduler-launched agents cannot run with outdated instructions.
 
@@ -510,7 +510,7 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
 > **PARTLY INCORRECT.** The flag is `--base-branch`, not `--base`, and there is
 > no `--short`. Real set: `--workflow --prompt --project-id --work-id --backend
 > --base-branch`. Note that `--base-branch` is accepted by the CLI but, per
-> AGENTS.md, is still not consumed server-side — the PR base is the branch the
+> `docs/lessons/phase-execution-and-pr-mechanics.md`, is still not consumed server-side — the PR base is the branch the
 > run's work was cut from.
 
 Posts a `task.create` envelope (`provider_tracked: false`, `auto_approve:
@@ -621,7 +621,7 @@ The cockpit status view renders ordered phase nodes, retry arrows, current failu
 
 ### `foreman logs`
 
-> **NOT IMPLEMENTED.** `foreman logs` is not dispatched. Run logs are readable through the MCP tool `foreman_run_get_logs` (see MCP Server below), which is backed by the durable worker-event log described in AGENTS.md.
+> **NOT IMPLEMENTED.** `foreman logs` is not dispatched. Run logs are readable through the MCP tool `foreman_run_get_logs` (see MCP Server below), which is backed by the durable worker-event log described in `docs/lessons/run-logs-known-issues.md`.
 
 Show run logs with structured rendering. When the Elixir backend is available, worker stdout/stderr is read from durable `WorkerStdout` / `WorkerStderr` event projections and rendered as timestamped, color-coded lines with stream, type, and phase labels. Known runs with no captured output render as empty; unknown runs report not found. Falls back to raw log file parsing when the backend is unavailable.
 
@@ -857,7 +857,7 @@ foreman doctor --json             # Machine-readable output
 
 ### `foreman server`
 
-> **NOT IMPLEMENTED.** `foreman server` is not dispatched. The Phoenix server is started with `mix phx.server` from `packages/foreman_server/` (AGENTS.md, Operator Reference). See also the projection-table correction above.
+> **NOT IMPLEMENTED.** `foreman server` is not dispatched. The Phoenix server is started with `mix phx.server` from `packages/foreman_server/` (`docs/lessons/operator-reference.md`). See also the projection-table correction above.
 
 Manage the experimental Elixir orchestration server used by TRD-2026-014.
 
@@ -1332,7 +1332,7 @@ behavior cannot diverge.
 > direction at once — `inbox.send` absent from the command allowlist, no
 > `"inbox:"` clause in `CommandRouter.aggregate_module_for/1`, no event structs,
 > no `ProjectionStore` handler, no HTTP route, no MCP tool, and no caller. It has
-> been deleted (see AGENTS.md §5.3). There is no
+> been deleted (see `docs/lessons/typed-boundaries-full.md` §5.3). There is no
 > `foreman_inbox_message_projections` table in the codebase either, despite the
 > mention under `server status`.
 >
@@ -1487,7 +1487,7 @@ foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
 > correction: eight flags shown in the examples/table below never
 > existed even then — `--type` (the real flag was `--task-type`),
 > `--priority` (settable only via a raw `task.create` envelope; see
-> AGENTS.md), `--parent`, `--model`, `--dry-run`, `--from-text`,
+> `docs/lessons/operator-reference.md`), `--parent`, `--model`, `--dry-run`, `--from-text`,
 > `--no-llm`, `--project-path`. The real set was `--id --project
 > --title --description --task-type --workflow-type --trd-path
 > --status`. Two corrections of note: `--command-id` was a `task
@@ -1616,7 +1616,7 @@ foreman attach --kill             # Kill the agent process
 
 ### `foreman worktree`
 
-> **NOT IMPLEMENTED.** `foreman worktree` is not dispatched. Worktrees are provisioned and reclaimed server-side, one per run (see AGENTS.md); there is no operator worktree verb.
+> **NOT IMPLEMENTED.** `foreman worktree` is not dispatched. Worktrees are provisioned and reclaimed server-side, one per run (see `docs/lessons/phase-execution-and-pr-mechanics.md`); there is no operator worktree verb.
 
 Manage git worktrees used by Foreman agents.
 

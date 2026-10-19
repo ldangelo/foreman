@@ -930,7 +930,7 @@ structured reason, never transport-level JSON-RPC errors.
 A project links to a task tracker by setting a `task_provider` block in
 its project config (`provider:` + `config:`, including `database_path` for
 the Beads JSONL/db). `bv`/`br` remain the only writers of that store from
-outside Foreman; see AGENTS.md's "Per-DB Beads lease" section for the
+outside Foreman; see the "Per-DB Beads lease" section of `docs/lessons/architecture-and-events.md` for the
 write-serialization guarantee Foreman itself provides once a run is admitted.
 
 - **Atomic `task.create`.** For a project with a configured `:create`
@@ -1303,9 +1303,9 @@ unconditionally, which is the rule now narrowed to the cleanup case above.
 
 ## Documentation Discipline
 
-See `AGENTS.md`'s "Documentation Discipline" section for the mandatory
+See `AGENTS.md`'s "Documentation Gate" section for the mandatory
 pre-completion gate: enumerate externally-visible identifiers a change
-adds/removes/renames, grep them across `CLAUDE.md`, `AGENTS.md`,
+adds/removes/renames, grep them across `CLAUDE.md`,
 `README.md`, this file, and `docs/cli-reference.md`, and fix or
 explicitly annotate any stale hit. `docs/PRD/*` and `docs/TRD/*` are
 point-in-time design specs, not living docs — leave their historical

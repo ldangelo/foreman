@@ -108,13 +108,13 @@ reviews:
         and pass in isolation; a failure there is not automatically a
         regression.
 
-    - path: "{AGENTS.md,CLAUDE.md,README.md,docs/user-guide.md,docs/cli-reference.md}"
+    - path: "{CLAUDE.md,README.md,docs/user-guide.md,docs/cli-reference.md}"
       instructions: >-
-        These five files are a documentation GATE, not optional prose. If a
+        These four files are a documentation GATE, not optional prose. If a
         change adds, removes, or renames an externally visible identifier —
         command or event type, foreman_* MCP tool, HTTP route, CLI flag, env
         var, config key, workflow or prompt name — the identifier's old and new
-        names must be reconciled across all five. Flag a stale reference to a
+        names must be reconciled across all four. Flag a stale reference to a
         removed identifier, and flag a new identifier documented nowhere.
 
         These documents deliberately record corrected mistakes, saying plainly
@@ -122,6 +122,20 @@ reviews:
         contradiction or redundancy — the correction is the point. DO flag a
         passage that contradicts the current code, or two passages that
         contradict each other without one being marked as the correction.
+
+    - path: "AGENTS.md"
+      instructions: >-
+        Loaded into every agent prompt, so it must stay small (rules only,
+        roughly 10 KB). It is NOT a documentation-gate target: do not demand
+        change notes here. Flag additions of changelog-style prose,
+        post-mortems, or per-feature mechanics; those belong in
+        docs/lessons/*.md.
+
+    - path: "docs/lessons/**"
+      instructions: >-
+        Archived history and mechanics, including deliberately recorded
+        corrections. Do not flag a correction as contradiction or redundancy;
+        DO flag a passage that contradicts current code.
 
     - path: "docs/{PRD,TRD}/**"
       instructions: >-
