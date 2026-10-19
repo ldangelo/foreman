@@ -1,0 +1,477 @@
+# Architecture, domain events, idempotency, CLI boundaries, tests, TaskProvider, execution safety
+
+> Archived from the former monolithic `AGENTS.md` (2026-10-18), with accuracy corrections from the PR #561 review, to keep the always-loaded agent context small. Stack, command flow, actor lifecycle, aggregate design, event structs, idempotency, TaskProvider behaviour.
+> Section-number references inside (e.g. "section 4", "§5.4") point at the pre-split `AGENTS.md`; the §5 rules are summarised in `AGENTS.md` and full text is in `typed-boundaries-full.md`.
+
+## Architecture
+
+### Stack
+
+- **ForemanServer.Aggregate**: behaviour defining `initial_state/0`,
+  `handle_command/2`, `apply_event/2` callbacks
+- **ForemanServer.Aggregate.Actor**: supervised GenServer holding in-memory
+  aggregate state and stream version; routes commands through `CommandRouter`
+- **CommandRouter**: single append point for all domain events
+- **EventStore** (via Commanded adapter): event persistence
+- **Postgrex**: Postgres driver
+- **Phoenix**: HTTP API boundary for Go CLI
+
+### Command Flow
+
+```
+Go CLI
+    │
+    ▼
+Phoenix POST /api/commands  ◄── CommandController.create/2
+    │
+    ▼
+CommandGateway.dispatch_operator(command)  ◄── enriches the operator command
+    │
+    ▼
+CommandRouter.dispatch(command)  ◄── CommandRouter.dispatch/1
+    │
+    ▼
+Aggregator.start_aggregate(module, id)  ◄── starts Actor if not running
+    │
+    ▼
+Actor.handle_call(:command, cmd)  ◄── Actor calls aggregate directly
+    │
+    ▼
+aggregate.handle_command(state, cmd)  ◄── handle_command/2 returns event spec
+    │
+    ▼
+Actor sends event spec to CommandRouter  ◄── send CommandRouter, {:append, ...}
+    │
+    ▼
+EventStore.append_to_stream  ◄── CommandRouter is sole append point
+    │
+    ▼
+CommandRouter sends {:append_ok, count} back to Actor  ◄── append confirmed
+    │
+    ▼
+Actor calls aggregate_module.apply_event/2  ◄── state updated after confirm
+```
+
+### Actor Lifecycle
+
+`Aggregator` manages actors with `restart: :permanent`:
+
+- **Startup**: `Actor.init` calls `Aggregate.load/2` which replays the event stream
+  via `apply_event` before processing any command.
+- **Normal operation**: actor receives command, calls `handle_command`, sends event spec
+  to `CommandRouter`, awaits append confirmation, then calls `apply_event` to update state.
+- **Conflict recovery (bounded retry)**: on `{:error, :wrong_expected_version}` the actor
+  reloads state via `Aggregate.load/2`, re-decides via `handle_command/2`, and retries the
+  append with the new `expected_stream_version`. Retry is bounded by
+  `@max_conflict_retries` (default 3). On exhaustion the actor replies with the telemetry
+  tuple `{:telemetry, {:error, {:wrong_expected_version, version}}, %{append_latency_ms: latency}}`
+  (`version` is the actor's current stream version); `CommandRouter` unwraps it, so callers
+  of `CommandRouter.dispatch/2` receive `{:error, {:wrong_expected_version, version}}`. The
+  aggregate state is left unchanged (only the in-flight Beads cache is compensated). A
+  re-decision that returns `{:error, _}` (e.g. `:phase_terminal`) terminates the retry
+  without appending; the actor replies with that plain error, not a telemetry tuple.
+- **Crash + eager restart**: `Aggregator` supervisor restarts the actor immediately
+  (`restart: :permanent`). Restarted actor rehydrates via `Aggregate.load/2` before
+  processing the next command.
+
+### Aggregate State Design
+
+**Every aggregate's fixed top-level state MUST be a dedicated `%Aggregate.State{}`
+struct. Maps are permitted only as nested genuinely dynamic values.**
+
+```elixir
+defmodule ForemanServer.Aggregates.Run do
+  defmodule State do
+    defstruct [:exists?, :run_id, :status, :terminal?,
+               phase_status: %{}, worker_status: %{}, retry_history: []]
+  end
+
+  @impl true
+  def initial_state, do: %State{exists?: false, run_id: nil, status: nil, ...}
+end
+```
+
+**Why:** Plain maps (`%{exists?: false, ...}`) admit atom/string key drift and
+silently accept unknown fields. `Map.merge(state, payload)` in `apply_event`
+can add undeclared keys with no warning, causing silent schema drift across
+replay. Struct-update syntax (`%State{state | field: value}`) rejects
+undeclared fields at compile time (literal unknown atoms) or runtime (`KeyError`
+for unknown variable fields). `struct/2` silently ignores unknown keys and
+MUST NOT be used.
+
+**Maps for dynamic collections are fine.** Fields like `phase_status`,
+`worker_status`, `config`, or `retry_history` — where the shape is genuinely
+open or comes from heterogeneous event payloads — may remain maps.
+
+**Status: complete.** Every aggregate under `lib/foreman_server/aggregates/`
+declares its own `State` struct and updates it with `%State{state | ...}`. This
+is now a standing rule for new aggregates, not outstanding migration work — do
+not add an aggregate whose state is a plain map.
+
+**Enforcement rules:**
+
+- `apply_event` uses `%State{state | field: value}` — not `Map.merge(state, payload)`,
+  not `struct(state, field: value)`.
+- Explicit per-event field mapping: `event_type → state field` is written out
+  per event type.
+- `initial_state/0` returns the State struct with required fields set to defaults.
+- **`handle_command` enforces domain invariants.** Struct construction alone does
+  not validate state preconditions or valid transitions.
+
+### Phoenix Is the Sole HTTP Ingress
+
+Phoenix receives all HTTP commands from Go CLI via `POST /api/commands` and
+dispatches them through `CommandGateway.dispatch_operator/2`, which ends at
+`CommandRouter.dispatch/2`. Internal (non-HTTP) mutations come from trusted OTP
+code via `CommandGateway.dispatch_system/2`, which calls `CommandRouter`
+directly and does not pass through Phoenix. No other module (worker, Go CLI,
+or other Elixir code) writes to the event store directly: every append goes
+through `CommandRouter`.
+
+### Architecture Test
+
+An ExUnit architecture test (`EventStore.Enforcement`) scans all `.ex` source files
+under `lib/foreman_server/` for direct operational calls to `append_to_stream` or
+adapter dispatch functions. Module declarations (`defmodule … do; use EventStore`,
+`otp_app:` config) are allowed. Any match causes the test to fail.
+
+### CQRS Invariant
+
+- **Commands** mutate state via `CommandRouter`. HTTP mutations go through
+  Phoenix → `CommandGateway.dispatch_operator/2` → CommandRouter; internal OTP mutations go through `dispatch_system/2` → CommandRouter.
+- **Queries** read from the projection store (read model). No writes on the query path.
+
+### Workflow Catalog Hot-Reload
+
+`ForemanServer.Workflow.Catalog` is a supervised GenServer that owns every
+parsed workflow manifest and prompt body in memory and keeps them in sync
+with the on-disk root — `~/.foreman/workflows` by default, overridable via
+`config :foreman_server, :workflow_root` (`AssetCatalog.default/0` reads
+that key first).
+
+- **Auto-install** — `init/1` calls
+  `ForemanServer.WorkflowTemplate.Installer` only when the configured root
+  contains no `*.yaml` manifests. A populated `prompts/` directory does
+  **not** suppress the install; the installer uses `File.cp/2` and
+  `File.write/2` and will overwrite any same-named prompt already on
+  disk. Keep custom templates under their own filenames.
+- **Synchronous load** — every manifest is parsed via
+  `ForemanServer.Workflow.Interpreter.load/1` during `init/1` so the first
+  command after boot finds the catalog ready. Every `*.md` under
+  `prompts/` is loaded the same way.
+- **Hot reload** — a periodic poll (default 2s, override via
+  `Application.put_env(:foreman_server, :workflow_catalog_poll_ms, ms)`)
+  re-hashes every manifest and prompt and replaces any entry whose content
+  or mtime changed. Files that vanish are removed from the catalog.
+- **Prompt read API** — `Catalog.read_prompt/1` returns the latest prompt
+  body. `RunExecutor.read_phase_prompt/2` reads through the catalog so a
+  prompt edit is picked up on the next phase.
+
+Telemetry:
+`[:foreman_server, :workflow, :installed]`,
+`[:foreman_server, :workflow, :manifest, :loaded | :reload, :ok | :reload, :error | :removed]`,
+`[:foreman_server, :workflow, :prompt, :loaded | :reload, :ok | :reload, :error | :removed]`.
+
+`[:foreman_server, :skills, :installed]` (measurements `%{count: files_copied}`, metadata
+`%{paths: [...]}`) and `[:foreman_server, :skills, :install, :error]` (metadata
+`%{reason: term()}`) are emitted by `ForemanServer.Workflow.Catalog`'s boot hook, which
+forwards `:skills_home_dir` / `:skills_target_dir` / `:skills_source_dir` (prefixed so they
+cannot collide with the workflow-root options the same GenServer accepts) to
+`ForemanServer.Skills.Installer.maybe_install/1`. Nothing swallows the result: `{:ok, :noop}`
+emits no event, a list of copied paths emits `:installed`, and `{:error, reason}` emits
+`:install, :error` — the `_ =` this replaced made a failed skill boot-install invisible (§5.2).
+
+---
+
+## Domain Events
+
+All authoritative state transitions are domain events persisted in `foreman_events`.
+Every event is emitted by an aggregate `handle_command/2` function routed through
+`CommandRouter` — no module emits events directly.
+
+**Source of truth: `lib/foreman_server/events/`.** `ForemanServer.EventCodec`
+derives its registry from that directory at compile time, so
+`EventCodec.registered/0` always lists every event struct. The table below is a
+**curated subset** for orientation, not an inventory — it is deliberately not
+exhaustive (there are currently 87 event structs). Do not treat a missing row
+as "this event does not exist", and do not try to keep the table in one-to-one
+sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
+
+| Event | Emitted by | Effects |
+| --- | --- | --- |
+| `ProjectRegistered` | `Project.handle_command/2` | Creates project projection |
+| `ProjectUpdated` | `Project.handle_command/2` | Updates project projection |
+| `ProjectArchived` | `Project.handle_command/2` | Archives project projection |
+| `TaskCreated` | `Task.handle_command/2` | Creates task projection |
+| `TaskApproved` | `Task.handle_command/2` | Transitions task to ready, triggers dispatch |
+| `TaskRetried` | `Task.handle_command/2` | Resets task for retry |
+| `TaskRunTerminated` | `Task.handle_command/2` | Marks task run-level terminal |
+| `TaskDispatched` | `Task.handle_command/2` | Records dispatch on task (`Dispatcher` issues the `task.dispatch` command) |
+| `ProjectRunReserved` | `Project.handle_command/2` | Implementation key reservation |
+| `RunStarted` | `Run.handle_command/2` | Creates run projection, spawns worker |
+| `RunCancelled` | `Run.handle_command/2` | Marks run cancelled; `Dispatcher` also kills the dispatched agent via `RunControl.cancel_agent/1` |
+| `RunPaused` | `Run.handle_command/2` | Stops the run resumably; `Dispatcher` kills the dispatched agent (after the executor commits partial work) and releases the run slot/lease without reopening the task |
+| `RunResumed` | `Run.handle_command/2` | Re-enters a paused run at its first non-completed phase |
+| `RunBaseBranchRecorded` | `Run.handle_command/2` | Persists the run's PR base branch so a resumed run cannot retarget it |
+| `RunDeleted`\* | `Run.handle_command/2` | Marks run removed and triggers cleanup fan-out |
+| `RunReset`\* | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
+| `RunCompleted` | `Run.handle_command/2` | Marks run terminal success |
+| `RunFailed` | `Run.handle_command/2` | Marks run terminal failure |
+| `RunFlaggedStuck` | `Run.handle_command/2` | Flags run as stuck (`StuckDetector` issues `run.flag_stuck`) |
+| `WorktreeCreated` | `Run.handle_command/2` | Worktree created |
+| `WorktreeCleaned` | `Run.handle_command/2` | Worktree cleaned |
+| `WorktreeCreateOrphanRecorded` | `Run.handle_command/2` | Records orphan worktree at creation |
+| `WorktreeCreateOrphanResolved` | `Run.handle_command/2` | Resolves orphan worktree |
+| `PrAssociated` | `PrAssociation.handle_command/2` | Records the PR URL on the run projection and in the `pr_associations` map |
+| `PrMerged`\* | `Run.handle_command/2` | Aggregate replay only (no `ProjectionStore` handler found) — treat as unverified read-model effect |
+| `PhaseStarted` | `Phase.handle_command/2` | Updates run phase |
+| `PhaseCompleted` | `Phase.handle_command/2` | Updates run phase |
+| `WorkerHeartbeat` | `Worker.handle_command/2` | Updates worker projection (`Tracker.heartbeat/3` dispatches the `worker.record` command) |
+| `ToolCallFinished` | `ToolCall.handle_command/2` | Records the tool-call decision (approve/deny in one event) |
+| `VcsOperationStarted` / `VcsOperationCompleted` / `VcsOperationFailed` | `VcsOperation.handle_command/2` | Records VCS operation lifecycle (three events, not one) |
+| `BeadsDbLeaseAcquired` | `BeadsDbLease.handle_command/2` | Holder takes the per-DB Beads lease |
+| `BeadsDbLeaseReleased` | `BeadsDbLease.handle_command/2` | Holder releases the lease (no waiters) |
+| `BeadsDbLeaseWaiterRegistered` | `BeadsDbLease.handle_command/2` | Runner enqueued behind current holder |
+| `BeadsDbLeaseWaiterRemoved` | `BeadsDbLease.handle_command/2` | Cancel-before-promotion of a waiter |
+| `BeadsDbLeaseTransferred` | `BeadsDbLease.handle_command/2` | Release + head-waiter promotion in one event |
+
+\* `RunDeleted` and `RunReset` (and `PrMerged` above) have no corresponding
+struct file under `lib/foreman_server/events/` — `grep -rn "defmodule.*RunDeleted\|defmodule.*RunReset\|defmodule.*PrMerged" lib/`
+returns nothing. They are emitted as raw `%{event_type: "RunDeleted", ...}`
+maps and consumed by `Run.apply_event/2`'s and `ProjectionStore`'s string-keyed
+`case`/`apply_event_by_type` clauses, not via `EventCodec`. This contradicts
+the "every event is a typed struct" claim directly below — do not assume it
+holds for every row in this table; verify against `lib/foreman_server/events/`
+before relying on it.
+
+#### Typed Event Structs
+
+Every domain event *should* be a typed struct in `lib/foreman_server/events/`
+with `@enforce_keys` and `@type t`, decoded via `EventCodec.decode!/2` before
+`apply_event` pattern-matches it — this is the contract for external
+decode/replay paths that go through `EventCodec` (e.g. `ProjectionStore`
+rebuild from a cold projection). It is **not** universally true internally:
+`Aggregate.load/2` (`aggregate.ex:180-193`) calls `module.apply_event(state,
+event)` directly on raw event-store maps with no `EventCodec.decode!` call at
+all, so an aggregate's own `apply_event/2` can — and in `Run`'s case, for
+`RunDeleted`/`RunReset`/`PrMerged`, does — pattern-match untyped `event_type`
+strings that have no registered struct. `%EventData{}` / `%RecordedEvent{}`
+are persistence envelopes only — they are not domain types. `EventData.data`
+/ `RecordedEvent.data` holds the serialized domain struct where one exists.
+
+Canonical event struct (`@derive` before `defstruct`):
+
+```elixir
+defmodule ForemanServer.Events.RunCompleted do
+  @enforce_keys [:run_id, :sequence]
+  @type t :: %__MODULE__{run_id: String.t(), sequence: non_neg_integer(), status: String.t() | nil}
+  @derive Jason.Encoder
+  defstruct [:run_id, :sequence, status: nil]
+end
+```
+
+`apply_event` pattern-matches the typed struct directly:
+
+```elixir
+def apply_event(state, %RunCompleted{run_id: run_id, sequence: seq}) do
+  %State{state | status: "completed", terminal?: true, run_id: run_id, last_sequence: seq}
+end
+```
+
+`EventCodec.decode!/2` is the replay contract. It reconstructs typed structs from
+deserialized data with uniform API `decode!(event_type, data)`: typed structs pass through,
+JSON maps are validated and rebuilt. Both paths reject a struct whose module does not
+match the `event_type` string. Maps are reserved for genuinely open nested data inside
+the event. They MUST NOT replace the typed event struct itself.
+
+**Registration is automatic — never hand-maintained.** `EventCodec` builds both
+its `event_type → module` registry and its enforced-key lookup at compile time
+by scanning `lib/foreman_server/events/`. Adding a struct file registers the
+event; deleting the file removes it. Each source is an `@external_resource`, and
+`__mix_recompile__?/0` forces a rebuild when a file is added or removed, so the
+registry can never go stale.
+
+Adding a new event is therefore one file and no registry edits:
+
+```elixir
+defmodule ForemanServer.Events.ThingHappened do
+  @enforce_keys [:run_id]
+  @type t :: %__MODULE__{run_id: String.t(), detail: String.t() | nil}
+  @derive Jason.Encoder
+  defstruct [:run_id, detail: nil]
+end
+```
+
+This replaced two parallel hand-written maps that had already drifted: 15 of 66
+event structs — `ProjectRegistered`, `ProjectUpdated`, `ProjectArchived`,
+`PrAssociated`, `MergeGate*`, `ScheduledFire*`, `SchedulerIntentStale`,
+`RunAlreadyCompleted`, `RunRecoveryEvent`, and all three `VcsOperation*` — were
+present on disk but absent from the registry, so decoding them raised
+"unregistered event_type" even though the struct existed and was documented.
+Do not reintroduce a second list.
+
+---
+
+## Idempotency and Concurrency
+
+**Idempotency**: `CommandRouter` deduplicates by `command_id`. Duplicate commands
+produce no additional events. Domain idempotency (e.g. rejecting a second
+`run.complete` on an already-completed run) is implemented in each aggregate's
+`handle_command/2`.
+
+**Optimistic Concurrency**: Every append uses `expected_stream_version`. If the
+stream has moved past the expected version, append fails with `{:error, :wrong_expected_version}`.
+The Actor's bounded retry path intercepts the conflict, reloads the aggregate state via
+`Aggregate.load/2`, re-decides via `handle_command/2`, and retries with the new version
+(see **Actor lifecycle → Conflict recovery**). On retry exhaustion the actor replies with
+`{:telemetry, {:error, {:wrong_expected_version, version}}, ...}`, which `CommandRouter`
+unwraps to `{:error, {:wrong_expected_version, version}}` for callers, and the aggregate state
+is unchanged; on a re-decision that
+rejects (e.g. `:phase_terminal`) the retry terminates without appending — preserving
+exactly-once.
+
+**Per-DB Beads lease (write serialization across processes and restarts)**: SQLite's
+single-writer protocol cannot tolerate concurrent br/bv writers or writers running
+alongside `bv --robot-plan`. The `BeadsDbLease` aggregate is an event-sourced lock
+keyed by the configured absolute Beads DB path passed at acquire time, giving
+process-local serialization through the Actor mailbox while surviving Foreman
+restarts via persisted events. Required because multi-`run_id` parallelism on the
+same DB otherwise deterministically raises
+`cannot connect to database: locking protocol (15)`. Callers must pass the same
+absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
+`/private/tmp/...`) is NOT collapsed and will register separate lease streams.
+
+- **Stream id**: `beads_db_lease:<db_path>` (literal path; see warning above).
+- **Acquire**: `lease.acquire` is atomic — if the DB is free, the run becomes holder;
+  if held, the run is enqueued as a waiter and admission returns `:queued`.
+- **Release**: `lease.release` and `lease.remove_waiter` are dispatched at run
+  terminal time (`RunCancelled`, `RunDeleted`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+  `RunBlocked`) by the Dispatcher. Both are idempotent no-ops when the run_id is not
+  bound to the lease.
+- **Promotion**: when the holder releases with waiters, the aggregate emits a single
+  `BeadsDbLeaseTransferred` event that releases the old holder and promotes the
+  head waiter, so cancellation cannot race with promotion. The Dispatcher subscribes
+  to this event and re-enters `RunAdmission.start/2` for the promoted run.
+- **Fail-closed gating**: `RunAdmission.start/3` reads the lease decision before
+  starting the run supervisor. Any uncertainty (acquire error, atom state of
+  `:unknown` or `:unexpected`) returns `{:error, ...}` and skips dispatch. A
+  `:queued` decision returns without starting the supervisor; the dispatcher picks
+  the run up again on `BeadsDbLeaseTransferred`.
+- **Compensation**: `lease.release` on admission failure is only emitted for
+  definitively non-retryable rejections (`{:missing_or_invalid, …}`,
+  `{:implementation_already_active, …}`, `{:command_rejected, …}`). Compensating
+  transient errors would break retry semantics.
+- **Scope**: different DBs and direct (`foreman run`) workflows remain parallel.
+  The lease keys only on the DB path, never on the run_id.
+- **Scope limitation (important)**: the lease governs only admission through
+  Foreman. External `br` writers and `bv --robot-plan` invocations launched
+  outside Foreman are NOT protected — they must observe single-writer
+  discipline themselves. `br_bv_lease_concurrency_test.exs` verifies the
+  admission contract; upstream concurrency (e.g. an operator running `br`
+  directly while Foreman holds) is the operator's responsibility. The lease
+  exists to prevent two Foreman-dispatched runs from racing on the same DB,
+  not to mediate file-system access against unrelated processes.
+
+- **Universal backstop**: all `br` invocations through `SystemBrRunner.cmd/3` are
+  additionally serialized per `database_path` via `:global.trans/2` as a universal
+  backstop. This catches every call site (create, list_ready, update, get, reopen,
+  set_priority, ready, coordination_status, and any future callers) without requiring
+  `with_lease` wrapping at each one. Covered by `system_br_runner_test.exs`
+  concurrency serialization regression test.
+
+---
+
+## Go CLI Boundaries
+
+The Go CLI never writes to:
+
+- The event store directly
+- The projection store directly
+- Any Elixir internal state
+
+The Go CLI only:
+
+- Sends commands via `POST /api/commands`
+- Queries read models via `GET /api/...`
+- Formats and displays output
+
+---
+
+## Test Architecture
+
+- **Unit tests**: aggregate handlers — `handle_command/2` → event spec, valid transitions
+- **Integration tests**: aggregate startup, mailbox serialization, crash/restart/rehydration
+- **Architecture tests**: no direct `append_to_stream`/adapter calls in `lib/foreman_server/`
+- **Projection tests**: known event sequence → rebuild → verify read model matches
+
+---
+
+## TaskProvider System
+
+The `TaskProvider` behaviour (`ForemanServer.TaskProvider`) defines the contract for
+issue tracker adapters. The existing production adapter is `BeadsAdapter` (backed by
+`beads_rust` / `br` CLI). A second adapter, `KataAdapter` (backed by the
+`kata` CLI), is designed but not yet implemented — no `task_providers/kata_*`
+files exist under `lib/`; see `docs/TRD/TRD-2026-8030852f-foreman-kata-task-provider.md`
+(status: Draft) for the plan.
+
+### TaskProvider Behaviour Callbacks
+
+```elixir
+@callback name() :: String.t()
+@callback provider_id() :: atom()
+@callback contract_version() :: String.t()
+@callback capabilities() :: map()
+@callback available?() :: boolean()
+@callback list_ready(project_id :: String.t(), opts :: keyword()) :: {:ok, [Issue.t()]} | {:error, ProviderError.t()}
+@callback get(issue_id :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback claim(issue_id :: String.t(), actor :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback complete(issue_id :: String.t(), opts :: keyword()) :: {:ok, Issue.t() | :terminal} | {:error, ProviderError.t()}
+@callback fail(issue_id :: String.t(), reason :: String.t(), opts :: keyword()) :: {:ok, :reopened} | {:error, ProviderError.t()}
+@callback reopen(issue_id :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback comment(issue_id :: String.t(), body :: String.t(), opts :: keyword()) :: {:ok, Comment.t()} | {:error, ProviderError.t()}
+@callback set_priority(issue_id :: String.t(), priority :: 0..4, opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback set_assignee(issue_id :: String.t(), actor :: String.t() | nil, opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback list_dependencies(issue_id :: String.t(), opts :: keyword()) :: {:ok, [String.t()]} | {:error, ProviderError.t()}
+@callback add_dependency(issue_id :: String.t(), depends_on :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback remove_dependency(issue_id :: String.t(), depends_on :: String.t(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+@callback create(attrs :: map(), opts :: keyword()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
+```
+
+### Registry
+
+`ForemanServer.TaskProvider.Registry` is a supervised GenServer that owns registered
+providers and exposes `routing_snapshot/0` for capability-aware routing.
+
+---
+
+## Implementation Context
+
+`ForemanServer.Workflow.ImplementationContext` freezes deterministic state at approval time:
+
+- `trd_path`: Normalized project-relative path to the TRD blob
+- `trd_path_argument`: JSON-quoted shell argument for the skill
+- `project_root`: Absolute project root path
+- `source_revision`: Exact git SHA resolved from `git rev-parse HEAD`
+- `implementation_key`: `SHA256(project_id <> "\0" <> normalized_trd_path)` — used for single-flight enforcement
+- `beads_database_path`: For `implement-trd-beads` workflows, the absolute Beads DB path from the TaskProvider registry
+
+These fields are reserved server-derived values. Operator payload and phase YAML context
+cannot override them.
+
+---
+
+## Execution Safety Rules
+
+- Before rerunning a task to validate a fix, ensure the fix is durably committed and available on the active branch being tested.
+- Treat "implemented" as meaning: relevant tests/build passed and the work has a concrete commit hash on the branch/workspace that will be used for the rerun.
+- Do not benchmark or rerun tasks from a dirty or ambiguous controller workspace state.
+- If a task reset, branch cleanup, or workspace cleanup is about to happen while important work is only in the working copy, checkpoint it first via commit or patch export.
+
+Task-provider boundary reminder: RunExecutor drives claim/complete/fail;
+BootReconciliation drives orphan-reopen.
+
+<!-- bv-agent-instructions-v3 -->
+
+---
+

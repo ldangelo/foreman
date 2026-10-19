@@ -75,7 +75,7 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   opt-IN by label: only Beads tagged `foreman-exec`
   (`br update <id> --add-label foreman-exec`) route to Foreman; untagged
   Beads are skipped for external processing. See `docs/user-guide.md`
-  and `AGENTS.md` §"Beads Dispatch Partitioning via Label Gate".
+  and `docs/lessons/beads-runtime-and-dispatch.md` ("Beads Dispatch Partitioning via Label Gate").
 - **Orphan janitor.** Opt in with
   `config :foreman_server, :start_beads_orphan_janitor?, true`. After a
   grace window, `BeadsOrphanJanitor` closes Beads whose matching

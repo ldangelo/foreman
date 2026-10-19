@@ -1,8 +1,8 @@
 # The Remote Jobsite spec contract
 
 Source of truth: `packages/foreman_server/lib/foreman_server/jobsite/spec.ex`
-(`Jobsite.Spec.from_json/2`) and the `Remote Jobsite API` section of the root
-`AGENTS.md`. This file is a derived cheat sheet — when it disagrees with
+(`Jobsite.Spec.from_json/2`) and the `Remote Jobsite API` entry in
+`docs/lessons/phase-execution-and-pr-mechanics.md`. This file is a derived cheat sheet — when it disagrees with
 `spec.ex`, `spec.ex` wins, so re-read those two functions rather than trusting
 this page.
 
