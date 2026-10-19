@@ -2222,3 +2222,22 @@ distinct error tags (`:missing_field` / `:invalid_field` in the Telegram/Slack
 adapters, `:provider_not_configured` when the currently active provider does
 not match the notification's); never collapse both causes into one
 `:missing_or_invalid` code (§5.3).
+
+## XERJ (code search)
+
+The repo is indexed in a local xerj node under the prefix `foreman` (node at
+`http://localhost:9200`, data dir `~/xerj-data`). Use it when you need code you
+cannot see in the open files; it is not a substitute for reading the file you
+are about to edit.
+
+- `xerj def --prefix foreman <symbol>` — where a symbol is defined (file:line + signature).
+- `xerj search --prefix foreman "<plain words>"` — ranked passages; cite the printed file:line.
+- Always pass `--prefix foreman`; without it the commands search the default `ax` prefix.
+- The corpus mixes code and prose: filter on `ax_format` (`code`, `yaml`, `txt-prose`, ...).
+  Prose is in `body`; line files such as changelogs are in `text`.
+- If the node is down, start it with
+  `xerj --data-dir "$HOME/xerj-data" --insecure --bind 127.0.0.1 --port 9200`,
+  then check `curl -s localhost:9200/_cluster/health`. Re-index with
+  `xerj autoindex . --prefix foreman --progress plain`. Never run `xerj init`
+  again: it writes `.mcp.json` and skill files into the repo and appends its own block here.
+- Trust the passage over memory, but verify it against the checked-out file before editing.
