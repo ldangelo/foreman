@@ -11,16 +11,16 @@ defmodule ForemanServer.Observability.DocsTest do
     ":signoz_logs"
   ]
 
-  # The five-file documentation gate (AGENTS.md "Documentation Discipline"):
+  # The four-file documentation gate (AGENTS.md "Documentation Gate"):
   # every externally-visible identifier a fix/feature adds must be findable
-  # in all five. A test that reads only one of them (as this file used to)
-  # would pass while README.md/CLAUDE.md/AGENTS.md/docs/cli-reference.md
-  # silently dropped or never gained a var name.
+  # in all four. A test that reads only one of them (as this file used to)
+  # would pass while README.md/CLAUDE.md/docs/cli-reference.md
+  # silently dropped or never gained a var name. AGENTS.md is deliberately
+  # not a gate target: it holds rules only (mechanics live in docs/lessons/).
   @doc_gate_files [
     "README.md",
     "docs/user-guide.md",
     "docs/cli-reference.md",
-    "AGENTS.md",
     "CLAUDE.md"
   ]
 
@@ -36,7 +36,7 @@ defmodule ForemanServer.Observability.DocsTest do
     assert docs =~ "retention policy"
   end
 
-  test "all five documentation-gate files name every SigNoz env var" do
+  test "all four documentation-gate files name every SigNoz env var" do
     for path <- @doc_gate_files do
       contents = File.read!(Path.join(@repo_root, path))
 
