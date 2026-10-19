@@ -11,12 +11,12 @@ defmodule ForemanServer.Observability.DocsTest do
     ":signoz_logs"
   ]
 
-  # The four-file documentation gate (AGENTS.md "Documentation Gate"):
-  # every externally-visible identifier a fix/feature adds must be findable
-  # in all four. A test that reads only one of them (as this file used to)
-  # would pass while README.md/CLAUDE.md/docs/cli-reference.md
-  # silently dropped or never gained a var name. AGENTS.md is deliberately
-  # not a gate target: it holds rules only (mechanics live in docs/lessons/).
+  # The documentation gate (AGENTS.md "Documentation Gate") covers these four
+  # files. This is a SigNoz-specific check, not a general gate rule: the SigNoz
+  # env vars were documented in all four, and a test that reads only one of
+  # them (as this file used to) would pass while README.md, CLAUDE.md or
+  # docs/cli-reference.md silently dropped a var name. AGENTS.md is deliberately
+  # not included: it holds rules only (mechanics live in docs/lessons/).
   @doc_gate_files [
     "README.md",
     "docs/user-guide.md",
