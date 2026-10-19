@@ -51,6 +51,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PreflightFailure
   alias ForemanServer.Jobsite.Context, as: JobsiteContext
   alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
+  alias ForemanServer.Jobsite.Git, as: JobsiteGit
   alias ForemanServer.Jobsite.Error, as: JobsiteError
   alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.JobsiteObserver
@@ -928,25 +929,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp dispatch_run_base_branch(_run_id, {:error, _reason}), do: :ok
 
-  # `git symbolic-ref --quiet --short HEAD` names the checked-out branch and
-  # exits non-zero on a detached HEAD. `rev-parse --abbrev-ref HEAD` would
-  # instead print the literal `HEAD` there, which `gh pr create --base` accepts
-  # as a ref name — a wrong PR target that reads as a resolved answer.
+  # `Jobsite.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
+  # which names the checked-out branch and exits non-zero on a detached HEAD.
+  # `rev-parse --abbrev-ref HEAD` would instead print the literal `HEAD`
+  # there, which `gh pr create --base` accepts as a ref name — a wrong PR
+  # target that reads as a resolved answer.
   defp checkout_branch(repo_path) do
-    args = ["-C", repo_path, "symbolic-ref", "--quiet", "--short", "HEAD"]
+    case JobsiteGit.current_branch(repo_path) do
+      {:ok, branch} ->
+        {:ok, branch}
 
-    case System.cmd("git", args, stderr_to_stdout: true) do
-      {output, 0} ->
-        {:ok, String.trim(output)}
+      # `--quiet` prints nothing when HEAD is simply not a symbolic ref, so
+      # empty output is a detached checkout and anything else is git's own
+      # complaint (directory missing, not a repository).
+      {:error, %JobsiteError{details: %{reason: ""}}} ->
+        {:error, {:checkout_branch_unresolvable, repo_path, :detached_head}}
 
-      {output, _code} ->
-        # `--quiet` prints nothing when HEAD is simply not a symbolic ref, so
-        # empty output is a detached checkout and anything else is git's own
-        # complaint (directory missing, not a repository).
-        case String.trim(output) do
-          "" -> {:error, {:checkout_branch_unresolvable, repo_path, :detached_head}}
-          detail -> {:error, {:checkout_branch_unresolvable, repo_path, detail}}
-        end
+      {:error, %JobsiteError{details: %{reason: detail}}} ->
+        {:error, {:checkout_branch_unresolvable, repo_path, detail}}
     end
   end
 
@@ -2776,80 +2776,29 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
   end
 
+  # Delegates to `Jobsite.Git.commit_all/3`, the one implementation of
+  # status → add → commit shared with the engine's `:commit` step. Its typed
+  # error names the failing git step (`:stage`), which this maps back onto
+  # the `{:phase_commit_status_failed | :phase_commit_failed, path, reason}`
+  # tuples callers match on.
   defp commit_dirty_worktree(state, phase_index, path) do
-    case worktree_dirty?(path) do
-      {:ok, false} ->
+    case JobsiteGit.commit_all(path, "Foreman run #{state.run_id} phase #{phase_index}") do
+      {:ok, :nothing_to_commit} ->
         Logger.info(
           "RunExecutor #{state.run_id} phase #{phase_index} worktree clean, nothing to commit"
         )
 
         {:ok, :nothing_to_commit}
 
-      {:ok, true} ->
-        stage_and_commit(state, phase_index, path)
+      {:ok, :committed} ->
+        Logger.info("RunExecutor #{state.run_id} phase #{phase_index} committed worktree #{path}")
+        {:ok, :committed}
 
-      {:error, reason} ->
+      {:error, %JobsiteError{details: %{stage: :status, reason: reason}}} ->
         {:error, {:phase_commit_status_failed, path, reason}}
-    end
-  end
 
-  # `git status --porcelain` is the decision, not `git commit`'s exit code.
-  # Reading emptiness off `git commit` cannot work: after `git add -A` a clean
-  # tree and a genuine failure both exit 1, and git prints "nothing to commit"
-  # to stdout rather than staying silent — so the earlier "exit 1 with empty
-  # output means clean" test matched the failure case and reported real errors
-  # as a clean tree.
-  #
-  # `--untracked-files=all` so a phase whose only output is a new, never-added
-  # file counts as dirty.
-  defp worktree_dirty?(path) do
-    args = ["-C", path, "status", "--porcelain", "--untracked-files=all"]
-
-    case System.cmd("git", args, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, String.trim(output) != ""}
-      {output, code} -> {:error, {:git_status_failed, code, String.trim(output)}}
-    end
-  end
-
-  # Foreman commits as itself, with `-c` overrides rather than repository
-  # config, so the commit cannot fail on a checkout with no `user.email` set and
-  # is attributable to the harness rather than to the operator who happens to
-  # own the clone. `--no-verify` because this is Foreman's bookkeeping commit:
-  # a repository pre-commit hook must not be able to fail the phase or rewrite
-  # the agent's output.
-  defp stage_and_commit(state, phase_index, path) do
-    with :ok <- git_ok(["-C", path, "add", "-A"], :git_add_failed),
-         :ok <-
-           git_ok(
-             [
-               "-C",
-               path,
-               "-c",
-               "user.name=Foreman",
-               "-c",
-               "user.email=foreman@localhost",
-               "commit",
-               "--no-verify",
-               "-m",
-               "Foreman run #{state.run_id} phase #{phase_index}"
-             ],
-             :git_commit_failed
-           ) do
-      Logger.info("RunExecutor #{state.run_id} phase #{phase_index} committed worktree #{path}")
-      {:ok, :committed}
-    else
-      {:error, reason} -> {:error, {:phase_commit_failed, path, reason}}
-    end
-  end
-
-  # Exit status is the only success signal. Matching on empty output as well —
-  # as the first implementation did for `git add` — mis-reads a successful
-  # command that emitted a warning (CRLF conversion, embedded repository) as a
-  # failure, and skips the commit.
-  defp git_ok(args, error_tag) do
-    case System.cmd("git", args, stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, code} -> {:error, {error_tag, code, String.trim(output)}}
+      {:error, %JobsiteError{details: %{reason: reason}}} ->
+        {:error, {:phase_commit_failed, path, reason}}
     end
   end
 

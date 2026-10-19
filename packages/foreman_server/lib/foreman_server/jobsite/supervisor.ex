@@ -7,7 +7,10 @@ defmodule ForemanServer.Jobsite.Supervisor do
   aggregate's `require_absent` guard would then reject). Recovery is always
   an explicit `resume/1` call: whoever observes the crash (the caller blocked
   on `reply_to` gets no reply and times out, or an operator notices the
-  jobsite stuck non-terminal) invokes `resume/1`.
+  jobsite stuck non-terminal) invokes `resume/1`. A server restart kills every
+  executor at once, so at boot `ForemanServer.Jobsite.BootRecovery` records each
+  orphaned jobsite as paused (`server_restart`) to make it visible and resumable
+  through that same path; it never resumes one itself.
   """
 
   use DynamicSupervisor

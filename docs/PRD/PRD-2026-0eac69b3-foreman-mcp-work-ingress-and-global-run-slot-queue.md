@@ -255,6 +255,7 @@ MCP MUST NOT ship on top of the current inert auth.
 
 - AC-018-1: Given `ForemanServer.ConfigProviders.Secrets`, when it is updated, then `FOREMAN_API_TOKEN` maps to `:api_bearer_token` alongside the existing secret mappings.
 - AC-018-2: Given `:api_bearer_token` is unset, when the MCP server starts, then it refuses to start and logs a fatal configuration error naming the missing key — the `/api` pipeline's existing permissive behaviour is unchanged, but MCP fails closed.
+  - *Superseded in part (2026-10-19):* the clause "the `/api` pipeline's existing permissive behaviour is unchanged" no longer holds. `/api` now fails closed when no token is configured, with an explicit `:api, allow_insecure_local` opt-in; see "Auth postures" in `docs/lessons/operator-reference.md`. The MCP behaviour in this criterion is unchanged.
 - AC-018-3: Given a request with an absent, malformed, or wrong bearer token, when it reaches any MCP tool, then it is rejected before dispatch and neither the token nor the tool arguments appear in any log line or telemetry metadata.
 
 ### 4e. Workflow Catalog Management

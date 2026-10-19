@@ -8,12 +8,12 @@ defmodule ForemanServerWeb.Plugs.RequireAuthenticated do
   `?token=<token>` query parameter — mirroring `BearerAuth`'s existing
   "narrow tooling" query-param allowance.
 
-  Unlike `BearerAuth`, an unconfigured `:api_bearer_token` does NOT
-  bypass this guard. Routes behind `:require_authenticated` (currently
-  the Jido live dashboard, TRD-2026-4212be7e / JLD-T001) expose live
-  internal agent/signal state and must fail closed until an operator
-  configures a token, rather than defaulting open like the JSON API
-  does for local dev convenience.
+  Like `BearerAuth`, an unconfigured `:api_bearer_token` does NOT
+  bypass this guard. Unlike `BearerAuth`, there is no `allow_insecure_local`
+  opt-in: routes behind `:require_authenticated` (currently the Jido live
+  dashboard, TRD-2026-4212be7e / JLD-T001) expose live internal
+  agent/signal state and must fail closed until an operator configures a
+  token, in every environment.
 
   On failure, halts with `401` and a plain-text body (this guards an
   HTML/LiveView route, not the JSON API).

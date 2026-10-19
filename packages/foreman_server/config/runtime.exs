@@ -5,7 +5,8 @@ import Config
 # set unless its variable is present, so an unset variable never overrides
 # `dev.exs`/`prod.exs`, and the API stays off by default.
 #
-#   FOREMAN_API_TOKEN                        bearer token every /api/jobsites call must present
+#   FOREMAN_API_TOKEN                        bearer token every /api call must present (unset = /api answers 401)
+#   FOREMAN_API_ALLOW_INSECURE_LOCAL=true    with no token set, let /api through unauthenticated (local use only)
 #   FOREMAN_JOBSITES_ALLOW_REMOTE_START=true allow POST /api/jobsites to start a jobsite
 #   FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true allow `"sandbox": "host"` (the agent runs unsandboxed
 #                                            on this machine; the default is docker)
@@ -32,6 +33,15 @@ if config_env() != :test do
         do: {key, System.get_env(var) == "true"}
 
   if jobsite_flags != [], do: config(:foreman_server, :jobsites, jobsite_flags)
+
+  # Without a token /api answers 401 (fail closed); this lets an operator allow
+  # unauthenticated access on a trusted local node. Unset changes nothing.
+  api_flags =
+    for {key, var} <- [allow_insecure_local: "FOREMAN_API_ALLOW_INSECURE_LOCAL"],
+        System.get_env(var) != nil,
+        do: {key, System.get_env(var) == "true"}
+
+  if api_flags != [], do: config(:foreman_server, :api, api_flags)
 
   case System.get_env("FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST") do
     value when value in [nil, ""] ->

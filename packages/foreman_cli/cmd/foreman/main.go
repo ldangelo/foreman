@@ -29,7 +29,7 @@
 // Environment:
 //
 //	FOREMAN_API_URL    Base URL (default http://127.0.0.1:4766)
-//	FOREMAN_API_TOKEN  Optional Bearer credential
+//	FOREMAN_API_TOKEN  Bearer credential (required unless the server opts into allow_insecure_local)
 package main
 
 import (
@@ -62,7 +62,7 @@ Commands:
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
 Env:
   FOREMAN_API_URL    Base URL (default http://127.0.0.1:4766)
-  FOREMAN_API_TOKEN  Bearer token (optional; bypassed in dev when unset)
+  FOREMAN_API_TOKEN  Bearer token (required unless the server opts into allow_insecure_local)
 
 Run 'foreman <command> -h' for command-specific help.
 `

@@ -1959,6 +1959,7 @@ defmodule ForemanServer.ProjectionStore do
       fn jobsite ->
         jobsite
         |> Map.put(:status, "running")
+        |> Map.delete(:paused_reason)
         |> Map.put(:container_id, get(payload, :container_id))
       end
     )
@@ -2104,7 +2105,9 @@ defmodule ForemanServer.ProjectionStore do
       get(payload, :jobsite_id),
       payload_event_at_ms(payload),
       fn jobsite ->
-        Map.put(jobsite, :status, "paused")
+        jobsite
+        |> Map.put(:status, "paused")
+        |> Map.put(:paused_reason, get(payload, :reason))
       end
     )
   end

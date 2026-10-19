@@ -19,8 +19,10 @@ defmodule ForemanServerWeb.Router do
     plug(ForemanServerWeb.Plugs.RequireAuthenticated)
   end
 
-  # Fail-closed JSON pipeline: unlike `:api` (BearerAuth, open when no token is
-  # configured), `RequireAuthenticated` answers 401 until an operator sets one.
+  # Fail-closed JSON pipeline with no local opt-in: `RequireAuthenticated` answers
+  # 401 until an operator sets a token. `:api` (BearerAuth) is also fail-closed
+  # when no token is configured, but honours `:api, allow_insecure_local: true`
+  # (on in dev/test) to let local development call it without one.
   pipeline :jobsite_api do
     plug(:accepts, ["json"])
     plug(ForemanServerWeb.Plugs.RequireAuthenticated)

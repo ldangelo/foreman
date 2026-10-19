@@ -346,6 +346,9 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
       assert resolve!(repo, branch) != base, "the commit must land on the run's branch"
 
+      assert git!(wt, ["log", "-1", "--format=%s|%an|%ae"]) ==
+               "Foreman run run-commit phase 1|Foreman|foreman@localhost\n"
+
       Default.clean_worktree(wt, worktree_opts(repo, base, branch))
     end
 

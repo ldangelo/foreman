@@ -153,6 +153,10 @@ defmodule ForemanServer.Jobsite.ResumeTest do
 
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
 
+    # `paused` is projected before the executor process exits; resuming in that
+    # gap is correctly refused as :already_running, so wait for it to be gone.
+    wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
+
     paused = Jobsite.get(id)
     assert paused.status == "paused"
     assert paused.terminal? == false
@@ -187,6 +191,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
     assert :ok = Jobsite.pause(id, "pause at the cap")
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
+    wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
 
     # The resumed iteration is #2, past the limit the jobsite started with. The
     # aggregate used to reject it, ending an accepted resume as `failed`.
@@ -222,6 +227,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
     assert :ok = Jobsite.pause(id, "pause")
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
+    wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
 
     assert {:ok, ^id} = Jobsite.resume_async(id)
     wait_until(fn -> Jobsite.get(id).status == "running" end)
