@@ -262,7 +262,7 @@ Set the `FOREMAN_API_TOKEN` environment variable to authenticate callers of `/ap
 FOREMAN_API_TOKEN=your-secret-token
 ```
 
-When set, all `/api/*` requests require an `Authorization: Bearer <token>` header. Requests without a valid bearer token receive a `401 Unauthorized` response. Always set it before exposing a server beyond localhost.
+When set, all `/api/*` requests must present the token, normally as an `Authorization: Bearer <token>` header. A matching `?token=<token>` query parameter is also accepted for narrow tooling only, since it ends up in URLs and server/proxy logs. Requests without a valid token receive a `401 Unauthorized` response. Always set it before exposing a server beyond localhost.
 
 The MCP task tools expose `foreman_task_list`, `foreman_task_get`, and write-gated `foreman_task_update` / `foreman_task_add_comment`. Task list supports `project_id`/canonical `status` filters plus `limit`/`offset` pagination and returns `{tasks, total, limit, offset, next_offset}`.
 

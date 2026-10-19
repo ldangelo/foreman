@@ -55,7 +55,7 @@ defmodule ForemanServer.Jobsite.Git do
     base_args =
       cond do
         branch_exists?(repo, branch) -> [path, branch]
-        is_nil(branch) -> [path, base]
+        is_nil(branch) -> ["--detach", path, base]
         true -> ["-b", branch, path, base]
       end
 

@@ -227,6 +227,20 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     assert event_types(id) == types_before
   end
 
+  test "an unreplayed (empty) projection does not hide an orphaned jobsite from the scan" do
+    id = unique_id("js-empty-projection")
+    seed_running!(id)
+
+    # What `ProjectionStore.init/1` installs when its boot replay of the event
+    # log fails: `initial_state()`, i.e. no jobsites at all.
+    :sys.replace_state(ForemanServer.ProjectionStore, fn state -> %{state | jobsites: %{}} end)
+    on_exit(fn -> ForemanServer.ProjectionStore.rebuild([]) end)
+    assert ForemanServer.ProjectionStore.list_jobsites() == []
+
+    assert {:paused, ^id} = outcome_for(scan_outcomes!(), id)
+    assert "JobsitePaused" in event_types(id)
+  end
+
   test "a jobsite orphaned again after a resume is paused again (new stream version, new command id)" do
     id = unique_id("js-twice")
     seed_running!(id)

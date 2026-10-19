@@ -31,6 +31,12 @@ defmodule ForemanServer.Jobsite.BootRecovery do
   a jobsite that is resumed and orphaned again by a later restart (a longer
   stream) gets a fresh id and is paused again.
 
+  Candidates are the event store's `jobsite:` streams, not
+  `ProjectionStore.list_jobsites/0`: a projection whose boot replay failed is
+  empty, and an empty candidate list must never mean "nothing to recover".
+  Failing to list the streams is logged at error and returned as
+  `{:error, %Error{code: :boot_recovery_failed}}`.
+
   A failure to reconcile one jobsite is logged at error with its id and does
   not stop the others or application boot.
 
@@ -45,11 +51,15 @@ defmodule ForemanServer.Jobsite.BootRecovery do
 
   require Logger
 
-  alias ForemanServer.{Aggregate, CommandGateway, ProjectionStore}
+  alias EventStore.Page
+  alias EventStore.Streams.StreamInfo
+  alias ForemanServer.{Aggregate, CommandGateway, EventStore}
   alias ForemanServer.Aggregates.Jobsite, as: JobsiteAggregate
   alias ForemanServer.Jobsite.{Error, Executor}
 
   @pause_reason "server_restart"
+  @stream_prefix "jobsite:"
+  @stream_page_size 100
 
   @type outcome ::
           {:paused, String.t()}
@@ -74,7 +84,9 @@ defmodule ForemanServer.Jobsite.BootRecovery do
   end
 
   @doc """
-  Reconcile every non-terminal jobsite in the projection. Returns one typed
+  Reconcile every non-terminal jobsite found in the event store's `jobsite:`
+  streams (not the projection: a failed projection replay installs an empty
+  read model). Returns one typed
   outcome per candidate, or `{:error, Error.t()}` (already logged) when the
   candidate list itself cannot be read.
 
@@ -85,23 +97,64 @@ defmodule ForemanServer.Jobsite.BootRecovery do
           {:ok, [outcome()]} | {:error, Error.t()}
   def scan(dispatch \\ &CommandGateway.dispatch_system/1) when is_function(dispatch, 1) do
     with {:ok, jobsite_ids} <- candidate_ids() do
-      {:ok, Enum.map(jobsite_ids, &reconcile(&1, dispatch))}
+      outcomes =
+        jobsite_ids
+        |> Enum.map(&reconcile(&1, dispatch))
+        |> Enum.reject(&match?({:skipped, _, :terminal}, &1))
+
+      {:ok, outcomes}
     end
   end
 
+  # Candidates come from the event store's `jobsite:` streams, not from
+  # `ProjectionStore`: if the projection's boot replay failed it falls back to
+  # an empty read model, which would read here as "no jobsites" and silently
+  # skip every orphan. The aggregate load in `reconcile/2` filters out the
+  # jobsites that are terminal, so listing every stream is safe; terminal ones
+  # are dropped from the result to keep the outcome list about actionable ids.
   defp candidate_ids do
-    ids =
-      ProjectionStore.list_jobsites()
-      |> Enum.reject(&(Map.get(&1, :terminal?) == true))
-      |> Enum.map(& &1.jobsite_id)
-
-    {:ok, ids}
+    with {:ok, stream_uuids} <- jobsite_stream_uuids(1, []) do
+      {:ok, Enum.map(stream_uuids, &String.replace_prefix(&1, @stream_prefix, ""))}
+    else
+      {:error, reason} -> candidates_failed(reason)
+    end
   catch
-    :exit, reason ->
-      Logger.error("Jobsite boot recovery could not list jobsites: #{inspect(reason)}")
+    :exit, reason -> candidates_failed(reason)
+  end
 
-      {:error,
-       Error.new(:boot_recovery_failed, "could not list jobsites", %{reason: inspect(reason)})}
+  # `paginate_streams(search: term)` matches `%term%`, so the prefix is
+  # re-checked. Sorting by `stream_uuid` keeps paging stable.
+  defp jobsite_stream_uuids(page_number, acc) do
+    opts = [
+      search: @stream_prefix,
+      page_number: page_number,
+      page_size: @stream_page_size,
+      sort_by: :stream_uuid
+    ]
+
+    case EventStore.paginate_streams(opts) do
+      {:ok, %Page{entries: entries, total_pages: total_pages}} ->
+        acc =
+          Enum.reduce(entries, acc, fn %StreamInfo{stream_uuid: stream_uuid}, uuids ->
+            if String.starts_with?(stream_uuid, @stream_prefix),
+              do: [stream_uuid | uuids],
+              else: uuids
+          end)
+
+        if page_number >= total_pages,
+          do: {:ok, Enum.reverse(acc)},
+          else: jobsite_stream_uuids(page_number + 1, acc)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp candidates_failed(reason) do
+    Logger.error("Jobsite boot recovery could not list jobsites: #{inspect(reason)}")
+
+    {:error,
+     Error.new(:boot_recovery_failed, "could not list jobsites", %{reason: inspect(reason)})}
   end
 
   # Isolation boundary: whatever goes wrong for one jobsite (event store read,

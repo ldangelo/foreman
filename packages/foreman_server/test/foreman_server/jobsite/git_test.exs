@@ -92,7 +92,24 @@ defmodule ForemanServer.Jobsite.GitTest do
       refute Git.branch_exists?(path, nil)
 
       assert Git.worktree_add_args(path, "/wt", nil, base) ==
-               ["-C", path, "worktree", "add", "/wt", base]
+               ["-C", path, "worktree", "add", "--detach", "/wt", base]
+    end
+
+    test "a nil branch with a branch-name base still adds a detached worktree" do
+      path = tmp_repo!()
+      {_output, 0} = System.cmd("git", ["-C", path, "branch", "other"])
+      wt = path <> "-wt"
+      on_exit(fn -> File.rm_rf(wt) end)
+
+      assert :ok = Git.worktree_add(path, wt, nil, "other")
+
+      # Without `--detach`, git attaches the worktree to `other`.
+      assert {_output, code} =
+               System.cmd("git", ["-C", wt, "symbolic-ref", "--quiet", "HEAD"],
+                 stderr_to_stdout: true
+               )
+
+      assert code != 0
     end
 
     test "attaches an existing branch and creates a missing one from the base" do

@@ -140,7 +140,8 @@ foreman project list
 - Set `FOREMAN_API_TOKEN` (CLI) and the server's
   `:foreman_server, :api_bearer_token` config to require
   `Authorization: Bearer <token>` on every `/api/*` request.
-- `/api/*` also accepts `?token=<token>` for narrow tooling.
+- `/api/*` also accepts `?token=<token>` for narrow tooling only (the token
+  ends up in URLs and logs).
 - When the server has no token configured, `/api/*` **fails closed**: every
   request gets `401` with `{"error":"unauthorized","detail":"no API token is
   configured on the server ..."}`. Set `FOREMAN_API_TOKEN` before exposing the
@@ -1021,8 +1022,11 @@ restart is never automatic: at boot, `ForemanServer.Jobsite.BootRecovery`
 records every non-terminal jobsite that has no live executor as **paused with
 reason `server_restart`** (a jobsite that never got a worktree is failed with
 `executor_lost` instead), so it shows up as `paused` with a `paused_reason` in
-`GET /api/jobsites` and is resumed through the same explicit path. It
-never starts an agent: `agent.env` values are not persisted, so an unattended
+`GET /api/jobsites` and is resumed through the same explicit path. The scan
+finds candidates from the event store's `jobsite:` streams, not the projection,
+so a failed projection replay cannot make it report an empty success; if the
+streams cannot be listed it logs an error (`could not list jobsites`) instead.
+It never starts an agent: `agent.env` values are not persisted, so an unattended
 resume would run without them. Disable the scan with
 `config :foreman_server, start_jobsite_boot_recovery?: false`.
 
