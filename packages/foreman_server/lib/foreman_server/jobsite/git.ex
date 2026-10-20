@@ -6,6 +6,8 @@ defmodule ForemanServer.Jobsite.Git do
   emitted a warning (CRLF conversion, embedded repository) as a failure.
   """
 
+  require Logger
+
   alias ForemanServer.Jobsite.Error
 
   @type commit :: %{sha: String.t(), subject: String.t()}
@@ -261,6 +263,63 @@ defmodule ForemanServer.Jobsite.Git do
 
       {:error, reason} ->
         {:error, Error.new(:git_failed, "git log failed", %{reason: reason})}
+    end
+  end
+
+  @doc """
+  Unified diff of `head` against `base` (`base..head`, renames detected). A
+  `head` of `:worktree` diffs the checked-out working tree against `base`,
+  including uncommitted changes and new untracked files (gitignored files
+  excluded). New files are first marked intent-to-add (`git add -N`), which
+  changes only the index of a checkout whose work is being archived. Used for
+  cancelled work, which is never committed.
+  """
+  @spec diff(String.t(), String.t(), String.t() | :worktree) ::
+          {:ok, String.t()} | {:error, Error.t()}
+  def diff(repo_path, base, head) do
+    diff_run(repo_path, base, head, ["diff", "--find-renames"])
+  end
+
+  @doc "`git diff --name-status --find-renames base..head` output (`:worktree` as for `diff/3`)."
+  @spec changed_files(String.t(), String.t(), String.t() | :worktree) ::
+          {:ok, String.t()} | {:error, Error.t()}
+  def changed_files(repo_path, base, head) do
+    diff_run(repo_path, base, head, ["diff", "--name-status", "--find-renames"])
+  end
+
+  defp diff_run(repo_path, base, :worktree, git_args) do
+    with :ok <- check_ref(:base, base) do
+      # Best effort: if the index cannot be updated (lock, refused path) the diff
+      # still captures every tracked change, only new files go missing.
+      case run(["-C", repo_path, "add", "--intent-to-add", "--all"]) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("git add --intent-to-add failed in #{repo_path}; new files omitted from diff: #{inspect(reason)}")
+      end
+
+      run(["-C", repo_path] ++ git_args ++ [base, "--"])
+      |> tag_error(:git_failed)
+    end
+  end
+
+  defp diff_run(repo_path, base, head, git_args) do
+    with :ok <- check_ref(:base, base),
+         :ok <- check_ref(:head, head) do
+      run(["-C", repo_path] ++ git_args ++ ["#{base}..#{head}"])
+      |> tag_error(:git_failed)
+    end
+  end
+
+  # A ref beginning with `-` would be parsed by git as an option; control
+  # characters and whitespace never occur in a legitimate ref.
+  defp check_ref(role, ref) do
+    if is_binary(ref) and ref != "" and not String.starts_with?(ref, "-") and
+         not String.match?(ref, ~r/[\x00-\x20\x7f]/) do
+      :ok
+    else
+      {:error, Error.new(:git_failed, "unsafe git ref rejected", %{role: role, ref: ref})}
     end
   end
 

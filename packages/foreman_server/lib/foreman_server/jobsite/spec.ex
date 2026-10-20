@@ -41,7 +41,7 @@ defmodule ForemanServer.Jobsite.Spec do
 
   @allowed_keys ~w(project_id prompt agent strategy sandbox name max_iterations completion_signal
                    idle_timeout_seconds completion_timeout_seconds hooks exclude_paths
-                   copy_to_worktree resume_session push)
+                   copy_to_worktree resume_session push bead_id)
 
   # Keys a remote caller must never supply, each with a reason in its error.
   @forbidden_keys ~w(on_event reply_to logging resume? resume repo_path path base)
@@ -67,7 +67,7 @@ defmodule ForemanServer.Jobsite.Spec do
          {:ok, sandbox} <- build_sandbox(spec, opts),
          {:ok, optional} <- build_optional(spec),
          built =
-           [repo_path: repo_path] ++
+           [repo_path: repo_path, project_id: Map.fetch!(spec, "project_id")] ++
              optional.strategy ++
              [sandbox: sandbox, agent: agent, prompt: prompt] ++ optional.rest,
          :ok <- check_push_strategy(built),
@@ -438,11 +438,13 @@ defmodule ForemanServer.Jobsite.Spec do
          {:ok, exclude} <- optional_relative_paths(spec, "exclude_paths", :exclude_paths),
          {:ok, copy} <- optional_relative_paths(spec, "copy_to_worktree", :copy_to_worktree),
          {:ok, resume_session} <- optional_string(spec, "resume_session", :resume_session),
-         {:ok, push} <- optional_push(spec) do
+         {:ok, push} <- optional_push(spec),
+         {:ok, bead_id} <- optional_string(spec, "bead_id", :bead_id) do
       rest =
         name ++
           max_iterations ++
-          signal ++ idle ++ completion ++ hooks ++ exclude ++ copy ++ resume_session ++ push
+          signal ++
+          idle ++ completion ++ hooks ++ exclude ++ copy ++ resume_session ++ push ++ bead_id
 
       {:ok, %{strategy: strategy, rest: rest}}
     end

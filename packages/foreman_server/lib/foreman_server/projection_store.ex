@@ -27,6 +27,8 @@ defmodule ForemanServer.ProjectionStore do
 
   use GenServer
 
+  require Logger
+
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
@@ -248,6 +250,23 @@ defmodule ForemanServer.ProjectionStore do
   @spec list_jobsites() :: [map()]
   def list_jobsites do
     GenServer.call(__MODULE__, :list_jobsites)
+  end
+
+  @doc """
+  Return the recorded review for a subject (`"run"` or `"jobsite"` plus its id),
+  or nil if no `ReviewRecorded` event has been projected for it.
+  """
+  @spec review(String.t(), String.t()) :: map() | nil
+  def review(subject_kind, subject_id)
+      when is_binary(subject_kind) and subject_kind != "" and is_binary(subject_id) and
+             subject_id != "" do
+    GenServer.call(__MODULE__, {:review, subject_kind, subject_id})
+  end
+
+  @doc "True when a recorded review filed `bead_id` as a gap bead."
+  @spec gap_bead?(String.t()) :: boolean()
+  def gap_bead?(bead_id) when is_binary(bead_id) and bead_id != "" do
+    GenServer.call(__MODULE__, {:gap_bead?, bead_id})
   end
 
   @doc """
@@ -478,6 +497,21 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:jobsite, jobsite_id}, _from, state) do
     {:reply, Map.get(state.jobsites, jobsite_id), state}
+  end
+
+  @impl true
+  def handle_call({:review, subject_kind, subject_id}, _from, state) do
+    {:reply, Map.get(state.reviews, {subject_kind, subject_id}), state}
+  end
+
+  @impl true
+  def handle_call({:gap_bead?, bead_id}, _from, state) do
+    found? =
+      Enum.any?(state.reviews, fn {_key, review} ->
+        bead_id in (Map.get(review, :gap_bead_ids) || [])
+      end)
+
+    {:reply, found?, state}
   end
 
   @impl true
@@ -918,7 +952,8 @@ defmodule ForemanServer.ProjectionStore do
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       inbox_threads: %{},
-      jobsites: %{}
+      jobsites: %{},
+      reviews: %{}
     }
   end
 
@@ -1902,6 +1937,30 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # A malformed ReviewRecorded must not crash `init/1`'s event-log rebuild, so
+  # a decode failure is logged and the event skipped rather than raised.
+  defp apply_event_by_type(state, "ReviewRecorded", payload) do
+    event =
+      try do
+        decode_for_projection("ReviewRecorded", payload)
+      rescue
+        error in ArgumentError ->
+          Logger.warning("ProjectionStore skipped malformed ReviewRecorded: #{Exception.message(error)}")
+
+          nil
+      end
+
+    case event do
+      %ForemanServer.Events.ReviewRecorded{subject_kind: kind, subject_id: id}
+      when is_binary(kind) and kind != "" and is_binary(id) and id != "" ->
+        review = Map.from_struct(event)
+        %{state | reviews: Map.put(state.reviews, {kind, id}, review)}
+
+      _ ->
+        state
+    end
+  end
+
   defp apply_event_by_type(state, "JobsiteStarted", payload) do
     case decode_for_projection("JobsiteStarted", payload) do
       %ForemanServer.Events.JobsiteStarted{jobsite_id: jobsite_id} = event ->
@@ -1911,6 +1970,9 @@ defmodule ForemanServer.ProjectionStore do
           jobsite = %{
             jobsite_id: jobsite_id,
             status: "starting",
+            repo_path: event.repo_path,
+            bead_id: event.bead_id,
+            project_id: event.project_id,
             strategy: event.strategy,
             branch: event.branch,
             target_branch: event.target_branch,

@@ -118,7 +118,9 @@ defmodule ForemanServer.Jobsite.Executor do
              1000,
          hooks: Keyword.get(opts, :hooks),
          output_opts: Keyword.get(opts, :output),
-         resume_session: Keyword.get(opts, :resume_session)
+         resume_session: Keyword.get(opts, :resume_session),
+         bead_id: Keyword.get(opts, :bead_id),
+         project_id: Keyword.get(opts, :project_id)
        }}
     end
   end
@@ -184,7 +186,8 @@ defmodule ForemanServer.Jobsite.Executor do
       idle_timeout_seconds: div(spec.idle_ms, 1000),
       completion_timeout_seconds: div(spec.completion_ms, 1000),
       resume_session: spec.resume_session,
-      output: spec.output_opts
+      output: spec.output_opts,
+      archive_spec: spec
     }
 
     steps =
@@ -283,6 +286,9 @@ defmodule ForemanServer.Jobsite.Executor do
   end
 
   defp handle_interrupt(jobsite_id, :cancel, reason, sandbox, worktree, _iterations) do
+    # Cancel discards the worktree, and cancelled work is never committed, so the
+    # archive takes the working-tree diff now, before `cleanup/3` removes it.
+    capture_diff(jobsite_id, worktree, :worktree)
     cleanup(jobsite_id, sandbox, worktree)
     dispatch(jobsite_id, "jobsite.cancel", "terminal", %{reason: reason})
     Control.clear(jobsite_id)
@@ -353,7 +359,8 @@ defmodule ForemanServer.Jobsite.Executor do
         idle_timeout_ms: idle_ms,
         completion_timeout_ms: completion_ms,
         completion_signals: signals,
-        intent_fun: fn -> Control.intent(jobsite_id) end
+        intent_fun: fn -> Control.intent(jobsite_id) end,
+        archive_dir: resume_archive_dir(jobsite_id, sandbox)
       ]
 
       case AgentRunner.run(agent, prompt, sandbox, runner_opts) do
@@ -614,6 +621,7 @@ defmodule ForemanServer.Jobsite.Executor do
                  []
                ),
              {:ok, commits} <- commit_and_record(jobsite_id, worktree),
+             :ok <- capture_diff(jobsite_id, worktree, "HEAD"),
              :ok <- maybe_push(agg_state, worktree),
              {:ok, release} <- release_all(jobsite_id, sandbox, worktree) do
           iterations = prior_iterations ++ fresh_iterations
@@ -662,6 +670,34 @@ defmodule ForemanServer.Jobsite.Executor do
         dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
         {:error, error}
     end
+  end
+
+  # A resumed iteration appends to the archive the original run opened (the
+  # request and manifest are written once, by `Engine`, and never re-opened here).
+  defp resume_archive_dir(jobsite_id, %{worktree: %{repo_path: repo_path}})
+       when is_binary(repo_path),
+       do: ForemanServer.Review.Archive.dir(:jobsite, jobsite_id, repo_path)
+
+  defp resume_archive_dir(_jobsite_id, _sandbox), do: nil
+
+  # A run paused before its commit step never reached `Observer`'s diff
+  # capture, so the resumed run captures it once the commit has been made; a
+  # cancelled run captures its working tree before the worktree is discarded.
+  # Capture failures are recorded in the manifest and never fail the jobsite.
+  defp capture_diff(_jobsite_id, nil, _head), do: :ok
+
+  defp capture_diff(jobsite_id, %Worktree{repo_path: repo_path} = worktree, head) do
+    if ForemanServer.Review.Archive.capture_enabled?() do
+      _ =
+        ForemanServer.Review.Capture.put_diff(
+          ForemanServer.Review.Archive.dir(:jobsite, jobsite_id, repo_path),
+          worktree.path,
+          worktree.base_sha,
+          head
+        )
+    end
+
+    :ok
   end
 
   defp agent_from_state(agent_map) do
@@ -769,7 +805,9 @@ defmodule ForemanServer.Jobsite.Executor do
       max_iterations: spec.max_iterations,
       completion_signals: spec.signals,
       name: Keyword.get(spec.opts, :name),
-      push: Keyword.get(spec.opts, :push, false) == true
+      push: Keyword.get(spec.opts, :push, false) == true,
+      bead_id: spec.bead_id,
+      project_id: spec.project_id
     }
   end
 

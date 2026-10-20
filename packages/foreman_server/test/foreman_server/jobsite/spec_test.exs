@@ -42,6 +42,7 @@ defmodule ForemanServer.Jobsite.SpecTest do
 
       assert opts == [
                repo_path: @repo_path,
+               project_id: @project_id,
                sandbox: Sandboxes.docker(),
                agent: %Agent{provider: :claude, model: "sonnet", binary: "claude"},
                prompt: "Fix the bug"
@@ -79,6 +80,7 @@ defmodule ForemanServer.Jobsite.SpecTest do
 
       assert opts == [
                repo_path: @repo_path,
+               project_id: @project_id,
                strategy: {:branch, "feature/x-1"},
                sandbox: Sandboxes.host(),
                agent: %Agent{
@@ -118,6 +120,45 @@ defmodule ForemanServer.Jobsite.SpecTest do
     test "push false is omitted" do
       assert {:ok, opts} = Spec.from_json(Map.put(base(), "push", false))
       refute Keyword.has_key?(opts, :push)
+    end
+
+    test "bead_id is accepted and carried into the options" do
+      assert {:ok, opts} = Spec.from_json(Map.put(base(), "bead_id", "bd-7"))
+      assert opts[:bead_id] == "bd-7"
+      assert opts[:project_id] == @project_id
+    end
+
+    test "bead_id is absent from the options when not supplied" do
+      assert {:ok, opts} = Spec.from_json(base())
+      refute Keyword.has_key?(opts, :bead_id)
+    end
+
+    test "empty or non-string bead_id is rejected with :spec_option_invalid" do
+      for bad <- ["", 7, true] do
+        error =
+          assert_error(Spec.from_json(Map.put(base(), "bead_id", bad)), :spec_option_invalid)
+
+        assert error.details == %{key: "bead_id"}
+      end
+    end
+
+    test "bead_id, project_id and repo_path land on the JobsiteStarted projection" do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "JobsiteStarted",
+                   payload: %{
+                     jobsite_id: "js-bead",
+                     repo_path: @repo_path,
+                     strategy: "head",
+                     bead_id: "bd-9",
+                     project_id: @project_id
+                   }
+                 }
+               ])
+
+      assert %{bead_id: "bd-9", project_id: @project_id, repo_path: @repo_path} =
+               ProjectionStore.jobsite("js-bead")
     end
 
     test "push requires a named-branch strategy: head and the default have none to publish" do

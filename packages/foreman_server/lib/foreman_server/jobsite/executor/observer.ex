@@ -118,6 +118,7 @@ defmodule ForemanServer.Jobsite.Executor.Observer do
 
   def step_completed(%{kind: :commit}, ctx, {:commit, outcome}, state) do
     with {:ok, commits} <- commits_record(ctx, outcome),
+         :ok <- capture_diff(ctx),
          {:ok, _} <- dispatch(state, "jobsite.commits.record", "commits", %{commits: commits}) do
       {:ok, %{ctx | commits: commits}, state}
     end
@@ -141,6 +142,22 @@ defmodule ForemanServer.Jobsite.Executor.Observer do
       {:ok, %{ctx | merged?: merged?, preserved_path: preserved_path}, state}
     end
   end
+
+  # Last point at which the worktree is guaranteed alive (`:release` closes it).
+  # Archiving never fails the step: `put_diff/4` records its own failures in
+  # the manifest, and its result is deliberately not propagated.
+  defp capture_diff(%{worktree: %{path: path, base_sha: base}} = ctx) do
+    if ForemanServer.Review.Archive.capture_enabled?() do
+      archive_dir =
+        ForemanServer.Review.Archive.dir(:jobsite, ctx.jobsite_id, ctx.repo_path)
+
+      _ = ForemanServer.Review.Capture.put_diff(archive_dir, path, base, "HEAD")
+    end
+
+    :ok
+  end
+
+  defp capture_diff(_ctx), do: :ok
 
   # A clean tree at the commit step does NOT mean the run made no commits: an
   # agent that commits its own work (the usual case for Claude and Pi) leaves

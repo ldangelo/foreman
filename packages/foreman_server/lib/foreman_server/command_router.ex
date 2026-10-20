@@ -590,4 +590,5 @@ defmodule ForemanServer.CommandRouter do
   def aggregate_module_for("notification:" <> _), do: ForemanServer.Aggregates.Notification
   def aggregate_module_for("jobsite:" <> _), do: ForemanServer.Aggregates.Jobsite
   def aggregate_module_for("jobsite_audit:" <> _), do: ForemanServer.Aggregates.JobsiteAudit
+  def aggregate_module_for("review:" <> _), do: ForemanServer.Aggregates.Review
 end

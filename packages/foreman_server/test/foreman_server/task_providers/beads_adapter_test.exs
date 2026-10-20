@@ -24,7 +24,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
       :list_dependencies,
       :add_dependency,
       :remove_dependency,
-      :create
+      :create,
+      :label
     ]
   }
   @expected_callbacks TaskProvider.behaviour_info(:callbacks)
@@ -67,13 +68,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
       assert :create in BeadsAdapter.capabilities().supports
     end
 
-    test "supports list has exactly 10 entries" do
-      assert length(BeadsAdapter.capabilities().supports) == 10
+    test "supports list has exactly 11 entries" do
+      assert length(BeadsAdapter.capabilities().supports) == 11
     end
 
-    test ":create appears as the tenth (final) entry" do
-      supports = BeadsAdapter.capabilities().supports
-      assert List.last(supports) == :create
+    test ":label is advertised in the supports list" do
+      assert :label in BeadsAdapter.capabilities().supports
     end
 
     test "supports list preserves the existing 9 operations" do
@@ -91,7 +91,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
         :remove_dependency
       ]
 
-      assert supports -- [:create] == expected_existing
+      assert supports -- [:create, :label] == expected_existing
     end
   end
 
