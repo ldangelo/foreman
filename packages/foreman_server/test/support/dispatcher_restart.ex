@@ -84,22 +84,26 @@ defmodule ForemanServer.TestSupport.DispatcherRestart do
 
   # `:sys.suspend/2` timing out does not cancel the request: it would still suspend the
   # Dispatcher later, leaving it frozen for the next test. On that failure queue a resume behind
-  # it (so the Dispatcher ends up running) and fail the restart.
+  # it (so the Dispatcher ends up running) and fail the restart. Once the suspend has succeeded,
+  # the resume is unconditional (`after`): nothing below may leave the Dispatcher frozen.
   defp suspend_and_count(dispatcher, timeout_ms) do
     try do
       :ok = :sys.suspend(dispatcher, timeout_ms)
     catch
       :exit, reason ->
-        :ok = :sys.resume(dispatcher, :infinity)
+        :ok = :sys.resume(dispatcher, @drain_timeout_ms)
 
         raise "#{inspect(@dispatcher)} did not reach its suspend barrier within #{timeout_ms}ms: " <>
                 inspect(reason)
     end
 
-    {:message_queue_len, queued} = Process.info(dispatcher, :message_queue_len)
-    %{} = state = :sys.get_state(dispatcher)
-    :ok = :sys.resume(dispatcher)
+    try do
+      {:message_queue_len, queued} = Process.info(dispatcher, :message_queue_len)
+      %{} = state = :sys.get_state(dispatcher)
 
-    {if(Map.get(state, :subscriber) == :retrying, do: :retrying, else: :subscribed), queued}
+      {if(Map.get(state, :subscriber) == :retrying, do: :retrying, else: :subscribed), queued}
+    after
+      :ok = :sys.resume(dispatcher, @drain_timeout_ms)
+    end
   end
 end
