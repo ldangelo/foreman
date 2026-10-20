@@ -38,12 +38,20 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
   # (not this test's `list_active_runs_fun` mock; it still calls
   # `run_loader_fun` while checking each holder) and
   # dispatches a release through *this test's* `dispatch_fun`/mailbox for
-  # every stale holder it finds there. Without the reset above, a holder
-  # left behind by an unrelated concurrently-run test (e.g. a `"run-B-*"`
-  # id from `br_bv_lease_concurrency_test.exs`) surfaces as an unexpected
-  # `:run_load_attempt`/`:dispatch` message in this file's `assert_receive`
-  # sequence — the same cross-test pollution class the `:telemetry` guard
-  # below defends against, but on a path that guard cannot reach.
+  # every stale holder it finds there. The reset above clears holders that
+  # earlier test modules left behind, but it cannot make that stream private:
+  # a writer still running when this test starts can add a holder after the
+  # reset and before the sweep. The one caught doing it is the app-level
+  # `Workflow.Dispatcher` that `run_executor_command_test.exs` restarts in
+  # every `on_exit`: its boot replays the whole event log asynchronously and
+  # re-enters `RunAdmission.start/2` for the test that just ended, so that
+  # test's `"run-<64 hex>"` id lands in `run_slots:global` (`run_slots.acquire`)
+  # and is released again ~20 ms later (the start is rejected, the admission
+  # compensates). A sweep inside that window surfaces the foreign holder as an
+  # unexpected `:run_load_attempt`/`:dispatch` message — and, for a loader that
+  # counts calls, steals an answer meant for `"run-1"`. That writer is outside
+  # this file's control, so a loader that counts calls keys on the run id and
+  # reports every other holder as live (the sweep leaves live holders alone).
 
   # `:telemetry` handlers are keyed process-wide by event name, not by the
   # emitting process. Under full-suite load, an unrelated concurrently
@@ -152,6 +160,26 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       payload = run_start_payload()
       {:ok, run_loader_state} = Agent.start_link(fn -> 0 end)
 
+      # Only "run-1" is this test's run, so only its loads are counted and mailed. Any other
+      # id is a holder some other process put in the real `run_slots:global` stream (see the
+      # note above `handle_telemetry/4`): report it as live and keep it out of the attempt
+      # counter and the mailbox.
+      run_loader_fun = fn
+        "run-1" = run_id ->
+          count = Agent.get_and_update(run_loader_state, fn current -> {current, current + 1} end)
+
+          send(parent, {:run_load_attempt, count + 1, run_id})
+
+          if count < 2 do
+            absent_run_state(run_id)
+          else
+            active_run_state(run_id, "project-1")
+          end
+
+        foreign_run_id ->
+          active_run_state(foreign_run_id, "project-1")
+      end
+
       pid =
         start_supervised!(
           {RunLifecycleReconciler,
@@ -161,18 +189,7 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
              subscribe_fun: fn -> :ok end,
              list_active_runs_fun: fn -> [{"project-1", ["run-1"]}] end,
              project_loader_fun: fn project_id -> project_state(project_id, "run-1", payload) end,
-             run_loader_fun: fn run_id ->
-               count =
-                 Agent.get_and_update(run_loader_state, fn current -> {current, current + 1} end)
-
-               send(parent, {:run_load_attempt, count + 1, run_id})
-
-               if count < 2 do
-                 absent_run_state(run_id)
-               else
-                 active_run_state(run_id, "project-1")
-               end
-             end,
+             run_loader_fun: run_loader_fun,
              run_admission_fun: fn project_id, recovered_payload, timeout ->
                send(parent, {:retry, project_id, recovered_payload, timeout})
                {:ok, %{accepted: true}}
