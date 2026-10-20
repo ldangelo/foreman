@@ -268,6 +268,8 @@ foreman project get <id>     # Fetch project
 foreman workflow install
 ```
 
+**Installed copies are not compared with the bundled ones.** Dispatch never checks `~/.foreman/workflows/` against `priv/defaults/workflows/`: an old-format copy fails validation at load (`{:missing_phase_action, i}`), but an older, still-valid copy runs silently. After editing bundled workflows or prompts, run `foreman init --force` to refresh the installed copies.
+
 ### Workflows
 
 Bundled workflows live in `packages/foreman_server/priv/defaults/workflows/`:

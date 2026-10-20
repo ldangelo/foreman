@@ -21,7 +21,7 @@ A gate, not a suggestion: it blocks calling a task done, like running the tests.
 
 `AGENTS.md` is **not** a doc-update target: do not add change notes or post-mortems here. Put them in `docs/lessons/` and, only if the rule is short and always needed, add one line here. `docs/PRD/*` and `docs/TRD/*` are point-in-time specs; leave their claims as written and add a forward-pointer note instead.
 
-- After editing bundled workflows or prompts, run `foreman init --force` to refresh the installed copies. Dispatch does NOT compare installed copies with the bundled ones: an old-format copy fails validation at load (`{:missing_phase_action, i}`), but an older, still-valid copy runs silently.
+- After editing bundled workflows or prompts, run `foreman init --force` to refresh the installed copies.
 - Verify a CLI command against Go source (`packages/foreman_cli/cmd/foreman/main.go` and the `runProject`/`runTask`/`runRun`/`runWorkflow` case lists) or a fresh `go build ./cmd/foreman` — never a stale `./foreman` binary or `docs/cli-reference.md` (which still carries annotated, non-routing verbs).
 
 ## Typed Boundaries, Loud Failures (§5)
