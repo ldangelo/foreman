@@ -58,18 +58,48 @@ defmodule ForemanServer.TestSupport.DispatcherRestart do
     drain!(dispatcher, System.monotonic_time(:millisecond) + @drain_timeout_ms)
   end
 
+  # `Dispatcher.init/1` swallows a failed `ProjectionStore.subscribe/1` and schedules
+  # `:retry_subscribe` (state `%{subscriber: :retrying}`): the replay would then arrive AFTER an
+  # empty mailbox looked drained. So a Dispatcher that is still retrying is not drained yet.
   defp drain!(dispatcher, deadline_ms) do
     timeout_ms = deadline_ms - System.monotonic_time(:millisecond)
 
     if timeout_ms <= 0 do
       raise "#{inspect(@dispatcher)} was still handling events #{@drain_timeout_ms}ms after " <>
-              "its restart: it keeps queueing work for itself"
+              "its restart: it keeps queueing work for itself or never subscribed"
     end
 
-    :ok = :sys.suspend(dispatcher, timeout_ms)
+    case suspend_and_count(dispatcher, timeout_ms) do
+      {:retrying, _queued} ->
+        Process.sleep(10)
+        drain!(dispatcher, deadline_ms)
+
+      {:subscribed, queued} when queued > 0 ->
+        drain!(dispatcher, deadline_ms)
+
+      {:subscribed, 0} ->
+        :ok
+    end
+  end
+
+  # `:sys.suspend/2` timing out does not cancel the request: it would still suspend the
+  # Dispatcher later, leaving it frozen for the next test. On that failure queue a resume behind
+  # it (so the Dispatcher ends up running) and fail the restart.
+  defp suspend_and_count(dispatcher, timeout_ms) do
+    try do
+      :ok = :sys.suspend(dispatcher, timeout_ms)
+    catch
+      :exit, reason ->
+        :ok = :sys.resume(dispatcher, :infinity)
+
+        raise "#{inspect(@dispatcher)} did not reach its suspend barrier within #{timeout_ms}ms: " <>
+                inspect(reason)
+    end
+
     {:message_queue_len, queued} = Process.info(dispatcher, :message_queue_len)
+    %{} = state = :sys.get_state(dispatcher)
     :ok = :sys.resume(dispatcher)
 
-    if queued > 0, do: drain!(dispatcher, deadline_ms), else: :ok
+    {if(Map.get(state, :subscriber) == :retrying, do: :retrying, else: :subscribed), queued}
   end
 end
