@@ -397,7 +397,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         %{
           name: :create_trd,
           action: :command,
-          command: "/skill:ensemble-full-create-trd-foreman --foreman",
+          command: "/skill:ensemble-full-create-trd --foreman",
           required_file: "planning.trd_path",
           index: 2,
           phase_id: Identity.phase_id(run_id, 2),

@@ -92,9 +92,9 @@
           "rendered_command": "/skill:ensemble-full-create-prd --foreman"
         },
         {
-          "original_command": "/skill:ensemble-full-create-trd-foreman --foreman",
+          "original_command": "/skill:ensemble-full-create-trd --foreman",
           "phase_name": "create-trd",
-          "rendered_command": "/skill:ensemble-full-create-trd-foreman --foreman"
+          "rendered_command": "/skill:ensemble-full-create-trd --foreman"
         }
       ],
       "snapshot": {
@@ -120,7 +120,7 @@
             "action": "command",
             "artifact_template": null,
             "bash": null,
-            "command": "/skill:ensemble-full-create-trd-foreman --foreman",
+            "command": "/skill:ensemble-full-create-trd --foreman",
             "index": null,
             "mail": null,
             "max_turns": null,

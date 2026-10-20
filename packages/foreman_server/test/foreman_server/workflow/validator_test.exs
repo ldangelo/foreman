@@ -23,7 +23,7 @@ defmodule ForemanServer.Workflow.ValidatorTest do
         create-prd refine-prd create-trd refine-trd implement-trd fix-issue
         ensemble-fix-issue
         ensemble-full-create-prd ensemble-full-refine-prd
-        ensemble-full-create-trd ensemble-full-create-trd-foreman
+        ensemble-full-create-trd
         ensemble-full-implement-trd ensemble-full-implement-trd-beads
         ensemble-full-refine-trd-foreman
       ]
@@ -177,6 +177,18 @@ defmodule ForemanServer.Workflow.ValidatorTest do
       }
 
       assert {:error, {:unknown_skill, "implement-trd-foreman"}} = Validator.validate(wf)
+    end
+
+    test "removed ensemble-full-create-trd-foreman skill is rejected" do
+      wf = %{
+        "name" => "test",
+        "phases" => [
+          %{"name" => "p", "command" => "/skill:ensemble-full-create-trd-foreman --foreman"}
+        ]
+      }
+
+      assert {:error, {:unknown_skill, "ensemble-full-create-trd-foreman"}} =
+               Validator.validate(wf)
     end
   end
 end

@@ -402,8 +402,8 @@ on the phase that produces it, present for every phase after, so `create-trd`
 consumes a named document instead of globbing `docs/PRD`. It is deliberately
 not the old name — `FOREMAN_PRD_PATH` meant "write here", it is deleted, and
 recycling the name for "read here" would leave two contradictory meanings in
-circulation. Its consumers are `create-trd.yaml` and `create-trd-foreman.yaml`,
-which STOP when it is set and missing rather than falling back.
+circulation. Its consumer is `create-trd.yaml` (the former
+`create-trd-foreman.yaml` was removed), which STOPs when it is set and missing rather than falling back.
 
 **A run has exactly ONE worktree, the whole workflow executes in it, and the
 `worktree:` block is declared at the WORKFLOW level.** The block sits at the top
