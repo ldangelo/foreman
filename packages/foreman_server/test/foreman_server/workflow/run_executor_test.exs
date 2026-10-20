@@ -374,7 +374,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       :sys.suspend(dispatcher)
 
       on_exit(fn ->
-        kill_and_restart_dispatcher(dispatcher)
+        ForemanServer.TestSupport.DispatcherRestart.restart!()
       end)
     end
 
@@ -3675,17 +3675,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       assert assigns["input.prompt"] == "multi\nline"
       assert assigns["input.prompt_argument"] == "\"multi\\nline\""
-    end
-  end
-
-  defp kill_and_restart_dispatcher(_dispatcher) do
-    app_sup = Process.whereis(ForemanServer.Application)
-
-    if app_sup do
-      :ok = Supervisor.terminate_child(app_sup, ForemanServer.Workflow.Dispatcher)
-
-      {:ok, _new_dispatcher} =
-        Supervisor.restart_child(app_sup, ForemanServer.Workflow.Dispatcher)
     end
   end
 end

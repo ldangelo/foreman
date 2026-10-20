@@ -60,7 +60,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
     pid
   end
 
-  defp wait_until(fun, timeout_ms \\ 1_000) do
+  defp wait_until(fun, timeout_ms \\ 5_000) do
     do_wait(fun, System.monotonic_time(:millisecond) + timeout_ms)
   end
 
@@ -125,6 +125,50 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
 
   defp count(events, type), do: Enum.count(events, &(&1.event_type == type))
 
+  # Blocks until the detector has recorded the `attempt`-th consecutive crash for the key.
+  # The counter is written by the detector's `handle_cast`, reached only after `Process.exit`
+  # is delivered to Tracker, Tracker's `:DOWN` `handle_info` runs, and
+  # `Tracker.notify_crash_loop_detector/2` casts to the detector. Three async handoffs, so
+  # the observable must be awaited, never assumed after a fixed sleep.
+  defp await_attempt(detector, worker_id, run_id, attempt) do
+    wait_until(
+      fn ->
+        Map.get(CrashLoopDetector.attempt_count(detector), {worker_id, run_id}) == attempt
+      end,
+      5_000
+    )
+  end
+
+  # Blocks until the Tracker has handled the `:DOWN` of the worker registered under the key:
+  # `pid_for/3` reads `nil` only once that handler has dropped the worker, and the cast to the
+  # detector is the handler's last step.
+  defp await_tracker_down(tracker, worker_id, run_id) do
+    wait_until(fn -> Tracker.pid_for(tracker, worker_id, run_id) == nil end, 5_000)
+  end
+
+  # Blocks until the blocking (6th) crash has been handled end to end: the detector reports the
+  # key sealed AND the events it emits are readable — WorkerCrashed on the worker stream,
+  # RunPaused and RunBlocked on the run stream. That chain is a Tracker `:DOWN` (WorkerExited
+  # append) → cast → detector (WorkerCrashed append, run.pause append, run.block append), each
+  # append a Postgres round trip, so how long it takes depends on load. RunBlocked is the last
+  # event of the chain: a fixed 100 ms sleep here read `RunBlocked == 0` on a loaded CI runner
+  # while WorkerCrashed, the first of the detector's three appends, was already visible.
+  defp await_blocked(detector, worker_id, run_id) do
+    key = {worker_id, run_id}
+
+    wait_until(
+      fn ->
+        status = CrashLoopDetector.status(detector)
+
+        key in status.crashed and key in status.paused and
+          count(read_worker_events(worker_id, run_id), "WorkerCrashed") > 0 and
+          count(read_run_events(run_id), "RunPaused") > 0 and
+          count(read_run_events(run_id), "RunBlocked") > 0
+      end,
+      5_000
+    )
+  end
+
   # ---------------------------------------------------------------------------
   # 5-restart blocking — the primary contract of TRD-078
   # ---------------------------------------------------------------------------
@@ -170,7 +214,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       pid6 = spawn_worker()
       :ok = Tracker.register(tracker, worker_id, run_id, pid6)
       Process.exit(pid6, :kill)
-      Process.sleep(100)
+      await_blocked(detector, worker_id, run_id)
 
       # WorkerCrashed must be emitted exactly once.
       worker_events = read_worker_events(worker_id, run_id)
@@ -203,18 +247,18 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       seed_run(run_id)
 
       # Exhaust the backoff: 5 crashes.
-      for _ <- 1..5 do
+      for attempt <- 1..5 do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_attempt(detector, worker_id, run_id, attempt)
       end
 
       # 6th — triggers blocked.
       pid6 = spawn_worker()
       :ok = Tracker.register(tracker, worker_id, run_id, pid6)
       Process.exit(pid6, :kill)
-      Process.sleep(100)
+      await_blocked(detector, worker_id, run_id)
 
       assert {worker_id, run_id} in CrashLoopDetector.status(detector).crashed
 
@@ -223,8 +267,13 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_tracker_down(tracker, worker_id, run_id)
       end
+
+      # A sealed key changes no detector state, so there is nothing to poll for: the absence of
+      # a duplicate is only meaningful once the detector has consumed the casts above. `status/1`
+      # is a call, queued behind them in the detector's mailbox.
+      _ = CrashLoopDetector.status(detector)
 
       worker_events = read_worker_events(worker_id, run_id)
 
@@ -274,7 +323,11 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       pid1 = spawn_worker()
       :ok = Tracker.register(tracker, worker_id, run_id, pid1)
       Process.exit(pid1, :kill)
-      Process.sleep(50)
+
+      wait_until(
+        fn -> Map.has_key?(CrashLoopDetector.pending_timers(detector), {worker_id, run_id}) end,
+        5_000
+      )
 
       pending = CrashLoopDetector.pending_timers(detector)
 
@@ -286,7 +339,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       pid2 = spawn_worker()
       :ok = Tracker.register(tracker, worker_id, run_id, pid2)
       Process.exit(pid2, :kill)
-      Process.sleep(50)
+      await_attempt(detector, worker_id, run_id, 2)
 
       # Pending timers map should have been updated.
       pending = CrashLoopDetector.pending_timers(detector)
@@ -315,7 +368,9 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       # "after crash 3, backoff timer scheduled but not yet fired".
       # We do this by sending a fake backoff_expired message.
       send(detector, {:backoff_expired, worker_id, run_id})
-      Process.sleep(50)
+      # No sleep needed: the calls below come from this same process, and signals between one
+      # sender and one receiver are delivered in order, so the detector has handled the
+      # `:backoff_expired` above before it answers them.
 
       # The backoff_expired must be drained without:
       # - incrementing the attempt counter
@@ -344,11 +399,11 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       run_id = uuid()
 
       # 2 crashes.
-      for _ <- 1..2 do
+      for attempt <- 1..2 do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_attempt(detector, worker_id, run_id, attempt)
       end
 
       attempt_before = CrashLoopDetector.attempt_count(detector)

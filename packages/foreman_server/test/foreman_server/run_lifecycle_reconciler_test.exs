@@ -282,7 +282,7 @@ defmodule ForemanServer.RunLifecycleReconcilerTest do
            subscribe_fun: fn -> :ok end,
            list_active_runs_fun: fn -> [{"project-1", ["run-1"]}] end,
            project_loader_fun: fn project_id -> project_state(project_id, "run-1", payload) end,
-           run_loader_fun: fn run_id -> absent_run_state(run_id) end,
+           run_loader_fun: absent_run_loader(),
            run_admission_fun: fn project_id, recovered_payload, timeout ->
              send(parent, {:retry, project_id, recovered_payload, timeout})
              {:ok, %{accepted: true}}
@@ -561,7 +561,7 @@ defmodule ForemanServer.RunLifecycleReconcilerTest do
          subscribe_fun: fn -> :ok end,
          list_active_runs_fun: fn -> [{"project-1", ["run-1"]}] end,
          project_loader_fun: fn project_id -> project_state(project_id, "run-1", payload) end,
-         run_loader_fun: fn run_id -> absent_run_state(run_id) end,
+         run_loader_fun: absent_run_loader(),
          run_admission_fun: fn project_id, recovered_payload, timeout ->
            send(parent, {{:retry, tag}, project_id, recovered_payload, timeout})
            run_admission_result
@@ -675,6 +675,21 @@ defmodule ForemanServer.RunLifecycleReconcilerTest do
       worker_status: %{},
       retry_history: []
     }
+  end
+
+  # `handle_info(:scheduled, ...)` also runs the run-slot backstop sweep, which loads the REAL,
+  # process-wide `run_slots:global` stream (not `list_active_runs_fun`) and asks `run_loader_fun`
+  # about every holder in it. A loader that answers "absent" for every id turns a holder this test
+  # did not put there into a `run_slots.release` through `dispatch_fun`, i.e. into this test's
+  # mailbox, where `refute_received {:dispatch, ...}` reads it as the reconciler wrongly
+  # releasing "run-1". Nothing here resets that stream and other tests leave holders in it (this
+  # file's own `RunAdmission.start/3` test never releases its slot). Only "run-1" is this test's
+  # run, so every other id is reported live, which the sweep leaves alone.
+  defp absent_run_loader do
+    fn
+      "run-1" = run_id -> absent_run_state(run_id)
+      foreign_run_id -> active_run_state(foreign_run_id, "project-1")
+    end
   end
 
   defp active_run_state(run_id, project_id) do

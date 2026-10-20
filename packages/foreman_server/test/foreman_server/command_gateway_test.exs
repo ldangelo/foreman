@@ -328,11 +328,7 @@ defmodule ForemanServer.CommandGatewayTest do
                )
 
       on_exit(fn ->
-        assert {:ok, _pid} =
-                 Supervisor.restart_child(
-                   ForemanServer.Application,
-                   ForemanServer.Workflow.Dispatcher
-                 )
+        ForemanServer.TestSupport.DispatcherRestart.restart!()
       end)
 
       ForemanServer.CommandGatewayTestHelper.reset_projection_store()
@@ -491,11 +487,7 @@ defmodule ForemanServer.CommandGatewayTest do
                )
 
       on_exit(fn ->
-        assert {:ok, _pid} =
-                 Supervisor.restart_child(
-                   ForemanServer.Application,
-                   ForemanServer.Workflow.Dispatcher
-                 )
+        ForemanServer.TestSupport.DispatcherRestart.restart!()
       end)
 
       ForemanServer.CommandGatewayTestHelper.reset_projection_store()
@@ -904,11 +896,7 @@ defmodule ForemanServer.CommandGatewayTest do
                )
 
       on_exit(fn ->
-        assert {:ok, _pid} =
-                 Supervisor.restart_child(
-                   ForemanServer.Application,
-                   ForemanServer.Workflow.Dispatcher
-                 )
+        ForemanServer.TestSupport.DispatcherRestart.restart!()
       end)
 
       ForemanServer.CommandGatewayTestHelper.reset_projection_store()
