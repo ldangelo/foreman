@@ -497,35 +497,60 @@ defmodule ForemanServer.Jobsite.Executor do
   # Resume
   # ---------------------------------------------------------------------
 
+  @doc """
+  The single source of truth for whether a jobsite's authoritative
+  (event-stream) state can be resumed. `Jobsite.resume/1` and
+  `Jobsite.resume_async/2` call this BEFORE starting an executor, and
+  `resume/2` calls it again, so a refusal never costs a process and every
+  entry point refuses identically.
+
+  An unknown id is `:jobsite_not_found`; a terminal one, or one that never
+  provisioned a worktree (it was only ever `starting`, so there is no
+  worktree, branch or session to continue), is `:not_resumable`.
+  """
+  @spec check_resumable(String.t()) ::
+          {:ok, %ForemanServer.Aggregates.Jobsite.State{}} | {:error, Error.t()}
+  def check_resumable(jobsite_id) do
+    {state, _version} = Aggregate.load(ForemanServer.Aggregates.Jobsite, "jobsite:" <> jobsite_id)
+
+    cond do
+      not state.exists? ->
+        {:error,
+         Error.new(:jobsite_not_found, "jobsite #{jobsite_id} does not exist", %{
+           jobsite_id: jobsite_id
+         })}
+
+      state.terminal? ->
+        {:error,
+         Error.new(:not_resumable, "jobsite #{jobsite_id} is already #{state.status}", %{
+           jobsite_id: jobsite_id,
+           status: state.status
+         })}
+
+      is_nil(state.worktree_path) ->
+        {:error,
+         Error.new(
+           :not_resumable,
+           "jobsite #{jobsite_id} never provisioned a worktree and cannot be resumed",
+           %{jobsite_id: jobsite_id, status: state.status}
+         )}
+
+      true ->
+        {:ok, state}
+    end
+  end
+
   @spec resume(String.t(), keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
   def resume(jobsite_id, opts) do
-    {state, _version} = Aggregate.load(ForemanServer.Aggregates.Jobsite, "jobsite:" <> jobsite_id)
-    do_resume(jobsite_id, state, opts)
-  end
-
-  defp do_resume(jobsite_id, %{exists?: false}, _opts) do
-    {:error,
-     Error.new(:jobsite_not_found, "jobsite #{jobsite_id} does not exist", %{
-       jobsite_id: jobsite_id
-     })}
-  end
-
-  defp do_resume(jobsite_id, %{terminal?: true, status: status}, _opts) do
-    {:error,
-     Error.new(:not_resumable, "jobsite #{jobsite_id} is already #{status}", %{
-       jobsite_id: jobsite_id,
-       status: status
-     })}
-  end
-
-  defp do_resume(jobsite_id, agg_state, opts) do
-    if File.dir?(agg_state.worktree_path) do
-      resume_from_state(jobsite_id, agg_state, opts)
-    else
-      {:error,
-       Error.new(:worktree_vanished, "worktree #{agg_state.worktree_path} no longer exists", %{
-         path: agg_state.worktree_path
-       })}
+    with {:ok, agg_state} <- check_resumable(jobsite_id) do
+      if File.dir?(agg_state.worktree_path) do
+        resume_from_state(jobsite_id, agg_state, opts)
+      else
+        {:error,
+         Error.new(:worktree_vanished, "worktree #{agg_state.worktree_path} no longer exists", %{
+           path: agg_state.worktree_path
+         })}
+      end
     end
   end
 

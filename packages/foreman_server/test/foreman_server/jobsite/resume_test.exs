@@ -257,6 +257,60 @@ defmodule ForemanServer.Jobsite.ResumeTest do
     wait_until(fn -> Jobsite.get(id).status == "completed" end)
   end
 
+  describe "a jobsite that never provisioned a worktree (status starting)" do
+    # `jobsite.start` only: what a server restart between the start command and
+    # worktree provisioning leaves behind. There is nothing to resume.
+    defp seed_starting!(id) do
+      assert {:ok, _} =
+               ForemanServer.CommandGateway.dispatch_system(%{
+                 type: "jobsite.start",
+                 command_id: "resume-test:#{id}:start",
+                 aggregate_id: "jobsite:#{id}",
+                 payload: %{
+                   jobsite_id: id,
+                   repo_path: "/tmp/resume-test-no-such-repo",
+                   strategy: "head",
+                   max_iterations: 1
+                 }
+               })
+
+      wait_until(fn -> Jobsite.get(id) != nil end)
+      assert Jobsite.get(id).status == "starting"
+    end
+
+    defp stream_types(id) do
+      {:ok, events} = EventStore.read_stream_forward("jobsite:" <> id, 0, 99_999)
+      Enum.map(events, & &1.event_type)
+    end
+
+    test "resume/1 refuses with :not_resumable, starts no executor, writes no events" do
+      id = "js-starting-resume-#{System.unique_integer([:positive])}"
+      seed_starting!(id)
+      before_types = stream_types(id)
+
+      assert {:error, %Jobsite.Error{code: :not_resumable, message: message, details: details}} =
+               Jobsite.resume(id)
+
+      assert message =~ "never provisioned a worktree"
+      assert details.status == "starting"
+      assert Executor.pid_for(id) == nil
+      assert stream_types(id) == before_types
+    end
+
+    test "resume_async/2 refuses with :not_resumable, starts no executor, writes no events" do
+      id = "js-starting-async-#{System.unique_integer([:positive])}"
+      seed_starting!(id)
+      before_types = stream_types(id)
+
+      assert {:error, %Jobsite.Error{code: :not_resumable, message: message}} =
+               Jobsite.resume_async(id)
+
+      assert message =~ "never provisioned a worktree"
+      assert Executor.pid_for(id) == nil
+      assert stream_types(id) == before_types
+    end
+  end
+
   test "signal: the loop stops as soon as the completion signal is seen" do
     repo = tmp_repo!()
 

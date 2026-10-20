@@ -56,48 +56,44 @@ defmodule ForemanServer.Jobsite do
   """
   @spec resume(String.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def resume(jobsite_id) do
-    start_and_await(jobsite_id, reply_to: self(), resume?: true)
+    with {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id) do
+      start_and_await(jobsite_id, reply_to: self(), resume?: true)
+    end
   end
 
   @doc """
   Resume a paused or crashed jobsite in the background and return immediately.
 
   The Executor reports a rejected resume only to `reply_to`, and a background
-  resume has none, so the preconditions are checked here against the same
-  authoritative event-stream state the Executor loads: an unknown id is
-  `:jobsite_not_found`, a terminal one `:not_resumable`, one whose Executor is
-  alive `:already_running`.
+  resume has none, so the preconditions are checked here, via the same
+  `Executor.check_resumable/1` the Executor itself uses: an unknown id is
+  `:jobsite_not_found`, a terminal one or one that never provisioned a worktree
+  `:not_resumable`, one whose Executor is alive `:already_running`.
   """
   @spec resume_async(String.t(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def resume_async(jobsite_id, opts \\ []) do
-    {state, _version} =
-      ForemanServer.Aggregate.load(ForemanServer.Aggregates.Jobsite, "jobsite:" <> jobsite_id)
+    with {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id),
+         :ok <- require_not_running(jobsite_id),
+         {:ok, _pid} <- resume_child(jobsite_id, opts) do
+      {:ok, jobsite_id}
+    end
+  end
 
-    cond do
-      not state.exists? ->
-        {:error,
-         Error.new(:jobsite_not_found, "jobsite #{jobsite_id} does not exist", %{
-           jobsite_id: jobsite_id
-         })}
+  defp resume_child(jobsite_id, opts) do
+    case Supervisor.resume_jobsite(jobsite_id, Keyword.take(opts, [:max_concurrent])) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, reason} -> {:error, start_failed_error(reason)}
+    end
+  end
 
-      state.terminal? ->
-        {:error,
-         Error.new(:not_resumable, "jobsite #{jobsite_id} is already #{state.status}", %{
-           jobsite_id: jobsite_id,
-           status: state.status
-         })}
-
-      ForemanServer.Jobsite.Executor.pid_for(jobsite_id) != nil ->
-        {:error,
-         Error.new(:already_running, "jobsite #{jobsite_id} is already running", %{
-           jobsite_id: jobsite_id
-         })}
-
-      true ->
-        case Supervisor.resume_jobsite(jobsite_id, Keyword.take(opts, [:max_concurrent])) do
-          {:ok, _pid} -> {:ok, jobsite_id}
-          {:error, reason} -> {:error, start_failed_error(reason)}
-        end
+  defp require_not_running(jobsite_id) do
+    if ForemanServer.Jobsite.Executor.pid_for(jobsite_id) == nil do
+      :ok
+    else
+      {:error,
+       Error.new(:already_running, "jobsite #{jobsite_id} is already running", %{
+         jobsite_id: jobsite_id
+       })}
     end
   end
 

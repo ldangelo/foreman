@@ -297,6 +297,28 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       assert %{"error" => "jobsite_not_found"} = json_response(conn, 404)
     end
 
+    test "resume of a jobsite that never provisioned a worktree => 409 not_resumable, no executor" do
+      id = "js-starting-#{System.unique_integer([:positive])}"
+
+      assert {:ok, _} =
+               ForemanServer.CommandGateway.dispatch_system(%{
+                 type: "jobsite.start",
+                 command_id: "jobsite-controller-test:#{id}:start",
+                 aggregate_id: "jobsite:#{id}",
+                 payload: %{
+                   jobsite_id: id,
+                   repo_path: "/tmp/jobsite-ctl-no-such-repo",
+                   strategy: "head",
+                   max_iterations: 1
+                 }
+               })
+
+      conn = post_json(authed(), "/api/jobsites/#{id}/resume", %{})
+      assert %{"error" => "not_resumable", "message" => message} = json_response(conn, 409)
+      assert message =~ "never provisioned a worktree"
+      assert Jobsite.Executor.pid_for(id) == nil
+    end
+
     test "resume is held to the remote-start flag, audited" do
       Application.put_env(:foreman_server, :jobsites, [])
       conn = post_json(authed(), "/api/jobsites/js-any/resume", %{})

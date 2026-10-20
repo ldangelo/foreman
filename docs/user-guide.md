@@ -1066,7 +1066,7 @@ the script: the body is validated data, the repo is a **registered
 | `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}` |
 | `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`, and `paused_reason` while paused) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
-| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start) |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 already_running` if its executor is alive, `502` if the executor could not start |
 | `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
 
 Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
