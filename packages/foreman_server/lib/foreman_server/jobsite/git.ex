@@ -2,9 +2,8 @@ defmodule ForemanServer.Jobsite.Git do
   @moduledoc """
   Git primitives for Jobsite. Every function returns `:ok | {:ok, term} | {:error, %Error{}}`,
   shelling out via `System.cmd/3` and treating exit status as the only success
-  signal — matching `RunExecutor.git_ok/2`'s documented reasoning: matching on
-  empty output as well mis-reads a successful command that emitted a warning
-  (CRLF conversion, embedded repository) as a failure.
+  signal: matching on empty output as well mis-reads a successful command that
+  emitted a warning (CRLF conversion, embedded repository) as a failure.
   """
 
   alias ForemanServer.Jobsite.Error
@@ -29,8 +28,10 @@ defmodule ForemanServer.Jobsite.Git do
     |> tag_error(:git_failed)
   end
 
-  @doc "Whether local branch `branch` exists in `repo`."
-  @spec branch_exists?(String.t(), String.t()) :: boolean()
+  @doc "Whether local branch `branch` exists in `repo`. A `nil` branch (detached worktree) never exists."
+  @spec branch_exists?(String.t(), String.t() | nil) :: boolean()
+  def branch_exists?(_repo, nil), do: false
+
   def branch_exists?(repo, branch) do
     case System.cmd(
            "git",
@@ -42,17 +43,34 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
-  @doc "Add a linked worktree at `path` on `branch`, creating the branch from `base` when it does not exist yet."
-  @spec worktree_add(String.t(), String.t(), String.t(), String.t()) :: :ok | {:error, Error.t()}
-  def worktree_add(repo, path, branch, base) do
-    args =
-      if branch_exists?(repo, branch) do
-        ["-C", repo, "worktree", "add", path, branch]
-      else
-        ["-C", repo, "worktree", "add", "-b", branch, path, base]
+  @doc """
+  The `git` arguments that add a linked worktree at `path`: attach `branch`
+  when it already exists, otherwise create it from `base`. A `nil` branch adds
+  a detached worktree at `base`. Exposed so callers that need git's raw exit
+  code and output (`VcsAdapter.Default`) build the same invocation as
+  `worktree_add/4`.
+  """
+  @spec worktree_add_args(String.t(), String.t(), String.t() | nil, String.t()) :: [String.t()]
+  def worktree_add_args(repo, path, branch, base) do
+    base_args =
+      cond do
+        branch_exists?(repo, branch) -> [path, branch]
+        is_nil(branch) -> ["--detach", path, base]
+        true -> ["-b", branch, path, base]
       end
 
-    run(args) |> as_ok() |> tag_error(:worktree_create_failed)
+    ["-C", repo, "worktree", "add"] ++ base_args
+  end
+
+  @doc "Add a linked worktree at `path` on `branch`, creating the branch from `base` when it does not exist yet."
+  @spec worktree_add(String.t(), String.t(), String.t() | nil, String.t()) ::
+          :ok | {:error, Error.t()}
+  def worktree_add(repo, path, branch, base) do
+    repo
+    |> worktree_add_args(path, branch, base)
+    |> run()
+    |> as_ok()
+    |> tag_error(:worktree_create_failed)
   end
 
   @doc """

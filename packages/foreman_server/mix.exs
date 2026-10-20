@@ -31,7 +31,7 @@ defmodule ForemanServer.MixProject do
       {:postgrex, "~> 0.19"},
 
       # EventStore persistence
-      {:eventstore, "~> 1.3"},
+      {:eventstore, "~> 1.4"},
 
       # Phoenix HTTP boundary
       {:phoenix, "~> 1.7"},

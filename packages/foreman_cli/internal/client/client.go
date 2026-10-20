@@ -5,9 +5,9 @@
 // streaming. Every call is one request, one response, one error.
 //
 // The transport respects FOREMAN_API_URL (default http://127.0.0.1:4766)
-// and FOREMAN_API_TOKEN (optional Bearer credential). A missing token
-// is not an error — the server's BearerAuth plug bypasses in dev mode
-// when no token is configured server-side either.
+// and FOREMAN_API_TOKEN (Bearer credential). A missing token is not a
+// client-side error, but the server's BearerAuth plug answers 401 when no
+// token is configured server-side unless it opts into allow_insecure_local.
 package client
 
 import (

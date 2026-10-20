@@ -107,6 +107,10 @@ See `docs/user-guide.md` for the full operator contract and defaults.
 Running `devbox update` rewrites it to the modern `{packages: [{name: ...}]}`
 shape; safe but cosmetic. Will be addressed in a follow-up.
 
+### `devbox run -- bash -c '…'` expands `$` in the string, so `echo $?` lies
+
+`devbox run -- <command string>` expands `$VARS` in the string at the devbox layer, before the inner shell runs it (verified 2026-10-19: `devbox run -- bash -c 'false; echo inner=$?'` prints `inner=0`, `rc=$?; echo rc=$rc` prints an empty `rc=`, and escaping as `\$?` does not help). A test run captured like `devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test > log 2>&1; echo exit=$?'` therefore always reports `exit=0`, even when `mix test` failed. The command's REAL exit status does propagate to the caller when the string has no `$`: the canonical `devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'` exits non-zero on a failing test (devbox then prints "error running script"). When you must redirect or post-process output, check the exit status of the `devbox run` invocation itself, or read the `Result: N passed` line (a failure shows as `Result: 3197/3198 passed`); never trust an `echo $?` written inside the quoted string.
+
 ---
 
 ### Toolchain pin and environmental workarounds in devbox.json

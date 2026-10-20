@@ -19,6 +19,7 @@ defmodule ForemanServer.Jobsite.Error do
     * `:jobsite_not_found` / `:not_resumable` — `Jobsite.resume/1`
     * `:dispatch_rejected` — `Jobsite.Executor`
     * `:runner_capability` / `:unsupported_phase_action` — `Workflow.Lowering`
+    * `:executor_lost` / `:boot_recovery_failed` — `Jobsite.BootRecovery`
   """
   @enforce_keys [:code, :message]
   @type t :: %__MODULE__{code: atom(), message: String.t(), details: map()}

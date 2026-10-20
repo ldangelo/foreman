@@ -5,6 +5,20 @@
 
 ## Operator Reference
 
+### Auth postures (deliberately different per surface)
+
+Which surfaces fail closed when `:api_bearer_token` (`FOREMAN_API_TOKEN`) is unset, and which do not. The asymmetry is intentional; do not "fix" it as part of unrelated cleanup.
+
+|Surface|Plug / verifier|Token unset|
+|---|---|---|
+|`/api/*` (commands, projects, tasks, runs, queue, `/admin/workflows/*`)|`Plugs.BearerAuth`|`401` unless `:api, allow_insecure_local: true` (dev and test config set it; a release uses `FOREMAN_API_ALLOW_INSECURE_LOCAL=true`). A configured token is always enforced|
+|`/api/jobsites`|`Plugs.RequireAuthenticated` (`:jobsite_api` pipeline)|`401`; also needs `:jobsites, allow_remote_start: true` to start anything|
+|`/dashboard`, `/dashboard/runs`|`Plugs.RequireAuthenticated`|`401`|
+|`/mcp` and stdio|`MCP.Auth`|refuses unless `:mcp, allow_insecure_local: true` (dev only; `false` in config/test)|
+|`/webhooks/github`|HMAC (`VerifyGithubSignature`)|refuses every delivery|
+
+Decision history: PRD-2026-0eac69b3 AC-018-2 originally kept `/api` open when no token was set ("the `/api` pipeline's existing permissive behaviour is unchanged, but MCP fails closed") and recorded in its risk 6 that enforcing a token breaks every caller that never set one. The project owner reversed that on 2026-10-19: `/api` now fails closed, mirroring `MCP.Auth`'s `allow_insecure_local` shape but under its own key (`config :foreman_server, :api, allow_insecure_local: <boolean>`, default `false`, exactly `true` required) because the MCP key is pinned `false` in the test env while the suite calls `/api` unauthenticated. The opt-in never weakens a configured token. Rollout consequence: any deployment that never set `FOREMAN_API_TOKEN` now answers `401` on `/api/*` (including `foreman init --force`'s `POST /api/admin/workflows/install`) until the token is set on the server and every client (the Go CLI sends `FOREMAN_API_TOKEN` when set) or the opt-in is enabled for a trusted local server. Still unauthenticated by design and unchanged: `/webhooks/external_trigger` and `/webhooks/operator/ingest` (keep them on a trusted network). Jobsite stays the stricter surface (no opt-in) because it runs agents on the server on behalf of a remote script.
+
 ### Starting the Phoenix Server
 
 ```bash
@@ -253,6 +267,8 @@ foreman project get <id>     # Fetch project
 # Workflow install (one-time bootstrap per machine)
 foreman workflow install
 ```
+
+**Installed copies are not compared with the bundled ones.** Dispatch never checks `~/.foreman/workflows/` against `priv/defaults/workflows/`: an old-format copy fails validation at load (`{:missing_phase_action, i}`), but an older, still-valid copy runs silently. After editing bundled workflows or prompts, run `foreman init --force` to refresh the installed copies.
 
 ### Workflows
 

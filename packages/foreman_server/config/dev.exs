@@ -50,5 +50,9 @@ config :foreman_server, :mcp,
   allow_workflow_writes: true,
   allow_insecure_local: true
 
+# JSON `/api` pipeline: allow unauthenticated local calls when no
+# FOREMAN_API_TOKEN is set (dev only; config.exs keeps it closed).
+config :foreman_server, :api, allow_insecure_local: true
+
 # BeadsWatcher auto-dispatch enabled (dev opt-in feature, TRD-005)
 config :foreman_server, :start_beads_watcher?, true

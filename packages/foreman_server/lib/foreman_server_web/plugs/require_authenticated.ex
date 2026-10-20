@@ -8,12 +8,12 @@ defmodule ForemanServerWeb.Plugs.RequireAuthenticated do
   `?token=<token>` query parameter — mirroring `BearerAuth`'s existing
   "narrow tooling" query-param allowance.
 
-  Unlike `BearerAuth`, an unconfigured `:api_bearer_token` does NOT
-  bypass this guard. Routes behind `:require_authenticated` (currently
-  the Jido live dashboard, TRD-2026-4212be7e / JLD-T001) expose live
-  internal agent/signal state and must fail closed until an operator
-  configures a token, rather than defaulting open like the JSON API
-  does for local dev convenience.
+  Like `BearerAuth`, an unconfigured `:api_bearer_token` does NOT
+  bypass this guard. Unlike `BearerAuth`, there is no `allow_insecure_local`
+  opt-in: routes behind `:require_authenticated` (currently the Jido live
+  dashboard, TRD-2026-4212be7e / JLD-T001) expose live internal
+  agent/signal state and must fail closed until an operator configures a
+  token, in every environment.
 
   On failure, halts with `401` and a plain-text body (this guards an
   HTML/LiveView route, not the JSON API).
@@ -39,10 +39,17 @@ defmodule ForemanServerWeb.Plugs.RequireAuthenticated do
   end
 
   defp token_matches?(conn, expected) do
-    header_token = extract_header_token(conn)
-    query_token = conn.query_params["token"]
-    header_token == expected or query_token == expected
+    secure_equal?(extract_header_token(conn), expected) or
+      secure_equal?(conn.query_params["token"], expected)
   end
+
+  # Constant-time, like `MCP.Auth`. A non-binary candidate (absent header, or a
+  # `?token[]=x` list/map) is simply not a match; `secure_compare/2` only takes
+  # binaries.
+  defp secure_equal?(candidate, expected) when is_binary(candidate),
+    do: Plug.Crypto.secure_compare(candidate, expected)
+
+  defp secure_equal?(_candidate, _expected), do: false
 
   defp extract_header_token(conn) do
     case get_req_header(conn, "authorization") do

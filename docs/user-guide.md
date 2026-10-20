@@ -140,9 +140,18 @@ foreman project list
 - Set `FOREMAN_API_TOKEN` (CLI) and the server's
   `:foreman_server, :api_bearer_token` config to require
   `Authorization: Bearer <token>` on every `/api/*` request.
-- `/api/*` also accepts `?token=<token>` for narrow tooling.
-- When the server has no token configured (the local dev default),
-  authentication is bypassed entirely.
+- `/api/*` also accepts `?token=<token>` for narrow tooling only (the token
+  ends up in URLs and logs).
+- When the server has no token configured, `/api/*` **fails closed**: every
+  request gets `401` with `{"error":"unauthorized","detail":"no API token is
+  configured on the server ..."}`. Set `FOREMAN_API_TOKEN` before exposing the
+  server. For token-less local use, opt in explicitly with
+  `config :foreman_server, :api, allow_insecure_local: true` (already set in the
+  dev and test environments) or, in a release, `FOREMAN_API_ALLOW_INSECURE_LOCAL=true`
+  (only the exact value `true`). A configured token is always enforced; the
+  opt-in never weakens it. `foreman init --force` calls
+  `POST /api/admin/workflows/install`, so it needs the token (or the opt-in)
+  too. See "Auth postures" in `docs/lessons/operator-reference.md`.
 
 ## Core Concepts
 
@@ -987,15 +996,17 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
 
 ## 11. Jobsite: scripted agent runs
 
-`ForemanServer.Jobsite` is a separate, event-sourced engine for scripted
-agent runs that is not a Foreman workflow phase: a run gets its own git
-worktree, an optional container sandbox, and loops an agent for up to
-`max_iterations` turns until it emits a completion signal or the budget is
-exhausted. It lives in its own `jobsite:<id>` aggregate stream
-(`ForemanServer.Aggregates.Jobsite`) and is driven by
+`ForemanServer.Jobsite` is the event-sourced engine behind scripted agent runs:
+a run gets its own git worktree, an optional container sandbox, and loops an
+agent for up to `max_iterations` turns until it emits a completion signal or
+the budget is exhausted. It has two front doors onto one engine
+(`ForemanServer.Jobsite.Engine`): scripts (this section) are driven by
 `ForemanServer.Jobsite.Executor`, a `GenServer` under
-`ForemanServer.Jobsite.Supervisor` — independent of `RunExecutor` and the
-`run:<id>`/`phase:<id>` streams workflow phases use.
+`ForemanServer.Jobsite.Supervisor`, and keep their state in their own
+`jobsite:<id>` aggregate stream (`ForemanServer.Aggregates.Jobsite`);
+workflow phases (see the end of this section) run on the same engine but keep
+their state in the `run:<id>`/`phase:<id>` streams, so `/api/jobsites` does not
+list workflow runs and `foreman run list` does not list jobsites.
 
 Use `foreman init --template <name>` (see
 [CLI Reference](./cli-reference.md#foreman-init---template-name-real-current))
@@ -1006,7 +1017,18 @@ signal), `parallel` (fans out across worktrees, merges sequentially),
 (pulls a ready Beads issue and works it). Resume after a crash or an
 explicit pause with `ForemanServer.Jobsite.resume/1`, which rehydrates
 authoritative state from the event stream (never from the projection or
-process memory) and continues the same agent session.
+process memory) and continues the same agent session. Recovery after a server
+restart is never automatic: at boot, `ForemanServer.Jobsite.BootRecovery`
+records every non-terminal jobsite that has no live executor as **paused with
+reason `server_restart`** (a jobsite that never got a worktree is failed with
+`executor_lost` instead), so it shows up as `paused` with a `paused_reason` in
+`GET /api/jobsites` and is resumed through the same explicit path. The scan
+finds candidates from the event store's `jobsite:` streams, not the projection,
+so a failed projection replay cannot make it report an empty success; if the
+streams cannot be listed it logs an error (`could not list jobsites`) instead.
+It never starts an agent: `agent.env` values are not persisted, so an unattended
+resume would run without them. Disable the scan with
+`config :foreman_server, start_jobsite_boot_recovery?: false`.
 
 **Unattended Claude runs need `approval_mode`.** The agent constructors take
 `approval_mode:` (`:default | :prompt | :auto_edit | :auto_approve`, default
@@ -1042,9 +1064,9 @@ the script: the body is validated data, the repo is a **registered
 | Route | Purpose |
 |---|---|
 | `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}` |
-| `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`) |
+| `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`, and `paused_reason` while paused) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
-| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite in the background (same flag and cap as start) |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start) |
 | `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
 
 Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
@@ -1085,7 +1107,7 @@ and releases, not to `mix test`):
 A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).
 
 These routes fail closed: with no `:api_bearer_token` configured every request is
-`401` (unlike `/api/commands`, which is open when no token is set). Put TLS in
+`401`, exactly like the rest of `/api` (which fails closed too, with a local-development opt-in that these routes do not have). Put TLS in
 front of the server before exposing it beyond localhost. Every start, pause,
 cancel, resume and merge request, accepted or rejected, is recorded in an
 audit stream with the caller's TCP address (the proxy's, behind one; requests

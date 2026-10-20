@@ -65,6 +65,7 @@ config :foreman_server, :start_json_schema_cache?, false
 config :foreman_server, :start_beads_watcher?, false
 config :foreman_server, :start_lifecycle_reconciler?, false
 config :foreman_server, :start_boot_reconciliation?, false
+config :foreman_server, :start_jobsite_boot_recovery?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
 config :foreman_server, :pr_monitor_enabled, false
 config :foreman_server, :trigger_poll_enabled, false
@@ -115,6 +116,10 @@ config :foreman_server, :mcp,
   mount: "/mcp",
   allow_workflow_writes: false,
   allow_insecure_local: false
+
+# JSON `/api` pipeline: the suite calls /api without a token in places;
+# bearer_auth_test.exs flips this to prove the fail-closed default.
+config :foreman_server, :api, allow_insecure_local: true
 
 # SigNoz log bridge stays off in tests regardless of the operator's shell env
 # (FOREMAN_SIGNOZ_LOGS_ENABLED may be `true` in the same shell a developer

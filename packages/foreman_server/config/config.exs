@@ -63,6 +63,13 @@ config :foreman_server, :mcp,
   allow_workflow_writes: false,
   allow_insecure_local: false
 
+# JSON `/api` pipeline (ForemanServerWeb.Plugs.BearerAuth). With no
+# `:api_bearer_token` configured the API answers 401 unless
+# `allow_insecure_local` is exactly `true`. Opt-in for local development only:
+# dev.exs/test.exs enable it; production uses FOREMAN_API_TOKEN (or
+# FOREMAN_API_ALLOW_INSECURE_LOCAL=true via runtime.exs).
+config :foreman_server, :api, allow_insecure_local: false
+
 # TRD-2026-4212be7e JOT-T001: jido_otel OTLP endpoint (Langfuse-compatible).
 # Defaults to localhost:4318 for local dev; runtime overrides come from
 # prod.exs (env-driven: OTEL_EXPORTER_OTLP_ENDPOINT, LANGFUSE_PUBLIC_KEY).

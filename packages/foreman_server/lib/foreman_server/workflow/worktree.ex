@@ -50,6 +50,8 @@ defmodule ForemanServer.Workflow.Worktree do
 
   alias ForemanServer.{CommandGateway, ProjectionStore, VcsAdapter}
   alias ForemanServer.VcsAdapter.Default, as: DefaultAdapter
+  alias ForemanServer.Jobsite.Error, as: JobsiteError
+  alias ForemanServer.Jobsite.Git, as: JobsiteGit
 
   @doc """
   Provision a worktree through the adapter and append `WorktreeCreated`.
@@ -297,9 +299,12 @@ defmodule ForemanServer.Workflow.Worktree do
     if protected_branch?(branch) do
       :ok
     else
-      case System.cmd("git", ["-C", repo_path, "branch", "-D", branch], stderr_to_stdout: true) do
-        {_output, 0} -> :ok
-        {output, _} -> {:error, {:branch_delete_failed, branch, output}}
+      case JobsiteGit.delete_branch(repo_path, branch) do
+        :ok ->
+          :ok
+
+        {:error, %JobsiteError{details: %{reason: output}}} ->
+          {:error, {:branch_delete_failed, branch, output}}
       end
     end
   end

@@ -125,6 +125,7 @@ defmodule ForemanServer.Application do
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter
         ] ++
+        maybe_jobsite_boot_recovery_child() ++
         maybe_messaging_dispatcher_child() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
@@ -552,6 +553,20 @@ defmodule ForemanServer.Application do
   def maybe_boot_reconciliation_child do
     if Application.get_env(:foreman_server, :start_boot_reconciliation?, true) do
       [ForemanServer.Workflow.BootReconciliation]
+    else
+      []
+    end
+  end
+
+  # Gated on :start_jobsite_boot_recovery? config so the test suite can opt out
+  # of the boot-time scan (it would otherwise pause jobsites that other tests
+  # seed in non-terminal states in the shared event store). Its own tests call
+  # `Jobsite.BootRecovery.scan/1` directly. Listed after CommandRouter,
+  # ProjectionStore, Jobsite.Registry and Jobsite.Supervisor, which the scan
+  # reads and dispatches through.
+  def maybe_jobsite_boot_recovery_child do
+    if Application.get_env(:foreman_server, :start_jobsite_boot_recovery?, true) do
+      [ForemanServer.Jobsite.BootRecovery]
     else
       []
     end

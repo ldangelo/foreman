@@ -14,6 +14,7 @@ defmodule ForemanServer.VcsAdapter.Default do
   @behaviour ForemanServer.VcsAdapter
 
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Jobsite.Git
 
   @impl true
   def clone(url, opts) do
@@ -96,12 +97,7 @@ defmodule ForemanServer.VcsAdapter.Default do
 
     emit_started(operation_id, "worktree_create", target, metadata)
 
-    base_args =
-      if branch_exists?(repo_path, branch),
-        do: [worktree_path, branch],
-        else: branch_args(branch) ++ [worktree_path, base]
-
-    args = ["-C", repo_path, "worktree", "add"] ++ base_args
+    args = Git.worktree_add_args(repo_path, worktree_path, branch, base)
 
     case System.cmd("git", args, stderr_to_stdout: true) do
       {output, 0} ->
@@ -315,43 +311,15 @@ defmodule ForemanServer.VcsAdapter.Default do
   # conservatively treat the worktree as registered — false-noop is
   # worse than a clean attempt that surfaces the underlying error.
   defp registered?(worktree_path, repo_path) do
-    case System.cmd(
-           "git",
-           ["-C", repo_path, "worktree", "list", "--porcelain"],
-           stderr_to_stdout: true
-         ) do
-      {output, 0} ->
+    case Git.worktree_list(repo_path) do
+      {:ok, worktrees} ->
         target = canonicalize(worktree_path)
+        Enum.any?(worktrees, &(canonicalize(&1.path) == target))
 
-        match_path = fn line ->
-          case String.split(line, " ", parts: 2) do
-            ["worktree", path] -> canonicalize(path) == target
-            _ -> false
-          end
-        end
-
-        Enum.any?(String.split(output, "\n", trim: true), match_path)
-
-      _ ->
+      {:error, _reason} ->
         true
     end
   end
-
-  defp branch_exists?(_repo_path, nil), do: false
-
-  defp branch_exists?(repo_path, branch) do
-    case System.cmd(
-           "git",
-           ["-C", repo_path, "rev-parse", "--verify", "--quiet", "refs/heads/" <> branch],
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} -> true
-      _ -> false
-    end
-  end
-
-  defp branch_args(nil), do: []
-  defp branch_args(branch), do: ["-b", branch]
 
   defp parse_pr_output(output) do
     case Regex.run(~r|https://github\.com/[^/]+/[^/]+/pull/(\d+)|, output) do

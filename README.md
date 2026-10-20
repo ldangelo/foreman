@@ -254,17 +254,15 @@ Generated assets call the real `foreman` CLI and inherit `FOREMAN_API_URL` / `FO
 
 ## API authentication
 
-The Foreman JSON API (`/api/*`) is **unauthenticated by default** in development and test environments.
+The Foreman JSON API (`/api/*`) **fails closed**: with no `FOREMAN_API_TOKEN` configured every request gets `401 Unauthorized`, in every environment. Local development is the exception: `allow_insecure_local: true` (`config :foreman_server, :api, ...`) is set in the dev and test environments, and a release can opt in with `FOREMAN_API_ALLOW_INSECURE_LOCAL=true` (only the exact value `true`; never weakens a configured token). The other surfaces fail closed without a token too: `/api/jobsites` and `/dashboard*` (no opt-in), and MCP (unless `allow_insecure_local: true` in the MCP config). Upgrading from a build where `/api` was open: set `FOREMAN_API_TOKEN` on the server and on every client (the Go CLI sends it when set), or set the opt-in for a trusted local server.
 
-In production, set the `FOREMAN_API_TOKEN` environment variable to enable bearer-token authentication:
+Set the `FOREMAN_API_TOKEN` environment variable to authenticate callers of `/api/*`:
 
 ```
 FOREMAN_API_TOKEN=your-secret-token
 ```
 
-When set, all `/api/*` requests require an `Authorization: Bearer <token>` header. Requests without a valid bearer token receive a `401 Unauthorized` response.
-
-To run in production without authentication (not recommended), set `allow_insecure_local: true` in the MCP policy config.
+When set, all `/api/*` requests must present the token, normally as an `Authorization: Bearer <token>` header. A matching `?token=<token>` query parameter is also accepted for narrow tooling only, since it ends up in URLs and server/proxy logs. Requests without a valid token receive a `401 Unauthorized` response. Always set it before exposing a server beyond localhost.
 
 The MCP task tools expose `foreman_task_list`, `foreman_task_get`, and write-gated `foreman_task_update` / `foreman_task_add_comment`. Task list supports `project_id`/canonical `status` filters plus `limit`/`offset` pagination and returns `{tasks, total, limit, offset, next_offset}`.
 
