@@ -15,7 +15,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache}
   alias ForemanServer.Workflow.RunExecutor
-  alias ForemanServer.TestSupport.RunSlotsReset
+  alias ForemanServer.TestSupport.{DispatcherRestart, RunSlotsReset}
   @cache_name :foreman_server_json_schema_cache
   @poll_timeout_ms 8_000
 
@@ -319,7 +319,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       :sys.suspend(dispatcher)
 
       on_exit(fn ->
-        kill_and_restart_dispatcher(dispatcher)
+        DispatcherRestart.restart!()
       end)
     end
 
@@ -1623,7 +1623,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   # for the provider reopen the terminal dispatch triggers.
   # Dispatcher.handle_run_terminated/3 and the provider call both react to
   # the run's own failure event asynchronously; without both waits the test
-  # can finish first, and on_exit's kill_and_restart_dispatcher then kills
+  # can finish first, and on_exit's DispatcherRestart.restart!/0 then kills
   # Dispatcher mid-dispatch, leaving BrRunnerMock under-invoked and failing
   # verification on a race rather than on behaviour.
   defp await_run_failure!(run_id) do
@@ -1862,17 +1862,6 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         "name" => %{"type" => "string"}
       }
     }
-  end
-
-  defp kill_and_restart_dispatcher(_dispatcher) do
-    app_sup = Process.whereis(ForemanServer.Application)
-
-    if app_sup do
-      :ok = Supervisor.terminate_child(app_sup, ForemanServer.Workflow.Dispatcher)
-
-      {:ok, _new_dispatcher} =
-        Supervisor.restart_child(app_sup, ForemanServer.Workflow.Dispatcher)
-    end
   end
 
   # Run a git command and return combined stdout/stderr. Raises on

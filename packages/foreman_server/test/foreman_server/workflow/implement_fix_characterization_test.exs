@@ -71,11 +71,7 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
     Supervisor.terminate_child(ForemanServer.Application, ForemanServer.Workflow.Dispatcher)
 
     on_exit(fn ->
-      {:ok, _pid} =
-        Supervisor.restart_child(
-          ForemanServer.Application,
-          ForemanServer.Workflow.Dispatcher
-        )
+      ForemanServer.TestSupport.DispatcherRestart.restart!()
     end)
 
     # Set up Mox for BrRunner mock

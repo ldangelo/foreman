@@ -33,7 +33,7 @@ defmodule ForemanServer.TaskDependencyGuardTest do
              )
 
     on_exit(fn ->
-      Supervisor.restart_child(ForemanServer.Application, ForemanServer.Workflow.Dispatcher)
+      ForemanServer.TestSupport.DispatcherRestart.restart!()
     end)
 
     :ok
