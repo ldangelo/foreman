@@ -328,6 +328,44 @@ default, an assumption to tune per provider). Usage covers the last 366 days per
 usage and reviewer-agent usage (role `review`, attributed to the reviewed run or jobsite) are included; a
 jobsite that reports through worker events is not counted twice.
 
+### Environment, secrets, setup script and network policy
+
+Each project has one **environment record** (`config.environment`): plain
+variables, an optional **setup script** and a **network policy**. It is written
+only by the operator-allowlisted command `project.environment.set` (HTTP
+`PUT /api/projects/<id>/environment`, or the CLI below): `project.update` and
+`project.register` reject an `environment` key, because the setup script is
+arbitrary code that runs on the server host.
+
+```
+foreman project env set project-123 NPM_REGISTRY=https://registry.example
+foreman project env unset project-123 NPM_REGISTRY
+foreman project env list project-123
+printf '%s' "$TOKEN" | foreman project secret set project-123 DEPLOY_TOKEN
+foreman project secret set --from-env MY_TOKEN_VAR project-123 DEPLOY_TOKEN
+foreman project secret list project-123
+foreman project setup-script set --file ./setup.sh project-123
+foreman project network set --mode allowlist --allow pypi.org project-123
+```
+
+| Piece | Rule |
+|---|---|
+| Variables | names `^[A-Za-z][A-Za-z0-9_]*$`, values <= 8 KiB, <= 100 vars. `FOREMAN_*` is reserved: `project.environment.set` rejects it (`reserved_env_name`), and a project whose stored legacy `config.env`/`config.environment` already holds one fails every workflow phase and jobsite launch LOUDLY (`reserved_project_env_keys`, naming the keys) until the operator removes it. Secret-looking names (`*_TOKEN`, `*_PASSWORD`, `*_API_KEY`, ...) are rejected with `secret_in_vars`: use a secret. |
+| Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and archives. A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
+| Delivery | Both doors: workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace); jobsites get the same as a base that the spec's own allowlisted `agent.env` overrides. |
+| Setup script | Runs once, right after a fresh run worktree (or jobsite worktree) is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase / jobsite (`setup_script_failed`, `setup_script_timeout`; jobsites: `hook_failed`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. Remote jobsite specs still cannot supply `hooks.host.*`; the script only comes from this record. |
+| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and workflow runs (agents on the server host) do not enforce it. Networks and sidecars are removed when the jobsite ends and swept at boot. |
+
+`GET /api/projects/<id>/environment` returns the record (variable values only for
+the record form; a project still on legacy flat `config.env` shows `[redacted]`
+values and `legacy_env: true`), `network_enforced_on` and secret names/versions.
+`PUT /api/projects/<id>/secrets/<NAME>` takes `{"value": "..."}`;
+`DELETE` removes it. `project env set` on a legacy project requires `--replace`
+with every variable (the old values are hidden), after which the record is used
+and legacy `config.env` is ignored. The MCP tool `foreman_project_environment_get`
+is read-only and returns variable and secret *names* only; there is deliberately no
+MCP write tool for the environment or secrets.
+
 ### Pause, resume and reactivate
 
 ```
@@ -474,6 +512,7 @@ is exactly:
 
 - `project.register`
 - `project.update`
+- `project.environment.set`
 - `project.archive`
 - `project.reactivate`
 - `task.create`
@@ -1089,7 +1128,7 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get`,
+`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get`, `foreman_project_environment_get`,
 `foreman_project_recommendations`, `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
 `foreman_thread_find`, `foreman_overview`.
 The write-gated thread tools are `foreman_thread_stop` and

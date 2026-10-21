@@ -13,7 +13,7 @@ defmodule ForemanServer.Jobsite.Hooks do
   `validate/1`.
   """
 
-  alias ForemanServer.Jobsite.{Error, ExecResult, Sandbox}
+  alias ForemanServer.Jobsite.{Error, ExecResult, HostCommand, Sandbox}
 
   @spec validate(map() | nil) :: :ok | {:error, Error.t()}
   def validate(nil), do: :ok
@@ -36,13 +36,22 @@ defmodule ForemanServer.Jobsite.Hooks do
     end
   end
 
-  @spec run_host(map() | nil, atom(), String.t()) :: :ok | {:error, Error.t()}
-  def run_host(hooks, phase, cwd) do
+  @doc """
+  Runs the host hooks of `phase` in `cwd`. `opts`: `:env` (overlaid on the
+  ambient env) and `:timeout_ms` (a hook that outlives it is killed, process
+  group included, and fails with `:hook_failed` carrying `timeout_ms`).
+  """
+  @spec run_host(map() | nil, atom(), String.t(), keyword()) :: :ok | {:error, Error.t()}
+  def run_host(hooks, phase, cwd, opts \\ []) do
     hooks
     |> entries(:host, phase)
     |> run_entries(fn cmd ->
-      case System.cmd("sh", ["-c", cmd], cd: cwd, stderr_to_stdout: true) do
-        {output, code} -> {:ok, code, output}
+      case HostCommand.run(cmd, cwd, opts) do
+        {:ok, %{exit_code: code, output: output}} ->
+          {:ok, code, output}
+
+        {:error, {:timeout, output}} ->
+          {:error, %{timeout_ms: Keyword.fetch!(opts, :timeout_ms), output: output}}
       end
     end)
   end

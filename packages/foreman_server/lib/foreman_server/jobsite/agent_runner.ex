@@ -24,6 +24,25 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   @spec run(ForemanServer.Jobsite.Agent.t(), String.t(), Sandbox.t(), keyword()) ::
           {:ok, IterationResult.t()} | {:error, Error.t()}
   def run(agent, prompt, %Sandbox{} = sandbox, opts \\ []) do
+    agent
+    |> run_iteration_once(prompt, sandbox, opts)
+    |> redact_result(agent.secrets)
+  end
+
+  # Agent output reaches events and archives only through the result text, so
+  # the resolved project secrets are redacted at this single exit (E4-S2).
+  defp redact_result({:ok, %IterationResult{text: text} = result}, secrets)
+       when is_binary(text) and secrets != [],
+       do:
+         {:ok,
+          %IterationResult{
+            result
+            | text: ForemanServer.Overwatch.WorkerLogPolicy.redact(text, secrets)
+          }}
+
+  defp redact_result(result, _secrets), do: result
+
+  defp run_iteration_once(agent, prompt, %Sandbox{} = sandbox, opts) do
     index = Keyword.get(opts, :index, 1)
     resume_session = Keyword.get(opts, :resume_session)
     fork_session = Keyword.get(opts, :fork_session)
@@ -69,7 +88,8 @@ defmodule ForemanServer.Jobsite.AgentRunner do
             completion_timeout_ms,
             on_event,
             intent_fun,
-            Keyword.get(opts, :archive_dir)
+            Keyword.get(opts, :archive_dir),
+            agent.secrets
           )
 
         {:error, reason} ->
@@ -164,13 +184,14 @@ defmodule ForemanServer.Jobsite.AgentRunner do
          completion_timeout_ms,
          on_event,
          intent_fun,
-         archive_dir
+         archive_dir,
+         secrets
        ) do
     case Run.stream(run_id) do
       {:ok, stream} ->
         parent = self()
         consumer = spawn_consumer(stream, signals, on_event, parent)
-        awaiter = spawn_awaiter(run_id, parent, archive_dir)
+        awaiter = spawn_awaiter(run_id, parent, archive_dir, secrets)
         result = wait(run_id, index, completion_timeout_ms, "", nil, intent_fun)
         Process.exit(consumer, :kill)
         Process.exit(awaiter, :kill)
@@ -205,13 +226,13 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   # The awaiter is the one place every harness `RunResult` (success or failed
   # status) passes through, so the session archive is written here, before the
   # result is handed to `wait/6`. Capture never fails the iteration.
-  defp spawn_awaiter(run_id, parent, archive_dir) do
+  defp spawn_awaiter(run_id, parent, archive_dir, secrets) do
     spawn(fn ->
       result = Run.await(run_id, :infinity)
 
       case result do
         {:ok, %RunResult{} = run_result} ->
-          _ = ForemanServer.Review.Capture.put_iteration(archive_dir, run_result)
+          _ = ForemanServer.Review.Capture.put_iteration(archive_dir, run_result, secrets)
 
         _other ->
           :ok

@@ -23,6 +23,10 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
 > foreman project settings  --format
 > foreman usage             --project --from --to --by --limit --format
+> foreman project env       list --format | set --replace | unset
+> foreman project secret    list --format | set --from-env | unset
+> foreman project setup-script show | set --file | clear
+> foreman project network   show | set --mode --allow
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
 > foreman project reactivate --idempotency-key
@@ -355,6 +359,27 @@ Print a project's status, settings and live limits (`GET /api/projects/<id>/sett
 ### `foreman usage --project <id>`
 
 Print token and cost usage of a project (`GET /api/projects/<id>/usage`). `--project` is required (it is never guessed). Flags: `--from YYYY-MM-DD`, `--to YYYY-MM-DD` (inclusive UTC days, at most 366 days apart; shape checked locally, range rules by the server), `--by day|model|provider|role|thread` (default `model`; sent as `group_by`), `--limit N` (thread rows, server default 50, max 500), `--format table|json` (`json` prints the response unchanged). The table columns are group, `INPUT`, `OUTPUT`, `CACHE-READ`, `CACHE-WRITE`, `TOTAL`, `COST`, plus a `TOTAL` row. A cost of `-` is unknown (`cost_usd: null`: the provider reported none, which is not free); `*` marks a partial sum; a footnote lists the number of events with unknown cost. When the project has a daily thread cap a line follows, for example `daily thread cap: threads today: 3/10, resets 00:00 UTC, 4 deferred today`. Server errors (`invalid_range`, `range_too_large`, `invalid_group_by`, `invalid_limit`, unknown project) are printed with their code.
+
+### `foreman project env list|set|unset <id>`
+Manage the project's plain environment variables (`PUT /api/projects/<id>/environment`,
+operator command `project.environment.set`). `set <id> NAME=value ...` merges into the
+current variables; `--replace` starts from an empty set (required once to migrate a legacy
+`config.env` project whose values are hidden). `list --format json` prints the raw
+`GET /api/projects/<id>/environment` response. Secret-looking names are rejected: use `secret`.
+
+### `foreman project secret list|set|unset <id> [NAME]`
+Secrets live only in the server's secret store; events, logs and responses carry names and
+versions. `set <id> NAME` reads the value from **stdin** (trailing newline trimmed) or from
+`--from-env VAR`; the value is never a flag or argument and is never printed.
+`list` prints `NAME`, version and update time. `unset` deletes.
+
+### `foreman project setup-script show|set|clear <id>`
+`set --file <path>` installs the script the server runs once after each fresh run/jobsite
+worktree is created (fatal on non-zero exit or timeout); `clear` removes it; `show` prints it.
+
+### `foreman project network show|set <id>`
+`set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only;
+workflow runs and the host sandbox do not enforce it (host sandbox + policy is a typed error).
 
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 
@@ -1363,7 +1388,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_recommendations`,
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only),
 `foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events),
 `foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,

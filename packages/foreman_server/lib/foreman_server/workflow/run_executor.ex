@@ -63,7 +63,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
-  alias ForemanServer.WorkerEnvironment
   require Logger
 
   @command_phase_inbox_progress_system_prompt """
@@ -1143,10 +1142,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # the run sits in awaiting_worker forever (WorkerStarted is the only
   # transition trigger).
   defp prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record) do
-    # One snapshot of the registered project's `config.env` feeds both the
-    # delivered env and the redaction list, so they cannot disagree.
-    with {:ok, project_env} <- project_env(state),
-         :ok <- assert_no_reserved_project_env(project_env),
+    # One resolution of the project's environment feeds both the delivered env
+    # and the redaction list, so they cannot disagree (E4-S1).
+    with {:ok, resolved} <- project_env(state),
          steering = steering_messages(state, phase_spec),
          {:ok, launch} <-
            build_agent_launch(
@@ -1155,7 +1153,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
              index,
              phase_index,
              worktree_record,
-             project_env,
+             resolved,
              steering
            ),
          # Only a successfully built launch consumes the messages: a failed
@@ -1223,27 +1221,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # `FOREMAN_*` is Foreman's own namespace: the artifact/run-id contract and
-  # keys Foreman emits only for some phases (`FOREMAN_BASE_BRANCH` is absent
-  # when no base branch resolves) must not be supplied by project config, or
-  # the agent receives a plausible but unverified value. A loud failure
-  # (AGENTS.md 5) rather than a silent strip; it runs before any worker
-  # launches. Broader reserved-variable policy belongs to the E4 environment
-  # record.
-  defp assert_no_reserved_project_env(project_env) do
-    case project_env |> Map.keys() |> Enum.filter(&String.starts_with?(&1, "FOREMAN_")) do
-      [] -> :ok
-      keys -> {:error, {:reserved_project_env_keys, Enum.sort(keys)}}
-    end
-  end
-
   defp build_agent_launch(
          state,
          phase_spec,
          index,
          phase_index,
          worktree_record,
-         project_env,
+         resolved,
          steering
        ) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
@@ -1269,8 +1253,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     foreman_env =
       foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-    # No key can collide: reserved `FOREMAN_*` project keys were rejected above.
-    env = Map.merge(project_env, foreman_env)
+    # `FOREMAN_*` always wins: `ProjectEnvironment.resolve/2` refuses a project
+    # that stores a reserved name, so no project key can reach this merge.
+    env = Map.merge(resolved.env, foreman_env)
 
     {:ok,
      %{
@@ -1298,7 +1283,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          project_id: project_id(state),
          task_id: task_id(state),
          env_map: env,
-         secrets: WorkerEnvironment.extract_secrets(project_env)
+         secrets: resolved.secrets
        ]
      }}
   end
@@ -1342,8 +1327,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # launch the agent with no env and no redaction secrets, silently.
   defp project_env(state) do
     case project_id(state) do
-      nil -> {:ok, %{}}
-      id when is_binary(id) and id != "" -> build_project_env(id)
+      nil -> {:ok, %{env: %{}, secrets: []}}
+      id when is_binary(id) and id != "" -> resolve_project_env(id)
       other -> {:error, {:invalid_project_id, other}}
     end
   end
@@ -1351,8 +1336,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # A project persisted before env validation can hold a value that cannot be
   # stringified (e.g. a map); `to_string/1` then raises. Only that conversion
   # error is converted, so the phase fails through the normal bounded path.
-  defp build_project_env(project_id) do
-    {:ok, WorkerEnvironment.build_env_map(project_id)}
+  defp resolve_project_env(project_id) do
+    ForemanServer.ProjectEnvironment.resolve(project_id)
   rescue
     Protocol.UndefinedError -> {:error, {:invalid_project_env, project_id}}
   end
@@ -2429,18 +2414,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
       })
       |> case do
         {:ok, ^worktree_path} ->
-          {:ok,
-           %{
-             operation_id: operation_id,
-             worktree_path: worktree_path,
-             branch: branch,
-             base_ref: base_ref,
-             project_root: project_root,
-             project_id: project_id,
-             implementation_key: implementation_key,
-             trd_scope: trd_scope,
-             cleanup: cleanup
-           }}
+          record = %{
+            operation_id: operation_id,
+            worktree_path: worktree_path,
+            branch: branch,
+            base_ref: base_ref,
+            project_root: project_root,
+            project_id: project_id,
+            implementation_key: implementation_key,
+            trd_scope: trd_scope,
+            cleanup: cleanup
+          }
+
+          run_project_setup(state, record)
 
         {:ok, other_path} ->
           # Worktree.create guarantees the returned path matches the requested
@@ -2451,6 +2437,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, _} = err ->
           err
       end
+    end
+  end
+
+  # The project's setup script (E4-S4) runs ONCE, right after the worktree is
+  # first created: `ensure_run_worktree/2` returns the remembered record for
+  # every later phase without coming back here, so a reused worktree never
+  # re-runs it. A failing or timed-out script fails the phase before any agent
+  # starts. The not-yet-remembered worktree is removed when its cleanup policy is
+  # `:always`; otherwise it stays like any failed run's worktree (the projection
+  # still lists it, so `RunDeleted` reclaims it).
+  defp run_project_setup(state, record) do
+    log_dir = Path.join([state.artifact_base || File.cwd!(), state.run_id])
+
+    case ForemanServer.ProjectSetup.run(record.project_id, record.worktree_path, state.run_id,
+           log_dir: log_dir
+         ) do
+      :ok ->
+        {:ok, record}
+
+      {:error, _failure} = error ->
+        if record.cleanup == :always, do: do_clean_run_worktree(state, record)
+        error
     end
   end
 

@@ -12,6 +12,9 @@
 #                             before emitting anything, so a test can reliably
 #                             observe + interrupt an iteration still in flight.
 #   FAKE_AGENT_SLEEP_SECS   - sleep duration (default: 10).
+#   FAKE_AGENT_ECHO_ENV     - name of an env var; the assistant text becomes
+#                             "env:NAME=<value the agent process received>", proving
+#                             what environment was delivered.
 #   FAKE_AGENT_FAIL_WITH    - when set, print it to stderr and exit 1 without emitting
 #                             any events (an agent that dies, e.g. bad credentials).
 
@@ -36,6 +39,9 @@ fi
 
 SESSION_ID="${FAKE_AGENT_SESSION_ID:-fake-session-stable-1}"
 TEXT="${FAKE_AGENT_TEXT:-did some work}"
+if [ -n "$FAKE_AGENT_ECHO_ENV" ]; then
+  TEXT="env:$FAKE_AGENT_ECHO_ENV=$(printenv "$FAKE_AGENT_ECHO_ENV")"
+fi
 
 printf '{"type":"session","id":"%s"}\n' "$SESSION_ID"
 printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"%s"}}\n' "$TEXT"
