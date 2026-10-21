@@ -278,5 +278,16 @@ config :foreman_server, :project_memory,
   max_repeat_ratio: 0.5,
   max_redaction_ratio: 0.5,
   min_guard_bytes: 200
+# Scheduled tasks (E11). `ticker_enabled` starts `Schedule.Ticker` (env override:
+# FOREMAN_SCHEDULE_TICKER_ENABLED=true|false in runtime.exs; off under test).
+# `min_interval_seconds` is the smallest `every` accepted; `max_per_project` caps
+# non-deleted schedules per project; `default_misfire_grace_seconds` is how late
+# a due slot may still fire before it is recorded as skipped (`missed`).
+config :foreman_server, :schedule,
+  ticker_enabled: true,
+  tick_interval_ms: 30_000,
+  min_interval_seconds: 300,
+  max_per_project: 50,
+  default_misfire_grace_seconds: 600
 
 import_config "#{config_env()}.exs"

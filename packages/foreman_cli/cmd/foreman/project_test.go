@@ -4,11 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1103,4 +1105,223 @@ func equalJSON(a, b map[string]any) bool {
 func sha256HexTest(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:])
+}
+
+// scheduleTestServer records every request and answers with the given status/body.
+type scheduleRequest struct {
+	method string
+	path   string
+	body   []byte
+}
+
+func scheduleTestServer(t *testing.T, status int, response string) (*client.Client, *[]scheduleRequest) {
+	t.Helper()
+
+	var seen []scheduleRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		seen = append(seen, scheduleRequest{method: r.Method, path: r.URL.Path, body: body})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(srv.Close)
+
+	return &client.Client{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}, &seen
+}
+
+func assertScheduleCommand(t *testing.T, req scheduleRequest, want string) {
+	t.Helper()
+
+	if req.method != http.MethodPost || req.path != "/api/commands" {
+		t.Fatalf("request = %s %s, want POST /api/commands", req.method, req.path)
+	}
+
+	var got, expected any
+	if err := json.Unmarshal(req.body, &got); err != nil {
+		t.Fatalf("decode request body %q: %v", req.body, err)
+	}
+	if err := json.Unmarshal([]byte(want), &expected); err != nil {
+		t.Fatalf("decode expected body: %v", err)
+	}
+	if !reflect.DeepEqual(got, expected) {
+		t.Fatalf("body = %s, want %s", req.body, want)
+	}
+}
+
+func TestProjectScheduleCreateEnvelope(t *testing.T) {
+	c, seen := scheduleTestServer(t, http.StatusCreated, `{"status":"accepted","result":{"project_id":"p","schedule_id":"sch-abc"}}`)
+
+	stdout := captureStdout(t, func() {
+		err := runProject(c, []string{"schedule", "create", "--project-id", "p", "--name", "n", "--every", "1h", "--prompt", "x", "--workflow", "implement"})
+		if err != nil {
+			t.Fatalf("schedule create: %v", err)
+		}
+	})
+
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %d, want 1", len(*seen))
+	}
+	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","payload":{"project_id":"p","name":"n","spec":{"every":"1h"},"prompt":"x","workflow":"implement","auto_approve":true,"overlap":"skip"}}`)
+	if !strings.Contains(stdout, "sch-abc") {
+		t.Fatalf("stdout = %q, want schedule id", stdout)
+	}
+}
+
+func TestProjectScheduleCreateAllFlags(t *testing.T) {
+	c, seen := scheduleTestServer(t, http.StatusCreated, `{"status":"accepted","result":{"project_id":"p","schedule_id":"mine"}}`)
+
+	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(promptFile, []byte("from file\n"), 0o600); err != nil {
+		t.Fatalf("write prompt file: %v", err)
+	}
+
+	captureStdout(t, func() {
+		err := runProject(c, []string{"schedule", "create", "--project-id", "p", "--name", "n", "--cron", "0 9 * * 1-5", "--timezone", "America/Chicago", "--prompt-file", promptFile, "--workflow", "implement", "--auto-approve=false", "--overlap", "allow", "--id", "mine"})
+		if err != nil {
+			t.Fatalf("schedule create: %v", err)
+		}
+	})
+
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %d, want 1", len(*seen))
+	}
+	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","payload":{"schedule_id":"mine","project_id":"p","name":"n","spec":{"cron":"0 9 * * 1-5","timezone":"America/Chicago"},"prompt":"from file\n","workflow":"implement","auto_approve":false,"overlap":"allow"}}`)
+}
+
+func TestProjectScheduleCreateUsageErrorsSendNothing(t *testing.T) {
+	base := []string{"schedule", "create", "--project-id", "p", "--name", "n", "--prompt", "x", "--workflow", "implement"}
+	cases := map[string][]string{
+		"every and cron together": append(append([]string{}, base...), "--every", "1h", "--cron", "0 9 * * *"),
+		"neither every nor cron":  append([]string{}, base...),
+		"no prompt":               {"schedule", "create", "--project-id", "p", "--name", "n", "--every", "1h", "--workflow", "implement"},
+		"prompt and prompt-file":  append(append([]string{}, base...), "--every", "1h", "--prompt-file", "/nonexistent"),
+		"invalid overlap":         append(append([]string{}, base...), "--every", "1h", "--overlap", "queue"),
+		"missing project id":      {"schedule", "create", "--name", "n", "--every", "1h", "--prompt", "x"},
+	}
+
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, seen := scheduleTestServer(t, http.StatusCreated, `{}`)
+
+			err := runProject(c, args)
+			var usageErr *client.UsageError
+			if !errors.As(err, &usageErr) {
+				t.Fatalf("err = %v, want usage error", err)
+			}
+			if client.ExitCode(err) != 1 {
+				t.Fatalf("exit code = %d, want 1", client.ExitCode(err))
+			}
+			if len(*seen) != 0 {
+				t.Fatalf("requests = %d, want 0", len(*seen))
+			}
+		})
+	}
+}
+
+func TestProjectScheduleListTableAndJSON(t *testing.T) {
+	const response = `{"ticker":"disabled","schedules":[` +
+		`{"schedule_id":"sch-1","project_id":"p","name":"nightly","spec":{"every":"1h"},"timezone":"UTC","prompt":"x","workflow":"implement","auto_approve":true,"overlap":"skip","status":"active","next_fire_at":"2026-10-21T10:00:00Z","last_outcome":{"kind":"skipped","slot":3,"reason":"overlap","missed_count":null,"at":"2026-10-21T09:00:00Z"},"last_task_id":null},` +
+		`{"schedule_id":"sch-2","project_id":"p","name":"weekdays","spec":{"cron":"0 9 * * 1-5"},"timezone":"UTC","prompt":"y","workflow":"implement","auto_approve":true,"overlap":"skip","status":"paused","next_fire_at":null,"last_outcome":{"kind":"fired","slot":1,"reason":null,"missed_count":null,"at":"2026-10-20T09:00:00Z"},"last_task_id":"t-1"}]}`
+
+	c, seen := scheduleTestServer(t, http.StatusOK, response)
+
+	stdout := captureStdout(t, func() {
+		if err := runProject(c, []string{"schedule", "list", "--project-id", "p"}); err != nil {
+			t.Fatalf("schedule list: %v", err)
+		}
+	})
+
+	if len(*seen) != 1 || (*seen)[0].method != http.MethodGet || (*seen)[0].path != "/api/projects/p/schedules" {
+		t.Fatalf("requests = %+v, want one GET /api/projects/p/schedules", *seen)
+	}
+	for _, want := range []string{"ID", "NAME", "SPEC", "STATUS", "NEXT FIRE", "LAST OUTCOME", "sch-1", "nightly", "every 1h", "active", "2026-10-21T10:00:00Z", "skipped: overlap", "sch-2", "cron 0 9 * * 1-5", "paused", "fired", "ticker: disabled", "will not fire"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout)
+		}
+	}
+
+	jsonOut := captureStdout(t, func() {
+		if err := runProject(c, []string{"schedule", "list", "--project-id", "p", "--json"}); err != nil {
+			t.Fatalf("schedule list --json: %v", err)
+		}
+	})
+
+	var got, want any
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\n%s", err, jsonOut)
+	}
+	if err := json.Unmarshal([]byte(response), &want); err != nil {
+		t.Fatalf("decode expected: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("--json output = %s, want %s", jsonOut, response)
+	}
+}
+
+func TestProjectScheduleListRunningTickerHasNoWarning(t *testing.T) {
+	c, _ := scheduleTestServer(t, http.StatusOK, `{"ticker":"running","schedules":[]}`)
+
+	stdout := captureStdout(t, func() {
+		if err := runProject(c, []string{"schedule", "list", "--project-id", "p"}); err != nil {
+			t.Fatalf("schedule list: %v", err)
+		}
+	})
+
+	if !strings.Contains(stdout, "ticker: running") || strings.Contains(stdout, "warning") {
+		t.Fatalf("stdout = %q, want running ticker without warning", stdout)
+	}
+}
+
+func TestProjectScheduleLifecycleVerbs(t *testing.T) {
+	for _, verb := range []string{"pause", "resume", "delete"} {
+		t.Run(verb, func(t *testing.T) {
+			c, seen := scheduleTestServer(t, http.StatusCreated, `{"status":"accepted","result":{"project_id":"p","schedule_id":"s1"}}`)
+
+			stdout := captureStdout(t, func() {
+				if err := runProject(c, []string{"schedule", verb, "--project-id", "p", "--id", "s1"}); err != nil {
+					t.Fatalf("schedule %s: %v", verb, err)
+				}
+			})
+
+			if len(*seen) != 1 {
+				t.Fatalf("requests = %d, want 1", len(*seen))
+			}
+			assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.`+verb+`","payload":{"project_id":"p","schedule_id":"s1"}}`)
+			if !strings.Contains(stdout, "s1") {
+				t.Fatalf("stdout = %q, want schedule id", stdout)
+			}
+		})
+	}
+
+	c, seen := scheduleTestServer(t, http.StatusCreated, `{}`)
+	if err := runProject(c, []string{"schedule", "pause", "--project-id", "p"}); client.ExitCode(err) != 1 || len(*seen) != 0 {
+		t.Fatalf("missing --id: err=%v requests=%d, want usage error and no request", err, len(*seen))
+	}
+}
+
+func TestProjectScheduleCreateRejectionPrintsServerError(t *testing.T) {
+	const code = `{:invalid_schedule_spec, :every, :below_minimum}`
+	c, seen := scheduleTestServer(t, http.StatusUnprocessableEntity, `{"error":"`+code+`"}`)
+
+	err := runProject(c, []string{"schedule", "create", "--project-id", "p", "--name", "n", "--every", "1s", "--prompt", "x", "--workflow", "implement"})
+	if err == nil {
+		t.Fatal("schedule create: want error for 422")
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %d, want 1", len(*seen))
+	}
+	if !strings.Contains(err.Error(), code) {
+		t.Fatalf("error = %q, want server code text %q", err.Error(), code)
+	}
+	var httpErr *client.Error
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("err = %v, want *client.Error with status 422", err)
+	}
+	if client.ExitCode(err) == 0 {
+		t.Fatal("exit code = 0, want non-zero")
+	}
 }

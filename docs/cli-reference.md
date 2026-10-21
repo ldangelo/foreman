@@ -355,6 +355,10 @@ Print a project's status, settings and live limits (`GET /api/projects/<id>/sett
 
 `pause [--reason <text>]` refuses new work (`task.create`, run reservation, jobsite start, BeadsWatcher imports) with `{:project_paused, id}` while in-flight runs continue; it is reversible. `resume` restores admission and re-admits held work. `reactivate` un-archives an archived project. Each takes `--idempotency-key <key>`.
 
+### `foreman project schedule list|create|pause|resume|delete`
+
+Manage a project's scheduled tasks. `list --project-id <id> [--json]` prints ID, NAME, SPEC, STATUS, NEXT FIRE and LAST OUTCOME plus a `ticker: running|disabled` line (schedules do not fire while the ticker is disabled). `create --project-id <id> --name <n> (--every <30m> | --cron "<expr>") [--timezone <tz>] (--prompt <text> | --prompt-file <path>) --workflow <w> [--auto-approve=false] [--overlap skip|allow] [--id <schedule-id>]` posts `schedule.create` (exactly one of `--every`/`--cron`; `--overlap` defaults to `skip`, `--auto-approve` to true). `pause|resume|delete --project-id <id> --id <schedule-id>` post `schedule.pause|resume|delete`. Server rejections (e.g. `{:invalid_schedule_spec, :every, :below_minimum}`) are printed verbatim with a non-zero exit.
+
 ### `foreman project delete <id>`
 
 Archive a project (**not** a purge: runs, tasks and event history are kept; reactivate with `foreman project reactivate <id>`). The server rejects the archive while active runs remain.

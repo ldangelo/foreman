@@ -110,9 +110,9 @@ vocabulary cannot be enumerated statically until that channel is closed.
 | `ToolCallApproved` | ToolCall | ✗ | missing (conditional if/else) |
 | `ToolCallDenied` | ToolCall | ✗ | missing (conditional if/else) |
 | `ToolCallFinished` | ToolCall | ✗ | missing |
-| `SchedulerTicked` | Scheduler | ✗ | missing |
-| `SchedulerTaskClaimed` | Scheduler | ✗ | missing |
-| `SchedulerTaskSkipped` | Scheduler | ✗ | missing |
+| `SchedulerTicked` | Scheduler | n/a | removed: the unrouted `Aggregates.Scheduler` was deleted; scheduling is `Aggregates.Schedule` + `Schedule.Ticker` (see user-guide §12) |
+| `SchedulerTaskClaimed` | Scheduler | n/a | removed (see above) |
+| `SchedulerTaskSkipped` | Scheduler | n/a | removed (see `ScheduleFireSkipped`) |
 | `InteractiveRecoveryResumed` | Recovery | ✗ | missing |
 | `RecoveryResolved` | Recovery | ✗ | missing |
 | `PlanningFlowStarted` | PlanningFlow | ✗ | missing |
@@ -346,10 +346,8 @@ state. Production use requires it.
 ### 12. Scheduler Runtime — Domain Parity
 
 **What must work:**
-- `Scheduler` GenServer ticks periodically
-- `SchedulerTicked` events are emitted
-- `SchedulerTaskClaimed` / `SchedulerTaskSkipped` handle task scheduling
-- Scheduled runs are triggered automatically
+- Implemented as `Schedule.Ticker` (supervised GenServer) over `Aggregates.Schedule`; `ScheduleFired` / `ScheduleFireSkipped` replace the removed `SchedulerTicked` / `SchedulerTaskClaimed` / `SchedulerTaskSkipped`
+- Scheduled runs are triggered automatically (user-guide §12)
 
 **Why:** `main` has this. Without a scheduler, all runs must be triggered manually.
 

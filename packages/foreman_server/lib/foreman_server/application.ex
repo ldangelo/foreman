@@ -132,6 +132,7 @@ defmodule ForemanServer.Application do
         maybe_review_children() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
+        maybe_schedule_ticker_child() ++
         maybe_trigger_poller_child() ++
         maybe_lifecycle_reconciler_child() ++
         maybe_jido_signal_bus_child() ++
@@ -561,6 +562,12 @@ defmodule ForemanServer.Application do
   # They start after CommandRouter and ProjectionStore, which they dispatch into.
   defp maybe_pr_monitor_child do
     if ForemanServer.PrMonitor.enabled?(), do: [ForemanServer.PrMonitor], else: []
+  end
+
+  # After ProjectionStore and CommandRouter (earlier in this list) so the first
+  # tick and boot recovery can read projections and dispatch commands.
+  defp maybe_schedule_ticker_child do
+    if ForemanServer.Schedule.Ticker.enabled?(), do: [ForemanServer.Schedule.Ticker], else: []
   end
 
   defp maybe_trigger_poller_child do

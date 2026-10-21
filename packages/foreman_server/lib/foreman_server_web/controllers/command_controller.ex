@@ -22,7 +22,8 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen)
+  @allowed_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @schedule_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -135,6 +136,36 @@ defmodule ForemanServerWeb.CommandController do
 
       true ->
         {:error, :aggregate_id_mismatch}
+    end
+  end
+
+  # Schedules live on the composite stream `schedule:<project_id>:<schedule_id>`,
+  # so the `<prefix>:<id>` derivation below cannot build it. `schedule.create`
+  # with no `schedule_id` returns a nil aggregate id and the gateway generates
+  # one, like the no-id `task.create` above.
+  defp resolve_aggregate_id(type, payload, params) when type in @schedule_types do
+    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+    schedule_id = get_value(payload, :schedule_id) || get_value(payload, "schedule_id")
+    supplied = get_value(params, :aggregate_id) || get_value(params, "aggregate_id")
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, :missing_id_field}
+
+      type == "schedule.create" and is_nil(schedule_id) and (is_nil(supplied) or supplied == "") ->
+        {:ok, nil}
+
+      not is_binary(schedule_id) or schedule_id == "" ->
+        {:error, :missing_id_field}
+
+      true ->
+        expected_id = ForemanServer.Aggregates.Schedule.stream_id(project_id, schedule_id)
+
+        cond do
+          is_nil(supplied) or supplied == "" -> {:ok, expected_id}
+          supplied == expected_id -> {:ok, supplied}
+          true -> {:error, :aggregate_id_mismatch}
+        end
     end
   end
 
@@ -257,6 +288,14 @@ defmodule ForemanServerWeb.CommandController do
         |> maybe_put_serialized(:external_id, external_id)
         |> maybe_put_serialized(:approval_id, approval_id)
         |> maybe_put_serialized(:run_id, run_id)
+
+      # Schedule events carry both ids; the caller needs `schedule_id` (it is
+      # generated server-side when `schedule.create` supplies none).
+      is_map(payload) and is_binary(get_value(payload, :schedule_id)) ->
+        %{
+          project_id: get_value(payload, :project_id),
+          schedule_id: get_value(payload, :schedule_id)
+        }
 
       is_map(payload) and is_binary(get_value(payload, :project_id)) ->
         %{project_id: get_value(payload, :project_id)}

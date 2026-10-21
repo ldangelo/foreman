@@ -53,47 +53,89 @@ defmodule ForemanServer.RecoveryTest do
     end
   end
 
-  describe "detect_unconfirmed_intents/1" do
-    test "returns {:ok, 0} when no intents are pending" do
-      IO.puts("[detect-returns-0] counter=#{System.unique_integer([:positive])}")
-      assert {:ok, 0} = Recovery.detect_unconfirmed_intents([])
+  describe "interrupted_intents/2" do
+    # Seeds through the projection with an explicit event time so the age filter
+    # is exercised against real recorded/confirmed/stale intents.
+    defp seed_intent(id, status, at_ms) do
+      base = %{intent_id: id, schedule_id: "s", project_id: "p", slot: 1}
+
+      events =
+        [%{event_type: "ScheduledFireRecorded", payload: base}] ++
+          case status do
+            "recorded" -> []
+            "confirmed" -> [%{event_type: "ScheduledFireConfirmed", payload: %{intent_id: id}}]
+            "skipped" -> [%{event_type: "ScheduledFireSkipped", payload: %{intent_id: id}}]
+            "stale" -> [%{event_type: "SchedulerIntentStale", payload: %{intent_id: id}}]
+          end
+
+      # The projection stamps `recorded_at` from this per-process clock hook.
+      Process.put(:projection_store_now_ms, fn -> at_ms end)
+      :ok = ProjectionStore.apply_events(events)
+      Process.delete(:projection_store_now_ms)
+      :ok
     end
 
-    test "emits a scheduler_intent.mark_stale for recorded intents" do
-      intent_id = fresh_intent_id()
-      IO.puts("[emits-mark-stale] intent_id=#{intent_id}")
+    test "returns only recorded intents older than the grace, never terminal ones" do
+      now = 10_000_000
+      grace = 300_000
 
-      {:ok, record_result} =
-        Recovery.record_intent(intent_id, %{
-          intent_id: intent_id,
-          run_id: "r-1",
-          scheduled_at: DateTime.to_iso8601(DateTime.utc_now())
-        })
+      seed_intent("old-recorded", "recorded", now - 600_000)
+      seed_intent("fresh-recorded", "recorded", now - 1_000)
+      seed_intent("old-confirmed", "confirmed", now - 600_000)
+      seed_intent("old-skipped", "skipped", now - 600_000)
+      seed_intent("old-stale", "stale", now - 600_000)
 
-      IO.inspect(record_result, label: "[emits-mark-stale] record_result")
-
-      intents = ProjectionStore.list_scheduler_intents()
-      IO.inspect(intents, label: "[emits-mark-stale] list_scheduler_intents after record")
-
-      assert {:ok, count} = Recovery.detect_unconfirmed_intents([])
-      IO.inspect(count, label: "[emits-mark-stale] detect count")
-      assert count >= 1
+      assert ["old-recorded"] ==
+               Enum.map(Recovery.interrupted_intents(now, grace), & &1.intent_id)
     end
 
-    test "does not re-flag an intent already confirmed" do
+    test "the grace boundary is exclusive and the function is pure over its arguments" do
+      seed_intent("edge", "recorded", 1_000)
+
+      assert [] = Recovery.interrupted_intents(1_000 + 300_000, 300_000)
+      assert [%{intent_id: "edge"}] = Recovery.interrupted_intents(1_000 + 300_001, 300_000)
+      # Same inputs, same answer, and nothing was written.
+      assert Recovery.interrupted_intents(1_000 + 300_001, 300_000) ==
+               Recovery.interrupted_intents(1_000 + 300_001, 300_000)
+
+      assert %{status: "recorded"} =
+               Enum.find(ProjectionStore.list_scheduler_intents(), &(&1.intent_id == "edge"))
+    end
+  end
+
+  describe "mark_interrupted/1" do
+    test "appends exactly one SchedulerIntentStale however often it is called" do
       intent_id = fresh_intent_id()
-      IO.puts("[does-not-reflag] intent_id=#{intent_id}")
 
       {:ok, _} =
-        Recovery.record_intent(intent_id, %{
-          intent_id: intent_id,
-          run_id: "r-1",
-          scheduled_at: DateTime.to_iso8601(DateTime.utc_now())
-        })
+        Recovery.record_intent(intent_id, %{run_id: "r-1", scheduled_at: "2026-01-01T00:00:00Z"})
 
+      [intent] =
+        Enum.filter(ProjectionStore.list_scheduler_intents(), &(&1.intent_id == intent_id))
+
+      assert {:ok, first} = Recovery.mark_interrupted(intent)
+      assert {:ok, ^first} = Recovery.mark_interrupted(intent)
+
+      {:ok, events} =
+        ForemanServer.EventStore.read_stream_forward("scheduler_intent:" <> intent_id, 0, 99)
+
+      assert Enum.map(events, & &1.event_type) == [
+               "ScheduledFireRecorded",
+               "SchedulerIntentStale"
+             ]
+
+      assert %{status: "stale"} =
+               Enum.find(ProjectionStore.list_scheduler_intents(), &(&1.intent_id == intent_id))
+    end
+
+    test "a dispatch failure is returned as an error tuple, not folded into success" do
+      # No such intent stream state: confirm it first so mark_stale is terminal.
+      intent_id = fresh_intent_id()
+      {:ok, _} = Recovery.record_intent(intent_id, %{run_id: "r-1"})
       {:ok, _} = Recovery.confirm_execution(intent_id)
 
-      assert {:ok, 0} = Recovery.detect_unconfirmed_intents([])
+      assert {:error, {:scheduler_intent_terminal, "confirmed"}} =
+               Recovery.mark_interrupted(%{intent_id: intent_id})
     end
   end
 
