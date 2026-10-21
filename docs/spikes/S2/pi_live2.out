@@ -1,0 +1,20 @@
+Info: Running script "/tmp/s2run2.sh" on /tmp/cp-wt/spikes
+devbox shell  ::  foreman.jido-migration  ::  Erlang/OTP 28 [erts-16.4.0.5] [source] [64-bit] [smp:18:18] [ds:18:18:10] [async-threads:1] [jit]
+
+Mix 1.20.4 (compiled with Erlang/OTP 28)
+[+84ms] pi procs after start: "2142   778 /Applications/zoom.us.app/Contents/Frameworks/caphost.app/Contents/MacOS/caphost -pid 778 -evtname caphost778 -key rpc"
+[+4454ms] before interrupt: "2142   778 /Applications/zoom.us.app/Contents/Frameworks/caphost.app/Contents/MacOS/caphost -pid 778 -evtname caphost778 -key rpc\n74804 72509 node /Users/ldangelo/.pi/agent/npm/node_modules/.bin/hypa --timeout-ms 130000 -c sleep 117\n74806 74804 /Users/ldangelo/.pi/agent/npm/node_modules/@hypabolic/hypa-darwin-arm64/bin/hypa --timeout-ms 130000 -c sleep 117\n74840 74806 sleep 117"
+[+4455ms] interrupt: :ok
+[+4456ms] await: %{status: :interrupted, text: ""}
+[+5507ms] after interrupt: "2142   778 /Applications/zoom.us.app/Contents/Frameworks/caphost.app/Contents/MacOS/caphost -pid 778 -evtname caphost778 -key rpc"
+[+5507ms] info: %{state: :idle, active_turn_id: nil}
+[+5509ms] interrupt-related events: [session_idle: %{}, turn_interrupted: %{"reason" => "interrupted"}, session_idle: %{}, turn_completed: %{}]
+[+6589ms] after close: "2142   778 /Applications/zoom.us.app/Contents/Frameworks/caphost.app/Contents/MacOS/caphost -pid 778 -evtname caphost778 -key rpc"
+[+6594ms] bogus resume start: :ok
+[+8994ms] bogus resume turn: %{status: :failed, text: "", provider_session_id: "00000000-dead-beef-0000-000000000000"}
+[+8995ms] bogus events: [session_started: %{}, session_ready: %{}, session_idle: %{}, input_accepted: %{}, turn_started: %{}, turn_failed: %{"error" => "%{\"exit_status\" => 1, \"reason\" => \"{:exit_status, 256}\"}"}, session_idle: %{}]
+[+8996ms] bogus info: %{error: nil, state: :idle}
+07:08:57.078 module=gen_server [error] GenServer #PID<0.498.0> terminating
+** (stop) {:process_failed, :failed}
+Last message: {:pi_process_event, %Jido.Harness.ProcessEvent{data: %{"exit_status" => 1, "reason" => "{:exit_status, 256}"}, stream: nil, timestamp: "2026-10-21T12:08:57.058260Z", type: :failed, sequence: 3, process_id: "proc_kYMndRZVbQA7uK5rWeQsRmrO", metadata: %{}}}
+State: %{owner: #PID<0.496.0>, stream: #Function<53.126355804/2 in Stream.resource/3>, request: %Jido.Harness.SessionRequest{cwd: "/tmp/s2-scratch-pi2", provider: :pi, transport: :rpc, provider_session_id: "00000000-dead-beef-0000-000000000000", mcp_config: nil, reasoning_effort: nil, model: "MiniMax-M2.7-highspeed", system_prompt: nil, allowed_tools: nil, disallowed_tools: nil, add_dirs: nil, env: %{}, metadata: %{}, provider_options: %{model_provider: "minimax"}, approval_mode: :default, sandbox_mode: :default, env_mode: :overlay, turn_runtime_timeout_ms: :infinity, retention: %{}, approval_timeout_ms: :infinity, turn_idle_timeout_ms: :infinity, session_idle_timeout_ms: :infinity}, buffer: "", context: %{owner: #PID<0.496.0>, config: %{}, session_id: "session_A-cSgfbXvT1hgHuLIp6tWL3X", provider: :pi, process_manager: Jido.Harness.ProcessManager, adapter: Jido.Harness.Adapters.Pi, telemetry_context: %{session_id: "session_A-cSgfbXvT1hgHuLIp6tWL3X", provider: :pi, transport: :rpc}}, reader: %Task{mfa: {:erlang, :apply, 2}, owner: #PID<0.498.0>, pid: #PID<0.502.0>, ref: #Reference<0.0.63747.3783454625.2949121.169888>}, process_id: "proc_kYMndRZVbQA7uK5rWeQsRmrO", active_turn_id: "turn_PXzT3rwfCieAeTKyWGiaCswp", provider_session_id: "00000000-dead-beef-0000-000000000000", interrupted_turn_id: nil, closing?: false}
