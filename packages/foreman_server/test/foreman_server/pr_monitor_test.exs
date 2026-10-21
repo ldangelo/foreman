@@ -5,6 +5,8 @@ defmodule ForemanServer.PrMonitorTest do
   alias ForemanServer.PrAssociate
   alias ForemanServer.PrMonitor
 
+  import ForemanServer.TestSupport.Eventually, only: [put_env_for_test: 3]
+
   setup do
     :persistent_term.erase({PrMonitor, :fetch_fun})
 
@@ -23,28 +25,20 @@ defmodule ForemanServer.PrMonitorTest do
 
   describe "interval and enabled helpers" do
     test "interval_ms/0 returns env override when set" do
-      original = Application.get_env(:foreman_server, :pr_monitor_interval_ms)
-
-      Application.put_env(:foreman_server, :pr_monitor_interval_ms, 60_000)
+      put_env_for_test(:foreman_server, :pr_monitor_interval_ms, 60_000)
       assert PrMonitor.interval_ms() == 60_000
-
-      Application.put_env(:foreman_server, :pr_monitor_interval_ms, original)
     end
 
     test "interval_ms/0 returns default 5 minutes when unset" do
-      original = Application.get_env(:foreman_server, :pr_monitor_interval_ms)
-      Application.delete_env(:foreman_server, :pr_monitor_interval_ms)
+      put_env_for_test(:foreman_server, :pr_monitor_interval_ms, nil)
       assert PrMonitor.interval_ms() == 300_000
-      Application.put_env(:foreman_server, :pr_monitor_interval_ms, original)
     end
 
     test "enabled?/0 reflects env" do
-      original = Application.get_env(:foreman_server, :pr_monitor_enabled)
-      Application.put_env(:foreman_server, :pr_monitor_enabled, true)
+      put_env_for_test(:foreman_server, :pr_monitor_enabled, true)
       assert PrMonitor.enabled?() == true
       Application.put_env(:foreman_server, :pr_monitor_enabled, false)
       refute PrMonitor.enabled?() == true
-      Application.put_env(:foreman_server, :pr_monitor_enabled, original)
     end
   end
 

@@ -244,6 +244,22 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         phase_specs: phase_specs
       }
 
+      on_exit(fn ->
+        for mod <-
+              [
+                ForemanServer.ProjectionStore,
+                ForemanServer.RunAdmission,
+                ForemanServer.CommandRouter,
+                ForemanServer.Workflow.RunSupervisor
+              ] do
+          try do
+            :meck.unload(mod)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+      end)
+
       :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
       :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
       :meck.new(ForemanServer.CommandRouter, [:no_link, :passthrough])
@@ -267,22 +283,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _, _ ->
         send(parent, :start_run_called)
         {:ok, :started}
-      end)
-
-      on_exit(fn ->
-        for mod <-
-              [
-                ForemanServer.ProjectionStore,
-                ForemanServer.RunAdmission,
-                ForemanServer.CommandRouter,
-                ForemanServer.Workflow.RunSupervisor
-              ] do
-          try do
-            :meck.unload(mod)
-          catch
-            :exit, _ -> :ok
-          end
-        end
       end)
 
       send_envelope(%{event_type: "TaskDispatched", data: %{task_id: task_id}})
@@ -326,6 +326,21 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         phase_specs: phase_specs
       }
 
+      on_exit(fn ->
+        for mod <-
+              [
+                ForemanServer.ProjectionStore,
+                ForemanServer.RunAdmission,
+                ForemanServer.Workflow.RunSupervisor
+              ] do
+          try do
+            :meck.unload(mod)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+      end)
+
       :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
       :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
@@ -342,21 +357,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _, _ ->
         send(parent, :start_run_called)
         {:ok, :started}
-      end)
-
-      on_exit(fn ->
-        for mod <-
-              [
-                ForemanServer.ProjectionStore,
-                ForemanServer.RunAdmission,
-                ForemanServer.Workflow.RunSupervisor
-              ] do
-          try do
-            :meck.unload(mod)
-          catch
-            :exit, _ -> :ok
-          end
-        end
       end)
 
       send_envelope(%{event_type: "TaskDispatched", data: %{task_id: task_id}})
@@ -385,15 +385,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       # RunPayload.from_task_projection/1, which -- because a restart
       # replays the SAME history again -- crash-looped and exhausted the
       # supervisor's restart budget (506 failures in one CI run).
-      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
-
-      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
-        ^task_id -> %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}
-        other -> :meck.passthrough([other])
-      end)
-
-      :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
-
       on_exit(fn ->
         try do
           :meck.unload(ForemanServer.ProjectionStore)
@@ -407,6 +398,15 @@ defmodule ForemanServer.Workflow.DispatcherTest do
           :exit, _ -> :ok
         end
       end)
+
+      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
+
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
+        ^task_id -> %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}
+        other -> :meck.passthrough([other])
+      end)
+
+      :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
 
       assert {:noreply, %{}} =
                Dispatcher.handle_info(
