@@ -22,6 +22,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project get       --format
 > foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
 > foreman project settings  --format
+> foreman project context   --format
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
 > foreman project reactivate --idempotency-key
@@ -317,6 +318,15 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 ### `foreman project settings <id>`
 
 Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`. `--format json` prints the raw response. `config.env` values are never shown.
+
+### `foreman project context <id>`
+
+Print the standing context an agent launched now would receive (`GET /api/projects/<id>/context`, read-only): project instructions, repositories and the memory index, exactly as injected. `--format json` returns `system_text`, `bytes`, `sha256`, `sections`, `truncated` (sections cut to fit the budget) and `redactions`. A project with no instructions or memory prints `no standing context`; an unknown project exits non-zero.
+
+```
+foreman project context project-123
+foreman project context --format json project-123
+```
 
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 

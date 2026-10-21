@@ -310,3 +310,47 @@ func TestProjectDeleteWordingSaysArchiveAndReactivate(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectContextPrintsTextOrJSON(t *testing.T) {
+	resp := `{"project_id":"p1","system_text":"## Project instructions\nNever touch vendor/","bytes":43,"sha256":"abc","sections":[{"id":"instructions","bytes":18}],"truncated":[],"redactions":0}`
+	c, rec := recordingServer(t, http.StatusOK, resp)
+	stdout := captureStdout(t, func() {
+		if err := runProject(c, []string{"context", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if rec.method != http.MethodGet || rec.path != "/api/projects/p1/context" {
+		t.Fatalf("request = %s %s", rec.method, rec.path)
+	}
+	if !strings.Contains(stdout, "Never touch vendor/") {
+		t.Fatalf("stdout missing context text:\n%s", stdout)
+	}
+
+	c, _ = recordingServer(t, http.StatusOK, resp)
+	jsonOut := captureStdout(t, func() {
+		if err := projectContext(c, []string{"--format=json", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &decoded); err != nil || decoded["sha256"] != "abc" {
+		t.Fatalf("json output %q: %v", jsonOut, err)
+	}
+
+	empty, _ := recordingServer(t, http.StatusOK, `{"project_id":"p2","system_text":null,"bytes":0,"sha256":null,"sections":[],"truncated":[],"redactions":0}`)
+	out := captureStdout(t, func() {
+		if err := projectContext(empty, []string{"p2"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "no standing context") {
+		t.Fatalf("empty context output = %q", out)
+	}
+}
+
+func TestProjectContextUnknownProjectIsAnError(t *testing.T) {
+	c, _ := recordingServer(t, http.StatusNotFound, `{"error":"not_found","reason":":project_not_found"}`)
+	if err := projectContext(c, []string{"ghost"}); err == nil {
+		t.Fatal("expected an error for an unknown project")
+	}
+}

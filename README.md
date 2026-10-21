@@ -271,6 +271,8 @@ The MCP `foreman_inbox_send` write tool appends concise run progress notes to th
 
 Project memory (`<project>/.foreman/memory/`, `MEMORY.md` index plus topic files; redacted, size-capped, audited by `ProjectMemoryWritten`/`ProjectMemoryForgotten` events) is exposed through the MCP tools `foreman_project_memory_list` / `foreman_project_memory_read` and the write-gated `foreman_project_memory_write` / `foreman_project_memory_forget`, the HTTP endpoints `/api/projects/:id/memory[/:name|/sync]`, and `foreman project memory list|read|write|forget|sync`. See the user guide section "Project memory".
 
+Standing context: every agent launch (workflow phases and jobsite iterations) receives the project instructions, repository list and memory index as its system prompt, built by `ForemanServer.ProjectContext.build/2` with a byte budget and visible truncation markers. Inspect it with `foreman project context <project-id>` / `GET /api/projects/:id/context`. See the user guide section "Standing context".
+
 `foreman_run_status` returns a bounded run-status DTO from run and phase projections: `run_id`, `status`, `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`, timestamps, and `failure_reason`.
 
 `foreman_run_get_logs` reads the Elixir projection of durable worker stdout/stderr events. Known runs with no captured output return an empty result and unknown runs return `NOT_FOUND`, so "wrote nothing" is never confused with "no such run". The read is bounded (latest 500 of at most 5,000 entries / 1 MiB retained per run) and reports eviction as `truncated: true` with non-zero `omitted_entries`.

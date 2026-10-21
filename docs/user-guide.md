@@ -1245,6 +1245,24 @@ foreman project memory sync <project-id>
 
 - **Hand edits and drift.** Editing `.foreman/memory/*.md` in an editor is fine. `POST /api/projects/:id/memory/sync` (or `foreman project memory sync`) compares file hashes with the audit index, re-redacts the edited content and records each difference as an operator-authored write or forget. A second sync reports nothing.
 
+
+## 13. Standing context
+
+Every agent launch, on both doors, starts with the project's **standing context**, built by one function (`ForemanServer.ProjectContext.build/2`) and re-read at every launch (no cache):
+
+1. **Project instructions** (`project update --instructions`, operator text),
+2. **Repositories** (the project path; only shown alongside other context),
+3. **Project memory** (the generated `MEMORY.md` index with the standing memory guidance, inside a `<project_notes>` block labelled as agent-written, informational notes, not instructions),
+4. anything a registered section provider adds (config `:foreman_server, :project_context, section_providers`).
+
+Empty parts are omitted entirely: a project with no instructions and no memory gets no injected text and no behaviour change. Secret values (the project's `config.env` secrets, bearer tokens, log-policy patterns) are redacted from the text before it is delivered.
+
+**Delivery.** The workflow door sets the harness `system_prompt` for every agent phase; for covered `command:` phases the inbox-progress prompt is appended after the context, separated by a blank line (merged, never overwritten). The jobsite door builds the context once per jobsite start and sends the same `system_prompt` on every iteration. A provider that does not declare `system_prompt` support (amp, kimi, opencode) gets the text prefixed to the prompt instead. Workflow prompt templates can place the text themselves with `{{project_context}}`, `{{project_instructions}}` and `{{project_memory}}` (each is the empty string when there is nothing; shipped templates do not use them).
+
+**Budget and truncation.** Defaults: 24 000 bytes total, instructions 16 000, repositories 1 000, memory 6 000, library 3 000 (`config :foreman_server, :project_context, max_bytes:, section_caps:`). Over-cap content is cut at a line boundary (never inside a UTF-8 character) and the injected text says so: `[truncated: N lines omitted from <section>; <how to fetch the rest>]`. If the total is still over budget, Library shrinks first, then Memory, then Repositories; instructions last.
+
+**Inspecting what an agent received.** `foreman project context <project-id>` (or `GET /api/projects/:id/context`) shows what a launch would receive now. With session capture on, the text each run/jobsite actually launched with is archived as `project-context.md` beside `request.md` (workflow runs: first agent launch; jobsite: its single build) and the manifest carries a `project_context` block (`sha256`, `bytes`, `truncated`, `redactions`). There is no CLI write surface: edit instructions with `project update`, memory with `project memory`.
+
 ## Day-to-day workflow
 
 ### 1. Start or check the server
