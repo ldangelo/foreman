@@ -269,6 +269,7 @@ foreman project settings project-123
 | `coordinator_provider` (`pi`/`claude`), `coordinator_model`, `coordinator_effort` | | Stored and validated for the coordinator (consumed by the coordinator epic) |
 | `max_concurrent_runs` | 1..1000 | Runs the project may have active at once |
 | `daily_thread_cap` | 1..10000 | Threads (workflow runs plus jobsites) the project may start per UTC day |
+| `library_collect_produced` | `true`/`false` | Register each run's artifacts and session-archive files in the project library (default off; see 12.2) |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim
@@ -1164,7 +1165,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 `database_path` stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
-`max_concurrent_runs`, `daily_thread_cap`, `clear`, `idempotency_key`; nothing
+`max_concurrent_runs`, `daily_thread_cap`, `library_collect_produced`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
@@ -1426,6 +1427,18 @@ foreman project memory sync <project-id>
 ```
 
 - **Hand edits and drift.** Editing `.foreman/memory/*.md` in an editor is fine. `POST /api/projects/:id/memory/sync` (or `foreman project memory sync`) compares file hashes with the audit index, re-redacts the edited content and records each difference as an operator-authored write or forget. A second sync reports nothing.
+
+## 12.2 Project library
+
+Each project can hold a **library**: files and folders that every agent thread can read, like Claude's project knowledge. Agents never write to it directly.
+
+- **Location.** `<project path>/.foreman/library/<entry_id>/files/...` plus an `entry.json` per entry. Only `.foreman/library/` is gitignored (added to `.foreman/.gitignore` on first use); `.foreman/Dockerfile`, `.foreman/bead.exs` and `.foreman/pi-models.json` stay tracked. The bytes never enter the event log: `ProjectLibraryAdded` / `ProjectLibraryReplaced` / `ProjectLibraryRemoved` carry metadata only.
+- **Limits (mirroring Claude).** At most 100 files per add and 480 MB per file. A folder add takes the first 100 eligible files (sorted path order) up to 200 MB total, skipping hidden files and directories, `node_modules`, symlinks and files over 30 MB; at most 10 folders per project. Every skipped file is reported back with a reason (`hidden`, `node_modules`, `symlink`, `not_regular`, `over_30mb`, `folder_file_cap`, `folder_byte_budget`), never silently dropped. All limits are under `config :foreman_server, :library`.
+- **Read-only delivery.** Agents on both doors get `FOREMAN_LIBRARY_PATH` when the library is non-empty: the absolute host directory for workflow runs and host-sandbox jobsites, and a read-only bind mount at `/library` for docker jobsites. Nothing is copied or linked into the worktree (Foreman commits the whole worktree). On the host, files are `chmod` read-only, which is advisory because agents run as the same user; the docker mount is the real guarantee.
+- **Standing context.** The library index (entry names, kinds and file lists) is a "Project library" section of the standing context (see section 13); file contents are never inlined.
+- **Thread-produced files (opt-in).** With `foreman project update --library-collect-produced <project-id>`, each completed phase's artifact and the run's session-archive `analysis.md` / `diff.patch` are registered into one `produced-<run_id>` entry, idempotently per path and content, within `produced_max_files_per_run` (100) and `produced_max_bytes_per_run` (50 MB), and only from the run's own directories. Off by default because registering every run's output clutters the library. Copied files are not redacted: they are agent output with the same exposure as the run's git branch.
+- **Operators** use the CLI (`foreman project library list|add|replace|remove`, see the CLI reference) or the HTTP endpoints `/api/projects/:id/library`. **Agents** use the read-only MCP tools `foreman_project_library_list` and `foreman_project_library_read` (files up to 1 MiB per read).
+
 ## 12.1 Scheduled tasks
 
 A project can own **schedules**: a prompt, a workflow and a timetable. Each time a

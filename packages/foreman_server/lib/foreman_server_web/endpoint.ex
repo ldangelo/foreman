@@ -15,6 +15,8 @@ defmodule ForemanServerWeb.Endpoint do
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
 
+  plug(ForemanServerWeb.Plugs.LibraryUploadParser)
+
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],

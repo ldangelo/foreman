@@ -14,6 +14,10 @@ defmodule ForemanServer.Library.Ingest do
       then the first `folder_max_files` remaining files are taken until the next file
       would push the total over `folder_max_bytes`. Everything left out is reported
       with a reason; an empty selection is `:folder_empty`.
+    * `{:folder_files, [%{relative_path:, source_path:}]}` - an uploaded folder (the
+      client sends the tree as files with relative paths). Same eligibility and
+      selection rules as `{:folder, path}`, applied to the relative paths; skipped
+      entries carry the uploaded relative path.
 
   The mirrored Claude limits come from `config :foreman_server, :library`
   (`max_files_per_add`, `max_file_bytes`, `folder_max_files`, `folder_max_bytes`,
@@ -31,7 +35,10 @@ defmodule ForemanServer.Library.Ingest do
   @name_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_ -]{0,127}\z/
 
   @type file_source :: %{relative_path: String.t(), source_path: String.t()}
-  @type source :: {:files, [file_source()]} | {:folder, String.t()}
+  @type source ::
+          {:files, [file_source()]}
+          | {:folder_files, [file_source()]}
+          | {:folder, String.t()}
 
   @doc "Effective limits (config merged with `overrides`)."
   @spec limits(map() | keyword()) :: map()
@@ -68,6 +75,12 @@ defmodule ForemanServer.Library.Ingest do
         with {:ok, name} <- name(explicit, Path.basename(path)),
              {:ok, root} <- folder_root(path),
              {:ok, items, skipped} <- plan_folder(root, limits) do
+          {:ok, build(:folder, name, items, skipped)}
+        end
+
+      {:folder_files, files} when is_list(files) ->
+        with {:ok, name} <- name(explicit, "folder"),
+             {:ok, items, skipped} <- plan_folder_files(files, limits) do
           {:ok, build(:folder, name, items, skipped)}
         end
     end
@@ -220,6 +233,67 @@ defmodule ForemanServer.Library.Ingest do
        )}
     else
       :ok
+    end
+  end
+
+  # An uploaded folder: the client sends the tree as files with relative paths. The
+  # same eligibility and selection rules as a server-local folder apply (the server
+  # stays authoritative whatever the client filtered).
+  defp plan_folder_files(files, limits) do
+    with {:ok, items} <- folder_file_items(files) do
+      {eligible, skipped} =
+        Enum.reduce(items, {[], []}, fn %Item{relative_path: rel, bytes: size} = item,
+                                        {ok, skip} ->
+          segments = String.split(rel, "/")
+
+          cond do
+            Enum.any?(segments, &String.starts_with?(&1, ".")) ->
+              {ok, [%Skip{path: rel, reason: :hidden} | skip]}
+
+            "node_modules" in segments ->
+              {ok, [%Skip{path: rel, reason: :node_modules} | skip]}
+
+            size > limits.folder_skip_file_bytes ->
+              {ok, [%Skip{path: rel, reason: :over_30mb} | skip]}
+
+            true ->
+              {[item | ok], skip}
+          end
+        end)
+
+      {selected, over} = select(Enum.reverse(eligible), limits)
+      skipped = Enum.reverse(skipped) ++ over
+
+      if selected == [] do
+        {:error,
+         Error.new(:folder_empty, "folder has no eligible files", %{
+           skipped: Plan.skipped_summary(skipped)
+         })}
+      else
+        {:ok, selected, skipped}
+      end
+    end
+  end
+
+  defp folder_file_items(files) do
+    files
+    |> Enum.reduce_while({:ok, [], MapSet.new()}, fn
+      %{relative_path: rel, source_path: source}, {:ok, acc, seen} when is_binary(source) ->
+        with {:ok, rel} <- validate_relative_path(rel),
+             :ok <- ensure_unseen(rel, seen),
+             {:ok, size} <- regular_size(source, rel) do
+          item = %Item{relative_path: rel, source_path: source, bytes: size}
+          {:cont, {:ok, [item | acc], MapSet.put(seen, rel)}}
+        else
+          {:error, _} = error -> {:halt, error}
+        end
+
+      other, _acc ->
+        {:halt, invalid(inspect(other), "file needs relative_path and source_path")}
+    end)
+    |> case do
+      {:ok, items, _seen} -> {:ok, Enum.sort_by(items, & &1.relative_path)}
+      error -> error
     end
   end
 

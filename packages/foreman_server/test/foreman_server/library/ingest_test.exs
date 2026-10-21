@@ -111,6 +111,62 @@ defmodule ForemanServer.Library.IngestTest do
     end
   end
 
+  describe "uploaded folders" do
+    defp uploaded(dir, rels, bytes \\ "x") do
+      for rel <- rels, do: %{relative_path: rel, source_path: touch(dir, "up/" <> rel, bytes)}
+    end
+
+    test "apply the folder rules to the uploaded relative paths", %{tmp_dir: dir} do
+      files =
+        uploaded(dir, [
+          "kit/a.md",
+          "kit/.env",
+          "kit/.git/config",
+          "kit/node_modules/x/i.js",
+          "kit/src/b.md"
+        ])
+
+      assert {:ok, %Plan{kind: :folder, files: items, skipped: skipped}} =
+               Ingest.plan({:folder_files, files}, name: "kit")
+
+      assert Enum.map(items, & &1.relative_path) == ["kit/a.md", "kit/src/b.md"]
+
+      assert Map.new(skipped, &{&1.path, &1.reason}) == %{
+               "kit/.env" => :hidden,
+               "kit/.git/config" => :hidden,
+               "kit/node_modules/x/i.js" => :node_modules
+             }
+    end
+
+    test "respect the file cap, byte budget and oversized-file skip", %{tmp_dir: dir} do
+      files = uploaded(dir, ["f1", "f2", "f3"], "1234")
+
+      assert {:ok, %Plan{files: [%{relative_path: "f1"}], skipped: skipped}} =
+               Ingest.plan({:folder_files, files}, limits: %{folder_max_bytes: 5})
+
+      assert Enum.map(skipped, &{&1.path, &1.reason}) == [
+               {"f2", :folder_byte_budget},
+               {"f3", :folder_byte_budget}
+             ]
+
+      assert {:ok, %Plan{files: capped}} =
+               Ingest.plan({:folder_files, files}, limits: %{folder_max_files: 2})
+
+      assert length(capped) == 2
+
+      assert {:error, %Error{code: :folder_empty, details: %{skipped: %{"over_30mb" => 3}}}} =
+               Ingest.plan({:folder_files, files}, limits: %{folder_skip_file_bytes: 3})
+    end
+
+    test "unsafe or duplicate paths are rejected", %{tmp_dir: dir} do
+      assert {:error, %Error{code: :path_invalid}} =
+               Ingest.plan({:folder_files, uploaded(dir, ["../escape"])})
+
+      [one] = uploaded(dir, ["same"])
+      assert {:error, %Error{code: :path_invalid}} = Ingest.plan({:folder_files, [one, one]})
+    end
+  end
+
   describe "folders" do
     test "hidden entries, node_modules, symlinks and oversized files are skipped with reasons",
          %{tmp_dir: dir} do
