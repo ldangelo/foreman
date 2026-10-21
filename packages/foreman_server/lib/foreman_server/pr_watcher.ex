@@ -173,6 +173,10 @@ defmodule ForemanServer.PrWatcher do
       {nil, _} ->
         {:noreply, finish_refresh(state, ref, {:error, {:refresh_crashed, reason}})}
 
+      {{:start, _key, payload} = task, tasks} ->
+        Logger.error("PrWatcher fix task #{inspect(task)} crashed: #{inspect(reason)}")
+        {:noreply, fail_crashed_start(%{state | fix_tasks: tasks}, task, payload)}
+
       {task, tasks} ->
         Logger.error("PrWatcher fix task #{inspect(task)} crashed: #{inspect(reason)}")
         {:noreply, %{state | fix_tasks: tasks, starting: release_start(state.starting, task)}}
@@ -321,6 +325,29 @@ defmodule ForemanServer.PrWatcher do
 
   defp release_start(starting, {:start, key, _payload}), do: MapSet.delete(starting, key)
   defp release_start(starting, _finish_task), do: starting
+
+  # A start task that crashed never reported an outcome; without one the aggregate
+  # keeps the fix in flight and refuses every later request for the PR. Record the
+  # failure (off the GenServer, like every other dispatch) and free the start slot.
+  defp fail_crashed_start(state, {:start, key, _payload} = task, payload) do
+    finished = %{
+      run_id: get(payload, :run_id),
+      pr_url: get(payload, :pr_url),
+      outcome: "failed",
+      error_code: "start_crashed"
+    }
+
+    dispatcher =
+      Task.Supervisor.async_nolink(state.supervisor, fn ->
+        dispatch_fix(:finished, payload, finished)
+      end)
+
+    %{
+      state
+      | starting: release_start(state.starting, task),
+        fix_tasks: Map.put(state.fix_tasks, dispatcher.ref, {:finish, {:crashed_start, key}})
+    }
+  end
 
   defp fix_task_done(state, {:start, key, payload}, {:started, result}) do
     state = %{state | starting: MapSet.delete(state.starting, key)}

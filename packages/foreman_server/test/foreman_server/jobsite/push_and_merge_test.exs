@@ -136,8 +136,10 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
       # The deadline only means something once the stalled child is running.
       wait_for_pidfile(pidfile, 50)
 
-      assert {:error, %Error{code: :push_failed, details: %{timed_out: true}}} =
+      assert {:error, %Error{code: :push_failed, details: %{timed_out: true, output: output}}} =
                Task.await(push, 10_000)
+
+      assert output =~ "push timed out"
 
       assert System.monotonic_time(:millisecond) - started < 5_000
 
@@ -146,6 +148,27 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
       Process.sleep(200)
       assert {_, status} = System.cmd("kill", ["-0", stalled], stderr_to_stdout: true)
       assert status != 0
+    end
+
+    test "a fetch that stalls is reported as a fetch timeout, not a push timeout" do
+      %{repo: repo, bare: bare} = repo_with_origin!()
+
+      stall =
+        Path.join(Path.dirname(bare), "stall-fetch-#{System.unique_integer([:positive])}.sh")
+
+      pidfile = stall <> ".pid"
+      File.write!(stall, "#!/bin/sh\necho $$ > #{pidfile}\nexec sleep 5\n")
+      File.chmod!(stall, 0o755)
+      git!(repo, ["config", "remote.origin.uploadpack", stall])
+
+      fetch = Task.async(fn -> Git.fetch_branch(repo, "origin", "main", timeout_ms: 1_500) end)
+      wait_for_pidfile(pidfile, 50)
+
+      assert {:error, %Error{code: :git_failed, details: %{timed_out: true, output: output}}} =
+               Task.await(fetch, 10_000)
+
+      assert output =~ "fetch timed out"
+      refute output =~ "push"
     end
   end
 

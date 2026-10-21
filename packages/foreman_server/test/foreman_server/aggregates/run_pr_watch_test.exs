@@ -321,6 +321,31 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
                })
     end
 
+    test "auto with a cooldown refuses a wrong-typed cooldown_seconds instead of raising" do
+      state = run_fix(watched(), "pushed", "s2", 1_000_000)
+
+      for bad <- ["300", 1.5, -1, false] do
+        assert {:error, {:invalid_integer, :cooldown_seconds, ^bad}} =
+                 reject(state, "run.pr.fix_ci", %{
+                   trigger: "auto",
+                   max_attempts: 5,
+                   cooldown_seconds: bad,
+                   requested_at: 1_100_000
+                 })
+      end
+    end
+
+    test "auto with a cooldown but no requested_at is refused, not silently un-cooled" do
+      state = run_fix(watched(), "pushed", "s2", 1_000_000)
+
+      assert {:error, {:invalid_integer, :requested_at, nil}} =
+               reject(state, "run.pr.fix_ci", %{
+                 trigger: "auto",
+                 max_attempts: 5,
+                 cooldown_seconds: 300
+               })
+    end
+
     test "fix_exhausted is recorded once per head and blocks that kind until the head moves" do
       {state, spec} =
         accept(watched(), "run.pr.fix_exhausted", %{
@@ -412,5 +437,41 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       Run.apply_event(state, %{event_type: "PrMerged", payload: %{run_id: "r1", pr_url: @url}})
 
     assert state.pr_watch[@url].status == "merged"
+  end
+
+  test "every event PrWatch can emit advances the run state (the lists cannot diverge)" do
+    other = "https://github.com/acme/repo/pull/8"
+
+    steps = [
+      {"run.pr.checks", checks_payload()},
+      {"run.pr.review",
+       %{
+         pr_url: @url,
+         head_sha: "sha-1",
+         digest: "r1",
+         review_decision: "approved",
+         pr_status: "open"
+       }},
+      {"run.pr.fix_ci", %{pr_url: @url}},
+      {"run.pr.fix_started", %{pr_url: @url, jobsite_id: "js"}},
+      {"run.pr.fix_finished", %{pr_url: @url, outcome: "pushed", new_head_sha: "s2"}},
+      {"run.pr.fix_exhausted",
+       %{pr_url: @url, kind: "ci", reason: "max_attempts", head_sha: "s2"}},
+      {"run.pr.watch_stop", %{pr_url: @url, reason: "operator"}},
+      {"run.pr.watch_start", %{pr_url: @url, reason: "operator"}},
+      {"run.pr.create", %{pr_url: other, head_branch: "foreman/r1/p", base_branch: "main"}}
+    ]
+
+    {_state, emitted} =
+      Enum.reduce(steps, {terminal("RunCompleted"), []}, fn {type, payload}, {state, acc} ->
+        {next, spec} = accept(state, type, payload)
+        # PrCreated is an audit record: PrUpdated/PrReady carry the PR into pr_watch.
+        if spec.event_type != "PrCreated",
+          do: assert(next != state, "#{spec.event_type} did not advance the run state")
+
+        {next, [spec.event_type | acc]}
+      end)
+
+    assert Enum.sort(Enum.uniq(emitted)) == Enum.sort(Run.PrWatch.event_types())
   end
 end

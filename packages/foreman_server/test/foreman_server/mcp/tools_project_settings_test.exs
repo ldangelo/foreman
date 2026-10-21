@@ -134,6 +134,20 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
     assert events(id, "ProjectUpdated") == []
   end
 
+  test "pr_auto_fix is advertised and reaches the project settings", %{id: id} do
+    writes(true)
+    assert "pr_auto_fix" in schema_properties("foreman_project_settings_update")
+
+    assert {:ok, _} =
+             Tools.call_tool("foreman_project_settings_update", %{
+               project_id: id,
+               pr_auto_fix: %{"kinds" => ["ci"], "max_attempts" => 3}
+             })
+
+    assert %{pr_auto_fix: %{"kinds" => ["ci"], "max_attempts" => 3, "cooldown_seconds" => 0}} =
+             ProjectionStore.project_settings(id)
+  end
+
   test "pause refuses new work and resume restores it; status is not an update argument", %{
     id: id
   } do

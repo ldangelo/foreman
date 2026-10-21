@@ -325,18 +325,18 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   defp pr_auto_fix(nil), do: {:ok, nil}
 
   defp pr_auto_fix(value) when is_map(value) do
-    kinds = pr_field(value, :kinds) || []
+    kinds = pr_field_or(value, :kinds, [])
 
     with {:ok, kinds} <- pr_auto_fix_kinds(kinds),
          {:ok, attempts} <-
            ranged(
-             pr_field(value, :max_attempts) || 2,
+             pr_field_or(value, :max_attempts, 2),
              :pr_auto_fix_max_attempts_invalid,
              @pr_fix_attempts_range
            ),
          {:ok, cooldown} <-
            ranged(
-             pr_field(value, :cooldown_seconds) || 0,
+             pr_field_or(value, :cooldown_seconds, 0),
              :pr_auto_fix_cooldown_invalid,
              @pr_fix_cooldown_range
            ) do
@@ -366,6 +366,15 @@ defmodule ForemanServer.Aggregates.Project.Settings do
     case Map.fetch(map, key) do
       {:ok, value} -> value
       :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  # Absent (or JSON null) takes the default; any other value, including `false`, is
+  # passed on to be validated rather than silently replaced.
+  defp pr_field_or(map, key, default) do
+    case pr_field(map, key) do
+      nil -> default
+      value -> value
     end
   end
 

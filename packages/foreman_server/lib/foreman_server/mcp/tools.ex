@@ -472,6 +472,21 @@ defmodule ForemanServer.MCP.Tools do
           type: "boolean",
           description: "Coordinator routes follow-ups to an existing thread where one matches"
         },
+        pr_auto_fix: %{
+          type: "object",
+          description:
+            "Which PR problems Foreman may fix by itself: kinds (any of ci, comments, conflicts; empty = off), " <>
+              "max_attempts (1..5, default 2), cooldown_seconds (0..86400, default 0)",
+          properties: %{
+            kinds: %{
+              type: "array",
+              items: %{type: "string", enum: ["ci", "comments", "conflicts"]}
+            },
+            max_attempts: %{type: "integer"},
+            cooldown_seconds: %{type: "integer"}
+          },
+          additionalProperties: false
+        },
         notification_preference: %{
           type: "string",
           description: "Notifications for this project: every_turn, blocked_only (default) or off"
@@ -2213,7 +2228,7 @@ defmodule ForemanServer.MCP.Tools do
 
   @settings_update_keys ~w(goal instructions thread_model thread_effort coordinator_provider
                            coordinator_model coordinator_effort max_concurrent_runs
-                           daily_thread_cap coordinator_propose_before_start
+                           daily_thread_cap pr_auto_fix coordinator_propose_before_start
                            coordinator_max_active_threads coordinator_reuse_threads
                            library_collect_produced notification_preference)a
 
