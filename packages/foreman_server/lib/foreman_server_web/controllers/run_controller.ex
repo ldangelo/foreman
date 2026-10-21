@@ -62,6 +62,10 @@ defmodule ForemanServerWeb.RunController do
     end
   end
 
+  # A struct (e.g. `ForemanServer.Usage` on `run.usage`) is not Enumerable and
+  # carries its own `Jason.Encoder`; leave it for the encoder.
+  defp stringify_keys(%_{} = struct), do: struct
+
   defp stringify_keys(value) when is_map(value) do
     Map.new(value, fn {k, v} -> {to_string(k), stringify_keys(v)} end)
   end

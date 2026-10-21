@@ -1785,11 +1785,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp maybe_auto_pr(state) do
     if phase_pr_created_or_reused?(state.run_id) do
-      Logger.info(
-        "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr because phase PR records exist"
-      )
+      # The phase PR IS the run's one PR. Returning it (instead of `:noop`) lets
+      # `finalize_run/1` associate it with the run and signal `run.pr.ready`;
+      # before, a `stack_pr` run never reached the merge gate or the PR watcher
+      # and its thread sat in Idle/no_pr beside an open PR.
+      case phase_pr_url(state.run_id) do
+        url when is_binary(url) ->
+          Logger.info(
+            "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr; phase PR #{url} is the run's PR"
+          )
 
-      :noop
+          {:ok, url}
+
+        nil ->
+          Logger.info(
+            "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr because phase PR records exist"
+          )
+
+          :noop
+      end
     else
       auto_pr(state)
     end
@@ -1865,6 +1879,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
     run_id
     |> phase_pr_records()
     |> Enum.any?(&(Map.get(&1, :status) in ["created", "existing", :created, :existing]))
+  end
+
+  # The URL of the latest created-or-reused phase PR (highest phase index).
+  defp phase_pr_url(run_id) do
+    run_id
+    |> phase_pr_records()
+    |> Enum.filter(fn record ->
+      Map.get(record, :status) in ["created", "existing", :created, :existing] and
+        is_binary(Map.get(record, :pr_url)) and Map.get(record, :pr_url) != ""
+    end)
+    |> Enum.max_by(&(Map.get(&1, :phase_index) || 0), fn -> nil end)
+    |> case do
+      nil -> nil
+      record -> record.pr_url
+    end
   end
 
   defp phase_pr_recorded_for_phase?(run_id, phase_id) do
@@ -3688,6 +3717,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __signal_pr_ready_for_test__(state, pr_url), do: signal_pr_ready(state, pr_url)
+
+  @doc false
+  def __maybe_auto_pr_for_test__(state), do: maybe_auto_pr(state)
 
   @doc false
   def __handle_phase_body_error_for_test__(

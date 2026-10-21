@@ -77,6 +77,49 @@ if config_env() != :test do
     _ -> :ok
   end
 
+  # Listen port override (acceptance runs and parallel dev servers). Only a
+  # valid TCP port number is applied; anything else leaves dev.exs' port alone.
+  case Integer.parse(System.get_env("FOREMAN_HTTP_PORT", "")) do
+    {port, ""} when port in 1..65_535 ->
+      config :foreman_server, ForemanServerWeb.Endpoint, http: [ip: {127, 0, 0, 1}, port: port]
+
+    _ ->
+      :ok
+  end
+
+  # Outbound notifications to one generic webhook (E10). Sets provider
+  # `webhook`, enables delivery for every event class and takes the URL from
+  # the variable; unset leaves any `config :foreman_server, :messaging` alone.
+  case System.get_env("FOREMAN_NOTIFY_WEBHOOK_URL") do
+    url when url in [nil, ""] ->
+      :ok
+
+    url ->
+      config :foreman_server, :messaging,
+        enabled: true,
+        provider: :webhook,
+        event_classes: [:collab_url, :action_needed, :stall, :failure, :run_update],
+        run_update_rate_limit_ms: 0,
+        webhook: %{url: url}
+  end
+
+  # The fixed reviewer agent (`config :foreman_server, :review, agent:`). Only
+  # `claude` and `pi` are providers the harness knows; an empty variable leaves
+  # config.exs' default (claude) in force.
+  case System.get_env("FOREMAN_REVIEW_PROVIDER", "") do
+    provider when provider in ["claude", "pi"] ->
+      config :foreman_server, :review,
+        agent: %{
+          provider: if(provider == "pi", do: :pi, else: :claude),
+          model:
+            System.get_env("FOREMAN_REVIEW_MODEL", "") |> then(&if(&1 == "", do: nil, else: &1)),
+          effort: nil
+        }
+
+    _ ->
+      :ok
+  end
+
   # The shared secret configured on the GitHub webhook. Without it the endpoint
   # answers 503 to everything (fail closed).
   case System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET") do

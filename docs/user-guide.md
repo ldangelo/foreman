@@ -1418,6 +1418,9 @@ and releases, not to `mix test`):
 | `FOREMAN_JOBSITES_ALLOW_REMOTE_START` | `allow_remote_start` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST` | `agent_env_allowlist` (comma-separated names, e.g. `ANTHROPIC_BASE_URL,ANTHROPIC_API_KEY`; blank entries are dropped) |
+| `FOREMAN_HTTP_PORT` | `ForemanServerWeb.Endpoint` http port (a valid port number; `127.0.0.1` only; lets a second server run beside the dev one) |
+| `FOREMAN_NOTIFY_WEBHOOK_URL` | `:messaging` (provider `webhook`, delivery enabled for every event class, no run-update rate limit, `webhook.url` from the variable) |
+| `FOREMAN_REVIEW_PROVIDER` / `FOREMAN_REVIEW_MODEL` | `:review, agent:` (the fixed reviewer; `claude` or `pi`, optional model; unset keeps `claude`) |
 | `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
 
 A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).
