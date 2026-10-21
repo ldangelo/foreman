@@ -236,7 +236,6 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       assert request.approval_mode == :default
       assert request.model == "m-test"
       assert request.reasoning_effort == :high
-      assert request.cwd == ctx.repo
       assert request.runtime_timeout_ms == 20_000
       assert request.prompt =~ Path.join(ctx.archive, "diff.patch")
       assert request.prompt =~ "Add /healthz"
@@ -244,6 +243,31 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       transcript = File.read!(Path.join(ctx.archive, "evaluator-transcript.jsonl"))
       assert transcript =~ "run_completed"
       assert transcript =~ "Review done."
+    end
+
+    test "the reviewer never runs inside the project checkout or its archive (foreman-qp5d3)", ctx do
+      # Default layout: the archive lives under the project's `.foreman/`.
+      archive = Path.join([ctx.repo, ".foreman", "sessions", "run", "run-1"])
+      :ok = Archive.init(archive, %{"kind" => "run", "subject_id" => "run-1"})
+      {_, 0} = System.cmd("git", ["init", "-q", ctx.repo])
+      subject = %{ctx.subject | archive_dir: archive}
+
+      Application.put_env(
+        :foreman_server,
+        :review_evaluator_test_stub,
+        {self(), {:reply, block(@valid)}}
+      )
+
+      assert {:ok, %Verdict{}} = Agent.evaluate(subject)
+      assert_received {:request, request}
+
+      refute String.starts_with?(Path.expand(request.cwd) <> "/", Path.expand(ctx.repo) <> "/")
+      refute String.starts_with?(Path.expand(request.cwd) <> "/", Path.expand(archive) <> "/")
+
+      # Nothing for an auto-commit hook to commit to: not a git work tree.
+      {_, status} = System.cmd("git", ["-C", request.cwd, "rev-parse", "--git-dir"], stderr_to_stdout: true)
+      assert status != 0
+      assert File.dir?(request.cwd)
     end
 
     test "malformed reviewer output is surfaced, transcript still archived", ctx do
