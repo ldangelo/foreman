@@ -77,6 +77,16 @@ defmodule ForemanServer.Agents.JidoSignalTopics do
     do: "agents.#{agent_id}.directive"
 
   @doc """
+  Topic an operator's answer to an unscoped agent question is published on
+  (`ForemanServer.Questions.Deliverer`). Deliberately NOT under
+  `com.foreman.operator.*`: that pattern is the question *intake*, and an answer
+  published there would be ingested as a new question. Not part of
+  `all_patterns/0` (which is the four intake/command/directive patterns).
+  """
+  @spec foreman_operator_reply() :: String.t()
+  def foreman_operator_reply, do: "com.foreman.reply.operator"
+
+  @doc """
   All four topic patterns as a list, for supervisors / config docs.
   """
   @spec all_patterns() :: [String.t()]

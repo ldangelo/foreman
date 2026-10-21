@@ -1031,6 +1031,39 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_approvals_list %{
+    name: "foreman_approvals_list",
+    description:
+      "List tool-call permission requests from agents that are waiting on the operator, oldest first. " <>
+        "Read-only: deciding a request is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
+        "Pass project_id (the project's requests) or run_id (one run or jobsite). status=all also lists decided, expired and finished ones.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        run_id: %{type: "string", description: "A run or jobsite ID (instead of project_id)"},
+        status: %{type: "string", enum: ["pending", "all"], description: "Default pending"}
+      },
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_questions_list %{
+    name: "foreman_questions_list",
+    description:
+      "List questions that agents have asked the operator, oldest first. Read-only: answering is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
+        "status=all also lists answered and expired questions.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        status: %{type: "string", enum: ["pending", "all"], description: "Default pending"}
+      },
+      required: ["project_id"],
+      additionalProperties: false
+    }
+  }
+
   @schema_foreman_project_conversation %{
     name: "foreman_project_conversation",
     description:
@@ -1164,6 +1197,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_memory_read,
     @schema_foreman_project_memory_write,
     @schema_foreman_project_memory_forget,
+    @schema_foreman_approvals_list,
+    @schema_foreman_questions_list,
     @schema_foreman_project_conversation,
     @schema_foreman_project_message,
     @schema_foreman_pr_status,
@@ -1972,6 +2007,22 @@ defmodule ForemanServer.MCP.Tools do
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)
         {:error, %ToolError{code: "RUN_DETAIL_FAILED", message: inspect(reason)}}
     end
+  end
+
+  defp tool_foreman_approvals_list(args) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.MCP.ApprovalsTool.call(args)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_approvals_list", overview_outcome(result))
+    result
+  end
+
+  defp tool_foreman_questions_list(args) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.MCP.QuestionsTool.call(args)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_questions_list", overview_outcome(result))
+    result
   end
 
   defp tool_foreman_queue_status(%{}) do

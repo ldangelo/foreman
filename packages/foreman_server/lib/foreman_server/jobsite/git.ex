@@ -414,7 +414,16 @@ defmodule ForemanServer.Jobsite.Git do
         env: [{~c"GIT_TERMINAL_PROMPT", ~c"0"}]
       ])
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    # A git that fails instantly (bad ref, missing remote) can exit before the OS
+    # pid is read: `Port.info/2` is then `nil`. Its output and exit status are
+    # already queued in the mailbox, so `collect/4` returns them and never needs
+    # to kill anything.
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        nil -> nil
+      end
+
     collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [])
   end
 
@@ -423,6 +432,8 @@ defmodule ForemanServer.Jobsite.Git do
   # Known limit: the descendant snapshot (`pgrep -P`) is not atomic, so a helper
   # git forks after it can outlive the kill. A process group (`setsid`) would close
   # that, but macOS ships no `setsid` binary, so it is not used.
+  defp kill_tree(nil), do: :ok
+
   defp kill_tree(os_pid) do
     pid = Integer.to_string(os_pid)
 
