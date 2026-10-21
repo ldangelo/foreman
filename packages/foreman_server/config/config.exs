@@ -285,6 +285,28 @@ config :foreman_server, :pr_fix,
   agent: %{"provider" => "claude"},
   max_iterations: 1,
   log_tail_bytes: 20_000
+# Per-project coordinator conversation (ForemanServer.Coordinator).
+config :foreman_server, :coordinator,
+  enabled: true,
+  agent: ForemanServer.Coordinator.Agent.Harness,
+  # Spike S1: pi + MiniMax is the provider path verified end to end.
+  default_provider: :pi,
+  default_model: "minimax/MiniMax-M2.7-highspeed",
+  default_effort: nil,
+  agent_timeout_ms: 180_000,
+  turn_timeout_ms: 300_000,
+  retry_backoff_ms: 5_000,
+  unhealthy_after: 3,
+  max_message_bytes: 16_000,
+  max_actions_per_turn: 10,
+  max_threads_per_turn: 5,
+  # Messages from these sources never carry operator authority (thread agents
+  # can call the MCP tool). Remove "mcp" only to let MCP callers start work.
+  untrusted_sources: ["mcp"],
+  report_turns_per_hour: 6,
+  report_backfill_hours: 24,
+  mcp_messages_per_minute: 6,
+  context: [max_total_tokens: 12_000]
 
 # Per-project memory (ForemanServer.ProjectMemory): caps and durable-content guard.
 config :foreman_server, :project_memory,
@@ -316,5 +338,10 @@ config :foreman_server, :secret_store,
 # Secret values arrive as `value` in PUT /api/projects/:id/secrets/:name; Phoenix
 # must never log them (E4-S6).
 config :phoenix, :filter_parameters, ["password", "value"]
+
+config :foreman_server, :project_context,
+  max_bytes: 24_000,
+  section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
+  section_providers: [ForemanServer.ProjectContext.Memory]
 
 import_config "#{config_env()}.exs"

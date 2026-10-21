@@ -51,7 +51,7 @@ func TestAgentCommandInventoryContainsRunCommandsOnly(t *testing.T) {
 	if _, ok := byID["foreman-run-get"]; !ok {
 		t.Fatalf("missing run get command")
 	}
-	for _, id := range []string{"foreman-project-memory-list", "foreman-project-memory-read"} {
+	for _, id := range []string{"foreman-project-memory-list", "foreman-project-memory-read", "foreman-project-chat"} {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("missing %s command", id)
 		}
@@ -220,7 +220,7 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 	}
 
 	// Verify the expected commands are present
-	expectedCommands := []string{"run submit", "run list", "run get", "project memory"}
+	expectedCommands := []string{"run submit", "run list", "run get", "project memory", "project chat"}
 	for _, cmd := range expectedCommands {
 		if _, ok := flags[cmd]; !ok {
 			t.Errorf("expected command %q not found in extracted flags", cmd)
@@ -244,6 +244,12 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 
 	if !flags["project memory"]["--name"] {
 		t.Errorf("project memory should expose --name (from projectMemoryRead), got %v", flags["project memory"])
+	}
+
+	for _, want := range []string{"--format", "--no-wait", "--since", "--history", "--restart", "--timeout", "--m"} {
+		if !flags["project chat"][want] {
+			t.Errorf("project chat should expose %s (from projectChat), got %v", want, flags["project chat"])
+		}
 	}
 
 	// Assert run get has no flags (it takes a positional ID only)

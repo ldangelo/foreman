@@ -439,6 +439,13 @@ defmodule ForemanServer.Jobsite.Engine do
     case Prompt.resolve(agent_prompt_opts(step.opts), ctx.sandbox, %{}) do
       {:ok, prompt_text} ->
         open_archive(step.opts, ctx, prompt_text)
+
+        _ =
+          ForemanServer.Review.Capture.put_project_context(
+            archive_dir(step.opts, ctx),
+            project_context(step.opts)
+          )
+
         iterate_agent(step, ctx, observer, observer_state, intent_fun, prompt_text, 1, [])
 
       {:error, %Error{} = error} ->
@@ -541,6 +548,7 @@ defmodule ForemanServer.Jobsite.Engine do
         archive_dir: archive_dir(step.opts, ctx)
       ]
       |> put_launch(step.opts)
+      |> put_system_prompt(step.opts)
 
     case runner.run(agent, prompt, ctx.sandbox, runner_opts) do
       {:ok, %IterationResult{status: :cancelled} = result} ->
@@ -598,6 +606,15 @@ defmodule ForemanServer.Jobsite.Engine do
 
       {:error, %Error{} = error} ->
         dispatch_iteration_failure(step, ctx, observer, observer_state, error)
+    end
+  end
+
+  defp project_context(step_opts), do: Map.get(step_opts, :project_context)
+
+  defp put_system_prompt(runner_opts, step_opts) do
+    case project_context(step_opts) do
+      %{system_text: text} when is_binary(text) -> Keyword.put(runner_opts, :system_prompt, text)
+      _ -> runner_opts
     end
   end
 

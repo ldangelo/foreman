@@ -17,13 +17,13 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project: missing subcommand (create|get|update|settings|env|secret|setup-script|network|pause|resume|reactivate|delete|list|recommend|adopt|memory|schedule)",
+			"foreman project: missing subcommand (create|get|update|settings|context|env|secret|setup-script|network|pause|resume|reactivate|delete|list|recommend|adopt|memory|schedule|chat)",
 			projectUsageText,
 		)
 	}
@@ -37,6 +37,8 @@ func runProject(c *client.Client, args []string) error {
 		return projectUpdate(c, args[1:])
 	case "settings":
 		return projectSettings(c, args[1:])
+	case "context":
+		return projectContext(c, args[1:])
 	case "env":
 		return projectEnv(c, args[1:])
 	case "secret":
@@ -63,6 +65,8 @@ func runProject(c *client.Client, args []string) error {
 		return projectMemory(c, args[1:])
 	case "schedule":
 		return projectSchedule(c, args[1:])
+	case "chat":
+		return projectChat(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman project: unknown subcommand %q", args[0]),
@@ -174,6 +178,9 @@ func projectUpdate(c *client.Client, args []string) error {
 	coordinatorEffort := fs.String("coordinator-effort", "", "Coordinator effort (low|medium|high)")
 	maxConcurrentRuns := fs.Int("max-concurrent-runs", 0, "Maximum concurrent runs")
 	dailyThreadCap := fs.Int("daily-thread-cap", 0, "Maximum threads started per day")
+	coordinatorProposeBeforeStart := fs.Bool("coordinator-propose-before-start", false, "Coordinator proposes before starting threads (true|false; enforced by the server)")
+	coordinatorMaxActiveThreads := fs.Int("coordinator-max-active-threads", 0, "Coordinator's maximum active threads (1..50; enforced by the server)")
+	coordinatorReuseThreads := fs.Bool("coordinator-reuse-threads", false, "Coordinator reuses existing threads (true|false; enforced by the server)")
 	var clear repeatedFlag
 	fs.Var(&clear, "clear", "Clear a setting back to its default (repeatable)")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
@@ -244,6 +251,18 @@ func projectUpdate(c *client.Client, args []string) error {
 	}
 	if set["daily-thread-cap"] {
 		payload["daily_thread_cap"] = *dailyThreadCap
+		changes++
+	}
+	if set["coordinator-propose-before-start"] {
+		payload["coordinator_propose_before_start"] = *coordinatorProposeBeforeStart
+		changes++
+	}
+	if set["coordinator-max-active-threads"] {
+		payload["coordinator_max_active_threads"] = *coordinatorMaxActiveThreads
+		changes++
+	}
+	if set["coordinator-reuse-threads"] {
+		payload["coordinator_reuse_threads"] = *coordinatorReuseThreads
 		changes++
 	}
 	if len(clear) > 0 {
@@ -368,10 +387,45 @@ func projectSettings(c *client.Client, args []string) error {
 	return printProjectSettings(out)
 }
 
+// projectContext prints the standing context (instructions, repositories,
+// memory) an agent launched now would receive; --format=json emits the whole
+// payload (bytes, sha256, sections, truncated, redactions).
+func projectContext(c *client.Client, args []string) error {
+	fs := newFlagSet("project context")
+	format := fs.String("format", "", "Output format (json)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman project context: expected one argument: <project-id>")
+	}
+	switch *format {
+	case "", "json":
+	default:
+		return usageError(fs, "foreman project context: unsupported format %q", *format)
+	}
+
+	var out map[string]any
+	if err := c.GetJSON(client.JoinPath("/api/projects", fs.Arg(0), "context"), &out); err != nil {
+		return err
+	}
+	if *format == "json" {
+		return printJSON(out)
+	}
+	text, _ := out["system_text"].(string)
+	if text == "" {
+		fmt.Printf("project %s: no standing context (nothing is injected)\n", fs.Arg(0))
+		return nil
+	}
+	fmt.Println(text)
+	return nil
+}
+
 var projectSettingNames = []string{
 	"goal", "instructions", "thread_model", "thread_effort",
 	"coordinator_provider", "coordinator_model", "coordinator_effort",
 	"max_concurrent_runs", "daily_thread_cap",
+	"coordinator_propose_before_start", "coordinator_max_active_threads", "coordinator_reuse_threads",
 }
 
 var projectLimitNames = []string{

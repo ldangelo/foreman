@@ -23,6 +23,9 @@ defmodule ForemanServer.Events.ProjectUpdated do
           max_concurrent_runs: pos_integer() | nil,
           daily_thread_cap: pos_integer() | nil,
           pr_auto_fix: map() | nil,
+          coordinator_propose_before_start: boolean() | nil,
+          coordinator_max_active_threads: pos_integer() | nil,
+          coordinator_reuse_threads: boolean() | nil,
           cleared_settings: [String.t()]
         }
   @derive Jason.Encoder
@@ -39,6 +42,9 @@ defmodule ForemanServer.Events.ProjectUpdated do
     :max_concurrent_runs,
     :daily_thread_cap,
     :pr_auto_fix,
+    :coordinator_propose_before_start,
+    :coordinator_max_active_threads,
+    :coordinator_reuse_threads,
     config: %{},
     cleared_settings: []
   ]

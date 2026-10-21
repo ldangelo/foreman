@@ -318,6 +318,64 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:project_memory, project_id})
   end
 
+  @doc """
+  The full bounded coordinator conversation read model of a project (see
+  `ForemanServer.Coordinator.Conversation`); a project that never spoke to its
+  coordinator has an empty one. `{:error, :project_not_found}` for an unknown
+  project.
+  """
+  @spec coordinator_state(String.t()) ::
+          {:ok, ForemanServer.Coordinator.Conversation.t()} | {:error, :project_not_found}
+  def coordinator_state(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:coordinator_state, project_id})
+  end
+
+  @doc """
+  Cursor page of a project's coordinator conversation. Options: `:after` (seq,
+  default 0) and `:limit` (1..200, default 50). Returns `%{messages:,
+  next_cursor:, has_more:, truncated_before_seq:}`.
+  """
+  @spec coordinator_conversation(String.t(), keyword()) ::
+          {:ok, map()} | {:error, :project_not_found}
+  def coordinator_conversation(project_id, opts \\ []) when is_binary(project_id) do
+    after_seq = Keyword.get(opts, :after, 0)
+    limit = opts |> Keyword.get(:limit, 50) |> max(1) |> min(200)
+
+    with {:ok, conv} <- coordinator_state(project_id) do
+      {:ok, ForemanServer.Coordinator.Conversation.page(conv, after_seq, limit)}
+    end
+  end
+
+  @doc """
+  Health of a project's coordinator: `status` (`:idle | :turn_open |
+  :unhealthy`), `open_turn`, `consecutive_failures`, `last_error`,
+  `pending_messages`, `last_activity_at`.
+  """
+  @spec coordinator_status(String.t()) :: {:ok, map()} | {:error, :project_not_found}
+  def coordinator_status(project_id) when is_binary(project_id) and project_id != "" do
+    with {:ok, conv} <- coordinator_state(project_id) do
+      alias ForemanServer.Coordinator.Conversation
+
+      {:ok,
+       %{
+         status: Conversation.status(conv),
+         open_turn: conv.open_turn,
+         consecutive_failures: conv.consecutive_failures,
+         unhealthy_after: conv.unhealthy_after,
+         last_error: conv.last_error,
+         pending_messages: length(Conversation.pending(conv)),
+         last_activity_at: conv.last_activity_at
+       }}
+    end
+  end
+
+  @doc """
+  Project ids whose coordinator has an open turn or trigger messages no
+  completed turn has consumed (the Runner's catch-up scan).
+  """
+  @spec coordinator_pending_projects() :: [String.t()]
+  def coordinator_pending_projects, do: GenServer.call(__MODULE__, :coordinator_pending_projects)
+
   @doc "True when a recorded review filed `bead_id` as a gap bead."
   @spec gap_bead?(String.t()) :: boolean()
   def gap_bead?(bead_id) when is_binary(bead_id) and bead_id != "" do
@@ -785,6 +843,38 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(& &1.name)
 
     {:reply, entries, state}
+  end
+
+  @impl true
+  def handle_call({:coordinator_state, project_id}, _from, state) do
+    reply =
+      if Map.has_key?(state.projects, project_id) do
+        {:ok,
+         state
+         |> Map.get(:coordinators, %{})
+         |> Map.get(project_id, ForemanServer.Coordinator.Conversation.new())}
+      else
+        {:error, :project_not_found}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:coordinator_pending_projects, _from, state) do
+    alias ForemanServer.Coordinator.Conversation
+
+    ids =
+      state
+      |> Map.get(:coordinators, %{})
+      |> Enum.filter(fn {project_id, conv} ->
+        Map.has_key?(state.projects, project_id) and
+          (conv.open_turn != nil or Conversation.pending(conv) != [])
+      end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    {:reply, ids, state}
   end
 
   @impl true
@@ -1444,7 +1534,8 @@ defmodule ForemanServer.ProjectionStore do
       project_memory: %{},
       project_secrets: %{},
       thread_flags: %{},
-      schedules: %{}
+      schedules: %{},
+      coordinators: %{}
     }
   end
 
@@ -3068,6 +3159,27 @@ defmodule ForemanServer.ProjectionStore do
     fold_pr_watch(state, type, payload)
   end
 
+  # Coordinator conversation events fold into `state.coordinators` through the
+  # pure `Coordinator.Conversation` reducer, which never raises on a malformed
+  # payload (`init/1` rebuilds from the event log).
+  @coordinator_events ~w(CoordinatorMessageAppended CoordinatorTurnStarted
+                         CoordinatorActionRecorded CoordinatorTurnCompleted
+                         CoordinatorTurnFailed CoordinatorRestarted)
+
+  defp apply_event_by_type(state, type, payload) when type in @coordinator_events do
+    case coordinator_project_id(payload) do
+      nil ->
+        skip_malformed(type)
+        state
+
+      project_id ->
+        coordinators = Map.get(state, :coordinators, %{})
+        conv = Map.get(coordinators, project_id) || ForemanServer.Coordinator.Conversation.new()
+        conv = ForemanServer.Coordinator.Conversation.apply_event(conv, type, payload)
+        Map.put(state, :coordinators, Map.put(coordinators, project_id, conv))
+    end
+  end
+
   defp apply_event_by_type(state, _type, _payload), do: state
 
   defp fold_pr_watch(state, type, payload) do
@@ -3124,6 +3236,15 @@ defmodule ForemanServer.ProjectionStore do
   defp fold_pr_state(state, type, payload) do
     Map.update(state, :pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
   end
+
+  defp coordinator_project_id(payload) when is_map(payload) do
+    case Map.get(payload, :project_id) || Map.get(payload, "project_id") do
+      id when is_binary(id) and id != "" -> id
+      _ -> nil
+    end
+  end
+
+  defp coordinator_project_id(_payload), do: nil
 
   defp append_phase_id_to_run(state, run_id, phase_id) do
     case Map.get(state.runs, run_id) do
