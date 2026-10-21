@@ -281,6 +281,7 @@ defmodule ForemanServer.Jobsite.Executor do
 
     steps =
       [%Step{kind: :worktree, id: "worktree", opts: worktree_opts}] ++
+        project_setup_steps(spec.project_id) ++
         hook_steps(spec.hooks, :host, :on_worktree_ready) ++
         [
           %Step{
@@ -304,6 +305,34 @@ defmodule ForemanServer.Jobsite.Executor do
 
     %Program{steps: steps}
   end
+
+  # The project's setup script runs first, as a host hook on the fresh
+  # worktree. It comes from the server-side environment record, never from the
+  # spec (`hooks.host.*` stays forbidden for remote specs).
+  defp project_setup_steps(project_id) when is_binary(project_id) and project_id != "" do
+    case ForemanServer.ProjectSetup.plan(project_id) do
+      nil ->
+        []
+
+      %{command: command, env: env, secrets: secrets, timeout_ms: timeout_ms} ->
+        [
+          %Step{
+            kind: :hook,
+            id: "hook:project_setup",
+            opts: %{
+              command: command,
+              target: :host,
+              project_setup: true,
+              env: env,
+              secrets: secrets,
+              timeout_ms: timeout_ms
+            }
+          }
+        ]
+    end
+  end
+
+  defp project_setup_steps(_project_id), do: []
 
   defp hook_steps(nil, _target, _phase), do: []
 

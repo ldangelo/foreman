@@ -2340,18 +2340,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
       })
       |> case do
         {:ok, ^worktree_path} ->
-          {:ok,
-           %{
-             operation_id: operation_id,
-             worktree_path: worktree_path,
-             branch: branch,
-             base_ref: base_ref,
-             project_root: project_root,
-             project_id: project_id,
-             implementation_key: implementation_key,
-             trd_scope: trd_scope,
-             cleanup: cleanup
-           }}
+          record = %{
+            operation_id: operation_id,
+            worktree_path: worktree_path,
+            branch: branch,
+            base_ref: base_ref,
+            project_root: project_root,
+            project_id: project_id,
+            implementation_key: implementation_key,
+            trd_scope: trd_scope,
+            cleanup: cleanup
+          }
+
+          run_project_setup(state, record)
 
         {:ok, other_path} ->
           # Worktree.create guarantees the returned path matches the requested
@@ -2362,6 +2363,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, _} = err ->
           err
       end
+    end
+  end
+
+  # The project's setup script (E4-S4) runs ONCE, right after the worktree is
+  # first created: `ensure_run_worktree/2` returns the remembered record for
+  # every later phase without coming back here, so a reused worktree never
+  # re-runs it. A failing or timed-out script fails the phase before any agent
+  # starts. The not-yet-remembered worktree is removed when its cleanup policy is
+  # `:always`; otherwise it stays like any failed run's worktree (the projection
+  # still lists it, so `RunDeleted` reclaims it).
+  defp run_project_setup(state, record) do
+    log_dir = Path.join([state.artifact_base || File.cwd!(), state.run_id])
+
+    case ForemanServer.ProjectSetup.run(record.project_id, record.worktree_path, state.run_id,
+           log_dir: log_dir
+         ) do
+      :ok ->
+        {:ok, record}
+
+      {:error, _failure} = error ->
+        if record.cleanup == :always, do: do_clean_run_worktree(state, record)
+        error
     end
   end
 

@@ -280,7 +280,7 @@ defmodule ForemanServer.Jobsite.Engine do
 
       exec_outcome =
         case target do
-          :host -> run_host_command(command, ctx.worktree.path)
+          :host -> run_host_command(command, ctx.worktree.path, host_hook_opts(step, ctx))
           :sandbox -> Sandbox.exec(ctx.sandbox, command)
         end
 
@@ -291,9 +291,17 @@ defmodule ForemanServer.Jobsite.Engine do
         {:ok, %{exit_code: code} = result} ->
           {:error,
            Error.new(:hook_failed, "hook exited non-zero", %{
-             command: command,
+             command: step_command_label(step, command),
              exit_code: code,
-             output: result.stdout
+             output: redact_hook_output(step, result.stdout)
+           }), observer_state}
+
+        {:timeout, timeout_ms, output} ->
+          {:error,
+           Error.new(:hook_failed, "hook timed out", %{
+             command: step_command_label(step, command),
+             timeout_ms: timeout_ms,
+             output: redact_hook_output(step, output)
            }), observer_state}
 
         {:error, %Error{} = err} ->
@@ -697,9 +705,52 @@ defmodule ForemanServer.Jobsite.Engine do
     end
   end
 
-  defp run_host_command(command, cwd) do
-    case System.cmd("sh", ["-c", command], cd: cwd, stderr_to_stdout: true) do
-      {output, code} -> {:ok, %{exit_code: code, stdout: output, stderr: ""}}
+  defp run_host_command(command, cwd, opts) do
+    case ForemanServer.Jobsite.HostCommand.run(command, cwd, opts) do
+      {:ok, %{exit_code: code, output: output}} ->
+        {:ok, %{exit_code: code, stdout: output, stderr: ""}}
+
+      {:error, {:timeout, output}} ->
+        {:timeout, Keyword.fetch!(opts, :timeout_ms), output}
     end
   end
+
+  # A host hook step is either a caller hook (plain `sh -c`) or the PROJECT
+  # SETUP step (`project_setup: true`, E4-S4): the server-side script from the
+  # operator-written environment record, run with the project env and bounded
+  # by `timeout_ms`. The worktree/run identifiers are only known here.
+  defp host_hook_opts(%Step{opts: %{project_setup: true} = opts}, %Context{} = ctx) do
+    env =
+      Map.merge(opts.env, %{
+        "FOREMAN_WORKTREE_PATH" => ctx.worktree.path,
+        "FOREMAN_RUN_ID" => ctx.jobsite_id
+      })
+
+    [env: env, timeout_ms: opts.timeout_ms]
+  end
+
+  defp host_hook_opts(%Step{}, _ctx), do: []
+
+  # The setup script is operator-owned code and may contain literals; the
+  # failure detail names the step, not the script body.
+  defp step_command_label(%Step{opts: %{project_setup: true}}, _command),
+    do: "project setup script"
+
+  defp step_command_label(_step, command), do: command
+
+  # Setup-script failures land in the persisted `JobsiteFailed` payload: redact
+  # with the project's secret values and keep only the last 2 KiB.
+  defp redact_hook_output(%Step{opts: %{project_setup: true, secrets: secrets}}, output)
+       when is_binary(output) do
+    tail =
+      if byte_size(output) > 2_048,
+        do: binary_part(output, byte_size(output) - 2_048, 2_048),
+        else: output
+
+    tail
+    |> String.replace_invalid("?")
+    |> ForemanServer.Overwatch.WorkerLogPolicy.redact(secrets)
+  end
+
+  defp redact_hook_output(_step, output), do: output
 end

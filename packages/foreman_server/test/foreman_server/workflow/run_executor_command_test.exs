@@ -624,6 +624,60 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     await_run_completed!(run_id)
   end
 
+  test "the project setup script runs once on the fresh worktree, before the agent, with the project env" do
+    marker = Path.join(System.tmp_dir!(), unique_id("setup-marker"))
+    on_exit(fn -> File.rm(marker) end)
+
+    %{run_id: run_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-66666666-setup.md"],
+        environment: %{
+          vars: %{"NPM_REGISTRY" => "https://r.example"},
+          setup_script:
+            ~s(echo "$NPM_REGISTRY $FOREMAN_RUN_ID" >> #{marker}; echo setup-output-line)
+        }
+      )
+
+    assert File.read!(marker) == "https://r.example #{run_id}\n"
+
+    # The run artifact dir defaults to $HOME/.foreman/runs/<run_id> (the same
+    # place the phase prompt is materialised).
+    run_dir = Path.join([System.get_env("HOME"), ".foreman", "runs", run_id])
+    on_exit(fn -> File.rm_rf(run_dir) end)
+    assert File.read!(Path.join(run_dir, "setup.log")) =~ "setup-output-line"
+
+    await_run_completed!(run_id)
+  end
+
+  test "a failing project setup script fails the phase before any worker launches, redacting secrets" do
+    dir = Path.join(System.tmp_dir!(), unique_id("secrets"))
+    previous = Application.get_env(:foreman_server, :secret_store)
+    Application.put_env(:foreman_server, :secret_store, Keyword.put(previous, :dir, dir))
+
+    on_exit(fn ->
+      Application.put_env(:foreman_server, :secret_store, previous)
+      File.rm_rf!(dir)
+    end)
+
+    %{run_id: run_id, phase_id: phase_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-77777777-setup-fail.md"],
+        expect_launch?: false,
+        environment: %{setup_script: ~s(echo "bad $DEPLOY_PASSPHRASE"; exit 9)},
+        secrets: %{"DEPLOY_PASSPHRASE" => "setup-fail-secret-xx"}
+      )
+
+    reason = await_phase_failure!(phase_id)
+
+    assert reason =~ "setup_script_failed"
+    assert reason =~ "9"
+    assert reason =~ "bad [REDACTED]"
+    refute reason =~ "setup-fail-secret-xx"
+    refute_received {:adapter_execute, _, _}
+
+    await_run_failure!(run_id)
+  end
+
   test "environment record vars and secret-store values reach the worker; secrets are redacted" do
     dir = Path.join(System.tmp_dir!(), unique_id("secrets"))
     previous = Application.get_env(:foreman_server, :secret_store)

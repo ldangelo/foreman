@@ -116,4 +116,40 @@ defmodule ForemanServer.Jobsite.ProjectEnvironmentTest do
     manifest = File.read!(Path.join([ctx.archive_root, "jobsite", id, "manifest.json"]))
     refute manifest =~ @secret
   end
+
+  defp set_script(ctx, script) do
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.environment.set",
+        payload: %{project_id: ctx.project_id, setup_script: script},
+        aggregate_id: "project:#{ctx.project_id}"
+      })
+  end
+
+  test "the project setup script runs on the fresh worktree before the agent", ctx do
+    set_script(ctx, ~s(echo "$NPM_REGISTRY $FOREMAN_PROJECT_ID" > setup-marker.txt))
+    {id, _} = run(ctx, "NPM_REGISTRY")
+
+    diff = File.read!(Path.join([ctx.archive_root, "jobsite", id, "diff.patch"]))
+    assert diff =~ "setup-marker.txt"
+    assert diff =~ "https://reg.example #{ctx.project_id}"
+  end
+
+  test "a failing setup script fails the jobsite before the agent starts", ctx do
+    set_script(ctx, ~s(echo "boom $DEPLOY_PASSPHRASE"; exit 5))
+
+    assert {:error, %ForemanServer.Jobsite.Error{code: :hook_failed, details: details}} =
+             Jobsite.run(
+               repo_path: ctx.repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: Agents.pi("x", binary: @fake_agent),
+               prompt: "go",
+               project_id: ctx.project_id
+             )
+
+    assert details.exit_code == 5
+    assert details.output =~ "boom [REDACTED]"
+    refute inspect(details) =~ @secret
+  end
 end
