@@ -1878,6 +1878,21 @@ recorded in the manifest (`capture_errors`, `transcript_truncated`,
 from its redacted, bounded run logs (`transcript_source: "run_logs"`); a
 jobsite's comes from the harness events.
 
+A multi-repository run (more than one repository attached) keeps the primary
+repository's `diff.patch` and `changed-files.txt` exactly as above and adds one
+pair per additional repository: `diffs/<repo_id>.patch` and
+`diffs/<repo_id>.files.txt` (same size bound and truncation record in
+`capture_errors`, stages `diff:<repo_id>` / `changed_files:<repo_id>`; the repo
+id is validated, so it cannot escape `diffs/`). The manifest (still
+`foreman.review.manifest.v1`) gains `repositories`:
+`[{id, primary, branch, base_ref, worktree_path, diff_status, pr_url}]`, primary
+first, with `pr_url` taken from the repository's PR association (`null` when it
+opened none). Single-repository archives have no `repositories` key and no
+`diffs/` directory. The automated reviewer is told to read every
+`diffs/*.patch` only when the manifest lists more than one repository. Jobsites
+stay single-repository: a `repositories` key in a jobsite spec is rejected with
+`spec_forbidden_key` (multi-repo jobsites unsupported).
+
 A cancelled run or jobsite is archived and reviewed like any other, with
 manifest `status: "cancelled"`. Cancelled work is never committed, so its
 `diff.patch` is the working-tree diff against the base: uncommitted changes to
@@ -1914,21 +1929,6 @@ an earlier recorded review filed as a gap bead gets the comment but spawns no
 further gap beads (depth cap of 1); the guard is the review event log, so it
 needs no `br show`. The bead step needs both `bead_id` and `project_id`: a
 jobsite without a `project_id` is still reviewed and the review is recorded,
-A multi-repository run (more than one repository attached) keeps the primary
-repository's `diff.patch` and `changed-files.txt` exactly as above and adds one
-pair per additional repository: `diffs/<repo_id>.patch` and
-`diffs/<repo_id>.files.txt` (same size bound and truncation record in
-`capture_errors`, stages `diff:<repo_id>` / `changed_files:<repo_id>`; the repo
-id is validated, so it cannot escape `diffs/`). The manifest (still
-`foreman.review.manifest.v1`) gains `repositories`:
-`[{id, primary, branch, base_ref, worktree_path, diff_status, pr_url}]`, primary
-first, with `pr_url` taken from the repository's PR association (`null` when it
-opened none). Single-repository archives have no `repositories` key and no
-`diffs/` directory. The automated reviewer is told to read every
-`diffs/*.patch` only when the manifest lists more than one repository. Jobsites
-stay single-repository: a `repositories` key in a jobsite spec is rejected with
-`spec_forbidden_key` (multi-repo jobsites unsupported).
-
 only the bead step (comment and gap beads) is skipped. A cancelled run or
 jobsite gets the verdict comment but no gap beads: unfinished work the operator
 stopped on purpose is not filed as work items (the recorded summary says so).
@@ -2009,6 +2009,14 @@ threads, merge conflicts) and folds changes into the run's PR projection as
   A delivery only refreshes the PR sooner; the signature is still mandatory and
   unknown PRs are ignored.
 
+**Multi-repository runs.** A run that touched several repositories has one PR per
+repository, and every PR is watched, polled and fixed on its own, addressed as
+`{run_id, repo_id}` (`repo_id` is carried on the PR's events only for a
+non-primary repository). A webhook or poll for repository b's PR updates b's PR
+record only: it never changes a's PR state, watch record or merge gate. A fix
+thread for a PR attaches that repository's checkout and that repository's
+worktree, never another repository's.
+
 **Reading.** `foreman run prs <run-id>` (HTTP `GET /api/runs/:id/prs`, MCP
 `foreman_pr_status`) returns one record per PR: URL, status, checks state, failing
 checks, review decision, comment count, whether it is still watched, fix counters
@@ -2054,11 +2062,3 @@ Agents can need an operator decision. Both show up as `waiting_on_you` in the pr
 **Recovery.** On startup the deliverers re-deliver approvals that were committed while the server was down (approved and never settled calls, denied calls whose run is still paused, answers to paused runs); the commands are idempotent, so an already-delivered decision is a no-op. An approved call whose decision never settled shows in the Overview as `approval_delivery_failed` while its run is paused.
 
 **MCP read tools.** `foreman_approvals_list` (`project_id` or `run_id`, optional `status`) and `foreman_questions_list` (`project_id`, optional `status`) return the same fields as the HTTP endpoints. They are read-only; there is deliberately no MCP tool to approve, deny or answer.
-**Multi-repository runs.** A run that touched several repositories has one PR per
-repository, and every PR is watched, polled and fixed on its own, addressed as
-`{run_id, repo_id}` (`repo_id` is carried on the PR's events only for a
-non-primary repository). A webhook or poll for repository b's PR updates b's PR
-record only: it never changes a's PR state, watch record or merge gate. A fix
-thread for a PR attaches that repository's checkout and that repository's
-worktree, never another repository's.
-

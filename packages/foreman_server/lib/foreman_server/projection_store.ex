@@ -845,8 +845,10 @@ defmodule ForemanServer.ProjectionStore do
   @doc """
   Return `{run_id, repo_id}` for every PR association whose url is `pr_url`, sorted.
 
-  More than one run can be associated with one PR (a retried run that reuses it),
-  so this answers with a list; `[]` means no run owns that PR.
+  `repo_id` is the effective string id of the repository that opened the PR (the
+  run's primary included), so a webhook or poll addresses exactly one PR of a
+  multi-repo run. More than one run can be associated with one PR (a retried run
+  that reuses it), so this answers with a list; `[]` means no run owns that PR.
   """
   @spec run_ids_for_pr_url(String.t()) :: [{String.t(), String.t()}]
   def run_ids_for_pr_url(pr_url) when is_binary(pr_url) and pr_url != "" do
@@ -1643,14 +1645,14 @@ defmodule ForemanServer.ProjectionStore do
 
     # A PR the run is associated with but nothing observed yet (no PrUpdated) is
     # watched too, as a blank record, so the poller's first sweep finds it.
+    # E12: a non-primary repository's PR is watched like the primary's; its blank
+    # record carries `repo_id` (absent == the run's primary).
     unobserved =
       for {run_id, %{pr_url: pr_url}} <- state.pr_associations,
           is_binary(pr_url),
           not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
           do: unobserved_record(state, run_id, pr_url, nil)
 
-    # E12: a non-primary repository's PR is watched like the primary's; its blank
-    # record carries `repo_id` (absent == the run's primary).
     unobserved_other =
       for {run_id, by_repo} <- Map.get(state, :repo_pr_associations, %{}),
           {repo_id, %{pr_url: pr_url}} <- by_repo,
@@ -2864,8 +2866,6 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  # `PrAssociated` lands on BOTH the association map and the run projection.
-  # It previously wrote only the association map, so `run/1` — and therefore
   # E12-S6: a repository whose PR could not be created. Kept per {run, repo};
   # a repository that later opens its PR (`run.pr.retry`) reads as resolved
   # because its association then exists (see `build_run_repositories/2`).
@@ -2884,6 +2884,8 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # `PrAssociated` lands on BOTH the association map and the run projection.
+  # It previously wrote only the association map, so `run/1` — and therefore
   # `GET /api/runs/:id` and `GET /api/runs` — carried no PR field at all: the
   # run that opened https://github.com/ldangelo/foreman/pull/420 read exactly
   # like a run that opened nothing.
@@ -2923,9 +2925,9 @@ defmodule ForemanServer.ProjectionStore do
             &Map.put(&1, repo_id, association)
           )
         end)
+        |> fold_pr_state("PrAssociated", payload)
 
       %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url} = event
-        |> fold_pr_state("PrAssociated", payload)
       when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" ->
         association = %{
           run_id: run_id,
@@ -3951,12 +3953,12 @@ defmodule ForemanServer.ProjectionStore do
         |> Enum.reject(&(&1 == primary_id))
         |> Enum.sort()
 
-      primary_entry = %{
-        repo_id: primary_id,
       repo_states = state |> Map.get(:repo_pr_states, %{}) |> Map.get(run_id, %{})
       repo_failures = state |> Map.get(:repo_pr_failures, %{}) |> Map.get(run_id, %{})
       repo_prs = state |> Map.get(:repo_pr_associations, %{}) |> Map.get(run_id, %{})
 
+      primary_entry = %{
+        repo_id: primary_id,
         primary?: true,
         worktree: Map.get(by_repo, primary_id),
         base_branch: run && get(run, :base_branch),
@@ -4005,11 +4007,9 @@ defmodule ForemanServer.ProjectionStore do
       pr_state: entry && entry.pr_state,
       pr_failure: nil
     }
+    |> apply_pr_failure(failure)
   end
 
-    |> apply_pr_failure(failure)
-  defp fold_pr_watch(state, type, payload) do
-    Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
   # A recorded PR-creation failure shows as `pr_state: :create_failed` only while
   # the repository has no PR: a retry that opened one resolves it.
   defp apply_pr_failure(%{pr_association: nil} = repo, %{} = failure),
@@ -4017,6 +4017,8 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_pr_failure(repo, _failure), do: repo
 
+  defp fold_pr_watch(state, type, payload) do
+    Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
   end
 
   defp unobserved_record(state, run_id, pr_url, repo_id) do

@@ -1493,6 +1493,12 @@ Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
 `text`, optional `message_id`, `resume`).
 
+Write-gated multi-repository tools (`allow_workflow_writes: true`; system commands,
+not operator routes): `foreman_run_request_repo` (`run_id`, `repo_id` or `repo_path`;
+allowlist + cap + audit; effective next phase) and `foreman_task_fanout`
+(`project_id`, `title`, `prompt`, `workflow`, `repo_ids` or `"all"`, optional
+`fanout_id`). `foreman_task_create` also takes optional `repo_id` and `repo_ids`.
+
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams
 instead, so use `foreman_run_get_activity` for per-worker heartbeat counts,
@@ -1505,12 +1511,6 @@ whichever binds first, and reports any eviction as `truncated: true` with
 non-zero `omitted_entries` / `omitted_bytes` — a truncated read can never look
 complete. There is no store-unavailable error: the projection is server state,
 so for a known run the read always succeeds.
-
-Write-gated multi-repository tools (`allow_workflow_writes: true`; system commands,
-not operator routes): `foreman_run_request_repo` (`run_id`, `repo_id` or `repo_path`;
-allowlist + cap + audit; effective next phase) and `foreman_task_fanout`
-(`project_id`, `title`, `prompt`, `workflow`, `repo_ids` or `"all"`, optional
-`fanout_id`). `foreman_task_create` also takes optional `repo_id` and `repo_ids`.
 
 `foreman_inbox_get` reads the per-run operator inbox projection. Inbox progress,
 logs, events, and activity are complementary: inbox messages are concise
