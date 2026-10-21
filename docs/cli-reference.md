@@ -20,7 +20,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --notification-preference --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -649,6 +649,13 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 
 Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`, `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`, and `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS`. When exceeded, Foreman stops the run, writes a native task failure note, and marks the run stuck for operator action.
 
+> **Correction.** None of `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`,
+> `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
+> `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
+> in the server or CLI source, so no pipeline budget is enforced. `foreman run`
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
+> Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
+
 ### `foreman run task`
 
 Operator use of `foreman run task` was removed after the Elixir cutover. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the worker store before execution so prompts receive title/type/priority/description metadata.
@@ -722,7 +729,7 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   AgentRuntime's own `:backend` opt is a separate, internal manual-strategy
   parameter with no CLI surface.
 - `--base-branch <branch>` (optional, half-consumed per
-  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
+  [TRD-2026-80ba0665](TRD/completed/TRD-2026-80ba0665-branch-parent-resolution.md))
   — parent branch for the new task's worktree and PR. **The default now
   resolves server-side from the operator's checkout**: `RunExecutor` records
   `git symbolic-ref --short HEAD` of the project checkout when the run's first
