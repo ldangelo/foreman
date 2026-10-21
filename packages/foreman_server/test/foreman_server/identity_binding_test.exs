@@ -77,9 +77,12 @@ defmodule ForemanServer.IdentityBindingTest do
       assert ProjectionStore.project_projection(other_project_id) == nil
     end
 
-    test "matching operator identity reaches the actor for project.update" do
+    @tag :tmp_dir
+    test "matching operator identity reaches the actor for project.update", %{tmp_dir: tmp_dir} do
       project_id = unique_id("project")
-      updated_path = "/tmp/#{project_id}/updated"
+      updated_path = Path.join(tmp_dir, "updated")
+      File.mkdir_p!(updated_path)
+      {_, 0} = System.cmd("git", ["init", "--quiet", updated_path], stderr_to_stdout: true)
 
       assert {:ok, _} = register_project(project_id)
 
@@ -91,7 +94,10 @@ defmodule ForemanServer.IdentityBindingTest do
                  payload: %{project_id: project_id, path: updated_path}
                })
 
-      assert ProjectionStore.project_projection(project_id).path == updated_path
+      # The gateway dispatches the canonical path (a path that moves the primary repo is validated);
+      # git reports the work-tree root in canonical form.
+      {toplevel, 0} = System.cmd("git", ["-C", updated_path, "rev-parse", "--show-toplevel"])
+      assert ProjectionStore.project_projection(project_id).path == String.trim(toplevel)
     end
   end
 
