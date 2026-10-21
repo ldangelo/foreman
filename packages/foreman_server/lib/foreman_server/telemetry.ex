@@ -5,6 +5,7 @@ defmodule ForemanServer.Telemetry do
   @aggregate_rehydrated [:foreman, :aggregate, :rehydrated]
   @run_admission_start [:foreman, :run_admission, :start]
   @project_read [:foreman_server, :project, :read]
+  @usage_read [:foreman_server, :usage, :read]
   @project_list [:foreman_server, :project, :list]
   @project_register [:foreman_server, :project, :register]
   @project_update [:foreman_server, :project, :update]
@@ -50,6 +51,7 @@ defmodule ForemanServer.Telemetry do
     @aggregate_rehydrated,
     @run_admission_start,
     @project_read,
+    @usage_read,
     @project_list,
     @project_register,
     @project_update,
@@ -152,6 +154,11 @@ defmodule ForemanServer.Telemetry do
   def project_read(duration_ms, metadata \\ %{})
       when is_integer(duration_ms) and duration_ms >= 0 and is_map(metadata) do
     execute(@project_read, %{duration_ms: duration_ms}, metadata)
+  end
+
+  def usage_read(duration_ms, metadata \\ %{})
+      when is_integer(duration_ms) and duration_ms >= 0 and is_map(metadata) do
+    execute(@usage_read, %{duration_ms: duration_ms}, metadata)
   end
 
   def project_list(duration_ms, count, metadata \\ %{})

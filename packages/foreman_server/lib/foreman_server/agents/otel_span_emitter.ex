@@ -44,17 +44,23 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
       when is_binary(model) and (is_integer(token_count) or is_nil(token_count)) and
              is_binary(routing_reason) and
              (is_number(cost_usd) or is_nil(cost_usd)) do
-    attributes =
-      %{
-        "llm.model" => model,
-        "llm.routing_reason" => routing_reason
-      }
-      |> put_unless_nil("llm.tokens", token_count)
-      |> put_unless_nil("llm.cost_usd", cost_usd)
+    attributes = llm_span_attributes(model, token_count, cost_usd, routing_reason)
 
     OpenTelemetry.Tracer.with_span "jido.llm", %{attributes: attributes} do
       :ok
     end
+  end
+
+  @doc """
+  The attribute map of a `jido.llm` span. `llm.tokens` / `llm.cost_usd` are
+  present only when known: an absent key means unknown, never zero.
+  """
+  @spec llm_span_attributes(String.t(), non_neg_integer() | nil, number() | nil, String.t()) ::
+          %{String.t() => String.t() | number()}
+  def llm_span_attributes(model, token_count, cost_usd, routing_reason) do
+    %{"llm.model" => model, "llm.routing_reason" => routing_reason}
+    |> put_unless_nil("llm.tokens", token_count)
+    |> put_unless_nil("llm.cost_usd", cost_usd)
   end
 
   defp put_unless_nil(attrs, _key, nil), do: attrs

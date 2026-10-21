@@ -17,6 +17,7 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.Aggregates.Project.Settings
 
   alias ForemanServer.Events.{
+    ProjectAdmissionDeferred,
     ProjectPaused,
     ProjectResumed,
     ProjectRunReservationReleased,
@@ -236,6 +237,30 @@ defmodule ForemanServer.Aggregates.Project do
          stream_id: "project:#{project_id}",
          event_type: "ProjectResumed",
          payload: %ProjectResumed{project_id: project_id}
+       }}
+    end
+  end
+
+  # System-only (not an operator command): records that run admission refused
+  # a task for a genuine admission reason. Idempotency is the caller's
+  # `command_id` (`deferral:<task>:<reason>:<day>`); it never changes
+  # reservation state, so it is allowed on a paused project.
+  def handle_command(state, %{type: "project.note_deferral", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, reason} <- validate_deferral_reason(Aggregate.get(payload, :reason)),
+         {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         :ok <- require_exists(state, project_id) do
+      {:ok,
+       %{
+         stream_id: "project:#{project_id}",
+         event_type: "ProjectAdmissionDeferred",
+         payload: %ProjectAdmissionDeferred{
+           project_id: project_id,
+           reason: reason,
+           day: today(),
+           task_id: task_id
+         }
        }}
     end
   end
@@ -585,6 +610,11 @@ defmodule ForemanServer.Aggregates.Project do
     ids = if state.thread_day == day, do: state.thread_ids, else: MapSet.new()
     %State{state | thread_day: day, thread_ids: MapSet.put(ids, thread_key(kind, id))}
   end
+
+  @deferral_reasons ~w(daily_thread_cap_exceeded run_limit_exceeded project_paused)
+
+  defp validate_deferral_reason(reason) when reason in @deferral_reasons, do: {:ok, reason}
+  defp validate_deferral_reason(reason), do: {:error, {:invalid_deferral_reason, reason}}
 
   defp reject_archived(%State{archived?: true}, project_id),
     do: {:error, {:project_archived, project_id}}

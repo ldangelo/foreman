@@ -20,6 +20,9 @@ defmodule ForemanServer.Events.ReviewRecorded do
           analysis_path: String.t() | nil,
           evaluator: String.t() | nil,
           error_code: String.t() | nil,
+          model: String.t() | nil,
+          usage: map() | nil,
+          usage_provider: String.t() | nil,
           at: String.t()
         }
   @derive Jason.Encoder
@@ -35,6 +38,9 @@ defmodule ForemanServer.Events.ReviewRecorded do
     :analysis_path,
     :evaluator,
     :error_code,
+    :model,
+    :usage,
+    :usage_provider,
     :at,
     gap_bead_ids: []
   ]
