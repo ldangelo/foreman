@@ -360,7 +360,7 @@ var projectSettingNames = []string{
 
 var projectLimitNames = []string{
 	"max_concurrent_runs", "active_runs", "daily_thread_cap", "threads_started_today",
-	"remaining_today", "cap_reached?", "resets_at", "deferred_tasks",
+	"remaining_today", "cap_reached?", "resets_at", "deferred_tasks", "deferred_today",
 }
 
 func printProjectSettings(out map[string]any) error {

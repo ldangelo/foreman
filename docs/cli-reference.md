@@ -22,6 +22,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project get       --format
 > foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
 > foreman project settings  --format
+> foreman usage             --project --from --to --by --limit --format
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
 > foreman project reactivate --idempotency-key
@@ -315,7 +316,11 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 
 ### `foreman project settings <id>`
 
-Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`. `--format json` prints the raw response. `config.env` values are never shown.
+Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`). `--format json` prints the raw response. `config.env` values are never shown.
+
+### `foreman usage --project <id>`
+
+Print token and cost usage of a project (`GET /api/projects/<id>/usage`). `--project` is required (it is never guessed). Flags: `--from YYYY-MM-DD`, `--to YYYY-MM-DD` (inclusive UTC days, at most 366 days apart; shape checked locally, range rules by the server), `--by day|model|provider|role|thread` (default `model`; sent as `group_by`), `--limit N` (thread rows, server default 50, max 500), `--format table|json` (`json` prints the response unchanged). The table columns are group, `INPUT`, `OUTPUT`, `CACHE-READ`, `CACHE-WRITE`, `TOTAL`, `COST`, plus a `TOTAL` row. A cost of `-` is unknown (`cost_usd: null`: the provider reported none, which is not free); `*` marks a partial sum; a footnote lists the number of events with unknown cost. When the project has a daily thread cap a line follows, for example `daily thread cap: threads today: 3/10, resets 00:00 UTC, 4 deferred today`. Server errors (`invalid_range`, `range_too_large`, `invalid_group_by`, `invalid_limit`, unknown project) are printed with their code.
 
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 
@@ -1267,7 +1272,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`.
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events).
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams

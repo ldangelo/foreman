@@ -269,6 +269,39 @@ retried when the project resumes or its settings change. `project settings` (and
 `GET /api/projects/<id>/settings`) shows the effective limits, usage today,
 `resets_at` and the count of deferred tasks.
 
+### Usage and cost
+
+`foreman usage` shows what a project's threads (workflow runs and jobsites) consumed, grouped by model
+(default), `day`, `provider`, `role` (`thread`, `coordinator`, `review`) or `thread`:
+
+```
+foreman usage --project project-123 --from 2026-10-01 --by day
+```
+
+```
+DAY         INPUT  OUTPUT  CACHE-READ  CACHE-WRITE  TOTAL   COST
+2026-10-01  1200   340     8000        900          1540    0.0210*
+2026-10-02  400    90      -           -            490     -
+TOTAL       1600   430     8000        900          2030    0.0210*
+
+2 events with unknown cost ("-" = no cost reported, "*" = partial sum)
+daily thread cap: threads today: 3/10, resets 00:00 UTC, 4 deferred today
+```
+
+Cost is provider-reported or unknown. `-` (JSON `cost_usd: null`) means the provider reported no cost, which is
+not the same as free; `*` marks a sum over only the events that reported one, and `cost_unknown_events` counts
+the rest. Foreman never computes a price. `--from` / `--to` are inclusive UTC dates spanning at most 366 days;
+`--limit` caps the thread rows (default 50, max 500); `--format json` prints the server response unchanged.
+The same data is `GET /api/projects/<id>/usage?from=&to=&group_by=&limit=` (422 `invalid_range`,
+`range_too_large`, `invalid_group_by`, `invalid_limit`; 404 for an unknown project) and the MCP read tool
+`foreman_usage_get`. The response also carries the `limits` block (including `deferred_today` /
+`deferred_by_reason`, the durable count of tasks refused today by the daily cap, run limit or pause) and
+`cache_hints`, one per thread: `cache_read_ratio`, `idle_seconds` and `likely_cold` (`null` when the provider has
+no configured cache TTL; the TTLs are `config :foreman_server, :usage, cache_ttl_seconds:`, claude 300 by
+default, an assumption to tune per provider). Usage covers the last 366 days per project. Jobsite iteration
+usage and reviewer-agent usage (role `review`, attributed to the reviewed run or jobsite) are included; a
+jobsite that reports through worker events is not counted twice.
+
 ### Pause, resume and reactivate
 
 ```
@@ -955,7 +988,7 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`.
+`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get`.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,

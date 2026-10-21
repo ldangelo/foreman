@@ -58,6 +58,7 @@ Commands:
   project resume <id> Resume a paused project
   project reactivate <id> Reactivate an archived project
   project delete <id> Soft-delete (archive) a project; history is kept, reactivate to restore
+  usage --project <id> Show token/cost usage (--from, --to, --by day|model|provider|role|thread, --limit, --format table|json)
   project list        List project projections
   commands           Generate/install agent command assets
   run list            List run projections
@@ -93,6 +94,8 @@ func main() {
 	switch os.Args[1] {
 	case "project":
 		err = runProject(c, args)
+	case "usage":
+		err = runUsage(c, args)
 	case "commands":
 		err = runCommands(args)
 	case "run":
