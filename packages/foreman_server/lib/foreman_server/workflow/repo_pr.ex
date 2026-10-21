@@ -24,6 +24,8 @@ defmodule ForemanServer.Workflow.RepoPr do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.RepoPrContext
+  alias ForemanServer.Workflow.Worktree
+  alias ForemanServer.Workflow.WorktreeSpec
 
   @type result :: :noop | {:ok, String.t()} | {:error, term()}
 
@@ -64,6 +66,95 @@ defmodule ForemanServer.Workflow.RepoPr do
         Logger.error("RepoPr #{run_id} repository #{repo_id}: PR FAILED: #{inspect(reason)}")
 
         error
+    end
+  end
+
+  @doc """
+  Records that `repo_id`'s PR could not be created (`RunRepoPrFailed`) so the
+  repository reads `create_failed` and can be retried. `repo_id` is the
+  repository's real id, the primary's included. A failed append is logged, never
+  raised: the run keeps completing.
+  """
+  @spec record_failure(String.t(), String.t(), term(), integer()) :: :ok
+  def record_failure(run_id, repo_id, reason, at \\ System.system_time(:millisecond))
+      when is_binary(run_id) and is_binary(repo_id) do
+    result =
+      CommandGateway.dispatch_system(%{
+        type: "run.repo_pr_failed",
+        command_id: Identity.run_repo_pr_failed_command_id(run_id, repo_id, at),
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id, repo_id: repo_id, reason: inspect(reason), at: at}
+      })
+
+    case result do
+      {:ok, _} ->
+        :ok
+
+      {:error, error} ->
+        Logger.error(
+          "RepoPr #{run_id} repository #{repo_id}: PR failure NOT recorded: #{inspect(error)}"
+        )
+    end
+  end
+
+  @doc """
+  The operator's `run.pr.retry`: runs `finalize/2` again from the repository's
+  preserved worktree. Success reclaims that worktree when its manifest policy
+  would have (`cleanup: always | on_success`), which finalisation deferred while
+  the PR was missing. Idempotent: with the PR already open it returns it again
+  and a worktree already gone is left alone. A failed attempt re-records
+  `RunRepoPrFailed` with the new reason.
+  """
+  @spec retry(String.t(), String.t()) :: result()
+  def retry(run_id, repo_id) when is_binary(run_id) and is_binary(repo_id) do
+    case finalize(run_id, repo_id) do
+      {:ok, _url} = opened ->
+        reclaim_worktree(run_id, repo_id)
+        opened
+
+      {:error, reason} = error ->
+        unless context_error?(reason), do: record_failure(run_id, repo_id, reason)
+        error
+
+      :noop ->
+        :noop
+    end
+  end
+
+  # Errors of `RepoPrContext.build/2`: the repository or its worktree is not
+  # known, which is not a PR-creation failure of that repository.
+  defp context_error?(:run_not_found), do: true
+  defp context_error?({tag, _repo_id}) when tag in [:unknown_repo, :no_worktree], do: true
+  defp context_error?({:base_branch_unrecorded, _repo_id}), do: true
+  defp context_error?(_reason), do: false
+
+  # The reclaim policy is the workflow's `worktree.cleanup` from the run's frozen
+  # snapshot (the worktree projection does not carry it); absent means `never`,
+  # as at finalisation.
+  defp reclaim_worktree(run_id, repo_id) do
+    entry = Enum.find(ProjectionStore.run_repositories(run_id), &(&1.repo_id == repo_id))
+
+    with %{worktree: %{status: "created"} = worktree} <- entry,
+         true <- cleanup_policy(run_id) in ["always", "on_success"] do
+      Worktree.clean(%{
+        operation_id: worktree.operation_id,
+        project_id: worktree.project_id,
+        run_id: run_id,
+        phase_id: Identity.phase_id(run_id, 1),
+        repo_path: worktree.repo_path
+      })
+    end
+
+    :ok
+  end
+
+  defp cleanup_policy(run_id) do
+    with %{workflow_snapshot: %{} = snapshot} <- ProjectionStore.run(run_id),
+         %{} = declared <- Map.get(snapshot, :worktree) || Map.get(snapshot, "worktree"),
+         %{cleanup: cleanup} <- WorktreeSpec.normalize(declared) do
+      to_string(cleanup)
+    else
+      _ -> "never"
     end
   end
 

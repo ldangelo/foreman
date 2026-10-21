@@ -10,8 +10,10 @@ defmodule ForemanServer.Events.MergeGatePending do
           run_id: String.t(),
           pr_url: String.t(),
           pr_number: non_neg_integer() | nil,
-          paused_at: non_neg_integer() | nil
+          paused_at: non_neg_integer() | nil,
+          repo_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :pr_url, pr_number: nil, paused_at: nil]
+  # `repo_id` is present only for a non-primary repository's PR (E12).
+  defstruct [:run_id, :pr_url, pr_number: nil, paused_at: nil, repo_id: nil]
 end

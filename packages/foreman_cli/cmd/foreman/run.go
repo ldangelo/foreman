@@ -20,11 +20,11 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>\n  foreman run merge --id <run-id>\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, merge, fix-ci, address-comments, resolve-conflicts, create-pr, watch-stop, watch-start, submit)",
+			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, merge, fix-ci, address-comments, resolve-conflicts, create-pr, retry-pr, watch-stop, watch-start, submit)",
 			usage,
 		)
 	}
@@ -58,6 +58,8 @@ func runRun(c *client.Client, args []string) error {
 		return runPrFix(c, "resolve-conflicts", "run.pr.resolve_conflicts", args[1:])
 	case "create-pr":
 		return runCreatePr(c, args[1:])
+	case "retry-pr":
+		return runRetryPr(c, args[1:])
 	case "watch-stop":
 		return runPrWatch(c, "watch-stop", "run.pr.watch_stop", args[1:])
 	case "watch-start":
@@ -186,14 +188,16 @@ func runResume(c *client.Client, args []string) error {
 	return postCommand(c, commandEnvelope{Type: "run.resume", Payload: map[string]any{"run_id": *runID}})
 }
 
-// runApproveMerge opens a run's merge gate. The server accepts it only from an
-// allowlisted approver identity; the identity is a claim made by whoever holds the
-// API token, not an authenticated login.
+// runApproveMerge opens the merge gate of one PR of a run (the primary's, or the
+// repository named by --repo-id). The server accepts it only from an allowlisted
+// approver identity; the identity is a claim made by whoever holds the API token,
+// not an authenticated login. There is no approve-all: one call, one PR.
 func runApproveMerge(c *client.Client, args []string) error {
 	fs := newFlagSet("run approve-merge")
 	runID := fs.String("id", "", "Run ID (required)")
 	approver := fs.String("approver", "", "Approver name (required)")
 	identity := fs.String("identity", "", "Approver identity, e.g. github:<login> (required)")
+	repoID := fs.String("repo-id", "", "Repository whose PR to approve (default: the run's primary repository)")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -213,15 +217,20 @@ func runApproveMerge(c *client.Client, args []string) error {
 		"approver":          *approver,
 		"approver_identity": *identity,
 	}
+	if *repoID != "" {
+		payload["repo_id"] = *repoID
+	}
 
 	return postCommand(c, commandEnvelope{Type: "merge_approve", Payload: payload})
 }
 
-// runMerge squash-merges the PR of an approved run. The server builds the whole
-// payload itself from the approved PrReady event, so only the run id is sent.
+// runMerge squash-merges the PR of an approved run (the primary's, or the one of
+// --repo-id). The server builds the whole payload itself from that repository's
+// approved PrReady event, so only the run id and repository are sent.
 func runMerge(c *client.Client, args []string) error {
 	fs := newFlagSet("run merge")
 	runID := fs.String("id", "", "Run ID (required)")
+	repoID := fs.String("repo-id", "", "Repository whose PR to merge (default: the run's primary repository)")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -230,7 +239,12 @@ func runMerge(c *client.Client, args []string) error {
 		return usageError(fs, "foreman run merge: --id is required")
 	}
 
-	return postCommand(c, commandEnvelope{Type: "run.pr.merge", Payload: map[string]any{"run_id": *runID}})
+	payload := map[string]any{"run_id": *runID}
+	if *repoID != "" {
+		payload["repo_id"] = *repoID
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.pr.merge", Payload: payload})
 }
 
 func runRemove(c *client.Client, args []string) error {
@@ -419,6 +433,31 @@ func runCreatePr(c *client.Client, args []string) error {
 	}
 
 	return postCommand(c, commandEnvelope{Type: "run.pr.create", Payload: map[string]any{"run_id": *runID}})
+}
+
+// runRetryPr re-opens the PR of one repository of a multi-repository run whose PR
+// could not be created, from the worktree preserved for it. Idempotent.
+func runRetryPr(c *client.Client, args []string) error {
+	fs := newFlagSet("run retry-pr")
+	runID := fs.String("id", "", "Run ID (or pass it as the first argument)")
+	repoID := fs.String("repo-id", "", "Repository whose PR to open (required)")
+
+	positional, rest := prRunID(args)
+	if err := fs.parse(rest); err != nil {
+		return err
+	}
+	if positional != "" {
+		*runID = positional
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run retry-pr: <run-id> is required")
+	}
+	if *repoID == "" {
+		return usageError(fs, "foreman run retry-pr: --repo-id is required")
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.pr.retry", Payload: map[string]any{"run_id": *runID, "repo_id": *repoID}})
 }
 
 // runPrWatch stops or restarts watching one PR of a run.

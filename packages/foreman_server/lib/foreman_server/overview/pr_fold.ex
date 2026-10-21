@@ -76,6 +76,32 @@ defmodule ForemanServer.Overview.PrFold do
     if non_primary?(payload), do: pr_states, else: fold_primary(pr_states, event_type, payload)
   end
 
+  @typedoc "Per-repository PR state of non-primary repositories: `%{run_id => %{repo_id => entry}}`."
+  @type repo_states :: %{String.t() => %{String.t() => entry()}}
+
+  @doc """
+  Fold one event of a NON-primary repository's PR (payload `repo_id` present)
+  into `%{run_id => %{repo_id => entry}}` - one gate and PR state per PR. An
+  event without a `repo_id` is the primary's and leaves this map unchanged
+  (see `fold/3`); so does an unusable payload.
+  """
+  @spec fold_repo(repo_states(), String.t(), map()) :: repo_states()
+  def fold_repo(repo_states, event_type, payload)
+      when is_map(repo_states) and event_type in @events and is_map(payload) do
+    run_id = binary(payload, :run_id)
+    repo_id = binary(payload, :repo_id)
+
+    with true <- is_binary(run_id) and is_binary(repo_id),
+         entry = repo_states |> Map.get(run_id, %{}) |> Map.get(repo_id, default_entry()),
+         {:ok, new_entry} <- apply_event(entry, event_type, payload) do
+      Map.update(repo_states, run_id, %{repo_id => new_entry}, &Map.put(&1, repo_id, new_entry))
+    else
+      _ -> repo_states
+    end
+  end
+
+  def fold_repo(repo_states, _event_type, _payload), do: repo_states
+
   # E12: an event carrying `repo_id` belongs to a non-primary repository's PR.
   # The per-run entry is the primary's, so it must not be overwritten by a
   # sibling PR (per-PR gate state is S6).

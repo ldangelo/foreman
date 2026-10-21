@@ -280,13 +280,16 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
     alias ForemanServer.Aggregates.Run
 
     test "a non-primary PrReady leaves the primary's merge gate alone" do
-      gate = fn state, payload ->
-        Run.apply_event(state, %{event_type: "PrReady", payload: payload}).merge_gate
+      gate = fn state, payload, repo_id ->
+        state
+        |> then(&Run.apply_event(&1, %{event_type: "PrReady", payload: payload}))
+        |> Run.merge_gate(repo_id)
       end
 
-      approved = %{Run.initial_state() | merge_gate: :approved}
-      assert gate.(approved, %{run_id: "r"}) == :pending
-      assert gate.(approved, %{run_id: "r", repo_id: "b"}) == :approved
+      approved = %{Run.initial_state() | merge_gates: %{nil => :approved}}
+      assert gate.(approved, %{run_id: "r"}, nil) == :pending
+      assert gate.(approved, %{run_id: "r", repo_id: "b"}, nil) == :approved
+      assert gate.(approved, %{run_id: "r", repo_id: "b"}, "b") == :pending
     end
   end
 

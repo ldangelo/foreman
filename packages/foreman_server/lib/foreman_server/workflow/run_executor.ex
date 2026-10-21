@@ -1700,12 +1700,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
       :ok ->
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        _ = finalize_repo_prs(state)
-
         # After AutoPR, never before: the worktree is the checkout AutoPR pushes
         # from. Reclaiming it earlier is what the old per-phase `after` clause
         # did, and it deleted the work before anything could propose it.
-        _ = cleanup_run_worktree(state, :success)
+        _ = finalize_repo_prs_and_cleanup(state)
 
         Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
 
@@ -1729,6 +1727,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         err
     end
+  end
+
+  defp finalize_repo_prs_and_cleanup(state) do
+    results = finalize_repo_prs(state)
+    _ = cleanup_run_worktree(state, :success, pr_failed_repo_ids(results))
+    results
   end
 
   # One PR per touched repository, the primary first. A repository's failure
@@ -1764,7 +1768,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
       end)
 
     results = [{primary_id, primary_result} | secondaries]
-    if secondaries != [], do: RepoPr.cross_link(state.run_id, results)
+
+    if secondaries != [] do
+      RepoPr.cross_link(state.run_id, results)
+
+      # A repository whose PR failed is recorded (the run still completes) so the
+      # operator can `run.pr.retry` it. Single-repository runs record nothing new.
+      for {repo_id, {:error, reason}} <- results do
+        RepoPr.record_failure(state.run_id, repo_id, reason)
+      end
+    end
+
     results
   end
 
@@ -3548,7 +3562,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # This replaced `cleanup_phase_worktree/4`, which ran in an `after` clause at
   # every phase boundary. With one worktree per run that is actively wrong: it
   # would delete the checkout the next phase is about to continue in.
-  defp cleanup_run_worktree(state, outcome) when outcome in [:success, :failure] do
+  defp cleanup_run_worktree(state, outcome, keep_repo_ids \\ [])
+       when outcome in [:success, :failure] do
     _ = ForemanServer.Review.Capture.close_run(state, outcome)
 
     warn_uncommitted_work(state)
@@ -3562,6 +3577,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         # rest, and the failures are aggregated.
         failures =
           [primary | secondary_run_worktrees(state)]
+          |> Enum.reject(&(record_repo_id(state, &1) in keep_repo_ids))
           |> Enum.filter(&reclaim_run_worktree?(&1, outcome))
           |> Enum.flat_map(fn record ->
             case do_clean_run_worktree(state, record) do
@@ -3573,6 +3589,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
         if failures == [], do: :ok, else: {:error, {:worktree_cleanup_failed, failures}}
     end
   end
+
+  # A repository of a multi-repository run whose PR could not be created keeps its
+  # worktree: `run.pr.retry` pushes from it. Cleanup is deferred, not skipped - the
+  # retry reclaims it once the PR exists. A single-repository run reclaims as ever.
+  defp pr_failed_repo_ids([_single]), do: []
+  defp pr_failed_repo_ids(results), do: for({repo_id, {:error, _}} <- results, do: repo_id)
+
+  defp record_repo_id(state, record), do: Map.get(record, :repo_id) || primary_repo_id(state)
 
   defp reclaim_run_worktree?(%{cleanup: :always}, _outcome), do: true
   defp reclaim_run_worktree?(%{cleanup: :on_success}, :success), do: true
@@ -4288,6 +4312,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __finalize_repo_prs_for_test__(state), do: finalize_repo_prs(state)
+
+  @doc false
+  def __finalize_repo_prs_and_cleanup_for_test__(state), do: finalize_repo_prs_and_cleanup(state)
 
   @doc false
   def __signal_pr_ready_for_test__(state, pr_url), do: signal_pr_ready(state, pr_url)

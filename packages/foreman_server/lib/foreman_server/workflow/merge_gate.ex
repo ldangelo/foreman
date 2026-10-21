@@ -91,8 +91,14 @@ defmodule ForemanServer.Workflow.MergeGate do
   end
 
   def handle_call({:approve_by_key, key, approver, identity}, _from, state) do
-    # Find the entry with matching run_id in the value's requested_by field
-    case :ets.tab2list(@table) |> Enum.find(fn {_url, req} -> req.requested_by == key end) do
+    # Approve the most recently requested PENDING entry of this key: never an
+    # arbitrary (possibly already-approved or superseded) one.
+    pending =
+      :ets.tab2list(@table)
+      |> Enum.filter(fn {_url, req} -> req.requested_by == key and req.status == :pending end)
+      |> Enum.max_by(fn {_url, req} -> req.requested_at end, fn -> nil end)
+
+    case pending do
       {pr_url, req} ->
         updated = %{
           req

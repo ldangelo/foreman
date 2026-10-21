@@ -24,7 +24,8 @@ defmodule ForemanServerWeb.CommandController do
   @default_command_gateway_module CommandGateway
   @allowed_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E9: operator PR-watch commands, declared once on the Run aggregate's PR rules.
-  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types()
+  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types() ++
+                       ForemanServer.Aggregates.Run.repo_pr_operator_types()
   @allowed_types @allowed_types ++ @pr_operator_types
   @schedule_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E8 agent tool-call decisions (own attribute so allowlist edits do not collide).

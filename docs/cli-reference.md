@@ -744,7 +744,7 @@ foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
 
-### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>`
+### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> [--repo-id <repo-id>]`
 
 Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`). Sends the `merge_approve` operator command. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut.
 
@@ -755,8 +755,11 @@ The identity is a claim made by whoever holds the API token, not an authenticate
 | `--id <run-id>` | Run ID (required). |
 | `--approver <name>` | Approver name, recorded on the approval (required). |
 | `--identity <github:login>` | Approver identity checked against the allowlist (required). |
+| `--repo-id <repo-id>` | Repository whose PR to approve (E12 multi-repo runs). Omit for the run's primary repository. |
 
-### `foreman run merge --id <run-id>`
+Each PR of a multi-repository run has its own merge gate (`merge_gates`, keyed by `repo_id`; the primary's is `nil`), so one `approve-merge` call approves exactly one PR. There is no approve-all. An unknown `--repo-id` fails with `{:merge_gate_not_found, :run, "<repo-id>"}`; for the primary the legacy `{:merge_gate_not_found, :run}` is unchanged.
+
+### `foreman run merge --id <run-id> [--repo-id <repo-id>]`
 
 Squash-merges the run's PR on GitHub with `gh pr merge --squash --match-head-commit <sha>`. Sends the `run.pr.merge` operator command; only the run id is sent, because the server builds the rest from the run's stored `PrReady` event and ignores any other payload field.
 
@@ -765,6 +768,16 @@ It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless t
 | Option | Description |
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
+| `--repo-id <repo-id>` | Repository whose PR to merge (E12). Omit for the run's primary repository. Only that repository's approval and `PrReady` (and so its own `--match-head-commit` pin) are used. |
+
+### `foreman run retry-pr <run-id> --repo-id <repo-id>`
+
+Re-opens the PR of one repository of a multi-repository run whose PR could not be created. Sends the `run.pr.retry` operator command; the server re-runs the PR step for that repository from its preserved worktree (association and `run.pr.ready` included) and then reclaims that worktree if the workflow's `cleanup` policy would have. Idempotent: a repository that already has its PR returns it again and opens nothing. Allowed on a finished run. Like merge, it is operator-only and has no MCP tool. `--repo-id` is always the repository's real id (the primary's included). A repository with nothing to propose fails with `nothing_to_propose`; an unknown repository with `unknown_repo`.
+
+| Option | Description |
+|--------|-------------|
+| `<run-id>` / `--id <run-id>` | Run ID (required). |
+| `--repo-id <repo-id>` | Repository to open the PR for (required). |
 
 ### `foreman thread list|get|stop|steer|resolve|reopen`
 

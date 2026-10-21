@@ -34,7 +34,10 @@ defmodule ForemanServerWeb.OperatorDashboard do
       :pr_marker,
       :terminal?,
       :failure_reason,
-      :actions
+      :actions,
+      # Derived, not a run status: a completed run with a repository whose PR
+      # could not be created (E12-S6).
+      completed_with_errors: false
     ]
   end
 
@@ -287,9 +290,19 @@ defmodule ForemanServerWeb.OperatorDashboard do
       pr_marker: if(is_binary(pr_url) and pr_url != "", do: "PR", else: "no PR"),
       terminal?: value(run, :terminal?) || false,
       failure_reason: value(run, :failure_reason) || :absent,
-      actions: actions_for_status(status)
+      actions: actions_for_status(status),
+      completed_with_errors: completed_with_errors?(run_id, status)
     }
   end
+
+  # `completed_with_errors` is derived from the per-repository PR state: the run
+  # completed, but at least one repository has no PR because its creation failed
+  # (`run.pr.retry` resolves it). The run status enum is untouched.
+  defp completed_with_errors?(run_id, "completed") do
+    run_id |> ProjectionStore.run_repositories() |> Enum.any?(&(&1.pr_state == :create_failed))
+  end
+
+  defp completed_with_errors?(_run_id, _status), do: false
 
   # Fail loudly on missing required invariant fields.
   defp run_id(run) do

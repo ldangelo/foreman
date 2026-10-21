@@ -1015,7 +1015,8 @@ defmodule ForemanServer.ProjectionStore do
           base_branch: String.t() | nil,
           pr_association: map() | nil,
           gate: :none | :pending | :approved | nil,
-          pr_state: :open | :merged | :closed | :conflicted | nil
+          pr_state: :open | :merged | :closed | :conflicted | :create_failed | nil,
+          pr_failure: %{reason: term(), at: term()} | nil
         }
 
   @doc """
@@ -1024,8 +1025,11 @@ defmodule ForemanServer.ProjectionStore do
   a string (the run's selected primary, else the project primary id `"main"`).
   A worktree entry with no `repo_id` belongs to the run's primary.
 
-  Merge gate and PR state are run-level today, so only the primary entry carries
-  them (`nil` for the rest, and for a primary with no PR event). `pr_association`
+  Merge gate and PR state are per repository (E12-S6: the primary's come from the
+  run's PR state, a non-primary's from its own `repo_id` events), `nil` for a
+  repository with no PR event. A repository whose PR could not be created
+  (`RunRepoPrFailed`) and has no association yet reads
+  `pr_state: :create_failed` with `pr_failure`. `pr_association`
   is per repository: a repository that opened a PR carries its association,
   `nil` otherwise. `[]` for an unknown run with no worktrees or PR events.
   """
@@ -2862,6 +2866,24 @@ defmodule ForemanServer.ProjectionStore do
 
   # `PrAssociated` lands on BOTH the association map and the run projection.
   # It previously wrote only the association map, so `run/1` — and therefore
+  # E12-S6: a repository whose PR could not be created. Kept per {run, repo};
+  # a repository that later opens its PR (`run.pr.retry`) reads as resolved
+  # because its association then exists (see `build_run_repositories/2`).
+  defp apply_event_by_type(state, "RunRepoPrFailed", payload) do
+    run_id = get(payload, :run_id)
+    repo_id = get(payload, :repo_id)
+
+    if is_binary(run_id) and run_id != "" and is_binary(repo_id) and repo_id != "" do
+      failure = %{reason: get(payload, :reason), at: get(payload, :at)}
+
+      Map.update(state, :repo_pr_failures, %{run_id => %{repo_id => failure}}, fn by_run ->
+        Map.update(by_run, run_id, %{repo_id => failure}, &Map.put(&1, repo_id, failure))
+      end)
+    else
+      state
+    end
+  end
+
   # `GET /api/runs/:id` and `GET /api/runs` — carried no PR field at all: the
   # run that opened https://github.com/ldangelo/foreman/pull/420 read exactly
   # like a run that opened nothing.
@@ -2872,8 +2894,8 @@ defmodule ForemanServer.ProjectionStore do
       when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" and
              is_binary(repo_id) and repo_id != "" ->
         # A non-primary repository's PR (E12): stored per {run, repo}. It never
-        # touches the run's `pr_url`, the primary association or the PR state
-        # fold, which stay the primary's (S6 gives each PR its own gate).
+        # touches the run's `pr_url`, the primary association or the primary's PR
+        # state fold; its own gate/state fold per repo (`repo_pr_states`).
         association = %{
           run_id: run_id,
           repo_id: repo_id,
@@ -2903,6 +2925,7 @@ defmodule ForemanServer.ProjectionStore do
         end)
 
       %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url} = event
+        |> fold_pr_state("PrAssociated", payload)
       when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" ->
         association = %{
           run_id: run_id,
@@ -3930,12 +3953,17 @@ defmodule ForemanServer.ProjectionStore do
 
       primary_entry = %{
         repo_id: primary_id,
+      repo_states = state |> Map.get(:repo_pr_states, %{}) |> Map.get(run_id, %{})
+      repo_failures = state |> Map.get(:repo_pr_failures, %{}) |> Map.get(run_id, %{})
+      repo_prs = state |> Map.get(:repo_pr_associations, %{}) |> Map.get(run_id, %{})
+
         primary?: true,
         worktree: Map.get(by_repo, primary_id),
         base_branch: run && get(run, :base_branch),
         pr_association: Map.get(state.pr_associations, run_id),
         gate: nil,
-        pr_state: nil
+        pr_state: nil,
+        pr_failure: nil
       }
 
       primary_entry =
@@ -3948,29 +3976,47 @@ defmodule ForemanServer.ProjectionStore do
             %{primary_entry | gate: view.merge_gate, pr_state: view.pr_state}
         end
 
-      repo_prs = state |> Map.get(:repo_pr_associations, %{}) |> Map.get(run_id, %{})
+      primary_entry = apply_pr_failure(primary_entry, Map.get(repo_failures, primary_id))
 
       [
         primary_entry
-        | Enum.map(others, &secondary_run_repository(&1, by_repo, base_branches, repo_prs))
+        | Enum.map(others, fn repo_id ->
+            secondary_run_repository(
+              repo_id,
+              by_repo,
+              base_branches,
+              repo_prs,
+              Map.get(repo_states, repo_id),
+              Map.get(repo_failures, repo_id)
+            )
+          end)
       ]
     end
   end
 
-  defp secondary_run_repository(repo_id, by_repo, base_branches, repo_prs) do
+  defp secondary_run_repository(repo_id, by_repo, base_branches, repo_prs, entry, failure) do
     %{
       repo_id: repo_id,
       primary?: false,
       worktree: Map.get(by_repo, repo_id),
       base_branch: Map.get(base_branches, repo_id),
       pr_association: Map.get(repo_prs, repo_id),
-      gate: nil,
-      pr_state: nil
+      gate: entry && entry.merge_gate,
+      pr_state: entry && entry.pr_state,
+      pr_failure: nil
     }
   end
 
+    |> apply_pr_failure(failure)
   defp fold_pr_watch(state, type, payload) do
     Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
+  # A recorded PR-creation failure shows as `pr_state: :create_failed` only while
+  # the repository has no PR: a retry that opened one resolves it.
+  defp apply_pr_failure(%{pr_association: nil} = repo, %{} = failure),
+    do: %{repo | pr_state: :create_failed, pr_failure: failure}
+
+  defp apply_pr_failure(repo, _failure), do: repo
+
   end
 
   defp unobserved_record(state, run_id, pr_url, repo_id) do
@@ -4025,7 +4071,13 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp fold_pr_state(state, type, payload) do
-    Map.update(state, :pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
+    state
+    |> Map.update(:pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
+    |> Map.update(
+      :repo_pr_states,
+      %{},
+      &ForemanServer.Overview.PrFold.fold_repo(&1, type, payload)
+    )
   end
 
   defp coordinator_project_id(payload) when is_map(payload) do

@@ -513,6 +513,16 @@ foreman run merge --id <run-id>
   (`head_moved_since_approval`), so nothing pushed after approval is merged
   unreviewed. A PR that is already merged at the approved head is recorded without
   calling `gh` again, so a retry is safe. The server host needs an authenticated `gh`.
+- **Multi-repository runs (E12)**: every repository opens its own PR with its own
+  merge gate. `run approve-merge` / `run merge` take `--repo-id <repo>` (omit it for
+  the primary repository); one call approves or merges exactly one PR, each merge
+  pinned to that PR's own approved head. There is no approve-all, and merge stays
+  operator-only (no MCP tool). If one repository's PR cannot be created the run
+  still completes; that repository shows `pr_state: create_failed` (and the
+  dashboard reads the run as `completed_with_errors`, a derived flag, not a run
+  status), its worktree is kept, and `run retry-pr <id> --repo-id <repo>`
+  (`run.pr.retry`, idempotent, allowed on a finished run) opens the missing PR and
+  then reclaims the worktree. Single-repository runs are unchanged.
 
 Phases have no default execution timeout: a workflow's `timeout_minutes:`
 (alias `timeoutMinutes:`) is optional, and `0` or an absent key both mean
@@ -581,6 +591,7 @@ is exactly:
 - `run.reset`
 - `merge_approve`
 - `run.pr.merge`
+- `run.pr.retry`
 - `inbox.send`
 
 `CommandController` derives or verifies `aggregate_id` before calling

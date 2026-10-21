@@ -58,7 +58,8 @@ defmodule ForemanServer.CommandGateway do
   # E9: the operator PR-watch commands (fix threads, stop/start watching, create PR) are
   # declared once on the Run aggregate's PR rules and appended here so both allowlists
   # (this one and `CommandController`) stay in step. Merge is deliberately not among them.
-  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types()
+  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types() ++
+                       ForemanServer.Aggregates.Run.repo_pr_operator_types()
   @allowed_operator_types @allowed_operator_types ++ @pr_operator_types
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E8: agent tool-call decisions. Kept out of the long lists above so concurrent
@@ -171,9 +172,25 @@ defmodule ForemanServer.CommandGateway do
   # type passes through untouched.
   defp perform_operator_side_effects(%{type: "run.pr.merge", payload: payload} = command) do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
 
-    with {:ok, merge_payload} <- RunPrMerge.execute(run_id) do
+    with :ok <- valid_merge_ids(run_id, repo_id),
+         {:ok, merge_payload} <- RunPrMerge.execute(run_id, repo_id) do
       {:ok, %{command | payload: merge_payload}}
+    end
+  end
+
+  # `run.pr.retry` re-opens one repository's PR from its preserved worktree before
+  # dispatch (impure, so never inside the aggregate). Idempotent: a repository
+  # that already has its PR returns it again. Nothing to propose is an error, not
+  # a silent success: the operator asked for a PR.
+  defp perform_operator_side_effects(%{type: "run.pr.retry", payload: payload} = command) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
+
+    with :ok <- valid_repo_id(repo_id, false),
+         {:ok, url} <- retry_repo_pr(run_id, repo_id) do
+      {:ok, %{command | payload: Map.put(payload, :pr_url, url)}}
     end
   end
 
@@ -230,6 +247,22 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp known_repositories(_project_id), do: :unknown_project
+
+  # A merge addresses the run's primary repository without a `repo_id`; a retry
+  # always names one. Anything but a non-empty binary is malformed, never primary.
+  defp valid_merge_ids(_run_id, repo_id), do: valid_repo_id(repo_id, true)
+
+  defp valid_repo_id(nil, true), do: :ok
+  defp valid_repo_id(repo_id, _optional) when is_binary(repo_id) and repo_id != "", do: :ok
+  defp valid_repo_id(_repo_id, _optional), do: {:error, {:missing_or_invalid, :repo_id}}
+
+  defp retry_repo_pr(run_id, repo_id) do
+    case ForemanServer.Workflow.RepoPr.retry(run_id, repo_id) do
+      {:ok, url} -> {:ok, url}
+      :noop -> {:error, {:nothing_to_propose, repo_id}}
+      {:error, _} = error -> error
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Operator envelope
