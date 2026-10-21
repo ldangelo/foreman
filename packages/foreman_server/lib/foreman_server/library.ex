@@ -25,7 +25,7 @@ defmodule ForemanServer.Library do
   """
 
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Library.{Entry, Error, Ingest, Plan, Store}
+  alias ForemanServer.Library.{Entry, Error, Ingest, Plan, Produced, Store}
   alias ForemanServer.ProjectionStore
 
   @type author :: %{kind: :agent | :operator | :system, ref: String.t() | nil}
@@ -62,7 +62,7 @@ defmodule ForemanServer.Library do
     with {:ok, path} <- writable_path(project_id),
          {:ok, existing} <- Store.read_entry(Store.root(path), entry_id),
          {:ok, plan} <-
-           Ingest.plan(source, plan_opts(Map.put_new(attrs, :name, existing.name))) do
+           Ingest.plan(source, plan_opts(Map.put(attrs, :name, attrs[:name] || existing.name))) do
       plan = %Plan{plan | kind: existing.kind}
       locked(project_id, fn -> do_replace(project_id, path, existing, plan, attrs, author) end)
     end
@@ -191,6 +191,54 @@ defmodule ForemanServer.Library do
     header <> "\n" <> body <> "\n"
   end
 
+  @doc """
+  Registers thread-produced files (phase artifacts, session archive files) into the
+  run's single `produced-<run_id>` entry (see `ForemanServer.Library.Produced` for
+  the idempotency, budget and containment rules). `files` are
+  `%{relative_path:, source_path:}`; every `source_path` must lie under one of
+  `opts[:allowed_roots]`. Returns `{:ok, :unchanged}` when nothing new was
+  registered. Author is `%{kind: :system, ref: run_id}`.
+  """
+  @spec register_produced(String.t(), String.t(), [Produced.file_source()], keyword()) ::
+          {:ok, :unchanged | result()} | {:error, Error.t()}
+  def register_produced(project_id, run_id, files, opts)
+      when is_binary(project_id) and is_binary(run_id) and run_id != "" and is_list(files) do
+    roots = Keyword.fetch!(opts, :allowed_roots)
+    author = %{kind: :system, ref: run_id}
+
+    with {:ok, path} <- writable_path(project_id) do
+      locked(project_id, fn ->
+        root = Store.root(path)
+        entry_id = Produced.entry_id(run_id)
+
+        existing =
+          case Store.read_entry(root, entry_id) do
+            {:ok, entry} -> entry
+            {:error, _} -> nil
+          end
+
+        case Produced.plan(run_id, existing, Store.files_dir(root, entry_id), files, roots) do
+          :unchanged ->
+            {:ok, :unchanged}
+
+          {:ok, plan} ->
+            attrs = %{
+              entry_id: entry_id,
+              name: plan.name,
+              source: %{"kind" => "thread", "run_id" => run_id}
+            }
+
+            if existing,
+              do: do_replace(project_id, path, existing, plan, attrs, author),
+              else: do_add(project_id, path, plan, attrs, author)
+
+          {:error, _} = error ->
+            error
+        end
+      end)
+    end
+  end
+
   # -- add / replace / remove --------------------------------------------
 
   defp do_add(project_id, path, plan, attrs, author) do
@@ -199,7 +247,7 @@ defmodule ForemanServer.Library do
     with :ok <- Store.ensure_ready(path),
          :ok <- precheck_add(project_id, plan),
          _ = Store.sweep(root, @orphan_max_age_seconds),
-         entry_id = Store.new_entry_id(plan.name),
+         entry_id = Map.get(attrs, :entry_id) || Store.new_entry_id(plan.name),
          {:ok, entry, pending} <-
            Store.write(root, entry_id, plan, source: source_meta(attrs, plan)) do
       finish(pending, dispatch(add_command(project_id, entry, plan, author)), fn ->

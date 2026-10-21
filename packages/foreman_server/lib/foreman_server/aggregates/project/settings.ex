@@ -33,7 +33,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @efforts ~w(low medium high)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
-           coordinator_effort max_concurrent_runs daily_thread_cap)a
+           coordinator_effort max_concurrent_runs daily_thread_cap library_collect_produced)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -50,6 +50,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_effort
           | :max_concurrent_runs
           | :daily_thread_cap
+          | :library_collect_produced
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -65,6 +66,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:coordinator_effort_invalid, term(), [String.t()]}
           | {:max_concurrent_runs_invalid, term(), Range.t()}
           | {:daily_thread_cap_invalid, term(), Range.t()}
+          | {:library_collect_produced_invalid, term()}
           | {:unknown_setting, String.t()}
 
   @doc "Maximum characters of project instructions (`String.length/1`)."
@@ -202,6 +204,12 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:daily_thread_cap, value),
     do: ranged(value, :daily_thread_cap_invalid, @daily_thread_cap_range)
+
+  defp validate(:library_collect_produced, nil), do: {:ok, nil}
+  defp validate(:library_collect_produced, value) when is_boolean(value), do: {:ok, value}
+
+  defp validate(:library_collect_produced, value),
+    do: {:error, {:library_collect_produced_invalid, value}}
 
   defp unknown_provider(value),
     do: {:error, {:invalid_setting, :coordinator_provider, {:unknown_provider, value}}}

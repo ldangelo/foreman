@@ -3767,6 +3767,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def phase_number(phase_spec, index), do: PhaseSpec.number(phase_spec, index)
 
+  @doc "Directory under which runs write their default artifacts (`~/.foreman/runs`)."
+  @spec artifact_base() :: String.t()
+  def artifact_base, do: default_artifact_base()
+
   defp default_artifact_base do
     case System.fetch_env("HOME") do
       {:ok, home} -> Path.join([home, ".foreman", "runs"])
