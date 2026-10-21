@@ -217,6 +217,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       if pid = LifecycleStore.test_pid(script_key) do
         send(pid, {:adapter_execute, prompt, context})
         send(pid, {:adapter_env, env})
+        send(pid, {:adapter_launch_opts, state})
       end
 
       if Map.get(context, "pause_then_fail?") == true and is_binary(working_directory) do
@@ -549,6 +550,82 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     # Same wait as `await_run_failure!/1`: the provider call the terminal
     # dispatch triggers must land before on_exit kills the dispatcher.
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+  end
+
+  test "project config.env reaches the worker env; FOREMAN_* wins; secrets are delivered and redacted" do
+    # Asserted at the worker boundary: the opts the Overwatch adapter was
+    # launched with are fed to the real `JidoHarnessWorker.init/1`, whose
+    # `put_env` decides the env the agent process gets.
+    %{run_id: run_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-11111111-project-env.md"],
+        project_config: %{
+          env: %{
+            "FOO" => "bar",
+            "FOREMAN_RUN_ID" => "evil",
+            "FOREMAN_ARTIFACT_PATH" => "/evil",
+            "API_TOKEN" => "s3cr3t-value"
+          }
+        }
+      )
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
+
+    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
+
+    assert delivered["FOO"] == "bar"
+    assert delivered["FOREMAN_RUN_ID"] == run_id
+    assert delivered["FOREMAN_ARTIFACT_PATH"] != "/evil"
+    assert is_binary(delivered["FOREMAN_ARTIFACT_PATH"])
+    assert delivered["API_TOKEN"] == "s3cr3t-value"
+
+    # The redaction list is built from the same snapshot as the delivered env.
+    assert worker_state.secrets == ["s3cr3t-value"]
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+  end
+
+  test "a project with no config.env gets only the FOREMAN_* env" do
+    %{run_id: run_id} =
+      run_plan_capture_phase!(write_paths: ["docs/PRD/PRD-2026-22222222-no-project-env.md"])
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
+
+    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
+
+    assert delivered["FOREMAN_RUN_ID"] == run_id
+    assert Enum.all?(Map.keys(delivered), &String.starts_with?(&1, "FOREMAN_"))
+    assert worker_state.secrets == []
+
+    assert {:ok, _} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
     assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
@@ -1520,7 +1597,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   # exactly `write_paths` inside its worktree, and return the ids needed to
   # assert on the outcome. The phase's fate is entirely decided by how many
   # new documents appear under `docs/PRD`.
-  defp run_plan_capture_phase!(write_paths: write_paths) do
+  defp run_plan_capture_phase!(opts) do
+    write_paths = Keyword.fetch!(opts, :write_paths)
+    project_config = Keyword.get(opts, :project_config, %{})
     expect_schema_boot_fetches()
     start_supervised!(JsonSchemaCache)
 
@@ -1564,7 +1643,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       run_id,
       workflow_snapshot,
       database_path,
-      repo_dir
+      repo_dir,
+      project_config
     )
 
     expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, _opts ->
@@ -1647,12 +1727,14 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
          run_id,
          workflow_snapshot,
          database_path,
-         project_path
+         project_path,
+         project_config \\ %{}
        ) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,
       name: "Plan #{project_id}",
       path: project_path,
+      config: project_config,
       task_provider: %{
         "provider" => "beads",
         "config" => %{"database_path" => database_path}

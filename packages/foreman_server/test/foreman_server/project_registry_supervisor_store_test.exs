@@ -210,15 +210,6 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
       {:ok, _} = ProjectStore.save(%{project_id: project_id, name: "c", path: "/tmp/c"})
       assert wait_for_project_name(project_id, "c").name == "c"
     end
-
-    test "save/1 with default_branch in payload persists branch" do
-      project_id = unique_id("store8")
-
-      {:ok, _} =
-        ProjectStore.save(%{project_id: project_id, path: "/tmp/p", default_branch: "develop"})
-
-      assert wait_for_project_projection(project_id).default_branch == "develop"
-    end
   end
 
   describe "ProjectSupervisor crash → restart" do

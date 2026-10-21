@@ -86,7 +86,6 @@ defmodule ForemanServer.ProjectionStoreTest do
              path: "/tmp/project-1",
              status: "active",
              archived?: false,
-             default_branch: "main",
              config: %{},
              task_provider: nil,
              health: %{ok: true},
@@ -100,7 +99,6 @@ defmodule ForemanServer.ProjectionStoreTest do
                  payload: %{
                    project_id: project_id,
                    status: "degraded",
-                   default_branch: "develop",
                    config: %{region: "iad"},
                    health: %{ok: false},
                    name: "Project Uno"
@@ -113,12 +111,47 @@ defmodule ForemanServer.ProjectionStoreTest do
              path: "/tmp/project-1",
              status: "degraded",
              archived?: false,
-             default_branch: "develop",
              config: %{region: "iad"},
              task_provider: nil,
              health: %{ok: false},
              name: "Project Uno"
            }
+  end
+
+  test "legacy project events carrying default_branch still project, without inventing one" do
+    project_id = "legacy-branch-#{System.unique_integer([:positive])}"
+
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "ProjectRegistered",
+                 payload: %{
+                   project_id: project_id,
+                   path: "/tmp/legacy",
+                   default_branch: "develop"
+                 }
+               },
+               %{
+                 event_type: "ProjectUpdated",
+                 payload: %{project_id: project_id, default_branch: "trunk", name: "Legacy"}
+               }
+             ])
+
+    project = ProjectionStore.project(project_id)
+    assert project.name == "Legacy"
+    refute Map.has_key?(project, :default_branch)
+
+    bare = "bare-#{System.unique_integer([:positive])}"
+
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "ProjectRegistered",
+                 payload: %{project_id: bare, path: "/tmp/bare"}
+               }
+             ])
+
+    refute Map.has_key?(ProjectionStore.project(bare), :default_branch)
   end
 
   test "projects can be archived and reactivated" do

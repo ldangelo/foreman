@@ -1159,7 +1159,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     model = phase_model(phase_spec)
     cwd = working_directory_for(state, worktree_record)
-    env = foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
+
+    foreman_env =
+      foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
+
+    # One snapshot of the registered project's `config.env` feeds both the
+    # delivered env and the redaction list, so they cannot disagree. The
+    # project env is the BASE and FOREMAN_* always wins on collision: the
+    # artifact/run-id contract must not be spoofable by project config.
+    # Reserved-variable policy belongs to the E4 environment record, not here.
+    project_env = project_env(state)
+    env = Map.merge(project_env, foreman_env)
 
     {:ok,
      %{
@@ -1185,8 +1195,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          prompt: prompt,
          project_id: project_id(state),
          env_map: env,
-         secrets:
-           WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
+         secrets: WorkerEnvironment.extract_secrets(project_env)
        ]
      }}
   end
@@ -1223,6 +1232,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp project_id(state) do
     Map.get(state.task, :project_id) || Map.get(state.task, "project_id")
+  end
+
+  defp project_env(state) do
+    case project_id(state) do
+      id when is_binary(id) -> WorkerEnvironment.build_env_map(id)
+      _ -> %{}
+    end
   end
 
   # Strip `-trd` suffix from workflow type so both `implement-trd` and

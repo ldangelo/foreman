@@ -160,6 +160,22 @@ foreman project list
 A project is a repository registered with Foreman. Commands operate on
 one project at a time via `--project-id`/`--project`.
 
+**Project environment.** A project's `config.env` (a map of variable name to
+value) is delivered to every workflow-phase agent of that project's runs. It is
+the base layer: Foreman's own `FOREMAN_*` variables (`FOREMAN_RUN_ID`,
+`FOREMAN_ARTIFACT_PATH`, ...) are applied on top and always win, so project
+config cannot override the artifact contract. Values of secret-named keys
+(names containing `API_KEY`, `TOKEN`, `PASSWORD`, `SECRET`, `CREDENTIAL`, ... as
+underscore-delimited words) are redacted from
+worker logs, but `config.env` itself is still stored in project event payloads;
+a real secret store is a separate, later feature. Jobsite `agent.env` is a
+different mechanism (an operator-allowlisted per-request map) and is unchanged.
+
+**Base branch.** A run's base branch is the registered checkout's `HEAD` at the
+moment the run's first phase starts, latched for the run. There is no
+per-project `default_branch` setting: `project update`/`register` payloads that
+carry one are rejected with `setting_removed: default_branch`.
+
 ### Create a project
 
 ```
