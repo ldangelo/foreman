@@ -19,7 +19,8 @@ defmodule ForemanServer.ProjectSettings do
           pr_auto_fix: map() | nil,
           coordinator_propose_before_start: boolean() | nil,
           coordinator_max_active_threads: pos_integer() | nil,
-          coordinator_reuse_threads: boolean() | nil
+          coordinator_reuse_threads: boolean() | nil,
+          notification_preference: String.t() | nil
         }
 
   defstruct @keys
