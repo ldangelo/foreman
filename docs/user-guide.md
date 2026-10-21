@@ -405,7 +405,47 @@ Read endpoints are projection-only:
   status, branch, repo_path, pr_url, last_report {verdict, summary, at},
   provider_session_id, resolved, steering, run_ids, created_at, updated_at`.
   `steering` is always `"pause_resume"` (steer = pause, then resume with the
-  operator message injected); `resolved` is `false` until resolve ships.
+  operator message injected); `resolved` is `true` after `thread.resolve`
+  until `thread.reopen`.
+- Thread actions: `POST /api/threads/{id}/stop` (`run.cancel` / jobsite
+  cancel), `POST /api/threads/{id}/steer` (`text`, optional `message_id`,
+  `resume`; 202, 409 `not_steerable` for a terminal thread). Operator commands
+  `thread.resolve` / `thread.reopen` (events `ThreadResolved` /
+  `ThreadReopened`) are sent through `POST /api/commands` or
+  `foreman thread resolve|reopen`; resolving is a disposition flag and never
+  stops a run.
+- Thread transcript: `GET /api/threads/{id}/transcript?after=&limit=` pages
+  structured turns; `GET /api/threads/{id}/stream?after=` is the SSE tail.
+  Caveat: the workflow transcript comes from the bounded `run_logs` tail, so
+  `omitted_entries` > 0 / `truncated: true` means older output was dropped;
+  jobsite turns have no timestamps and jobsite threads have no operator turns
+  (jobsite resume prompts are not persisted as events).
+- Thread lookup: `GET /api/projects/{project_id}/threads/find?q=&external_id=&branch=&pr=`
+  (MCP `foreman_thread_find`) ranks exact `external_id`, branch and PR matches
+  above conservative text matches (suggestions only; resolved/deleted threads
+  are never text matches). It is read-only and never starts a run.
+
+#### Steering v1 and thread housekeeping
+
+Steering is pause, partial-work commit, resume. `run.steer` queues a
+`RunSteerQueued` event (durable, idempotent per `message_id`); the run is
+paused (the executor commits partial work while it unwinds) and resumed with
+the message appended to the next phase prompt. When that prompt is built the
+system-only command `run.steer.consume` appends `RunSteerConsumed`, so the
+message is injected once and survives a server restart.
+`run.steer.consume` is deliberately not operator-allowlisted. A jobsite thread
+steers through `Jobsite.steer/3`, i.e. the jobsite `resume` with the message
+as its `prompt` (`POST /api/jobsites/{id}/resume`).
+
+Terminal threads with no PR are resolved automatically after a period of
+inactivity by `ForemanServer.Threads.IdleResolver`:
+
+```elixir
+config :foreman_server, :threads,
+  idle_resolver: true,           # start the resolver (default true)
+  idle_resolve_after_days: 7,    # idle period (default 7)
+  sweep_interval_ms: 3_600_000   # sweep period (default one hour)
+```
 
 ### Operator run dashboard
 
@@ -897,7 +937,9 @@ and behavior cannot diverge.
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
 `foreman_task_list`, `foreman_task_get`, `foreman_thread_list`,
-`foreman_thread_get`.
+`foreman_thread_get`, `foreman_thread_transcript`, `foreman_thread_find`.
+The write-gated thread tools are `foreman_thread_stop` and
+`foreman_thread_steer`.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,

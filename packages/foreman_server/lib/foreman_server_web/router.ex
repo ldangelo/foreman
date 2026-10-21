@@ -59,6 +59,7 @@ defmodule ForemanServerWeb.Router do
     get("/runs", RunController, :index)
     get("/runs/:id", RunController, :show)
     get("/projects/:project_id/threads", ThreadController, :index)
+    get("/projects/:project_id/threads/find", ThreadController, :find)
     get("/threads/:id", ThreadController, :show)
     get("/threads/:id/transcript", ThreadTranscriptController, :transcript)
     get("/threads/:id/stream", ThreadTranscriptController, :stream)

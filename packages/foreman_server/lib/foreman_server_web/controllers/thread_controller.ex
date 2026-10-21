@@ -11,6 +11,7 @@ defmodule ForemanServerWeb.ThreadController do
 
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Actions
+  alias ForemanServer.Threads.Finder
   alias ForemanServer.Threads.Thread
 
   def index(conn, %{"project_id" => project_id} = params) do
@@ -25,6 +26,33 @@ defmodule ForemanServerWeb.ThreadController do
         conn
         |> put_status(:bad_request)
         |> json(%{error: "invalid_params", detail: reason})
+    end
+  end
+
+  @doc """
+  `GET /api/projects/:project_id/threads/find?q=&external_id=&branch=&pr=` -
+  deterministic ranked candidates (`ForemanServer.Threads.Finder`). 400 when
+  no criterion is given. Read-only: never starts a run.
+  """
+  def find(conn, %{"project_id" => project_id} = params) do
+    opts = [
+      text: params["q"],
+      external_id: params["external_id"],
+      branch: params["branch"],
+      pr: params["pr"]
+    ]
+
+    case Finder.find(project_id, opts) do
+      {:ok, candidates} ->
+        conn |> put_status(:ok) |> json(%{candidates: Enum.map(candidates, &Finder.to_dto/1)})
+
+      {:error, :no_criteria} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{
+          error: "invalid_params",
+          detail: "one of q, external_id, branch, pr is required"
+        })
     end
   end
 

@@ -147,6 +147,26 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_thread_find %{
+    name: "foreman_thread_find",
+    description:
+      "Find the existing thread a request most likely belongs to (read-only, deterministic): " <>
+        "ranks exact external_id/branch/PR matches above conservative text matches. " <>
+        "Text matches are suggestions only and skip resolved/deleted threads. Never starts a run.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        q: %{type: "string", description: "Free text to match against thread title and prompt"},
+        external_id: %{type: "string", description: "Exact bead/external task id"},
+        branch: %{type: "string", description: "Exact branch name"},
+        pr: %{type: "string", description: "PR URL or number"},
+        limit: %{type: "integer", minimum: 1, maximum: 500, description: "Default 5"}
+      },
+      required: ["project_id"]
+    }
+  }
+
   @schema_foreman_thread_get %{
     name: "foreman_thread_get",
     description: "Get one thread by id (run:<run_id> or jobsite:<jobsite_id>)",
@@ -608,6 +628,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_run_status,
     @schema_foreman_thread_list,
     @schema_foreman_thread_get,
+    @schema_foreman_thread_find,
     @schema_foreman_thread_transcript,
     @schema_foreman_thread_stop,
     @schema_foreman_thread_steer,
@@ -797,6 +818,43 @@ defmodule ForemanServer.MCP.Tools do
   defp thread_status(nil), do: {:ok, nil}
   defp thread_status(status) when is_binary(status) and status != "", do: {:ok, status}
   defp thread_status(_), do: {:error, "status must be a non-empty string"}
+
+  defp tool_foreman_thread_find(%{project_id: project_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      if is_binary(project_id) and project_id != "" do
+        opts = [
+          text: Map.get(args, :q),
+          external_id: Map.get(args, :external_id),
+          branch: Map.get(args, :branch),
+          pr: Map.get(args, :pr),
+          limit: Map.get(args, :limit)
+        ]
+
+        case ForemanServer.Threads.Finder.find(project_id, opts) do
+          {:ok, candidates} ->
+            {:ok, Enum.map(candidates, &ForemanServer.Threads.Finder.to_dto/1)}
+
+          {:error, :no_criteria} ->
+            {:error, "one of q, external_id, branch, pr is required"}
+        end
+      else
+        {:error, "project_id must be a non-empty string"}
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _} = ok ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_find", :ok)
+        ok
+
+      {:error, message} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_find", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: message}}
+    end
+  end
 
   defp tool_foreman_thread_get(%{thread_id: thread_id}) do
     start_us = System.monotonic_time(:microsecond)
