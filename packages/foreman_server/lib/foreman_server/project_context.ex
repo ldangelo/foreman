@@ -309,11 +309,12 @@ defmodule ForemanServer.ProjectContext do
     Enum.map_join(entries, "\n\n", fn e -> "## #{e.section.title}\n#{marked(e)}" end)
   end
 
-  defp marked(%{omitted_bytes: 0, body: body}), do: body
+  defp marked(%{section: section, body: body, omitted_bytes: omitted, omitted_lines: lines}) do
+    marker = if omitted > 0, do: marker_text(section, lines), else: ""
 
-  defp marked(%{section: section, body: body, omitted_lines: lines}) do
-    marker = marker_text(section, lines)
-    if body == "", do: marker, else: body <> "\n" <> marker
+    [body, marker, section.trailer]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
   end
 
   defp marker_text(section, lines),

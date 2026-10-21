@@ -48,6 +48,13 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
     def run(request, _context) do
       send(Application.fetch_env!(:jido_harness, :jobsite_context_test_pid), {:request, request})
 
+      # A test may hold the first run open (a long-running agent) so it can pause it.
+      if Application.get_env(:jido_harness, :jobsite_context_hold_first) &&
+           :persistent_term.get({__MODULE__, :held}, false) == false do
+        :persistent_term.put({__MODULE__, :held}, true)
+        Process.sleep(10_000)
+      end
+
       {:ok,
        [
          Event.new!(provider: :pi, type: :output_text_final, payload: %{"text" => "worked"}),
@@ -109,6 +116,25 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
           payload: %{project_id: id, path: path, config: config}
         }
       ])
+  end
+
+  defp await(fun, deadline_ms \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+
+    Stream.repeatedly(fn -> fun.() end)
+    |> Enum.reduce_while(nil, fn
+      true, _ ->
+        {:halt, :ok}
+
+      false, _ ->
+        if System.monotonic_time(:millisecond) >= deadline,
+          do: flunk("await timed out"),
+          else:
+            (
+              Process.sleep(25)
+              {:cont, nil}
+            )
+    end)
   end
 
   defp run(repo, extra) do
@@ -175,6 +201,40 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
 
     assert first.system_prompt =~ "Stable rules"
     assert second.system_prompt == first.system_prompt
+  end
+
+  test "a resumed jobsite re-sends the project context", %{repo: repo} do
+    register("jc-6", %{instructions: "Resume rules"}, repo)
+    Application.put_env(:jido_harness, :jobsite_context_hold_first, true)
+    :persistent_term.put({Recorder, :held}, false)
+
+    on_exit(fn ->
+      Application.delete_env(:jido_harness, :jobsite_context_hold_first)
+      :persistent_term.erase({Recorder, :held})
+    end)
+
+    {:ok, id} =
+      Jobsite.run_async(
+        repo_path: repo,
+        strategy: :merge_to_head,
+        sandbox: Sandboxes.host(),
+        agent: Agents.pi("x", binary: @fake_agent),
+        prompt: "go",
+        project_id: "jc-6",
+        max_iterations: 3,
+        completion_signal: "NEVER"
+      )
+
+    assert_receive {:request, %{system_prompt: first}}, 5_000
+    assert first =~ "Resume rules"
+
+    assert :ok = Jobsite.pause(id, "pause for resume")
+    await(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
+    await(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
+
+    assert {:ok, _result} = Jobsite.resume(id)
+    assert_receive {:request, %{system_prompt: resumed}}, 5_000
+    assert resumed == first
   end
 
   test "capture off still delivers context but writes no archive", %{
