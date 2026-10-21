@@ -8,7 +8,7 @@ defmodule ForemanServer.CommandGateway do
       `project.register`, `project.update`, `project.archive`,
       `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
       `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
-      `run.reset`, `merge_approve`, `run.pr.merge`, `inbox.send`,
+      `run.reset`, `run.steer`, `merge_approve`, `run.pr.merge`, `inbox.send`,
       `thread.resolve`, and `thread.reopen`. The
       command must carry `command_id`, `type`, and a `payload` map.
       `run.pr.merge` performs the real GitHub merge (see
@@ -412,6 +412,7 @@ defmodule ForemanServer.CommandGateway do
               "run.resume",
               "run.remove",
               "run.reset",
+              "run.steer",
               "merge_approve",
               "run.pr.merge"
             ] do
@@ -460,7 +461,6 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
-  defp validate_aggregate_id(%{
   defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
        when type in ["thread.resolve", "thread.reopen"] do
     thread_id = get_value(payload, :thread_id)
@@ -477,6 +477,7 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp validate_aggregate_id(%{
          type: "run.report_stall",
          aggregate_id: aggregate_id,
          payload: payload

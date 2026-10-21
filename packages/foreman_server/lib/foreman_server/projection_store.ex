@@ -240,6 +240,23 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
+  Return the run's pending steering messages (`RunSteerQueued` minus
+  `RunSteerConsumed`) in queue order as `[%{message_id, text, resume}]`.
+
+  This is the durable source of truth for operator steering: `RunControl`'s
+  ETS mailbox is cleared across every pause/resume and is only a cache.
+  """
+  @spec pending_steering(String.t()) :: [
+          %{message_id: String.t(), text: String.t(), resume: boolean()}
+        ]
+  def pending_steering(run_id) when is_binary(run_id) and run_id != "" do
+    case run(run_id) do
+      nil -> []
+      run -> Map.get(run, :pending_steering, [])
+    end
+  end
+
+  @doc """
   Return the projected state for a jobsite, or nil if not found.
   """
   @spec jobsite(String.t()) :: map() | nil
@@ -270,23 +287,6 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:gap_bead?, bead_id})
   end
 
-  @doc """
-  Return all events for a run as serializable maps.
-
-  `{:ok, []}` for a run with no stream. `{:error, reason}` on a store failure —
-  never an empty list standing in for an error.
-  """
-  @spec run_events(String.t()) :: {:ok, [map()]} | {:error, term()}
-  def run_events(run_id) do
-    GenServer.call(__MODULE__, {:run_events, run_id})
-  end
-
-  @doc """
-  Return per-worker activity for a run, summarized from its
-  `worker:<run_id>:<worker_id>` event streams.
-
-  Worker liveness events are appended to those streams, never to
-  `run:<run_id>`, so `run_events/1` does not surface them: a live run shows a
   @typedoc """
   Operator disposition of a thread: `resolved`, when (`resolved_at`, ISO-8601)
   and why, who resolved it, and when it was last reopened (`reopened_at`).
@@ -308,6 +308,23 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:thread_flags, thread_id})
   end
 
+  @doc """
+  Return all events for a run as serializable maps.
+
+  `{:ok, []}` for a run with no stream. `{:error, reason}` on a store failure —
+  never an empty list standing in for an error.
+  """
+  @spec run_events(String.t()) :: {:ok, [map()]} | {:error, term()}
+  def run_events(run_id) do
+    GenServer.call(__MODULE__, {:run_events, run_id})
+  end
+
+  @doc """
+  Return per-worker activity for a run, summarized from its
+  `worker:<run_id>:<worker_id>` event streams.
+
+  Worker liveness events are appended to those streams, never to
+  `run:<run_id>`, so `run_events/1` does not surface them: a live run shows a
   single `RunStarted` event on its run stream while its worker stream grows a
   `WorkerHeartbeat` every few seconds. This read is therefore the only way to
   judge worker liveness without reading the server console.
@@ -546,6 +563,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:thread_flags, thread_id}, _from, state) do
+    {:reply, Map.get(state.thread_flags, thread_id), state}
+  end
+
+  @impl true
   def handle_call({:gap_bead?, bead_id}, _from, state) do
     found? =
       Enum.any?(state.reviews, fn {_key, review} ->
@@ -561,11 +583,6 @@ defmodule ForemanServer.ProjectionStore do
       state.jobsites
       |> Map.values()
       |> Enum.sort_by(fn jobsite -> get(jobsite, :started_at_ms, 0) end, :desc)
-
-  @impl true
-  def handle_call({:thread_flags, thread_id}, _from, state) do
-    {:reply, Map.get(state.thread_flags, thread_id), state}
-  end
 
     {:reply, jobsites, state}
   end
@@ -1346,6 +1363,40 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # E6-S4 steering mailbox: pending steering is RunSteerQueued minus
+  # RunSteerConsumed, in queue order. This projection field is the durable
+  # source `RunControl`'s ETS mailbox is rebuilt from.
+  defp apply_event_by_type(state, "RunSteerQueued", payload) do
+    message_id = get(payload, :message_id)
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      pending = Map.get(run, :pending_steering, [])
+
+      if is_binary(message_id) and message_id != "" and
+           not Enum.any?(pending, &(&1.message_id == message_id)) do
+        entry = %{
+          message_id: message_id,
+          text: get(payload, :text),
+          resume: get(payload, :resume) != false
+        }
+
+        Map.put(run, :pending_steering, pending ++ [entry])
+      else
+        run
+      end
+    end)
+  end
+
+  defp apply_event_by_type(state, "RunSteerConsumed", payload) do
+    consumed = MapSet.new(List.wrap(get(payload, :message_ids)))
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.update(run, :pending_steering, [], fn pending ->
+        Enum.reject(pending, &MapSet.member?(consumed, &1.message_id))
+      end)
+    end)
+  end
+
   defp apply_event_by_type(state, "RunBaseBranchRecorded", payload) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       maybe_put(run, :base_branch, get(payload, :base_branch))
@@ -2094,6 +2145,48 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # Operator disposition flags per thread id. A malformed payload is logged and
+  # skipped (never raised) so `init/1`'s event-log rebuild survives it.
+  defp apply_event_by_type(state, "ThreadResolved", payload) do
+    case decode_or_skip("ThreadResolved", payload) do
+      {:ok, %ForemanServer.Events.ThreadResolved{thread_id: id} = event}
+      when is_binary(id) and id != "" ->
+        flags = %{
+          resolved: true,
+          resolved_at: event.at,
+          reason: event.reason,
+          resolved_by: event.resolved_by,
+          reopened_at: nil
+        }
+
+        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ThreadResolved")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ThreadReopened", payload) do
+    case decode_or_skip("ThreadReopened", payload) do
+      {:ok, %ForemanServer.Events.ThreadReopened{thread_id: id} = event}
+      when is_binary(id) and id != "" ->
+        flags = %{
+          resolved: false,
+          resolved_at: nil,
+          reason: nil,
+          resolved_by: nil,
+          reopened_at: event.at
+        }
+
+        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ThreadReopened")
+        state
+    end
+  end
+
   defp apply_event_by_type(state, "JobsiteStarted", payload) do
     case decode_for_projection("JobsiteStarted", payload) do
       %ForemanServer.Events.JobsiteStarted{jobsite_id: jobsite_id} = event ->
@@ -2145,48 +2238,6 @@ defmodule ForemanServer.ProjectionStore do
       end
     )
   end
-  # Operator disposition flags per thread id. A malformed payload is logged and
-  # skipped (never raised) so `init/1`'s event-log rebuild survives it.
-  defp apply_event_by_type(state, "ThreadResolved", payload) do
-    case decode_or_skip("ThreadResolved", payload) do
-      {:ok, %ForemanServer.Events.ThreadResolved{thread_id: id} = event}
-      when is_binary(id) and id != "" ->
-        flags = %{
-          resolved: true,
-          resolved_at: event.at,
-          reason: event.reason,
-          resolved_by: event.resolved_by,
-          reopened_at: nil
-        }
-
-        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
-
-      _ ->
-        Logger.warning("ProjectionStore skipped malformed ThreadResolved")
-        state
-    end
-  end
-
-  defp apply_event_by_type(state, "ThreadReopened", payload) do
-    case decode_or_skip("ThreadReopened", payload) do
-      {:ok, %ForemanServer.Events.ThreadReopened{thread_id: id} = event}
-      when is_binary(id) and id != "" ->
-        flags = %{
-          resolved: false,
-          resolved_at: nil,
-          reason: nil,
-          resolved_by: nil,
-          reopened_at: event.at
-        }
-
-        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
-
-      _ ->
-        Logger.warning("ProjectionStore skipped malformed ThreadReopened")
-        state
-    end
-  end
-
 
   defp apply_event_by_type(state, "JobsiteSandboxProvisioned", payload) do
     update_jobsite_projection(

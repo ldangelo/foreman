@@ -1199,7 +1199,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     case CommandGateway.dispatch_system(%{
            type: "run.steer.consume",
-           command_id: "run_executor:steer-consume:#{state.run_id}:#{:erlang.phash2(message_ids)}",
+           command_id:
+             "run_executor:steer-consume:#{state.run_id}:#{:erlang.phash2(message_ids)}",
            aggregate_id: "run:#{state.run_id}",
            payload: %{run_id: state.run_id, message_ids: message_ids}
          }) do

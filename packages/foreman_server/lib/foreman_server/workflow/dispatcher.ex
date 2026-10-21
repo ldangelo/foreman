@@ -347,7 +347,9 @@ defmodule ForemanServer.Workflow.Dispatcher do
   end
 
   # Re-populates the mailbox cache for live runs after a restart.
-  defp rebuild_steering_mailbox do
+  @doc false
+  @spec rebuild_steering_mailbox() :: :ok
+  def rebuild_steering_mailbox do
     for %{run_id: run_id, terminal?: false} <- ProjectionStore.list_runs(),
         %{message_id: message_id, text: text} <- ProjectionStore.pending_steering(run_id) do
       RunControl.push_message(run_id, %{message_id: message_id, text: text})

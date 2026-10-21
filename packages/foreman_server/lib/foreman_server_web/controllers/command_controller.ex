@@ -8,7 +8,7 @@ defmodule ForemanServerWeb.CommandController do
   (`project.register`, `project.update`, `project.archive`,
   `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
   `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
-  `merge_approve`, and `run.pr.merge`),
+  `run.steer`, `merge_approve`, and `run.pr.merge`),
   enriches the payload, and dispatches to
   `CommandRouter`.
 
@@ -176,11 +176,12 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("run.resume"), do: "run"
   defp aggregate_prefix("run.remove"), do: "run"
   defp aggregate_prefix("run.reset"), do: "run"
+  defp aggregate_prefix("run.steer"), do: "run"
   defp aggregate_prefix("merge_approve"), do: "run"
   defp aggregate_prefix("run.pr.merge"), do: "run"
-  defp aggregate_prefix(_), do: ""
   defp aggregate_prefix("thread.resolve"), do: "thread"
   defp aggregate_prefix("thread.reopen"), do: "thread"
+  defp aggregate_prefix(_), do: ""
 
   defp id_field_for("project.register"), do: :project_id
   defp id_field_for("project.update"), do: :project_id
@@ -195,12 +196,13 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("run.resume"), do: :run_id
   defp id_field_for("run.remove"), do: :run_id
   defp id_field_for("run.reset"), do: :run_id
+  defp id_field_for("run.steer"), do: :run_id
   defp id_field_for("merge_approve"), do: :run_id
   defp id_field_for("run.pr.merge"), do: :run_id
-  defp id_field_for(_), do: nil
-
   defp id_field_for("thread.resolve"), do: :thread_id
   defp id_field_for("thread.reopen"), do: :thread_id
+  defp id_field_for(_), do: nil
+
   defp default_command_id do
     "op:#{System.unique_integer([:positive])}:#{System.os_time(:nanosecond)}"
   end
