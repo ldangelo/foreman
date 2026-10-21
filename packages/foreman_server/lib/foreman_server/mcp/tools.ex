@@ -455,6 +455,11 @@ defmodule ForemanServer.MCP.Tools do
         },
         max_concurrent_runs: %{type: "integer", description: "Concurrent runs limit (1..1000)"},
         daily_thread_cap: %{type: "integer", description: "Threads per UTC day (1..10000)"},
+        library_collect_produced: %{
+          type: "boolean",
+          description:
+            "Register each run's artifacts and session archive files in the project library"
+        },
         coordinator_propose_before_start: %{
           type: "boolean",
           description: "Coordinator creates proposals (open tasks) instead of starting threads"
@@ -1206,6 +1211,9 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_pr_watch_stop
   ]
 
+  # Read-only library tools (E5); implemented in `ForemanServer.MCP.LibraryTools`.
+  @tools @tools ++ ForemanServer.MCP.LibraryTools.schemas()
+
   def list_tools, do: @tools
 
   # -------------------------------------------------------------------
@@ -1944,6 +1952,9 @@ defmodule ForemanServer.MCP.Tools do
   defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message}),
     do: %ToolError{code: "DOMAIN_ERROR", message: "#{code}: #{message}"}
 
+  defp tool_foreman_project_library_list(args), do: ForemanServer.MCP.LibraryTools.list(args)
+  defp tool_foreman_project_library_read(args), do: ForemanServer.MCP.LibraryTools.read(args)
+
   defp tool_foreman_inbox_send(%{} = args) do
     start_us = System.monotonic_time(:microsecond)
 
@@ -2204,7 +2215,7 @@ defmodule ForemanServer.MCP.Tools do
                            coordinator_model coordinator_effort max_concurrent_runs
                            daily_thread_cap coordinator_propose_before_start
                            coordinator_max_active_threads coordinator_reuse_threads
-                           notification_preference)a
+                           library_collect_produced notification_preference)a
 
   # The command id is content-derived (tool + canonical args + caller key), so a
   # retry of the same update collapses into one command while two different

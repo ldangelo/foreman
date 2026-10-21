@@ -41,7 +41,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
            coordinator_effort max_concurrent_runs daily_thread_cap pr_auto_fix
            coordinator_propose_before_start coordinator_max_active_threads
-           coordinator_reuse_threads notification_preference)a
+           coordinator_reuse_threads library_collect_produced notification_preference)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -58,6 +58,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_effort
           | :max_concurrent_runs
           | :daily_thread_cap
+          | :library_collect_produced
           | :pr_auto_fix
           | :coordinator_propose_before_start
           | :coordinator_max_active_threads
@@ -78,6 +79,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:coordinator_effort_invalid, term(), [String.t()]}
           | {:max_concurrent_runs_invalid, term(), Range.t()}
           | {:daily_thread_cap_invalid, term(), Range.t()}
+          | {:library_collect_produced_invalid, term()}
           | {:pr_auto_fix_invalid, term()}
           | {:pr_auto_fix_unknown_kind, term()}
           | {:pr_auto_fix_max_attempts_invalid, term(), Range.t()}
@@ -229,6 +231,12 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:daily_thread_cap, value),
     do: ranged(value, :daily_thread_cap_invalid, @daily_thread_cap_range)
+
+  defp validate(:library_collect_produced, nil), do: {:ok, nil}
+  defp validate(:library_collect_produced, value) when is_boolean(value), do: {:ok, value}
+
+  defp validate(:library_collect_produced, value),
+    do: {:error, {:library_collect_produced_invalid, value}}
 
   defp validate(:coordinator_propose_before_start, value),
     do: boolean(value, :coordinator_propose_before_start)

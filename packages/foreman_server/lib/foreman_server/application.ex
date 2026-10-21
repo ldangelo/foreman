@@ -131,6 +131,7 @@ defmodule ForemanServer.Application do
         maybe_threads_children() ++
         maybe_overview_children() ++
         maybe_review_children() ++
+        maybe_library_collector_child() ++
         maybe_approvals_children() ++
         maybe_coordinator_children() ++
         maybe_stuck_detector_child() ++
@@ -232,6 +233,14 @@ defmodule ForemanServer.Application do
   defp maybe_overview_children do
     if Application.get_env(:foreman_server, :overview, [])[:merge_resolver] != false do
       [ForemanServer.Overview.MergeResolver]
+    else
+      []
+    end
+  end
+
+  defp maybe_library_collector_child do
+    if Application.get_env(:foreman_server, :library, [])[:collector] do
+      [ForemanServer.Library.Collector]
     else
       []
     end

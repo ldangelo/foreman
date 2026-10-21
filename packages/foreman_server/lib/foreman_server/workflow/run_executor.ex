@@ -1317,7 +1317,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     # `FOREMAN_*` always wins: `ProjectEnvironment.resolve/2` refuses a project
     # that stores a reserved name, so no project key can reach this merge.
-    env = Map.merge(resolved.env, foreman_env)
+    env =
+      resolved.env
+      |> Map.merge(ForemanServer.Library.env(project_id(state)))
+      |> Map.merge(foreman_env)
 
     {:ok,
      %{
@@ -3823,6 +3826,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def phase_number(phase_spec, index), do: PhaseSpec.number(phase_spec, index)
+
+  @doc "Directory under which runs write their default artifacts (`~/.foreman/runs`)."
+  @spec artifact_base() :: String.t()
+  def artifact_base, do: default_artifact_base()
 
   defp default_artifact_base do
     case System.fetch_env("HOME") do

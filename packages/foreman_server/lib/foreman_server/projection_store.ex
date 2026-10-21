@@ -508,6 +508,16 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
+  Metadata index of a project's library entries (`ProjectLibraryAdded` /
+  `ProjectLibraryReplaced` / `ProjectLibraryRemoved`), sorted by name. Bytes live
+  on disk; this is the audit trail and the source of the entry count.
+  """
+  @spec project_library(String.t()) :: [map()]
+  def project_library(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:project_library, project_id})
+  end
+
+  @doc """
   The full bounded coordinator conversation read model of a project (see
   `ForemanServer.Coordinator.Conversation`); a project that never spoke to its
   coordinator has an empty one. `{:error, :project_not_found}` for an unknown
@@ -1021,6 +1031,17 @@ defmodule ForemanServer.ProjectionStore do
 
   def handle_call({:jobsite, jobsite_id}, _from, state) do
     {:reply, Map.get(state.jobsites, jobsite_id), state}
+  end
+
+  @impl true
+  def handle_call({:project_library, project_id}, _from, state) do
+    entries =
+      state.project_library
+      |> Map.get(project_id, %{})
+      |> Map.values()
+      |> Enum.sort_by(& &1.name)
+
+    {:reply, entries, state}
   end
 
   @impl true
@@ -1826,6 +1847,7 @@ defmodule ForemanServer.ProjectionStore do
       adoptions: %{},
       reviews: %{},
       project_memory: %{},
+      project_library: %{},
       project_secrets: %{},
       thread_flags: %{},
       schedules: %{},
@@ -3174,6 +3196,25 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # Malformed library events are logged and skipped, like memory events.
+  defp apply_event_by_type(state, "ProjectLibraryAdded", payload),
+    do: apply_library_upsert(state, "ProjectLibraryAdded", payload)
+
+  defp apply_event_by_type(state, "ProjectLibraryReplaced", payload),
+    do: apply_library_upsert(state, "ProjectLibraryReplaced", payload)
+
+  defp apply_event_by_type(state, "ProjectLibraryRemoved", payload) do
+    case decode_or_skip("ProjectLibraryRemoved", payload) do
+      {:ok, %ForemanServer.Events.ProjectLibraryRemoved{project_id: pid, entry_id: entry_id}}
+      when is_binary(pid) and pid != "" and is_binary(entry_id) and entry_id != "" ->
+        put_project_library(state, pid, &Map.delete(&1, entry_id))
+
+      _ ->
+        skip_malformed("ProjectLibraryRemoved")
+        state
+    end
+  end
+
   defp apply_event_by_type(state, "ProjectMemoryForgotten", payload) do
     case decode_or_skip("ProjectMemoryForgotten", payload) do
       {:ok, %ForemanServer.Events.ProjectMemoryForgotten{project_id: pid, name: name}}
@@ -4472,6 +4513,38 @@ defmodule ForemanServer.ProjectionStore do
   defp put_project_memory(state, project_id, fun) do
     topics = state.project_memory |> Map.get(project_id, %{}) |> fun.()
     %{state | project_memory: Map.put(state.project_memory, project_id, topics)}
+  end
+
+  defp apply_library_upsert(state, type, payload) do
+    case decode_or_skip(type, payload) do
+      {:ok, %{project_id: pid, entry_id: entry_id, name: name, manifest_sha256: sha} = e}
+      when is_binary(pid) and pid != "" and is_binary(entry_id) and entry_id != "" and
+             is_binary(name) and is_binary(sha) ->
+        entry = %{
+          entry_id: entry_id,
+          name: name,
+          kind: e.kind,
+          file_count: e.file_count,
+          bytes: e.bytes,
+          manifest_sha256: sha,
+          source: e.source,
+          skipped_summary: e.skipped_summary,
+          author_kind: e.author_kind,
+          author_ref: e.author_ref,
+          updated_at: e.at
+        }
+
+        put_project_library(state, pid, &Map.put(&1, entry_id, entry))
+
+      _ ->
+        skip_malformed(type)
+        state
+    end
+  end
+
+  defp put_project_library(state, project_id, fun) do
+    entries = state.project_library |> Map.get(project_id, %{}) |> fun.()
+    %{state | project_library: Map.put(state.project_library, project_id, entries)}
   end
 
   defp skip_malformed(event_type),

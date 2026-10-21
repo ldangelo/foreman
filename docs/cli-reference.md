@@ -20,7 +20,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -30,6 +30,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project secret    list --format | set --from-env | unset
 > foreman project setup-script show | set --file | clear
 > foreman project network   show | set --mode --allow
+> foreman project library   list --format | add --name --format | replace --name --format | remove
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
 > foreman project reactivate --idempotency-key
@@ -327,6 +328,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
 | `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
+| `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
 | `--clear <setting>` | Clear a setting (repeatable) |
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
@@ -471,6 +473,26 @@ foreman project memory sync [--format json|table] <project-id>
 | `sync` | `POST /api/projects/:id/memory/sync` | records hand-edited files in the audit trail; exits non-zero if any topic could not be recorded |
 
 Server errors keep their code (`content_too_large`, `index_full`, `too_many_topics`, `content_not_durable`, `name_invalid` = 422; unknown topic or project = 404; archived project = 409). `foreman commands` also generates `foreman-project-memory-list` and `foreman-project-memory-read` assets.
+
+### `foreman project library`
+
+Add, replace, remove and list a project's library files (`<project>/.foreman/library/`). Uploads go to `/api/projects/:id/library` as multipart `files[]` parts.
+
+```
+foreman project library list [--format json|table] <project-id>
+foreman project library add [--name <name>] [--format json|table] <project-id> <path>...
+foreman project library replace [--name <name>] [--format json|table] <project-id> <entry-id> <path>...
+foreman project library remove <project-id> <entry-id>
+```
+
+| Verb | HTTP | Notes |
+|------|------|-------|
+| `list` | `GET /api/projects/:id/library` | entries, the markdown index and the effective limits |
+| `add` | `POST /api/projects/:id/library` | one folder (walked locally with the server's rules) or up to 100 files (480 MB each); every skipped file is printed with its reason |
+| `replace` | `PUT /api/projects/:id/library/:entry_id` | keeps the entry id, name and kind unless `--name` is given |
+| `remove` | `DELETE /api/projects/:id/library/:entry_id` | deletes the files and the entry |
+
+Folder rules (client and server): hidden files and directories, `node_modules`, symlinks and files over 30 MB are skipped; at most the first 100 files within 200 MB (sorted path order; the rest are reported as `folder_file_cap` / `folder_byte_budget`); at most 10 folders per project. Reading a file is `GET /api/projects/:id/library/:entry_id/files/*path` (raw bytes, 1 MiB cap, served as an attachment). Adding a directory that lives on the server host (`{"server_path": "/abs/dir"}` JSON body) is refused with 403 `server_path_disabled` unless `config :foreman_server, :library, allow_server_paths: true`. Server errors keep their code (`name_invalid`, `path_invalid`, `too_many_files`, `file_too_large`, `folder_empty`, `too_many_folders`, `duplicate_name`, `source_missing` = 422; `too_large` = 413; unknown entry or project = 404; archived project = 409). The opt-in setting `foreman project update --library-collect-produced` registers each run's artifacts and archive files into the library. Agents read the library through the MCP tools `foreman_project_library_list` / `foreman_project_library_read`; there is no agent write tool.
 
 ---
 
@@ -1498,7 +1520,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `notification_preference`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
