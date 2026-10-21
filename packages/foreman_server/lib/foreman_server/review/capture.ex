@@ -76,6 +76,74 @@ defmodule ForemanServer.Review.Capture do
   end
 
   @doc """
+  Persist the standing project context an agent was launched with:
+  `project-context.md` (byte-identical to the text delivered) plus a
+  `project_context` manifest block (sha256, bytes, truncated sections,
+  redactions). Written once per archive (the first launch); a bundle with no
+  text, a disabled capture or `nil` is a no-op. Never raises.
+  """
+  @spec put_project_context(String.t() | nil, ForemanServer.ProjectContext.Bundle.t() | nil) ::
+          :ok | {:error, Error.t()}
+  def put_project_context(nil, _bundle), do: :ok
+  def put_project_context(_dir, nil), do: :ok
+  def put_project_context(_dir, %{system_text: nil}), do: :ok
+
+  def put_project_context(dir, %{system_text: text} = bundle) when is_binary(dir) do
+    if Archive.capture_enabled?() and not File.exists?(Path.join(dir, "project-context.md")) do
+      guarded("put_project_context", dir, fn ->
+        with :ok <- ensure_manifest(dir, nil),
+             :ok <- Archive.write_file(dir, "project-context.md", text) do
+          Archive.merge_manifest(dir, %{
+            "project_context" => %{
+              "sha256" => bundle.sha256,
+              "bytes" => bundle.bytes,
+              "truncated" =>
+                Enum.map(bundle.truncated, fn t ->
+                  %{
+                    "section" => to_string(t.section),
+                    "omitted_bytes" => t.omitted_bytes,
+                    "omitted_lines" => t.omitted_lines
+                  }
+                end),
+              "redactions" => bundle.redactions
+            }
+          })
+        end
+      end)
+    else
+      :ok
+    end
+  end
+
+  @doc "`put_project_context/2` for a workflow run's archive (dir resolved from the run)."
+  @spec put_run_project_context(String.t(), ForemanServer.ProjectContext.Bundle.t() | nil) ::
+          :ok | {:error, Error.t()}
+  def put_run_project_context(_run_id, nil), do: :ok
+  def put_run_project_context(_run_id, %{system_text: nil}), do: :ok
+
+  def put_run_project_context(run_id, bundle) when is_binary(run_id) do
+    if Archive.capture_enabled?() do
+      case run_repo_path(run_id) do
+        {:ok, repo_path} ->
+          put_project_context(Archive.dir(:run, run_id, repo_path), bundle)
+
+        {:error, error} ->
+          Logger.warning("review capture: run #{run_id} project context: #{inspect(error)}")
+          {:error, error}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp ensure_manifest(dir, _) do
+    case Archive.read_manifest(dir) do
+      {:ok, _} -> :ok
+      {:error, _} -> Archive.init(dir, %{})
+    end
+  end
+
+  @doc """
   Capture `diff.patch` and `changed-files.txt` for `base..head` of the worktree.
   For a `:worktree` head new files are first marked intent-to-add; if that fails
   the tracked-file diff is still captured and the omission of the new files is
@@ -280,10 +348,21 @@ defmodule ForemanServer.Review.Capture do
       "transcript_source" => "run_logs"
     }
 
-    with :ok <- Archive.init(dir, manifest),
+    carried = carried_project_context(dir)
+
+    with :ok <- Archive.init(dir, Map.merge(manifest, carried)),
          :ok <- put_run_session_ids(dir, run),
          :ok <- write_request(dir, request_text) do
       capture_run_diff(dir, worktree, outcome)
+    end
+  end
+
+  # The launched project context is recorded at the first agent launch, before
+  # `close_run/2` writes the final manifest; carry that block over.
+  defp carried_project_context(dir) do
+    case Archive.read_manifest(dir) do
+      {:ok, %{"project_context" => block}} -> %{"project_context" => block}
+      _ -> %{}
     end
   end
 
