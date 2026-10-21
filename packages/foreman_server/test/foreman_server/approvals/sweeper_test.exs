@@ -52,24 +52,22 @@ defmodule ForemanServer.Approvals.SweeperTest do
     name
   end
 
-  test "a call exactly at the timeout is expired once; a younger one and an approved one are untouched" do
+  test "a call one ms short of the timeout is untouched; exactly at it, it is expired once" do
     run_id = "run-sw-#{System.unique_integer([:positive])}"
-    old = request!(run_id, "old")
-    young = request!(run_id, "young")
-    # young is 1ms short of the timeout, old is exactly at it
-    now = old.requested_at_ms + @timeout
-    assert young.requested_at_ms >= old.requested_at_ms
+    call = request!(run_id, "edge")
+    deadline = call.requested_at_ms + @timeout
 
-    server = sweeper(now)
+    Sweeper.sweep(sweeper(deadline - 1))
+    assert %{status: "requested"} = ProjectionStore.tool_call(run_id, "edge")
+    assert events(ToolCall.stream_id(run_id, "edge")) == ["ToolCallRequested"]
+
+    server = sweeper(deadline)
     Sweeper.sweep(server)
-    await_projection("ToolCallExpired", :tool_call_id, "old")
+    await_projection("ToolCallExpired", :tool_call_id, "edge")
     Sweeper.sweep(server)
 
-    assert events(ToolCall.stream_id(run_id, "old")) == ["ToolCallRequested", "ToolCallExpired"]
-    assert %{status: "expired"} = ProjectionStore.tool_call(run_id, "old")
-
-    if young.requested_at_ms + @timeout > now,
-      do: assert(%{status: "requested"} = ProjectionStore.tool_call(run_id, "young"))
+    assert events(ToolCall.stream_id(run_id, "edge")) == ["ToolCallRequested", "ToolCallExpired"]
+    assert %{status: "expired"} = ProjectionStore.tool_call(run_id, "edge")
   end
 
   test "an expired call can no longer be approved" do

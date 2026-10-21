@@ -1956,7 +1956,7 @@ foreman approvals approve --run <id> --call <tool_call_id> [--by <name>] [--reas
 foreman approvals deny    --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
 ```
 
-Agent tool-permission requests (`GET /api/projects/:id/approvals`, `GET /api/runs/:run_id/approvals`). `approve`/`deny` post `tool.approve` / `tool.deny` to `/api/commands` for ONE tool call; they never touch the run's merge gate (`foreman run approve-merge` / `merge` stay the only way to merge). `--all` includes decided, expired and finished requests. The `approval_delivery` column is `resume_with_override` (the run is resumed with a one-phase approval-mode override) or `live`.
+Agent tool-permission requests (`GET /api/projects/:id/approvals`, `GET /api/runs/:run_id/approvals`). `approve`/`deny` post `tool.approve` / `tool.deny` to `/api/commands` for ONE tool call; they never touch the run's merge gate (`foreman run approve-merge` / `merge` stay the only way to merge). `--all` includes decided, expired and finished requests. An approval relaxes the approval mode for the NEXT PHASE ONLY, but phase-wide: pi/claude have no per-tool grant (the claude path is unverified live). The `approval_delivery` column is `resume_with_override` (the run is resumed with a one-phase approval-mode override) or `live`.
 
 ### `foreman questions`
 

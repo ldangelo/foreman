@@ -42,8 +42,8 @@ defmodule ForemanServer.MCP.ApprovalsToolTest do
     assert {:ok, %{"approvals" => [call]}} =
              Tools.call_tool("foreman_approvals_list", %{project_id: "mp"})
 
-    assert call["tool_call_id"] == "c1"
-    assert call["actions"] == ["tool.approve", "tool.deny"]
+    assert call.tool_call_id == "c1"
+    assert call.actions == ["tool.approve", "tool.deny"]
 
     assert {:ok, %{"approvals" => [^call]}} =
              Tools.call_tool("foreman_approvals_list", %{run_id: "mr1"})

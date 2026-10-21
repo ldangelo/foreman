@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"text/tabwriter"
+	"unicode"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
@@ -18,7 +20,10 @@ const approvalsHelp = `Usage of approvals:
 
 Agent tool-permission requests. approve/deny decide ONE agent tool call
 (tool.approve / tool.deny); they are unrelated to the run merge gate, which is
-only ever 'foreman run approve-merge/merge'.
+only ever 'foreman run approve-merge/merge'. An approval resumes the run with a
+relaxed approval mode for the NEXT PHASE ONLY (auto_edit for edit tools,
+auto_approve otherwise), so it grants more than the single tool for that phase
+(pi/claude have no per-tool grant; claude is unverified live).
 `
 
 const questionsHelp = `Usage of questions:
@@ -174,9 +179,21 @@ func listNeedsYou(c *client.Client, path string, all bool, format, key string, c
 			if i > 0 {
 				fmt.Fprint(w, "\t")
 			}
-			fmt.Fprint(w, row[col])
+			fmt.Fprint(w, sanitizeCell(fmt.Sprint(row[col])))
 		}
 		fmt.Fprintln(w)
 	}
 	return w.Flush()
+}
+
+// sanitizeCell makes agent-supplied text safe for one table cell: control
+// characters (newline, tab, carriage return, ANSI escapes) become spaces, so a
+// value can neither forge extra rows nor rewrite the terminal.
+func sanitizeCell(v string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, v)
 }

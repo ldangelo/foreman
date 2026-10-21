@@ -1214,9 +1214,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # and the projection is the fallback. Command phases never see a prompt,
   # so they neither inject nor consume.
   defp steering_messages(state, phase_spec) do
-    if phase_action(phase_spec) == :command do
-      []
-    else
+    pending =
       case RunControl.peek_messages(state.run_id) do
         [] ->
           state.run_id
@@ -1226,7 +1224,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         cached ->
           cached
       end
-    end
+
+    # A command phase has no prompt to carry operator text, but an approval's
+    # `approval_mode_override` still applies to its driver opts: only those
+    # messages are taken (and consumed) there.
+    if phase_action(phase_spec) == :command,
+      do: Enum.filter(pending, &Map.get(&1, :approval_mode_override)),
+      else: pending
   end
 
   defp append_steering_block(prompt, []), do: prompt
@@ -1274,7 +1278,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          steering
        ) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
-    request = %{request | prompt: append_steering_block(request.prompt, steering)}
+    prompt_steering = if phase_action(phase_spec) == :command, do: [], else: steering
+    request = %{request | prompt: append_steering_block(request.prompt, prompt_steering)}
 
     prompt =
       case phase_action(phase_spec) do
