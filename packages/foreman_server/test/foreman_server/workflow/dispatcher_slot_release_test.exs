@@ -39,6 +39,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
   end
 
   setup do
+    :ok = ForemanServer.DispatcherQuiesce.suspend!()
     {:ok, _} = Application.ensure_all_started(:meck)
     :meck.new(ForemanServer.CommandGateway, [:passthrough, :no_link])
 
