@@ -128,7 +128,13 @@ defmodule ForemanServer.RunControl do
   end
 
   @doc "Returns `run_id`'s cached steering messages in queue order, without removing them."
-  @spec peek_messages(String.t()) :: [%{message_id: String.t(), text: String.t()}]
+  @spec peek_messages(String.t()) :: [
+          %{
+            required(:message_id) => String.t(),
+            required(:text) => String.t(),
+            optional(:approval_mode_override) => String.t() | nil
+          }
+        ]
   def peek_messages(run_id) when is_binary(run_id) do
     case :ets.lookup(@table, {:messages, run_id}) do
       [{_key, messages}] -> messages

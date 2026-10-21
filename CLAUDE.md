@@ -443,6 +443,13 @@ reason `operator_pause`, Abandon is `run.remove`, Resume is
 `run.resume`, and Reset/Restart is `run.reset`. Code evidence stays
 read-only and may use projected worktree/branch/base data only.
 
+The project workspace is `GET /dashboard/projects/:id` (+ `/settings`,
+`ForemanServerWeb.ProjectWorkspaceLive` / `ProjectSettingsLive`), same guard.
+It adds no mutation path: actions go through `ForemanServerWeb.Workspace.Actions`
+(Threads.Actions, CoordinatorAPI, operator-allowlisted commands) and updates
+come from one coalesced `ProjectionStore` subscription (`Workspace.Refresh`),
+never a polling timer. It has no merge/approve-PR control.
+
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
 Atomic `task.create` and bidirectional Beads sync are governed by

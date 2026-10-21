@@ -426,9 +426,15 @@ defmodule ForemanServer.Threads.Transcript do
   end
 
   defp gather(%Threads.Thread{door: :workflow, id: "run:" <> run_id}, opts) do
-    with {:ok, logs} <- ProjectionStore.run_logs(run_id),
-         {:ok, events} <- ProjectionStore.run_events(run_id),
-         %{} = run <- ProjectionStore.run(run_id) do
+    # Read the run (and so `terminal?`) FIRST. Each ProjectionStore call is a
+    # separate GenServer call, so a terminal event can land between them. The
+    # projection only ever grows, so logs/events read after the status are a
+    # superset of what the status implies; the reverse order let a stream see
+    # `terminal? = true` with events that lacked the closing turn and end
+    # without ever emitting it.
+    with %{} = run <- ProjectionStore.run(run_id),
+         {:ok, logs} <- ProjectionStore.run_logs(run_id),
+         {:ok, events} <- ProjectionStore.run_events(run_id) do
       {steer, system} = split_events(events)
 
       {:ok,

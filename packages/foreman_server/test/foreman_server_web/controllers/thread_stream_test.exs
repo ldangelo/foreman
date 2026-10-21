@@ -130,12 +130,17 @@ defmodule ForemanServerWeb.ThreadStreamTest do
     # let the idle stream demonstrably loop before the thread ends
     {:reductions, start} = Process.info(task.pid, :reductions)
 
-    await(fn ->
-      case Process.info(task.pid, :reductions) do
-        {:reductions, now} -> now - start > 500_000
-        nil -> true
-      end
-    end)
+    # Generous deadline: the observable is CPU progress of the stream process,
+    # which a saturated CI/host can starve for far longer than the default 10s.
+    await(
+      fn ->
+        case Process.info(task.pid, :reductions) do
+          {:reductions, now} -> now - start > 500_000
+          nil -> true
+        end
+      end,
+      System.monotonic_time(:millisecond) + 60_000
+    )
 
     :ok = apply_event("RunCompleted", %{run_id: run_id, project_id: "p-sse"})
 

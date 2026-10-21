@@ -243,13 +243,19 @@ defmodule ForemanServer.ProjectionStore do
 
   @doc """
   Return the run's pending steering messages (`RunSteerQueued` minus
-  `RunSteerConsumed`) in queue order as `[%{message_id, text, resume}]`.
+  `RunSteerConsumed`) in queue order as `[%{message_id, text, resume,
+  approval_mode_override}]` (the override is nil unless an approval set it).
 
   This is the durable source of truth for operator steering: `RunControl`'s
   ETS mailbox is cleared across every pause/resume and is only a cache.
   """
   @spec pending_steering(String.t()) :: [
-          %{message_id: String.t(), text: String.t(), resume: boolean()}
+          %{
+            message_id: String.t(),
+            text: String.t(),
+            resume: boolean(),
+            approval_mode_override: String.t() | nil
+          }
         ]
   def pending_steering(run_id) when is_binary(run_id) and run_id != "" do
     case run(run_id) do
@@ -299,6 +305,176 @@ defmodule ForemanServer.ProjectionStore do
              subject_id != "" do
     GenServer.call(__MODULE__, {:review, subject_kind, subject_id})
   end
+
+  @typedoc """
+  One projected tool-call approval request. `status` is `requested`, `approved`,
+  `denied`, `expired` or `finished`; `project_id` is nil only when neither the event
+  nor the run/jobsite projection knew it.
+  """
+  @type tool_call :: %{
+          run_id: String.t(),
+          tool_call_id: String.t(),
+          project_id: String.t() | nil,
+          tool_name: String.t(),
+          input_summary: String.t() | nil,
+          provider: String.t() | nil,
+          delivery: String.t() | nil,
+          status: String.t(),
+          requested_at: String.t(),
+          requested_at_ms: integer() | nil,
+          decided_at: String.t() | nil,
+          decided_by: String.t() | nil,
+          reason: String.t() | nil,
+          outcome: String.t() | nil
+        }
+
+  @approvals_limit 200
+
+  @doc "Maximum approvals returned by one `project_approvals/2` / `run_approvals/2` read."
+  @spec approvals_limit() :: pos_integer()
+  def approvals_limit, do: @approvals_limit
+
+  @doc """
+  A project's tool-call approvals, oldest request first. `status: :pending`
+  (default) returns only `requested` calls; `status: :all` includes decided,
+  expired and finished ones. Bounded by `:limit` (default and max 200).
+  """
+  @spec project_approvals(String.t(), keyword()) :: [tool_call()]
+  def project_approvals(project_id, opts \\ []) when is_binary(project_id) and is_list(opts),
+    do: read_tool_calls({:project, project_id}, opts)
+
+  @doc "A run's (or jobsite's) tool-call approvals; same options as `project_approvals/2`."
+  @spec run_approvals(String.t(), keyword()) :: [tool_call()]
+  def run_approvals(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
+    do: read_tool_calls({:run, run_id}, opts)
+
+  @doc "The `requested` tool calls of a project, oldest first (the Waiting-on-you source)."
+  @spec pending_approvals(String.t()) :: [tool_call()]
+  def pending_approvals(project_id), do: project_approvals(project_id)
+
+  @doc "Pending approval counts per run id for a project."
+  @spec pending_approvals_by_run(String.t()) :: %{String.t() => pos_integer()}
+  def pending_approvals_by_run(project_id) when is_binary(project_id) do
+    project_id |> pending_approvals() |> Enum.frequencies_by(& &1.run_id)
+  end
+
+  @doc "One tool call, or nil."
+  @spec tool_call(String.t(), String.t()) :: tool_call() | nil
+  def tool_call(run_id, tool_call_id) when is_binary(run_id) and is_binary(tool_call_id),
+    do: GenServer.call(__MODULE__, {:tool_call, run_id, tool_call_id})
+
+  @doc """
+  `%{pending: n, expired: n, failed_deliveries: n}` tool-call counts over `run_ids`
+  (a thread's runs, or its jobsite id): what `Overview.Signals` reads.
+  `failed_deliveries` counts approved calls whose decision never reached the agent.
+  """
+  @spec approval_counts([String.t()]) :: %{
+          pending: non_neg_integer(),
+          expired: non_neg_integer(),
+          failed_deliveries: non_neg_integer()
+        }
+  def approval_counts(run_ids) when is_list(run_ids),
+    do: GenServer.call(__MODULE__, {:approval_counts, run_ids})
+
+  defp read_tool_calls(scope, opts) do
+    statuses =
+      case Keyword.get(opts, :status, :pending) do
+        :all -> :all
+        :pending -> ["requested"]
+      end
+
+    limit = opts |> Keyword.get(:limit, @approvals_limit) |> min(@approvals_limit) |> max(1)
+    GenServer.call(__MODULE__, {:tool_calls, scope, statuses, limit})
+  end
+
+  defp delivery_failed?(%{status: "finished", outcome: "delivery_failed" <> _}), do: true
+  defp delivery_failed?(_call), do: false
+
+  @typedoc """
+  One projected operator question. `status` is `open`, `answered` or `expired`.
+  The answer text is never projected (it is delivered to the agent and lives only
+  in the `QuestionAnswered` event).
+  """
+  @type question :: %{
+          run_id: String.t(),
+          question_id: String.t(),
+          project_id: String.t() | nil,
+          agent_id: String.t() | nil,
+          text: String.t() | nil,
+          status: String.t(),
+          timeout_ms: pos_integer() | nil,
+          opened_at: String.t(),
+          opened_at_ms: integer() | nil,
+          decided_at: String.t() | nil,
+          answered_by: String.t() | nil,
+          reason: String.t() | nil
+        }
+
+  @doc """
+  A project's operator questions, oldest first. `status: :pending` (default)
+  returns only `open` ones, `status: :all` includes answered and expired.
+  Bounded like `project_approvals/2`.
+  """
+  @spec project_questions(String.t(), keyword()) :: [question()]
+  def project_questions(project_id, opts \\ []) when is_binary(project_id) and is_list(opts),
+    do: read_questions({:project, project_id}, opts)
+
+  @doc "A run's questions (the id `\"global\"` for unscoped ones); see `project_questions/2`."
+  @spec run_questions(String.t(), keyword()) :: [question()]
+  def run_questions(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
+    do: read_questions({:run, run_id}, opts)
+
+  @doc "The `open` questions of a project, oldest first (the Waiting-on-you source)."
+  @spec open_questions(String.t()) :: [question()]
+  def open_questions(project_id), do: project_questions(project_id)
+
+  @doc "Open question counts per run id for a project."
+  @spec open_questions_by_run(String.t()) :: %{String.t() => pos_integer()}
+  def open_questions_by_run(project_id) when is_binary(project_id) do
+    project_id |> open_questions() |> Enum.frequencies_by(& &1.run_id)
+  end
+
+  @doc "One question, or nil."
+  @spec question(String.t(), String.t()) :: question() | nil
+  def question(run_id, question_id) when is_binary(run_id) and is_binary(question_id),
+    do: GenServer.call(__MODULE__, {:question, run_id, question_id})
+
+  @doc "`%{open: n, expired: n}` question counts over `run_ids` (what `Overview.Signals` reads)."
+  @spec question_counts([String.t()]) :: %{open: non_neg_integer(), expired: non_neg_integer()}
+  def question_counts(run_ids) when is_list(run_ids),
+    do: GenServer.call(__MODULE__, {:question_counts, run_ids})
+
+  @doc """
+  Every pending tool call and open question across all projects (unbounded, and
+  including ones with no project): the sweeper's input.
+  """
+  @spec pending_needs_you() :: %{tool_calls: [tool_call()], questions: [question()]}
+  def pending_needs_you, do: GenServer.call(__MODULE__, :pending_needs_you)
+
+  @doc """
+  The open question with this id in any run, or nil. For the operator-timeout fast
+  path, which knows a question id but not the run it was opened under.
+  """
+  @spec open_question_by_id(String.t()) :: question() | nil
+  def open_question_by_id(question_id) when is_binary(question_id),
+    do: GenServer.call(__MODULE__, {:open_question_by_id, question_id})
+
+  defp read_questions(scope, opts) do
+    statuses =
+      case Keyword.get(opts, :status, :pending) do
+        :all -> :all
+        :pending -> ["open"]
+      end
+
+    limit = opts |> Keyword.get(:limit, @approvals_limit) |> min(@approvals_limit) |> max(1)
+    GenServer.call(__MODULE__, {:questions, scope, statuses, limit})
+  end
+
+  defp question_in_scope?(question, {:project, project_id}), do: question.project_id == project_id
+  defp question_in_scope?(question, {:run, run_id}), do: question.run_id == run_id
+
+  defp tool_call_in_scope?(call, {:project, project_id}), do: call.project_id == project_id
+  defp tool_call_in_scope?(call, {:run, run_id}), do: call.run_id == run_id
 
   @doc """
   The adoption record for a subject: the `project.adopt` move that re-homed it
@@ -893,6 +1069,98 @@ defmodule ForemanServer.ProjectionStore do
           do: schedule
 
     {:reply, Enum.sort_by(list, &{&1.name, &1.schedule_id}), state}
+  end
+
+  @impl true
+  def handle_call({:tool_calls, scope, statuses, limit}, _from, state) do
+    calls =
+      state.tool_calls
+      |> Map.values()
+      |> Enum.filter(&tool_call_in_scope?(&1, scope))
+      |> Enum.filter(&(statuses == :all or &1.status in statuses))
+      |> Enum.sort_by(&{&1.requested_at_ms || 0, &1.tool_call_id})
+      |> Enum.take(limit)
+
+    {:reply, calls, state}
+  end
+
+  @impl true
+  def handle_call({:tool_call, run_id, tool_call_id}, _from, state) do
+    {:reply, Map.get(state.tool_calls, {run_id, tool_call_id}), state}
+  end
+
+  @impl true
+  def handle_call({:approval_counts, run_ids}, _from, state) do
+    counts =
+      Enum.reduce(
+        state.tool_calls,
+        %{pending: 0, expired: 0, failed_deliveries: 0},
+        fn {{run_id, _}, call}, acc ->
+          cond do
+            run_id not in run_ids -> acc
+            call.status == "requested" -> Map.update!(acc, :pending, &(&1 + 1))
+            call.status == "expired" -> Map.update!(acc, :expired, &(&1 + 1))
+            delivery_failed?(call) -> Map.update!(acc, :failed_deliveries, &(&1 + 1))
+            true -> acc
+          end
+        end
+      )
+
+    {:reply, counts, state}
+  end
+
+  @impl true
+  def handle_call({:questions, scope, statuses, limit}, _from, state) do
+    questions =
+      state.questions
+      |> Map.values()
+      |> Enum.filter(&question_in_scope?(&1, scope))
+      |> Enum.filter(&(statuses == :all or &1.status in statuses))
+      |> Enum.sort_by(&{&1.opened_at_ms || 0, &1.question_id})
+      |> Enum.take(limit)
+
+    {:reply, questions, state}
+  end
+
+  @impl true
+  def handle_call({:question, run_id, question_id}, _from, state) do
+    {:reply, Map.get(state.questions, {run_id, question_id}), state}
+  end
+
+  @impl true
+  def handle_call({:open_question_by_id, question_id}, _from, state) do
+    open =
+      Enum.find_value(state.questions, fn
+        {{_run_id, ^question_id}, %{status: "open"} = question} -> question
+        _other -> nil
+      end)
+
+    {:reply, open, state}
+  end
+
+  @impl true
+  def handle_call(:pending_needs_you, _from, state) do
+    reply = %{
+      tool_calls: state.tool_calls |> Map.values() |> Enum.filter(&(&1.status == "requested")),
+      questions: state.questions |> Map.values() |> Enum.filter(&(&1.status == "open"))
+    }
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:question_counts, run_ids}, _from, state) do
+    counts =
+      Enum.reduce(state.questions, %{open: 0, expired: 0}, fn {{run_id, _}, question}, acc ->
+        cond do
+          run_id not in run_ids -> acc
+          question.status == "open" -> Map.update!(acc, :open, &(&1 + 1))
+          question.status == "expired" -> Map.update!(acc, :expired, &(&1 + 1))
+          true -> acc
+        end
+      end)
+
+    {:reply, counts, state}
   end
 
   @impl true
@@ -1506,6 +1774,8 @@ defmodule ForemanServer.ProjectionStore do
       project_secrets: %{},
       thread_flags: %{},
       schedules: %{},
+      tool_calls: %{},
+      questions: %{},
       coordinators: %{}
     }
   end
@@ -1915,7 +2185,8 @@ defmodule ForemanServer.ProjectionStore do
         entry = %{
           message_id: message_id,
           text: get(payload, :text),
-          resume: get(payload, :resume) != false
+          resume: get(payload, :resume) != false,
+          approval_mode_override: get(payload, :approval_mode_override)
         }
 
         Map.put(run, :pending_steering, pending ++ [entry])
@@ -2429,7 +2700,124 @@ defmodule ForemanServer.ProjectionStore do
     |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
   end
 
+  # E8 operator-question folds (same tolerance as the tool-call folds below).
+  defp apply_event_by_type(state, "QuestionOpened", payload) do
+    case decode_or_skip("QuestionOpened", payload) do
+      {:ok, %ForemanServer.Events.QuestionOpened{run_id: run_id, question_id: id} = e}
+      when is_binary(run_id) and run_id != "" and is_binary(id) and id != "" ->
+        entry = %{
+          run_id: run_id,
+          question_id: id,
+          project_id: e.project_id || subject_project_id(state, run_id),
+          agent_id: e.agent_id,
+          text: e.text,
+          status: "open",
+          timeout_ms: e.timeout_ms,
+          opened_at: e.at,
+          opened_at_ms: iso_to_ms(e.at),
+          decided_at: nil,
+          answered_by: nil,
+          reason: nil
+        }
+
+        %{state | questions: Map.put_new(state.questions, {run_id, id}, entry)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed QuestionOpened")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "QuestionAnswered", payload) do
+    case decode_or_skip("QuestionAnswered", payload) do
+      {:ok, %ForemanServer.Events.QuestionAnswered{} = e} ->
+        update_question(state, e.run_id, e.question_id, fn question ->
+          %{question | status: "answered", decided_at: e.at, answered_by: e.answered_by}
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed QuestionAnswered")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "QuestionExpired", payload) do
+    case decode_or_skip("QuestionExpired", payload) do
+      {:ok, %ForemanServer.Events.QuestionExpired{} = e} ->
+        update_question(state, e.run_id, e.question_id, fn question ->
+          %{question | status: "expired", decided_at: e.at, reason: e.reason}
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed QuestionExpired")
+        state
+    end
+  end
+
+  # E8 tool-call folds. A decision event for an unknown call is ignored (never
+  # raised) so `init/1`'s event-log rebuild survives partial or reordered history.
+  defp apply_event_by_type(state, "ToolCallRequested", payload) do
+    case decode_or_skip("ToolCallRequested", payload) do
+      {:ok, %ForemanServer.Events.ToolCallRequested{run_id: run_id, tool_call_id: id} = e}
+      when is_binary(run_id) and run_id != "" and is_binary(id) and id != "" ->
+        entry = %{
+          run_id: run_id,
+          tool_call_id: id,
+          project_id: e.project_id || subject_project_id(state, run_id),
+          tool_name: e.tool_name,
+          input_summary: e.input_summary,
+          provider: e.provider,
+          delivery: e.delivery,
+          status: "requested",
+          requested_at: e.requested_at,
+          requested_at_ms: iso_to_ms(e.requested_at),
+          decided_at: nil,
+          decided_by: nil,
+          reason: nil,
+          outcome: nil
+        }
+
+        %{state | tool_calls: Map.put_new(state.tool_calls, {run_id, id}, entry)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ToolCallRequested")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ToolCallApproved", payload),
+    do: decide_tool_call(state, "ToolCallApproved", payload, "approved")
+
+  defp apply_event_by_type(state, "ToolCallDenied", payload),
+    do: decide_tool_call(state, "ToolCallDenied", payload, "denied")
+
+  defp apply_event_by_type(state, "ToolCallExpired", payload) do
+    case decode_or_skip("ToolCallExpired", payload) do
+      {:ok, %ForemanServer.Events.ToolCallExpired{} = e} ->
+        update_tool_call(state, e.run_id, e.tool_call_id, fn call ->
+          %{call | status: "expired", decided_at: e.at, reason: e.reason}
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ToolCallExpired")
+        state
+    end
+  end
+
+  # Worker-emitted `ToolCallFinished` events carry no `tool_call_id`; only the
+  # approvals path (`tool.finish`) does, and only that one settles a call.
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
+    state =
+      case get(payload, :tool_call_id) do
+        id when is_binary(id) and id != "" ->
+          update_tool_call(state, get(payload, :run_id), id, fn call ->
+            %{call | status: "finished", outcome: get(payload, :outcome)}
+          end)
+
+        _ ->
+          state
+      end
+
     state
     |> touch_run_for_payload(payload)
     |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
@@ -4250,6 +4638,63 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp iso_to_unix(_), do: nil
+
+  defp iso_to_ms(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> DateTime.to_unix(dt, :millisecond)
+      _ -> nil
+    end
+  end
+
+  defp iso_to_ms(_), do: nil
+
+  # A tool call / question is owned by a run id, or by a jobsite id for the jobsite door.
+  defp subject_project_id(state, subject_id) do
+    case {Map.get(state.runs, subject_id), Map.get(state.jobsites, subject_id)} do
+      {%{project_id: pid}, _} when is_binary(pid) -> pid
+      {_, %{project_id: pid}} when is_binary(pid) -> pid
+      _ -> nil
+    end
+  end
+
+  defp decide_tool_call(state, event_type, payload, status) do
+    case decode_or_skip(event_type, payload) do
+      {:ok, %{run_id: run_id, tool_call_id: id} = e} ->
+        update_tool_call(state, run_id, id, fn call ->
+          %{
+            call
+            | status: status,
+              decided_at: e.decided_at,
+              decided_by: e.decided_by,
+              reason: e.reason
+          }
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed #{event_type}")
+        state
+    end
+  end
+
+  defp update_question(state, run_id, question_id, fun) do
+    case Map.fetch(state.questions, {run_id, question_id}) do
+      {:ok, question} ->
+        %{state | questions: Map.put(state.questions, {run_id, question_id}, fun.(question))}
+
+      :error ->
+        state
+    end
+  end
+
+  defp update_tool_call(state, run_id, tool_call_id, fun) do
+    case Map.fetch(state.tool_calls, {run_id, tool_call_id}) do
+      {:ok, call} ->
+        %{state | tool_calls: Map.put(state.tool_calls, {run_id, tool_call_id}, fun.(call))}
+
+      :error ->
+        state
+    end
+  end
 
   defp valid_id?(value) when is_binary(value), do: value != ""
   defp valid_id?(_value), do: false

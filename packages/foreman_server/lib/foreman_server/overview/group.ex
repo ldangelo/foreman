@@ -16,6 +16,9 @@ defmodule ForemanServer.Overview.Group do
   |   |  | `:cancelled` | status `cancelled`, `deleted`, `removed` |
   | 2 | `:waiting_on_you` | `:approval` | `pending_approvals > 0` |
   |   |  | `:question` | `open_questions > 0` |
+  |   |  | `:approval_expired` | `expired_approvals > 0` (a request timed out undecided) |
+  |   |  | `:question_expired` | `expired_questions > 0` (a question timed out unanswered) |
+  |   |  | `:approval_delivery_failed` | `failed_approval_deliveries > 0` (an approved call never reached the agent) |
   |   |  | `:blocked` | status `blocked`, `stuck`, `needs_recovery`, `unresponsive` |
   |   |  | `:failed` | status `failed` |
   |   |  | `:conflict` | `pr_state :conflicted` |
@@ -44,6 +47,9 @@ defmodule ForemanServer.Overview.Group do
     :cancelled,
     :approval,
     :question,
+    :approval_expired,
+    :question_expired,
+    :approval_delivery_failed,
     :blocked,
     :failed,
     :conflict,
@@ -67,6 +73,9 @@ defmodule ForemanServer.Overview.Group do
           | :cancelled
           | :approval
           | :question
+          | :approval_expired
+          | :question_expired
+          | :approval_delivery_failed
           | :blocked
           | :failed
           | :conflict
@@ -103,6 +112,9 @@ defmodule ForemanServer.Overview.Group do
       i.status in @cancelled -> {:resolved, :cancelled}
       i.pending_approvals > 0 -> {:waiting_on_you, :approval}
       i.open_questions > 0 -> {:waiting_on_you, :question}
+      i.expired_approvals > 0 -> {:waiting_on_you, :approval_expired}
+      i.expired_questions > 0 -> {:waiting_on_you, :question_expired}
+      i.failed_approval_deliveries > 0 -> {:waiting_on_you, :approval_delivery_failed}
       i.status in @blocked -> {:waiting_on_you, :blocked}
       i.status == "failed" -> {:waiting_on_you, :failed}
       i.pr_state == :conflicted -> {:waiting_on_you, :conflict}

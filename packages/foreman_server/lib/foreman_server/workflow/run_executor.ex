@@ -964,31 +964,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def handle_phase_body_error(state, phase_spec, phase_index, worktree_record, reason, err) do
     case RunControl.intent(state.run_id) do
       :pause ->
-        case commit_phase_worktree(state, phase_spec, phase_index, worktree_record) do
-          {:ok, _} ->
-            :ok
-
-          {:error, commit_reason} ->
-            Logger.warning(
-              "RunExecutor #{state.run_id} phase #{phase_index} pause commit failed: #{inspect(commit_reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              phase_index: phase_index,
-              operation: "run_executor.pause",
-              outcome: "error",
-              reason: inspect(commit_reason)
-            )
-        end
-
-        Logger.info(
-          "RunExecutor #{state.run_id} phase #{phase_index} paused mid-execution: #{inspect(reason)}",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          phase_index: phase_index,
-          operation: "run_executor.pause"
-        )
-
-        {:stopped, %{state | status: :paused}}
+        pause_mid_phase(state, phase_spec, phase_index, worktree_record, reason)
 
       :cancel ->
         Logger.info(
@@ -1002,11 +978,77 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:stopped, %{state | status: :cancelled}}
 
       nil ->
-        case emit_phase_failure(state, phase_spec, phase_index, reason) do
-          :ok -> err
-          {:error, lifecycle_reason} -> {:error, lifecycle_reason}
+        case awaiting_approval(state, phase_index, reason) do
+          :paused ->
+            pause_mid_phase(state, phase_spec, phase_index, worktree_record, reason)
+
+          :not_applicable ->
+            case emit_phase_failure(state, phase_spec, phase_index, reason) do
+              :ok -> err
+              {:error, lifecycle_reason} -> {:error, lifecycle_reason}
+            end
         end
     end
+  end
+
+  # E8 (spike S2 NO-GO path): an agent that was denied tools is waiting on an
+  # operator decision, not failed. Records a `tool.request` per denied tool and
+  # pauses the run; `:not_applicable` (feature off, not a denial, or the request
+  # could not be recorded) leaves the ordinary phase-failure path, so a denial is
+  # never silently dropped.
+  defp awaiting_approval(state, phase_index, {:permission_denied, [_ | _] = tools}) do
+    context = %{run_id: state.run_id, project_id: project_id(state)}
+
+    with true <- ForemanServer.Approvals.PhasePause.enabled?(),
+         :ok <- ForemanServer.Approvals.PhasePause.request_and_pause(context, phase_index, tools) do
+      :paused
+    else
+      false ->
+        :not_applicable
+
+      {:error, reason} ->
+        Logger.warning(
+          "RunExecutor #{state.run_id} phase #{phase_index} could not request approval: #{inspect(reason)}",
+          run_id: state.run_id,
+          phase_index: phase_index,
+          operation: "run_executor.approval_request",
+          outcome: "error"
+        )
+
+        :not_applicable
+    end
+  end
+
+  defp awaiting_approval(_state, _phase_index, _reason), do: :not_applicable
+
+  # Commit the phase's partial work and stop the run paused (operator pause, or an
+  # approval request waiting on the operator).
+  defp pause_mid_phase(state, phase_spec, phase_index, worktree_record, reason) do
+    case commit_phase_worktree(state, phase_spec, phase_index, worktree_record) do
+      {:ok, _} ->
+        :ok
+
+      {:error, commit_reason} ->
+        Logger.warning(
+          "RunExecutor #{state.run_id} phase #{phase_index} pause commit failed: #{inspect(commit_reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          phase_index: phase_index,
+          operation: "run_executor.pause",
+          outcome: "error",
+          reason: inspect(commit_reason)
+        )
+    end
+
+    Logger.info(
+      "RunExecutor #{state.run_id} phase #{phase_index} paused mid-execution: #{inspect(reason)}",
+      run_id: state.run_id,
+      task_id: task_id(state),
+      phase_index: phase_index,
+      operation: "run_executor.pause"
+    )
+
+    {:stopped, %{state | status: :paused}}
   end
 
   # ---------------------------------------------------------------------
@@ -1179,7 +1221,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         [] ->
           state.run_id
           |> ProjectionStore.pending_steering()
-          |> Enum.map(&%{message_id: &1.message_id, text: &1.text})
+          |> Enum.map(&Map.take(&1, [:message_id, :text, :approval_mode_override]))
 
         cached ->
           cached
@@ -1293,7 +1335,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> maybe_put_driver_effort(state, request)
          |> append_system_prompt(context_system_text)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
-         |> maybe_put_approval_mode(phase_spec)
+         |> maybe_put_approval_mode(phase_spec, steering)
        end,
        launch_opts: [
          prompt_path: materialize_prompt(state, phase_index, prompt),
@@ -1313,8 +1355,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # the run completes. `Interpreter` validates the value at load; this match is
   # total over exactly those strings, so anything else raises (AGENTS.md 5.2)
   # and no atom is minted from caller input.
-  defp maybe_put_approval_mode(driver_opts, phase_spec) do
-    case Map.get(phase_spec, :approval_mode) do
+  #
+  # E8: a steering message consumed by this launch may carry an
+  # `approval_mode_override` (an operator approved a tool the agent was denied).
+  # It replaces the phase's mode for THIS launch only: the message is consumed
+  # with the launch, so the next phase builds its opts without it.
+  defp maybe_put_approval_mode(driver_opts, phase_spec, steering) do
+    case steering_override(steering) || Map.get(phase_spec, :approval_mode) do
       nil ->
         driver_opts
 
@@ -1322,6 +1369,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:ok, mode} = ForemanServer.Jobsite.Agent.parse_approval_mode(name)
         Keyword.put(driver_opts, :approval_mode, mode)
     end
+  end
+
+  # The latest override wins when several approvals queued before one resume.
+  defp steering_override(steering) do
+    steering
+    |> Enum.map(&Map.get(&1, :approval_mode_override))
+    |> Enum.reject(&is_nil/1)
+    |> List.last()
   end
 
   # Write the prompt to a deterministic path under the run's artifact

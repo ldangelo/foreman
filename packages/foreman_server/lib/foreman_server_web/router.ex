@@ -75,6 +75,8 @@ defmodule ForemanServerWeb.Router do
     put("/projects/:id/library/:entry_id", ProjectLibraryController, :update)
     delete("/projects/:id/library/:entry_id", ProjectLibraryController, :delete)
     get("/projects/:id/schedules", ProjectController, :schedules)
+    get("/projects/:id/approvals", ApprovalController, :index_for_project)
+    get("/projects/:id/questions", QuestionController, :index)
     get("/projects/:id/usage", UsageController, :show)
     get("/projects/:id/environment", ProjectEnvironmentController, :show)
     put("/projects/:id/environment", ProjectEnvironmentController, :update)
@@ -84,6 +86,7 @@ defmodule ForemanServerWeb.Router do
     get("/tasks/:id", TaskController, :show)
     get("/runs", RunController, :index)
     get("/runs/:id", RunController, :show)
+    get("/runs/:run_id/approvals", ApprovalController, :index_for_run)
     get("/projects/:project_id/threads", ThreadController, :index)
     get("/projects/:project_id/threads/find", ThreadController, :find)
     get("/threads/:id", ThreadController, :show)
@@ -132,5 +135,13 @@ defmodule ForemanServerWeb.Router do
     pipe_through([:browser, :require_authenticated])
     live("/", LiveDashboard)
     live("/runs", OperatorRunDashboardLive, :index)
+
+    # E16: the project workspace. One live_session so navigating between the
+    # workspace and its settings stays on the already-authenticated socket.
+    live_session :project_workspace,
+      root_layout: {ForemanServerWeb.Workspace.Layouts, :root} do
+      live("/projects/:id", ProjectWorkspaceLive, :show)
+      live("/projects/:id/settings", ProjectSettingsLive, :show)
+    end
   end
 end
