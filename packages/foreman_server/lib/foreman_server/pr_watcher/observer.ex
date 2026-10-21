@@ -159,8 +159,20 @@ defmodule ForemanServer.PrWatcher.Observer do
 
       {:error, reason} ->
         case AutoFix.exhausted_command(run_id, pr_url, command, reason, status.head_sha) do
-          {:ok, exhausted} -> CommandGateway.dispatch_system(exhausted)
-          :none -> Logger.debug("PrWatcher auto-fix not requested: #{inspect(reason)}")
+          {:ok, exhausted} ->
+            case CommandGateway.dispatch_system(exhausted) do
+              {:ok, _spec} ->
+                :ok
+
+              {:error, rejection} ->
+                Logger.error(
+                  "PrWatcher run_id=#{run_id} url=#{pr_url} rejected: " <>
+                    "#{inspect([{run_id, exhausted.type, rejection}])}"
+                )
+            end
+
+          :none ->
+            Logger.debug("PrWatcher auto-fix not requested: #{inspect(reason)}")
         end
 
         []

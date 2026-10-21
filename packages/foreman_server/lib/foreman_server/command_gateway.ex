@@ -164,7 +164,15 @@ defmodule ForemanServer.CommandGateway do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
 
     with {:ok, create_payload} <- ForemanServer.PrCreate.execute(run_id) do
-      {:ok, %{command | payload: Map.put(create_payload, :created_by, nil)}}
+      # One `PrCreated` per opened PR: the id is derived from the PR, so a retry after a
+      # failed dispatch (or a concurrent second click) replays the same command.
+      {:ok,
+       %{
+         command
+         | command_id:
+             "pr_create:#{run_id}:#{ForemanServer.PrObservation.url_hash(create_payload.pr_url)}",
+           payload: Map.put(create_payload, :created_by, nil)
+       }}
     end
   end
 

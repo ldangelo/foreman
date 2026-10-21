@@ -30,6 +30,72 @@ defmodule ForemanServer.PrFixTest do
     ~r/`+/ |> Regex.scan(text) |> Enum.map(fn [run] -> String.length(run) end) |> Enum.max()
   end
 
+  describe "byte limits never split a UTF-8 character" do
+    setup do
+      original = Application.get_env(:foreman_server, :pr_fix)
+
+      on_exit(fn ->
+        if original,
+          do: Application.put_env(:foreman_server, :pr_fix, original),
+          else: Application.delete_env(:foreman_server, :pr_fix)
+      end)
+
+      %{original: original || []}
+    end
+
+    test "a log tail that starts inside a multibyte character still renders", %{original: env} do
+      # 9 bytes of 2-byte characters: the tail slice starts mid-character
+      Application.put_env(:foreman_server, :pr_fix, Keyword.put(env, :log_tail_bytes, 9))
+      ctx = Fix.watched!()
+
+      plan =
+        plan!("ci", ctx,
+          log_fetcher: fn _url, _check -> {:ok, String.duplicate("é", 11) <> "boom"} end
+        )
+
+      assert String.valid?(plan.prompt)
+      assert plan.prompt =~ "Log excerpt for"
+      assert plan.prompt =~ "boom"
+    end
+
+    test "a log that is not valid UTF-8 is scrubbed instead of raising" do
+      ctx = Fix.watched!()
+
+      plan =
+        plan!("ci", ctx, log_fetcher: fn _url, _check -> {:ok, <<0x80, ?a, 0xFF, ?b>>} end)
+
+      assert String.valid?(plan.prompt)
+      assert plan.prompt =~ "?a?b"
+    end
+
+    test "the prompt data cut at its byte limit never ends inside a character" do
+      # A one-byte prefix on the body moves the cut point by one byte: one of the two
+      # variants lands inside a 2-byte character.
+      for prefix <- ["", "x"] do
+        comments =
+          for n <- 1..40 do
+            %{
+              id: "c#{n}",
+              author: "eve",
+              body: if(n == 1, do: prefix, else: "") <> String.duplicate("é", 1_500),
+              url: nil,
+              created_at: nil
+            }
+          end
+
+        ctx =
+          Fix.watched!(
+            status: Support.status(head_branch: "foreman/run/phase", comments: comments)
+          )
+
+        plan = plan!("comments", ctx)
+
+        assert String.valid?(plan.prompt)
+        assert plan.prompt =~ "(truncated)"
+      end
+    end
+  end
+
   describe "untrusted PR text is fenced and cannot close its fence" do
     test "a log excerpt that embeds fences and an instruction stays inside one data block" do
       ctx = Fix.watched!()

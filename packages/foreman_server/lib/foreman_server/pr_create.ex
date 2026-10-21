@@ -17,13 +17,14 @@ defmodule ForemanServer.PrCreate do
   run stream; spike E9-SP1), `{:pr_already_associated, url}`, `:no_head_branch`,
   `:no_base_branch`, `:no_commits_to_propose`, `{:project_unresolved, id}` and AutoPR's
   own errors. A PR that already exists for the branch (a retry after the association
-  write failed) is adopted, not duplicated.
+  write failed) is adopted, not duplicated; an association whose `PrCreated` was never
+  recorded (the dispatch after `execute/1` failed) is resumed by the retry, not refused.
 
   `set_command_runner/1` is the test seam (3-arity `(cmd, args, opts)` returning
   `{output, exit_code}`); without it the installed `git`/`gh` run.
   """
 
-  alias ForemanServer.{PrAssociate, ProjectionStore}
+  alias ForemanServer.{EventStore, PrAssociate, ProjectionStore}
   alias ForemanServer.Workflow.AutoPR
 
   @runner_key {__MODULE__, :command_runner}
@@ -61,12 +62,10 @@ defmodule ForemanServer.PrCreate do
 
   defp create(run_id) do
     with {:ok, run} <- fetch_run(run_id),
-         :ok <- none_associated(run_id),
+         {:ok, existing} <- existing_pr(run_id),
          {:ok, head} <- head_branch(run_id),
          {:ok, base} <- base_branch(run),
-         {:ok, project} <- project(run),
-         {:ok, pr_url} <- open(run, project, head, base),
-         {:ok, _id} <- PrAssociate.store(run_id, pr_url) do
+         {:ok, pr_url} <- open_or_resume(run, run_id, existing, head, base) do
       {:ok,
        %{
          run_id: run_id,
@@ -76,6 +75,17 @@ defmodule ForemanServer.PrCreate do
          head_branch: head,
          base_branch: base
        }}
+    end
+  end
+
+  defp open_or_resume(_run, _run_id, existing, _head, _base) when is_binary(existing),
+    do: {:ok, existing}
+
+  defp open_or_resume(run, run_id, nil, head, base) do
+    with {:ok, project} <- project(run),
+         {:ok, pr_url} <- open(run, project, head, base),
+         {:ok, _id} <- PrAssociate.store(run_id, pr_url) do
+      {:ok, pr_url}
     end
   end
 
@@ -89,10 +99,30 @@ defmodule ForemanServer.PrCreate do
   defp missing_run("jobsite:" <> _ = id), do: {:error, {:unsupported_subject, :jobsite, id}}
   defp missing_run(run_id), do: {:error, {:run_not_found, run_id}}
 
-  defp none_associated(run_id) do
+  # The association is written before `run.pr.create` is dispatched. When that dispatch
+  # failed, a retry finds the association but no `PrCreated` on the run stream: the PR
+  # is already open, so resume with it (nothing is opened twice) and let the retry
+  # record the missing fact. With `PrCreated` recorded, the PR was created: refuse.
+  defp existing_pr(run_id) do
     case ProjectionStore.pr_association(run_id) do
-      {:ok, %{pr_url: url}} -> {:error, {:pr_already_associated, url}}
-      {:error, :not_found} -> :ok
+      {:error, :not_found} ->
+        {:ok, nil}
+
+      {:ok, %{pr_url: url}} ->
+        case created_recorded?(run_id, url) do
+          {:ok, true} -> {:error, {:pr_already_associated, url}}
+          {:ok, false} -> {:ok, url}
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  defp created_recorded?(run_id, pr_url) do
+    with {:ok, events} <- EventStore.read_stream_forward("run:#{run_id}", 0, 99_999_999) do
+      {:ok,
+       Enum.any?(events, fn event ->
+         event.event_type == "PrCreated" and Map.get(event.data, :pr_url) == pr_url
+       end)}
     end
   end
 

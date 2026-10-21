@@ -386,7 +386,7 @@ defmodule ForemanServer.Jobsite.Git do
     timeout_ms = Keyword.get(opts, :timeout_ms, 120_000)
     args = ["-C", path, "push", remote, "refs/heads/#{branch}:refs/heads/#{branch}"]
 
-    case cmd_with_deadline(args, timeout_ms) do
+    case cmd_with_deadline(args, timeout_ms, "push") do
       {_output, 0} ->
         :ok
 
@@ -403,7 +403,7 @@ defmodule ForemanServer.Jobsite.Git do
   end
 
   # `git` under a port so the deadline can kill the OS process; prompts disabled.
-  defp cmd_with_deadline(args, timeout_ms) do
+  defp cmd_with_deadline(args, timeout_ms, label) do
     port =
       Port.open({:spawn_executable, System.find_executable("git")}, [
         :binary,
@@ -424,7 +424,7 @@ defmodule ForemanServer.Jobsite.Git do
         nil -> nil
       end
 
-    collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [])
+    collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [], label)
   end
 
   # git spawns helpers (receive-pack, ssh) that outlive a kill of git alone, so
@@ -445,11 +445,11 @@ defmodule ForemanServer.Jobsite.Git do
     System.cmd("kill", ["-KILL", pid], stderr_to_stdout: true)
   end
 
-  defp collect(port, os_pid, deadline, acc) do
+  defp collect(port, os_pid, deadline, acc, label) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {^port, {:data, data}} -> collect(port, os_pid, deadline, [acc, data])
+      {^port, {:data, data}} -> collect(port, os_pid, deadline, [acc, data], label)
       {^port, {:exit_status, status}} -> {IO.iodata_to_binary(acc), status}
     after
       remaining ->
@@ -462,7 +462,7 @@ defmodule ForemanServer.Jobsite.Git do
         end
 
         drain_port_messages(port)
-        {IO.iodata_to_binary(acc) <> "push timed out", :timeout}
+        {IO.iodata_to_binary(acc) <> "#{label} timed out", :timeout}
     end
   end
 
@@ -492,7 +492,11 @@ defmodule ForemanServer.Jobsite.Git do
          :ok <- check_ref(:branch, branch) do
       refspec = "+refs/heads/#{branch}:refs/remotes/#{remote}/#{branch}"
 
-      case cmd_with_deadline(["-C", repo, "fetch", "--no-tags", remote, refspec], timeout_ms) do
+      case cmd_with_deadline(
+             ["-C", repo, "fetch", "--no-tags", remote, refspec],
+             timeout_ms,
+             "fetch"
+           ) do
         {_output, 0} ->
           :ok
 
