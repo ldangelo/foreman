@@ -64,6 +64,14 @@ if config_env() != :test do
     config :foreman_server, :pr_monitor_enabled, true
   end
 
+  # Scheduled-task ticker: on by default (config.exs); "false" turns it off,
+  # "true" forces it on.
+  case System.get_env("FOREMAN_SCHEDULE_TICKER_ENABLED") do
+    "true" -> config :foreman_server, :schedule, ticker_enabled: true
+    "false" -> config :foreman_server, :schedule, ticker_enabled: false
+    _ -> :ok
+  end
+
   # The shared secret configured on the GitHub webhook. Without it the endpoint
   # answers 503 to everything (fail closed).
   case System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET") do
