@@ -74,6 +74,58 @@ defmodule ForemanServerWeb.ThreadController do
     end
   end
 
+  @doc """
+  `POST /api/threads/:id/steer` with `text`, optional `message_id` and `resume`
+  (boolean, workflow door). 202 `{thread_id, message_id, mode}`; 404 unknown
+  thread; 409 `not_steerable` naming `status` for a terminal thread; 400 for
+  blank or oversize `text` or a non-boolean `resume`; 422 when steering is
+  rejected otherwise.
+  """
+  def steer(conn, %{"id" => id} = params) do
+    with {:ok, opts} <- steer_opts(params),
+         {:ok, %{message_id: message_id, mode: mode}} <-
+           Actions.steer(id, Map.get(params, "text"), opts) do
+      conn
+      |> put_status(:accepted)
+      |> json(%{thread_id: id, message_id: message_id, mode: Atom.to_string(mode)})
+    else
+      {:error, :thread_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "thread_not_found", thread_id: id})
+
+      {:error, {:not_steerable, status}} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "not_steerable", thread_id: id, status: status})
+
+      {:error, {:invalid_text, why}} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_params", detail: "text is #{why}"})
+
+      {:error, :invalid_resume} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_params", detail: "resume must be a boolean"})
+
+      {:error, {:steer_failed, cause}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "steer_failed", thread_id: id, detail: inspect(cause)})
+    end
+  end
+
+  defp steer_opts(params) do
+    message_id = blank_to_nil(Map.get(params, "message_id"))
+
+    case Map.get(params, "resume", true) do
+      resume when is_boolean(resume) ->
+        {:ok, [resume: resume] |> put_present(:message_id, message_id)}
+
+      _ ->
+        {:error, :invalid_resume}
+    end
+  end
+
   defp parse_opts(params) do
     with {:ok, limit} <- parse_limit(Map.get(params, "limit")),
          {:ok, door} <- parse_door(Map.get(params, "door")) do

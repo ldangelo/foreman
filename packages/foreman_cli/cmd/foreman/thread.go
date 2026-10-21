@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
@@ -13,13 +14,14 @@ const threadUsage = `Usage:
   foreman thread get <thread-id>
   foreman thread stop [--reason <reason>] <thread-id>
   foreman thread resolve [--reason <reason>] <thread-id>
-  foreman thread reopen <thread-id>`
+  foreman thread reopen <thread-id>
+  foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>`
 
-var threadVerbs = []string{"list", "get", "stop", "resolve", "reopen"}
+var threadVerbs = []string{"list", "get", "stop", "resolve", "reopen", "steer"}
 
 func runThread(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		return usageTextError("foreman thread: missing subcommand (list, get, stop, resolve, reopen)", threadUsage)
+		return usageTextError("foreman thread: missing subcommand (list, get, stop, resolve, reopen, steer)", threadUsage)
 	}
 
 	switch args[0] {
@@ -33,6 +35,8 @@ func runThread(c *client.Client, args []string) error {
 		return threadResolve(c, args[1:])
 	case "reopen":
 		return threadReopen(c, args[1:])
+	case "steer":
+		return threadSteer(c, args[1:])
 	default:
 		return usageTextError(fmt.Sprintf("foreman thread: unknown subcommand %q", args[0]), threadUsage)
 	}
@@ -182,4 +186,35 @@ func threadDisposition(c *client.Client, commandType, threadID string, extra map
 		AggregateID: "thread:" + threadID,
 		Payload:     payload,
 	})
+}
+
+func threadSteer(c *client.Client, args []string) error {
+	fs := newFlagSet("thread steer")
+	message := fs.String("message", "", "Operator message delivered to the thread (required)")
+	messageID := fs.String("message-id", "", "Idempotency id; re-sending the same id is a no-op")
+	noResume := fs.Bool("no-resume", false, "Queue the message but keep a paused run paused")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman thread steer: expected one argument: <thread-id>")
+	}
+	if strings.TrimSpace(*message) == "" {
+		return usageTextError("foreman thread steer: --message is required", threadUsage)
+	}
+
+	body := map[string]any{"text": *message}
+	if *messageID != "" {
+		body["message_id"] = *messageID
+	}
+	if *noResume {
+		body["resume"] = false
+	}
+
+	var out map[string]any
+	if err := c.PostJSON(client.JoinPath("/api/threads", fs.Arg(0), "steer"), body, &out); err != nil {
+		return err
+	}
+
+	return printJSON(out)
 }

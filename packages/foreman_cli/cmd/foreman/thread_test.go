@@ -92,6 +92,54 @@ func TestThreadStopConflictExitsNonZeroWithServerText(t *testing.T) {
 	}
 }
 
+func TestThreadSteerPostsMessageToSteerRoute(t *testing.T) {
+	c, seen := threadServer(t, func(*http.Request) (int, string) {
+		return 202, `{"thread_id":"run:r1","message_id":"m1","mode":"pause_resume"}`
+	})
+
+	var err error
+	stdout, _ := captureOutput(t, func() {
+		err = runThread(c, []string{"steer", "--message", "use the cache", "--message-id", "m1", "--no-resume", "run:r1"})
+	})
+	if err != nil {
+		t.Fatalf("thread steer: %v", err)
+	}
+	if len(*seen) != 1 || (*seen)[0].method != http.MethodPost || (*seen)[0].path != "/api/threads/run:r1/steer" {
+		t.Fatalf("requests = %+v, want one POST /api/threads/run:r1/steer", *seen)
+	}
+	var body map[string]any
+	if err := json.Unmarshal((*seen)[0].body, &body); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if body["text"] != "use the cache" || body["message_id"] != "m1" || body["resume"] != false {
+		t.Fatalf("body = %s, want text, message_id and resume=false", (*seen)[0].body)
+	}
+	if !strings.Contains(stdout, "pause_resume") {
+		t.Fatalf("stdout = %q, want the server response", stdout)
+	}
+}
+
+func TestThreadSteerRequiresMessageAndMapsConflict(t *testing.T) {
+	c, seen := threadServer(t, func(*http.Request) (int, string) {
+		return 409, `{"error":"not_steerable","status":"completed"}`
+	})
+
+	if err := runThread(c, []string{"steer", "run:r1"}); err == nil || !strings.Contains(err.Error(), "--message is required") {
+		t.Fatalf("missing message err = %v", err)
+	}
+	if len(*seen) != 0 {
+		t.Fatalf("no request expected without a message, got %+v", *seen)
+	}
+
+	err := runThread(c, []string{"steer", "--message", "hi", "run:r1"})
+	if err == nil || client.ExitCode(err) != 3 || !strings.Contains(err.Error(), "not_steerable") {
+		t.Fatalf("409 err = %v (exit %d), want exit 3 naming not_steerable", err, client.ExitCode(err))
+	}
+	if strings.Contains(string((*seen)[0].body), "resume") {
+		t.Fatalf("body %s must omit resume by default", (*seen)[0].body)
+	}
+}
+
 func TestThreadResolvePostsEnvelopeWithThreadAggregate(t *testing.T) {
 	c, seen := threadServer(t, func(r *http.Request) (int, string) {
 		if r.Method == http.MethodGet {

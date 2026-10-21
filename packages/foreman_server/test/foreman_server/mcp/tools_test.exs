@@ -51,6 +51,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_thread_get",
                "foreman_thread_transcript",
                "foreman_thread_stop",
+               "foreman_thread_steer",
                "foreman_queue_status",
                "foreman_project_list",
                "foreman_project_get",

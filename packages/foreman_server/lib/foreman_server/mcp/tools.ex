@@ -190,6 +190,29 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_thread_steer %{
+    name: "foreman_thread_steer",
+    description:
+      "Send an operator message to a thread (workflow run or jobsite). The work is " <>
+        "paused and resumed with the message in its next prompt. Terminal threads are rejected.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"},
+        text: %{type: "string", description: "The message (1..8000 characters)"},
+        message_id: %{
+          type: "string",
+          description: "Idempotency id; re-sending the same id is a no-op"
+        },
+        resume: %{
+          type: "boolean",
+          description: "Workflow door: false keeps a paused run paused (default true)"
+        }
+      },
+      required: ["thread_id", "text"]
+    }
+  }
+
   @schema_foreman_queue_status %{
     name: "foreman_queue_status",
     description: "Get the current run slot queue status",
@@ -587,6 +610,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_thread_get,
     @schema_foreman_thread_transcript,
     @schema_foreman_thread_stop,
+    @schema_foreman_thread_steer,
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
@@ -864,6 +888,51 @@ defmodule ForemanServer.MCP.Tools do
 
       {:error, other} ->
         Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :error)
+        {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(other)}}
+    end
+  end
+
+  defp tool_foreman_thread_steer(%{thread_id: thread_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    opts =
+      [resume: Map.get(args, :resume, true)]
+      |> then(fn opts ->
+        case Map.get(args, :message_id) do
+          id when is_binary(id) and id != "" -> Keyword.put(opts, :message_id, id)
+          _ -> opts
+        end
+      end)
+
+    result =
+      cond do
+        not is_binary(thread_id) -> {:error, :thread_not_found}
+        not is_boolean(opts[:resume]) -> {:error, :invalid_resume}
+        true -> ForemanServer.Threads.Actions.steer(thread_id, Map.get(args, :text), opts)
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, %{message_id: message_id, mode: mode}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :ok)
+
+        {:ok, %{thread_id: thread_id, message_id: message_id, mode: Atom.to_string(mode)}}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+
+      {:error, {:invalid_text, why}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "text is #{why}"}}
+
+      {:error, :invalid_resume} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "resume must be a boolean"}}
+
+      {:error, other} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :error)
         {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(other)}}
     end
   end

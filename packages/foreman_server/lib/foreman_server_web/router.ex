@@ -63,6 +63,7 @@ defmodule ForemanServerWeb.Router do
     get("/threads/:id/transcript", ThreadTranscriptController, :transcript)
     get("/threads/:id/stream", ThreadTranscriptController, :stream)
     post("/threads/:id/stop", ThreadController, :stop)
+    post("/threads/:id/steer", ThreadController, :steer)
     get("/queue", QueueController, :index)
 
     scope "/admin" do

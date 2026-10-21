@@ -47,6 +47,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman thread stop       --reason
 > foreman thread resolve    --reason
 > foreman thread reopen     (no flags)
+> foreman thread steer      --message --message-id --no-resume
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
@@ -606,6 +607,7 @@ A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a j
 | `foreman thread stop [--reason <r>] <thread-id>` | `POST /api/threads/:id/stop`: `run.cancel` for a workflow thread, the jobsite cancel for a jobsite thread. A terminal thread exits 3 (HTTP 409 `not_stoppable`, naming its status). |
 | `foreman thread resolve [--reason <r>] <thread-id>` | Reads the thread's project, then sends the `thread.resolve` operator command (aggregate `thread:<thread-id>`). A disposition flag only; it never stops a run. |
 | `foreman thread reopen <thread-id>` | Sends `thread.reopen`; a thread that is not resolved is rejected. |
+| `foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>` | `POST /api/threads/:id/steer`: queues an operator message (`run.steer` for a workflow thread, `Jobsite.steer` for a jobsite thread); the work is paused then resumed with the message in its next prompt. 202 `{thread_id, message_id, mode}`; a terminal thread exits 3 (409 `not_steerable`); blank or oversize (>8000) text is 400. `--no-resume` keeps a paused run paused (workflow door). |
 
 
 ---

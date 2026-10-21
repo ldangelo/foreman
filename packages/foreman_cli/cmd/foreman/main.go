@@ -18,7 +18,7 @@
 //	run resume          Resume a paused run
 //	run remove          Remove a run and clean worktree/branch
 //	run reset           Reset a failed or stuck run projection
-//	thread list|get|stop|resolve|reopen  Inspect and act on threads
+//	thread list|get|stop|resolve|reopen|steer  Inspect and act on threads
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
 //
@@ -64,6 +64,7 @@ Commands:
   thread stop <id>    Stop a thread (workflow run or jobsite)
   thread resolve <id> Mark a thread resolved
   thread reopen <id>  Reopen a resolved thread
+  thread steer <id>   Send an operator message to a thread (--message)
   workflow install    Install workflow assets
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
 Env:
