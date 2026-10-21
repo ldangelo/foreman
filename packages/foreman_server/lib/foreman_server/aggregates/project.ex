@@ -296,8 +296,7 @@ defmodule ForemanServer.Aggregates.Project do
       if reserved_run(state, run_id) do
         {:ok, nil}
       else
-        with :ok <- reject_paused(state, project_id),
-             :ok <- reject_at_daily_cap(state, day, "run", run_id),
+        with :ok <- admission_refusal(state, run_id),
              :ok <- reject_at_run_limit(state, max_concurrent_runs_per_project) do
           :ok
         end
@@ -351,6 +350,25 @@ defmodule ForemanServer.Aggregates.Project do
   end
 
   def handle_command(_state, _command), do: :unhandled
+
+  @doc """
+  The non-terminal refusals that apply to starting a NEW run: paused project,
+  exhausted daily thread cap. `:ok` for a run that already holds a reservation.
+  Pure over aggregate state; `project.reserve_run` uses it authoritatively and
+  `RunAdmission` consults it before touching the global run slot.
+  """
+  @spec admission_refusal(%State{}, String.t() | nil) :: :ok | {:error, term()}
+  def admission_refusal(%State{} = state, run_id) do
+    cond do
+      is_binary(run_id) and reserved_run(state, run_id) ->
+        :ok
+
+      true ->
+        with :ok <- reject_paused(state, state.project_id) do
+          reject_at_daily_cap(state, today(), "run", run_id)
+        end
+    end
+  end
 
   defp require_absent(%State{exists?: true}, project_id),
     do: {:error, {:already_exists, :project, project_id}}

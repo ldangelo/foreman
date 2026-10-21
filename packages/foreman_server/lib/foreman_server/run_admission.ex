@@ -54,7 +54,7 @@ defmodule ForemanServer.RunAdmission do
   derived from `db_path` and `run_id` so retries collapse through
   the router's idempotency path.
   """
-  alias ForemanServer.EventStore
+  alias ForemanServer.{Aggregate, EventStore}
   alias ForemanServer.{Aggregate.Actor, CommandGateway, CommandRouter, Telemetry}
   alias ForemanServer.RunSlots.Config
 
@@ -72,6 +72,27 @@ defmodule ForemanServer.RunAdmission do
       Map.get(payload, :task_id)
     )
 
+    # ── Project gate (before any slot is touched) ───────────────────────────
+    # A paused project or an exhausted daily thread cap refuses the admission
+    # BEFORE the global slot is acquired. Acquiring first would leave the
+    # refused run holding a slot (and it cannot be handed back and re-acquired:
+    # the slot-acquire command id is per run id on purpose, so a replayed
+    # admission can never re-take a finished run's slot). The project
+    # aggregate re-checks authoritatively at `project.reserve_run`.
+    with :ok <- project_admission_gate(project_id, payload) do
+      admit_through_slot(project_id, payload, timeout)
+    end
+  end
+
+  def start(project_id, _payload, _timeout),
+    do: {:error, {:missing_or_invalid, :project_id, project_id}}
+
+  defp project_admission_gate(project_id, payload) do
+    {state, _version} = Aggregate.load(ForemanServer.Aggregates.Project, "project:#{project_id}")
+    ForemanServer.Aggregates.Project.admission_refusal(state, Map.get(payload, :run_id))
+  end
+
+  defp admit_through_slot(project_id, payload, timeout) do
     # ── Slot gate (outermost) ───────────────────────────────────────────────
     case acquire_slot(payload, timeout) do
       {:error, _reason} = err ->
@@ -107,9 +128,6 @@ defmodule ForemanServer.RunAdmission do
         end
     end
   end
-
-  def start(project_id, _payload, _timeout),
-    do: {:error, {:missing_or_invalid, :project_id, project_id}}
 
   @doc """
   Re-acquires the global run-slot and (if applicable) the per-DB Beads
@@ -357,12 +375,6 @@ defmodule ForemanServer.RunAdmission do
   defp compensable_admission_error?({:missing_or_invalid, _field}), do: true
   defp compensable_admission_error?({:implementation_already_active, _key, _run_id}), do: true
   defp compensable_admission_error?({:command_rejected, _reason}), do: true
-  # Non-terminal project refusals: the run never started, so the slot (and
-  # lease) it acquired must be handed back or a paused / capped project would
-  # hold global capacity hostage. The task stays approved and is retried.
-  defp compensable_admission_error?({:project_paused, _project_id}), do: true
-  defp compensable_admission_error?({:daily_thread_cap_exceeded, _cap, _day}), do: true
-  defp compensable_admission_error?(:run_limit_exceeded), do: true
   defp compensable_admission_error?(_other), do: false
 
   defp release_after_failed_start(payload, _timeout) do
