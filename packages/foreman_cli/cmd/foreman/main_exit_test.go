@@ -59,7 +59,7 @@ func TestProjectDeleteHelpMentionsSoftDeleteAndActiveRunBlock(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", result.exitCode, result.stderr)
 	}
 
-	if !bytes.Contains([]byte(result.stdout), []byte("Soft-delete (archive) a project")) {
+	if !bytes.Contains([]byte(result.stdout), []byte("Soft delete: archives the project")) {
 		t.Fatalf("stdout = %q, want soft-delete help text", result.stdout)
 	}
 
