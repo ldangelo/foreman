@@ -388,6 +388,7 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:tool_calls, scope, statuses, limit})
   end
 
+  defp delivery_failed?(%{status: "approved"}), do: true
   defp delivery_failed?(%{status: "finished", outcome: "delivery_failed" <> _}), do: true
   defp delivery_failed?(_call), do: false
 
@@ -444,6 +445,18 @@ defmodule ForemanServer.ProjectionStore do
   @spec question_counts([String.t()]) :: %{open: non_neg_integer(), expired: non_neg_integer()}
   def question_counts(run_ids) when is_list(run_ids),
     do: GenServer.call(__MODULE__, {:question_counts, run_ids})
+
+  @doc """
+  Tool calls whose decision may not have reached the agent: `approved` ones (no
+  settling `ToolCallFinished` yet) and `denied` ones. The deliverers' startup
+  recovery input; re-delivery is idempotent.
+  """
+  @spec undelivered_tool_calls() :: [tool_call()]
+  def undelivered_tool_calls, do: GenServer.call(__MODULE__, :undelivered_tool_calls)
+
+  @doc "Answered operator questions (the question deliverer's startup recovery input)."
+  @spec answered_questions() :: [question()]
+  def answered_questions, do: GenServer.call(__MODULE__, :answered_questions)
 
   @doc """
   Every pending tool call and open question across all projects (unbounded, and
@@ -1138,6 +1151,19 @@ defmodule ForemanServer.ProjectionStore do
       end)
 
     {:reply, open, state}
+  end
+
+  @impl true
+  def handle_call(:undelivered_tool_calls, _from, state) do
+    calls =
+      state.tool_calls |> Map.values() |> Enum.filter(&(&1.status in ["approved", "denied"]))
+
+    {:reply, calls, state}
+  end
+
+  @impl true
+  def handle_call(:answered_questions, _from, state) do
+    {:reply, state.questions |> Map.values() |> Enum.filter(&(&1.status == "answered")), state}
   end
 
   @impl true

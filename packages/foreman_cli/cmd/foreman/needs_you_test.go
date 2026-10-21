@@ -94,3 +94,18 @@ func TestQuestionsListAndAnswer(t *testing.T) {
 		t.Fatal("answer without question/text must fail")
 	}
 }
+
+func TestListCellsCannotForgeRowsOrEscapeSequences(t *testing.T) {
+	c, _, _ := needsYouServer(t, `{"approvals":[{"tool_call_id":"c1","run_id":"r1","tool_name":"Bash","status":"requested","approval_delivery":"x","input_summary":"a\nc9\tr9\tBash\trequested\u001b[2J"}]}`)
+	out := captureStdout(t, func() {
+		if err := runApprovals(c, []string{"list", "--project", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := strings.Count(strings.TrimSpace(out), "\n"); got != 1 {
+		t.Fatalf("want header + 1 row, got %d newlines in %q", got, out)
+	}
+	if strings.ContainsRune(out, 0x1b) {
+		t.Fatalf("escape char leaked: %q", out)
+	}
+}

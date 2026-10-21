@@ -34,9 +34,15 @@ defmodule ForemanServer.Questions.Deliverer do
   @impl true
   def init(opts) do
     case ProjectionStore.subscribe(replay_existing: false) do
-      :ok -> {:ok, %{opts: opts}}
+      :ok -> {:ok, %{opts: opts}, {:continue, :recover}}
       {:error, reason} -> {:stop, {:projection_subscribe_failed, reason}}
     end
+  end
+
+  @impl true
+  def handle_continue(:recover, state) do
+    recover(state.opts)
+    {:noreply, state}
   end
 
   @impl true
@@ -55,6 +61,41 @@ defmodule ForemanServer.Questions.Deliverer do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  @doc """
+  Re-deliver answers to run questions whose run is still paused (the answer may
+  have been recorded while the server was down). The answer text is read back from
+  the `QuestionAnswered` event; the steer has a deterministic message id, so an
+  answer that did arrive is a no-op. Returns the number attempted.
+  """
+  @spec recover(keyword()) :: non_neg_integer()
+  def recover(opts \\ []) do
+    pending =
+      for %{run_id: run_id, question_id: id} <- ProjectionStore.answered_questions(),
+          match?(%{status: "paused"}, ProjectionStore.run(run_id)),
+          text = answer_text(run_id, id),
+          is_binary(text),
+          do: {run_id, id, text}
+
+    for {run_id, id, text} <- pending, do: deliver(run_id, id, text, opts)
+    length(pending)
+  end
+
+  defp answer_text(run_id, question_id) do
+    stream = ForemanServer.Aggregates.OperatorQuestion.stream_id(run_id, question_id)
+
+    with {:ok, events} <- ForemanServer.EventStore.read_stream_forward(stream, 0, 100) do
+      Enum.find_value(events, fn
+        %{event_type: "QuestionAnswered", data: data} ->
+          Map.get(data, :text) || Map.get(data, "text")
+
+        _ ->
+          nil
+      end)
+    else
+      _ -> nil
+    end
+  end
 
   @doc """
   Deliver one answer (public so tests and recovery can drive it without a

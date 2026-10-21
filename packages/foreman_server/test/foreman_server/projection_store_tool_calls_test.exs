@@ -77,10 +77,11 @@ defmodule ForemanServer.ProjectionStoreToolCallsTest do
 
     assert statuses == %{"a" => "approved", "d" => "denied", "e" => "expired", "f" => "finished"}
 
+    # "a" is approved and never settled, so it counts as an undelivered decision
     assert ProjectionStore.approval_counts(["r1"]) == %{
              pending: 0,
              expired: 1,
-             failed_deliveries: 0
+             failed_deliveries: 1
            }
   end
 

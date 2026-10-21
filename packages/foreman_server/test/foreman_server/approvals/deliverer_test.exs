@@ -170,6 +170,54 @@ defmodule ForemanServer.Approvals.DelivererTest do
     end
   end
 
+  describe "startup recovery" do
+    test "an approval committed while the deliverer was down is delivered once on restart" do
+      {project_id, run_id} = start_run!()
+
+      {:ok, id} =
+        Requester.request(
+          %{run_id: run_id, project_id: project_id, provider: :claude},
+          "Write",
+          "a",
+          phase_index: 1
+        )
+
+      pause!(run_id)
+      :ok = stop_supervised(Deliverer)
+
+      decide!("tool.approve", run_id, id)
+      await("ToolCallApproved", :run_id, run_id)
+      assert %{status: "approved"} = ProjectionStore.tool_call(run_id, id)
+
+      start_supervised!(
+        {Deliverer,
+         name: :deliverer_test_2, live: :deliverer_test_live, session_module: FakeSession}
+      )
+
+      await("ToolCallFinished", :run_id, run_id)
+      assert %{status: "finished", outcome: "delivered"} = ProjectionStore.tool_call(run_id, id)
+
+      # exactly once: a second recovery pass changes nothing
+      assert Deliverer.recover() >= 0
+      assert [%{message_id: "approval:" <> _}] = ProjectionStore.pending_steering(run_id)
+      refute_receive {:projection_event, %{event_type: "RunSteerQueued"}}, 200
+    end
+
+    test "an approved call that was never settled is surfaced as a delivery problem" do
+      {project_id, run_id} = start_run!()
+      :ok = stop_supervised(Deliverer)
+
+      {:ok, id} =
+        Requester.request(%{run_id: run_id, project_id: project_id}, "Write", "a", phase_index: 1)
+
+      pause!(run_id)
+      decide!("tool.approve", run_id, id)
+      await("ToolCallApproved", :run_id, run_id)
+
+      assert %{failed_deliveries: 1} = ProjectionStore.approval_counts([run_id])
+    end
+  end
+
   describe "live (ACP providers)" do
     test "approving answers the registered provider session and finishes the call" do
       run_id = "run-live-#{System.unique_integer([:positive])}"

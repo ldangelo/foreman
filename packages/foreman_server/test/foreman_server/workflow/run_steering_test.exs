@@ -213,6 +213,27 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
     refute Keyword.has_key?(second.driver_opts.(60_000), :approval_mode)
   end
 
+  test "a command phase applies and consumes an approval override without injecting any text",
+       %{run_id: run_id, project_id: project_id} do
+    steer!(run_id, "approval:c2", "approved Bash", %{
+      resume: false,
+      approval_mode_override: "auto_approve"
+    })
+
+    steer!(run_id, "plain", "just text", %{resume: false})
+    assert_event("RunPaused", run_id)
+    RunControl.clear(run_id)
+
+    launch = launch(run_id, project_id, %{name: "cmd", action: :command, command: "echo hi"})
+    assert Keyword.fetch!(launch.driver_opts.(60_000), :approval_mode) == :auto_approve
+    refute launch.phase.prompt =~ "approved Bash"
+    refute launch.phase.prompt =~ @heading
+
+    assert_event("RunSteerConsumed", run_id)
+    # only the override message was consumed; the text-only one still waits for a prompt phase
+    assert [%{message_id: "plain"}] = ProjectionStore.pending_steering(run_id)
+  end
+
   test "an unknown override name is rejected, never queued", %{run_id: run_id} do
     assert {:error, {:invalid_approval_mode_override, "yolo"}} =
              CommandGateway.dispatch_operator(%{
@@ -248,7 +269,7 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
   end
 
   # Builds the phase launch exactly as a (re)started executor would.
-  defp launch(run_id, project_id) do
+  defp launch(run_id, project_id, phase_spec \\ %{name: "code-generation"}) do
     projection = %{
       task_id: "task-#{run_id}",
       project_id: project_id,
@@ -263,12 +284,13 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
     }
 
     {:ok, state} = RunExecutor.init({run_id, projection, []})
-    phase_spec = %{name: "code-generation"}
 
     assert {:ok, %{phase: %{prompt: prompt}, launch_opts: opts} = launch} =
              RunExecutor.phase_launch(state, phase_spec, 0, nil)
 
-    assert Keyword.fetch!(opts, :prompt) == prompt
+    if Map.get(phase_spec, :action) != :command,
+      do: assert(Keyword.fetch!(opts, :prompt) == prompt)
+
     launch
   end
 
