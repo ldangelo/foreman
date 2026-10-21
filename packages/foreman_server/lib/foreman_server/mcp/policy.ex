@@ -11,7 +11,9 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_inbox_send",
     "foreman_workflow_put",
     "foreman_workflow_delete",
-    "foreman_prompt_put"
+    "foreman_prompt_put",
+    "foreman_project_memory_write",
+    "foreman_project_memory_forget"
   ]
 
   @spec authorized?(String.t()) :: boolean()
