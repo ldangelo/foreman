@@ -733,11 +733,10 @@ defmodule ForemanServer.AgentRuntime do
     end
   end
 
-  # Provider usage is nil when the provider reported none; an unknown token
-  # count is reported as 0 (the span attribute is an integer), but cost is
-  # never fabricated: nil means "unknown".
+  # Provider usage is nil when the provider reported none. Neither tokens nor
+  # cost are fabricated: nil means "unknown".
   defp token_count(%{total_tokens: total}) when is_integer(total), do: total
-  defp token_count(_usage), do: 0
+  defp token_count(_usage), do: nil
 
   defp cost_usd(%{total_cost: cost}) when is_number(cost), do: cost
   defp cost_usd(_usage), do: nil

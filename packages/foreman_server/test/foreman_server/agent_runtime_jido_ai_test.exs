@@ -66,6 +66,15 @@ defmodule ForemanServer.AgentRuntimeJidoAiTest do
         assert opts[:token_count] == 18
       end
 
+      test "usage the provider did not report is an unknown token count, not zero" do
+        FakeReqLlm.install(self(), {:answer_without_usage, "the answer"})
+
+        assert {:ok, "the answer"} = run(unquote(strategy))
+
+        assert_receive {:langfuse_trace, "prompt", "the answer", @model, nil, opts}
+        assert opts[:token_count] == nil
+      end
+
       test "a runner error is an error outcome: one completion event, no success trace",
            %{ref: ref} do
         FakeReqLlm.install(self(), {:error, :econnrefused})
@@ -89,12 +98,18 @@ defmodule ForemanServer.AgentRuntimeJidoAiTest do
         assert {:ok, "the answer"} =
                  AgentRuntime.execute("prompt", %{},
                    strategy: unquote(strategy),
-                   task_type: :chat
+                   task_type: :chat,
+                   timeout_ms: 7_000
                  )
 
         label = Jido.AI.model_label(:fast)
         assert is_binary(label)
         assert_receive {:langfuse_trace, "prompt", "the answer", ^label, _cost, _opts}
+
+        # The runtime's token cap and the caller's timeout reach the provider call.
+        assert_received {:fake_llm_call, _model, _messages, provider_opts}
+        assert provider_opts[:max_tokens] == 4096
+        assert provider_opts[:receive_timeout] == 7_000
       end
 
       test "#{strategy} with an unresolvable model alias is a typed error, not an exception",

@@ -13,14 +13,15 @@ defmodule ForemanServer.Agents.JidoAiRunner.Error do
   @enforce_keys [:code, :message]
   defstruct [:code, :message, details: nil]
 
-  @type code :: :unknown_strategy | :invalid_model | :strategy_failed | :unexpected_result_shape
+  @codes [:unknown_strategy, :invalid_model, :strategy_failed, :unexpected_result_shape]
+
+  @type code :: unquote(Enum.reduce(Enum.reverse(@codes), &{:|, [], [&1, &2]}))
 
   @type t :: %__MODULE__{code: code(), message: String.t(), details: term()}
 
   @spec new(code(), String.t(), term()) :: t()
   def new(code, message, details \\ nil)
-      when code in [:unknown_strategy, :invalid_model, :strategy_failed, :unexpected_result_shape] and
-             is_binary(message) do
+      when code in @codes and is_binary(message) do
     %__MODULE__{code: code, message: message, details: details}
   end
 end

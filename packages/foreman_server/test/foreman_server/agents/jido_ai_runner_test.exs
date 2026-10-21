@@ -33,6 +33,17 @@ defmodule ForemanServer.Agents.JidoAiRunnerTest do
       assert_received {:fake_llm_call, _model, _messages, _opts}
     end
 
+    test "forwards :max_tokens and :timeout_ms to the provider call" do
+      FakeReqLlm.install(self(), {:answer, "four", @usage})
+
+      assert {:ok, %Result{}} =
+               JidoAiRunner.run(:react, "2 + 2?", max_tokens: 123, timeout_ms: 4_567)
+
+      assert_received {:fake_llm_call, _model, _messages, opts}
+      assert opts[:max_tokens] == 123
+      assert opts[:receive_timeout] == 4_567
+    end
+
     test "usage is nil, not an empty or zeroed map, when the provider reports none" do
       FakeReqLlm.install(self(), {:answer_without_usage, "four"})
 
@@ -107,6 +118,17 @@ defmodule ForemanServer.Agents.JidoAiRunnerTest do
                message.role == :system and
                  Jido.AI.Turn.extract_text(message.content) =~ "step by step"
              end)
+    end
+
+    test "forwards :max_tokens and :timeout_ms to the provider call" do
+      FakeReqLlm.install(self(), {:answer, "four", @usage})
+
+      assert {:ok, %Result{}} =
+               JidoAiRunner.run(:cot, "2 + 2?", max_tokens: 123, timeout_ms: 4_567)
+
+      assert_received {:fake_llm_call, _model, _messages, opts}
+      assert opts[:max_tokens] == 123
+      assert opts[:receive_timeout] == 4_567
     end
 
     test "a failing model is a typed :strategy_failed error" do
