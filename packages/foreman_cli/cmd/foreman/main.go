@@ -11,6 +11,7 @@
 //	project update <id> POST /api/commands with type=project.update
 //	project delete <id> POST /api/commands with type=project.archive
 //	project list        GET /api/projects
+//	project memory      list|read|write|forget|sync a project's memory (/api/projects/:id/memory)
 //	commands           Generate/install agent command assets
 //	run list            List run projections
 //	run get <id>        Fetch a run projection
@@ -51,6 +52,7 @@ Commands:
   project update <id> Update a project's task provider
   project delete <id> Soft-delete (archive) a project
   project list        List project projections
+  project memory      list|read|write|forget|sync project memory topics
   commands           Generate/install agent command assets
   run list            List run projections
   run get <id>        Fetch a run projection

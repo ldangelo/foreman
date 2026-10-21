@@ -889,7 +889,8 @@ and behavior cannot diverge.
 **Write tools** (`foreman_task_create`, `foreman_task_update`,
 `foreman_task_add_comment`, `foreman_run_cancel`, `foreman_run_pause`,
 `foreman_run_resume`, `foreman_inbox_send`, `foreman_workflow_put`,
-`foreman_workflow_delete`, `foreman_prompt_put`) are unadvertised and refused unless
+`foreman_workflow_delete`, `foreman_prompt_put`, `foreman_project_memory_write`,
+`foreman_project_memory_forget`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
 `foreman_inbox_send` appends concise progress to the run inbox via the public
@@ -1122,6 +1123,27 @@ needs only Erlang/OTP 27+, no Foreman checkout, no database). Set `FOREMAN_API_T
 `FOREMAN_PROJECT_ID` (and `FOREMAN_API_URL` if the server is not local), then
 `elixir .foreman/<name>.exs`. `iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` and `FOREMAN_AGENT_ENV` (names of shell variables to pass to the agent as `agent.env`, e.g. `ANTHROPIC_API_KEY`; the server must list them in `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST`). `review` and `triage` still run inside a booted
 server app with `mix run`.
+
+## 12. Project memory
+
+Each project has durable memory that every agent thread can read and write, like a project notebook.
+
+- **Location.** `<project path>/.foreman/memory/`: `MEMORY.md` (a generated index, one `- [name](name.md) - description` line per topic, sorted) plus one `<name>.md` file per topic. A topic file may start with a `<!-- description: ... -->` line; that is the hook shown in the index. Names match `^[a-z0-9][a-z0-9_-]{0,63}$` (`memory` is reserved). `.foreman/.gitignore` gets a `memory/` line automatically; other `.foreman` files stay tracked.
+- **Caps.** 64 KiB per topic (after redaction), 200 topics, index at most 200 lines / 25 KiB. Violations are rejected with `content_too_large`, `too_many_topics` or `index_full` and leave disk untouched. Configurable under `config :foreman_server, :project_memory`.
+- **Redaction.** Bearer tokens, `api_key=`/`token=`/`password=`/`secret=` values, private-key blocks and the project's configured secret env values are replaced by `[REDACTED]` before anything is written. Content is never stored in events; the event log (`ProjectMemoryWritten` / `ProjectMemoryForgotten` on `project_memory:<id>`) keeps only name, description, sha256, size, redaction count and author.
+- **Durable facts only.** Log dumps (more than half identical lines) and secret-heavy pastes (more than half the bytes redacted, for content of 200 bytes or more) are rejected with `content_not_durable`.
+- **Agents** use the MCP tools `foreman_project_memory_list`, `foreman_project_memory_read`, `foreman_project_memory_write` and `foreman_project_memory_forget` (the last two need `allow_workflow_writes`). Their descriptions carry the guidance: save decisions, conventions, gotchas and project-wide preferences; never task progress, logs or secrets; list before writing and update instead of duplicating; forget facts that became false.
+- **Operators** can view, edit and delete through `GET|PUT|DELETE /api/projects/:id/memory[/:name]` and the CLI:
+
+```
+foreman project memory list <project-id> [--format json]
+foreman project memory read --name conventions <project-id>
+foreman project memory write --name conventions --description "How we work" --file notes.md <project-id>
+foreman project memory forget --name conventions <project-id>
+foreman project memory sync <project-id>
+```
+
+- **Hand edits and drift.** Editing `.foreman/memory/*.md` in an editor is fine. `POST /api/projects/:id/memory/sync` (or `foreman project memory sync`) compares file hashes with the audit index, re-redacts the edited content and records each difference as an operator-authored write or forget. A second sync reports nothing.
 
 ## Day-to-day workflow
 

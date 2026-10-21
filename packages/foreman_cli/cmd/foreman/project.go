@@ -19,8 +19,8 @@ import (
 func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project: missing subcommand (create|get|update|delete|list)",
-			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
+			"foreman project: missing subcommand (create|get|update|delete|list|memory)",
+			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id> (see: foreman project memory)",
 		)
 	}
 
@@ -35,10 +35,12 @@ func runProject(c *client.Client, args []string) error {
 		return projectDelete(c, args[1:])
 	case "list":
 		return projectList(c, args[1:])
+	case "memory":
+		return projectMemory(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman project: unknown subcommand %q", args[0]),
-			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
+			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id> (see: foreman project memory)",
 		)
 	}
 }

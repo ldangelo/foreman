@@ -837,13 +837,19 @@ defmodule ForemanServer.MCP.Tools do
     result =
       with {:ok, topic, content} <- ProjectMemory.read(project_id, name) do
         {:ok,
-         %__MODULE__.ProjectMemoryReadResult{name: topic.name, content: content, bytes: byte_size(content)}}
+         %__MODULE__.ProjectMemoryReadResult{
+           name: topic.name,
+           content: content,
+           bytes: byte_size(content)
+         }}
       end
 
     project_memory_reply("foreman_project_memory_read", start_us, result)
   end
 
-  defp tool_foreman_project_memory_write(%{project_id: project_id, name: name, content: content} = args) do
+  defp tool_foreman_project_memory_write(
+         %{project_id: project_id, name: name, content: content} = args
+       ) do
     start_us = System.monotonic_time(:microsecond)
 
     result =

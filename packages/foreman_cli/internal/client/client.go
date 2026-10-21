@@ -125,6 +125,16 @@ func (c *Client) PostJSON(path string, body any, out any) error {
 	return c.do("POST", path, body, out)
 }
 
+// PutJSON replaces a resource with the JSON body and decodes the response.
+func (c *Client) PutJSON(path string, body any, out any) error {
+	return c.do("PUT", path, body, out)
+}
+
+// DeleteJSON deletes a resource and decodes the JSON response into `out`.
+func (c *Client) DeleteJSON(path string, out any) error {
+	return c.do("DELETE", path, nil, out)
+}
+
 // GetJSON fetches a resource and decodes the JSON body into `out`.
 func (c *Client) GetJSON(path string, out any) error {
 	return c.do("GET", path, nil, out)

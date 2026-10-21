@@ -252,6 +252,7 @@ Manage Elixir-registered projects.
 | `update <id>` | Update a project's task provider |
 | `delete <id>` | Soft-delete (archive) a project |
 | `list` | List project projections |
+| `memory` | List, read, write, forget or sync the project's memory |
 
 ### `foreman project create`
 
@@ -326,6 +327,28 @@ foreman project list --include-archived
 |--------|-------------|
 | `--include-archived` | Include archived projects |
 | `--format json\|ndjson` | Output format |
+
+### `foreman project memory`
+
+View, edit and delete a project's memory (`<project>/.foreman/memory/`). All verbs call `/api/projects/:id/memory`; content is redacted and size-capped by the server.
+
+```
+foreman project memory list [--format json|table] <project-id>
+foreman project memory read --name <topic> [--format json|table] <project-id>
+foreman project memory write --name <topic> [--description <text>] --file <path|-> [--format json|table] <project-id>
+foreman project memory forget --name <topic> <project-id>
+foreman project memory sync [--format json|table] <project-id>
+```
+
+| Verb | HTTP | Notes |
+|------|------|-------|
+| `list` | `GET /api/projects/:id/memory` | table by default; `--format json` prints one JSON object per topic (NDJSON) |
+| `read` | `GET /api/projects/:id/memory/:name` | prints the content; `--format json` prints the whole response |
+| `write` | `PUT /api/projects/:id/memory/:name` | content from `--file <path>` or stdin with `--file -`; `--name` and `--file` are required |
+| `forget` | `DELETE /api/projects/:id/memory/:name` | `--name` required |
+| `sync` | `POST /api/projects/:id/memory/sync` | records hand-edited files in the audit trail; exits non-zero if any topic could not be recorded |
+
+Server errors keep their code (`content_too_large`, `index_full`, `too_many_topics`, `content_not_durable`, `name_invalid` = 422; unknown topic or project = 404; archived project = 409). `foreman commands` also generates `foreman-project-memory-list` and `foreman-project-memory-read` assets.
 
 ---
 

@@ -27,7 +27,12 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
 
   defp writes(enabled?) do
     config = Application.get_env(:foreman_server, :mcp, [])
-    Application.put_env(:foreman_server, :mcp, Keyword.put(config, :allow_workflow_writes, enabled?))
+
+    Application.put_env(
+      :foreman_server,
+      :mcp,
+      Keyword.put(config, :allow_workflow_writes, enabled?)
+    )
   end
 
   defp stream(project_id) do
@@ -53,7 +58,11 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
     writes(false)
 
     assert {:error, %ToolError{code: "POLICY_REFUSED"}} =
-             Tools.call_tool("foreman_project_memory_write", %{project_id: p, name: "a", content: "x"})
+             Tools.call_tool("foreman_project_memory_write", %{
+               project_id: p,
+               name: "a",
+               content: "x"
+             })
 
     assert {:error, %ToolError{code: "POLICY_REFUSED"}} =
              Tools.call_tool("foreman_project_memory_forget", %{project_id: p, name: "a"})
@@ -76,7 +85,11 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
 
     assert bytes > 0 and byte_size(sha) == 64
 
-    assert {:ok, %{entries: [%{name: "deploy", description: "How we deploy", author_kind: "agent"}], index: index}} =
+    assert {:ok,
+            %{
+              entries: [%{name: "deploy", description: "How we deploy", author_kind: "agent"}],
+              index: index
+            }} =
              Tools.call_tool("foreman_project_memory_list", %{project_id: p})
 
     assert index =~ "[deploy](deploy.md) - How we deploy"
@@ -94,7 +107,12 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
     writes(true)
 
     {:ok, _} =
-      Tools.call_tool("foreman_project_memory_write", %{project_id: p, name: "a", content: "x", session_id: "sess-1"})
+      Tools.call_tool("foreman_project_memory_write", %{
+        project_id: p,
+        name: "a",
+        content: "x",
+        session_id: "sess-1"
+      })
 
     assert [%{author_ref: "sess-1"}] = ProjectionStore.project_memory(p)
   end
@@ -112,10 +130,16 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
     assert message =~ "content_too_large"
 
     assert {:error, %ToolError{code: "INVALID_PARAMS", message: "name_invalid" <> _}} =
-             Tools.call_tool("foreman_project_memory_write", %{project_id: p, name: "Bad/Name", content: "x"})
+             Tools.call_tool("foreman_project_memory_write", %{
+               project_id: p,
+               name: "Bad/Name",
+               content: "x"
+             })
   end
 
-  test "unknown project and unknown topic are NOT_FOUND; archived project write is rejected", %{project_id: p} do
+  test "unknown project and unknown topic are NOT_FOUND; archived project write is rejected", %{
+    project_id: p
+  } do
     writes(true)
 
     assert {:error, %ToolError{code: "NOT_FOUND", message: "project_not_found" <> _}} =
@@ -125,15 +149,25 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
              Tools.call_tool("foreman_project_memory_read", %{project_id: p, name: "ghost"})
 
     {:ok, _} =
-      CommandRouter.dispatch(%{type: "project.archive", aggregate_id: "project:#{p}", payload: %{project_id: p}})
+      CommandRouter.dispatch(%{
+        type: "project.archive",
+        aggregate_id: "project:#{p}",
+        payload: %{project_id: p}
+      })
 
     assert {:error, %ToolError{code: "DOMAIN_ERROR", message: "project_archived" <> _}} =
-             Tools.call_tool("foreman_project_memory_write", %{project_id: p, name: "a", content: "x"})
+             Tools.call_tool("foreman_project_memory_write", %{
+               project_id: p,
+               name: "a",
+               content: "x"
+             })
   end
 
   test "forget then read is not_found", %{project_id: p} do
     writes(true)
-    {:ok, _} = Tools.call_tool("foreman_project_memory_write", %{project_id: p, name: "a", content: "x"})
+
+    {:ok, _} =
+      Tools.call_tool("foreman_project_memory_write", %{project_id: p, name: "a", content: "x"})
 
     assert {:ok, %{name: "a", status: "forgotten"}} =
              Tools.call_tool("foreman_project_memory_forget", %{project_id: p, name: "a"})
