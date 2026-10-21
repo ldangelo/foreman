@@ -81,6 +81,12 @@ defmodule ForemanServer.Coordinator.ProjectWorker do
     {:noreply, after_turn(%{state | task: nil}, result)}
   end
 
+  # The runtime is shutting down: the turn stays open in the log and is recovered
+  # as `interrupted` on the next start.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: {ref, _}} = state)
+      when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown),
+      do: {:noreply, %{state | task: nil}}
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: {ref, _}} = state) do
     Logger.warning("coordinator #{state.project_id}: turn task ended #{inspect(reason)}")
 

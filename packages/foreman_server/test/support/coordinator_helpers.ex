@@ -31,21 +31,26 @@ defmodule ForemanServer.TestSupport.CoordinatorHelpers do
   """
   def await_event(type, pred \\ fn _ -> true end, timeout \\ 10_000) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    do_await(type, pred, deadline)
+    do_await(type, pred, deadline, [])
   end
 
-  defp do_await(type, pred, deadline) do
+  # Events that do not match are put back (in order) so a later await can still
+  # see them: two awaits for the same type in one test must not steal each other's.
+  defp do_await(type, pred, deadline, skipped) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {:projection_event, event} ->
         if field(event, :event_type) == type and pred.(payload(event)) do
+          Enum.each(Enum.reverse(skipped), &send(self(), {:projection_event, &1}))
           payload(event)
         else
-          do_await(type, pred, deadline)
+          do_await(type, pred, deadline, [event | skipped])
         end
     after
-      remaining -> ExUnit.Assertions.flunk("timed out waiting for #{type}")
+      remaining ->
+        Enum.each(Enum.reverse(skipped), &send(self(), {:projection_event, &1}))
+        ExUnit.Assertions.flunk("timed out waiting for #{type}")
     end
   end
 
