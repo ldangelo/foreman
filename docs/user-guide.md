@@ -229,6 +229,31 @@ foreman project chat project-123 "fix the login bug"
 ```
 
 Posts the message, then prints the coordinator's reply and action notes as they arrive. Use `--no-wait` to return immediately, `--history 20` or `--since <seq>` to read the conversation, `--format ndjson` for scripting and `--restart` to restart a wedged coordinator (exit code 3 means it is unhealthy). See `docs/cli-reference.md`.
+### Moving a session into a project
+
+`foreman project adopt` brings an existing run, jobsite or task into a project.
+*Move* re-homes it (a run moves with its task and that task's other runs) and
+updates its archive manifest; the original events keep their project, and
+`ReviewRecorded` keeps pointing at the original project. A session that is still
+running (or paused) cannot be moved; use *Continue* instead, which starts a new
+task in the target project seeded from the session's archive and leaves the
+original running. *Mint* (`--new-project`) creates a project from the session's
+repo and goal and moves the session into it. Tasks imported from beads stay in
+their source project, and a session's repo must be the target project's path.
+See `docs/cli-reference.md` (`foreman project adopt`).
+
+### Setup recommendations
+
+`foreman project recommend <id>` (also `GET /api/projects/<id>/recommendations`
+and the read-only MCP tool `foreman_project_recommendations`) lists what is
+missing or misconfigured: the beads task provider not wired, no AGENTS.md or
+CLAUDE.md, no CI, `gh` not logged in, workflows not installed, empty goal or
+instructions, a configured provider that is not installed, a paused project.
+Each item has a stable id, a severity (`action`, `warn`, `info`) and a fix: a
+Foreman command computed from what was observed, or manual advice. Checks are
+read-only and bounded (5 s per external command); a check that cannot run
+produces no recommendation rather than a false alarm. `foreman doctor` reports
+server, provider and workflow readiness (`--project` adds this summary).
 
 ### Project settings
 
@@ -1012,7 +1037,7 @@ and behavior cannot diverge.
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
 `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`,
-`foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
+`foreman_project_recommendations`, `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
 `foreman_thread_find`.
 The write-gated thread tools are `foreman_thread_stop` and
 `foreman_thread_steer`.

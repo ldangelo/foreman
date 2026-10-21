@@ -489,6 +489,20 @@ carries `provider`, `model`, `project_id`, `task_id`, `role` (`"thread"`), the t
   expose it. Rollups by project/day/model and the usage endpoint arrive with E14; nothing
   here aggregates across runs.
 
+## Re-homing a session (`project.adopt`)
+
+Event history is immutable, so moving a task/run/jobsite to another project is a
+projection re-home, not a rewrite. `project.adopt` runs on the TARGET
+`project:<id>` stream and emits `ProjectSubjectAdopted`; `CommandGateway`
+enriches the payload from projections (`Projects.Adoption.resolve/1`: owning
+task + sibling runs, repo path, activity) so the aggregate stays pure. The
+`ProjectionStore` fold rewrites `project_id` on the projected rows and keeps
+`adopted_from`; the original events keep their original `project_id`
+(`ReviewRecorded` too). `rebuild_project/2` replays only `project:<id>`
+streams, so it cannot undo a move. The facade (`Projects.AdoptionService`) then
+syncs the on-disk archive manifest idempotently; a crash between the two is
+repaired by re-running the same adoption.
+
 ---
 
 ## Execution Safety Rules

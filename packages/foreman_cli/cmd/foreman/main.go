@@ -10,6 +10,8 @@
 //	project get <id>    GET /api/projects/:id
 //	project update <id> POST /api/commands with type=project.update
 //	project settings <id> GET /api/projects/:id/settings
+//	project recommend <id> GET /api/projects/:id/recommendations
+//	project adopt       POST /api/project-adoptions
 //	project pause <id>  POST /api/commands with type=project.pause
 //	project resume <id> POST /api/commands with type=project.resume
 //	project reactivate <id> POST /api/commands with type=project.reactivate
@@ -27,6 +29,7 @@
 //	thread list|get|stop|resolve|reopen|steer  Inspect and act on threads
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
+//	doctor              GET /api/doctor
 //
 // `foreman init --force` is the canonical developer-facing entry point
 // for refreshing the runtime asset cache after editing bundled source
@@ -57,6 +60,8 @@ Commands:
   project get <id>    Fetch a project projection
   project update <id> Update project settings (goal, instructions, models, limits) and/or task provider
   project settings <id> Show project status, settings and limits
+  project recommend <id> Setup recommendations (--format json, --fail-on warn|action)
+  project adopt       Move/continue/mint a project from a session (--kind --id --into|--new-project)
   project pause <id>  Pause a project (--reason text)
   project resume <id> Resume a paused project
   project reactivate <id> Reactivate an archived project
@@ -79,6 +84,7 @@ Commands:
   thread steer <id>   Send an operator message to a thread (--message)
   workflow install    Install workflow assets
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
+  doctor              Server, provider, workflow and project-setup checks (--project, --strict, --format json)
 Env:
   FOREMAN_API_URL    Base URL (default http://127.0.0.1:4766)
   FOREMAN_API_TOKEN  Bearer token (required unless the server opts into allow_insecure_local)
@@ -114,6 +120,8 @@ func main() {
 		err = runWorkflow(c, args)
 	case "init":
 		err = runInit(c, args)
+	case "doctor":
+		err = runDoctor(c, args)
 	default:
 		err = usageTextError(fmt.Sprintf("foreman: unknown command %q", os.Args[1]), usage)
 	}
