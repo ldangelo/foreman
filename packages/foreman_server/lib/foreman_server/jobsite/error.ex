@@ -13,6 +13,8 @@ defmodule ForemanServer.Jobsite.Error do
     * `:sandbox_create_failed` / `:sandbox_exec_failed` / `:copy_failed` / `:image_missing` —
       sandbox providers
     * `:hook_failed` — `Jobsite.Hooks`, `Jobsite.Engine` (also the project setup script)
+    * `:project_env_invalid` — `Jobsite.Executor` (the project's stored environment uses
+      reserved `FOREMAN_*` names; fails loudly, never silently dropped)
     * `:network_policy_unsupported` / `:network_policy_violation` / `:network_policy_failed` —
       `Jobsite.NetworkPolicy` (project `environment.network` on a non-docker sandbox; a
       wider sandbox network than the policy; docker refused to create the policy's network)

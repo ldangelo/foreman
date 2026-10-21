@@ -171,4 +171,35 @@ defmodule ForemanServer.Jobsite.ProjectEnvironmentTest do
                project_id: ctx.project_id
              )
   end
+
+  test "a project with a stored FOREMAN_* env name fails the jobsite loudly", ctx do
+    # Only a project still on legacy env can hold a reserved key (the record
+    # rejects it at write time), so register a legacy-only project.
+    legacy = "legacy-#{Elixir.EventStore.UUID.uuid4()}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{
+          project_id: legacy,
+          path: ctx.repo,
+          config: %{env: %{"FOREMAN_RUN_ID" => "evil"}}
+        },
+        aggregate_id: "project:#{legacy}"
+      })
+
+    assert {:error,
+            %ForemanServer.Jobsite.Error{
+              code: :project_env_invalid,
+              details: %{keys: ["FOREMAN_RUN_ID"]}
+            }} =
+             Jobsite.run(
+               repo_path: ctx.repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: Agents.pi("x", binary: @fake_agent),
+               prompt: "go",
+               project_id: legacy
+             )
+  end
 end

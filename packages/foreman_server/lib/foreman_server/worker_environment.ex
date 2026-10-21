@@ -15,7 +15,14 @@ defmodule ForemanServer.WorkerEnvironment do
 
   @spec build(String.t(), keyword()) :: env_map()
   def build(project_id, opts \\ []) when is_binary(project_id) and is_list(opts) do
-    project_id |> ProjectEnvironment.resolve(opts) |> Map.fetch!(:env)
+    case ProjectEnvironment.resolve(project_id, opts) do
+      {:ok, %{env: env}} ->
+        env
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "project #{inspect(project_id)} environment is invalid: #{inspect(reason)}"
+    end
   end
 
   @spec build_env_map(String.t()) :: env_map()

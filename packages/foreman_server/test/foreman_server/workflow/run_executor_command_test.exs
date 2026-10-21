@@ -597,82 +597,25 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
-  test "a legacy project config.env key in the FOREMAN_ namespace is dropped and Foreman's value wins" do
-    # Reserved names are dropped at resolve time (a project value would reach
-    # the agent as plausible but unverified); the launch still happens and the
-    # run's own value wins.
-    %{run_id: run_id} =
-      run_plan_capture_phase!(
-        write_paths: ["docs/PRD/PRD-2026-33333333-reserved-env.md"],
-        project_config: %{
-          env: %{"FOO" => "bar", "FOREMAN_UNEMITTED" => "evil", "FOREMAN_RUN_ID" => "evil"}
-        }
-      )
-
-    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
-
-    assert {:ok, worker_state} =
-             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
-
-    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
-
-    assert delivered["FOO"] == "bar"
-    assert delivered["FOREMAN_RUN_ID"] == run_id
-    # A reserved name Foreman itself does not emit must not leak through either.
-    refute Map.has_key?(delivered, "FOREMAN_UNEMITTED")
-
-    await_run_completed!(run_id)
-  end
-
-  test "the project setup script runs once on the fresh worktree, before the agent, with the project env" do
-    marker = Path.join(System.tmp_dir!(), unique_id("setup-marker"))
-    on_exit(fn -> File.rm(marker) end)
-
-    %{run_id: run_id} =
-      run_plan_capture_phase!(
-        write_paths: ["docs/PRD/PRD-2026-66666666-setup.md"],
-        environment: %{
-          vars: %{"NPM_REGISTRY" => "https://r.example"},
-          setup_script:
-            ~s(echo "$NPM_REGISTRY $FOREMAN_RUN_ID" >> #{marker}; echo setup-output-line)
-        }
-      )
-
-    assert File.read!(marker) == "https://r.example #{run_id}\n"
-
-    # The run artifact dir defaults to $HOME/.foreman/runs/<run_id> (the same
-    # place the phase prompt is materialised).
-    run_dir = Path.join([System.get_env("HOME"), ".foreman", "runs", run_id])
-    on_exit(fn -> File.rm_rf(run_dir) end)
-    assert File.read!(Path.join(run_dir, "setup.log")) =~ "setup-output-line"
-
-    await_run_completed!(run_id)
-  end
-
-  test "a failing project setup script fails the phase before any worker launches, redacting secrets" do
-    dir = Path.join(System.tmp_dir!(), unique_id("secrets"))
-    previous = Application.get_env(:foreman_server, :secret_store)
-    Application.put_env(:foreman_server, :secret_store, Keyword.put(previous, :dir, dir))
-
-    on_exit(fn ->
-      Application.put_env(:foreman_server, :secret_store, previous)
-      File.rm_rf!(dir)
-    end)
-
+  test "a project config.env key in the FOREMAN_ namespace fails the phase before any worker launches" do
+    # `FOREMAN_BASE_BRANCH` is the sharp case: this repo has no resolvable
+    # base branch, so Foreman emits no such key and a project-supplied one
+    # would reach the agent as an unverified base branch. Loud failure, not a drop.
     %{run_id: run_id, phase_id: phase_id} =
       run_plan_capture_phase!(
-        write_paths: ["docs/PRD/PRD-2026-77777777-setup-fail.md"],
+        write_paths: ["docs/PRD/PRD-2026-33333333-reserved-env.md"],
         expect_launch?: false,
-        environment: %{setup_script: ~s(echo "bad $DEPLOY_PASSPHRASE"; exit 9)},
-        secrets: %{"DEPLOY_PASSPHRASE" => "setup-fail-secret-xx"}
+        project_config: %{
+          env: %{"FOO" => "bar", "FOREMAN_BASE_BRANCH" => "evil", "FOREMAN_RUN_ID" => "evil"}
+        }
       )
 
-    reason = await_phase_failure!(phase_id)
+    failure_reason = await_phase_failure!(phase_id)
 
-    assert reason =~ "setup_script_failed"
-    assert reason =~ "9"
-    assert reason =~ "bad [REDACTED]"
-    refute reason =~ "setup-fail-secret-xx"
+    assert failure_reason =~ "reserved_project_env_keys"
+    assert failure_reason =~ "FOREMAN_BASE_BRANCH"
+    assert failure_reason =~ "FOREMAN_RUN_ID"
+    refute failure_reason =~ "FOO"
     refute_received {:adapter_execute, _, _}
 
     await_run_failure!(run_id)

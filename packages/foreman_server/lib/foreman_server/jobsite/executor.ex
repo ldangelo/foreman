@@ -187,7 +187,8 @@ defmodule ForemanServer.Jobsite.Executor do
   defp build_spec(jobsite_id, opts) do
     with :ok <- Options.validate(opts),
          {:ok, agent} <- fetch(opts, :agent, :prompt_source_missing, "agent"),
-         agent = apply_project_environment(agent, Keyword.get(opts, :project_id)),
+         {:ok, agent} <- apply_project_environment(agent, Keyword.get(opts, :project_id)),
+         {:ok, setup_plan} <- project_setup_plan(Keyword.get(opts, :project_id)),
          {:ok, {sandbox_provider, sandbox_config}} <-
            fetch(opts, :sandbox, :sandbox_create_failed, "sandbox"),
          :ok <- Hooks.validate(Keyword.get(opts, :hooks)),
@@ -205,6 +206,7 @@ defmodule ForemanServer.Jobsite.Executor do
          sandbox_provider: sandbox_provider,
          sandbox_config: sandbox_config,
          network_cleanup: network_cleanup,
+         setup_plan: setup_plan,
          repo_path: Keyword.get(opts, :repo_path, File.cwd!()),
          strategy: Keyword.get(opts, :strategy, :head),
          max_iterations: Keyword.get(opts, :max_iterations, 1),
@@ -226,17 +228,40 @@ defmodule ForemanServer.Jobsite.Executor do
   # The project's resolved env (vars + secret store) is the BASE of the agent
   # env; the spec's own `agent.env` (validated against the caller allowlist by
   # `Jobsite.Spec`) overrides it, so a caller never needs to allowlist project
-  # keys and can never inject keys the allowlist forbids. `FOREMAN_*` names are
-  # reserved: `ProjectEnvironment.resolve/1` already dropped them from the base.
+  # keys and can never inject keys the allowlist forbids. A project that stores
+  # a reserved `FOREMAN_*` name fails the jobsite loudly (`:project_env_invalid`).
   # The resolved secret values ride on `agent.secrets` (never persisted:
   # `start_payload/2` lists agent fields explicitly) so every runner redacts them.
   defp apply_project_environment(agent, project_id)
        when is_binary(project_id) and project_id != "" do
-    %{env: env, secrets: secrets} = ForemanServer.ProjectEnvironment.resolve(project_id)
-    %{agent | env: Map.merge(env, agent.env || %{}), secrets: secrets}
+    case ForemanServer.ProjectEnvironment.resolve(project_id) do
+      {:ok, %{env: env, secrets: secrets}} ->
+        {:ok, %{agent | env: Map.merge(env, agent.env || %{}), secrets: secrets}}
+
+      {:error, reason} ->
+        {:error, project_env_error(project_id, reason)}
+    end
   end
 
-  defp apply_project_environment(agent, _project_id), do: agent
+  defp apply_project_environment(agent, _project_id), do: {:ok, agent}
+
+  defp project_setup_plan(project_id) when is_binary(project_id) and project_id != "" do
+    case ForemanServer.ProjectSetup.plan(project_id) do
+      {:ok, plan} -> {:ok, plan}
+      {:error, reason} -> {:error, project_env_error(project_id, reason)}
+    end
+  end
+
+  defp project_setup_plan(_project_id), do: {:ok, nil}
+
+  defp project_env_error(project_id, {:reserved_project_env_keys, keys} = reason) do
+    Error.new(
+      :project_env_invalid,
+      "project #{inspect(project_id)} environment uses reserved FOREMAN_* names: " <>
+        Enum.join(keys, ", "),
+      %{project_id: project_id, reason: inspect(reason), keys: keys}
+    )
+  end
 
   # The project's `environment.network` is a CEILING on the jobsite's sandbox
   # (E4-S5). Last in `build_spec/2`'s checks: it is the only one with a side
@@ -317,7 +342,7 @@ defmodule ForemanServer.Jobsite.Executor do
 
     steps =
       [%Step{kind: :worktree, id: "worktree", opts: worktree_opts}] ++
-        project_setup_steps(spec.project_id) ++
+        project_setup_steps(spec.setup_plan) ++
         hook_steps(spec.hooks, :host, :on_worktree_ready) ++
         [
           %Step{
@@ -345,30 +370,29 @@ defmodule ForemanServer.Jobsite.Executor do
   # The project's setup script runs first, as a host hook on the fresh
   # worktree. It comes from the server-side environment record, never from the
   # spec (`hooks.host.*` stays forbidden for remote specs).
-  defp project_setup_steps(project_id) when is_binary(project_id) and project_id != "" do
-    case ForemanServer.ProjectSetup.plan(project_id) do
-      nil ->
-        []
+  defp project_setup_steps(nil), do: []
 
-      %{command: command, env: env, secrets: secrets, timeout_ms: timeout_ms} ->
-        [
-          %Step{
-            kind: :hook,
-            id: "hook:project_setup",
-            opts: %{
-              command: command,
-              target: :host,
-              project_setup: true,
-              env: env,
-              secrets: secrets,
-              timeout_ms: timeout_ms
-            }
-          }
-        ]
-    end
+  defp project_setup_steps(%{
+         command: command,
+         env: env,
+         secrets: secrets,
+         timeout_ms: timeout_ms
+       }) do
+    [
+      %Step{
+        kind: :hook,
+        id: "hook:project_setup",
+        opts: %{
+          command: command,
+          target: :host,
+          project_setup: true,
+          env: env,
+          secrets: secrets,
+          timeout_ms: timeout_ms
+        }
+      }
+    ]
   end
-
-  defp project_setup_steps(_project_id), do: []
 
   defp hook_steps(nil, _target, _phase), do: []
 
@@ -757,8 +781,8 @@ defmodule ForemanServer.Jobsite.Executor do
   # and relies on `resume_session` for the agent's own conversation memory.
   defp resume_from_state(jobsite_id, agg_state, opts) do
     with {:ok, sandbox_provider} <- Sandboxes.resolve(agg_state.sandbox_provider),
-         {:ok, agent} <- agent_from_state(agg_state.agent) do
-      agent = apply_project_environment(agent, agg_state.project_id)
+         {:ok, agent} <- agent_from_state(agg_state.agent),
+         {:ok, agent} <- apply_project_environment(agent, agg_state.project_id) do
       sandbox_config = agg_state.sandbox_config || %{}
 
       worktree = %Worktree{

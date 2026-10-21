@@ -1253,8 +1253,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     foreman_env =
       foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-    # `FOREMAN_*` always wins: `ProjectEnvironment.resolve/1` drops reserved
-    # names, and the run's own values are merged last regardless.
+    # `FOREMAN_*` always wins: `ProjectEnvironment.resolve/2` refuses a project
+    # that stores a reserved name, so no project key can reach this merge.
     env = Map.merge(resolved.env, foreman_env)
 
     {:ok,
@@ -1337,7 +1337,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # stringified (e.g. a map); `to_string/1` then raises. Only that conversion
   # error is converted, so the phase fails through the normal bounded path.
   defp resolve_project_env(project_id) do
-    {:ok, ForemanServer.ProjectEnvironment.resolve(project_id)}
+    ForemanServer.ProjectEnvironment.resolve(project_id)
   rescue
     Protocol.UndefinedError -> {:error, {:invalid_project_env, project_id}}
   end

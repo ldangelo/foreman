@@ -6,9 +6,11 @@ defmodule ForemanServer.ProjectEnvironment do
   `Overwatch` fallback and the jobsite door — goes through `resolve/1`:
 
     * `env`: project vars (record `vars`, else legacy `config.env`, else legacy
-      flat `config.environment`) overlaid by secret-store values. `FOREMAN_*`
-      names are dropped here (the write path already rejects them) so Foreman's
-      own namespace can never be shadowed.
+      flat `config.environment`) overlaid by secret-store values. `FOREMAN_*` is
+      Foreman's own namespace: the write path rejects such names, and a stored one
+      (legacy config) makes `resolve/2` return
+      `{:error, {:reserved_project_env_keys, sorted_keys}}` so the phase or jobsite
+      fails LOUDLY rather than launching with a plausible but unverified value.
     * `secrets`: secret-store values ++ `WorkerEnvironment.extract_secrets/1`
       over `env`, de-duplicated, never empty strings. This list feeds log
       redaction (`WorkerLogPolicy`).
@@ -28,23 +30,37 @@ defmodule ForemanServer.ProjectEnvironment do
           env: %{optional(String.t()) => String.t()},
           secrets: [String.t()]
         }
+  @type resolve_error :: {:reserved_project_env_keys, [String.t()]}
 
   @doc """
   Resolve the agent env and redaction list. `opts[:project]` supplies an
   explicit project snapshot (used by tests and `WorkerEnvironment.build/2`).
   """
-  @spec resolve(String.t(), keyword()) :: resolved()
+  @spec resolve(String.t(), keyword()) :: {:ok, resolved()} | {:error, resolve_error()}
   def resolve(project_id, opts \\ []) when is_binary(project_id) and is_list(opts) do
     %{"vars" => vars} = environment(project_id, opts)
-    secret_pairs = secret_pairs(project_id)
-    env = Map.merge(vars, secret_pairs)
 
-    secrets =
-      (Map.values(secret_pairs) ++ WorkerEnvironment.extract_secrets(env))
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.uniq()
+    case reserved_keys(vars) do
+      [] ->
+        secret_pairs = secret_pairs(project_id)
+        env = Map.merge(vars, secret_pairs)
 
-    %{env: env, secrets: secrets}
+        secrets =
+          (Map.values(secret_pairs) ++ WorkerEnvironment.extract_secrets(env))
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        {:ok, %{env: env, secrets: secrets}}
+
+      keys ->
+        {:error, {:reserved_project_env_keys, keys}}
+    end
+  end
+
+  @doc "Sorted `FOREMAN_*` names present in `vars` (reserved for Foreman's own env)."
+  @spec reserved_keys(%{optional(String.t()) => term()}) :: [String.t()]
+  def reserved_keys(vars) when is_map(vars) do
+    vars |> Map.keys() |> Enum.filter(&String.starts_with?(&1, "FOREMAN_")) |> Enum.sort()
   end
 
   @doc """
@@ -84,7 +100,7 @@ defmodule ForemanServer.ProjectEnvironment do
     script = fetch(record, :setup_script, nil)
 
     %{
-      "vars" => record |> fetch(:vars, %{}) |> stringify() |> drop_reserved(),
+      "vars" => record |> fetch(:vars, %{}) |> stringify(),
       "setup_script" => if(is_binary(script) and String.trim(script) != "", do: script),
       "network" => %{
         "mode" => network |> fetch(:mode, "default") |> to_string(),
@@ -98,13 +114,9 @@ defmodule ForemanServer.ProjectEnvironment do
       config
       |> fetch(:env, fetch(config, :environment, %{}))
       |> stringify()
-      |> drop_reserved()
 
     %{Environment.default() | "vars" => vars}
   end
-
-  defp drop_reserved(vars),
-    do: Map.reject(vars, fn {k, _v} -> String.starts_with?(k, "FOREMAN_") end)
 
   defp secret_pairs(project_id) do
     case SecretStore.pairs(project_id) do

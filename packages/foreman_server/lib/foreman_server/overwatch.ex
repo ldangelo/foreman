@@ -120,76 +120,78 @@ defmodule ForemanServer.Overwatch do
     prompt_path = Keyword.fetch!(opts, :prompt_path)
 
     project_id = Keyword.get(opts, :project_id) || project_id_from_phase(phase)
-    {env_map, resolved_secrets} = build_launch_env(project_id, opts)
 
-    launch_opts =
-      [
-        worker_id: worker_id,
-        run_id: run_id,
-        session_id: session_id,
-        adapter: adapter,
-        adapter_name: adapter_name,
-        prompt_path: prompt_path,
-        phase: phase,
-        project_id: project_id,
-        env_map: env_map
-      ]
-      |> Keyword.merge(
-        Keyword.take(opts, [
-          :tool_names,
-          :artifact_paths,
-          :activation_timeout_ms,
-          # LGC-T002: agent-runtime hooks for the Jido path. The supervised
-          # worker needs the prompt, provider, driver_opts, and a result
-          # recipient to run the agent and report completion to the caller.
-          :provider,
-          :prompt,
-          :task_id,
-          :driver_opts,
-          :result_recipient
-        ])
-      )
-      |> Keyword.put(:secrets, Keyword.get(opts, :secrets, resolved_secrets))
+    with {:ok, env_map, resolved_secrets} <- build_launch_env(project_id, opts) do
+      launch_opts =
+        [
+          worker_id: worker_id,
+          run_id: run_id,
+          session_id: session_id,
+          adapter: adapter,
+          adapter_name: adapter_name,
+          prompt_path: prompt_path,
+          phase: phase,
+          project_id: project_id,
+          env_map: env_map
+        ]
+        |> Keyword.merge(
+          Keyword.take(opts, [
+            :tool_names,
+            :artifact_paths,
+            :activation_timeout_ms,
+            # LGC-T002: agent-runtime hooks for the Jido path. The supervised
+            # worker needs the prompt, provider, driver_opts, and a result
+            # recipient to run the agent and report completion to the caller.
+            :provider,
+            :prompt,
+            :task_id,
+            :driver_opts,
+            :result_recipient
+          ])
+        )
+        |> Keyword.put(:secrets, Keyword.get(opts, :secrets, resolved_secrets))
 
-    case WorkerSupervisor.start_worker(launch_opts) do
-      {:ok, launch_pid} ->
-        {:ok,
-         %{
-           worker_id: worker_id,
-           worker_pid: launch_pid,
-           launch_pid: launch_pid,
-           launched_at: System.system_time(:millisecond),
-           metadata: %{
-             phase: phase,
-             session_id: session_id,
-             adapter: adapter_name,
-             prompt_path: prompt_path,
-             project_id: project_id,
-             env_map: env_map
-           }
-         }}
+      case WorkerSupervisor.start_worker(launch_opts) do
+        {:ok, launch_pid} ->
+          {:ok,
+           %{
+             worker_id: worker_id,
+             worker_pid: launch_pid,
+             launch_pid: launch_pid,
+             launched_at: System.system_time(:millisecond),
+             metadata: %{
+               phase: phase,
+               session_id: session_id,
+               adapter: adapter_name,
+               prompt_path: prompt_path,
+               project_id: project_id,
+               env_map: env_map
+             }
+           }}
 
-      {:error, _reason} = err ->
-        err
+        {:error, _reason} = err ->
+          err
 
-      other ->
-        {:error, {:unexpected_start_child, other}}
+        other ->
+          {:error, {:unexpected_start_child, other}}
+      end
     end
   end
 
   # The caller's `:env_map` wins (RunExecutor resolved it once, together with
   # its redaction list). Without one the project's environment is resolved here
   # so the fallback path redacts exactly what it delivers.
-  defp build_launch_env(nil, _opts), do: {%{}, []}
+  defp build_launch_env(nil, _opts), do: {:ok, %{}, []}
 
   defp build_launch_env(project_id, opts) do
     case Keyword.get(opts, :env_map) do
       nil ->
-        %{env: env, secrets: secrets} = ForemanServer.ProjectEnvironment.resolve(project_id)
-        {env, secrets}
+        with {:ok, %{env: env, secrets: secrets}} <-
+               ForemanServer.ProjectEnvironment.resolve(project_id),
+             do: {:ok, env, secrets}
 
       other ->
-        {other, []}
+        {:ok, other, []}
     end
   end
 

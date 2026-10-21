@@ -41,28 +41,36 @@ defmodule ForemanServer.ProjectSetup do
     do: project_id |> ProjectEnvironment.environment() |> Map.fetch!("setup_script")
 
   @doc """
-  Everything a runner needs to execute the project's script: `nil` when there is
-  none, else `%{command:, env:, secrets:, timeout_ms:}`. `env` is the resolved
+  Everything a runner needs to execute the project's script: `{:ok, nil}` when there
+  is none, else `{:ok, plan}` with `%{command:, env:, secrets:, timeout_ms:}`. `env` is the resolved
   project env plus `FOREMAN_PROJECT_ID`; callers add `FOREMAN_WORKTREE_PATH` and
   `FOREMAN_RUN_ID` once the worktree exists.
   """
   @spec plan(String.t()) ::
-          nil
-          | %{command: String.t(), env: map(), secrets: [String.t()], timeout_ms: pos_integer()}
+          {:ok,
+           nil
+           | %{
+               command: String.t(),
+               env: map(),
+               secrets: [String.t()],
+               timeout_ms: pos_integer()
+             }}
+          | {:error, ProjectEnvironment.resolve_error()}
   def plan(project_id) when is_binary(project_id) do
     case script(project_id) do
       nil ->
-        nil
+        {:ok, nil}
 
       command ->
-        %{env: env, secrets: secrets} = ProjectEnvironment.resolve(project_id)
-
-        %{
-          command: command,
-          env: Map.put(env, "FOREMAN_PROJECT_ID", project_id),
-          secrets: secrets,
-          timeout_ms: timeout_ms()
-        }
+        with {:ok, %{env: env, secrets: secrets}} <- ProjectEnvironment.resolve(project_id) do
+          {:ok,
+           %{
+             command: command,
+             env: Map.put(env, "FOREMAN_PROJECT_ID", project_id),
+             secrets: secrets,
+             timeout_ms: timeout_ms()
+           }}
+        end
     end
   end
 
@@ -71,13 +79,17 @@ defmodule ForemanServer.ProjectSetup do
   it exits 0; a typed `t:failure/0` otherwise. `opts[:log_dir]` receives
   `setup.log`.
   """
-  @spec run(String.t(), String.t(), String.t(), keyword()) :: :ok | {:error, failure()}
+  @spec run(String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, failure() | ProjectEnvironment.resolve_error()}
   def run(project_id, worktree_path, run_id, opts \\ []) do
     case plan(project_id) do
-      nil ->
+      {:ok, nil} ->
         :ok
 
-      %{command: command, env: env, secrets: secrets, timeout_ms: timeout} ->
+      {:error, _} = error ->
+        error
+
+      {:ok, %{command: command, env: env, secrets: secrets, timeout_ms: timeout}} ->
         env =
           Map.merge(env, %{"FOREMAN_WORKTREE_PATH" => worktree_path, "FOREMAN_RUN_ID" => run_id})
 

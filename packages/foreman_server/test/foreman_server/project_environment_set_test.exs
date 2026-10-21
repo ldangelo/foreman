@@ -150,6 +150,17 @@ defmodule ForemanServer.ProjectEnvironmentSetTest do
       refute Map.has_key?(ProjectionStore.project(id).config, "environment")
     end
 
+    test "a FOREMAN_* var is rejected at the write boundary and nothing is stored", %{
+      project_id: id
+    } do
+      register(id)
+
+      assert {:error, {:reserved_env_name, "FOREMAN_RUN_ID"}} =
+               set_env(id, %{vars: %{"FOREMAN_RUN_ID" => "x"}})
+
+      refute Map.has_key?(ProjectionStore.project(id).config, "environment")
+    end
+
     test "unknown project is not_found", %{project_id: id} do
       assert {:error, {:not_found, :project, ^id}} = set_env(id, %{vars: %{}})
     end

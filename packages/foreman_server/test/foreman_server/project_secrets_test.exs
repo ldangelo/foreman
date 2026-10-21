@@ -62,7 +62,10 @@ defmodule ForemanServer.ProjectSecretsTest do
       capture_log(fn ->
         assert {:ok, result} = ProjectSecrets.set(id, "API_TOKEN", @value, "t")
         refute inspect(result) =~ @value
-        assert %{env: %{"API_TOKEN" => @value}, secrets: secrets} = ProjectEnvironment.resolve(id)
+
+        assert {:ok, %{env: %{"API_TOKEN" => @value}, secrets: secrets}} =
+                 ProjectEnvironment.resolve(id)
+
         assert @value in secrets
       end)
 
@@ -89,7 +92,7 @@ defmodule ForemanServer.ProjectSecretsTest do
 
     {:ok, _} = ProjectSecrets.set(id, "DEPLOY_KEY_NAME", @value, "t")
 
-    assert %{env: env, secrets: secrets} = ProjectEnvironment.resolve(id)
+    assert {:ok, %{env: env, secrets: secrets}} = ProjectEnvironment.resolve(id)
     assert env == %{"REGION" => "us", "DEPLOY_KEY_NAME" => @value}
     assert secrets == [@value]
   end
@@ -111,7 +114,7 @@ defmodule ForemanServer.ProjectSecretsTest do
 
     log =
       capture_log(fn ->
-        assert %{env: %{}, secrets: []} = ProjectEnvironment.resolve(id)
+        assert {:ok, %{env: %{}, secrets: []}} = ProjectEnvironment.resolve(id)
       end)
 
     assert log =~ "secret store unavailable"
