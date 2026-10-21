@@ -54,6 +54,20 @@ defmodule ForemanServer.Workflow.Worktree do
   alias ForemanServer.Jobsite.Git, as: JobsiteGit
 
   @doc """
+  Deterministic correlation id of a run's worktree for one repository.
+
+  The run's primary repository (`repo_id` nil) keeps the historical
+  `"wt-" <> run_id`; a secondary repository is `"wt-<run_id>-<repo_id>"`.
+  Production run ids are `run-<32 hex>`, so `<run>-<repo>` cannot collide with
+  another run's primary id.
+  """
+  @spec operation_id(String.t(), String.t() | nil) :: String.t()
+  def operation_id(run_id, nil) when is_binary(run_id), do: "wt-" <> run_id
+
+  def operation_id(run_id, repo_id) when is_binary(run_id) and is_binary(repo_id),
+    do: "wt-" <> run_id <> "-" <> repo_id
+
+  @doc """
   Provision a worktree through the adapter and append `WorktreeCreated`.
   Returns `{:ok, worktree_path}` on success and an error tuple on failure.
 

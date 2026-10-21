@@ -2337,6 +2337,8 @@ defmodule ForemanServer.ProjectionStore do
           branch: event.branch,
           base_ref: event.base_ref,
           cleanup: event.cleanup,
+          repo_id: event.repo_id,
+          primary?: is_nil(event.repo_id),
           last_event_at_ms: payload_event_at_ms(payload)
         }
 
@@ -2389,6 +2391,7 @@ defmodule ForemanServer.ProjectionStore do
           worktree_path: event.worktree_path,
           repo_path: event.repo_path,
           reason: event.reason,
+          repo_id: event.repo_id,
           last_event_at_ms: payload_event_at_ms(payload)
         }
 

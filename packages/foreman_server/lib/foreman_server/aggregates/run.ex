@@ -275,6 +275,11 @@ defmodule ForemanServer.Aggregates.Run do
           | base_branch: Aggregate.get(payload, :base_branch),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
+
+      # Events this binary does not know (written by a newer binary, e.g. a
+      # later multi-repo event type) must not crash replay of the run stream.
+      _ ->
+        state
     end
   end
 

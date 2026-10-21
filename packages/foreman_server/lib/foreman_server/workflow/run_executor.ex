@@ -720,7 +720,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp find_resumable_worktree(run_id) do
-    operation_id = "wt-" <> run_id
+    operation_id = Worktree.operation_id(run_id, nil)
     Enum.find(ProjectionStore.worktrees_for_run(run_id), &(&1.operation_id == operation_id))
   end
 
@@ -2470,7 +2470,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
            resolve_run_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
-         operation_id = "wt-" <> state.run_id,
+         operation_id = Worktree.operation_id(state.run_id, nil),
          worktree_path = run_worktree_path(project_id, state, spec),
          :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
          branch = render_worktree_template(branch_template(spec), state),
