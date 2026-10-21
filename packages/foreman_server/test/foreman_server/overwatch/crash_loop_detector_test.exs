@@ -63,6 +63,16 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
     end
   end
 
+  # Barrier replacing "sleep and hope": once the Tracker no longer holds a pid for the key
+  # it has handled the DOWN and already cast the notification to the detector, and one
+  # synchronous call to the detector then drains that cast (including any crash/pause
+  # dispatch it triggered), however slow the machine is.
+  defp await_down(tracker, detector, worker_id, run_id) do
+    wait_until(fn -> Tracker.pid_for(tracker, worker_id, run_id) == nil end, 5_000)
+    _ = CrashLoopDetector.status(detector)
+    :ok
+  end
+
   defp seed_run(run_id) do
     project_id = "project-#{run_id}"
 
@@ -123,7 +133,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         # Tie the lifetime of this pid to the previous one dying.
         Process.exit(pid, :kill)
         # Wait for Tracker to process DOWN and notify the detector.
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
         _ = round
       end
 
@@ -148,7 +158,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
       end
 
       status = CrashLoopDetector.status(detector)
@@ -170,7 +180,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         # Simulate the orphan reason by stopping the worker pid and
         # letting the supervisor's DOWN arrive with that reason.
         Process.exit(pid, reason)
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
       end
 
       status = CrashLoopDetector.status(detector)
@@ -217,7 +227,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
       end
 
       assert {worker_id, run_id} in CrashLoopDetector.status(detector).crashed
@@ -227,7 +237,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
       end
 
       assert read_worker_events(worker_id, run_id) |> count("WorkerCrashed") == 1
@@ -247,7 +257,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
       end
 
       assert {worker_id, run_id} in CrashLoopDetector.status(detector).paused
@@ -257,7 +267,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
         pid = spawn_worker()
         :ok = Tracker.register(tracker, worker_id, run_id, pid)
         Process.exit(pid, :kill)
-        Process.sleep(50)
+        await_down(tracker, detector, worker_id, run_id)
       end
 
       assert read_run_events(run_id) |> count("RunPaused") == 1
@@ -315,7 +325,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
 
       :sys.resume(tracker)
       assert {:error, :previous_generation_pending} = Task.await(register_task, 1_000)
-      Process.sleep(50)
+      await_down(tracker, detector, worker_id, run_id)
 
       history = CrashLoopDetector.restart_history(detector)
       assert history == %{}
@@ -349,7 +359,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
       :sys.resume(tracker)
 
       assert {:error, :previous_generation_pending} = Task.await(register_task, 1_000)
-      Process.sleep(50)
+      wait_until(fn -> Tracker.pid_for(tracker, worker_id, run_id) == nil end, 5_000)
 
       pid3 = spawn_worker()
       assert :ok = Tracker.register(tracker, worker_id, run_id, pid3)
