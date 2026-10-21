@@ -57,6 +57,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
   end
 
   setup do
+    :ok = ForemanServer.DispatcherQuiesce.suspend!()
     parent = self()
     boot_name = ForemanServer.Workflow.BootReconciliation
     real_pid = Process.whereis(boot_name)
