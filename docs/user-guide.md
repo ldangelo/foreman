@@ -540,6 +540,33 @@ config :foreman_server, :threads,
   sweep_interval_ms: 3_600_000   # sweep period (default one hour)
 ```
 
+### Project Overview
+
+`GET /api/projects/{project_id}/overview` (query `include_resolved=true|false`,
+default false; `resolved_limit` 0..200, default 20) answers "what needs me?".
+The body has `project_id`, `groups`, `counts`, `attention`, `tabs` and
+`generated_at`. `groups` has six string keys, each a list of thread cards
+(newest first): `ready_for_review` (PR open and merge gate pending, or a
+completed thread with a `met`/`partially_met` review and an open PR),
+`waiting_on_you` (pending approval or question, blocked/stuck, failed, PR
+conflict, plain pause, review `not_met` on an open PR), `working`, `landing`
+(merge approved, PR still open), `idle` and `resolved` (flag, PR merged or
+closed, cancelled). `attention` is `{needed, count, reasons}`: needed when
+`waiting_on_you` or `ready_for_review` is non-empty. An unknown project is
+`404 project_not_found`.
+
+`tabs` carries `pull_requests` (live), and `library` / `scheduled`, which read
+`{"available": false, "rows": []}` until those features register a tab provider.
+`GET /api/projects` and `GET /api/projects/{id}` gain `attention` and
+`attention_count`; the MCP read tool `foreman_overview` returns the same
+overview for one project, or one attention line per active project without
+`project_id`. Approval and question counts are zero until the approvals feature
+lands. When a PR merges, `Overview.MergeResolver` resolves its thread
+automatically (reason `pr_merged`; a thread you reopened after the merge stays
+open). **Merging remains an operator action** (`merge_approve`, then
+`run.pr.merge`): no overview or MCP surface can merge or approve; cards only
+carry the text hint `operator: foreman run approve-merge/merge`.
+
 ### Operator run dashboard
 
 Open `/dashboard/runs` with the same bearer token accepted by the browser dashboard guard: `Authorization: Bearer <token>` or `?token=<token>`. The route fails closed with `401 unauthorized` when the token is missing, wrong, or `:api_bearer_token` is unset. `/dashboard` remains the separate Jido live dashboard.
@@ -1031,7 +1058,7 @@ and behavior cannot diverge.
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
 `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`,
 `foreman_project_recommendations`, `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
-`foreman_thread_find`.
+`foreman_thread_find`, `foreman_overview`.
 The write-gated thread tools are `foreman_thread_stop` and
 `foreman_thread_steer`.
 

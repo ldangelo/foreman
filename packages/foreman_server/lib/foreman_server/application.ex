@@ -128,6 +128,7 @@ defmodule ForemanServer.Application do
         maybe_jobsite_boot_recovery_child() ++
         maybe_messaging_dispatcher_child() ++
         maybe_threads_children() ++
+        maybe_overview_children() ++
         maybe_review_children() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
@@ -218,6 +219,14 @@ defmodule ForemanServer.Application do
   defp maybe_threads_children do
     if Application.get_env(:foreman_server, :threads, [])[:idle_resolver] != false do
       [ForemanServer.Threads.IdleResolver]
+    else
+      []
+    end
+  end
+
+  defp maybe_overview_children do
+    if Application.get_env(:foreman_server, :overview, [])[:merge_resolver] != false do
+      [ForemanServer.Overview.MergeResolver]
     else
       []
     end

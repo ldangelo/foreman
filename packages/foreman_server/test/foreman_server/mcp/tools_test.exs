@@ -34,7 +34,10 @@ defmodule ForemanServer.MCP.ToolsTest do
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       works: %{},
       inbox_threads: %{},
-      jobsites: %{}
+      jobsites: %{},
+      pr_states: %{},
+      reviews: %{},
+      thread_flags: %{}
     }
 
     :sys.replace_state(ProjectionStore, fn _ -> Map.merge(base, overrides) end)
@@ -53,6 +56,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_thread_transcript",
                "foreman_thread_stop",
                "foreman_thread_steer",
+               "foreman_overview",
                "foreman_queue_status",
                "foreman_project_list",
                "foreman_project_get",
@@ -345,8 +349,7 @@ defmodule ForemanServer.MCP.ToolsTest do
     test "returns projects list" do
       replace_state(%{})
 
-      assert Tools.call_tool("foreman_project_list", %{}) ==
-               {:ok, ProjectionStore.list_projects()}
+      assert Tools.call_tool("foreman_project_list", %{}) == {:ok, []}
     end
   end
 
@@ -355,7 +358,10 @@ defmodule ForemanServer.MCP.ToolsTest do
       project = %{project_id: "proj-1", name: "Test Project"}
       replace_state(%{projects: %{"proj-1" => project}})
 
-      assert Tools.call_tool("foreman_project_get", %{project_id: "proj-1"}) == {:ok, project}
+      assert {:ok, result} = Tools.call_tool("foreman_project_get", %{project_id: "proj-1"})
+      assert Map.take(result, [:project_id, :name]) == project
+
+      assert %{attention: %{"needed" => false, "count" => 0}, attention_count: 0} = result
     end
 
     test "returns NOT_FOUND when not found" do

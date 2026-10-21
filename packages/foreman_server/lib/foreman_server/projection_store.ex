@@ -35,6 +35,7 @@ defmodule ForemanServer.ProjectionStore do
   alias ForemanServer.Events.{UsageRecorded, WorkerSessionBound, WorkerStderr, WorkerStdout}
   alias ForemanServer.Usage
 
+  @pr_fold_events ForemanServer.Overview.PrFold.events()
   @active_run_statuses ["awaiting_worker", "in_progress"]
 
   @spec start_link(term()) :: GenServer.on_start()
@@ -402,6 +403,43 @@ defmodule ForemanServer.ProjectionStore do
   @spec phases_for_run(String.t()) :: [map()]
   def phases_for_run(run_id) when is_binary(run_id) and run_id != "" do
     GenServer.call(__MODULE__, {:phases_for_run, run_id})
+  end
+
+  @typedoc """
+  Read state of a run's pull request and merge gate (E7-S1), folded from
+  `PrAssociated`, `PrReady`, `MergeGatePending/Approved`, `PrUpdated`,
+  `PrMerged`, `PrRetargeted` and `PrReset`. `failure_reason` is the run
+  projection's `RunFailed` reason. Keys are exactly these.
+  """
+  @type pr_state_view :: %{
+          run_id: String.t(),
+          pr_url: String.t() | nil,
+          pr_number: non_neg_integer() | nil,
+          pr_state: :open | :merged | :closed | :conflicted | nil,
+          head_sha: String.t() | nil,
+          base_branch: String.t() | nil,
+          merge_gate: :none | :pending | :approved,
+          merge_gate_at: integer() | nil,
+          pr_updated_at: integer() | nil,
+          failure_reason: String.t() | nil
+        }
+
+  @doc """
+  PR / merge-gate read state of one run, or nil when the run is unknown and has
+  no PR event. A run with no PR yet reads `pr_state: nil, merge_gate: :none`.
+  """
+  @spec pr_state(String.t()) :: pr_state_view() | nil
+  def pr_state(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:pr_state, run_id})
+  end
+
+  @doc """
+  `pr_state/1` for every run of a project, keyed by run id. One GenServer call;
+  O(runs).
+  """
+  @spec pr_states_for_project(String.t()) :: %{String.t() => pr_state_view()}
+  def pr_states_for_project(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:pr_states_for_project, project_id})
   end
 
   @doc "Return the PR association for a run_id, or :not_found."
@@ -862,6 +900,25 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:pr_state, run_id}, _from, state) do
+    run = Map.get(state.runs, run_id)
+    entry = Map.get(state.pr_states, run_id)
+
+    view = if run || entry, do: pr_state_view(run_id, run, entry)
+    {:reply, view, state}
+  end
+
+  @impl true
+  def handle_call({:pr_states_for_project, project_id}, _from, state) do
+    views =
+      for {run_id, %{project_id: ^project_id} = run} <- state.runs, into: %{} do
+        {run_id, pr_state_view(run_id, run, Map.get(state.pr_states, run_id))}
+      end
+
+    {:reply, views, state}
+  end
+
+  @impl true
   def handle_call({:pr_association, run_id}, _from, state) do
     case Map.get(state.pr_associations, run_id) do
       nil -> {:reply, {:error, :not_found}, state}
@@ -1149,6 +1206,7 @@ defmodule ForemanServer.ProjectionStore do
       tasks: %{},
       phases: %{},
       pr_associations: %{},
+      pr_states: %{},
       run_logs: %{},
       scheduler_intents: %{},
       subscribers: %{},
@@ -1965,6 +2023,7 @@ defmodule ForemanServer.ProjectionStore do
           Map.put(run, :pr_url, pr_url)
         end)
         |> Map.update!(:pr_associations, &Map.put(&1, run_id, association))
+        |> fold_pr_state("PrAssociated", payload)
 
       # AGENTS.md 5.3: a blank run_id or pr_url is malformed, not absent.
       # Projecting it would leave `pr_url: nil` on the run, indistinguishable
@@ -2629,7 +2688,29 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
+  # E7-S1: PR / merge-gate read state for the Overview. Pure fold in
+  # `Overview.PrFold`; it logs and skips malformed payloads, so replay survives.
+  defp apply_event_by_type(state, type, payload) when type in @pr_fold_events do
+    fold_pr_state(state, type, payload)
+  end
+
   defp apply_event_by_type(state, _type, _payload), do: state
+
+  defp pr_state_view(run_id, run, entry) do
+    failure_reason =
+      case run do
+        %{status: "failed", failure_reason: reason} when is_binary(reason) -> reason
+        _ -> nil
+      end
+
+    ForemanServer.Overview.PrFold.default_entry()
+    |> Map.merge(entry || %{})
+    |> Map.merge(%{run_id: run_id, failure_reason: failure_reason})
+  end
+
+  defp fold_pr_state(state, type, payload) do
+    Map.update(state, :pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
+  end
 
   defp append_phase_id_to_run(state, run_id, phase_id) do
     case Map.get(state.runs, run_id) do

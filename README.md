@@ -30,6 +30,7 @@ A thread is the operator-facing unit of work (a workflow run, `run:<id>`, or a j
 - HTTP: `GET /api/projects/:project_id/threads`, `GET /api/threads/:id`, `GET /api/threads/:id/transcript`, `GET /api/threads/:id/stream` (SSE), `POST /api/threads/:id/stop`, `POST /api/threads/:id/steer`, and the deterministic lookup `GET /api/projects/:project_id/threads/find?q=&external_id=&branch=&pr=`.
 - MCP: `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`, `foreman_thread_find` (read) and the write-gated `foreman_thread_stop`, `foreman_thread_steer`.
 - CLI: `foreman thread list|get|stop|steer|resolve|reopen`.
+- Overview: `GET /api/projects/:project_id/overview` groups a project's threads (ready for review / waiting on you / working / landing / idle / resolved) with counts, an attention flag and tab data; MCP `foreman_overview` (read-only); `attention` on project payloads. Merging stays operator-only.
 - Commands/events: `thread.resolve` / `thread.reopen` (`ThreadResolved` / `ThreadReopened`) and `run.steer` (`RunSteerQueued`, consumed by the system-only `run.steer.consume` -> `RunSteerConsumed`; deliberately not operator-allowlisted).
 - Config: `config :foreman_server, :threads, idle_resolver:, idle_resolve_after_days:, sweep_interval_ms:` (idle auto-resolve of terminal, PR-less threads).
 

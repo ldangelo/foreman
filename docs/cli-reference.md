@@ -690,6 +690,8 @@ Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and
 
 **Resolve / reopen.** `thread.resolve` and `thread.reopen` append `ThreadResolved` / `ThreadReopened` on `thread:<thread-id>`. Resolved threads are excluded from text lookup. Terminal threads without a PR are idle-resolved by `IdleResolver`, configured under `config :foreman_server, :threads` (`idle_resolver`, `idle_resolve_after_days`, `sweep_interval_ms`; see the user guide).
 
+**Overview.** There is no `foreman overview` CLI verb. `GET /api/projects/:project_id/overview[?include_resolved=true|false&resolved_limit=0..200]` (and the MCP read tool `foreman_overview`) groups threads into `ready_for_review`, `waiting_on_you`, `working`, `landing`, `idle`, `resolved` with `counts`, `attention` (`needed`, `count`, `reasons`) and `tabs` (`pull_requests` live; `library`/`scheduled` `available: false` until registered). Read-only: merging is still `merge_approve` then `run.pr.merge`, operator only.
+
 **Transcript caveats.** The workflow transcript is built from `run_logs`, which keep a bounded tail: when entries were dropped `omitted_entries` > 0 and `truncated` is true. Jobsite turns carry no timestamps (`at: null`, ordered by iteration) and jobsite threads have no operator turns, because jobsite resume prompts are not persisted as events.
 
 
