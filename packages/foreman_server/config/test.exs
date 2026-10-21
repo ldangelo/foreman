@@ -146,3 +146,9 @@ config :foreman_server, :review,
   capture: false,
   analysis: false,
   evaluator: ForemanServer.Review.Evaluator.Stub
+
+# The suite must never read or write the operator's ~/.foreman/secrets. The
+# directory does not exist unless a test creates it; tests that store secrets
+# point :dir at their own tmp_dir.
+config :foreman_server, :secret_store,
+  dir: Path.join(System.tmp_dir!(), "foreman-test-secrets-never-created")

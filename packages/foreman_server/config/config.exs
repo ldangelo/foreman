@@ -268,4 +268,10 @@ config :foreman_server, :review,
   max_comment_bytes: 8_000,
   max_gap_beads: 10
 
+# Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
+# Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
+config :foreman_server, :secret_store,
+  backend: ForemanServer.SecretStore.File,
+  dir: Path.join(System.user_home!(), ".foreman/secrets")
+
 import_config "#{config_env()}.exs"

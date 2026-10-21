@@ -18,13 +18,15 @@ defmodule ForemanServer.Jobsite.Agent do
           env: map(),
           provider_options: map(),
           binary: String.t() | nil,
-          approval_mode: :default | :prompt | :auto_edit | :auto_approve | nil
+          approval_mode: :default | :prompt | :auto_edit | :auto_approve | nil,
+          secrets: [String.t()]
         }
   defstruct [
     :provider,
     :model,
     :effort,
     env: %{},
+    secrets: [],
     provider_options: %{},
     binary: nil,
     approval_mode: nil

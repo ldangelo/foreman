@@ -63,7 +63,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
-  alias ForemanServer.WorkerEnvironment
   require Logger
 
   @command_phase_inbox_progress_system_prompt """
@@ -1143,36 +1142,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # the run sits in awaiting_worker forever (WorkerStarted is the only
   # transition trigger).
   defp prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record) do
-    # One snapshot of the registered project's `config.env` feeds both the
-    # delivered env and the redaction list, so they cannot disagree.
-    with {:ok, project_env} <- project_env(state),
-         :ok <- assert_no_reserved_project_env(project_env) do
+    # One resolution of the project's environment feeds both the delivered env
+    # and the redaction list, so they cannot disagree (E4-S1).
+    with {:ok, resolved} <- project_env(state) do
       build_agent_launch(
         state,
         phase_spec,
         index,
         phase_index,
         worktree_record,
-        project_env
+        resolved
       )
     end
   end
 
-  # `FOREMAN_*` is Foreman's own namespace: the artifact/run-id contract and
-  # keys Foreman emits only for some phases (`FOREMAN_BASE_BRANCH` is absent
-  # when no base branch resolves) must not be supplied by project config, or
-  # the agent receives a plausible but unverified value. A loud failure
-  # (AGENTS.md 5) rather than a silent strip; it runs before any worker
-  # launches. Broader reserved-variable policy belongs to the E4 environment
-  # record.
-  defp assert_no_reserved_project_env(project_env) do
-    case project_env |> Map.keys() |> Enum.filter(&String.starts_with?(&1, "FOREMAN_")) do
-      [] -> :ok
-      keys -> {:error, {:reserved_project_env_keys, Enum.sort(keys)}}
-    end
-  end
-
-  defp build_agent_launch(state, phase_spec, index, phase_index, worktree_record, project_env) do
+  defp build_agent_launch(state, phase_spec, index, phase_index, worktree_record, resolved) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
 
     prompt =
@@ -1195,8 +1179,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     foreman_env =
       foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-    # No key can collide: reserved `FOREMAN_*` project keys were rejected above.
-    env = Map.merge(project_env, foreman_env)
+    # `FOREMAN_*` always wins: `ProjectEnvironment.resolve/1` drops reserved
+    # names, and the run's own values are merged last regardless.
+    env = Map.merge(resolved.env, foreman_env)
 
     {:ok,
      %{
@@ -1224,7 +1209,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          project_id: project_id(state),
          task_id: task_id(state),
          env_map: env,
-         secrets: WorkerEnvironment.extract_secrets(project_env)
+         secrets: resolved.secrets
        ]
      }}
   end
@@ -1268,8 +1253,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # launch the agent with no env and no redaction secrets, silently.
   defp project_env(state) do
     case project_id(state) do
-      nil -> {:ok, %{}}
-      id when is_binary(id) and id != "" -> build_project_env(id)
+      nil -> {:ok, %{env: %{}, secrets: []}}
+      id when is_binary(id) and id != "" -> resolve_project_env(id)
       other -> {:error, {:invalid_project_id, other}}
     end
   end
@@ -1277,8 +1262,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # A project persisted before env validation can hold a value that cannot be
   # stringified (e.g. a map); `to_string/1` then raises. Only that conversion
   # error is converted, so the phase fails through the normal bounded path.
-  defp build_project_env(project_id) do
-    {:ok, WorkerEnvironment.build_env_map(project_id)}
+  defp resolve_project_env(project_id) do
+    {:ok, ForemanServer.ProjectEnvironment.resolve(project_id)}
   rescue
     Protocol.UndefinedError -> {:error, {:invalid_project_env, project_id}}
   end

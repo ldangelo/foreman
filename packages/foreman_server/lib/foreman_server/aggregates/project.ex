@@ -14,7 +14,8 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.Aggregate
   alias ForemanServer.RunSlots.Config
 
-  alias ForemanServer.Aggregates.Project.Settings
+  alias ForemanServer.Aggregates.Project.{Environment, Settings}
+  alias ForemanServer.ProjectEnvironment
 
   alias ForemanServer.Events.{
     ProjectPaused,
@@ -138,6 +139,7 @@ defmodule ForemanServer.Aggregates.Project do
     with {:ok, project_id} <- Aggregate.required_binary(project_id, :project_id),
          {:ok, path} <- Aggregate.required_binary(Aggregate.get(payload, :path), :path),
          :ok <- reject_removed_settings(payload),
+         :ok <- reject_environment_write(payload),
          :ok <- require_absent(state, project_id),
          :ok <- validate_status(Aggregate.get(payload, :status, "active")),
          {:ok, payload} <-
@@ -159,6 +161,7 @@ defmodule ForemanServer.Aggregates.Project do
     with {:ok, project_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
          :ok <- reject_removed_settings(payload),
+         :ok <- reject_environment_write(payload),
          :ok <- reject_status_edit(payload),
          :ok <- require_exists(state, project_id),
          {:ok, payload} <-
@@ -171,6 +174,31 @@ defmodule ForemanServer.Aggregates.Project do
          stream_id: "project:#{project_id}",
          event_type: "ProjectUpdated",
          payload: payload
+       }}
+    end
+  end
+
+  # The environment record (vars, setup script, network policy) is written ONLY
+  # by this operator-allowlisted command: `setup_script` is arbitrary code run
+  # on the server host, and `project.update` is also what automation (E15's
+  # coordinator) uses. Keys absent from the payload keep their stored value; a
+  # present `setup_script: nil` clears the script. A project with only legacy
+  # flat env gets those vars ported into `vars` unless the payload sets `vars`.
+  def handle_command(%State{} = state, %{type: "project.environment.set", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- reject_archived(state, project_id),
+         {:ok, record} <- environment_record(state, payload) do
+      {:ok,
+       %{
+         stream_id: "project:#{project_id}",
+         event_type: "ProjectUpdated",
+         payload: %{
+           project_id: project_id,
+           task_provider: nil,
+           config: %{"environment" => record}
+         }
        }}
     end
   end
@@ -480,6 +508,29 @@ defmodule ForemanServer.Aggregates.Project do
     if Map.has_key?(payload, :default_branch) or Map.has_key?(payload, "default_branch"),
       do: {:error, {:setting_removed, :default_branch}},
       else: :ok
+  end
+
+  defp reject_environment_write(payload) do
+    config = Aggregate.get(payload, :config, %{})
+
+    if has_key?(payload, :environment) or (is_map(config) and has_key?(config, :environment)),
+      do: {:error, {:setting_not_editable, :environment}},
+      else: :ok
+  end
+
+  defp has_key?(map, key), do: Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))
+
+  defp environment_record(%State{config: config}, payload) do
+    base = ProjectEnvironment.from_config(config)
+
+    overlay =
+      for {name, key} <- [{"vars", :vars}, {"setup_script", :setup_script}, {"network", :network}],
+          has_key?(payload, key),
+          into: %{} do
+        {name, Aggregate.get(payload, key)}
+      end
+
+    Environment.normalize(Map.merge(base, overlay))
   end
 
   defp update_health(%State{} = state, payload) do

@@ -244,7 +244,7 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
              provider: agent.provider,
              prompt: prompt,
              env_map: agent.env || %{},
-             secrets: Keyword.get(opts, :secrets, [])
+             secrets: Keyword.get(opts, :secrets, agent.secrets)
            ]
            |> Enum.reject(fn {_k, v} -> is_nil(v) end)
        }}

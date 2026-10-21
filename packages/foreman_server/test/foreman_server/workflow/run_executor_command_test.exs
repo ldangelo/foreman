@@ -597,28 +597,65 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
-  test "a project config.env key in the FOREMAN_ namespace fails the phase before any worker launches" do
-    # `FOREMAN_BASE_BRANCH` is the sharp case: this repo has no resolvable
-    # base branch, so Foreman emits no such key and a project-supplied one
-    # would reach the agent as an unverified base branch.
-    %{run_id: run_id, phase_id: phase_id} =
+  test "a legacy project config.env key in the FOREMAN_ namespace is dropped and Foreman's value wins" do
+    # Reserved names are dropped at resolve time (a project value would reach
+    # the agent as plausible but unverified); the launch still happens and the
+    # run's own value wins.
+    %{run_id: run_id} =
       run_plan_capture_phase!(
         write_paths: ["docs/PRD/PRD-2026-33333333-reserved-env.md"],
-        expect_launch?: false,
         project_config: %{
-          env: %{"FOO" => "bar", "FOREMAN_BASE_BRANCH" => "evil", "FOREMAN_RUN_ID" => "evil"}
+          env: %{"FOO" => "bar", "FOREMAN_UNEMITTED" => "evil", "FOREMAN_RUN_ID" => "evil"}
         }
       )
 
-    failure_reason = await_phase_failure!(phase_id)
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
 
-    assert failure_reason =~ "reserved_project_env_keys"
-    assert failure_reason =~ "FOREMAN_BASE_BRANCH"
-    assert failure_reason =~ "FOREMAN_RUN_ID"
-    refute failure_reason =~ "FOO"
-    refute_received {:adapter_execute, _, _}
+    assert {:ok, worker_state} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
 
-    await_run_failure!(run_id)
+    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
+
+    assert delivered["FOO"] == "bar"
+    assert delivered["FOREMAN_RUN_ID"] == run_id
+    # A reserved name Foreman itself does not emit must not leak through either.
+    refute Map.has_key?(delivered, "FOREMAN_UNEMITTED")
+
+    await_run_completed!(run_id)
+  end
+
+  test "environment record vars and secret-store values reach the worker; secrets are redacted" do
+    dir = Path.join(System.tmp_dir!(), unique_id("secrets"))
+    previous = Application.get_env(:foreman_server, :secret_store)
+    Application.put_env(:foreman_server, :secret_store, Keyword.put(previous, :dir, dir))
+
+    on_exit(fn ->
+      Application.put_env(:foreman_server, :secret_store, previous)
+      File.rm_rf!(dir)
+    end)
+
+    %{run_id: run_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-55555555-env-record.md"],
+        environment: %{
+          vars: %{"NPM_REGISTRY" => "https://registry.example"}
+        },
+        secrets: %{"DEPLOY_PASSPHRASE" => "hunter2-value-zz"}
+      )
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
+
+    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
+
+    assert delivered["NPM_REGISTRY"] == "https://registry.example"
+    assert delivered["DEPLOY_PASSPHRASE"] == "hunter2-value-zz"
+    assert delivered["FOREMAN_RUN_ID"] == run_id
+    assert "hunter2-value-zz" in worker_state.secrets
+
+    await_run_completed!(run_id)
   end
 
   test "a configured project secret is redacted from the persisted WorkerStdout event" do
@@ -1755,7 +1792,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       workflow_snapshot,
       database_path,
       repo_dir,
-      project_config
+      project_config,
+      Keyword.take(opts, [:environment, :secrets])
     )
 
     expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, _opts ->
@@ -1794,6 +1832,21 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       do: assert_receive({:adapter_execute, _prompt, _context}, @poll_timeout_ms)
 
     %{run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
+  end
+
+  defp await_run_completed!(run_id) do
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
   defp await_phase_failure!(phase_id) do
@@ -1842,7 +1895,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
          workflow_snapshot,
          database_path,
          project_path,
-         project_config \\ %{}
+         project_config \\ %{},
+         environment_opts \\ []
        ) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,
@@ -1854,6 +1908,20 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         "config" => %{"database_path" => database_path}
       }
     })
+
+    # The environment record and secrets are written only through their own
+    # commands (E4): project.register/update reject them.
+    if environment = Keyword.get(environment_opts, :environment) do
+      dispatch_system!(
+        "project.environment.set",
+        "project:#{project_id}",
+        Map.put(environment, :project_id, project_id)
+      )
+    end
+
+    for {name, value} <- Keyword.get(environment_opts, :secrets, %{}) do
+      {:ok, _} = ForemanServer.ProjectSecrets.set(project_id, name, value, "test")
+    end
 
     :ok =
       TaskProviderRegistry.register_for_project(project_id, BeadsAdapter, %{

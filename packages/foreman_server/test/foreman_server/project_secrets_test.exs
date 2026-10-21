@@ -1,0 +1,120 @@
+defmodule ForemanServer.ProjectSecretsTest do
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureLog
+
+  alias ForemanServer.{CommandRouter, EventStore, ProjectionStore, ProjectSecrets}
+  alias ForemanServer.ProjectEnvironment
+  alias ForemanServer.SecretStore.Error
+
+  @moduletag :tmp_dir
+  @value "zq-very-secret-value-4711"
+
+  setup %{tmp_dir: tmp_dir} do
+    previous = Application.get_env(:foreman_server, :secret_store)
+    Application.put_env(:foreman_server, :secret_store, Keyword.put(previous, :dir, tmp_dir))
+    on_exit(fn -> Application.put_env(:foreman_server, :secret_store, previous) end)
+
+    project_id = "project-#{Elixir.EventStore.UUID.uuid4()}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{project_id: project_id, path: "/tmp/#{project_id}", config: %{}},
+        aggregate_id: "project:#{project_id}"
+      })
+
+    %{project_id: project_id}
+  end
+
+  test "set records name+version only; versions increase; unset removes the name", %{
+    project_id: id
+  } do
+    assert {:ok, %{name: "API_TOKEN", version: 1}} =
+             ProjectSecrets.set(id, "API_TOKEN", @value, "t")
+
+    assert {:ok, %{version: 2}} = ProjectSecrets.set(id, "API_TOKEN", @value <> "2", "t")
+
+    assert [%{name: "API_TOKEN", version: 2, updated_at: at}] =
+             ProjectionStore.project_secret_names(id)
+
+    assert is_binary(at)
+
+    assert {:ok, %{name: "API_TOKEN"}} = ProjectSecrets.unset(id, "API_TOKEN", "t")
+    assert [] = ProjectionStore.project_secret_names(id)
+    assert {:error, %Error{code: :secret_not_found}} = ProjectSecrets.unset(id, "API_TOKEN")
+
+    # A re-set after unset continues the version sequence.
+    assert {:ok, %{version: 4}} = ProjectSecrets.set(id, "API_TOKEN", @value, "t")
+  end
+
+  test "an unknown project cannot receive a secret and nothing is written" do
+    assert {:error, {:not_found, :project, "ghost"}} =
+             ProjectSecrets.set("ghost", "API_TOKEN", @value)
+
+    assert {:ok, []} = ForemanServer.SecretStore.names("ghost")
+  end
+
+  test "leakage audit: the value appears in no event, projection, log or return value", %{
+    project_id: id
+  } do
+    log =
+      capture_log(fn ->
+        assert {:ok, result} = ProjectSecrets.set(id, "API_TOKEN", @value, "t")
+        refute inspect(result) =~ @value
+        assert %{env: %{"API_TOKEN" => @value}, secrets: secrets} = ProjectEnvironment.resolve(id)
+        assert @value in secrets
+      end)
+
+    refute log =~ @value
+
+    {:ok, events} = EventStore.read_stream_forward("project_secret:#{id}", 0, 100)
+    assert [%{event_type: "ProjectSecretSet"}] = events
+    refute inspect(events) =~ @value
+
+    state = :sys.get_state(ProjectionStore)
+    refute inspect(state, limit: :infinity, printable_limit: :infinity) =~ @value
+  end
+
+  test "resolve merges secrets over vars and feeds the redaction list; secret wins on name clash",
+       %{
+         project_id: id
+       } do
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.environment.set",
+        payload: %{project_id: id, vars: %{"REGION" => "us", "DEPLOY_KEY_NAME" => "from-vars"}},
+        aggregate_id: "project:#{id}"
+      })
+
+    {:ok, _} = ProjectSecrets.set(id, "DEPLOY_KEY_NAME", @value, "t")
+
+    assert %{env: env, secrets: secrets} = ProjectEnvironment.resolve(id)
+    assert env == %{"REGION" => "us", "DEPLOY_KEY_NAME" => @value}
+    assert secrets == [@value]
+  end
+
+  test "an unavailable secret store degrades to vars-only with a warning that has no value", %{
+    project_id: id,
+    tmp_dir: tmp_dir
+  } do
+    {:ok, _} = ProjectSecrets.set(id, "API_TOKEN", @value, "t")
+    blocker = Path.join(tmp_dir, "blocker")
+    File.write!(blocker, "x")
+    previous = Application.get_env(:foreman_server, :secret_store)
+
+    Application.put_env(
+      :foreman_server,
+      :secret_store,
+      Keyword.put(previous, :dir, Path.join(blocker, "sub"))
+    )
+
+    log =
+      capture_log(fn ->
+        assert %{env: %{}, secrets: []} = ProjectEnvironment.resolve(id)
+      end)
+
+    assert log =~ "secret store unavailable"
+    refute log =~ @value
+  end
+end

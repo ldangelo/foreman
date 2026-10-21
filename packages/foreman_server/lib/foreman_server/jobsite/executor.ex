@@ -171,6 +171,7 @@ defmodule ForemanServer.Jobsite.Executor do
   defp build_spec(_jobsite_id, opts) do
     with :ok <- Options.validate(opts),
          {:ok, agent} <- fetch(opts, :agent, :prompt_source_missing, "agent"),
+         agent = apply_project_environment(agent, Keyword.get(opts, :project_id)),
          {:ok, {sandbox_provider, sandbox_config}} <-
            fetch(opts, :sandbox, :sandbox_create_failed, "sandbox"),
          :ok <- Hooks.validate(Keyword.get(opts, :hooks)) do
@@ -197,6 +198,21 @@ defmodule ForemanServer.Jobsite.Executor do
        }}
     end
   end
+
+  # The project's resolved env (vars + secret store) is the BASE of the agent
+  # env; the spec's own `agent.env` (validated against the caller allowlist by
+  # `Jobsite.Spec`) overrides it, so a caller never needs to allowlist project
+  # keys and can never inject keys the allowlist forbids. `FOREMAN_*` names are
+  # reserved: `ProjectEnvironment.resolve/1` already dropped them from the base.
+  # The resolved secret values ride on `agent.secrets` (never persisted:
+  # `start_payload/2` lists agent fields explicitly) so every runner redacts them.
+  defp apply_project_environment(agent, project_id)
+       when is_binary(project_id) and project_id != "" do
+    %{env: env, secrets: secrets} = ForemanServer.ProjectEnvironment.resolve(project_id)
+    %{agent | env: Map.merge(env, agent.env || %{}), secrets: secrets}
+  end
+
+  defp apply_project_environment(agent, _project_id), do: agent
 
   defp fetch(opts, key, code, label) do
     case Keyword.fetch(opts, key) do
@@ -643,6 +659,7 @@ defmodule ForemanServer.Jobsite.Executor do
   defp resume_from_state(jobsite_id, agg_state, opts) do
     with {:ok, sandbox_provider} <- Sandboxes.resolve(agg_state.sandbox_provider),
          {:ok, agent} <- agent_from_state(agg_state.agent) do
+      agent = apply_project_environment(agent, agg_state.project_id)
       sandbox_config = agg_state.sandbox_config || %{}
 
       worktree = %Worktree{

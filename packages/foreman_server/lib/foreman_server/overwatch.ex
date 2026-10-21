@@ -29,7 +29,6 @@ defmodule ForemanServer.Overwatch do
   use Supervisor
 
   alias ForemanServer.Overwatch.{Tracker, WorkerSupervisor}
-  alias ForemanServer.WorkerEnvironment
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -121,7 +120,7 @@ defmodule ForemanServer.Overwatch do
     prompt_path = Keyword.fetch!(opts, :prompt_path)
 
     project_id = Keyword.get(opts, :project_id) || project_id_from_phase(phase)
-    env_map = build_launch_env(project_id, opts)
+    {env_map, resolved_secrets} = build_launch_env(project_id, opts)
 
     launch_opts =
       [
@@ -147,10 +146,10 @@ defmodule ForemanServer.Overwatch do
           :prompt,
           :task_id,
           :driver_opts,
-          :result_recipient,
-          :secrets
+          :result_recipient
         ])
       )
+      |> Keyword.put(:secrets, Keyword.get(opts, :secrets, resolved_secrets))
 
     case WorkerSupervisor.start_worker(launch_opts) do
       {:ok, launch_pid} ->
@@ -178,13 +177,19 @@ defmodule ForemanServer.Overwatch do
     end
   end
 
-  defp build_launch_env(nil, _opts), do: %{}
+  # The caller's `:env_map` wins (RunExecutor resolved it once, together with
+  # its redaction list). Without one the project's environment is resolved here
+  # so the fallback path redacts exactly what it delivers.
+  defp build_launch_env(nil, _opts), do: {%{}, []}
 
   defp build_launch_env(project_id, opts) do
     case Keyword.get(opts, :env_map) do
-      nil -> WorkerEnvironment.build_env_map(project_id)
-      map when is_map(map) -> map
-      other -> other
+      nil ->
+        %{env: env, secrets: secrets} = ForemanServer.ProjectEnvironment.resolve(project_id)
+        {env, secrets}
+
+      other ->
+        {other, []}
     end
   end
 
