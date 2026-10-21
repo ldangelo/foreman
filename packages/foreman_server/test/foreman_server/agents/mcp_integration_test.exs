@@ -10,8 +10,8 @@ defmodule ForemanServer.Agents.McpIntegrationTest do
   }
 
   test "tool sync across multiple servers" do
-    {:ok, _sync} = McpToolSync.start_link()
-    {:ok, _pool} = McpClientPool.start_link()
+    start_supervised!(McpToolSync)
+    start_supervised!(McpClientPool)
 
     assert :ok = McpToolSync.sync(["srv-a", "srv-b"])
     assert is_list(McpToolSync.tools_for("srv-a"))
@@ -28,7 +28,7 @@ defmodule ForemanServer.Agents.McpIntegrationTest do
   end
 
   test "allowlist denies unknown tool" do
-    {:ok, _pid} = McpAllowlist.start_link()
+    start_supervised!(McpAllowlist)
     :ok = McpAllowlist.add("git")
 
     assert McpAllowlist.permit?("git")
