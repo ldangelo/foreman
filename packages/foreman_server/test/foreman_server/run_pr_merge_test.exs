@@ -15,11 +15,6 @@ defmodule ForemanServer.RunPrMergeTest do
   @approver "github:ldangelo"
 
   setup do
-    case GenServer.whereis(MergeGate) do
-      nil -> {:ok, _pid} = MergeGate.start_link()
-      _pid -> :ok
-    end
-
     MergeGate.clear()
 
     run_id = "run-pr-merge-#{System.unique_integer([:positive])}"
