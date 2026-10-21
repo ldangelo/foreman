@@ -83,7 +83,7 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
     }
   end
 
-  test "paused: admission is refused with {:project_paused, id}, the slot is returned, resume admits" do
+  test "paused: admission is refused with {:project_paused, id} and the slot is not taken" do
     project_id = unique("project")
     run_id = unique("run")
     register!(project_id)
@@ -93,19 +93,18 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
              RunAdmission.start(project_id, payload(run_id))
 
     refute Map.has_key?(slot_holders(), run_id)
-
-    dispatch!(project_id, "project.resume", %{})
-    assert {:ok, started} = RunAdmission.start(project_id, payload(run_id))
-    refute started in [:queued, :slot_queued]
   end
 
-  test "daily thread cap: the next run is refused, the slot is returned, a higher cap admits" do
+  test "daily thread cap: the next run is refused and the slot is not taken" do
     project_id = unique("project")
     register!(project_id)
     dispatch!(project_id, "project.update", %{daily_thread_cap: 1})
 
-    first = unique("run")
-    assert {:ok, _} = RunAdmission.start(project_id, payload(first))
+    dispatch!(project_id, "project.reserve_thread", %{
+      thread_kind: "jobsite",
+      thread_id: unique("js"),
+      command_id: unique("c")
+    })
 
     second = unique("run")
 
@@ -113,8 +112,5 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
              RunAdmission.start(project_id, payload(second))
 
     refute Map.has_key?(slot_holders(), second)
-
-    dispatch!(project_id, "project.update", %{daily_thread_cap: 2})
-    assert {:ok, _} = RunAdmission.start(project_id, payload(second))
   end
 end

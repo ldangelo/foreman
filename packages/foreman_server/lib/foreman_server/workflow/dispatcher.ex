@@ -201,7 +201,13 @@ defmodule ForemanServer.Workflow.Dispatcher do
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp readmit_deferred(envelope, state) do
-    payload = unwrap_data(envelope)
+    # The recorded event's data is a typed struct (no Access behaviour).
+    payload =
+      case unwrap_data(envelope) do
+        %_{} = struct -> Map.from_struct(struct)
+        map -> map
+      end
+
     project_id = payload["project_id"] || payload[:project_id]
 
     if is_binary(project_id) and project_id != "" do

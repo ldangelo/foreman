@@ -89,6 +89,18 @@ defmodule ForemanServer.Workflow.DispatcherProjectResumeTest do
     assert_received {:admitted, "run-1"}
   end
 
+  test "a recorded event carrying a typed struct (the real wire shape) is handled" do
+    expect_deferred([], %{})
+
+    envelope = %{
+      event_type: "ProjectResumed",
+      data: %ForemanServer.Events.ProjectResumed{project_id: "proj-resume"}
+    }
+
+    assert {:noreply, _} = Dispatcher.handle_info({:projection_event, envelope}, %{})
+    assert :meck.called(ForemanServer.ProjectionStore, :deferred_task_ids, ["proj-resume"])
+  end
+
   test "a project with nothing deferred admits nothing" do
     expect_deferred([], %{})
     :meck.expect(ForemanServer.RunAdmission, :start, fn _, _ -> flunk("must not admit") end)
