@@ -135,7 +135,7 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"--thread-model", "m1", "--thread-effort", "high",
 		"--coordinator-provider", "claude", "--coordinator-model", "m2", "--coordinator-effort", "low",
 		"--max-concurrent-runs", "4", "--daily-thread-cap", "20",
-		"--coordinator-propose-before-start=false", "--coordinator-max-active-threads", "7", "--coordinator-reuse-threads",
+		"--coordinator-propose-before-start=false", "--coordinator-max-active-threads", "7", "--coordinator-reuse-threads", "--notification-preference", "every_turn",
 		"--clear", "goal", "--clear", "thread_model",
 		"p1")
 	if err != nil {
@@ -147,7 +147,8 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"coordinator_provider": "claude", "coordinator_model": "m2", "coordinator_effort": "low",
 		"max_concurrent_runs": float64(4), "daily_thread_cap": float64(20),
 		"coordinator_propose_before_start": false, "coordinator_max_active_threads": float64(7), "coordinator_reuse_threads": true,
-		"cleared_settings": []any{"goal", "thread_model"},
+		"notification_preference": "every_turn",
+		"cleared_settings":        []any{"goal", "thread_model"},
 	}
 	if !reflect.DeepEqual(env.Payload, want) {
 		t.Fatalf("payload = %v\nwant     %v", env.Payload, want)

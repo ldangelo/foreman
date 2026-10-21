@@ -32,11 +32,13 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
   # would validate here and then fail the launch.
   @efforts ~w(low medium high)
+  # Notification preference (E10): every turn, only when blocked, or off.
+  @notification_preferences ~w(every_turn blocked_only off)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
            coordinator_effort max_concurrent_runs daily_thread_cap
            coordinator_propose_before_start coordinator_max_active_threads
-           coordinator_reuse_threads)a
+           coordinator_reuse_threads notification_preference)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -56,6 +58,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_propose_before_start
           | :coordinator_max_active_threads
           | :coordinator_reuse_threads
+          | :notification_preference
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -74,6 +77,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:coordinator_max_active_threads_invalid, term(), Range.t()}
           | {:coordinator_propose_before_start_invalid, term()}
           | {:coordinator_reuse_threads_invalid, term()}
+          | {:notification_preference_invalid, term(), [String.t()]}
           | {:unknown_setting, String.t()}
 
   @doc "Maximum characters of project instructions (`String.length/1`)."
@@ -87,6 +91,10 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @doc "Efforts accepted for thread/coordinator effort settings."
   @spec efforts() :: [String.t()]
   def efforts, do: @efforts
+
+  @doc "Values accepted for the `notification_preference` setting."
+  @spec notification_preferences() :: [String.t()]
+  def notification_preferences, do: @notification_preferences
 
   @doc "Setting keys, in declaration order."
   @spec keys() :: [key()]
@@ -219,6 +227,19 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:coordinator_max_active_threads, value),
     do: ranged(value, :coordinator_max_active_threads_invalid, @max_active_threads_range)
+
+  defp validate(:notification_preference, nil), do: {:ok, nil}
+
+  defp validate(:notification_preference, value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "" -> {:ok, nil}
+      pref when pref in @notification_preferences -> {:ok, pref}
+      _ -> {:error, {:notification_preference_invalid, value, @notification_preferences}}
+    end
+  end
+
+  defp validate(:notification_preference, value),
+    do: {:error, {:notification_preference_invalid, value, @notification_preferences}}
 
   defp boolean(nil, _name), do: {:ok, nil}
   defp boolean(value, _name) when is_boolean(value), do: {:ok, value}

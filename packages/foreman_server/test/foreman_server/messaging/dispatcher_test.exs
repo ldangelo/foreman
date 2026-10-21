@@ -146,5 +146,48 @@ defmodule ForemanServer.Messaging.DispatcherTest do
 
       assert {:ok, %{token: "t-token", chat_id: "chat-1"}} = Dispatcher.destination(notification)
     end
+
+    test "a slack recipient is a label and never replaces the configured webhook URL" do
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :slack,
+        slack: [webhook_url: "https://hooks.slack.com/services/T/B/CONFIGURED"]
+      )
+
+      {:ok, notification} =
+        Notification.normalize(%{@notification | provider: :slack, recipient: "default"})
+
+      assert {:ok, %{webhook_url: "https://hooks.slack.com/services/T/B/CONFIGURED"}} =
+               Dispatcher.destination(notification)
+
+      {:ok, labelled} =
+        Notification.normalize(%{@notification | provider: :slack, recipient: "ops-channel"})
+
+      assert {:ok, %{webhook_url: "https://hooks.slack.com/services/T/B/CONFIGURED"}} =
+               Dispatcher.destination(labelled)
+    end
+
+    test "the default telegram recipient keeps the configured chat; a webhook ignores the recipient" do
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :telegram,
+        telegram: [token: "t-token", chat_id: "config-chat"]
+      )
+
+      {:ok, default} = Notification.normalize(%{@notification | recipient: "default"})
+      assert {:ok, %{chat_id: "config-chat"}} = Dispatcher.destination(default)
+
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :webhook,
+        webhook: [url: "https://example.test/hook"]
+      )
+
+      {:ok, webhook} =
+        Notification.normalize(%{@notification | provider: :webhook, recipient: "anything"})
+
+      assert {:ok, %{url: "https://example.test/hook", provider: :webhook}} =
+               Dispatcher.destination(webhook)
+    end
   end
 end

@@ -59,6 +59,7 @@ config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
 config :foreman_server, :start_project_provider_projector?, false
 config :foreman_server, :start_messaging_dispatcher?, false
+config :foreman_server, :start_notifier?, false
 # Threads.IdleResolver sweeps real projections; tests start it explicitly.
 config :foreman_server, :threads, idle_resolver: false
 # Overview.MergeResolver resolves real threads; tests start it explicitly.

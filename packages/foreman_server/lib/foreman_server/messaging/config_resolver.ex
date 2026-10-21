@@ -3,7 +3,7 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   alias ForemanServer.Messaging.Config
 
-  @providers [:telegram, :slack]
+  @providers [:telegram, :slack, :webhook]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
   @known_keys [
     :enabled,
@@ -12,7 +12,8 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     :dedupe_window_ms,
     :run_update_rate_limit_ms,
     :telegram,
-    :slack
+    :slack,
+    :webhook
   ]
   @defaults %{
     enabled: false,
@@ -21,7 +22,8 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     dedupe_window_ms: 300_000,
     run_update_rate_limit_ms: 300_000,
     telegram: %{},
-    slack: %{}
+    slack: %{},
+    webhook: %{}
   }
 
   @spec resolve(keyword()) :: {:ok, Config.t()} | {:error, term()}
@@ -137,6 +139,43 @@ defmodule ForemanServer.Messaging.ConfigResolver do
     with {:ok, cfg} <- provider_config(raw, :slack, :slack_destination),
          {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination) do
       {:ok, %{provider: :slack, webhook_url: webhook_url}}
+    end
+  end
+
+  # Generic outbound webhook: `url` is required (a literal http(s) URL or a
+  # `{:system, env}` reference); `secret` is optional and, when present, signs
+  # the JSON body (HMAC-SHA256 in `x-foreman-signature`). Both live only in
+  # config, never in events: notifications carry the provider name and a
+  # recipient label, not the destination.
+  defp destination(raw, :webhook) do
+    with {:ok, cfg} <- provider_config(raw, :webhook, :webhook_destination),
+         {:ok, url} <- required_secret_ref(cfg, :url, :webhook_destination),
+         :ok <- http_url(url),
+         {:ok, secret} <- optional_secret_ref(cfg, :secret, :webhook_destination) do
+      {:ok, %{provider: :webhook, url: url, secret: secret}}
+    end
+  end
+
+  defp http_url({:system, _name}), do: :ok
+
+  defp http_url(url) do
+    if String.starts_with?(url, ["http://", "https://"]),
+      do: :ok,
+      else: {:error, {:invalid_field, :webhook_destination, :url, url}}
+  end
+
+  defp optional_secret_ref(map, key, error_key) do
+    case fetch_field(map, key) do
+      :absent ->
+        {:ok, nil}
+
+      {:present, nil} ->
+        {:ok, nil}
+
+      {:present, value} ->
+        if valid_secret_ref?(value),
+          do: {:ok, value},
+          else: {:error, {:invalid_field, error_key, key, value}}
     end
   end
 

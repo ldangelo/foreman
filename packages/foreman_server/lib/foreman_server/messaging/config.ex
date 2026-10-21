@@ -20,7 +20,7 @@ defmodule ForemanServer.Messaging.Config do
 
   @type t :: %__MODULE__{
           enabled?: boolean(),
-          provider: :telegram | :slack,
+          provider: :telegram | :slack | :webhook,
           event_classes: [atom()],
           dedupe_window_ms: non_neg_integer(),
           run_update_rate_limit_ms: non_neg_integer(),
