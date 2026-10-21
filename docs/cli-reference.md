@@ -1269,8 +1269,11 @@ system facts, and activity is heartbeat/liveness data.
 
 `foreman_run_status` returns a bounded projection DTO with `run_id`, `status`,
 `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`,
-`started_at_ms`, `last_event_at_ms`, and `failure_reason`; it does not scrape
-logs or raw events.
+`started_at_ms`, `last_event_at_ms`, `failure_reason`, `provider_session_id`
+(latest provider-reported session id, or `null`), and `provider_sessions` (ordered
+list of `{worker_id, provider, model, provider_session_id}`, empty when none); it
+does not scrape logs or raw events. `foreman_run_get` returns the same two fields
+in its full projection.
 
 `foreman_task_list` accepts optional `project_id`, canonical `status` (`open`,
 `ready`, `in_progress`, `blocked`, `closed`, `failed`), `limit` (default 100,

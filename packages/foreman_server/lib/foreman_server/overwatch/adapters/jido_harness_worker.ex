@@ -36,7 +36,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
-  alias ForemanServer.Overwatch.{WorkerLogPolicy, WorkerProtocol}
+  alias ForemanServer.Overwatch.{RunMeta, WorkerLogPolicy, WorkerProtocol}
   alias ForemanServer.RunControl
 
   @default_heartbeat_interval_ms 5_000
@@ -122,10 +122,10 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     task =
       Task.async(fn ->
-        {result, log_events} =
+        {result, log_events, meta} =
           run_agent(state.run_id, state.provider, state.prompt, state.driver_opts)
 
-        send(parent_pid, {:agent_done, result, log_events})
+        send(parent_pid, {:agent_done, result, log_events, meta})
       end)
 
     Process.monitor(task.pid)
@@ -139,8 +139,13 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     {:noreply, state}
   end
 
-  def handle_info({:agent_done, result, log_events}, state) do
+  def handle_info({:agent_done, result, log_events, meta}, state) do
     state = emit_worker_logs(state, log_events)
+    # Ordering matters: the session id is bound BEFORE `:worker_exited` so the
+    # worker stream reads in lifecycle order and `Worker.allow_after_terminal/2`
+    # (which rejects every non-terminal type on a sealed stream) can never
+    # refuse it.
+    emit_session_bound(state, meta)
     _ = WorkerProtocol.emit(:worker_exited, %{worker_id: state.worker_id, run_id: state.run_id})
 
     if state.result_recipient do
@@ -188,7 +193,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   # site that reads it, shared with the non-Overwatch adapter so the two
   # cannot drift.
   @spec run_agent(String.t(), atom(), String.t(), keyword()) ::
-          {{:ok, String.t()} | ErrorCodes.code(), [map()]}
+          {{:ok, String.t()} | ErrorCodes.code(), [map()], RunMeta.t() | nil}
   defp run_agent(run_id, provider, prompt, driver_opts) do
     driver_opts =
       Keyword.put(driver_opts, :on_start, fn harness_run_id ->
@@ -197,7 +202,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     case Driver.run(provider, prompt, driver_opts) do
       {:ok, %Jido.Harness.RunResult{} = run_result} ->
-        {normalize_result(run_result), log_events(run_result)}
+        {normalize_result(run_result), log_events(run_result), build_meta(provider, run_result)}
 
       {:ok, detached} when is_map(detached) ->
         harness_run_id = detached[:run_id] || detached["run_id"]
@@ -205,16 +210,72 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
         case Driver.await(harness_run_id, timeout) do
           {:ok, %Jido.Harness.RunResult{} = run_result} ->
-            {normalize_result(run_result), log_events(run_result)}
+            {normalize_result(run_result), log_events(run_result),
+             build_meta(provider, run_result)}
 
           {:error, reason} ->
-            {JidoHarnessAdapter.normalize_raw_error(reason), []}
+            {JidoHarnessAdapter.normalize_raw_error(reason), [], nil}
         end
 
       {:error, reason} ->
-        {JidoHarnessAdapter.normalize_raw_error(reason), []}
+        {JidoHarnessAdapter.normalize_raw_error(reason), [], nil}
     end
   end
+
+  # Provider-reported facts that `normalize_result/1` discards. Built from the
+  # RunResult directly so a FAILED run still yields its session id: a failed
+  # run is exactly the one a "fix thread" wants to resume.
+  #
+  # Public only so `jido_harness_worker_session_test.exs` can exercise it
+  # without a provider CLI. Pure and total over any `%RunResult{}`.
+  @doc false
+  @spec build_meta(atom(), Jido.Harness.RunResult.t()) :: RunMeta.t()
+  def build_meta(provider, %Jido.Harness.RunResult{} = run_result) when is_atom(provider) do
+    %RunMeta{
+      provider: provider,
+      provider_session_id: non_empty_binary(run_result.provider_session_id),
+      run_status: run_result.status,
+      usage: run_result.usage,
+      events_cost_usd: events_cost_usd(run_result.events)
+    }
+  end
+
+  defp non_empty_binary(value) when is_binary(value) and value != "", do: value
+  defp non_empty_binary(_value), do: nil
+
+  # Claude reports the dollar cost only on the terminal `:run_completed` event
+  # (`claude_stream.ex:71`), never in `RunResult.usage`. Last one wins.
+  defp events_cost_usd(events) do
+    events
+    |> Enum.filter(&match?(%Jido.Harness.Event{type: :run_completed}, &1))
+    |> List.last()
+    |> case do
+      %Jido.Harness.Event{payload: %{"cost_usd" => cost}} when is_number(cost) -> cost
+      _ -> nil
+    end
+  end
+
+  defp emit_session_bound(_state, nil), do: :ok
+  defp emit_session_bound(_state, %RunMeta{provider_session_id: nil}), do: :ok
+
+  defp emit_session_bound(state, %RunMeta{provider_session_id: session_id} = meta) do
+    payload =
+      %{
+        worker_id: state.worker_id,
+        run_id: state.run_id,
+        provider: Atom.to_string(meta.provider),
+        provider_session_id: session_id
+      }
+      |> put_model(Keyword.get(state.driver_opts, :model))
+
+    _ = WorkerProtocol.emit(:worker_session_bound, payload)
+    :ok
+  end
+
+  defp put_model(payload, model) when is_binary(model) and model != "",
+    do: Map.put(payload, :model, model)
+
+  defp put_model(payload, _model), do: payload
 
   # Unwrap RunResult.normalize's 3-tuple to the 2-tuple RunExecutor expects.
   # Metadata is dropped here — Invocation drops it for the same reason.

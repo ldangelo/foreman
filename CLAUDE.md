@@ -568,7 +568,11 @@ register separate lease streams.
 
 `foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and
 `ProjectionStore.phases_for_run/1`; do not rebuild it from logs or raw event
-streams, and keep `foreman_run_get`'s full projection shape distinct.
+streams, and keep `foreman_run_get`'s full projection shape distinct. Both carry
+`provider_session_id` (latest) and `provider_sessions` (ordered
+`{worker_id, provider, model, provider_session_id}` list), folded from the
+`WorkerSessionBound` worker event that `JidoHarnessWorker` emits before
+`WorkerExited` (`nil` / `[]` when the provider reported none).
 
 `foreman_run_get_logs` is backed by `ProjectionStore`, not console `Logger`
 output or ad hoc files. Production worker output must enter the system only as

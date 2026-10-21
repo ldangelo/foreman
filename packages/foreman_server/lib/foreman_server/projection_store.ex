@@ -32,7 +32,7 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
-  alias ForemanServer.Events.{WorkerStderr, WorkerStdout}
+  alias ForemanServer.Events.{WorkerSessionBound, WorkerStderr, WorkerStdout}
 
   @active_run_statuses ["awaiting_worker", "in_progress"]
 
@@ -1187,7 +1187,9 @@ defmodule ForemanServer.ProjectionStore do
             failure_reason: nil,
             pr_url: nil,
             phase_prs: [],
-            notifications: []
+            notifications: [],
+            provider_session_id: nil,
+            provider_sessions: []
           }
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
@@ -1548,6 +1550,40 @@ defmodule ForemanServer.ProjectionStore do
       end
     end)
     |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
+  end
+
+  # Binds the provider's session id to the run. The fold is idempotent: a
+  # replayed event (same worker, provider, session) leaves one entry, and
+  # `provider_session_id` is always the latest bound value.
+  #
+  # An undecodable payload leaves the projection untouched rather than raising:
+  # this runs inside `rebuild_state_from_event_log/1` from `init/1`, where a
+  # raise would take the whole application down at boot.
+  defp apply_event_by_type(state, "WorkerSessionBound", payload) do
+    case decode_session_bound(payload) do
+      {:ok, %WorkerSessionBound{} = event} ->
+        entry = %{
+          worker_id: event.worker_id,
+          provider: event.provider,
+          model: event.model,
+          provider_session_id: event.provider_session_id
+        }
+
+        update_run_projection(state, event.run_id, payload_event_at_ms(payload), fn run ->
+          sessions =
+            run
+            |> Map.get(:provider_sessions, [])
+            |> Enum.reject(&(&1 == entry))
+            |> Kernel.++([entry])
+
+          run
+          |> Map.put(:provider_sessions, sessions)
+          |> Map.put(:provider_session_id, event.provider_session_id)
+        end)
+
+      :error ->
+        state
+    end
   end
 
   defp apply_event_by_type(state, "WorkerHeartbeat", payload) do
@@ -2590,7 +2626,9 @@ defmodule ForemanServer.ProjectionStore do
       latest_stall: nil,
       pr_url: nil,
       phase_prs: [],
-      notifications: []
+      notifications: [],
+      provider_session_id: nil,
+      provider_sessions: []
     }
   end
 
@@ -2805,6 +2843,12 @@ defmodule ForemanServer.ProjectionStore do
   defp decode_for_projection(event_type, payload)
        when is_binary(event_type) and is_map(payload) do
     EventCodec.decode!(event_type, drop_projection_meta(payload))
+  end
+
+  defp decode_session_bound(payload) do
+    {:ok, decode_for_projection("WorkerSessionBound", payload)}
+  rescue
+    ArgumentError -> :error
   end
 
   defp with_recorded_projection_metadata(payload, %RecordedEvent{} = recorded, now_ms_fun) do

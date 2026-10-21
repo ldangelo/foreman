@@ -8,8 +8,9 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
 
     * `:heartbeat` → `Tracker.heartbeat/3` (sole producer of
       `WorkerHeartbeat`; resets liveness timer).
-    * `:worker_started`, `:worker_exited`, `:tool_call_finished`,
-      `:assistant_message`, `:worker_stdout`, `:worker_stderr`
+    * `:worker_started`, `:worker_session_bound`, `:worker_exited`,
+      `:tool_call_finished`, `:assistant_message`, `:worker_stdout`,
+      `:worker_stderr`
       → `Tracker.dispatch_lifecycle/3` (atomically allocates the next
       sequence, dispatches via `CommandRouter`, advances the mirror
       on success).
@@ -85,6 +86,8 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
     * `:worker_started` — `:worker_id`, `:run_id`, `:session_id`,
       `:adapter`, `:prompt_path` (optional `:tool_names`,
       `:artifact_paths`; default `[]`)
+    * `:worker_session_bound` — `:worker_id`, `:run_id`, `:provider`,
+      `:provider_session_id` (optional `:model`)
     * `:worker_exited`, `:tool_call_finished`, `:assistant_message`,
       `:worker_stdout`, `:worker_stderr` — `:worker_id`, `:run_id`,
       plus type-specific fields
@@ -96,6 +99,7 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
   @spec emit(
           :heartbeat
           | :worker_started
+          | :worker_session_bound
           | :worker_exited
           | :tool_call_finished
           | :assistant_message
@@ -110,6 +114,10 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
 
   def emit(:worker_started, payload) do
     Tracker.dispatch_lifecycle("WorkerStarted", payload)
+  end
+
+  def emit(:worker_session_bound, payload) do
+    Tracker.dispatch_lifecycle("WorkerSessionBound", payload)
   end
 
   def emit(:worker_exited, payload) do

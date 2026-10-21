@@ -12,6 +12,7 @@ defmodule ForemanServer.Aggregates.Worker do
     WorkerCrashed,
     WorkerExited,
     WorkerHeartbeat,
+    WorkerSessionBound,
     WorkerStarted,
     WorkerStderr,
     WorkerStdout,
@@ -27,6 +28,7 @@ defmodule ForemanServer.Aggregates.Worker do
       :status,
       :terminal?,
       :session_id,
+      :provider_session_id,
       :adapter,
       :prompt_path,
       last_sequence: -1,
@@ -92,6 +94,19 @@ defmodule ForemanServer.Aggregates.Worker do
         artifact_paths: e.artifact_paths,
         status: "running",
         terminal?: false
+    }
+  end
+
+  # Records the provider's own session id without touching `status`: binding a
+  # session is bookkeeping, not a lifecycle transition.
+  defp apply_typed_event(%State{} = state, %WorkerSessionBound{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        provider_session_id: e.provider_session_id
     }
   end
 
