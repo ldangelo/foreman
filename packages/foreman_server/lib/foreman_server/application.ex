@@ -127,6 +127,7 @@ defmodule ForemanServer.Application do
         ] ++
         maybe_jobsite_boot_recovery_child() ++
         maybe_messaging_dispatcher_child() ++
+        maybe_notifier_child() ++
         maybe_threads_children() ++
         maybe_overview_children() ++
         maybe_review_children() ++
@@ -237,6 +238,15 @@ defmodule ForemanServer.Application do
   defp maybe_coordinator_children do
     if Application.get_env(:foreman_server, :coordinator, [])[:enabled] do
       [{ForemanServer.Coordinator.Supervisor, []}]
+    else
+      []
+    end
+  end
+
+  # Production producer for Messaging.notify; tests start it explicitly.
+  defp maybe_notifier_child do
+    if Application.get_env(:foreman_server, :start_notifier?, true) do
+      [ForemanServer.Notifier]
     else
       []
     end
