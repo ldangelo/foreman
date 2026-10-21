@@ -82,6 +82,21 @@ func (e *HelpError) Error() string {
 	return e.Text
 }
 
+// ExitError carries an explicit process exit code and the stderr text to
+// print, for verbs that define their own exit-code contract.
+type ExitError struct {
+	Code int
+	Text string
+}
+
+func NewExitError(code int, text string) error {
+	return &ExitError{Code: code, Text: text}
+}
+
+func (e *ExitError) Error() string {
+	return e.Text
+}
+
 // ExitCode maps CLI errors to the documented process exit codes.
 func ExitCode(err error) int {
 	if err == nil {
@@ -91,6 +106,11 @@ func ExitCode(err error) int {
 	var helpErr *HelpError
 	if errors.As(err, &helpErr) {
 		return 0
+	}
+
+	var exitErr *ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code
 	}
 
 	var usageErr *UsageError

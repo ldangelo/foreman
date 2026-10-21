@@ -33,6 +33,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project reactivate --idempotency-key
 > foreman project delete    --force --idempotency-key   # archives; see docs/decisions/project-delete.md
 > foreman project list      --format --include-archived
+> foreman project chat      --m --no-wait --since --history --format --restart --timeout   # exit 2 usage, 3 unhealthy coordinator
 >
 > foreman task create       --description --id --project --status --task-type --title --trd-path --workflow-type  # REMOVED (TRD-018)
 > foreman task approve      --approved-by --command-id --id  # REMOVED (TRD-018)
@@ -270,6 +271,7 @@ Manage Elixir-registered projects.
 | `delete <id>` | Soft-delete (archive) a project |
 | `list` | List project projections |
 | `memory` | List, read, write, forget or sync the project's memory |
+| `chat <id> [message...]` | Chat with the project's coordinator |
 
 ### `foreman project create`
 
@@ -424,6 +426,26 @@ foreman project list --include-archived
 |--------|-------------|
 | `--include-archived` | Include archived projects |
 | `--format json\|ndjson` | Output format |
+
+### `foreman project chat`
+
+Talk to a project's coordinator. A message (arguments, `-m`, or piped stdin) is POSTed to `/api/projects/:id/coordinator/messages`; the CLI then long-polls `GET .../messages?after=<seq>&wait_ms=20000` and prints coordinator/system/agent messages until the coordinator is idle again. With no message on a TTY it runs an interactive loop (`/restart` restarts the coordinator, `/quit` or EOF exits).
+
+```
+foreman project chat project-123 "fix the login bug"
+```
+
+| Option | Description |
+|--------|-------------|
+| `-m <text>` | Message text (alternative to positional words or stdin) |
+| `--no-wait` | Return right after the POST, printing `message_id` and `seq` |
+| `--since <seq>` | Print messages after the cursor, then exit |
+| `--history <n>` | Print the last `n` messages, then exit |
+| `--format text\|json\|ndjson` | `json`/`ndjson` emit the server's message objects |
+| `--restart` | Restart the coordinator (`POST .../coordinator/restart`), then exit |
+| `--timeout <duration>` | Overall wait bound (default `10m`) |
+
+Exit codes: `0` ok, `2` usage error, `3` coordinator `unhealthy` (the notice includes `last_error`), other non-zero for HTTP errors (the server's error envelope is printed).
 
 ### `foreman project memory`
 

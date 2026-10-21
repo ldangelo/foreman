@@ -247,6 +247,13 @@ Foreman command computed from what was observed, or manual advice. Checks are
 read-only and bounded (5 s per external command); a check that cannot run
 produces no recommendation rather than a false alarm. `foreman doctor` reports
 server, provider and workflow readiness (`--project` adds this summary).
+### Chat with the project coordinator
+
+```
+foreman project chat project-123 "fix the login bug"
+```
+
+Posts the message, then prints the coordinator's reply and action notes as they arrive. Use `--no-wait` to return immediately, `--history 20` or `--since <seq>` to read the conversation, `--format ndjson` for scripting and `--restart` to restart a wedged coordinator (exit code 3 means it is unhealthy). See `docs/cli-reference.md`.
 
 ### Project settings
 
