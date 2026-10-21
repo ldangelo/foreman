@@ -168,6 +168,7 @@ defmodule ForemanServer.PrMonitor do
        last_errors: 0,
        due: %{},
        failures: %{},
+       backlog: 0,
        paused_until: nil
      }}
   end
@@ -196,30 +197,40 @@ defmodule ForemanServer.PrMonitor do
   defp sweep(state, mode, now) do
     fun = fetch_fun()
 
-    batch =
-      ProjectionStore.watched_prs()
-      |> Enum.uniq_by(& &1.pr_url)
-      |> due_batch(state, mode, now)
+    watched = ProjectionStore.watched_prs() |> Enum.uniq_by(& &1.pr_url)
+    {batch, backlog} = due_batch(watched, state, mode, now)
 
     {state, count, errors} =
-      Enum.reduce(batch, {state, 0, 0}, fn record, {acc, ok, err} ->
+      Enum.reduce_while(batch, {state, 0, 0}, fn record, {acc, ok, err} ->
         case Observer.observe(record.pr_url, fetch_fun: fun) do
           {:ok, _result} ->
-            {schedule_after_success(acc, record, now), ok + 1, err}
+            {:cont, {schedule_after_success(acc, record, now), ok + 1, err}}
 
           # No run owns the PR any more, or its watch ended: nothing to observe.
           {:error, :not_watched} ->
-            {acc, ok, err}
+            {:cont, {acc, ok, err}}
 
           {:error, reason} ->
             Logger.warning("PrMonitor observe failed url=#{record.pr_url}: #{inspect(reason)}")
-            {schedule_after_failure(acc, record, reason, now), ok, err + 1}
+            acc = schedule_after_failure(acc, record, reason, now)
+            # A rate limit pauses the whole sweep: stop instead of hitting `gh`
+            # again for every remaining PR in the batch.
+            if paused?(acc, now),
+              do: {:halt, {acc, ok, err + 1}},
+              else: {:cont, {acc, ok, err + 1}}
         end
       end)
 
+    # Entries of PRs no longer watched (merged, closed, stopped, not_watched)
+    # would otherwise stay in `due` and pin `next_delay/2` to its 1 s floor.
+    live = MapSet.new(watched, & &1.pr_url)
+
     %{
       state
-      | last_run_at: System.system_time(:millisecond),
+      | due: Map.filter(state.due, fn {url, _} -> MapSet.member?(live, url) end),
+        failures: Map.filter(state.failures, fn {url, _} -> MapSet.member?(live, url) end),
+        backlog: backlog,
+        last_run_at: System.system_time(:millisecond),
         last_count: count,
         last_errors: errors
     }
@@ -227,12 +238,14 @@ defmodule ForemanServer.PrMonitor do
 
   # A scheduled tick takes only the due PRs, capped. `poll_now/0` is a barrier: it
   # observes every watched PR (ignoring due times and the cap).
-  defp due_batch(records, _state, :all, _now), do: records
+  # Returns `{batch, backlog}`: `backlog` is how many due PRs the cap left for the
+  # next tick.
+  defp due_batch(records, _state, :all, _now), do: {records, 0}
 
   defp due_batch(records, state, :due, now) do
-    records
-    |> Enum.filter(&(Map.get(state.due, &1.pr_url, 0) <= now))
-    |> Enum.take(max_per_tick())
+    due = Enum.filter(records, &(Map.get(state.due, &1.pr_url, 0) <= now))
+    batch = Enum.take(due, max_per_tick())
+    {batch, length(due) - length(batch)}
   end
 
   defp schedule_after_success(state, record, now) do
@@ -270,7 +283,9 @@ defmodule ForemanServer.PrMonitor do
   # `gh` reports a rate limit as an HTTP 403/429 in its output; honour a
   # `Retry-After: <seconds>` it printed, else pause a minute.
   defp rate_limit_pause({:gh_failed, _code, output}) when is_binary(output) do
-    if Regex.match?(~r/rate limit|HTTP 429|HTTP 403/i, output) do
+    # A bare 403 (revoked token, repo the token cannot read) is not a rate limit;
+    # GitHub's rate-limit 403 says so in its message.
+    if Regex.match?(~r/rate limit|HTTP 429/i, output) do
       case Regex.run(~r/retry-after:?\s*(\d+)/i, output) do
         [_, seconds] -> String.to_integer(seconds) * 1000
         nil -> @default_rate_limit_pause_ms
@@ -285,9 +300,10 @@ defmodule ForemanServer.PrMonitor do
 
   defp next_delay(state, now) do
     soonest =
-      case Map.values(state.due) do
-        [] -> interval_ms()
-        dues -> max(Enum.min(dues) - now, 1_000)
+      cond do
+        state.backlog > 0 -> 1_000
+        state.due == %{} -> interval_ms()
+        true -> max(Enum.min(Map.values(state.due)) - now, 1_000)
       end
 
     pause = if paused?(state, now), do: state.paused_until - now, else: 0

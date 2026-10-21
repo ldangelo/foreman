@@ -261,11 +261,23 @@ defmodule ForemanServer.PrFix do
 
     excerpt =
       if size > limit,
-        do: "…" <> binary_part(text, size - limit, limit),
+        do: "…" <> (text |> binary_part(size - limit, limit) |> drop_leading_continuation()),
         else: text
 
-    excerpt |> String.replace(~r/[^\x00-\x7F]|\x00/u, "?") |> WorkerLogPolicy.redact()
+    excerpt
+    |> String.replace_invalid("?")
+    |> String.replace(~r/[^\x00-\x7F]|\x00/u, "?")
+    |> WorkerLogPolicy.redact()
   end
+
+  # A byte slice can start inside a multibyte character: drop the orphaned
+  # continuation bytes (at most 3) so the excerpt starts on a character boundary.
+  defp drop_leading_continuation(bytes, left \\ 3)
+
+  defp drop_leading_continuation(<<0b10::2, _::6, rest::binary>>, left) when left > 0,
+    do: drop_leading_continuation(rest, left - 1)
+
+  defp drop_leading_continuation(bytes, _left), do: bytes
 
   defp default_log(pr_url, %{url: url}) when is_binary(url) do
     with [_, run_id] <- Regex.run(~r{/actions/runs/(\d+)}, url),
@@ -283,8 +295,19 @@ defmodule ForemanServer.PrFix do
 
   defp default_log(_pr_url, _check), do: {:error, :log_unavailable}
 
-  defp truncate(text, max) when byte_size(text) > max,
-    do: binary_part(text, 0, max) <> "\n…(truncated)"
+  # Cut at `max` bytes without splitting a multibyte character (an incomplete trailing
+  # sequence is dropped); bytes that were never valid UTF-8 become "?".
+  defp truncate(text, max) when byte_size(text) > max do
+    cut = binary_part(text, 0, max)
+
+    valid =
+      case :unicode.characters_to_binary(cut) do
+        {:incomplete, complete, _partial} -> complete
+        _complete_or_invalid -> cut
+      end
+
+    String.replace_invalid(valid, "?") <> "\n…(truncated)"
+  end
 
   defp truncate(text, _max), do: text
 

@@ -75,6 +75,10 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @spec command_types() :: [String.t()]
   def command_types, do: @command_types
 
+  @doc "Every event type this module can emit (the values of its command→event map)."
+  @spec event_types() :: [String.t()]
+  def event_types, do: @events |> Map.values() |> Enum.uniq()
+
   @operator_types ~w(run.pr.fix_ci run.pr.address_comments run.pr.resolve_conflicts
                      run.pr.watch_stop run.pr.watch_start run.pr.create)
 
@@ -420,16 +424,30 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   defp made_progress(_fixes, _kind, _head, false), do: :ok
 
   defp cooled_down(fixes, _kind, payload, true) do
-    cooldown_ms = (Aggregate.get(payload, :cooldown_seconds) || 0) * 1000
-    now = Aggregate.get(payload, :requested_at)
+    with {:ok, cooldown_s} <- cooldown_seconds(Aggregate.get(payload, :cooldown_seconds)) do
+      cooldown_ms = cooldown_s * 1000
 
-    if is_integer(now) and is_integer(fixes.last_finished_at) and cooldown_ms > 0 and
-         now - fixes.last_finished_at < cooldown_ms,
-       do: {:error, {:fix_cooling_down, fixes.last_finished_at + cooldown_ms}},
-       else: :ok
+      if cooldown_ms == 0 do
+        :ok
+      else
+        case Aggregate.get(payload, :requested_at) do
+          now when is_integer(now) ->
+            if is_integer(fixes.last_finished_at) and now - fixes.last_finished_at < cooldown_ms,
+              do: {:error, {:fix_cooling_down, fixes.last_finished_at + cooldown_ms}},
+              else: :ok
+
+          other ->
+            {:error, {:invalid_integer, :requested_at, other}}
+        end
+      end
+    end
   end
 
   defp cooled_down(_fixes, _kind, _payload, false), do: :ok
+
+  defp cooldown_seconds(nil), do: {:ok, 0}
+  defp cooldown_seconds(n) when is_integer(n) and n >= 0, do: {:ok, n}
+  defp cooldown_seconds(other), do: {:error, {:invalid_integer, :cooldown_seconds, other}}
 
   @passthrough ~w(observed_at observation_seq failing branch_name base_branch pr_status
                   comment_ids thread_ids new_comment_count requested_by resumed_session

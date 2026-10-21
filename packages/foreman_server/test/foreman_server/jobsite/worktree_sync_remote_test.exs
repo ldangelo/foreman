@@ -142,6 +142,36 @@ defmodule ForemanServer.Jobsite.WorktreeSyncRemoteTest do
       assert local_sha(repo) == tip
     end
 
+    test "a behind branch checked out in the MAIN worktree is refused before anything moves",
+         %{repo: repo, peer: peer} do
+      first = peer_pushes!(peer, 1)
+      Fix.git!(repo, ["fetch", "-q", "origin", @branch])
+      Fix.git!(repo, ["checkout", "-q", "-b", @branch, first])
+      peer_pushes!(peer, 1)
+
+      assert {:error, %Error{code: :worktree_create_failed, details: %{branch: @branch}}} =
+               attach(repo)
+
+      assert local_sha(repo) == first
+      assert Fix.git!(repo, ["rev-parse", "HEAD"]) == first
+    end
+
+    test "a behind branch in a linked worktree with uncommitted changes is not fast-forwarded",
+         %{repo: repo, peer: peer, root: root} do
+      first = peer_pushes!(peer, 1)
+      Fix.git!(repo, ["fetch", "-q", "origin", @branch])
+      existing = Path.join(root, "dirty-wt")
+      Fix.git!(repo, ["worktree", "add", "-q", "-b", @branch, existing, first])
+      File.write!(Path.join(existing, "wip.txt"), "unsaved\n")
+      peer_pushes!(peer, 1)
+
+      assert {:error, %Error{code: :worktree_create_failed, details: %{branch: @branch}}} =
+               attach(repo)
+
+      assert local_sha(repo) == first
+      assert File.read!(Path.join(existing, "wip.txt")) == "unsaved\n"
+    end
+
     test "unpushed local commits are never discarded: the attach is refused", %{
       repo: repo,
       peer: peer
