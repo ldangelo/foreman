@@ -31,7 +31,7 @@ defmodule ForemanServer.Messaging.Notification do
   @allowed_keys MapSet.new(
                   ~w(notification_id provider recipient event_class severity subject body url correlation_id run_id metadata)a
                 )
-  @providers [:telegram, :slack]
+  @providers [:telegram, :slack, :webhook]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
   @severities [:info, :warning, :critical]
   @safe_metadata_keys MapSet.new(

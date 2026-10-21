@@ -2,7 +2,7 @@ defmodule ForemanServer.Messaging.ProvidersTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.Messaging.{HttpResponse, Notification}
-  alias ForemanServer.Messaging.Providers.{Slack, Telegram}
+  alias ForemanServer.Messaging.Providers.{Slack, Telegram, Webhook}
 
   defmodule FakeHttpClient do
     def post_json(url, body, headers, timeout) do
@@ -102,5 +102,74 @@ defmodule ForemanServer.Messaging.ProvidersTest do
 
     assert slack_url == "https://hooks.slack.com/services/T/B/C"
     assert slack_body == %{text: "safe text"}
+  end
+
+  describe "webhook adapter" do
+    setup do
+      {:ok, notification} =
+        Notification.normalize(%{@notification_attrs | provider: :webhook, recipient: "default"})
+
+      {:ok, notification: notification}
+    end
+
+    test "posts the versioned JSON document to the configured URL", %{notification: notification} do
+      assert {:ok, %{status: :succeeded, provider: :webhook}} =
+               Webhook.send(notification, %{url: "https://example.test/hook", secret: nil})
+
+      assert_received {:provider_request, "https://example.test/hook", body, [], 5_000}
+      assert body.schema == "foreman.notification.v1"
+      assert body.notification_id == "n-1"
+      assert body.event_class == :test
+      assert body.subject == "Test"
+      assert body.body == "Hello"
+      assert body.run_id == "run-1"
+    end
+
+    test "signs the exact JSON body with HMAC-SHA256 when a secret is configured", %{
+      notification: notification
+    } do
+      assert {:ok, _} =
+               Webhook.send(notification, %{url: "https://example.test/hook", secret: "s3cret"})
+
+      assert_received {:provider_request, _url, body, [{"x-foreman-signature", "sha256=" <> hex}],
+                       _}
+
+      expected =
+        :crypto.mac(:hmac, :sha256, "s3cret", Jason.encode!(body)) |> Base.encode16(case: :lower)
+
+      assert hex == expected
+    end
+
+    test "classifies statuses and never echoes the URL or secret in a failure reason", %{
+      notification: notification
+    } do
+      destination = %{url: "https://example.test/hook/LEAKTOKEN", secret: "s3cret"}
+
+      for {status, retryable?} <- [{429, true}, {503, true}, {400, false}, {404, false}] do
+        Process.put(:fake_http_response, {:ok, %HttpResponse{status: status, body: "nope"}})
+        assert {:error, failed} = Webhook.send(notification, destination)
+        assert failed.retryable? == retryable?
+        assert failed.reason == "webhook_http_#{status}"
+      end
+
+      Process.put(:fake_http_response, {:error, :econnrefused})
+      assert {:error, failed} = Webhook.send(notification, destination)
+      assert failed.retryable? == true
+      refute inspect(failed) =~ "LEAKTOKEN"
+    end
+
+    test "resolves {:system, env} references and fails terminally when unset", %{
+      notification: notification
+    } do
+      assert {:error, failed} =
+               Webhook.send(notification, %{url: {:system, "FOREMAN_E10_UNSET_WEBHOOK_URL"}})
+
+      assert failed.retryable? == false
+      assert failed.reason =~ "unresolved_secret_ref"
+      refute_received {:provider_request, _, _, _, _}
+
+      assert {:error, missing} = Webhook.send(notification, %{})
+      assert missing.reason =~ "missing_field"
+    end
   end
 end

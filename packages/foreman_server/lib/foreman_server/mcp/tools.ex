@@ -472,6 +472,10 @@ defmodule ForemanServer.MCP.Tools do
           type: "boolean",
           description: "Coordinator routes follow-ups to an existing thread where one matches"
         },
+        notification_preference: %{
+          type: "string",
+          description: "Notifications for this project: every_turn, blocked_only (default) or off"
+        },
         clear: %{
           type: "array",
           items: %{type: "string"},
@@ -1967,7 +1971,7 @@ defmodule ForemanServer.MCP.Tools do
                            coordinator_model coordinator_effort max_concurrent_runs
                            daily_thread_cap coordinator_propose_before_start
                            coordinator_max_active_threads coordinator_reuse_threads
-                           library_collect_produced)a
+                           library_collect_produced notification_preference)a
 
   # The command id is content-derived (tool + canonical args + caller key), so a
   # retry of the same update collapses into one command while two different
