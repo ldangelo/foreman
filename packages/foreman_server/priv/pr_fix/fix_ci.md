@@ -3,7 +3,6 @@ pull request's head branch `{{head_branch}}` (base branch `{{base_branch}}`) in 
 copy that is up to date with `origin/{{head_branch}}`.
 
 Pull request: {{pr_url}}
-Failing checks: {{failing_summary}}
 
 {{data_instruction}}
 

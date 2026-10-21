@@ -119,7 +119,8 @@ defmodule ForemanServer.PrFix do
     fetch = Keyword.get(opts, :fetch_fun, &PrStatus.fetch(&1, threads: true))
 
     case fetch.(pr_url) do
-      {:ok, %PrStatus{} = status} -> {:ok, status}
+      {:ok, %PrStatus{status: state} = status} when state in [:open, :conflicted] -> {:ok, status}
+      {:ok, %PrStatus{status: state}} -> {:error, {:pr_not_open, Atom.to_string(state)}}
       {:error, reason} -> {:error, {:fetch_failed, reason}}
     end
   end
@@ -196,12 +197,6 @@ defmodule ForemanServer.PrFix do
   defp prompt_data("ci", %PrStatus{} = status, _record, pr_url, opts) do
     failing = Enum.filter(status.checks, &(&1.state == :failing))
 
-    summary =
-      case failing do
-        [] -> "(none reported failing at fetch time)"
-        list -> list |> Enum.map(& &1.name) |> Enum.join(", ")
-      end
-
     lines =
       Enum.map(failing, fn check ->
         "- #{check.name} [#{check.conclusion || "failed"}] #{check.url || ""}"
@@ -209,7 +204,9 @@ defmodule ForemanServer.PrFix do
 
     logs = failing |> Enum.map(&log_excerpt(pr_url, &1, opts)) |> Enum.reject(&is_nil/1)
 
-    {%{"failing_summary" => summary}, Enum.join(["Failing checks:" | lines] ++ ["" | logs], "\n")}
+    lines = if lines == [], do: ["(none reported failing at fetch time)"], else: lines
+
+    {%{}, Enum.join(["Failing checks:" | lines] ++ ["" | logs], "\n")}
   end
 
   defp prompt_data("comments", %PrStatus{} = status, _record, _pr_url, _opts) do
