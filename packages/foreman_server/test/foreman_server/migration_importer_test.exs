@@ -10,14 +10,6 @@ defmodule ForemanServer.MigrationImporterTest do
 
   setup do
     # Make sure shared Inbox infrastructure is up (affects ingest path).
-    case Process.whereis(ForemanServer.Inbox.Poller) do
-      nil ->
-        {:ok, _pid} = ForemanServer.Inbox.Poller.start_link([])
-
-      pid ->
-        if not Process.alive?(pid), do: {:ok, _pid} = ForemanServer.Inbox.Poller.start_link([])
-    end
-
     :ok
   end
 

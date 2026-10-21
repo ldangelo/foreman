@@ -70,10 +70,7 @@ defmodule ForemanServer.PrMonitor do
   end
 
   def start_link(opts \\ []) do
-    case GenServer.start_link(__MODULE__, opts, name: __MODULE__) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, pid}} -> {:ok, pid}
-    end
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """

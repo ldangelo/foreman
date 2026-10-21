@@ -30,11 +30,6 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
   # ===========================================================================
 
   setup_all do
-    case GenServer.whereis(MergeGate) do
-      nil -> {:ok, _pid} = MergeGate.start_link()
-      _pid -> :ok
-    end
-
     :ok
   end
 

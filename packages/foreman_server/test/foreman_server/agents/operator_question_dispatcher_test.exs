@@ -30,42 +30,8 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
     {:ok, _} = Application.ensure_all_started(:meck)
-    # Start the Poller + DedupeTable + OperatorTimeout explicitly. Mirrors
-    # `test/foreman_server/inbox/poller_test.exs` — those tests do
-    # NOT boot the full Foreman application (which fails in this
-    # environment because :erlexec can't start) but still need the
-    # inbox pipeline and timeout scheduling live.
-    case Process.whereis(DedupeTable) do
-      nil ->
-        {:ok, _} = DedupeTable.start_link(name: DedupeTable)
-        :ok
-
-      _pid ->
-        :ok
-    end
-
-    case Process.whereis(Poller) do
-      nil ->
-        {:ok, _} = Poller.start_link(name: Poller)
-        :ok
-
-      _pid ->
-        :ok
-    end
-
-    case Process.whereis(ForemanServer.Agents.OperatorTimeout) do
-      nil ->
-        {:ok, _} =
-          ForemanServer.Agents.OperatorTimeout.start_link(
-            name: ForemanServer.Agents.OperatorTimeout
-          )
-
-        :ok
-
-      _pid ->
-        :ok
-    end
-
+    # DedupeTable, Poller and OperatorTimeout are in the application tree
+    # (config/test.exs enables :operator_timeout); nothing to start here.
     :ok
   end
 

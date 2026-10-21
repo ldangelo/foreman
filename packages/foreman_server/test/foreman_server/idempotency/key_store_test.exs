@@ -27,14 +27,6 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
     setup do
       Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
 
-      # KeyStore is a named GenServer that may already be running from a
-      # prior async:false test file with a different repo config.
-      # Gracefully handle {:already_started,pid} and always ensure a clean ETS table.
-      case KeyStore.start_link() do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> :ok
-      end
-
       # Wipe stale entries left by prior test files before each test.
       if :ets.info(:foreman_idempotency_keys) != :undefined do
         :ets.delete_all_objects(:foreman_idempotency_keys)
@@ -104,11 +96,6 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
   describe "key format (REQ-026)" do
     setup do
       Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
-
-      case KeyStore.start_link() do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> :ok
-      end
 
       if :ets.info(:foreman_idempotency_keys) != :undefined do
         :ets.delete_all_objects(:foreman_idempotency_keys)

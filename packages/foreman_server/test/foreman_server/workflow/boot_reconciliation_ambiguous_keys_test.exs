@@ -26,11 +26,6 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
     Application.ensure_all_started(:telemetry)
 
-    case KeyStore.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
     if :ets.info(:foreman_idempotency_keys) != :undefined do
       :ets.delete_all_objects(:foreman_idempotency_keys)
     end
