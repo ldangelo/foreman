@@ -32,7 +32,8 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
-  alias ForemanServer.Events.{WorkerSessionBound, WorkerStderr, WorkerStdout}
+  alias ForemanServer.Events.{UsageRecorded, WorkerSessionBound, WorkerStderr, WorkerStdout}
+  alias ForemanServer.Usage
 
   @active_run_statuses ["awaiting_worker", "in_progress"]
 
@@ -1189,7 +1190,8 @@ defmodule ForemanServer.ProjectionStore do
             phase_prs: [],
             notifications: [],
             provider_session_id: nil,
-            provider_sessions: []
+            provider_sessions: [],
+            usage: nil
           }
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
@@ -1560,7 +1562,7 @@ defmodule ForemanServer.ProjectionStore do
   # this runs inside `rebuild_state_from_event_log/1` from `init/1`, where a
   # raise would take the whole application down at boot.
   defp apply_event_by_type(state, "WorkerSessionBound", payload) do
-    case decode_session_bound(payload) do
+    case decode_or_skip("WorkerSessionBound", payload) do
       {:ok, %WorkerSessionBound{} = event} ->
         entry = %{
           worker_id: event.worker_id,
@@ -1579,6 +1581,38 @@ defmodule ForemanServer.ProjectionStore do
           run
           |> Map.put(:provider_sessions, sessions)
           |> Map.put(:provider_session_id, event.provider_session_id)
+        end)
+
+      :error ->
+        state
+    end
+  end
+
+  # Cumulative usage for the run. Each worker's usage is stored on
+  # `workers[worker_id].usage` (replaced, so replaying one worker's event is
+  # idempotent) and `run.usage` is the nil-preserving sum over all workers.
+  # `nil` until the first event, so historical runs read as "unknown", not 0.
+  defp apply_event_by_type(state, "UsageRecorded", payload) do
+    case decode_or_skip("UsageRecorded", payload) do
+      {:ok, %UsageRecorded{} = event} ->
+        usage = Usage.from_fields(Map.from_struct(event))
+
+        update_run_projection(state, event.run_id, payload_event_at_ms(payload), fn run ->
+          workers =
+            run
+            |> Map.get(:workers, %{})
+            |> Map.update(event.worker_id, %{usage: usage}, &Map.put(&1, :usage, usage))
+
+          total =
+            workers
+            |> Map.values()
+            |> Enum.map(&Map.get(&1, :usage))
+            |> Enum.reject(&is_nil/1)
+            |> Enum.reduce(nil, &Usage.merge(&2, &1))
+
+          run
+          |> Map.put(:workers, workers)
+          |> Map.put(:usage, total)
         end)
 
       :error ->
@@ -1610,10 +1644,11 @@ defmodule ForemanServer.ProjectionStore do
       sequence = get(payload, :sequence)
 
       workers =
-        Map.put(
+        Map.update(
           Map.get(run, :workers, %{}),
           worker_id,
-          %{status: "unresponsive", sequence: sequence}
+          %{status: "unresponsive", sequence: sequence},
+          &Map.merge(&1, %{status: "unresponsive", sequence: sequence})
         )
 
       run
@@ -2628,7 +2663,8 @@ defmodule ForemanServer.ProjectionStore do
       phase_prs: [],
       notifications: [],
       provider_session_id: nil,
-      provider_sessions: []
+      provider_sessions: [],
+      usage: nil
     }
   end
 
@@ -2845,8 +2881,10 @@ defmodule ForemanServer.ProjectionStore do
     EventCodec.decode!(event_type, drop_projection_meta(payload))
   end
 
-  defp decode_session_bound(payload) do
-    {:ok, decode_for_projection("WorkerSessionBound", payload)}
+  # `decode_for_projection/2` for handlers that must survive a malformed
+  # historical payload: an undecodable event is skipped, not fatal to `init/1`.
+  defp decode_or_skip(event_type, payload) do
+    {:ok, decode_for_projection(event_type, payload)}
   rescue
     ArgumentError -> :error
   end

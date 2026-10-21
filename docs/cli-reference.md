@@ -1272,8 +1272,11 @@ system facts, and activity is heartbeat/liveness data.
 `started_at_ms`, `last_event_at_ms`, `failure_reason`, `provider_session_id`
 (latest provider-reported session id, or `null`), and `provider_sessions` (ordered
 list of `{worker_id, provider, model, provider_session_id}`, empty when none); it
-does not scrape logs or raw events. `foreman_run_get` returns the same two fields
-in its full projection.
+does not scrape logs or raw events. It also carries `usage`
+(`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`,
+`total_tokens`, `cost_usd`; every value `null` when the provider did not report it, and
+`usage` itself `null` for runs that predate usage capture); `cost_usd` is provider-reported
+only. `foreman_run_get` returns the same fields in its full projection.
 
 `foreman_task_list` accepts optional `project_id`, canonical `status` (`open`,
 `ready`, `in_progress`, `blocked`, `closed`, `failed`), `limit` (default 100,

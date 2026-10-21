@@ -572,7 +572,10 @@ streams, and keep `foreman_run_get`'s full projection shape distinct. Both carry
 `provider_session_id` (latest) and `provider_sessions` (ordered
 `{worker_id, provider, model, provider_session_id}` list), folded from the
 `WorkerSessionBound` worker event that `JidoHarnessWorker` emits before
-`WorkerExited` (`nil` / `[]` when the provider reported none).
+`WorkerExited` (`nil` / `[]` when the provider reported none). They also carry
+`usage` (a `ForemanServer.Usage`: input/output/cache-read/cache-write/total tokens and
+`cost_usd`, each `null` when the provider did not report it), the sum of the
+`UsageRecorded` worker events; cross-run rollups arrive with E14.
 
 `foreman_run_get_logs` is backed by `ProjectionStore`, not console `Logger`
 output or ad hoc files. Production worker output must enter the system only as

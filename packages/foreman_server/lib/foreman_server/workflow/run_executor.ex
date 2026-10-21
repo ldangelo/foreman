@@ -1184,6 +1184,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          provider: JidoHarness.request_provider(request),
          prompt: prompt,
          project_id: project_id(state),
+         task_id: task_id(state),
          env_map: env,
          secrets:
            WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))

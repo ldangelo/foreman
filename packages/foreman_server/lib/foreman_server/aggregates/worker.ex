@@ -9,6 +9,7 @@ defmodule ForemanServer.Aggregates.Worker do
     RunCompleted,
     RunFailed,
     ToolCallFinished,
+    UsageRecorded,
     WorkerCrashed,
     WorkerExited,
     WorkerHeartbeat,
@@ -108,6 +109,13 @@ defmodule ForemanServer.Aggregates.Worker do
         run_id: e.run_id,
         provider_session_id: e.provider_session_id
     }
+  end
+
+  # Usage is bookkeeping like session binding: it never changes `status`.
+  defp apply_typed_event(%State{} = state, %UsageRecorded{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{new_state | worker_id: e.worker_id, run_id: e.run_id}
   end
 
   defp apply_typed_event(%State{} = state, %WorkerHeartbeat{} = e) do

@@ -13,6 +13,9 @@ defmodule ForemanServer.Overwatch.RunMeta do
     NOT `WorkerStarted.session_id`, which is a Foreman-generated handle.
   * `run_status` - the harness run's terminal status.
   * `usage` - the string-keyed provider usage map, verbatim (`%{}` when absent).
+  * `usage_events` - payloads of the run's `:usage` events, in order. Needed
+    because `usage` is a last-write-wins merge of them, which loses every
+    message but the last for providers (pi) that report usage per message.
   * `events_cost_usd` - dollar cost the provider reported on its final
     `:run_completed` event (`"cost_usd"`), `nil` when none was reported.
     `nil` means unknown, never zero.
@@ -24,7 +27,8 @@ defmodule ForemanServer.Overwatch.RunMeta do
     :provider_session_id,
     :run_status,
     :events_cost_usd,
-    usage: %{}
+    usage: %{},
+    usage_events: []
   ]
 
   @type run_status :: :completed | :failed | :cancelled
@@ -34,6 +38,7 @@ defmodule ForemanServer.Overwatch.RunMeta do
           provider_session_id: String.t() | nil,
           run_status: run_status(),
           usage: map(),
+          usage_events: [map()],
           events_cost_usd: number() | nil
         }
 end

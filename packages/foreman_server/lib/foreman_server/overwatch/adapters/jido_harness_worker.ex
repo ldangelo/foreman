@@ -38,6 +38,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
   alias ForemanServer.Overwatch.{RunMeta, WorkerLogPolicy, WorkerProtocol}
   alias ForemanServer.RunControl
+  alias ForemanServer.Usage
 
   @default_heartbeat_interval_ms 5_000
 
@@ -65,6 +66,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       interval: interval,
       result_recipient: result_recipient,
       activated?: false,
+      project_id: Keyword.get(opts, :project_id),
+      task_id: Keyword.get(opts, :task_id),
       secrets: Keyword.get(opts, :secrets, []),
       log_counters: WorkerLogPolicy.initial_counters()
     }
@@ -146,6 +149,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     # (which rejects every non-terminal type on a sealed stream) can never
     # refuse it.
     emit_session_bound(state, meta)
+    emit_usage_recorded(state, meta)
     _ = WorkerProtocol.emit(:worker_exited, %{worker_id: state.worker_id, run_id: state.run_id})
 
     if state.result_recipient do
@@ -236,12 +240,19 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       provider_session_id: non_empty_binary(run_result.provider_session_id),
       run_status: run_result.status,
       usage: run_result.usage,
+      usage_events: usage_events(run_result.events),
       events_cost_usd: events_cost_usd(run_result.events)
     }
   end
 
   defp non_empty_binary(value) when is_binary(value) and value != "", do: value
   defp non_empty_binary(_value), do: nil
+
+  defp usage_events(events) do
+    for %Jido.Harness.Event{type: :usage, payload: payload} <- events,
+        is_map(payload),
+        do: payload
+  end
 
   # Claude reports the dollar cost only on the terminal `:run_completed` event
   # (`claude_stream.ex:71`), never in `RunResult.usage`. Last one wins.
@@ -270,6 +281,37 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     _ = WorkerProtocol.emit(:worker_session_bound, payload)
     :ok
+  end
+
+  # One `UsageRecorded` per worker run, before `:worker_exited`, for failed
+  # runs too (the tokens were spent). Nothing is emitted when the provider
+  # reported nothing: an all-nil event would read as "recorded, unknown".
+  defp emit_usage_recorded(_state, nil), do: :ok
+
+  defp emit_usage_recorded(state, %RunMeta{} = meta) do
+    usage = Usage.from_run(meta.provider, meta.usage, meta.usage_events, meta.events_cost_usd)
+
+    if Usage.empty?(usage) do
+      :ok
+    else
+      payload =
+        usage
+        |> Usage.to_event_fields()
+        |> Map.merge(%{
+          worker_id: state.worker_id,
+          run_id: state.run_id,
+          provider: Atom.to_string(meta.provider),
+          project_id: non_empty_binary(state.project_id),
+          task_id: non_empty_binary(state.task_id),
+          role: "thread",
+          run_status: Atom.to_string(meta.run_status),
+          at: DateTime.to_iso8601(DateTime.utc_now())
+        })
+        |> put_model(Keyword.get(state.driver_opts, :model))
+
+      _ = WorkerProtocol.emit(:usage_recorded, payload)
+      :ok
+    end
   end
 
   defp put_model(payload, model) when is_binary(model) and model != "",

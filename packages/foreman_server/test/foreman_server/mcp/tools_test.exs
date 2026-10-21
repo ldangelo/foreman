@@ -240,6 +240,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                :status,
                :task_id,
                :terminal,
+               :usage,
                :workflow_name
              ]
 
