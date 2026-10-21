@@ -52,6 +52,9 @@ defmodule ForemanServerWeb.Router do
     pipe_through(:api)
 
     post("/commands", CommandController, :create)
+    post("/project-adoptions", AdoptionController, :create)
+    get("/doctor", DoctorController, :show)
+    get("/projects/:id/recommendations", RecommendationsController, :show)
     get("/projects", ProjectController, :index)
     get("/projects/:id", ProjectController, :show)
     get("/projects/:id/settings", ProjectController, :settings)

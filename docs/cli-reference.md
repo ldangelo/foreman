@@ -70,8 +70,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > `missing subcommand`. Any section below showing flags directly on a bare verb
 > (notably `foreman run --prompt …`) is not a real invocation.
 >
-> Twenty-six documented top-level verbs are not dispatched at all: `abandon`,
-> `attach`, `board`, `clean-state`, `debug`, `doctor`, `import`, `inbox`,
+> Twenty-five documented top-level verbs are not dispatched at all: `abandon`,
+> `attach`, `board`, `clean-state`, `debug`, `import`, `inbox`,
 > `issue`, `logs`, `merge`, `metrics`, `monitor`, `plan`, `pr`, `purge`,
 > `recover`, `reset`, `retry`, `sentinel`, `server`, `sling`, `status`, `stop`,
 > `watch`, `worktree`. Each section below that describes one now carries a
@@ -320,6 +320,32 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
 | `--format json` | Print the raw command response as JSON |
 
+### `foreman project recommend <id>`
+
+Read-only `GET /api/projects/:id/recommendations`: setup recommendations for a project, each with a stable id, a severity (`action` > `warn` > `info`) and an optional fix (a Foreman command, or manual advice). Detector ids: `task_provider.wire_beads`, `task_provider.br_missing`, `repo.agents_md_missing`, `ci.none_detected`, `gh.unauthenticated`, `gh.check_timeout`, `git.no_remote`, `workflows.not_installed`, `workflows.unmapped_types`, `provider.coordinator_unavailable`, `provider.none_installed`, `settings.instructions_empty`, `settings.goal_empty`, `settings.env_plain_secrets`, `memory.empty` (only when project memory exists), `project.paused`, `stack.test_hint`. A fact that cannot be observed produces no recommendation. Probes check only fixed file names and run external commands (`gh auth status`) by absolute path from the server's `PATH` with a 5 s bound each (15 s total, then HTTP 504); nothing from the repository is executed.
+
+```bash
+foreman project recommend my-project
+foreman project recommend --format json my-project
+foreman project recommend --fail-on warn my-project   # exit 1 when a warn/action exists
+```
+
+The MCP read tool `foreman_project_recommendations` returns the same body.
+
+### `foreman project adopt`
+
+Brings a session into a project via `POST /api/project-adoptions` (not an MCP tool; the move is also reachable as the `project.adopt` command on `POST /api/commands`).
+
+```bash
+foreman project adopt --kind run --id RUN --into other-project            # move
+foreman project adopt --kind run --id RUN --into other-project --continue --prompt "also add /readyz"
+foreman project adopt --kind run --id RUN --new-project --project-id my-app --path /repo --goal "..."
+```
+
+- **Move** re-homes the task, all runs of that task (or the jobsite) and the archive manifest (`.foreman/sessions/<kind>/<id>/manifest.json` gains `project_id`, `adopted_from`, `adopted_at`). Event history is immutable: events keep their original `project_id`, the read model and the manifest change, and `ReviewRecorded` keeps the original project. Refusals: `subject_active` (any non-terminal run/jobsite, including paused ones: they hold a run reservation), `subject_not_found`, `project_not_found`, `project_archived`, `project_paused`, `subject_bound_to_task_provider` (a `beads:<project>:<bead>` task belongs to its source project's beads DB), `repo_not_in_project` (the session's repo must be the target project's path). Re-issuing is a no-op that still repairs a stale manifest.
+- **Continue** (`--continue --prompt`) creates a NEW task in the target project whose prompt is built from the archive (`request.md`, branch, `changed-files.txt`, a bounded tail of `transcript.jsonl`, wrapped as untrusted data) plus your text; the source is untouched and may still be running. The provider session is not forked (no run-start path carries a session id): the new thread always starts context-seeded.
+- **Mint** (`--new-project`) registers a project from the session's manifest (id = repo directory slug, goal = request title) and moves the session into it. Refused with `path_in_use` when a live project already owns that repo path, and with `repo_not_in_project` when `--path` is not the session's repo.
+
 ### `foreman project settings <id>`
 
 Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`. `--format json` prints the raw response. `config.env` values are never shown.
@@ -564,7 +590,7 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   `:litellm` is a model dispatcher reached through one of those providers, not
   one itself. Accepting a value here is therefore NOT evidence that a backend
   is installed, ready, or reachable: `foreman_doctor` (MCP) reports
-  `jido_harness` provider readiness, and `foreman doctor` does not route at all.
+  `jido_harness` provider readiness, and `foreman doctor` reports the same rows.
   AgentRuntime's own `:backend` opt is a separate, internal manual-strategy
   parameter with no CLI surface.
 - `--base-branch <branch>` (optional, half-consumed per
@@ -892,22 +918,24 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 
 ### `foreman doctor`
 
-> **NOT IMPLEMENTED.** `foreman doctor` is not dispatched. A `foreman_doctor` MCP tool does exist and reports jido_harness provider readiness — a much narrower check than this section describes.
-
-Health checks for Foreman installation. Validates Pi SDK, DB integrity, required bundled Pi skills, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed prompt files and workflow YAML are compared to bundled runtime contracts; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
+Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
 
 ```bash
-foreman doctor                    # Run all health checks
-foreman doctor --fix              # Auto-fix issues
-foreman doctor --dry-run          # Preview fixes without applying
-foreman doctor --json             # Machine-readable output
+foreman doctor                       # Run the checks
+foreman doctor --project my-project  # Also summarise setup recommendations
+foreman doctor --strict              # Exit 1 on warnings as well
+foreman doctor --format json         # Machine-readable output
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Auto-fix safe issues: install missing/stale prompts and workflows, reinstall missing required bundled Pi skills, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
-| `--dry-run` | Preview what --fix would do |
-| `--json` | Output as JSON |
+| `--project <id>` | Add the project setup-recommendation summary check (404 for an unknown project) |
+| `--strict` | Treat `warn` checks as failures |
+| `--format json` | Output the server's `{checks: [{id, status, title, detail}]}` body |
+
+Exit code: `0` when no check has status `fail` (and, with `--strict`, none `warn`); `1` otherwise or on a usage error.
+
+**NOT IMPLEMENTED:** `--fix` and `--dry-run` (passing them is a usage error), and the Pi SDK, DB integrity, bundled-skill, prompt/workflow-staleness, duplicate `task_type`, zombie-run, stale-run and stale-worktree checks. Use `foreman init --force` to refresh installed prompts and workflows.
 
 ### `foreman server`
 
@@ -1301,7 +1329,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`,
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_recommendations`,
 `foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,
 optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
