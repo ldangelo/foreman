@@ -268,4 +268,15 @@ config :foreman_server, :review,
   max_comment_bytes: 8_000,
   max_gap_beads: 10
 
+# Per-project memory (ForemanServer.ProjectMemory): caps and durable-content guard.
+config :foreman_server, :project_memory,
+  max_topic_bytes: 65_536,
+  max_index_lines: 200,
+  max_index_bytes: 25_600,
+  max_topics: 200,
+  max_description_chars: 200,
+  max_repeat_ratio: 0.5,
+  max_redaction_ratio: 0.5,
+  min_guard_bytes: 200
+
 import_config "#{config_env()}.exs"
