@@ -9,13 +9,26 @@ defmodule ForemanServer.Aggregates.SchedulerIntent do
   * `scheduler_intent.skip` emits `ScheduledFireSkipped` (abandoned).
   * `scheduler_intent.mark_stale` emits `SchedulerIntentStale` (recovery re-dispatch).
 
-  Idempotency: a duplicate `record` is rejected via `{:error, :already_recorded}`.
-  Confirmed/skipped intents reject further commands.
+  Idempotency: `CommandRouter` dedupes an identical retry (same `command_id`)
+  before this aggregate runs. A `record` under a DIFFERENT command id for an
+  intent that already exists is `{:error, {:scheduler_intent_exists, intent_id}}`.
+  Confirmed, skipped and stale intents reject further `confirm`/`skip`/
+  `mark_stale` with `{:error, {:scheduler_intent_terminal, status}}`.
+
+  Event payloads are built from the typed event structs (enforced keys,
+  declared fields only), so unknown payload keys are dropped, not persisted.
   """
 
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
+
+  alias ForemanServer.Events.{
+    ScheduledFireConfirmed,
+    ScheduledFireRecorded,
+    ScheduledFireSkipped,
+    SchedulerIntentStale
+  }
 
   defmodule State do
     @enforce_keys [:exists?, :status]
@@ -88,68 +101,50 @@ defmodule ForemanServer.Aggregates.SchedulerIntent do
   end
 
   @impl true
-  def handle_command(_state, %{type: "scheduler_intent.record", payload: payload}) do
-    with {:ok, intent_id} <-
-           Aggregate.required_binary(Aggregate.get(payload, :intent_id), :intent_id) do
-      {:ok,
-       %{
-         stream_id: "scheduler_intent:#{intent_id}",
-         event_type: "ScheduledFireRecorded",
-         payload: Map.put(payload, :intent_id, intent_id)
-       }}
-    end
-  end
+  def handle_command(%State{exists?: true, intent_id: existing}, %{
+        type: "scheduler_intent.record"
+      }),
+      do: {:error, {:scheduler_intent_exists, existing}}
 
-  def handle_command(%State{status: status}, %{type: "scheduler_intent.confirm"})
-      when status in ["confirmed", "skipped", "stale"] do
+  def handle_command(%State{}, %{type: "scheduler_intent.record", payload: payload}),
+    do: emit(ScheduledFireRecorded, "ScheduledFireRecorded", payload)
+
+  def handle_command(%State{status: status}, %{type: type})
+      when type in [
+             "scheduler_intent.confirm",
+             "scheduler_intent.skip",
+             "scheduler_intent.mark_stale"
+           ] and
+             status in ["confirmed", "skipped", "stale"] do
     {:error, {:scheduler_intent_terminal, status}}
   end
 
-  def handle_command(_state, %{type: "scheduler_intent.confirm", payload: payload}) do
-    with {:ok, intent_id} <-
-           Aggregate.required_binary(Aggregate.get(payload, :intent_id), :intent_id) do
-      {:ok,
-       %{
-         stream_id: "scheduler_intent:#{intent_id}",
-         event_type: "ScheduledFireConfirmed",
-         payload: Map.put(payload, :intent_id, intent_id)
-       }}
-    end
-  end
+  def handle_command(%State{}, %{type: "scheduler_intent.confirm", payload: payload}),
+    do: emit(ScheduledFireConfirmed, "ScheduledFireConfirmed", payload)
 
-  def handle_command(%State{status: status}, %{type: "scheduler_intent.skip"})
-      when status in ["confirmed", "skipped", "stale"] do
-    {:error, {:scheduler_intent_terminal, status}}
-  end
+  def handle_command(%State{}, %{type: "scheduler_intent.skip", payload: payload}),
+    do: emit(ScheduledFireSkipped, "ScheduledFireSkipped", payload)
 
-  def handle_command(_state, %{type: "scheduler_intent.skip", payload: payload}) do
-    with {:ok, intent_id} <-
-           Aggregate.required_binary(Aggregate.get(payload, :intent_id), :intent_id) do
-      {:ok,
-       %{
-         stream_id: "scheduler_intent:#{intent_id}",
-         event_type: "ScheduledFireSkipped",
-         payload: Map.put(payload, :intent_id, intent_id)
-       }}
-    end
-  end
-
-  def handle_command(%State{status: status}, %{type: "scheduler_intent.mark_stale"})
-      when status in ["confirmed", "skipped", "stale"] do
-    {:error, {:scheduler_intent_terminal, status}}
-  end
-
-  def handle_command(_state, %{type: "scheduler_intent.mark_stale", payload: payload}) do
-    with {:ok, intent_id} <-
-           Aggregate.required_binary(Aggregate.get(payload, :intent_id), :intent_id) do
-      {:ok,
-       %{
-         stream_id: "scheduler_intent:#{intent_id}",
-         event_type: "SchedulerIntentStale",
-         payload: Map.put(payload, :intent_id, intent_id)
-       }}
-    end
-  end
+  def handle_command(%State{}, %{type: "scheduler_intent.mark_stale", payload: payload}),
+    do: emit(SchedulerIntentStale, "SchedulerIntentStale", payload)
 
   def handle_command(_state, _command), do: :unhandled
+
+  defp emit(module, event_type, payload) do
+    with {:ok, intent_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :intent_id), :intent_id) do
+      fields =
+        module.__struct__()
+        |> Map.from_struct()
+        |> Map.new(fn {key, _default} -> {key, Aggregate.get(payload, key)} end)
+        |> Map.put(:intent_id, intent_id)
+
+      {:ok,
+       %{
+         stream_id: "scheduler_intent:#{intent_id}",
+         event_type: event_type,
+         payload: module |> struct!(fields) |> Map.from_struct()
+       }}
+    end
+  end
 end
