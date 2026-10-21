@@ -41,6 +41,7 @@ defmodule ForemanServer.Coordinator.ScenarioTest do
          name: name,
          agent: Stub,
          agent_opts: [script: script],
+         only: [p],
          gateway: SpyGateway,
          threads: FakeThreads,
          thread_actions: FakeThreadActions,

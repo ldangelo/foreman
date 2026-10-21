@@ -4,7 +4,7 @@ defmodule ForemanServer.Coordinator.RunnerTest do
   @moduletag :tmp_dir
 
   alias ForemanServer.Coordinator.{Agent.Stub, Commands, Error, ProjectWorker, Turn}
-  alias ForemanServer.{CommandGateway, EventStore, ProjectionStore}
+  alias ForemanServer.{CommandGateway, ProjectionStore}
 
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
   alias ForemanServer.TestSupport.CoordinatorHelpers.{FakeThreadActions, FakeThreads, SpyGateway}
@@ -40,6 +40,7 @@ defmodule ForemanServer.Coordinator.RunnerTest do
       FakeThreadActions.clear()
     end)
 
+    Process.put(:co_project, project_id)
     script = start_supervised!({Stub, responses: []})
     {:ok, project_id: project_id, script: script}
   end
@@ -53,6 +54,7 @@ defmodule ForemanServer.Coordinator.RunnerTest do
           name: name,
           agent: Stub,
           agent_opts: [script: script],
+          only: [Process.get(:co_project)],
           gateway: SpyGateway,
           threads: FakeThreads,
           thread_actions: FakeThreadActions,
@@ -194,7 +196,7 @@ defmodule ForemanServer.Coordinator.RunnerTest do
       tmp_dir: dir
     } do
       other = H.register_project(Path.join(dir, "other") |> tap(&File.mkdir_p!/1))
-      rt = start_runtime(script)
+      rt = start_runtime(script, only: [p, other])
       say(p, "a1", "for p")
       say(other, "b1", "for other")
       completed(p)
@@ -339,12 +341,15 @@ defmodule ForemanServer.Coordinator.RunnerTest do
       _rt_b = start_runtime(script, name: :co_rt_crash_b)
       assert %{turn_id: "m1:a2"} = completed(p)
 
-      {:ok, events} = EventStore.read_stream_forward("coordinator:#{p}", 0, 100)
-      types = Enum.map(events, & &1.event_type)
-      assert Enum.count(types, &(&1 == "CoordinatorTurnStarted")) == 2
-      assert Enum.count(types, &(&1 == "CoordinatorTurnFailed")) == 1
-      assert [%{data: failed}] = Enum.filter(events, &(&1.event_type == "CoordinatorTurnFailed"))
-      assert (failed["error_code"] || failed[:error_code]) == "interrupted"
+      assert %{error_code: "interrupted"} =
+               H.await_event("CoordinatorTurnFailed", &(&1.project_id == p))
+
+      turns = conversation(p).turns
+
+      assert %{
+               "m1:a1" => %{status: "failed", attempt: 1},
+               "m1:a2" => %{status: "completed", attempt: 2}
+             } = turns
 
       # one thread, one approval, one reply, one recorded outcome
       assert H.event_count("task:#{created}") == 2
