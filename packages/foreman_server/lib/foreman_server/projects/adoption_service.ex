@@ -109,6 +109,7 @@ defmodule ForemanServer.Projects.AdoptionService do
          manifest = manifest_for(facts, kind, subject_id),
          {:ok, path} <- mint_path(opts, manifest, facts),
          :ok <- require_git_working_tree(path),
+         :ok <- require_session_repo(facts, path),
          {:ok, project_id, step} <- resolve_mint_project(opts, path),
          {:ok, _} <- register_minted(step, project_id, path, kind, subject_id, opts, manifest),
          {:ok, result} <- adopt_minted(kind, subject_id, project_id) do
@@ -263,6 +264,14 @@ defmodule ForemanServer.Projects.AdoptionService do
       path when is_binary(path) and path != "" -> {:ok, Path.expand(path)}
       _ -> {:error, {:missing_or_invalid, :path}}
     end
+  end
+
+  # Registering a project at a different repo than the session's would strand
+  # the session: adopt would then refuse it as `repo_not_in_project`.
+  defp require_session_repo(%{repo_path: nil}, _path), do: :ok
+
+  defp require_session_repo(%{repo_path: repo}, path) do
+    if Path.expand(repo) == path, do: :ok, else: {:error, {:repo_not_in_project, repo}}
   end
 
   defp require_git_working_tree(path) do

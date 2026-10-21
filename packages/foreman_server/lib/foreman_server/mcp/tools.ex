@@ -279,6 +279,20 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_project_recommendations %{
+    name: "foreman_project_recommendations",
+    description:
+      "Setup recommendations for a project (missing task provider wiring, AGENTS.md, CI, gh auth, " <>
+        "workflows, instructions, memory). Read-only; each item has a stable id, severity and an optional fix.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
+    }
+  }
+
   @schema_foreman_project_settings_update %{
     name: "foreman_project_settings_update",
     description:
@@ -716,6 +730,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
+    @schema_foreman_project_recommendations,
     @schema_foreman_project_settings_get,
     @schema_foreman_project_settings_update,
     @schema_foreman_project_pause,
@@ -1211,6 +1226,28 @@ defmodule ForemanServer.MCP.Tools do
     if result,
       do: {:ok, ProjectSettings.public_view(result)},
       else: {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+  end
+
+  defp tool_foreman_project_recommendations(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServerWeb.RecommendationsController.recommend(project_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, recommendations} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_recommendations", :ok)
+
+        {:ok,
+         ForemanServer.Projects.Recommendations.View.serialise(project_id, recommendations)}
+
+      {:error, :project_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_recommendations", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+
+      {:error, :timeout} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_recommendations", :error)
+        {:error, %ToolError{code: "TIMEOUT", message: "Recommendations timed out"}}
+    end
   end
 
   defp tool_foreman_project_settings_get(%{project_id: project_id}) do

@@ -10,6 +10,8 @@
 //	project get <id>    GET /api/projects/:id
 //	project update <id> POST /api/commands with type=project.update
 //	project settings <id> GET /api/projects/:id/settings
+//	project recommend <id> GET /api/projects/:id/recommendations
+//	project adopt       POST /api/project-adoptions
 //	project pause <id>  POST /api/commands with type=project.pause
 //	project resume <id> POST /api/commands with type=project.resume
 //	project reactivate <id> POST /api/commands with type=project.reactivate
@@ -55,6 +57,8 @@ Commands:
   project get <id>    Fetch a project projection
   project update <id> Update project settings (goal, instructions, models, limits) and/or task provider
   project settings <id> Show project status, settings and limits
+  project recommend <id> Setup recommendations (--format json, --fail-on warn|action)
+  project adopt       Move/continue/mint a project from a session (--kind --id --into|--new-project)
   project pause <id>  Pause a project (--reason text)
   project resume <id> Resume a paused project
   project reactivate <id> Reactivate an archived project
