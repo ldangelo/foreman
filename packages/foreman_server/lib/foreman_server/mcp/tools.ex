@@ -1,6 +1,7 @@
 defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.ProjectMemory
   alias ForemanServer.ProjectSettings
   alias ForemanServer.ProjectSettingsDTO
   alias ForemanServer.Threads
@@ -90,6 +91,57 @@ defmodule ForemanServer.MCP.Tools do
     @type t :: %__MODULE__{run_id: String.t(), message_id: String.t(), status: String.t()}
     @derive Jason.Encoder
     defstruct [:run_id, :message_id, :status]
+  end
+
+  defmodule ProjectMemoryEntry do
+    @moduledoc "Whitelisted memory topic metadata returned by the project-memory tools."
+    @enforce_keys [:name, :bytes]
+    @type t :: %__MODULE__{
+            name: String.t(),
+            description: String.t(),
+            bytes: non_neg_integer(),
+            author_kind: String.t() | nil,
+            updated_at: String.t() | nil
+          }
+    @derive Jason.Encoder
+    defstruct [:name, :bytes, :author_kind, :updated_at, description: ""]
+  end
+
+  defmodule ProjectMemoryListResult do
+    @enforce_keys [:project_id, :index, :entries]
+    @type t :: %__MODULE__{
+            project_id: String.t(),
+            index: String.t(),
+            entries: [ProjectMemoryEntry.t()]
+          }
+    @derive Jason.Encoder
+    defstruct [:project_id, :index, :entries]
+  end
+
+  defmodule ProjectMemoryReadResult do
+    @enforce_keys [:name, :content, :bytes]
+    @type t :: %__MODULE__{name: String.t(), content: String.t(), bytes: non_neg_integer()}
+    @derive Jason.Encoder
+    defstruct [:name, :content, :bytes]
+  end
+
+  defmodule ProjectMemoryWriteResult do
+    @enforce_keys [:name, :sha256, :bytes, :redactions]
+    @type t :: %__MODULE__{
+            name: String.t(),
+            sha256: String.t(),
+            bytes: non_neg_integer(),
+            redactions: non_neg_integer()
+          }
+    @derive Jason.Encoder
+    defstruct [:name, :sha256, :bytes, :redactions]
+  end
+
+  defmodule ProjectMemoryForgetResult do
+    @enforce_keys [:name, :status]
+    @type t :: %__MODULE__{name: String.t(), status: String.t()}
+    @derive Jason.Encoder
+    defstruct [:name, :status]
   end
 
   defmodule TaskAddCommentResult do
@@ -718,6 +770,74 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_project_memory_list %{
+    name: "foreman_project_memory_list",
+    description: ProjectMemory.Guidance.tool_description(:list),
+    inputSchema: %{
+      type: "object",
+      required: ["project_id"],
+      properties: %{"project_id" => %{type: "string", description: "The project ID."}}
+    }
+  }
+
+  @schema_foreman_project_memory_read %{
+    name: "foreman_project_memory_read",
+    description: ProjectMemory.Guidance.tool_description(:read),
+    inputSchema: %{
+      type: "object",
+      required: ["project_id", "name"],
+      properties: %{
+        "project_id" => %{type: "string", description: "The project ID."},
+        "name" => %{type: "string", description: "Topic name, e.g. \"conventions\"."}
+      }
+    }
+  }
+
+  @schema_foreman_project_memory_write %{
+    name: "foreman_project_memory_write",
+    description:
+      ProjectMemory.Guidance.tool_description(:write) <> "\nRequires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      required: ["project_id", "name", "content"],
+      properties: %{
+        "project_id" => %{type: "string", description: "The project ID."},
+        "name" => %{
+          type: "string",
+          description: "Topic name: lowercase letters, digits, - and _ (max 64)."
+        },
+        "description" => %{
+          type: "string",
+          maxLength: 200,
+          description: "One-line hook shown in the MEMORY.md index."
+        },
+        "content" => %{
+          type: "string",
+          maxLength: 65_536,
+          description: "Markdown content of the topic (secrets are redacted)."
+        },
+        "run_id" => %{type: "string", description: "Optional run recorded as the author."},
+        "session_id" => %{type: "string", description: "Optional session recorded as the author."}
+      }
+    }
+  }
+
+  @schema_foreman_project_memory_forget %{
+    name: "foreman_project_memory_forget",
+    description:
+      ProjectMemory.Guidance.tool_description(:forget) <> "\nRequires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      required: ["project_id", "name"],
+      properties: %{
+        "project_id" => %{type: "string", description: "The project ID."},
+        "name" => %{type: "string", description: "Topic name to delete."},
+        "run_id" => %{type: "string", description: "Optional run recorded as the author."},
+        "session_id" => %{type: "string", description: "Optional session recorded as the author."}
+      }
+    }
+  }
+
   @tools [
     @schema_foreman_run_get,
     @schema_foreman_run_status,
@@ -755,7 +875,11 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_run_get_events,
     @schema_foreman_run_get_activity,
     @schema_foreman_inbox_get,
-    @schema_foreman_inbox_send
+    @schema_foreman_inbox_send,
+    @schema_foreman_project_memory_list,
+    @schema_foreman_project_memory_read,
+    @schema_foreman_project_memory_write,
+    @schema_foreman_project_memory_forget
   ]
 
   def list_tools, do: @tools
@@ -1134,6 +1258,126 @@ defmodule ForemanServer.MCP.Tools do
     Telemetry.mcp_tool_call(duration_us, "foreman_inbox_get", outcome)
     if result, do: {:ok, result}, else: {:ok, %{run_id: run_id, messages: []}}
   end
+
+  defp tool_foreman_project_memory_list(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with {:ok, topics} <- ProjectMemory.list(project_id),
+           {:ok, index} <- ProjectMemory.index(project_id) do
+        {:ok,
+         %__MODULE__.ProjectMemoryListResult{
+           project_id: project_id,
+           index: index,
+           entries: Enum.map(topics, &project_memory_entry/1)
+         }}
+      end
+
+    project_memory_reply("foreman_project_memory_list", start_us, result)
+  end
+
+  defp tool_foreman_project_memory_read(%{project_id: project_id, name: name}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with {:ok, topic, content} <- ProjectMemory.read(project_id, name) do
+        {:ok,
+         %__MODULE__.ProjectMemoryReadResult{
+           name: topic.name,
+           content: content,
+           bytes: byte_size(content)
+         }}
+      end
+
+    project_memory_reply("foreman_project_memory_read", start_us, result)
+  end
+
+  defp tool_foreman_project_memory_write(
+         %{project_id: project_id, name: name, content: content} = args
+       ) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with :ok <- authorize_write_tool("foreman_project_memory_write"),
+           {:ok, topic} <-
+             ProjectMemory.write(
+               project_id,
+               %{name: name, content: content, description: Map.get(args, :description)},
+               project_memory_author(args)
+             ) do
+        {:ok,
+         %__MODULE__.ProjectMemoryWriteResult{
+           name: topic.name,
+           sha256: topic.sha256,
+           bytes: topic.bytes,
+           redactions: topic.redactions
+         }}
+      end
+
+    project_memory_reply("foreman_project_memory_write", start_us, result)
+  end
+
+  defp tool_foreman_project_memory_forget(%{project_id: project_id, name: name} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with :ok <- authorize_write_tool("foreman_project_memory_forget"),
+           {:ok, topic} <- ProjectMemory.forget(project_id, name, project_memory_author(args)) do
+        {:ok, %__MODULE__.ProjectMemoryForgetResult{name: topic.name, status: "forgotten"}}
+      end
+
+    project_memory_reply("foreman_project_memory_forget", start_us, result)
+  end
+
+  # An MCP caller is an agent; operators use the CLI/HTTP surfaces.
+  defp project_memory_author(args),
+    do: %{kind: :agent, ref: Map.get(args, :run_id) || Map.get(args, :session_id)}
+
+  defp project_memory_entry(topic) do
+    %__MODULE__.ProjectMemoryEntry{
+      name: topic.name,
+      description: topic.description,
+      bytes: topic.bytes,
+      author_kind: topic.author_kind,
+      updated_at: topic.updated_at
+    }
+  end
+
+  defp project_memory_reply(tool, start_us, result) do
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _} = ok ->
+        Telemetry.mcp_tool_call(duration_us, tool, :ok)
+        ok
+
+      {:error, %ToolError{}} = error ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        error
+
+      {:error, %ProjectMemory.Error{} = error} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        {:error, project_memory_tool_error(error)}
+    end
+  end
+
+  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message})
+       when code in [:not_found, :project_not_found],
+       do: %ToolError{code: "NOT_FOUND", message: "#{code}: #{message}"}
+
+  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message})
+       when code in [
+              :name_invalid,
+              :description_invalid,
+              :content_too_large,
+              :index_full,
+              :too_many_topics,
+              :content_not_durable
+            ],
+       do: %ToolError{code: "INVALID_PARAMS", message: "#{code}: #{message}"}
+
+  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message}),
+    do: %ToolError{code: "DOMAIN_ERROR", message: "#{code}: #{message}"}
 
   defp tool_foreman_inbox_send(%{} = args) do
     start_us = System.monotonic_time(:microsecond)

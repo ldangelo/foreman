@@ -34,6 +34,7 @@ defmodule ForemanServer.Telemetry do
   @run_stop [:foreman, :dispatch, :run, :stop]
   @mcp_tool_call [:foreman_server, :mcp, :tool, :call]
   @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
+  @project_memory_op [:foreman_server, :project_memory, :op]
   @dispatcher_admission_failed [:foreman_server, :dispatcher, :admission_failed]
   @run_slots_acquired [:foreman_server, :run_slots, :acquired]
   @run_slots_queued [:foreman_server, :run_slots, :queued]
@@ -66,6 +67,7 @@ defmodule ForemanServer.Telemetry do
     @run_stop,
     @mcp_tool_call,
     @mcp_policy_refused,
+    @project_memory_op,
     @dispatcher_admission_failed,
     @run_slots_acquired,
     @run_slots_queued,
@@ -340,6 +342,16 @@ defmodule ForemanServer.Telemetry do
   # ---------------------------------------------------------------------------
   # MCP telemetry (TRD-042)
   # ---------------------------------------------------------------------------
+
+  @doc """
+  Emits `[:foreman_server, :project_memory, :op]` for a project-memory write/forget.
+  Metadata whitelist: `op` (`:write | :forget`), `author_kind`, `outcome` only -
+  never project content or topic text.
+  """
+  @spec project_memory_op(:write | :forget, String.t(), atom() | String.t()) :: :ok
+  def project_memory_op(op, author_kind, outcome) when op in [:write, :forget] do
+    execute(@project_memory_op, %{count: 1}, %{op: op, author_kind: author_kind, outcome: outcome})
+  end
 
   @doc """
   Emits `[:foreman_server, :mcp, :tool, :call]`.
