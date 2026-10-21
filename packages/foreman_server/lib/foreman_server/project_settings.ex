@@ -11,6 +11,7 @@ defmodule ForemanServer.ProjectSettings do
           instructions: String.t() | nil,
           thread_model: String.t() | nil,
           thread_effort: String.t() | nil,
+          coordinator_provider: String.t() | nil,
           coordinator_model: String.t() | nil,
           coordinator_effort: String.t() | nil,
           max_concurrent_runs: pos_integer() | nil,

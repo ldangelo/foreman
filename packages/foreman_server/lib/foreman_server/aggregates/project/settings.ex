@@ -11,18 +11,29 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   `ForemanServer.Events.ProjectUpdated` (plus `cleared_settings`) and are folded
   into the project's `config` under the same names.
 
+  `coordinator_provider` is a closed set (`JidoHarness.providers/0`): spike S1
+  found a per-project coordinator provider is needed (default `pi`, applied by
+  the coordinator in E15, not here). Validation here is a name check only; the
+  real provider probe belongs to E15, which is the first thing to start an agent.
+  There is no `coordinator_effort_effective?` helper: spike S1's default
+  coordinator provider (`pi`) declares `reasoning_effort`.
+
   Later epics add their key to `@validators` and nowhere else.
   """
+
+  alias ForemanServer.AgentRuntime.JidoHarness
 
   @max_instructions_chars 16_000
   @max_goal_chars 2_000
   @max_model_chars 200
   @max_concurrent_runs_range 1..1000
   @daily_thread_cap_range 1..10_000
-  @efforts ~w(minimal low medium high xhigh)
+  # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
+  # would validate here and then fail the launch.
+  @efforts ~w(low medium high)
 
-  @keys ~w(goal instructions thread_model thread_effort coordinator_model coordinator_effort
-           max_concurrent_runs daily_thread_cap)a
+  @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
+           coordinator_effort max_concurrent_runs daily_thread_cap)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -34,6 +45,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :instructions
           | :thread_model
           | :thread_effort
+          | :coordinator_provider
           | :coordinator_model
           | :coordinator_effort
           | :max_concurrent_runs
@@ -48,6 +60,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:instructions_invalid_encoding}
           | {:thread_model_invalid, term()}
           | {:thread_effort_invalid, term(), [String.t()]}
+          | {:invalid_setting, :coordinator_provider, {:unknown_provider, term()}}
           | {:coordinator_model_invalid, term()}
           | {:coordinator_effort_invalid, term(), [String.t()]}
           | {:max_concurrent_runs_invalid, term(), Range.t()}
@@ -168,6 +181,18 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   defp validate(:goal, value), do: text(value, :goal, @max_goal_chars)
   defp validate(:instructions, value), do: text(value, :instructions, @max_instructions_chars)
   defp validate(:thread_model, value), do: model(value, :thread_model)
+  defp validate(:coordinator_provider, nil), do: {:ok, nil}
+
+  defp validate(:coordinator_provider, value) when is_binary(value) do
+    supported = Enum.map(JidoHarness.providers(), &Atom.to_string/1)
+
+    case String.trim(value) do
+      "" -> {:ok, nil}
+      provider -> if provider in supported, do: {:ok, provider}, else: unknown_provider(value)
+    end
+  end
+
+  defp validate(:coordinator_provider, value), do: unknown_provider(value)
   defp validate(:coordinator_model, value), do: model(value, :coordinator_model)
   defp validate(:thread_effort, value), do: effort(value, :thread_effort)
   defp validate(:coordinator_effort, value), do: effort(value, :coordinator_effort)
@@ -177,6 +202,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:daily_thread_cap, value),
     do: ranged(value, :daily_thread_cap_invalid, @daily_thread_cap_range)
+
+  defp unknown_provider(value),
+    do: {:error, {:invalid_setting, :coordinator_provider, {:unknown_provider, value}}}
 
   defp text(nil, _name, _max), do: {:ok, nil}
 

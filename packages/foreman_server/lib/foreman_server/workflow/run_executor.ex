@@ -87,7 +87,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
           artifact_base: String.t(),
           plan_context: map() | nil,
           resume_from: non_neg_integer(),
-          resuming?: boolean()
+          resuming?: boolean(),
+          project_settings: ForemanServer.ProjectSettings.t() | nil
         }
   @spec start_link(String.t(), map(), keyword()) :: GenServer.on_start()
   def start_link(run_id, task_projection, opts \\ []) do
@@ -323,7 +324,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       artifact_base: default_artifact_base(),
       plan_context: plan_context,
       resume_from: resume_from,
-      resuming?: Keyword.get(opts, :resume_from) != nil
+      resuming?: Keyword.get(opts, :resume_from) != nil,
+      project_settings: latch_project_settings(task_projection)
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -736,7 +738,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp preflight_providers_and_models(state) do
     {reversed_failures, _cache} =
       Enum.reduce(state.phase_specs, {[], %{}}, fn phase_spec, {failures, cache} ->
-        case phase_provider_and_model_check(phase_spec, cache) do
+        case phase_provider_and_model_check(phase_spec, state, cache) do
           {:ok, cache} -> {failures, cache}
           {{:error, %PreflightFailure{} = failure}, cache} -> {[failure | failures], cache}
         end
@@ -746,9 +748,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if failures == [], do: :ok, else: {:error, failures}
   end
 
-  defp phase_provider_and_model_check(phase_spec, cache) do
+  defp phase_provider_and_model_check(phase_spec, state, cache) do
     declared_provider = Map.get(phase_spec, :provider)
-    model = phase_model(phase_spec)
+    model = phase_model(phase_spec, state)
 
     if is_nil(declared_provider) and is_nil(model) do
       {:ok, cache}
@@ -1187,7 +1189,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     policy = AgentRuntime.FailurePolicy.resolve(task_type, phase_timeout_opts(phase_spec))
     timeout_ms = Map.fetch!(policy, :timeout_ms)
 
-    model = phase_model(phase_spec)
+    model = phase_model(phase_spec, state)
     cwd = working_directory_for(state, worktree_record)
 
     foreman_env =
@@ -1211,6 +1213,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
        driver_opts: fn remaining_ms ->
          [timeout: remaining_ms, await_timeout: remaining_ms, cwd: cwd]
          |> maybe_put_driver_model(model)
+         |> maybe_put_driver_effort(state, request)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec)
        end,
@@ -2079,7 +2082,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     base
     |> Map.merge(state.plan_context || %{})
     |> Map.merge(Map.get(phase_spec, :context) || %{})
-    |> map_from_models(phase_spec)
+    |> map_from_models(phase_spec, state)
     |> map_from_provider(phase_spec)
     |> override_working_directory(worktree_record)
   end
@@ -2098,8 +2101,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # Inject workflow-declared model into context (Req-020).
   # phase_spec.models is %{"default" => "MiniMax"} from YAML,
   # normalized to atom-keyed map by PhaseSpec.normalize/1.
-  defp map_from_models(context, spec) do
-    case phase_model(spec) do
+  defp map_from_models(context, spec, state) do
+    case phase_model(spec, state) do
       nil -> context
       model -> Map.put(context, :model, model)
     end
@@ -2122,7 +2125,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `preflight_providers_and_models/1` (the live catalog check before phase 1
   # dispatches) — one extraction, not two hand-written copies of the same
   # `models.default` lookup.
-  defp phase_model(phase_spec) do
+  #
+  # Precedence: the phase's `models.default` > the project's `thread_model` >
+  # provider default (no model). The project value comes from the settings
+  # latched in executor state (`latch_project_settings/1`).
+  defp phase_model(phase_spec, state) do
+    phase_declared_model(phase_spec) || project_setting(state, :thread_model)
+  end
+
+  defp phase_declared_model(phase_spec) do
     case Map.get(phase_spec, :models) do
       nil ->
         nil
@@ -3095,6 +3106,59 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp maybe_put_driver_model(opts, _model), do: opts
 
+  # The project's `thread_effort`, delivered as `reasoning_effort` only when the
+  # resolved provider's adapter declares it as a normalized option. An
+  # unsupported provider ignores it (one info log per launch) — never an error.
+  defp maybe_put_driver_effort(opts, state, request) do
+    case project_setting(state, :thread_effort) do
+      nil ->
+        opts
+
+      effort ->
+        provider = JidoHarness.request_provider(request)
+
+        if provider_supports_reasoning_effort?(provider) do
+          Keyword.put(opts, :reasoning_effort, String.to_existing_atom(effort))
+        else
+          Logger.info("reasoning_effort ignored for provider #{provider}",
+            run_id: state.run_id,
+            operation: "run_executor.thread_effort",
+            outcome: "ignored"
+          )
+
+          opts
+        end
+    end
+  end
+
+  defp provider_supports_reasoning_effort?(provider) when is_atom(provider) do
+    case Jido.Harness.Registry.spec(provider) do
+      {:ok, spec} -> :reasoning_effort in spec.normalized_options
+      {:error, _} -> false
+    end
+  end
+
+  defp provider_supports_reasoning_effort?(_provider), do: false
+
+  # Project settings are read ONCE when the executor starts and latched in
+  # state, so preflight and every phase launch agree. A resumed run starts a
+  # fresh executor and therefore reads the project's CURRENT settings (not a
+  # run-start snapshot): changing the project's model between a crash and a
+  # resume deliberately applies to the remaining phases.
+  defp latch_project_settings(task) when is_map(task) do
+    case Map.get(task, :project_id) || Map.get(task, "project_id") do
+      id when is_binary(id) and id != "" -> ProjectionStore.project_settings(id)
+      _ -> nil
+    end
+  end
+
+  defp project_setting(state, key) do
+    case Map.get(state, :project_settings) do
+      %ForemanServer.ProjectSettings{} = settings -> Map.fetch!(settings, key)
+      nil -> nil
+    end
+  end
+
   defp maybe_put_foreman_model(env, model)
        when is_map(env) and is_binary(model) and model != "" do
     Map.put(env, "FOREMAN_MODEL", model)
@@ -3430,6 +3494,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __find_resumable_worktree_for_test__(run_id), do: find_resumable_worktree(run_id)
+  @doc false
+  def __prepare_agent_launch_for_test__(state, phase_spec, index, phase_index, worktree_record),
+    do: prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record)
+
+  @doc false
+  def __preflight_for_test__(state), do: preflight_providers_and_models(state)
+
+  @doc false
+  def __latch_project_settings_for_test__(task), do: latch_project_settings(task)
+
   @doc false
   def __foreman_env_for_test__(state, worktree_record, artifact_path, model),
     do: foreman_env(state, worktree_record, artifact_path, model)
