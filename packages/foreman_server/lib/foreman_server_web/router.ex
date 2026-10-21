@@ -127,5 +127,13 @@ defmodule ForemanServerWeb.Router do
     pipe_through([:browser, :require_authenticated])
     live("/", LiveDashboard)
     live("/runs", OperatorRunDashboardLive, :index)
+
+    # E16: the project workspace. One live_session so navigating between the
+    # workspace and its settings stays on the already-authenticated socket.
+    live_session :project_workspace,
+      root_layout: {ForemanServerWeb.Workspace.Layouts, :root} do
+      live("/projects/:id", ProjectWorkspaceLive, :show)
+      live("/projects/:id/settings", ProjectSettingsLive, :show)
+    end
   end
 end
