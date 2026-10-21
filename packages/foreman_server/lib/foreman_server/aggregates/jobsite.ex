@@ -52,6 +52,8 @@ defmodule ForemanServer.Aggregates.Jobsite do
               completion_signals: [],
               prompt_digest: nil,
               name: nil,
+              bead_id: nil,
+              project_id: nil,
               push?: false,
               iteration_index: 0,
               iteration_open?: false,
@@ -129,6 +131,8 @@ defmodule ForemanServer.Aggregates.Jobsite do
         completion_signals: e.completion_signals || [],
         prompt_digest: e.prompt_digest,
         name: e.name,
+        bead_id: e.bead_id,
+        project_id: e.project_id,
         push?: e.push == true
     }
   end

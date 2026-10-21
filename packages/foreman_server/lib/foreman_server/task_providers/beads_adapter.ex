@@ -52,7 +52,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         :list_dependencies,
         :add_dependency,
         :remove_dependency,
-        :create
+        :create,
+        :label
       ]
     }
   end
@@ -2864,6 +2865,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
            "BeadsAdapter.create/2 requires a non-empty :command_id correlation handle."
          )}
 
+      not valid_labels?(Map.get(attrs, :labels)) ->
+        {:error, invalid_labels_error(Map.get(attrs, :labels))}
+
       true ->
         validate_create_attrs_priority_and_type(attrs)
     end
@@ -2883,6 +2887,27 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       true ->
         :ok
     end
+  end
+
+  defp valid_labels?(nil), do: true
+
+  defp valid_labels?(labels) when is_list(labels) do
+    Enum.all?(labels, &(is_binary(&1) and &1 != "" and not String.contains?(&1, ",")))
+  end
+
+  defp valid_labels?(_other), do: false
+
+  defp invalid_labels_error(got) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "VALIDATION_FAILED",
+        "Bead labels must be a list of non-empty binaries without commas.",
+        "Pass :labels as a list of comma-free label strings (got: #{inspect(got)}).",
+        false
+      ),
+      nil,
+      0
+    )
   end
 
   defp invalid_title_error(message) do
@@ -2991,6 +3016,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
           priority: Map.fetch!(attrs, :priority)
         }
       )
+
+    base_payload =
+      case Map.get(attrs, :labels) do
+        [_ | _] = labels -> Map.put(base_payload, :labels, labels)
+        _absent_or_empty -> base_payload
+      end
 
     if is_binary(dedupe_key) and dedupe_key != "" do
       Map.put(base_payload, :dedupe_key, dedupe_key)

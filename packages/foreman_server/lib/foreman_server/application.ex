@@ -127,6 +127,7 @@ defmodule ForemanServer.Application do
         ] ++
         maybe_jobsite_boot_recovery_child() ++
         maybe_messaging_dispatcher_child() ++
+        maybe_review_children() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
         maybe_trigger_poller_child() ++
@@ -208,6 +209,17 @@ defmodule ForemanServer.Application do
   defp maybe_messaging_dispatcher_child do
     if Application.get_env(:foreman_server, :start_messaging_dispatcher?, true) do
       [ForemanServer.Messaging.Dispatcher]
+    else
+      []
+    end
+  end
+
+  defp maybe_review_children do
+    if Application.get_env(:foreman_server, :review, [])[:analysis] do
+      [
+        {Task.Supervisor, name: ForemanServer.Review.TaskSupervisor},
+        ForemanServer.Review.Analyzer
+      ]
     else
       []
     end

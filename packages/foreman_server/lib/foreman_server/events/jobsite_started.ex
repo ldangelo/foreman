@@ -16,7 +16,9 @@ defmodule ForemanServer.Events.JobsiteStarted do
           prompt_digest: String.t() | nil,
           name: String.t() | nil,
           started_at_ms: non_neg_integer() | nil,
-          push: boolean()
+          push: boolean(),
+          bead_id: String.t() | nil,
+          project_id: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -34,6 +36,8 @@ defmodule ForemanServer.Events.JobsiteStarted do
     :prompt_digest,
     :name,
     :started_at_ms,
+    :bead_id,
+    :project_id,
     push: false
   ]
 end

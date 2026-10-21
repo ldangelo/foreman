@@ -263,6 +263,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       "--agent-context",
       fetch_optional(payload, :agent_context)
     ]
+    |> maybe_append_labels(payload)
     |> maybe_append_json_flag()
   end
 
@@ -358,6 +359,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
         raise ArgumentError,
               "expected :priority to be an integer in 0..4, got: #{inspect(other)}"
     end
+
+    validate_create_labels!(fetch_optional(payload, :labels))
 
     case fetch_optional(payload, :description) do
       description when is_binary(description) ->
@@ -469,6 +472,33 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   end
 
   defp maybe_prepend_id(flags, _action, _payload), do: flags
+
+  defp maybe_append_labels(flags, payload) do
+    case fetch_optional(payload, :labels) do
+      [_ | _] = labels -> flags ++ ["--labels", Enum.join(labels, ",")]
+      _absent_or_empty -> flags
+    end
+  end
+
+  defp validate_create_labels!(nil), do: :ok
+
+  defp validate_create_labels!(labels) when is_list(labels) do
+    Enum.each(labels, fn
+      label when is_binary(label) and label != "" ->
+        if String.contains?(label, ",") do
+          raise ArgumentError,
+                "expected :labels entries to contain no comma (br splits --labels on commas), got: #{inspect(label)}"
+        end
+
+      other ->
+        raise ArgumentError,
+              "expected :labels entries to be non-empty binaries, got: #{inspect(other)}"
+    end)
+  end
+
+  defp validate_create_labels!(other) do
+    raise ArgumentError, "expected :labels to be a list of binaries, got: #{inspect(other)}"
+  end
 
   defp maybe_append_json_flag(flags) do
     if Enum.member?(flags, "--json"), do: flags, else: flags ++ ["--json"]

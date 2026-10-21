@@ -2816,6 +2816,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # every phase boundary. With one worktree per run that is actively wrong: it
   # would delete the checkout the next phase is about to continue in.
   defp cleanup_run_worktree(state, outcome) when outcome in [:success, :failure] do
+    _ = ForemanServer.Review.Capture.close_run(state, outcome)
+
     warn_uncommitted_work(state)
 
     case {Map.get(state, :run_worktree), outcome} do
@@ -3337,6 +3339,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __worktree_cleanup_for_test__(worktree), do: worktree_cleanup(worktree)
+
+  @doc false
+  def __cleanup_run_worktree_for_test__(state, outcome), do: cleanup_run_worktree(state, outcome)
 
   @doc false
   def __warn_uncommitted_work_for_test__(state), do: warn_uncommitted_work(state)

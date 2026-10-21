@@ -428,6 +428,64 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
     end
   end
 
+  describe "create/2 :labels" do
+    test "labels reach the runner payload" do
+      register_project!("proj-labels", "/abs/labels.db")
+      test_pid = self()
+
+      expect(BrRunnerMock, :cmd, 1, fn request, _cfg, _opts ->
+        send(test_pid, {:captured, request})
+
+        {:ok,
+         %{
+           stdout: Jason.encode!(create_response_payload(%{"id" => "bead-lbl"})),
+           stderr: "",
+           exit_code: 0
+         }}
+      end)
+
+      attrs = base_attrs(%{labels: ["foreman-exec", "foreman-gap"]})
+
+      assert {:ok, %Issue{}} = BeadsAdapter.create("proj-labels", attrs)
+
+      assert_received {:captured, {:create, payload}}
+      assert payload.labels == ["foreman-exec", "foreman-gap"]
+    end
+
+    test "absent labels leave the payload without a :labels key" do
+      register_project!("proj-nolabels", "/abs/nolabels.db")
+      test_pid = self()
+
+      expect(BrRunnerMock, :cmd, 1, fn request, _cfg, _opts ->
+        send(test_pid, {:captured, request})
+
+        {:ok,
+         %{
+           stdout: Jason.encode!(create_response_payload(%{"id" => "bead-nl"})),
+           stderr: "",
+           exit_code: 0
+         }}
+      end)
+
+      assert {:ok, %Issue{}} = BeadsAdapter.create("proj-nolabels", base_attrs())
+
+      assert_received {:captured, {:create, payload}}
+      refute Map.has_key?(payload, :labels)
+    end
+
+    test "invalid labels are rejected before reaching the runner" do
+      register_project!("proj-badlabels", "/abs/bad.db")
+
+      for bad <- ["foreman-exec", [:atom], [""], ["a,b"]] do
+        assert {:error, %ProviderError{} = err} =
+                 BeadsAdapter.create("proj-badlabels", base_attrs(%{labels: bad}))
+
+        assert err.code == "VALIDATION_FAILED"
+        assert err.retryable? == false
+      end
+    end
+  end
+
   ## Helpers
 
   defp base_attrs(overrides \\ %{}) do

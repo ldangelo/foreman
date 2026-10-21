@@ -1341,6 +1341,82 @@ claims as written; add a forward-pointer note instead of rewriting them.
 - Do not manually mutate an active run's worktree unless you intend to
   take ownership of that run.
 
+## Session archive and automated review
+
+Every terminal run (workflow runs and jobsites — completed, failed, or
+cancelled) leaves a session archive under
+`<repo>/.foreman/sessions/<run|jobsite>/<id>/`:
+`manifest.json`, `request.md` (the original request), `transcript.jsonl`,
+`diff.patch`, `changed-files.txt`, and — once reviewed — `analysis.json` and
+`analysis.md`. Capture never fails a run; a failed or truncated capture is
+recorded in the manifest (`capture_errors`, `transcript_truncated`,
+`diff_status`), never silently empty. A workflow run's transcript is rebuilt
+from its redacted, bounded run logs (`transcript_source: "run_logs"`); a
+jobsite's comes from the harness events.
+
+A cancelled run or jobsite is archived and reviewed like any other, with
+manifest `status: "cancelled"`. Cancelled work is never committed, so its
+`diff.patch` is the working-tree diff against the base: uncommitted changes to
+tracked files and new untracked files are included (gitignored files are not;
+the checkout's index is marked intent-to-add). If that marking fails, for example
+on a held `index.lock`, the diff still holds every tracked change but omits the
+new files, and the manifest's `capture_errors` says so (stage `intent_to_add`).
+A jobsite cancel captures that diff just before its worktree is discarded. For a
+workflow run, `run.cancel`
+is recorded before the run's executor has actually stopped, so the review step
+waits up to 30 seconds for the executor to exit before it archives the run from
+its retained worktree (after the timeout it captures anyway and logs a warning).
+
+A failed workflow run has the same ordering problem: the phase failure records
+`run.fail` before the executor has written the run's archive, so the review step
+waits up to 30 seconds for the executor to exit and then reviews the archive the
+executor wrote. After the timeout it reviews anyway and logs a warning; if the
+archive still does not exist the review is recorded `undetermined` with
+`error_code: archive_missing`. A completed run is not waited for: its archive is
+written before `run.complete`.
+
+After the archive is written, a fixed reviewer agent grades the diff and
+transcript against the original request on correctness, tests, documentation
+and robustness, and records a `ReviewRecorded` event (command `review.record`,
+system-only: not on the operator allowlist). The reviewer grades the content of
+the diff against the request, not the branch outcome: whether the work was
+pushed, merged or opened as a PR is never counted as a gap. Verdicts are `met`,
+`partially_met`, `not_met`, or `undetermined` (the review itself failed; the
+`error_code` says why). When the work came from a bead (workflow runs whose
+task id is `beads:<project>:<bead>`, or a jobsite started with `bead_id`) the
+verdict is posted as a bead comment and each gap becomes a new bead labelled
+`foreman-exec` + `foreman-gap`, which Foreman then dispatches. A bead that
+an earlier recorded review filed as a gap bead gets the comment but spawns no
+further gap beads (depth cap of 1); the guard is the review event log, so it
+needs no `br show`. The bead step needs both `bead_id` and `project_id`: a
+jobsite without a `project_id` is still reviewed and the review is recorded,
+only the bead step (comment and gap beads) is skipped. A cancelled run or
+jobsite gets the verdict comment but no gap beads: unfinished work the operator
+stopped on purpose is not filed as work items (the recorded summary says so).
+
+Transcript lines are `{type, timestamp, text, stream}`; `stream` is non-null
+only for process-stream provider events such as stderr. Text is secret-redacted
+before it is written (values of sensitive environment variables and bearer
+tokens become `[REDACTED]`).
+
+Known limits: a review is write-once per subject — a recorded `undetermined`
+is never retried, and re-reviewing needs a new mechanism. The Analyzer does not
+replay history on boot, so runs that finish while it is down are not reviewed.
+A second terminal event for a subject whose review is still running is ignored.
+With `:pi` the harness surfaced zero text events in a smoke test, and with
+`:claude` the authentication must be valid; verify the reviewer provider by
+running a jobsite end to end before relying on verdicts.
+
+Add `.foreman/sessions/` to the `.gitignore` of every repo Foreman reviews:
+untracked files there can be swept into an agent's `git add -A`.
+
+Configuration (`config :foreman_server, :review`): `capture`, `analysis`
+(set `analysis: false` to keep archiving but stop spending an agent run per
+terminal run), `archive_root`, `agent` (`%{provider:, model:, effort:}` — the
+reviewer is deliberately independent of the run's own provider), `evaluator`,
+`evaluator_timeout_ms`, `max_transcript_bytes`, `max_diff_bytes`,
+`max_comment_bytes`, `max_gap_beads`.
+
 ## Further Reading
 
 - Command syntax: [CLI Reference](./cli-reference.md)

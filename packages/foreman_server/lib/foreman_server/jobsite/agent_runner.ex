@@ -62,7 +62,15 @@ defmodule ForemanServer.Jobsite.AgentRunner do
            ) do
       case Run.start(agent.provider, request) do
         {:ok, run_id} ->
-          run_iteration(run_id, index, signals, completion_timeout_ms, on_event, intent_fun)
+          run_iteration(
+            run_id,
+            index,
+            signals,
+            completion_timeout_ms,
+            on_event,
+            intent_fun,
+            Keyword.get(opts, :archive_dir)
+          )
 
         {:error, reason} ->
           {:error, Error.new(:agent_start_failed, "failed to start agent run", %{reason: reason})}
@@ -149,12 +157,20 @@ defmodule ForemanServer.Jobsite.AgentRunner do
 
   @intent_poll_ms 500
 
-  defp run_iteration(run_id, index, signals, completion_timeout_ms, on_event, intent_fun) do
+  defp run_iteration(
+         run_id,
+         index,
+         signals,
+         completion_timeout_ms,
+         on_event,
+         intent_fun,
+         archive_dir
+       ) do
     case Run.stream(run_id) do
       {:ok, stream} ->
         parent = self()
         consumer = spawn_consumer(stream, signals, on_event, parent)
-        awaiter = spawn_awaiter(run_id, parent)
+        awaiter = spawn_awaiter(run_id, parent, archive_dir)
         result = wait(run_id, index, completion_timeout_ms, "", nil, intent_fun)
         Process.exit(consumer, :kill)
         Process.exit(awaiter, :kill)
@@ -186,9 +202,21 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     end)
   end
 
-  defp spawn_awaiter(run_id, parent) do
+  # The awaiter is the one place every harness `RunResult` (success or failed
+  # status) passes through, so the session archive is written here, before the
+  # result is handed to `wait/6`. Capture never fails the iteration.
+  defp spawn_awaiter(run_id, parent, archive_dir) do
     spawn(fn ->
       result = Run.await(run_id, :infinity)
+
+      case result do
+        {:ok, %RunResult{} = run_result} ->
+          _ = ForemanServer.Review.Capture.put_iteration(archive_dir, run_result)
+
+        _other ->
+          :ok
+      end
+
       send(parent, {:result, result})
     end)
   end

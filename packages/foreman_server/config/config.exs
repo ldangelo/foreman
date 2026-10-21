@@ -255,4 +255,17 @@ config :foreman_server, :jido_vfs,
   # may be in /tmp). Default true in dev/prod.
   enforce_allowlist: System.get_env("FOREMAN_VFS_ENFORCE_ALLOWLIST", "true") == "true"
 
+# Per-run session archive + automated review (ForemanServer.Review).
+config :foreman_server, :review,
+  capture: true,
+  analysis: true,
+  archive_root: nil,
+  agent: %{provider: :claude, model: nil, effort: nil},
+  evaluator: ForemanServer.Review.Evaluator.Agent,
+  evaluator_timeout_ms: 900_000,
+  max_transcript_bytes: 2_000_000,
+  max_diff_bytes: 1_000_000,
+  max_comment_bytes: 8_000,
+  max_gap_beads: 10
+
 import_config "#{config_env()}.exs"

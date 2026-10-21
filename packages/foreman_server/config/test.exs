@@ -139,3 +139,10 @@ config :foreman_server, :signoz_logs, enabled: false
 # locally and 404'd in CI. Tests that need their own manifests still override
 # :workflow_catalog with an isolated Catalog rooted at a tmp dir.
 config :foreman_server, :workflow_root, Path.expand("../test/fixtures/workflows", __DIR__)
+
+# Archiving/analysis off by default in test: otherwise every jobsite/run test
+# would write into the repo's own .foreman/sessions. Tests opt in per-test.
+config :foreman_server, :review,
+  capture: false,
+  analysis: false,
+  evaluator: ForemanServer.Review.Evaluator.Stub

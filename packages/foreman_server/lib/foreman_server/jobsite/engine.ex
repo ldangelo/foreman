@@ -422,12 +422,29 @@ defmodule ForemanServer.Jobsite.Engine do
   defp run_step(%Step{kind: :agent} = step, ctx, observer, observer_state, intent_fun) do
     case Prompt.resolve(agent_prompt_opts(step.opts), ctx.sandbox, %{}) do
       {:ok, prompt_text} ->
+        open_archive(step.opts, ctx, prompt_text)
         iterate_agent(step, ctx, observer, observer_state, intent_fun, prompt_text, 1, [])
 
       {:error, %Error{} = error} ->
         {:error, error, observer_state}
     end
   end
+
+  # The resolved prompt only exists here (it needs the sandbox for `prompt_file`
+  # and `!`cmd`` expansion), so the archive is opened here, with exactly the text
+  # the agent will receive. Only the jobsite door sets `:archive_spec` on its
+  # agent step; the workflow door never does, so it never writes a jobsite archive.
+  defp open_archive(%{archive_spec: spec}, %Context{} = ctx, prompt_text) do
+    _ = ForemanServer.Review.Capture.open_jobsite(ctx.jobsite_id, spec, prompt_text)
+    :ok
+  end
+
+  defp open_archive(_step_opts, _ctx, _prompt_text), do: :ok
+
+  defp archive_dir(%{archive_spec: _spec}, %Context{} = ctx),
+    do: ForemanServer.Review.Archive.dir(:jobsite, ctx.jobsite_id, ctx.repo_path)
+
+  defp archive_dir(_step_opts, _ctx), do: nil
 
   defp agent_prompt_opts(opts) do
     opts
@@ -504,7 +521,8 @@ defmodule ForemanServer.Jobsite.Engine do
         completion_signals: signals,
         intent_fun: intent_fun,
         run_id: ctx.jobsite_id,
-        cwd: (ctx.worktree && ctx.worktree.path) || (ctx.sandbox && ctx.sandbox.worktree.path)
+        cwd: (ctx.worktree && ctx.worktree.path) || (ctx.sandbox && ctx.sandbox.worktree.path),
+        archive_dir: archive_dir(step.opts, ctx)
       ]
       |> put_launch(step.opts)
 
