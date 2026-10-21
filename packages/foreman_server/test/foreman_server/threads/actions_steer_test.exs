@@ -9,7 +9,6 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
   alias ForemanServer.Jobsite
   alias ForemanServer.Jobsite.{Agents, Sandboxes}
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.RunAdmission
   alias ForemanServer.Threads.Actions
 
   @recording_agent Path.join(__DIR__, "../jobsite/support/recording_agent.sh")
@@ -162,8 +161,8 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
                payload: %{project_id: project_id, name: project_id, path: System.tmp_dir!()}
              })
 
-    assert {:ok, result} =
-             RunAdmission.start(project_id, %{
+    assert {:ok, _} =
+             CommandRouter.dispatch_run_start(project_id, %{
                run_id: run_id,
                task_id: unique("task"),
                workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]},
@@ -171,7 +170,6 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
                approval_id: unique("approval")
              })
 
-    refute result in [:queued, :slot_queued]
     await_event("RunStarted", :run_id, run_id)
     run_id
   end

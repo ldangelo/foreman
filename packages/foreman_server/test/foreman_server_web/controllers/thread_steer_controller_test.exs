@@ -4,10 +4,8 @@ defmodule ForemanServerWeb.ThreadSteerControllerTest do
   import Plug.Conn
   import Phoenix.ConnTest
 
-  alias ForemanServer.CommandGateway
   alias ForemanServer.CommandRouter
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.RunAdmission
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @endpoint ForemanServerWeb.Endpoint
@@ -93,24 +91,6 @@ defmodule ForemanServerWeb.ThreadSteerControllerTest do
     n = System.unique_integer([:positive])
     project_id = "steer-http-project-#{n}"
     run_id = "steer-http-run-#{n}"
-    slot = "steer-http-slot-#{n}"
-
-    {:ok, _} =
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.acquire",
-        command_id: "steer-http:#{slot}",
-        aggregate_id: "run_slots:global",
-        payload: %{run_id: slot, capacity: 100}
-      })
-
-    on_exit(fn ->
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.release",
-        command_id: "steer-http:release:#{slot}",
-        aggregate_id: "run_slots:global",
-        payload: %{run_id: slot}
-      })
-    end)
 
     {:ok, _} =
       CommandRouter.dispatch(%{
@@ -121,7 +101,7 @@ defmodule ForemanServerWeb.ThreadSteerControllerTest do
       })
 
     {:ok, _} =
-      RunAdmission.start(project_id, %{
+      CommandRouter.dispatch_run_start(project_id, %{
         run_id: run_id,
         task_id: "task-#{n}",
         workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]},

@@ -15,7 +15,6 @@ defmodule ForemanServer.Threads.FinderTest do
   alias ForemanServer.MCP.ToolError
   alias ForemanServer.MCP.Tools
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.RunAdmission
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Threads.Actions
   alias ForemanServer.Threads.Finder
@@ -340,8 +339,8 @@ defmodule ForemanServer.Threads.FinderTest do
                payload: %{project_id: project_id, name: project_id, path: System.tmp_dir!()}
              })
 
-    assert {:ok, result} =
-             RunAdmission.start(project_id, %{
+    assert {:ok, _} =
+             CommandRouter.dispatch_run_start(project_id, %{
                run_id: run_id,
                task_id: unique("task"),
                workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]},
@@ -349,7 +348,6 @@ defmodule ForemanServer.Threads.FinderTest do
                approval_id: unique("approval")
              })
 
-    refute result in [:queued, :slot_queued]
     await_event("RunStarted", run_id)
     {run_id, project_id}
   end

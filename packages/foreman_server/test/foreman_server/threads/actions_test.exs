@@ -1,7 +1,8 @@
 defmodule ForemanServer.Threads.ActionsTest do
   # `Threads.Actions.stop/3` on both doors, driven by real events: a run is
-  # admitted through `RunAdmission.start/2` and a jobsite is started through
-  # its aggregate, so the thread's status comes from the live projection.
+  # started with `CommandRouter.dispatch_run_start/2` (no global slot gate, which other
+  # tests can exhaust) and a jobsite through its aggregate, so the thread's status
+  # comes from the live projection.
   use ExUnit.Case, async: false
 
   alias ForemanServer.CommandGateway
@@ -9,33 +10,11 @@ defmodule ForemanServer.Threads.ActionsTest do
   alias ForemanServer.EventStore
   alias ForemanServer.Jobsite.Control
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.RunAdmission
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Actions
 
   setup do
     :ok = ProjectionStore.subscribe(replay_existing: false)
-
-    # Generous slot capacity so admission never queues the run.
-    slot_init = "thread-stop-slot-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.acquire",
-        command_id: "thread-stop-test:#{slot_init}",
-        aggregate_id: "run_slots:global",
-        payload: %{run_id: slot_init, capacity: 100}
-      })
-
-    on_exit(fn ->
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.release",
-        command_id: "thread-stop-test:release:#{slot_init}",
-        aggregate_id: "run_slots:global",
-        payload: %{run_id: slot_init}
-      })
-    end)
-
     :ok
   end
 
@@ -138,8 +117,8 @@ defmodule ForemanServer.Threads.ActionsTest do
                payload: %{project_id: project_id, name: project_id, path: System.tmp_dir!()}
              })
 
-    assert {:ok, result} =
-             RunAdmission.start(project_id, %{
+    assert {:ok, _} =
+             CommandRouter.dispatch_run_start(project_id, %{
                run_id: run_id,
                task_id: unique("task"),
                workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]},
@@ -147,7 +126,6 @@ defmodule ForemanServer.Threads.ActionsTest do
                approval_id: unique("approval")
              })
 
-    refute result in [:queued, :slot_queued]
     await_event("RunStarted", :run_id, run_id)
     run_id
   end
