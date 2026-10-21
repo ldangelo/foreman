@@ -1,0 +1,20 @@
+Info: Running script "/tmp/s2run3.sh" on /tmp/cp-wt/spikes
+devbox shell  ::  foreman.jido-migration  ::  Erlang/OTP 28 [erts-16.4.0.5] [source] [64-bit] [smp:18:18] [ds:18:18:10] [async-threads:1] [jit]
+
+Mix 1.20.4 (compiled with Erlang/OTP 28)
+[+57ms] session: "session_aGjw-_bBXAIx4CLf0MXb75UC"
+[+742ms] info: %{state: :idle, transport: :acp}
+[+33024ms] approval_requested event: %{timestamp: "2026-10-21T12:10:12.335300Z", type: :approval_requested, session_id: "session_aGjw-_bBXAIx4CLf0MXb75UC", request_id: "0", provider: :opencode, run_id: nil, provider_session_id: "ses_ea1a20410ffearMn8OCj4st87E", payload: %{"options" => [%{"kind" => "allow_once", "name" => "Allow once", "optionId" => "once"}, %{"kind" => "allow_always", "name" => "Always allow", "optionId" => "always"}, %{"kind" => "reject_once", "name" => "Reject", "optionId" => "reject"}], "tool_call" => %{"content" => [%{"newText" => "HELLO\n", "oldText" => nil, "path" => "/tmp/s2-scratch-oc/hello.txt", "type" => "diff"}], "kind" => "edit", "locations" => [%{"path" => "/tmp/s2-scratch-oc/hello.txt"}], "name" => "write", "rawInput" => %{"content" => "HELLO\n", "path" => "hello.txt"}, "status" => "pending", "title" => "hello.txt", "toolCallId" => "call_01a15e5e796d74ff85a6d048"}}, turn_id: "turn_4DkhlglcLBoYECPqkMOskavI", ...}
+[+33024ms] info while waiting: %{state: :awaiting_approval, pending_approvals: 1}
+[+33031ms] respond deny: :ok
+[+33062ms] turn1 (deny): %{status: :interrupted, text: "I'll create the file using the write tool.", provider_session_id: "ses_ea1a20410ffearMn8OCj4st87E"}
+[+33063ms] hello.txt after deny: false
+[+33063ms] resolved events: [{"0", %{"decision" => "deny", "scope" => "once"}}]
+[+43572ms] respond approve: :ok
+[+45567ms] turn2 (approve): %{status: :completed, text: "Created `approved.txt` containing `YES`.", provider_session_id: "ses_ea1a20410ffearMn8OCj4st87E"}
+[+45567ms] approved.txt: {:ok, "YES\n"}
+[+47599ms] unanswered: waiting for approval_timeout_ms=20000: :ok
+[+67488ms] turn3 (unanswered): %{status: :interrupted, text: "", provider_session_id: "ses_ea1a20410ffearMn8OCj4st87E"}
+[+67489ms] timeout resolved: [%{"decision" => "deny", "reason" => "timeout", "scope" => "once"}]
+[+67489ms] timeout.txt exists: false
+[+67489ms] provider_session_id: "ses_ea1a20410ffearMn8OCj4st87E"

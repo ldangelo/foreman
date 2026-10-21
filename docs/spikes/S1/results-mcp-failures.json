@@ -1,0 +1,115 @@
+{
+ "A_partial": {
+  "calls": [
+   {
+    "event": "call",
+    "tool": "foreman_thread_create",
+    "args": {
+     "title": "Cart total ignores quantity discounts",
+     "workflow": "fix",
+     "prompt": "Bug report from QA:\n\n1) cart total ignores quantity discounts\n\nRepro (as reported by QA): when a line item has a quantity that qualifies for a volume/quantity discount, the cart total is computed without applying that discount. The cart subtotal/total shown to the customer does not reflect quantity discount pricing.\n\nNotes:\n- This affects cart total calculation, which is part of the checkout flow. Per project memory, checkout errors page the on-call and checkout bugs are treated as high priority.\n- Expected: cart total applies quantity discounts for qualifying line items.\n- Please investigate where the cart total is computed (likely a Cart/Order total calculation module and its Ecto schemas/queries), fix the discount application, and add/adjust tests. Run `mix test`.\n- Stack: Elixir 1.17 / Phoenix 1.7 / Ecto 3.11 / Postgres 16.\n- Code style: use `mix format` and Credo strict; no `IO.inspect` in committed code. Never touch config/runtime.exs secrets.\n- PRs target `main`.\n- Do not assume specific file names or function names exist \u2014 locate the real code first. Report what you actually changed and the test results."
+    },
+    "error": null
+   },
+   {
+    "event": "call",
+    "tool": "foreman_thread_create",
+    "args": {
+     "title": "'Back to shop' link 404s (/shop)",
+     "workflow": "fix",
+     "prompt": "Bug report from QA:\n\n2) the 'Back to shop' link goes to /shop which 404s\n\nRepro: on a page with a \"Back to shop\" link (e.g. an empty-cart / order-complete / error page), clicking the link navigates to /shop and returns a 404 Not Found.\n\nExpected: the \"Back to shop\" link should navigate to the actual catalog/shop route that exists in this Phoenix app.\n\nNotes:\n- Please locate the router (Phoenix 1.7 scope-based routes) and determine the real path for the product listing/catalog page, then update the link (and any hardcoded \"/shop\" path) accordingly.\n- Also check for other templates/links pointing at /shop.\n- Run `mix test`.\n- Stack: Elixir 1.17 / Phoenix 1.7 / Ecto 3.11 / Postgres 16.\n- Code style: use `mix format` and Credo strict; no `IO.inspect` in committed code. Never touch config/runtime.exs secrets.\n- PRs target `main`.\n- Do not assume specific file names exist \u2014 locate the real code first. Report what you actually changed and the test results."
+    },
+    "error": "simulated transient failure"
+   },
+   {
+    "event": "call",
+    "tool": "foreman_thread_create",
+    "args": {
+     "title": "Newsletter signup accepts 'a@b' as valid",
+     "workflow": "fix",
+     "prompt": "Bug report from QA:\n\n3) newsletter signup accepts 'a@b' as valid\n\nRepro: submitting the newsletter signup form with the email address `a@b` is accepted as a valid signup, even though it is not a valid email address (no dot in the domain / no TLD).\n\nExpected: newsletter signup should reject invalid email addresses such as `a@b` with a validation error.\n\nNotes:\n- Please find the newsletter signup form/endpoint and its changeset, and tighten email validation so malformed addresses like `a@b` are rejected. Prefer a proper email format validation (e.g. Ecto `validate_format` with a suitable regex) over a hand-rolled check, and keep the error message user-friendly.\n- Add a test covering rejection of `a@b` and acceptance of a normal address.\n- Run `mix test`.\n- Stack: Elixir 1.17 / Phoenix 1.7 / Ecto 3.11 / Postgres 16.\n- Code style: use `mix format` and Credo strict; no `IO.inspect` in committed code. Never touch config/runtime.exs secrets.\n- PRs target `main`.\n- Do not assume specific file names exist \u2014 locate the real code first. Report what you actually changed and the test results."
+    },
+    "error": null
+   },
+   {
+    "event": "call",
+    "tool": "foreman_thread_create",
+    "args": {
+     "title": "'Back to shop' link 404s (/shop)",
+     "workflow": "fix",
+     "prompt": "Bug report from QA:\n\n2) the 'Back to shop' link goes to /shop which 404s\n\nRepro: on a page with a \"Back to shop\" link (e.g. an empty-cart / order-complete / error page), clicking the link navigates to /shop and returns a 404 Not Found.\n\nExpected: the \"Back to shop\" link should navigate to the actual catalog/shop route that exists in this Phoenix app.\n\nNotes:\n- Please locate the router (Phoenix 1.7 scope-based routes) and determine the real path for the product listing/catalog page, then update the link (and any hardcoded \"/shop\" path) accordingly.\n- Also check for other templates/links pointing at /shop.\n- Run `mix test`.\n- Stack: Elixir 1.17 / Phoenix 1.7 / Ecto 3.11 / Postgres 16.\n- Code style: use `mix format` and Credo strict; no `IO.inspect` in committed code. Never touch config/runtime.exs secrets.\n- PRs target `main`.\n- Do not assume specific file names exist \u2014 locate the real code first. Report what you actually changed and the test results."
+    },
+    "error": null
+   }
+  ],
+  "turns": 3
+ },
+ "B_malformed": {
+  "calls": [
+   {
+    "event": "call",
+    "tool": "foreman_thread_create",
+    "args": {
+     "title": "Fix footer year typo",
+     "workflow": "fix",
+     "prompt": "Task: fix a typo in the year shown in the site footer of the Acme Shop Phoenix/Elixir storefront. The footer currently displays an incorrect (wrong/obsolete) year; it should show the correct current year.\n\nContext:\n- Project: acme-shop, Phoenix 1.7 / Elixir 1.17 storefront (catalog, cart, Stripe checkout, admin back-office).\n- Locate the footer template/component (likely under lib/acme_shop_web/components/ or templates/) and find the hardcoded or computed year value that renders incorrectly.\n- Fix it so the footer year renders correctly (prefer deriving the year from the current date at render time if that matches the existing intent; if the intent was a hardcoded literal, correct the literal).\n- Keep the change minimal and scoped to the footer year only.\n- Follow project conventions: run `mix format`, and ensure Credo strict passes. Do not use `IO.inspect` in committed code.\n- Never modify config/runtime.exs secrets.\n- Add or update a test covering the footer year rendering if one is feasible.\n- Verify with `mix test`.\n- PRs target `main`.\n\nNote: the operator requested workflow 'hotfix'; that workflow does not exist in Foreman, so this was routed through the 'fix' workflow. Treat it as a small, high-priority change.\n\nReport back: the file(s) changed, the root cause of the wrong year, and test results."
+    },
+    "error": null
+   },
+   {
+    "event": "call",
+    "tool": "foreman_project_reply",
+    "args": {
+     "text": "Heads-up on two things:\n\n1) There is no 'hotfix' workflow in Foreman \u2014 the available workflows are fix, assess, prd, implement-trd, review. I routed the footer year typo through **fix** and started a thread for it (T-105). Since you mentioned treating checkout bugs as high priority, this one is a low-risk cosmetic change; if it actually needs to ship immediately, the operator will still need to open/merge the PR.\n\n2) T-102 (Wishlist PRD) is blocked waiting on you: should wishlists be public or private by default? Reply with your preference and I'll pass it to that thread so the PRD can proceed."
+    },
+    "error": null
+   }
+  ]
+ },
+ "C_variance": [
+  [
+   [
+    "foreman_thread_create",
+    "Discount code apply button does nothing on iOS Safari (mobile)",
+    "fix",
+    1241
+   ],
+   [
+    "foreman_project_reply",
+    null,
+    null,
+    0
+   ]
+  ],
+  [
+   [
+    "foreman_thread_create",
+    "Discount code apply button does nothing on iOS Safari (mobile)",
+    "fix",
+    2079
+   ]
+  ],
+  [
+   [
+    "foreman_thread_create",
+    "Discount code apply button does nothing on iOS Safari (mobile)",
+    "fix",
+    2220
+   ]
+  ],
+  [
+   [
+    "foreman_thread_create",
+    "Discount code apply button no-op on iOS Safari (mobile)",
+    "fix",
+    1465
+   ],
+   [
+    "foreman_project_reply",
+    null,
+    null,
+    0
+   ]
+  ]
+ ]
+}
