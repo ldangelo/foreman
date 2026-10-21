@@ -50,6 +50,57 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:project, project_id})
   end
 
+  @doc """
+  Every repository of a project: the synthesised primary followed by the
+  attached extras (`ProjectRepositoryAdded` minus `ProjectRepositoryRemoved`),
+  or nil for an unknown project.
+
+  The primary is computed at READ time from the projected `path` -- no event
+  exists for a legacy project, and a `project.update` path change moves it
+  automatically: `%{id: "main", path: path, default_branch: nil, primary: true,
+  vcs: %{adapter: "git"}, task_provider: nil, added_by: nil, added_at:
+  registered_at}`. `default_branch` is nil (the branch checked out at run
+  start), never `"main"`.
+  """
+  @spec project_repositories(String.t()) :: [map()] | nil
+  def project_repositories(project_id) do
+    case project(project_id) do
+      nil ->
+        nil
+
+      project ->
+        [synthesized_primary_repository(project) | Map.get(project, :repositories_extra, [])]
+    end
+  end
+
+  @doc "One repository of a project by id (`\"main\"` is the synthesised primary), or nil."
+  @spec project_repository(String.t(), String.t()) :: map() | nil
+  def project_repository(project_id, repo_id) do
+    project_id |> project_repositories() |> List.wrap() |> Enum.find(&(&1.id == repo_id))
+  end
+
+  @doc "Id of the project's primary repository (`\"main\"` for every known project), or nil."
+  @spec project_primary_repo_id(String.t()) :: String.t() | nil
+  def project_primary_repo_id(project_id) do
+    case project_repositories(project_id) do
+      [%{id: id, primary: true} | _] -> id
+      _ -> nil
+    end
+  end
+
+  defp synthesized_primary_repository(project) do
+    %{
+      id: ForemanServer.Projects.RepoValidation.primary_id(),
+      path: Map.get(project, :path),
+      default_branch: nil,
+      primary: true,
+      vcs: %{adapter: "git"},
+      task_provider: nil,
+      added_by: nil,
+      added_at: Map.get(project, :registered_at)
+    }
+  end
+
   @doc "Return the active run ids."
   @spec active_runs() :: [String.t()]
   def active_runs do
@@ -1474,6 +1525,59 @@ defmodule ForemanServer.ProjectionStore do
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
     else
       state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectRepositoryAdded", payload) do
+    project_id = get(payload, :project_id)
+    repo_id = get(payload, :repo_id)
+
+    with true <- valid_id?(project_id) and is_binary(repo_id),
+         %{} = project <- Map.get(state.projects, project_id) do
+      repo = %{
+        id: repo_id,
+        path: get(payload, :path),
+        default_branch: get(payload, :default_branch),
+        primary: false,
+        vcs: get(payload, :vcs) || %{adapter: "git"},
+        task_provider: nil,
+        added_by: get(payload, :added_by),
+        added_at: get(payload, :at)
+      }
+
+      extras =
+        project
+        |> Map.get(:repositories_extra, [])
+        |> Enum.reject(&(&1.id == repo_id))
+        |> Kernel.++([repo])
+
+      project =
+        project
+        |> Map.put(:repositories_extra, extras)
+        |> put_project_projection_metadata(payload)
+
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      _ -> state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectRepositoryRemoved", payload) do
+    project_id = get(payload, :project_id)
+    repo_id = get(payload, :repo_id)
+
+    with true <- valid_id?(project_id) and is_binary(repo_id),
+         %{} = project <- Map.get(state.projects, project_id) do
+      project =
+        project
+        |> Map.update(:repositories_extra, [], fn extras ->
+          Enum.reject(extras, &(&1.id == repo_id))
+        end)
+        |> put_project_projection_metadata(payload)
+
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      _ -> state
     end
   end
 
