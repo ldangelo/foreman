@@ -24,6 +24,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
+> foreman approvals         list --project --run --all --format | approve --run --call --by --reason | deny --run --call --by --reason
+> foreman questions         list --project --all --format | answer --run --question --text --by
 > foreman project env       list --format | set --replace | unset
 > foreman project secret    list --format | set --from-env | unset
 > foreman project setup-script show | set --file | clear
@@ -1921,3 +1923,22 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 ## Messaging CLI status
 
 No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. Outbound Telegram/Slack delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
+
+### `foreman approvals`
+
+```
+foreman approvals list (--project <id> | --run <id>) [--all] [--format table|json]
+foreman approvals approve --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
+foreman approvals deny    --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
+```
+
+Agent tool-permission requests (`GET /api/projects/:id/approvals`, `GET /api/runs/:run_id/approvals`). `approve`/`deny` post `tool.approve` / `tool.deny` to `/api/commands` for ONE tool call; they never touch the run's merge gate (`foreman run approve-merge` / `merge` stay the only way to merge). `--all` includes decided, expired and finished requests. The `approval_delivery` column is `resume_with_override` (the run is resumed with a one-phase approval-mode override) or `live`.
+
+### `foreman questions`
+
+```
+foreman questions list --project <id> [--all] [--format table|json]
+foreman questions answer --run <id|global> --question <id> --text <answer> [--by <name>]
+```
+
+Questions agents asked the operator (`GET /api/projects/:id/questions`); `answer` posts `question.answer`. Unanswered requests expire after the configured timeout and then show as `approval_expired` / `question_expired` in the Overview.
