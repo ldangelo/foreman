@@ -1482,7 +1482,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `notification_preference`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
@@ -1944,4 +1944,4 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 
 ## Messaging CLI status
 
-No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. Outbound Telegram/Slack delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
+No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. `foreman project update --notification-preference every_turn|blocked_only|off <id>` sets a project's notification preference (see the user guide's Outbound messaging delivery section). Outbound Telegram/Slack/webhook delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
