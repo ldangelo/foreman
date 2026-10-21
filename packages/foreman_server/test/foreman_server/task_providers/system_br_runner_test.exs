@@ -272,71 +272,50 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   describe "concurrency serialization" do
     test "two concurrent calls with same database_path serialize via global trans backstop",
          %{temp_dir: temp_dir} do
+      # Deterministic, barrier-based: the fake br logs CALL, then blocks until the
+      # test creates the release file, then logs DONE. No wall-clock thresholds.
+      # Per-test unique database_path => unique :global lock key.
       log_file = Path.join(temp_dir, "ordering.log")
-      counter_file = Path.join(temp_dir, "concurrency.counter")
-      max_file = Path.join(temp_dir, "concurrency.max")
+      release_file = Path.join(temp_dir, "release")
+      db_path = Path.join(temp_dir, "serialize.db")
 
       fake_br_body =
         [
           "echo \"CALL:$$\" >> \"#{log_file}\"",
-          "n=$(cat \"#{counter_file}\" 2>/dev/null || echo 0)",
-          "n=$((n + 1))",
-          "echo $n > \"#{counter_file}\"",
-          "max=$(cat \"#{max_file}\" 2>/dev/null || echo 0)",
-          "if [ $n -gt $max ]; then echo $n > \"#{max_file}\"; fi",
-          "sleep 0.5",
-          "n=$(cat \"#{counter_file}\")",
-          "n=$((n - 1))",
-          "echo $n > \"#{counter_file}\"",
+          "while [ ! -f \"#{release_file}\" ]; do sleep 0.01; done",
           "echo \"DONE:$$\" >> \"#{log_file}\""
         ]
         |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
-        db_path = "/tmp/test.db"
-        parent = self()
+        run = fn -> SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path}) end
 
-        spawn(fn ->
-          SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
-          send(parent, :call1_done)
+        task1 = Task.async(run)
+        await_condition("first call to enter the fake br", fn -> log_markers(log_file) != [] end)
+
+        task2 = Task.async(run)
+
+        # Call 2 must either be parked inside :global (serialization works) or have
+        # reached the script (serialization broken => a second CALL is logged).
+        await_condition("second call to park on the lock or run concurrently", fn ->
+          length(log_markers(log_file)) > 1 or waiting_on_global?(task2.pid)
         end)
 
-        spawn(fn ->
-          SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
-          send(parent, :call2_done)
-        end)
-
-        receive do
-          :call1_done -> :ok
+        try do
+          assert [{"CALL", _}] = log_markers(log_file),
+                 "second call ran while the first still held the database lock: " <>
+                   inspect(log_markers(log_file))
         after
-          5000 -> flunk("timeout waiting for call1")
+          File.write!(release_file, "go")
         end
 
-        receive do
-          :call2_done -> :ok
-        after
-          5000 -> flunk("timeout waiting for call2")
-        end
+        assert {:ok, %{exit_code: 0}} = Task.await(task1, 30_000)
+        assert {:ok, %{exit_code: 0}} = Task.await(task2, 30_000)
 
-        log = File.read!(log_file)
-        lines = String.split(log, "\n", trim: true)
-        call_lines = Enum.filter(lines, &String.starts_with?(&1, "CALL:"))
-        done_lines = Enum.filter(lines, &String.starts_with?(&1, "DONE:"))
+        assert [{"CALL", pid1}, {"DONE", pid1}, {"CALL", pid2}, {"DONE", pid2}] =
+                 log_markers(log_file)
 
-        assert length(call_lines) == 2,
-               "Expected 2 CALL markers, got #{length(call_lines)}: #{inspect(lines)}"
-
-        assert length(done_lines) == 2,
-               "Expected 2 DONE markers, got #{length(done_lines)}: #{inspect(lines)}"
-
-        max_concurrency =
-          case File.read(max_file) do
-            {:ok, val} -> String.trim(val) |> String.to_integer()
-            _ -> 0
-          end
-
-        assert max_concurrency == 1,
-               "Expected max concurrency 1, got #{max_concurrency}"
+        assert pid1 != pid2
       end)
     end
   end
@@ -590,6 +569,50 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
         assert stdout =~ "BR_WAS_CALLED=1"
       end)
+    end
+  end
+
+  defp log_markers(log_file) do
+    case File.read(log_file) do
+      {:ok, log} ->
+        log
+        |> String.split("\n", trim: true)
+        |> Enum.map(fn line ->
+          [kind, pid] = String.split(line, ":", parts: 2)
+          {kind, pid}
+        end)
+
+      {:error, :enoent} ->
+        []
+    end
+  end
+
+  defp waiting_on_global?(pid) do
+    case Process.info(pid, :current_stacktrace) do
+      {:current_stacktrace, frames} ->
+        Enum.any?(frames, fn {mod, _fun, _arity, _loc} -> mod == :global end)
+
+      nil ->
+        false
+    end
+  end
+
+  # Polls an observable; the deadline only bounds a genuinely broken run.
+  defp await_condition(description, fun, deadline_ms \\ 30_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_await_condition(description, fun, deadline)
+  end
+
+  defp do_await_condition(description, fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("timed out waiting for #{description}")
+
+      true ->
+        Process.sleep(5) && do_await_condition(description, fun, deadline)
     end
   end
 
