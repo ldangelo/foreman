@@ -22,7 +22,7 @@ A gate, not a suggestion: it blocks calling a task done, like running the tests.
 `AGENTS.md` is **not** a doc-update target: do not add change notes or post-mortems here. Put them in `docs/lessons/` and, only if the rule is short and always needed, add one line here. `docs/PRD/*` and `docs/TRD/*` are point-in-time specs; leave their claims as written and add a forward-pointer note instead.
 
 - After editing bundled workflows or prompts, run `foreman init --force` to refresh the installed copies.
-- Verify a CLI command against Go source (`packages/foreman_cli/cmd/foreman/main.go` and the `runProject`/`runTask`/`runRun`/`runWorkflow` case lists) or a fresh `go build ./cmd/foreman` — never a stale `./foreman` binary or `docs/cli-reference.md` (which still carries annotated, non-routing verbs).
+- Verify a CLI command against Go source (`packages/foreman_cli/cmd/foreman/main.go` and the `runProject`/`runRun`/`runThread`/`runWorkflow`/`runApprovals`/`runQuestions`/`runCommands` case lists) or a fresh `go build ./cmd/foreman` — never a stale `./foreman` binary or `docs/cli-reference.md` (which still carries annotated, non-routing verbs). A new CLI verb MUST be added to the `usage` const in `main.go` and to `docs/cli-reference.md`; `usage_drift_test.go` parses the dispatch switches and fails the build when usage, dispatch, docs or `agent_commands` disagree.
 
 ## Typed Boundaries, Loud Failures (§5)
 

@@ -68,3 +68,7 @@ this, read the `switch` in `main.go` and the `case` lists in
 `runProject`/`runTask`/`runRun`/
 `runWorkflow` — that is the whole surface, and it takes one grep.
 
+
+## CLI verb drift guard (E16-S1/S2)
+
+By late 2026 the `usage` const in `main.go` listed only a subset of the dispatched verbs (it omitted `run cancel`, `run approve-merge`, `run merge`, `run submit`, `project context/env/secret/setup-script/network`, the `run` PR verbs and `workflow remove`), and `docs/cli-reference.md` still said the CLI dispatched "exactly six" verbs, that `foreman task` existed, and that there was "no operator merge verb". `usage_drift_test.go` now parses the dispatch `switch` statements with `go/ast` and asserts usage, the cli-reference and the `agent_commands` inventory agree, and that no `NOT IMPLEMENTED ... is not dispatched` claim names a verb that is dispatched.
