@@ -22,19 +22,40 @@ defmodule ForemanServer.DispatcherQuiesce do
 
   import ExUnit.Callbacks, only: [on_exit: 1]
 
-  @spec suspend!() :: :ok
-  def suspend! do
-    pid = Process.whereis(ForemanServer.Workflow.Dispatcher)
+  @default_timeout_ms 30_000
+
+  @doc """
+  Suspends the Dispatcher (or `opts[:pid]`) and guarantees it is resumed when
+  the test exits.
+
+  The resume callback is registered BEFORE the suspend request is sent.
+  `:sys.suspend/2` exits on timeout (e.g. the target is stuck in a long
+  message) but its request stays queued in the target's mailbox and suspends
+  it later; had the callback been registered after the call, that late
+  suspension would never be undone. Resuming an unsuspended or dead process is
+  harmless, so the callback is safe whether or not the suspend took effect.
+  Callbacks run in reverse registration order, so this one runs after the
+  caller's own `on_exit` callbacks and the real `BootReconciliation` is back in
+  place before the queued events are processed.
+  """
+  @spec suspend!(pid: pid(), timeout: timeout()) :: :ok
+  def suspend!(opts \\ []) do
+    pid =
+      Keyword.get_lazy(opts, :pid, fn -> Process.whereis(ForemanServer.Workflow.Dispatcher) end)
+
+    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     true = is_pid(pid)
-    :ok = :sys.suspend(pid)
 
-    # Registered before the caller's own on_exit callbacks, so it runs after
-    # them (ExUnit runs on_exit in reverse order): the real BootReconciliation
-    # is back in place before the queued events are processed.
-    on_exit(fn ->
-      if Process.alive?(pid), do: :sys.resume(pid)
-    end)
+    on_exit(fn -> resume(pid) end)
 
-    :ok
+    :ok = :sys.suspend(pid, timeout)
+  end
+
+  defp resume(pid) do
+    :sys.resume(pid, @default_timeout_ms)
+  catch
+    :exit, {:noproc, _} -> :ok
+    :exit, {:normal, _} -> :ok
+    :exit, {:killed, _} -> :ok
   end
 end
