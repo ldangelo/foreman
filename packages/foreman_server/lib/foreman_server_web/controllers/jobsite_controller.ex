@@ -96,10 +96,12 @@ defmodule ForemanServerWeb.JobsiteController do
   # POST /api/jobsites/:id/resume
   # Resuming starts an executor (worktree, container, agent spend) exactly as a
   # start does, so it is held to the same operator flag and concurrency cap.
-  def resume(conn, %{"id" => id}) do
+  # An optional JSON `prompt` replaces the default "Continue." for the resumed
+  # iteration (the operator's steering message).
+  def resume(conn, %{"id" => id} = params) do
     with :ok <- check_enabled(),
          {:ok, max} <- max_concurrent(),
-         {:ok, ^id} <- Jobsite.resume_async(id, max_concurrent: max) do
+         {:ok, ^id} <- Jobsite.resume_async(id, resume_opts(params, max)) do
       audit(conn, "accepted", nil, id)
 
       conn
@@ -109,6 +111,9 @@ defmodule ForemanServerWeb.JobsiteController do
       {:error, %Error{} = error} -> reject(conn, error, id)
     end
   end
+
+  defp resume_opts(%{"prompt" => prompt}, max), do: [max_concurrent: max, prompt: prompt]
+  defp resume_opts(_params, max), do: [max_concurrent: max]
 
   # POST /api/jobsites/:id/merge  {"into": "<checked-out branch>"}
   def merge(conn, %{"id" => id}) do
