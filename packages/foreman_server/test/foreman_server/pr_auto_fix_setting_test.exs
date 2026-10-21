@@ -89,6 +89,19 @@ defmodule ForemanServer.PrAutoFixSettingTest do
       assert {:error, {:pr_auto_fix_unknown_kind, "x"}} =
                normalize(%{kinds: ["x"], max_attempts: 99})
     end
+
+    test "an explicit false is invalid, never replaced by the default for an absent key" do
+      assert {:error, {:pr_auto_fix_invalid, false}} = normalize(%{kinds: false})
+
+      assert {:error, {:pr_auto_fix_max_attempts_invalid, false, 1..5}} =
+               normalize(%{kinds: ["ci"], max_attempts: false})
+
+      assert {:error, {:pr_auto_fix_cooldown_invalid, false, 0..86_400}} =
+               normalize(%{kinds: ["ci"], cooldown_seconds: false})
+
+      assert {:ok, %{pr_auto_fix: %{"max_attempts" => 2, "cooldown_seconds" => 0}}} =
+               normalize(%{kinds: ["ci"]})
+    end
   end
 
   describe "through project.update" do
