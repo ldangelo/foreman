@@ -29,6 +29,7 @@ defmodule ForemanServer.PrWatcher.Observer do
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.PrWatcher.AutoFix
   alias ForemanServer.PrObservation
+  alias ForemanServer.PrUpdate
   alias ForemanServer.ProjectionStore
 
   require Logger
@@ -82,12 +83,16 @@ defmodule ForemanServer.PrWatcher.Observer do
   @spec default_fetch(String.t()) :: {:ok, PrStatus.t()} | {:error, PrStatus.error()}
   def default_fetch(pr_url), do: PrStatus.fetch(pr_url, threads: true)
 
-  # Runs that own the PR and whose watch is on (or reopenable: ended as `closed`).
+  # `{run_id, repo_id, record}` of every PR association with this url whose watch is
+  # on (or reopenable: ended as `closed`). A PR is `{run_id, repo_id}`: one run's PRs
+  # in other repositories are never touched by this url's observation.
   defp observable_runs(pr_url) do
     pr_url
     |> ProjectionStore.run_ids_for_pr_url()
-    |> Enum.map(&{&1, watch_record(&1, pr_url)})
-    |> Enum.filter(fn {_run_id, record} -> observable?(record) end)
+    |> Enum.map(fn {run_id, repo_id} ->
+      {run_id, PrUpdate.payload_repo_id(run_id, repo_id), watch_record(run_id, pr_url)}
+    end)
+    |> Enum.filter(fn {_run_id, _repo_id, record} -> observable?(record) end)
   end
 
   defp watch_record(run_id, pr_url),
@@ -108,8 +113,8 @@ defmodule ForemanServer.PrWatcher.Observer do
 
   defp dispatch_for_runs(runs, pr_url, status) do
     {dispatched, failures} =
-      Enum.reduce(runs, {[], []}, fn {run_id, record}, acc ->
-        case dispatch_run(run_id, record, pr_url, status) do
+      Enum.reduce(runs, {[], []}, fn {run_id, repo_id, record}, acc ->
+        case dispatch_run(run_id, repo_id, record, pr_url, status) do
           {:ok, types} -> {elem(acc, 0) ++ types, elem(acc, 1)}
           {:error, run_failures} -> {elem(acc, 0), elem(acc, 1) ++ run_failures}
         end
@@ -120,7 +125,7 @@ defmodule ForemanServer.PrWatcher.Observer do
         {:ok,
          %{
            status: status,
-           runs: Enum.map(runs, &elem(&1, 0)),
+           runs: runs |> Enum.map(&elem(&1, 0)) |> Enum.uniq(),
            dispatched: dispatched,
            requested: []
          }}
@@ -167,9 +172,9 @@ defmodule ForemanServer.PrWatcher.Observer do
     end
   end
 
-  defp dispatch_run(run_id, record, pr_url, status) do
-    with {:ok, observation} <- PrObservation.commands(run_id, pr_url, status, record) do
-      commands = observation ++ lifecycle_commands(run_id, record, pr_url, status)
+  defp dispatch_run(run_id, repo_id, record, pr_url, status) do
+    with {:ok, observation} <- PrObservation.commands(run_id, pr_url, status, record, repo_id) do
+      commands = observation ++ lifecycle_commands(run_id, repo_id, record, pr_url, status)
 
       results = for command <- commands, do: {command, CommandGateway.dispatch_system(command)}
 
@@ -189,13 +194,14 @@ defmodule ForemanServer.PrWatcher.Observer do
   end
 
   # Merged/closed ends the watch; open again after `closed` restarts it.
-  defp lifecycle_commands(run_id, record, pr_url, %PrStatus{status: terminal} = status)
+  defp lifecycle_commands(run_id, repo_id, record, pr_url, %PrStatus{status: terminal} = status)
        when terminal in [:merged, :closed] do
     if record == nil or record.watching do
       [
         watch_command(
           "run.pr.watch_stop",
           run_id,
+          repo_id,
           record,
           pr_url,
           status,
@@ -209,17 +215,20 @@ defmodule ForemanServer.PrWatcher.Observer do
 
   defp lifecycle_commands(
          run_id,
+         repo_id,
          %{watching: false, stop_reason: "closed"} = record,
          pr_url,
          status
        ),
-       do: [watch_command("run.pr.watch_start", run_id, record, pr_url, status, "reopened")]
+       do: [
+         watch_command("run.pr.watch_start", run_id, repo_id, record, pr_url, status, "reopened")
+       ]
 
-  defp lifecycle_commands(_run_id, _record, _pr_url, _status), do: []
+  defp lifecycle_commands(_run_id, _repo_id, _record, _pr_url, _status), do: []
 
   # The record's last-update time is part of the id so a second close/reopen cycle
   # on the same head SHA is a new command, not a swallowed duplicate.
-  defp watch_command(type, run_id, record, pr_url, status, reason) do
+  defp watch_command(type, run_id, repo_id, record, pr_url, status, reason) do
     cycle = (record && record.updated_at) || 0
 
     %{
@@ -227,7 +236,10 @@ defmodule ForemanServer.PrWatcher.Observer do
       command_id:
         "#{String.replace(type, ".", "_")}:#{run_id}:#{PrObservation.url_hash(pr_url)}:#{reason}:#{status.head_sha}:#{cycle}",
       aggregate_id: "run:#{run_id}",
-      payload: %{run_id: run_id, pr_url: pr_url, reason: reason}
+      payload: %{run_id: run_id, pr_url: pr_url, reason: reason} |> put_repo(repo_id)
     }
   end
+
+  defp put_repo(payload, nil), do: payload
+  defp put_repo(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
 end

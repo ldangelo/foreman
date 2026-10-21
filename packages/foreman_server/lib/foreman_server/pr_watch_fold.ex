@@ -104,7 +104,7 @@ defmodule ForemanServer.PrWatchFold do
     record
     |> put(:project_id, get(payload, :project_id))
     |> put(:task_id, get(payload, :task_id))
-    |> put(:repo_id, get(payload, :repo_id))
+    |> put_repo_id(get(payload, :repo_id))
     |> put(:updated_at, get(payload, :_projection_event_at_ms))
   end
 
@@ -206,6 +206,14 @@ defmodule ForemanServer.PrWatchFold do
 
   defp list(value) when is_list(value), do: value
   defp list(_other), do: []
+
+  # Absent == the run's primary, so an event without `repo_id` (an operator fix
+  # request that did not name one) must not erase the repository an earlier
+  # observation recorded for a non-primary PR.
+  defp put_repo_id(record, repo_id) when is_binary(repo_id) and repo_id != "",
+    do: Map.put(record, :repo_id, repo_id)
+
+  defp put_repo_id(record, _absent), do: record
 
   defp status(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
   defp status(value), do: value

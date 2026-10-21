@@ -2003,3 +2003,11 @@ Agents can need an operator decision. Both show up as `waiting_on_you` in the pr
 **Recovery.** On startup the deliverers re-deliver approvals that were committed while the server was down (approved and never settled calls, denied calls whose run is still paused, answers to paused runs); the commands are idempotent, so an already-delivered decision is a no-op. An approved call whose decision never settled shows in the Overview as `approval_delivery_failed` while its run is paused.
 
 **MCP read tools.** `foreman_approvals_list` (`project_id` or `run_id`, optional `status`) and `foreman_questions_list` (`project_id`, optional `status`) return the same fields as the HTTP endpoints. They are read-only; there is deliberately no MCP tool to approve, deny or answer.
+**Multi-repository runs.** A run that touched several repositories has one PR per
+repository, and every PR is watched, polled and fixed on its own, addressed as
+`{run_id, repo_id}` (`repo_id` is carried on the PR's events only for a
+non-primary repository). A webhook or poll for repository b's PR updates b's PR
+record only: it never changes a's PR state, watch record or merge gate. A fix
+thread for a PR attaches that repository's checkout and that repository's
+worktree, never another repository's.
+

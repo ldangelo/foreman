@@ -63,12 +63,13 @@ defmodule ForemanServer.PrFix do
          {:ok, head} <- head_branch(record),
          {:ok, base} <- safe_branch(record.base_branch),
          {:ok, project} <- project(run),
+         {:ok, repo_path} <- repo_path(run, project, record),
          {:ok, status} <- read_pr(pr_url, opts),
-         worktree = original_worktree(run_id, head),
-         {:ok, attach} <- attach(project.path, head, worktree),
+         worktree = original_worktree(run_id, record, head),
+         {:ok, attach} <- attach(repo_path, head, worktree),
          agent = agent(run, attach.resume?),
          prompt = render(kind, record, status, head, base, pr_url, opts),
-         {:ok, spec_opts} <- spec_opts(run, project, head, prompt, agent, attach, kind) do
+         {:ok, spec_opts} <- spec_opts(run, repo_path, head, prompt, agent, attach, kind) do
       {:ok,
        %{
          jobsite_opts: spec_opts,
@@ -115,6 +116,18 @@ defmodule ForemanServer.PrFix do
     end
   end
 
+  # The repository the PR was opened in (E12): a record without `repo_id` is the
+  # run's primary, i.e. the project's own path; a non-primary PR's fix runs against
+  # THAT repository's checkout, never the primary's.
+  defp repo_path(run, _project, %{repo_id: repo_id}) when is_binary(repo_id) and repo_id != "" do
+    case ProjectionStore.project_repository(run.project_id, repo_id) do
+      %{path: path} when is_binary(path) and path != "" -> {:ok, path}
+      _ -> {:error, {:repo_unresolved, repo_id}}
+    end
+  end
+
+  defp repo_path(_run, project, _record), do: {:ok, project.path}
+
   defp read_pr(pr_url, opts) do
     fetch = Keyword.get(opts, :fetch_fun, &PrStatus.fetch(&1, threads: true))
 
@@ -127,10 +140,21 @@ defmodule ForemanServer.PrFix do
 
   # -- worktree attach and session resume -----------------------------------------
 
-  defp original_worktree(run_id, head) do
-    entries = ProjectionStore.worktrees_for_run(run_id)
+  # Only this PR's repository's worktrees are candidates: an entry with no `repo_id`
+  # belongs to the run's primary (E12), so another repo's worktree is never reused.
+  defp original_worktree(run_id, record, head) do
+    repo_id = Map.get(record, :repo_id)
+
+    entries =
+      run_id
+      |> ProjectionStore.worktrees_for_run()
+      |> Enum.filter(&(blank_to_nil(&1[:repo_id]) == blank_to_nil(repo_id)))
+
     Enum.find(entries, &(&1[:branch] == head)) || List.last(entries)
   end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   # Where the fix runs and whether the provider session can follow it.
   defp attach(repo_path, head, original) do
@@ -290,7 +314,7 @@ defmodule ForemanServer.PrFix do
 
   # -- jobsite options -----------------------------------------------------------------
 
-  defp spec_opts(run, project, head, prompt, agent, attach, kind) do
+  defp spec_opts(run, repo_path, head, prompt, agent, attach, kind) do
     cfg = Application.get_env(:foreman_server, :pr_fix, [])
 
     spec =
@@ -310,7 +334,7 @@ defmodule ForemanServer.PrFix do
     with {:ok, opts} <- Spec.from_json(spec) do
       {:ok,
        opts
-       |> Keyword.put(:repo_path, project.path)
+       |> Keyword.put(:repo_path, repo_path)
        |> Keyword.put(:sync_remote, "origin")
        |> put_path(attach.path)}
     end

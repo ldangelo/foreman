@@ -843,12 +843,12 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
-  Return the ids of every run whose recorded PR association is `pr_url`, sorted.
+  Return `{run_id, repo_id}` for every PR association whose url is `pr_url`, sorted.
 
   More than one run can be associated with one PR (a retried run that reuses it),
   so this answers with a list; `[]` means no run owns that PR.
   """
-  @spec run_ids_for_pr_url(String.t()) :: [String.t()]
+  @spec run_ids_for_pr_url(String.t()) :: [{String.t(), String.t()}]
   def run_ids_for_pr_url(pr_url) when is_binary(pr_url) and pr_url != "" do
     GenServer.call(__MODULE__, {:run_ids_for_pr_url, pr_url})
   end
@@ -1610,10 +1610,16 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_call({:run_ids_for_pr_url, pr_url}, _from, state) do
-    run_ids =
-      for {run_id, %{pr_url: ^pr_url}} <- state.pr_associations, do: run_id
+    primaries =
+      for {run_id, %{pr_url: ^pr_url}} <- state.pr_associations,
+          do: {run_id, run_primary_repo_id(state, run_id)}
 
-    {:reply, Enum.sort(run_ids), state}
+    others =
+      for {run_id, by_repo} <- Map.get(state, :repo_pr_associations, %{}),
+          {repo_id, %{pr_url: ^pr_url}} <- by_repo,
+          do: {run_id, repo_id}
+
+    {:reply, Enum.sort(Enum.uniq(primaries ++ others)), state}
   end
 
   @impl true
@@ -1637,9 +1643,18 @@ defmodule ForemanServer.ProjectionStore do
       for {run_id, %{pr_url: pr_url}} <- state.pr_associations,
           is_binary(pr_url),
           not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
-          do: unobserved_record(state, run_id, pr_url)
+          do: unobserved_record(state, run_id, pr_url, nil)
 
-    watched = observed ++ unobserved
+    # E12: a non-primary repository's PR is watched like the primary's; its blank
+    # record carries `repo_id` (absent == the run's primary).
+    unobserved_other =
+      for {run_id, by_repo} <- Map.get(state, :repo_pr_associations, %{}),
+          {repo_id, %{pr_url: pr_url}} <- by_repo,
+          is_binary(pr_url),
+          not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
+          do: unobserved_record(state, run_id, pr_url, repo_id)
+
+    watched = observed ++ unobserved ++ unobserved_other
     {:reply, Enum.sort_by(watched, &{&1.updated_at || 0, &1.run_id, &1.pr_url}), state}
   end
 
@@ -3958,12 +3973,16 @@ defmodule ForemanServer.ProjectionStore do
     Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
   end
 
-  defp unobserved_record(state, run_id, pr_url) do
+  defp unobserved_record(state, run_id, pr_url, repo_id) do
     run = Map.get(state.runs, run_id, %{})
 
     run_id
     |> ForemanServer.PrWatchFold.new_record(pr_url)
-    |> Map.merge(%{project_id: Map.get(run, :project_id), task_id: Map.get(run, :task_id)})
+    |> Map.merge(%{
+      project_id: Map.get(run, :project_id),
+      task_id: Map.get(run, :task_id),
+      repo_id: repo_id
+    })
     |> Map.put(:agent_review, review_signal(Map.get(state, :reviews, %{}), run_id))
   end
 
