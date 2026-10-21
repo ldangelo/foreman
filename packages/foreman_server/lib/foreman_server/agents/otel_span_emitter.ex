@@ -34,19 +34,25 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @doc """
   Emit a `jido.llm` span capturing the model, token counts, cost, and routing
   reason. Called from the LiteLLM/Langfuse call site (TRD-061).
+
+  `cost_usd` is `nil` when the provider reported no cost; the `llm.cost_usd`
+  attribute is then omitted rather than recorded as a misleading zero.
   """
-  @spec emit_llm_span(String.t(), non_neg_integer(), number(), String.t()) :: :ok
+  @spec emit_llm_span(String.t(), non_neg_integer(), number() | nil, String.t()) :: :ok
   def emit_llm_span(model, token_count, cost_usd, routing_reason)
-      when is_binary(model) and is_integer(token_count) and is_binary(routing_reason) do
-    OpenTelemetry.Tracer.with_span "jido.llm",
-                                   %{
-                                     attributes: %{
-                                       "llm.model" => model,
-                                       "llm.tokens" => token_count,
-                                       "llm.cost_usd" => cost_usd,
-                                       "llm.routing_reason" => routing_reason
-                                     }
-                                   } do
+      when is_binary(model) and is_integer(token_count) and is_binary(routing_reason) and
+             (is_number(cost_usd) or is_nil(cost_usd)) do
+    attributes =
+      %{
+        "llm.model" => model,
+        "llm.tokens" => token_count,
+        "llm.routing_reason" => routing_reason
+      }
+      |> then(fn attrs ->
+        if is_nil(cost_usd), do: attrs, else: Map.put(attrs, "llm.cost_usd", cost_usd)
+      end)
+
+    OpenTelemetry.Tracer.with_span "jido.llm", %{attributes: attributes} do
       :ok
     end
   end

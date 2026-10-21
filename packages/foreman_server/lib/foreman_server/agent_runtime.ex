@@ -34,6 +34,7 @@ defmodule ForemanServer.AgentRuntime do
   alias ForemanServer.Telemetry
   alias ForemanServer.AgentRuntime.FailurePolicy
   alias ForemanServer.Agents.OtelSpanEmitter
+  alias ForemanServer.Agents.JidoAiRunner
   alias ForemanServer.Agents.LlmErrorHandler
   alias ForemanServer.Agents.LangfuseTracer
 
@@ -653,14 +654,18 @@ defmodule ForemanServer.AgentRuntime do
     end
   end
 
-  # ReAct strategy: delegate to JidoAiRunner with Jido.AI.Reasoning.ReAct,
-  # which uses req_llm for LLM calls.  The runner is wrapped so exactly
-  # one telemetry completion event fires per execute/3 call.  Each
-  # successful branch emits a Langfuse trace (REQ-020) so the routing
-  # decision (routed_to, routing_reason, capability) lands in the live
-  # trace — without this call site the LangfuseTracer helper exists but
-  # nothing ever invokes it.
-  defp execute_react(prompt, _request, model, task_type, policy, _env) do
+  # ReAct / Chain-of-Thought strategies: delegate to JidoAiRunner, which uses
+  # req_llm for LLM calls.  The runner is wrapped so exactly one telemetry
+  # completion event fires per execute/3 call.  Each successful branch emits a
+  # Langfuse trace (REQ-020) so the routing decision (routed_to,
+  # routing_reason, capability) lands in the live trace.
+  defp execute_react(prompt, _request, model, task_type, policy, _env),
+    do: execute_jido_ai(:react, prompt, model, task_type, policy)
+
+  defp execute_cot(prompt, _request, model, task_type, policy, _env),
+    do: execute_jido_ai(:cot, prompt, model, task_type, policy)
+
+  defp execute_jido_ai(strategy, prompt, model, task_type, policy) do
     start_time = System.system_time()
     monotonic_start = System.monotonic_time(:microsecond)
     timeout_ms = Map.get(policy, :timeout_ms, 60_000)
@@ -669,67 +674,60 @@ defmodule ForemanServer.AgentRuntime do
       Telemetry.execute(
         [:foreman, :agent_runtime, :execute, :start],
         %{system_time: start_time, status: :started},
-        %{strategy: :react, backend: :jido_ai_runner}
+        %{strategy: strategy, backend: :jido_ai_runner}
       )
 
-      case ForemanServer.Agents.JidoAiRunner.run(:react, prompt,
+      case JidoAiRunner.run(strategy, prompt,
              model: model,
              max_tokens: 4096,
              timeout_ms: timeout_ms
            ) do
-        {:ok, %{output: output} = result} when is_binary(output) ->
+        {:ok, %JidoAiRunner.Result{output: output, usage: usage}} ->
           stop_time = System.system_time()
-          usage = Map.get(result, :usage, %{})
-          token_count = Map.get(usage, :total_tokens, 0)
-          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
-          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
+          token_count = token_count(usage)
+          cost_usd = cost_usd(usage)
+          _ = OtelSpanEmitter.emit_llm_span(model, token_count, cost_usd, "auto")
+
+          _ =
+            emit_langfuse_trace(
+              prompt,
+              output,
+              model,
+              monotonic_start,
+              task_type,
+              token_count,
+              cost_usd
+            )
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
             %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
-            %{strategy: :react, backend: :jido_ai_runner}
+            %{strategy: strategy, backend: :jido_ai_runner}
           )
 
           emit_early_exit_completion(monotonic_start, :ok, task_type)
           {:ok, output}
 
-        {:ok, %{output: output} = result} ->
-          stop_time = System.system_time()
-          usage = Map.get(result, :usage, %{})
-          token_count = Map.get(usage, :total_tokens, 0)
-          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
-          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
-
-          Telemetry.execute(
-            [:foreman, :agent_runtime, :execute, :stop],
-            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
-            %{strategy: :react, backend: :jido_ai_runner}
-          )
-
-          emit_early_exit_completion(monotonic_start, :ok, task_type)
-          {:ok, inspect(output)}
-
-        {:error, reason} ->
+        {:error, %JidoAiRunner.Error{code: code, message: message}} ->
           stop_time = System.system_time()
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
             %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
-            %{strategy: :react, backend: :jido_ai_runner}
+            %{strategy: strategy, backend: :jido_ai_runner}
           )
 
           emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
 
           # REQ-008 AC-008-2: classify LLM errors and return as agent directives
           # so the agent can retry or escalate rather than treating them as fatal.
-          error_kind =
-            case reason do
-              :failed -> :llm_failed
-              {:run_error, _} -> :llm_run_error
-              _ -> :llm_error
-            end
+          error_kind = if code == :strategy_failed, do: :llm_failed, else: :llm_error
 
-          LlmErrorHandler.classify_and_directive(error_kind, %{source: :jido_ai_runner})
+          LlmErrorHandler.classify_and_directive(error_kind, %{
+            source: :jido_ai_runner,
+            code: code,
+            message: message
+          })
       end
     rescue
       e ->
@@ -738,7 +736,7 @@ defmodule ForemanServer.AgentRuntime do
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :stop],
           %{duration_us: stop_time - start_time, status: :exception, attempts: 1},
-          %{strategy: :react, backend: :jido_ai_runner}
+          %{strategy: strategy, backend: :jido_ai_runner}
         )
 
         emit_early_exit_completion(monotonic_start, :exception, task_type)
@@ -746,92 +744,14 @@ defmodule ForemanServer.AgentRuntime do
     end
   end
 
-  # Chain-of-Thought strategy: same pattern as execute_react/6.
-  defp execute_cot(prompt, _request, model, task_type, policy, _env) do
-    start_time = System.system_time()
-    monotonic_start = System.monotonic_time(:microsecond)
-    timeout_ms = Map.get(policy, :timeout_ms, 60_000)
+  # Provider usage is nil when the provider reported none; an unknown token
+  # count is reported as 0 (the span attribute is an integer), but cost is
+  # never fabricated: nil means "unknown".
+  defp token_count(%{total_tokens: total}) when is_integer(total), do: total
+  defp token_count(_usage), do: 0
 
-    try do
-      Telemetry.execute(
-        [:foreman, :agent_runtime, :execute, :start],
-        %{system_time: start_time, status: :started},
-        %{strategy: :cot, backend: :jido_ai_runner}
-      )
-
-      case ForemanServer.Agents.JidoAiRunner.run(:cot, prompt,
-             model: model,
-             max_tokens: 4096,
-             timeout_ms: timeout_ms
-           ) do
-        {:ok, %{output: output} = result} when is_binary(output) ->
-          stop_time = System.system_time()
-          usage = Map.get(result, :usage, %{})
-          token_count = Map.get(usage, :total_tokens, 0)
-          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
-          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
-
-          Telemetry.execute(
-            [:foreman, :agent_runtime, :execute, :stop],
-            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
-            %{strategy: :cot, backend: :jido_ai_runner}
-          )
-
-          emit_early_exit_completion(monotonic_start, :ok, task_type)
-          {:ok, output}
-
-        {:ok, %{output: output} = result} ->
-          stop_time = System.system_time()
-          usage = Map.get(result, :usage, %{})
-          token_count = Map.get(usage, :total_tokens, 0)
-          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
-          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
-
-          Telemetry.execute(
-            [:foreman, :agent_runtime, :execute, :stop],
-            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
-            %{strategy: :cot, backend: :jido_ai_runner}
-          )
-
-          emit_early_exit_completion(monotonic_start, :ok, task_type)
-          {:ok, inspect(output)}
-
-        {:error, reason} ->
-          stop_time = System.system_time()
-
-          Telemetry.execute(
-            [:foreman, :agent_runtime, :execute, :stop],
-            %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
-            %{strategy: :cot, backend: :jido_ai_runner}
-          )
-
-          emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
-
-          # REQ-008 AC-008-2: classify LLM errors and return as agent directives
-          # so the agent can retry or escalate rather than treating them as fatal.
-          error_kind =
-            case reason do
-              :failed -> :llm_failed
-              {:run_error, _} -> :llm_run_error
-              _ -> :llm_error
-            end
-
-          LlmErrorHandler.classify_and_directive(error_kind, %{source: :jido_ai_runner})
-      end
-    rescue
-      e ->
-        stop_time = System.system_time()
-
-        Telemetry.execute(
-          [:foreman, :agent_runtime, :execute, :stop],
-          %{duration_us: stop_time - start_time, status: :exception, attempts: 1},
-          %{strategy: :cot, backend: :jido_ai_runner}
-        )
-
-        emit_early_exit_completion(monotonic_start, :exception, task_type)
-        {:error, {:exception, Exception.message(e)}}
-    end
-  end
+  defp cost_usd(%{total_cost: cost}) when is_number(cost), do: cost
+  defp cost_usd(_usage), do: nil
 
   # Spawn an Invocation for the policy strategy and bridge its result through
   # the facade's telemetry/receive plumbing. Used by both the `:ok` and the
@@ -958,15 +878,22 @@ defmodule ForemanServer.AgentRuntime do
 
   # REQ-020 / LGL-T004 — wire LangfuseTracer.emit_trace/6 into every
   # successful LLM call so routed_to / routing_reason / capability land
-  # in the live trace. cost_usd is 0.0 here because the JidoAiRunner
-  # abstraction doesn't surface pricing; once req_llm's response carries
-  # cost, swap the literal for the actual value. Latency is measured
-  # from `monotonic_start` so the trace mirrors the Otel span duration.
-  defp emit_langfuse_trace(prompt, response, model, monotonic_start, task_type, token_count) do
+  # in the live trace. `cost_usd` is the provider-reported cost or nil when the
+  # provider did not report one (unknown, never a fabricated 0.0). Latency is
+  # measured from `monotonic_start` so the trace mirrors the Otel span duration.
+  defp emit_langfuse_trace(
+         prompt,
+         response,
+         model,
+         monotonic_start,
+         task_type,
+         token_count,
+         cost_usd
+       ) do
     duration_ms = div(System.monotonic_time(:microsecond) - monotonic_start, 1_000)
     capability = capability_for_task_type(task_type)
 
-    LangfuseTracer.emit_trace(prompt, response, model, 0.0, duration_ms,
+    LangfuseTracer.emit_trace(prompt, response, model, cost_usd, duration_ms,
       routed_to: model,
       routing_reason: routing_reason_for(capability),
       capability: capability,
@@ -992,17 +919,4 @@ defmodule ForemanServer.AgentRuntime do
   defp routing_reason_for(:code_generation), do: "auto-routing:code"
   defp routing_reason_for(:embedding), do: "auto-routing:embedding"
   defp routing_reason_for(:chat), do: "auto-routing:chat"
-
-  # Test-only export. Avoid calling from production code.
-  @doc false
-  def __emit_langfuse_trace_for_test__(
-        prompt,
-        response,
-        model,
-        monotonic_start,
-        task_type,
-        token_count
-      ) do
-    emit_langfuse_trace(prompt, response, model, monotonic_start, task_type, token_count)
-  end
 end

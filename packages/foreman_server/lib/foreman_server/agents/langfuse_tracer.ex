@@ -4,6 +4,12 @@ defmodule ForemanServer.Agents.LangfuseTracer do
   def endpoint,
     do: Application.get_env(:foreman_server, :langfuse)[:endpoint] || "http://localhost:3000"
 
+  @doc """
+  Build a trace payload. `cost_usd` is `nil` when the provider reported no
+  cost (unknown, not free).
+  """
+  @spec emit_trace(String.t(), term(), String.t(), number() | nil, non_neg_integer(), keyword()) ::
+          {:ok, map()}
   def emit_trace(prompt, response, model, cost_usd, latency_ms, opts \\ []) do
     trace = %{
       id: "trace-#{System.unique_integer([:positive])}",
