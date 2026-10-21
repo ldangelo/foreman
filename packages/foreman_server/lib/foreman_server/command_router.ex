@@ -34,6 +34,9 @@ defmodule ForemanServer.CommandRouter do
 
   @default_post_commit_retry_delays_ms [50, 200, 1_000]
   @run_reservation_sequence 0
+  # `:project_paused`, `:daily_thread_cap_exceeded` and `:run_limit_exceeded` are
+  # deliberately NOT definitive: pause is reversible and the cap resets, so the
+  # rejected admission must be retried after resume / reset / a higher limit.
   @definitive_run_start_rejections MapSet.new([
                                      :phase_terminal,
                                      :project_archived,
@@ -45,7 +48,9 @@ defmodule ForemanServer.CommandRouter do
                                     "ProjectRegistered",
                                     "ProjectUpdated",
                                     "ProjectArchived",
-                                    "ProjectReactivated"
+                                    "ProjectReactivated",
+                                    "ProjectPaused",
+                                    "ProjectResumed"
                                   ])
 
   @doc """
@@ -191,9 +196,7 @@ defmodule ForemanServer.CommandRouter do
             command_id: command_id,
             sequence: @run_reservation_sequence,
             run_start_payload: payload,
-            implementation_key: implementation_key,
-            max_concurrent_runs_per_project:
-              ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
+            implementation_key: implementation_key
           }
         },
         timeout

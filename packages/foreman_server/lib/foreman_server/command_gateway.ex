@@ -6,7 +6,7 @@ defmodule ForemanServer.CommandGateway do
 
     * `dispatch_operator/2` — public operator commands. Currently allows
       `project.register`, `project.update`, `project.archive`,
-      `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
+      `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
       `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
       `run.reset`, `run.steer`, `merge_approve`, `run.pr.merge`, `inbox.send`,
       `thread.resolve`, and `thread.reopen`. The
@@ -51,7 +51,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen)
+  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -272,10 +272,11 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp validate_aggregate_id(%{
-         type: "project.reactivate",
+         type: type,
          aggregate_id: aggregate_id,
          payload: payload
-       }) do
+       })
+       when type in ["project.reactivate", "project.pause", "project.resume"] do
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
 
     cond do
@@ -331,6 +332,7 @@ defmodule ForemanServer.CommandGateway do
         case ProjectionStore.project_projection(project_id) do
           nil -> {:error, {:project_not_found, project_id}}
           %{archived?: true} -> {:error, {:project_archived, project_id}}
+          %{status: "paused"} -> {:error, {:project_paused, project_id}}
           _ -> :ok
         end
 
@@ -998,6 +1000,9 @@ defmodule ForemanServer.CommandGateway do
 
           Map.get(project, :archived?) == true ->
             {:error, {:project_archived, project_id}}
+
+          Map.get(project, :status) == "paused" ->
+            {:error, {:project_paused, project_id}}
 
           true ->
             with {:ok, provider} <- Registry.route(:create, %{project_id: project_id}) do

@@ -256,7 +256,11 @@ defmodule ForemanServerWeb.JobsiteController do
   defp status_for(code) when code in [:into_missing, :into_invalid], do: :bad_request
   defp status_for(code) when code in [:git_failed, :merge_failed], do: :internal_server_error
 
-  defp status_for(:jobsite_capacity_reached), do: :too_many_requests
+  # 429, not 409: the project's daily thread cap resets at UTC midnight, so the
+  # same request can succeed later (capacity-style, retryable).
+  defp status_for(code) when code in [:jobsite_capacity_reached, :thread_cap_reached],
+    do: :too_many_requests
+
   defp status_for(:dispatch_rejected), do: :bad_gateway
   defp status_for(_other_validation_or_domain_error), do: :unprocessable_entity
 

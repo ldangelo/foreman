@@ -31,6 +31,9 @@ defmodule ForemanServer.RunLifecycleReconciler do
                           "RunBlocked",
                           "RunFlaggedStuck"
                         ])
+  # `:project_paused`, `:daily_thread_cap_exceeded` and `:run_limit_exceeded` are
+  # deliberately NOT definitive: pause is reversible and the cap resets, so the
+  # rejected admission must be retried after resume / reset / a higher limit.
   @definitive_retry_rejections MapSet.new([
                                  :phase_terminal,
                                  :project_archived,

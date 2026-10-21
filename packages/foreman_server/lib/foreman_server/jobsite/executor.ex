@@ -82,6 +82,79 @@ defmodule ForemanServer.Jobsite.Executor do
   # Fresh run
   # ---------------------------------------------------------------------
 
+  @doc """
+  Counts a fresh jobsite against its project's daily thread cap
+  (`project.reserve_thread`) BEFORE any `jobsite.start` event exists, so a
+  rejected jobsite leaves no `JobsiteStarted`. Called by `Jobsite.run/1` and
+  `Jobsite.run_async/1` (the synchronous entry points, so an HTTP caller sees the
+  rejection); resumed jobsites never pass through here and are not counted
+  again. The command id is derived from the jobsite id, so a retry is
+  idempotent. A jobsite without a project is not counted.
+
+  A jobsite that is then refused by the live-executor capacity cap has already
+  consumed one count; the cap is a ceiling on attempts, by design.
+  """
+  @spec reserve_thread(String.t(), keyword()) :: :ok | {:error, Error.t()}
+  def reserve_thread(jobsite_id, opts) do
+    case Keyword.get(opts, :project_id) do
+      project_id when is_binary(project_id) and project_id != "" ->
+        command = %{
+          type: "project.reserve_thread",
+          command_id: "jobsite-thread:" <> jobsite_id,
+          aggregate_id: "project:" <> project_id,
+          payload: %{
+            project_id: project_id,
+            thread_kind: "jobsite",
+            thread_id: jobsite_id,
+            command_id: "jobsite-thread:" <> jobsite_id
+          }
+        }
+
+        case CommandGateway.dispatch_system(command) do
+          {:ok, _} ->
+            :ok
+
+          # The project is known to the read model but has no aggregate stream,
+          # so no cap can be configured for it: nothing to count against.
+          {:error, {:not_found, :project, _}} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, thread_reservation_error(project_id, reason)}
+        end
+
+      _no_project ->
+        :ok
+    end
+  end
+
+  defp thread_reservation_error(project_id, {:daily_thread_cap_exceeded, cap, day}) do
+    Error.new(
+      :thread_cap_reached,
+      "project #{inspect(project_id)} reached its daily thread cap of #{cap} (UTC day #{day})",
+      %{project_id: project_id, cap: cap, day: day}
+    )
+  end
+
+  defp thread_reservation_error(project_id, {:project_paused, _}) do
+    Error.new(:spec_project_unavailable, "project #{inspect(project_id)} is paused", %{
+      project_id: project_id
+    })
+  end
+
+  defp thread_reservation_error(project_id, {:project_archived, _}) do
+    Error.new(:spec_project_unavailable, "project #{inspect(project_id)} is archived", %{
+      project_id: project_id
+    })
+  end
+
+  defp thread_reservation_error(project_id, reason) do
+    Error.new(:dispatch_rejected, "project.reserve_thread rejected", %{
+      project_id: project_id,
+      reason: reason
+    })
+  end
+
   @spec run(String.t(), keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
   def run(jobsite_id, opts) do
     with {:ok, spec} <- build_spec(jobsite_id, opts),

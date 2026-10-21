@@ -8,7 +8,17 @@ defmodule ForemanServer.Jobsite do
   `EventStore` + Postgres.
   """
 
-  alias ForemanServer.Jobsite.{Control, Error, Git, Result, Sandbox, Supervisor, Worktree}
+  alias ForemanServer.Jobsite.{
+    Control,
+    Error,
+    Executor,
+    Git,
+    Result,
+    Sandbox,
+    Supervisor,
+    Worktree
+  }
+
   alias ForemanServer.ProjectionStore
 
   @doc """
@@ -19,7 +29,10 @@ defmodule ForemanServer.Jobsite do
   @spec run(keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
   def run(opts) do
     id = generate_id()
-    start_and_await(id, Keyword.put(opts, :reply_to, self()))
+
+    with :ok <- Executor.reserve_thread(id, opts) do
+      start_and_await(id, Keyword.put(opts, :reply_to, self()))
+    end
   end
 
   @doc "Start a jobsite in the background and return its id immediately."
@@ -27,9 +40,11 @@ defmodule ForemanServer.Jobsite do
   def run_async(opts) do
     id = generate_id()
 
-    case Supervisor.start_jobsite(id, opts) do
-      {:ok, _pid} -> {:ok, id}
-      {:error, reason} -> {:error, start_failed_error(reason)}
+    with :ok <- Executor.reserve_thread(id, opts) do
+      case Supervisor.start_jobsite(id, opts) do
+        {:ok, _pid} -> {:ok, id}
+        {:error, reason} -> {:error, start_failed_error(reason)}
+      end
     end
   end
 

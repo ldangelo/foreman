@@ -20,8 +20,12 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path
-> foreman project delete    --force --idempotency-key
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
+> foreman project settings  --format
+> foreman project pause     --reason --idempotency-key
+> foreman project resume    --idempotency-key
+> foreman project reactivate --idempotency-key
+> foreman project delete    --force --idempotency-key   # archives; see docs/decisions/project-delete.md
 > foreman project list      --format --include-archived
 >
 > foreman task create       --description --id --project --status --task-type --title --trd-path --workflow-type  # REMOVED (TRD-018)
@@ -295,7 +299,7 @@ foreman project get project-123
 
 ### `foreman project update <id>`
 
-Update a project's task provider. `--task-provider` is required. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path.
+Update a project's task provider and/or settings. At least one change flag is required; `--task-provider` is only required when changing the provider. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path. The server is the single validator: its error (for example `{:instructions_too_long, 16001, 16000}`) is printed verbatim. `status` cannot be set here (use `pause`/`resume`/`reactivate`).
 
 ```
 foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
@@ -303,14 +307,30 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 
 | Option | Description |
 |--------|-------------|
-| `--task-provider <provider>` | Task provider (required) |
+| `--task-provider <provider>` | Task provider (required only when changing the provider) |
 | `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
-| `--idempotency-key <key>` | Idempotency key |
+| `--goal <text>` | Project goal (max 2000 characters) |
+| `--instructions <text>` | Standing instructions (max 16000 characters); exclusive with `--instructions-file` |
+| `--instructions-file <path>` | Read the instructions from a file |
+| `--thread-model <model>`, `--thread-effort <low\|medium\|high>` | Default model/effort for threads |
+| `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
+| `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
+| `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
+| `--clear <setting>` | Clear a setting (repeatable) |
+| `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
 | `--format json` | Print the raw command response as JSON |
+
+### `foreman project settings <id>`
+
+Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`. `--format json` prints the raw response. `config.env` values are never shown.
+
+### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
+
+`pause [--reason <text>]` refuses new work (`task.create`, run reservation, jobsite start, BeadsWatcher imports) with `{:project_paused, id}` while in-flight runs continue; it is reversible. `resume` restores admission and re-admits held work. `reactivate` un-archives an archived project. Each takes `--idempotency-key <key>`.
 
 ### `foreman project delete <id>`
 
-Soft-delete (archive) a project. The server rejects the archive while active runs remain.
+Archive a project (**not** a purge: runs, tasks and event history are kept; reactivate with `foreman project reactivate <id>`). The server rejects the archive while active runs remain.
 
 ```
 foreman project delete --force project-123
@@ -1283,7 +1303,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`,
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`,
 `foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,
 optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
@@ -1331,8 +1351,23 @@ projection or `NOT_FOUND`.
 Write tools (`foreman_task_create`, `foreman_task_update`,
 `foreman_task_add_comment`, `foreman_run_cancel`, `foreman_run_pause`,
 `foreman_run_resume`, `foreman_inbox_send`, `foreman_workflow_put`,
-`foreman_workflow_delete`, `foreman_prompt_put`) are unadvertised and refused
+`foreman_workflow_delete`, `foreman_prompt_put`, `foreman_project_settings_update`,
+`foreman_project_pause`, `foreman_project_resume`) are unadvertised and refused
 unless `allow_workflow_writes: true`.
+
+`foreman_project_settings_get` returns the same typed payload as
+`GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
+no env values). Project reads over HTTP and MCP replace `config.env` /
+`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` and
+`database_path` stay visible). The write tools `foreman_project_settings_update`
+(arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
+`coordinator_provider`, `coordinator_model`, `coordinator_effort`,
+`max_concurrent_runs`, `daily_thread_cap`, `clear`, `idempotency_key`; nothing
+else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
+operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
+report the server's error code (`instructions_too_long`, `project_paused`, ...).
+Retries of `foreman_project_settings_update` with the same arguments and
+`idempotency_key` are one command. No MCP tool can merge or approve.
 `foreman_task_create` requires `description` for `FOREMAN_TASK_DESCRIPTION`, passes
 `prompt` separately for `:prompt`-action phases, and defaults `auto_approve: true`.
 `foreman_task_update` requires `task_id` and at least one of `title`,
