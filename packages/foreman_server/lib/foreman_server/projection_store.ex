@@ -2223,6 +2223,7 @@ defmodule ForemanServer.ProjectionStore do
           index: get(payload, :index),
           status: get(payload, :status),
           text: get(payload, :text),
+          text_truncated?: get(payload, :text_truncated?, false) == true,
           session_id: get(payload, :session_id),
           signalled?: get(payload, :signalled?, false),
           matched_signal: get(payload, :matched_signal)
