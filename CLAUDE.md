@@ -414,6 +414,34 @@ stays the primary alias. Every run worktree is committed at phase end
 (`phase_finish/5`) and on pause, and cleaned at terminal (continue-on-error).
 `RunExecutor.repo_root/2` refuses ids not registered on the run's project.
 
+**Repo targeting, thread repo requests and fan-out (E12-S9..S11).** `task.create`
+(and the MCP `foreman_task_create`, the retired `work.submit` ergonomics) accepts
+optional `repo_id` (the run's PRIMARY) and `repo_ids` (extras); the Task aggregate
+validates them through `Workflow.RunRepoSet.resolve/3` BEFORE `TaskCreated` is
+written (`{:unknown_repo, id}`, duplicates, extra equal to the primary, then the
+`max_repos_per_run` cap counting primary + extras) and writes the keys only when
+present (a `repo_id` equal to the project primary is dropped: absent == project
+primary). The executor reads them from the task projection. Provider resolution is
+unchanged (one provider per project; BeadSink attributes only). The run-start gate
+still refuses secondary-primary runs until multi-repo runs are released.
+`run.repo.request {run_id, repo_id | repo_path}` is a SYSTEM command
+(`CommandGateway.dispatch_system/2` -> `Workflow.RunRepoRequest`, NOT in the
+operator allowlist): realpath first, then `repo_allowlist` (`/`-bounded prefixes,
+empty = off, applies to registered repos too), already-attached returns success
+BEFORE the cap, then `max_repos_per_run` (primary + extras), then for an
+unregistered path git-work-tree + remote-duplicate checks and a system
+`project.repo.add` (`added_by: "run:<id>"`, command id
+`run-repo-add:<run>:<sha256(path)[0,12]>`), then `Workflow.RepoAttach` creates the
+worktree (`wt-<run>-<repo>`); the executor sees it from the NEXT phase because it
+rebuilds `run_worktrees` from the worktree projection each phase. Every outcome
+appends `RunRepoRequested` to `run_repo_audit:<run_id>` (`Aggregates.RunRepoAudit`,
+command `run.repo.audit.record`, command id `run-repo-audit:<request command id>`).
+`task.fanout {project_id, title, prompt, workflow_name, repo_ids | "all",
+fanout_id?}` (`Workflow.TaskFanout`, system-only) loops `task.create` with task ids
+`<fanout_id>-<repo_id>`; rejections are reported per repo and keep earlier tasks. The
+MCP write tools `foreman_run_request_repo` and `foreman_task_fanout`
+(`MCP.RepoTools`, in `MCP.Policy` `@write_tools`) are the only entry points.
+
 **Env, isolation and prompt contract of a multi-repo run (E12-S4).** Whenever a
 phase has a worktree (single-repo runs too) `RunExecutor.foreman_env/4` adds
 `FOREMAN_PRIMARY_REPO` (primary repo id, `main` for legacy projects),

@@ -106,7 +106,9 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_pr_fix",
                "foreman_pr_watch_stop",
                "foreman_project_library_list",
-               "foreman_project_library_read"
+               "foreman_project_library_read",
+               "foreman_run_request_repo",
+               "foreman_task_fanout"
              ]
 
       Enum.each(tools, fn tool ->

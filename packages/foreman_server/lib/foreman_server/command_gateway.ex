@@ -112,7 +112,23 @@ defmodule ForemanServer.CommandGateway do
   applied to an as-yet-unapproved payload.
   """
   @spec dispatch_system(map(), integer()) :: dispatch_result()
-  def dispatch_system(command, timeout \\ 5_000) when is_map(command) do
+  def dispatch_system(command, timeout \\ 5_000)
+
+  # `run.repo.request` (E12 S10) is system-authored: a thread asks to add a
+  # repository to its own run. The decision procedure, its side effects and
+  # its audit event live in `Workflow.RunRepoRequest`; there is no aggregate
+  # command of this name and it is NOT in `@allowed_operator_types`.
+  def dispatch_system(%{type: "run.repo.request"} = command, _timeout) do
+    ForemanServer.Workflow.RunRepoRequest.execute(command)
+  end
+
+  # `task.fanout` (E12 S11): one single-repo task per repository, looped over
+  # `task.create` by `Workflow.TaskFanout`. System-only, like the above.
+  def dispatch_system(%{type: "task.fanout"} = command, _timeout) do
+    ForemanServer.Workflow.TaskFanout.execute(command)
+  end
+
+  def dispatch_system(command, timeout) when is_map(command) do
     dispatch_and_emit_project_telemetry(command, timeout)
   end
 

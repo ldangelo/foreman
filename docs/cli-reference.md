@@ -1493,6 +1493,12 @@ non-zero `omitted_entries` / `omitted_bytes` — a truncated read can never look
 complete. There is no store-unavailable error: the projection is server state,
 so for a known run the read always succeeds.
 
+Write-gated multi-repository tools (`allow_workflow_writes: true`; system commands,
+not operator routes): `foreman_run_request_repo` (`run_id`, `repo_id` or `repo_path`;
+allowlist + cap + audit; effective next phase) and `foreman_task_fanout`
+(`project_id`, `title`, `prompt`, `workflow`, `repo_ids` or `"all"`, optional
+`fanout_id`). `foreman_task_create` also takes optional `repo_id` and `repo_ids`.
+
 `foreman_inbox_get` reads the per-run operator inbox projection. Inbox progress,
 logs, events, and activity are complementary: inbox messages are concise
 agent-authored progress notes, logs are raw stdout/stderr, events are durable

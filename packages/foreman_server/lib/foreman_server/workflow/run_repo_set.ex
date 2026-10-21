@@ -51,6 +51,17 @@ defmodule ForemanServer.Workflow.RunRepoSet do
     end
   end
 
+  @doc """
+  The project's `max_repos_per_run` (default 4) read from its current settings.
+  """
+  @spec cap(String.t()) :: pos_integer()
+  def cap(project_id) do
+    case ProjectionStore.project_settings(project_id) do
+      %ForemanServer.ProjectSettings{max_repos_per_run: max} when is_integer(max) -> max
+      _ -> ForemanServer.Aggregates.Project.Settings.default_max_repos_per_run()
+    end
+  end
+
   defp resolve_named(project_id, repo_id, repo_ids, max_repos) do
     case ProjectionStore.project_repositories(project_id) do
       nil ->

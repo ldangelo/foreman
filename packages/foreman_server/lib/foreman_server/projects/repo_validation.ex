@@ -168,6 +168,14 @@ defmodule ForemanServer.Projects.RepoValidation do
     ErlangError -> nil
   end
 
+  @doc """
+  IMPURE. The canonical `realpath` of `path` (every symlink component
+  resolved, `..` normalised). `{:error, {:repo_path_not_found, component}}`
+  when a component does not exist or the symlinks loop.
+  """
+  @spec canonical_path(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def canonical_path(path) when is_binary(path), do: realpath(path)
+
   # Resolves every symlink component (bounded, so a loop errors instead of
   # hanging). Errors with :repo_path_not_found when a component is missing.
   defp realpath(path), do: resolve(Path.split(Path.expand(path)), "", 0)

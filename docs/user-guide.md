@@ -325,6 +325,31 @@ bodies. A repository whose push or `gh` fails does not stop the others. A run
 with `stack_pr: true` phases cannot span several repositories and is refused at
 start.
 
+#### Targeting repositories, letting a thread add one, fan-out
+
+The `task.create` command (HTTP `/api/commands`) and the MCP `foreman_task_create` accept `repo_id` (the
+repository the run is rooted in; default the project primary) and `repo_ids`
+(additional repositories). Unknown ids, duplicates, an extra equal to the primary
+and a total above `max_repos_per_run` (primary included) are refused at creation.
+Runs rooted in or spanning other repositories stay refused at start until
+multi-repo runs are enabled.
+
+A thread can ask for another repository with the write tool
+`foreman_run_request_repo` (`run_id`, and `repo_id` or an absolute `repo_path`).
+It is **off** until an operator sets `repo_allowlist` (`project update`): every
+request, for registered and unregistered repositories alike, must resolve (symlinks
+followed) inside an allowlisted prefix, and the run may hold at most
+`max_repos_per_run` repositories. An unregistered git checkout inside the
+allowlist is registered first. The repository's worktree is created at once but
+is effective in the **next phase**. Every request, allowed or denied, is recorded
+(`RunRepoRequested` on `run_repo_audit:<run_id>`). A thread cannot merge or approve.
+
+`foreman_task_fanout` (write tool; `project_id`, `title`, `prompt`, `workflow`,
+`repo_ids` or `"all"`, optional `fanout_id`) creates one independent task per
+repository (`<fanout_id>-<repo_id>`, each its own run and PR). Retry with the same
+`fanout_id` to stay idempotent; rejections (paused/archived project, unknown repo)
+are reported per repository and keep the tasks already created.
+
 ### Usage and cost
 
 `foreman usage` shows what a project's threads (workflow runs and jobsites) consumed, grouped by model
