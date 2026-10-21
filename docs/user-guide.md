@@ -2033,8 +2033,8 @@ worktree path still exists), else `config :foreman_server, :pr_fix, agent:`.
 `foreman run watch-stop|watch-start <run-id> [--pr <url>]` pauses or resumes
 watching one PR (a merged or closed PR is dropped automatically).
 
-**Loop guard.** Per PR and kind there is at most one fix in flight, a hard cap of
-5 attempts (operators included), and a fix that left the PR head unchanged is
+**Loop guard.** Per PR there is at most one fix in flight (of any kind), and a hard cap of
+5 attempts per kind (operators included), and a fix that left the PR head unchanged is
 recorded as `PrFixExhausted` (`no_progress`) instead of being retried. Exhaustion
 is an event (`run.pr.fix_exhausted`), visible in `foreman run prs`.
 

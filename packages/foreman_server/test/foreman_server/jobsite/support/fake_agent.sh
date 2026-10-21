@@ -12,6 +12,10 @@
 #                             before emitting anything, so a test can reliably
 #                             observe + interrupt an iteration still in flight.
 #   FAKE_AGENT_SLEEP_SECS   - sleep duration (default: 10).
+#   FAKE_AGENT_SPAWN_FAIL_FIRST - for the first N invocations print erlexec's
+#                             child-setup failure line to stderr and exit 1 without
+#                             running, as the macOS setpgid race does.
+#   FAKE_AGENT_SPAWN_FAIL_ON - the same failure, only on that one invocation number.
 #   FAKE_AGENT_ECHO_ENV     - name of an env var; the assistant text becomes
 #                             "env:NAME=<value the agent process received>", proving
 #                             what environment was delivered.
@@ -25,6 +29,12 @@ COUNT=0
 [ -f "$COUNTER_FILE" ] && COUNT=$(cat "$COUNTER_FILE")
 COUNT=$((COUNT + 1))
 echo "$COUNT" > "$COUNTER_FILE"
+
+if { [ -n "$FAKE_AGENT_SPAWN_FAIL_FIRST" ] && [ "$COUNT" -le "$FAKE_AGENT_SPAWN_FAIL_FIRST" ]; } ||
+   { [ -n "$FAKE_AGENT_SPAWN_FAIL_ON" ] && [ "$COUNT" = "$FAKE_AGENT_SPAWN_FAIL_ON" ]; }; then
+  echo "Cannot set effective group to 0: Operation not permitted" >&2
+  exit 1
+fi
 
 echo "fake agent ran (invocation $COUNT)" >> agent-log.txt
 

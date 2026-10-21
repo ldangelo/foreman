@@ -395,6 +395,9 @@ func runPrFix(c *client.Client, verb, commandType string, args []string) error {
 	if err := fs.parse(rest); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "foreman run %s: unexpected argument %q (use --pr <url> to select a PR)", verb, fs.Arg(0))
+	}
 	if positional != "" {
 		*runID = positional
 	}
@@ -423,6 +426,9 @@ func runCreatePr(c *client.Client, args []string) error {
 	positional, rest := prRunID(args)
 	if err := fs.parse(rest); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "foreman run create-pr: unexpected argument %q", fs.Arg(0))
 	}
 	if positional != "" {
 		*runID = positional
@@ -469,6 +475,9 @@ func runPrWatch(c *client.Client, verb, commandType string, args []string) error
 	positional, rest := prRunID(args)
 	if err := fs.parse(rest); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "foreman run %s: unexpected argument %q (use --pr <url> to select a PR)", verb, fs.Arg(0))
 	}
 	if positional != "" {
 		*runID = positional

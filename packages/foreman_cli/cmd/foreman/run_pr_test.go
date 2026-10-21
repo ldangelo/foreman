@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -80,5 +81,33 @@ func TestRunPrsReadsTheRunPrsEndpoint(t *testing.T) {
 
 	if err := runRun(c, []string{"prs"}); err == nil {
 		t.Fatal("run prs without an id must fail")
+	}
+}
+
+func TestRunPrVerbsRejectSurplusPositionalArguments(t *testing.T) {
+	cases := [][]string{
+		{"fix-ci", "run-7", "extra"},
+		{"fix-ci", "run-7", "--note", "x", "extra"},
+		{"address-comments", "run-7", "extra"},
+		{"resolve-conflicts", "run-7", "extra"},
+		{"create-pr", "run-7", "extra"},
+		{"watch-stop", "run-7", "https://github.com/a/b/pull/2"},
+		{"watch-start", "run-7", "https://github.com/a/b/pull/2"},
+	}
+
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var runErr error
+			env := captureCommand(t, func(c *client.Client) error {
+				runErr = runRun(c, args)
+				return runErr
+			})
+			if env != nil {
+				t.Fatalf("server was hit with %+v; surplus arguments must be rejected", env)
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), "unexpected argument") {
+				t.Fatalf("err = %v, want unexpected argument usage error", runErr)
+			}
+		})
 	}
 }

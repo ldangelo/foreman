@@ -373,3 +373,27 @@ func TestProjectUpdatePrAutoFixSendsObjectAndRejectsNonObjects(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectSettingsShowsPrAutoFixAsCompactJSON(t *testing.T) {
+	resp := `{"project_id":"p1","status":"active","settings":{"pr_auto_fix":{"kinds":["ci"],"max_attempts":2,"cooldown_seconds":300}},"limits":{}}`
+	c, _ := recordingServer(t, http.StatusOK, resp)
+	stdout := captureStdout(t, func() {
+		if err := runProject(c, []string{"settings", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := `pr_auto_fix: {"cooldown_seconds":300,"kinds":["ci"],"max_attempts":2}`
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("stdout missing %q:\n%s", want, stdout)
+	}
+
+	c, _ = recordingServer(t, http.StatusOK, `{"project_id":"p1","status":"active","settings":{},"limits":{}}`)
+	unset := captureStdout(t, func() {
+		if err := runProject(c, []string{"settings", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(unset, "pr_auto_fix: (unset)") {
+		t.Fatalf("stdout missing unset pr_auto_fix:\n%s", unset)
+	}
+}

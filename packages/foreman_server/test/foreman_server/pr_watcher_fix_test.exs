@@ -11,6 +11,7 @@ defmodule ForemanServer.PrWatcherFixTest do
 
   alias ForemanServer.Jobsite.Error
   alias ForemanServer.{CommandGateway, PrWatcher, ProjectionStore}
+  alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
 
@@ -197,6 +198,27 @@ defmodule ForemanServer.PrWatcherFixTest do
       assert finished.error_code == "branch_unsafe"
       refute_receive {:jobsite_start, _, _}, 100
     end
+
+    test "a start task that crashes finishes the fix as failed instead of leaving it in flight",
+         tc do
+      ctx = setup_run!(tc)
+
+      # not a `{:ok, id} | {:error, _}` shape: the start task raises CaseClauseError
+      starter = fn _opts -> :unexpected end
+      start_watcher!(ctx, tc, starter: starter)
+
+      request_fix!(ctx)
+
+      finished = await_event("PrFixFinished", ctx.run_id)
+      assert finished.outcome == "failed"
+      assert finished.error_code == "start_crashed"
+      await_idle()
+
+      assert [%{fix: %{in_flight: nil}}] = ProjectionStore.pr_watch(ctx.run_id)
+      # the PR is free again: the aggregate accepts a new request (dispatch! raises on refusal)
+      request_fix!(ctx)
+      assert await_event("PrFixFinished", ctx.run_id).error_code == "start_crashed"
+    end
   end
 
   describe "outcomes" do
@@ -295,6 +317,49 @@ defmodule ForemanServer.PrWatcherFixTest do
 
       refute_receive {:jobsite_start, _, _}, 300
       assert Enum.count(Support.run_event_types(ctx.run_id), &(&1 == "PrFixRequested")) == 1
+    end
+
+    test "a rejected PrFixExhausted dispatch is logged, not dropped", tc do
+      ctx =
+        setup_run!(tc,
+          settings: %{
+            thread_model: "sonnet",
+            pr_auto_fix: %{"kinds" => ["ci"], "max_attempts" => 1}
+          }
+        )
+
+      request_fix!(ctx, "run.pr.fix_ci", %{
+        trigger: "auto",
+        max_attempts: 1,
+        requested_at: System.system_time(:millisecond)
+      })
+
+      Support.dispatch!(%{
+        type: "run.pr.fix_started",
+        command_id: "started-#{ctx.run_id}",
+        aggregate_id: "run:#{ctx.run_id}",
+        payload: %{run_id: ctx.run_id, pr_url: ctx.pr_url, jobsite_id: "js-cap"}
+      })
+
+      Support.dispatch!(%{
+        type: "run.pr.fix_finished",
+        command_id: "finished-#{ctx.run_id}",
+        aggregate_id: "run:#{ctx.run_id}",
+        payload: %{run_id: ctx.run_id, pr_url: ctx.pr_url, outcome: "failed"}
+      })
+
+      # The cap is used up, so the next automatic request is refused and the give-up is
+      # recorded - but an empty head sha makes the aggregate reject that record too.
+      status = %{ctx.status | head_sha: ""}
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert [] = Observer.auto_fix([ctx.run_id], ctx.pr_url, status)
+        end)
+
+      assert log =~ "run.pr.fix_exhausted"
+      assert log =~ ctx.run_id
+      refute "PrFixExhausted" in Support.run_event_types(ctx.run_id)
     end
   end
 

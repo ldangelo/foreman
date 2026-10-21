@@ -171,15 +171,35 @@ defmodule ForemanServer.Jobsite.Worktree do
   end
 
   # A branch checked out in a linked worktree moves with `merge --ff-only` run there
-  # (git refuses to move a checked-out branch with `branch -f`).
+  # (git refuses to move a checked-out branch with `branch -f`). Nothing moves when the
+  # branch is checked out in the repo's MAIN worktree (the operator's live checkout,
+  # which `attach_branch/4` refuses anyway) or the linked worktree has uncommitted
+  # changes: the refusal must precede any side effect.
   defp fast_forward(repo_path, name, remote_sha) do
-    with {:ok, existing} <- Git.worktree_list(repo_path) do
+    with {:ok, [main | _] = existing} <- Git.worktree_list(repo_path) do
       case Enum.find(existing, &(&1.branch == name)) do
         nil ->
           with :ok <- Git.set_branch(repo_path, name, remote_sha), do: {:ok, remote_sha}
 
+        %{path: path} when path == main.path ->
+          {:error,
+           Error.new(
+             :worktree_create_failed,
+             "branch #{inspect(name)} is checked out in the repository's main worktree; it was not fast-forwarded",
+             %{branch: name, path: path}
+           )}
+
         %{path: path} ->
-          with :ok <- Git.fast_forward(path, remote_sha), do: {:ok, remote_sha}
+          if Git.dirty?(path) do
+            {:error,
+             Error.new(
+               :worktree_create_failed,
+               "branch #{inspect(name)} is checked out in a worktree with uncommitted changes; it was not fast-forwarded",
+               %{branch: name, path: path}
+             )}
+          else
+            with :ok <- Git.fast_forward(path, remote_sha), do: {:ok, remote_sha}
+          end
       end
     end
   end

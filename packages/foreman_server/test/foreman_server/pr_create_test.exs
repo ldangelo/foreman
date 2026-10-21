@@ -166,12 +166,14 @@ defmodule ForemanServer.PrCreateTest do
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--title", "Add widgets"])
     end
 
-    test "a second Create PR for the same run is refused and opens nothing", %{pr_url: pr_url} do
+    test "a second execute before PrCreated was recorded resumes the open PR and opens nothing",
+         %{pr_url: pr_url} do
       t = thread!()
       assert {:ok, _} = PrCreate.execute(t.run_id)
       _ = {ran("gh"), ran("git")}
 
-      assert {:error, {:pr_already_associated, ^pr_url}} = PrCreate.execute(t.run_id)
+      assert {:ok, %{pr_url: ^pr_url, head_branch: head}} = PrCreate.execute(t.run_id)
+      assert head == t.branch
       assert ran("gh") == []
       assert ran("git") == []
     end
@@ -188,8 +190,7 @@ defmodule ForemanServer.PrCreateTest do
       send(gh_pid, :release)
 
       results = Task.await_many(tasks, 15_000)
-      assert [{:ok, _}] = Enum.filter(results, &match?({:ok, _}, &1))
-      assert [{:error, {:pr_already_associated, _}}] = Enum.reject(results, &match?({:ok, _}, &1))
+      assert [{:ok, %{pr_url: url}}, {:ok, %{pr_url: url}}] = results
       assert length(ran("gh")) == 1
     end
 
@@ -313,6 +314,25 @@ defmodule ForemanServer.PrCreateTest do
 
       assert ran("gh") == []
       assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrCreated")) == 1
+    end
+
+    test "a retry after the dispatch failed records PrCreated for the already-open PR",
+         %{pr_url: pr_url} do
+      t = thread!()
+      # the PR was opened and associated, but the command never reached the aggregate
+      assert {:ok, _} = PrCreate.execute(t.run_id)
+      refute "PrCreated" in Support.run_event_types(t.run_id)
+      _ = {ran("gh"), ran("git")}
+
+      assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrCreated")) == 1
+      created = t.run_id |> Support.run_events() |> Enum.find(&(&1.event_type == "PrCreated"))
+      assert created.data.pr_url == pr_url
+      assert ran("gh") == []
+
+      assert {:error, {:pr_already_associated, ^pr_url}} =
+               CommandGateway.dispatch_operator(create_command(t.run_id))
     end
 
     test "typed errors reach the caller and append nothing", %{script: script} do

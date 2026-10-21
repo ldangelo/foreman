@@ -277,5 +277,87 @@ defmodule ForemanServer.PrMonitorTest do
       pr_url = run.pr_url
       refute_received {:fetched, ^pr_url}
     end
+
+    defp open_status,
+      do: %PrStatus{status: :open, head_sha: "s", head_branch: "b", base_branch: "main"}
+
+    # Every `:fetched` message queued so far.
+    defp fetched_urls(acc \\ []) do
+      receive do
+        {:fetched, url} -> fetched_urls([url | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "a 403 that does not mention a rate limit does not pause polling" do
+      PrMonitor.set_fetch_fun(fn _url ->
+        {:error, {:gh_failed, 1, "HTTP 403: Resource not accessible by integration"}}
+      end)
+
+      PrMonitor.poll_now()
+
+      assert %{last_errors: errors, paused_until: nil} = PrMonitor.stats()
+      assert errors >= 1
+    end
+
+    test "a rate limit pauses polling and stops the sweep at once" do
+      test_pid = self()
+
+      PrMonitor.set_fetch_fun(fn url ->
+        send(test_pid, {:fetched, url})
+        {:error, {:gh_failed, 1, "HTTP 403: API rate limit exceeded"}}
+      end)
+
+      PrMonitor.poll_now()
+
+      assert %{last_errors: 1, paused_until: until} = PrMonitor.stats()
+      assert is_integer(until)
+      # the three watched PRs of this test were not all hit: the sweep halted
+      assert [_one] = fetched_urls()
+    end
+
+    test "entries of PRs that are no longer watched are pruned from the schedule", %{
+      runs: [run | rest]
+    } do
+      PrMonitor.set_fetch_fun(fn _url -> {:ok, open_status()} end)
+      PrMonitor.poll_now()
+      assert %{due: due} = PrMonitor.stats()
+      assert Map.has_key?(due, run.pr_url)
+
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "PrMerged",
+          payload: %{
+            run_id: run.run_id,
+            pr_url: run.pr_url,
+            project_id: run.project_id,
+            task_id: run.task_id
+          }
+        }
+      ])
+
+      PrMonitor.poll_now()
+      assert %{due: due} = PrMonitor.stats()
+      refute Map.has_key?(due, run.pr_url)
+      assert Enum.all?(rest, &Map.has_key?(due, &1.pr_url))
+    end
+
+    test "PRs the per-tick cap left over are polled on the next second, not a full interval later",
+         %{runs: runs} do
+      Application.put_env(:foreman_server, :pr_monitor_max_per_tick, 1)
+      on_exit(fn -> Application.delete_env(:foreman_server, :pr_monitor_max_per_tick) end)
+      test_pid = self()
+
+      PrMonitor.set_fetch_fun(fn url ->
+        send(test_pid, {:fetched, url})
+        {:ok, open_status()}
+      end)
+
+      send(Process.whereis(PrMonitor), :poll)
+
+      # only the first tick is triggered by hand; the rest follow from the schedule
+      for run <- runs, do: assert_receive({:fetched, url} when url == run.pr_url, 20_000)
+    end
   end
 end

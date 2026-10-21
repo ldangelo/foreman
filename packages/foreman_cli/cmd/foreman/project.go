@@ -447,7 +447,7 @@ var projectSettingNames = []string{
 	"max_concurrent_runs", "daily_thread_cap",
 	"coordinator_propose_before_start", "coordinator_max_active_threads", "coordinator_reuse_threads",
 	"library_collect_produced",
-	"notification_preference",
+	"notification_preference", "pr_auto_fix",
 }
 
 var projectLimitNames = []string{
@@ -485,6 +485,12 @@ func projectSettingValue(v any) string {
 		return value
 	case float64:
 		return strconv.FormatFloat(value, 'f', -1, 64)
+	case map[string]any:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		return string(encoded)
 	default:
 		return fmt.Sprint(value)
 	}

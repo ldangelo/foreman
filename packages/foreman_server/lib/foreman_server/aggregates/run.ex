@@ -8,8 +8,7 @@ defmodule ForemanServer.Aggregates.Run do
   alias ForemanServer.PrGate
 
   @pr_watch_types PrWatch.command_types()
-  @pr_watch_events ~w(PrChecksChanged PrReviewChanged PrFixRequested PrFixStarted PrFixFinished
-                      PrFixExhausted PrWatchStopped PrWatchStarted PrCreated)
+  @pr_watch_events PrWatch.event_types()
 
   defmodule PhaseStatus do
     @moduledoc "Phase status keyed by phase_id."

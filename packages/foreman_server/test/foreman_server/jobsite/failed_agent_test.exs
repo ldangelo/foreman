@@ -46,6 +46,110 @@ defmodule ForemanServer.Jobsite.FailedAgentTest do
     assert Jobsite.get(id).status == "failed"
   end
 
+  # erlexec's macOS setpgid race kills the child before it execs the agent
+  # ("Cannot set effective group ..." on stderr, exit 1). The agent never ran,
+  # so the iteration is repeated instead of failing the jobsite.
+  test "a spawn that died before the agent started is retried" do
+    repo = tmp_repo!()
+
+    agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{"FAKE_AGENT_SPAWN_FAIL_FIRST" => "2", "FAKE_AGENT_TEXT" => "recovered"}
+      )
+
+    assert {:ok, result} =
+             Jobsite.run(
+               repo_path: repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: agent,
+               prompt: "go"
+             )
+
+    assert result.text =~ "recovered"
+  end
+
+  test "a spawn failure that keeps happening still fails the jobsite, after a bounded number of attempts" do
+    repo = tmp_repo!()
+    log = Path.join(System.tmp_dir!(), "spawn-attempts-#{System.unique_integer([:positive])}.log")
+    on_exit(fn -> File.rm(log) end)
+
+    agent =
+      Agents.pi("x",
+        binary: Path.join(__DIR__, "support/recording_agent.sh"),
+        env: %{"FAKE_AGENT_SPAWN_FAIL_FIRST" => "100", "FAKE_AGENT_PROMPT_LOG" => log}
+      )
+
+    assert {:error, %Error{code: :agent_failed}} =
+             Jobsite.run(
+               repo_path: repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: agent,
+               prompt: "go"
+             )
+
+    # The first attempt plus at most three retries, never an unbounded loop.
+    # (A real erlexec spawn race can swallow an attempt before the recorder
+    # runs, so the lower bound is "retried at least once", not exactly four.)
+    attempts = log |> File.read!() |> String.split("--invocation--\n", trim: true)
+    assert length(attempts) in 2..4
+  end
+
+  test "a spawn that died on a later iteration (session id already known) is retried too" do
+    repo = tmp_repo!()
+
+    # Iteration 2 resumes iteration 1's session, so the harness result for its
+    # dead spawn already carries a provider session id; that must not hide the
+    # spawn failure from the retry. Invocation 2 dies, invocation 3 runs.
+    agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{"FAKE_AGENT_SPAWN_FAIL_ON" => "2", "FAKE_AGENT_TEXT" => "second wind"}
+      )
+
+    assert {:ok, result} =
+             Jobsite.run(
+               repo_path: repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: agent,
+               prompt: "go",
+               max_iterations: 2,
+               completion_signal: "NEVER"
+             )
+
+    assert length(result.iterations) == 2
+    assert result.text =~ "second wind"
+  end
+
+  test "an agent that exits 1 for any other reason is not retried" do
+    repo = tmp_repo!()
+    log = Path.join(System.tmp_dir!(), "other-failure-#{System.unique_integer([:positive])}.log")
+    on_exit(fn -> File.rm(log) end)
+
+    agent =
+      Agents.pi("x",
+        binary: Path.join(__DIR__, "support/recording_agent.sh"),
+        env: %{
+          "FAKE_AGENT_FAIL_WITH" => "Credit balance is too low",
+          "FAKE_AGENT_PROMPT_LOG" => log
+        }
+      )
+
+    assert {:error, %Error{code: :agent_failed}} =
+             Jobsite.run(
+               repo_path: repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: agent,
+               prompt: "go"
+             )
+
+    assert log |> File.read!() |> String.split("--invocation--\n", trim: true) |> length() == 1
+  end
+
   test "commits the agent made itself are reported even though the tree is clean at the commit step" do
     repo = tmp_repo!()
 
