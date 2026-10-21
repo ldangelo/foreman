@@ -38,7 +38,7 @@ defmodule ForemanServer.DispatcherQuiesce do
   caller's own `on_exit` callbacks and the real `BootReconciliation` is back in
   place before the queued events are processed.
   """
-  @spec suspend!(pid: pid(), timeout: timeout()) :: :ok
+  @spec suspend!(pid: pid(), timeout: timeout(), resume_timeout: timeout()) :: :ok
   def suspend!(opts \\ []) do
     pid =
       Keyword.get_lazy(opts, :pid, fn -> Process.whereis(ForemanServer.Workflow.Dispatcher) end)
@@ -46,14 +46,19 @@ defmodule ForemanServer.DispatcherQuiesce do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     true = is_pid(pid)
 
-    on_exit(fn -> resume(pid) end)
+    resume_timeout = Keyword.get(opts, :resume_timeout, @default_timeout_ms)
+
+    on_exit(fn -> resume(pid, resume_timeout) end)
 
     :ok = :sys.suspend(pid, timeout)
   end
 
-  defp resume(pid) do
-    :sys.resume(pid, @default_timeout_ms)
+  # A resume that times out (target still busy) leaves its request queued, so
+  # the target resumes as soon as it gets to it; the cleanup must not fail.
+  defp resume(pid, timeout) do
+    :sys.resume(pid, timeout)
   catch
+    :exit, {:timeout, _} -> :ok
     :exit, {:noproc, _} -> :ok
     :exit, {:normal, _} -> :ok
     :exit, {:killed, _} -> :ok
