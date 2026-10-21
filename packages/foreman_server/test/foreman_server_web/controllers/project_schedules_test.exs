@@ -129,24 +129,23 @@ defmodule ForemanServerWeb.ProjectSchedulesTest do
     create(id, "s4", "aaa-paused")
     command(id, "schedule.pause", "s4", %{})
 
-    rows = get_json("/api/projects/#{id}/schedules", 200)["schedules"]
-    names = Enum.map(rows, & &1["name"])
-    next = Map.new(rows, &{&1["name"], &1["next_fire_at"]})
+    schedules = get_json("/api/projects/#{id}/schedules", 200)["schedules"]
+    names = Enum.map(schedules, & &1["name"])
 
-    # `next_fire_at` is computed from the wall clock on read. The 5m schedule's
-    # next slot is never later than the hourly ones', but in the last five
-    # minutes of every hour it lands exactly on the hour: a tie, which the
-    # contract breaks by name ("alpha" < "early"). Assert the order the clock
-    # actually produced instead of one that only holds for 55 minutes an hour.
-    assert next["early"] <= next["alpha"]
-    assert next["alpha"] == next["zeta"]
+    # The "5m" and "1h" schedules next fire at the SAME instant during the last five
+    # minutes of every hour (both land on the top of the hour), and the tie then breaks
+    # by name. So the contract is asserted from the response itself - ordered by
+    # (next_fire_at, name), schedules without a next fire last - not from a wall-clock
+    # dependent literal list.
+    keys = Enum.map(schedules, &{is_nil(&1["next_fire_at"]), &1["next_fire_at"], &1["name"]})
+    assert keys == Enum.sort(keys)
 
-    expected =
-      if next["early"] < next["alpha"],
-        do: ["early", "alpha", "zeta"],
-        else: ["alpha", "early", "zeta"]
+    assert List.last(names) == "aaa-paused"
+    assert Enum.find_index(names, &(&1 == "alpha")) < Enum.find_index(names, &(&1 == "zeta"))
 
-    assert names == expected ++ ["aaa-paused"]
+    by_name = Map.new(schedules, &{&1["name"], &1["next_fire_at"]})
+    assert by_name["early"] <= by_name["alpha"]
+    assert by_name["alpha"] == by_name["zeta"]
   end
 
   test "empty project lists no schedules", %{id: id} do

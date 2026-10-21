@@ -455,6 +455,11 @@ defmodule ForemanServer.MCP.Tools do
         },
         max_concurrent_runs: %{type: "integer", description: "Concurrent runs limit (1..1000)"},
         daily_thread_cap: %{type: "integer", description: "Threads per UTC day (1..10000)"},
+        library_collect_produced: %{
+          type: "boolean",
+          description:
+            "Register each run's artifacts and session archive files in the project library"
+        },
         coordinator_propose_before_start: %{
           type: "boolean",
           description: "Coordinator creates proposals (open tasks) instead of starting threads"
@@ -466,6 +471,25 @@ defmodule ForemanServer.MCP.Tools do
         coordinator_reuse_threads: %{
           type: "boolean",
           description: "Coordinator routes follow-ups to an existing thread where one matches"
+        },
+        pr_auto_fix: %{
+          type: "object",
+          description:
+            "Which PR problems Foreman may fix by itself: kinds (any of ci, comments, conflicts; empty = off), " <>
+              "max_attempts (1..5, default 2), cooldown_seconds (0..86400, default 0)",
+          properties: %{
+            kinds: %{
+              type: "array",
+              items: %{type: "string", enum: ["ci", "comments", "conflicts"]}
+            },
+            max_attempts: %{type: "integer"},
+            cooldown_seconds: %{type: "integer"}
+          },
+          additionalProperties: false
+        },
+        notification_preference: %{
+          type: "string",
+          description: "Notifications for this project: every_turn, blocked_only (default) or off"
         },
         clear: %{
           type: "array",
@@ -1027,6 +1051,39 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_approvals_list %{
+    name: "foreman_approvals_list",
+    description:
+      "List tool-call permission requests from agents that are waiting on the operator, oldest first. " <>
+        "Read-only: deciding a request is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
+        "Pass project_id (the project's requests) or run_id (one run or jobsite). status=all also lists decided, expired and finished ones.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        run_id: %{type: "string", description: "A run or jobsite ID (instead of project_id)"},
+        status: %{type: "string", enum: ["pending", "all"], description: "Default pending"}
+      },
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_questions_list %{
+    name: "foreman_questions_list",
+    description:
+      "List questions that agents have asked the operator, oldest first. Read-only: answering is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
+        "status=all also lists answered and expired questions.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        status: %{type: "string", enum: ["pending", "all"], description: "Default pending"}
+      },
+      required: ["project_id"],
+      additionalProperties: false
+    }
+  }
+
   @schema_foreman_project_conversation %{
     name: "foreman_project_conversation",
     description:
@@ -1062,6 +1119,51 @@ defmodule ForemanServer.MCP.Tools do
           description: "Optional idempotency key; the same id twice appends once."
         }
       }
+    }
+  }
+
+  @schema_foreman_pr_status %{
+    name: "foreman_pr_status",
+    description:
+      "Watched pull requests of a run: checks, review, fix counters, agent review and gate state",
+    inputSchema: %{
+      type: "object",
+      properties: %{run_id: %{type: "string", description: "The run ID"}},
+      required: ["run_id"]
+    }
+  }
+
+  @schema_foreman_pr_fix %{
+    name: "foreman_pr_fix",
+    description: "Request a fix thread for a watched PR: ci, comments or conflicts",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        run_id: %{type: "string", description: "The run ID"},
+        kind: %{type: "string", enum: ["ci", "comments", "conflicts"]},
+        pr_url: %{
+          type: "string",
+          description: "The PR; optional while the run watches exactly one"
+        },
+        note: %{type: "string", maxLength: 2000, description: "Extra guidance for the fix"}
+      },
+      required: ["run_id", "kind"]
+    }
+  }
+
+  @schema_foreman_pr_watch_stop %{
+    name: "foreman_pr_watch_stop",
+    description: "Stop watching a PR (reversible by an operator with `run watch-start`)",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        run_id: %{type: "string", description: "The run ID"},
+        pr_url: %{
+          type: "string",
+          description: "The PR; optional while the run watches exactly one"
+        }
+      },
+      required: ["run_id"]
     }
   }
 
@@ -1115,9 +1217,17 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_memory_read,
     @schema_foreman_project_memory_write,
     @schema_foreman_project_memory_forget,
+    @schema_foreman_approvals_list,
+    @schema_foreman_questions_list,
     @schema_foreman_project_conversation,
-    @schema_foreman_project_message
+    @schema_foreman_project_message,
+    @schema_foreman_pr_status,
+    @schema_foreman_pr_fix,
+    @schema_foreman_pr_watch_stop
   ]
+
+  # Read-only library tools (E5); implemented in `ForemanServer.MCP.LibraryTools`.
+  @tools @tools ++ ForemanServer.MCP.LibraryTools.schemas()
 
   def list_tools, do: @tools
 
@@ -1222,6 +1332,151 @@ defmodule ForemanServer.MCP.Tools do
       do: {:ok, result},
       else: {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
   end
+
+  defp tool_foreman_pr_status(%{run_id: run_id}) do
+    case ForemanServer.PrWatch.DTO.fetch(run_id) do
+      {:ok, body} ->
+        {:ok, body}
+
+      {:error, :run_not_found} ->
+        {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+    end
+  end
+
+  @pr_fix_types %{
+    "ci" => "run.pr.fix_ci",
+    "comments" => "run.pr.address_comments",
+    "conflicts" => "run.pr.resolve_conflicts"
+  }
+
+  defp tool_foreman_pr_fix(%{run_id: run_id, kind: kind} = args) do
+    note = Map.get(args, :note)
+
+    with :ok <- authorize_write("foreman_pr_fix"),
+         {:ok, type} <- pr_fix_type(kind),
+         :ok <- pr_fix_note(note) do
+      payload =
+        %{
+          run_id: run_id,
+          trigger: "coordinator",
+          requested_by: "mcp",
+          requested_at: System.system_time(:millisecond)
+        }
+        |> put_present(:pr_url, Map.get(args, :pr_url))
+        |> put_present(:note, note)
+
+      dispatch_pr_command("foreman_pr_fix", type, run_id, payload)
+    end
+  end
+
+  defp tool_foreman_pr_watch_stop(%{run_id: run_id} = args) do
+    with :ok <- authorize_write("foreman_pr_watch_stop") do
+      payload =
+        %{run_id: run_id, reason: "operator", stopped_by: "mcp"}
+        |> put_present(:pr_url, Map.get(args, :pr_url))
+
+      dispatch_pr_command("foreman_pr_watch_stop", "run.pr.watch_stop", run_id, payload)
+    end
+  end
+
+  defp pr_fix_type(kind) do
+    case Map.fetch(@pr_fix_types, kind) do
+      {:ok, type} ->
+        {:ok, type}
+
+      :error ->
+        {:error,
+         %ToolError{
+           code: "INVALID_PARAMS",
+           message: "kind must be one of: ci, comments, conflicts"
+         }}
+    end
+  end
+
+  defp pr_fix_note(nil), do: :ok
+
+  defp pr_fix_note(note) when is_binary(note) do
+    if String.valid?(note) and String.length(note) <= 2000, do: :ok, else: invalid_pr_note()
+  end
+
+  defp pr_fix_note(_note), do: invalid_pr_note()
+
+  defp invalid_pr_note do
+    {:error,
+     %ToolError{
+       code: "INVALID_PARAMS",
+       message: "note must be a string of at most 2000 characters"
+     }}
+  end
+
+  defp put_present(map, _key, value) when value in [nil, ""], do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  # Operator dispatch of the allow-listed PR commands: the `Run` aggregate
+  # enforces watched/open/in-flight/caps and records the fix; the PrWatcher
+  # reactor spawns it. There is no merge path from here.
+  defp dispatch_pr_command(tool, type, run_id, payload) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      CommandGateway.dispatch_operator(%{
+        type: type,
+        command_id: "mcp:#{tool}:#{run_id}:#{System.unique_integer([:positive])}",
+        aggregate_id: "run:#{run_id}",
+        payload: payload
+      })
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _event} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :ok)
+        {:ok, %{run_id: run_id, command: type, accepted: true}}
+
+      {:error, reason} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        {:error, pr_command_error(reason)}
+
+      {:error, reason, _detail} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        {:error, pr_command_error(reason)}
+    end
+  end
+
+  defp pr_command_error({:fix_in_flight, pr_url}),
+    do: %ToolError{code: "pr_fix_in_flight", message: "a fix is already running for #{pr_url}"}
+
+  defp pr_command_error({:not_found, :run, _id}),
+    do: %ToolError{code: "NOT_FOUND", message: "Run not found"}
+
+  defp pr_command_error({:pr_not_watched, pr_url}),
+    do: %ToolError{code: "pr_not_watched", message: "PR is not watched: #{inspect(pr_url)}"}
+
+  defp pr_command_error({:pr_url_required, _run_id}),
+    do: %ToolError{code: "pr_url_required", message: "the run has several PRs; pass pr_url"}
+
+  defp pr_command_error({:pr_not_open, status}),
+    do: %ToolError{code: "pr_not_open", message: "PR is #{status}"}
+
+  defp pr_command_error({:fix_exhausted, kind}),
+    do: %ToolError{code: "pr_fix_exhausted", message: "#{kind} fixes are exhausted for this head"}
+
+  defp pr_command_error({:fix_attempts_exhausted, kind, cap}),
+    do: %ToolError{
+      code: "pr_fix_exhausted",
+      message: "#{kind} fix attempts reached the cap of #{cap}"
+    }
+
+  defp pr_command_error({:fix_no_progress, kind}),
+    do: %ToolError{
+      code: "pr_fix_no_progress",
+      message: "the last #{kind} fix changed nothing on this head"
+    }
+
+  defp pr_command_error({:fix_cooling_down, _until}),
+    do: %ToolError{code: "pr_fix_cooling_down", message: "a fix finished too recently"}
+
+  defp pr_command_error(reason), do: %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}
 
   defp tool_foreman_thread_list(%{project_id: project_id} = args) do
     start_us = System.monotonic_time(:microsecond)
@@ -1712,6 +1967,9 @@ defmodule ForemanServer.MCP.Tools do
   defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message}),
     do: %ToolError{code: "DOMAIN_ERROR", message: "#{code}: #{message}"}
 
+  defp tool_foreman_project_library_list(args), do: ForemanServer.MCP.LibraryTools.list(args)
+  defp tool_foreman_project_library_read(args), do: ForemanServer.MCP.LibraryTools.read(args)
+
   defp tool_foreman_inbox_send(%{} = args) do
     start_us = System.monotonic_time(:microsecond)
 
@@ -1775,6 +2033,22 @@ defmodule ForemanServer.MCP.Tools do
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)
         {:error, %ToolError{code: "RUN_DETAIL_FAILED", message: inspect(reason)}}
     end
+  end
+
+  defp tool_foreman_approvals_list(args) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.MCP.ApprovalsTool.call(args)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_approvals_list", overview_outcome(result))
+    result
+  end
+
+  defp tool_foreman_questions_list(args) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.MCP.QuestionsTool.call(args)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_questions_list", overview_outcome(result))
+    result
   end
 
   defp tool_foreman_queue_status(%{}) do
@@ -1954,8 +2228,9 @@ defmodule ForemanServer.MCP.Tools do
 
   @settings_update_keys ~w(goal instructions thread_model thread_effort coordinator_provider
                            coordinator_model coordinator_effort max_concurrent_runs
-                           daily_thread_cap coordinator_propose_before_start
-                           coordinator_max_active_threads coordinator_reuse_threads)a
+                           daily_thread_cap pr_auto_fix coordinator_propose_before_start
+                           coordinator_max_active_threads coordinator_reuse_threads
+                           library_collect_produced notification_preference)a
 
   # The command id is content-derived (tool + canonical args + caller key), so a
   # retry of the same update collapses into one command while two different

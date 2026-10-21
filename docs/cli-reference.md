@@ -11,7 +11,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 
 > ## Read this first: most of this file documents commands that do not exist
 >
-> The Go CLI dispatches exactly six top-level verbs (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
+> The Go CLI dispatches exactly ten top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
@@ -20,14 +20,21 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --notification-preference --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
+> foreman approvals         list --project --run --all --format | approve --run --call --by --reason | deny --run --call --by --reason
+> foreman questions         list --project --all --format | answer --run --question --text --by
 > foreman project env       list --format | set --replace | unset
 > foreman project secret    list --format | set --from-env | unset
 > foreman project setup-script show | set --file | clear
 > foreman project network   show | set --mode --allow
+> foreman project adopt     --kind --id --into --new-project --format
+> foreman project recommend --format --fail-on
+> foreman project memory    list|read|write|forget|sync
+> foreman project schedule  list|create|pause|resume|delete --project-id
+> foreman project library   list --format | add --name --format | replace --name --format | remove
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
 > foreman project reactivate --idempotency-key
@@ -52,6 +59,16 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run approve-merge --approver --id --identity
 > foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
+> foreman run prs           <run-id>
+> foreman run fix-ci        <run-id> --pr --note
+> foreman run address-comments <run-id> --pr --note
+> foreman run resolve-conflicts <run-id> --pr --note
+> foreman run create-pr     <run-id>
+> foreman run watch-start   <run-id> --pr
+> foreman run watch-stop    <run-id> --pr
+>
+> foreman commands          inventory|generate|install|validate
+> foreman doctor            --project --strict --format
 >
 > foreman thread list       --door --limit --project --status
 > foreman thread get        (no flags)
@@ -72,8 +89,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > task-verb handlers); invoking any of them now produces the CLI's
 > standard "unknown command" error.
 >
-> Every verb except `init` REQUIRES a subcommand: bare `foreman run`,
-> `foreman task`, `foreman project` or `foreman workflow` returns
+> Every verb that has subcommands REQUIRES one: bare `foreman run`,
+> `foreman thread`, `foreman project` or `foreman workflow` returns
 > `missing subcommand`. Any section below showing flags directly on a bare verb
 > (notably `foreman run --prompt …`) is not a real invocation.
 >
@@ -144,8 +161,8 @@ This repository's Devbox/direnv setup starts Docker Compose services before you 
 > handling, and its `default:` branch returns `unknown command`, so every
 > spelling in the table below — including the `Use instead` column — is
 > unroutable. Of the 23 distinct verbs listed in the groups, three exist —
-> `init`, `run`, `task`; `retry` and `reset` exist only as the subcommands
-> `task retry` and `run reset`.
+> `init`, `run`, `doctor`; `reset` exists only as the subcommand `run reset`
+> (`task` and `task retry` were removed, TRD-018).
 >
 > `foreman server start` in the closing line does not exist either; use
 > `mix phx.server`.
@@ -325,6 +342,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
 | `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
+| `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
 | `--clear <setting>` | Clear a setting (repeatable) |
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
@@ -470,6 +488,26 @@ foreman project memory sync [--format json|table] <project-id>
 
 Server errors keep their code (`content_too_large`, `index_full`, `too_many_topics`, `content_not_durable`, `name_invalid` = 422; unknown topic or project = 404; archived project = 409). `foreman commands` also generates `foreman-project-memory-list` and `foreman-project-memory-read` assets.
 
+### `foreman project library`
+
+Add, replace, remove and list a project's library files (`<project>/.foreman/library/`). Uploads go to `/api/projects/:id/library` as multipart `files[]` parts.
+
+```
+foreman project library list [--format json|table] <project-id>
+foreman project library add [--name <name>] [--format json|table] <project-id> <path>...
+foreman project library replace [--name <name>] [--format json|table] <project-id> <entry-id> <path>...
+foreman project library remove <project-id> <entry-id>
+```
+
+| Verb | HTTP | Notes |
+|------|------|-------|
+| `list` | `GET /api/projects/:id/library` | entries, the markdown index and the effective limits |
+| `add` | `POST /api/projects/:id/library` | one folder (walked locally with the server's rules) or up to 100 files (480 MB each); every skipped file is printed with its reason |
+| `replace` | `PUT /api/projects/:id/library/:entry_id` | keeps the entry id, name and kind unless `--name` is given |
+| `remove` | `DELETE /api/projects/:id/library/:entry_id` | deletes the files and the entry |
+
+Folder rules (client and server): hidden files and directories, `node_modules`, symlinks and files over 30 MB are skipped; at most the first 100 files within 200 MB (sorted path order; the rest are reported as `folder_file_cap` / `folder_byte_budget`); at most 10 folders per project. Reading a file is `GET /api/projects/:id/library/:entry_id/files/*path` (raw bytes, 1 MiB cap, served as an attachment). Adding a directory that lives on the server host (`{"server_path": "/abs/dir"}` JSON body) is refused with 403 `server_path_disabled` unless `config :foreman_server, :library, allow_server_paths: true`. Server errors keep their code (`name_invalid`, `path_invalid`, `too_many_files`, `file_too_large`, `folder_empty`, `too_many_folders`, `duplicate_name`, `source_missing` = 422; `too_large` = 413; unknown entry or project = 404; archived project = 409). The opt-in setting `foreman project update --library-collect-produced` registers each run's artifacts and archive files into the library. Agents read the library through the MCP tools `foreman_project_library_list` / `foreman_project_library_read`; there is no agent write tool. Uploads are authenticated before the body is read; the whole request is capped by `config :foreman_server, :library, upload_max_bytes` (default 512 MiB, so one add of many near-limit files may need it raised) and an overrun is a JSON `413 upload_too_large`. `foreman project library add` is not subject to the CLI's 30s request timeout.
+
 ---
 
 ## Agent Command Assets
@@ -531,7 +569,7 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 ### `foreman run`
 
 > **NOT IMPLEMENTED as described.** `foreman run` is not a dispatch verb; it
-> requires one of `list`, `get`, `cancel`, `remove`, `reset`, `submit`, and a
+> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-start`, `watch-stop`, and a
 > bare `foreman run` returns `missing subcommand`. None of the twenty flags this
 > section documents exist anywhere in `run.go` — `--model`, `--watch`,
 > `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
@@ -611,6 +649,13 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 
 Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`, `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`, and `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS`. When exceeded, Foreman stops the run, writes a native task failure note, and marks the run stuck for operator action.
 
+> **Correction.** None of `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`,
+> `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
+> `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
+> in the server or CLI source, so no pipeline budget is enforced. `foreman run`
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
+> Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
+
 ### `foreman run task`
 
 Operator use of `foreman run task` was removed after the Elixir cutover. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the worker store before execution so prompts receive title/type/priority/description metadata.
@@ -684,7 +729,7 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   AgentRuntime's own `:backend` opt is a separate, internal manual-strategy
   parameter with no CLI surface.
 - `--base-branch <branch>` (optional, half-consumed per
-  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
+  [TRD-2026-80ba0665](TRD/completed/TRD-2026-80ba0665-branch-parent-resolution.md))
   — parent branch for the new task's worktree and PR. **The default now
   resolves server-side from the operator's checkout**: `RunExecutor` records
   `git symbolic-ref --short HEAD` of the project checkout when the run's first
@@ -1061,8 +1106,22 @@ foreman server stop               # Stop server started by Foreman
 
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns aggregate-validated commands/events/projections/recovery/security/overwatch and all database access, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases, stream worker events, emit authoritative terminal run/task events, stream Pi SDK tool calls/assistant messages as ordered worker events, expose typed Foreman tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`), and ask Elixir overwatch to approve/deny tool calls before execution. Node workers and CLI clients do not connect directly to the database; they use Elixir HTTP commands/projections and do not drain DB-backed merge queues from inside the worker. Raw log files are compatibility/debug projections of the worker event stream. The launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; that fallback may parse the final worker output to avoid stale phase attribution, but authoritative worker terminal events remain preferred. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
-The Elixir server can follow a run's PR on GitHub in two opt-in ways; each appends a `PrUpdated` event to the run's stream, and neither changes task status or adds merge metadata to `foreman run get` (nothing folds `PrUpdated` into the read model yet). A PR monitor (`FOREMAN_PR_MONITOR_ENABLED=true`; off by default) reads the PR of every run with a recorded association using `gh pr view`, so the `gh` CLI must be installed and authenticated on the server host; an unchanged PR adds nothing on later polls. `POST /webhooks/github` is the real-time path for `pull_request` events: every delivery must carry a valid `X-Hub-Signature-256` HMAC-SHA256 of the raw body, keyed by `FOREMAN_GITHUB_WEBHOOK_SECRET`. It fails closed: with no secret configured every delivery gets `503`, and a missing, malformed or wrong signature gets `401`. Deliveries are attributed to runs by PR URL; a PR no run owns is accepted and ignored. There is no `foreman server doctor` check for the secret (`server` is not a routed command).
+The Elixir server can follow a run's PR on GitHub in two opt-in ways; both append a `PrUpdated` event to the run's stream for a PR state change (status or head SHA), and neither changes task status or adds merge metadata to `foreman run get` (`foreman run prs` shows the richer PR watch record). A PR monitor (`FOREMAN_PR_MONITOR_ENABLED=true`; off by default) reads the PR of every run with a recorded association using `gh pr view`, so the `gh` CLI must be installed and authenticated on the server host; an unchanged PR adds nothing on later polls. `POST /webhooks/github` is the real-time path: a `pull_request` delivery (`closed`, `reopened`, or any action on a conflicted PR) appends `PrUpdated` through `run.pr.update`, while `check_run`/`check_suite` (completed), `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment` and `pull_request` `synchronize`/`ready_for_review`/`converted_to_draft` deliveries only request an early refresh: `PrWatcher` re-reads the PR and emits `PrChecksChanged`/`PrReviewChanged` when the content digest changed, so a webhook and a poll converge on one event. Every delivery must carry a valid `X-Hub-Signature-256` HMAC-SHA256 of the raw body, keyed by `FOREMAN_GITHUB_WEBHOOK_SECRET`. It fails closed: with no secret configured every delivery gets `503`, and a missing, malformed or wrong signature gets `401`. Deliveries are attributed to runs by PR URL; a PR no run owns is accepted and ignored. There is no `foreman server doctor` check for the secret (`server` is not a routed command).
 
+
+### `foreman run prs <run-id>`
+
+Lists the pull requests a run is watching (`GET /api/runs/<id>/prs`): PR URL, status, checks state and failing checks, review decision, comment count, whether watching is on, fix attempt counters per kind (`ci`, `comments`, `conflicts`) with any fix in flight, and the merge gate. The same record is returned by the MCP read tool `foreman_pr_status`. An unknown run is `404`.
+
+### `foreman run fix-ci|address-comments|resolve-conflicts <run-id> [--pr <url>] [--note <text>]`
+
+Operator commands `run.pr.fix_ci`, `run.pr.address_comments`, `run.pr.resolve_conflicts`. Each starts one fix thread (a jobsite that checks out the PR head branch, fast-forwards it to the remote, never force-pushes, and pushes the fix to that branch). `--pr` selects the PR when the run has several; `--note` (at most 2000 characters) is operator guidance. Refused with a typed error (`pr_fix_in_flight`) when any fix, of whatever kind, is already in flight for the PR (the guard is one fix per PR), when the per-PR, per-kind cap of 5 attempts is used up, or when the PR is closed/merged. These commands never merge. The MCP write tool `foreman_pr_fix` is the same operation with trigger `coordinator`.
+
+### `foreman run create-pr <run-id>` / `foreman run watch-stop|watch-start <run-id> [--pr <url>]`
+
+`create-pr` (`run.pr.create`) opens the PR for a run that has none. `watch-stop` / `watch-start` (`run.pr.watch_stop`, `run.pr.watch_start`; MCP `foreman_pr_watch_stop`) pause or resume PR watching. None of them merge or approve: use `approve-merge` and `merge`.
+
+**Project policy.** `foreman project update <id> --pr-auto-fix '<json>'` sets `pr_auto_fix` (`kinds` from `ci|comments|conflicts`, `max_attempts` 1..5, `cooldown_seconds` 0..86400); `--clear pr_auto_fix` turns automatic fixing off. Server settings: `FOREMAN_PR_WATCHER_ENABLED`, `FOREMAN_PR_MONITOR_ENABLED` (polling, off by default), `FOREMAN_GITHUB_WEBHOOK_SECRET`. Live webhooks, force-push handling, check re-run, conflict resolution and unresolved-thread reads are UNVERIFIED against real GitHub (spike S4).
 
 ### `foreman reset`
 
@@ -1135,7 +1194,7 @@ Reset Foreman to a clean operator state by intentionally dropping stale/obsolete
 
 ### `foreman run kill-switch`
 
-> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-stop`, `watch-start`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 
@@ -1201,7 +1260,7 @@ Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
 
-> **NOT IMPLEMENTED.** `foreman merge` is not dispatched. PR creation is automatic and server-side (`Workflow.AutoPR.maybe_create_pr/1`, called from `RunExecutor.finalize_run/1`); there is no operator merge verb.
+> **NOT IMPLEMENTED.** `foreman merge` is not dispatched. PR creation is automatic and server-side (`Workflow.AutoPR.maybe_create_pr/1`, called from `RunExecutor.finalize_run/1`); the operator-only merge gate is `foreman run approve-merge --id <run-id> --approver <name> --identity github:<login>` followed by `foreman run merge --id <run-id>` (never an MCP/agent path).
 
 Merge completed agent work into the target branch via the refinery. Merge-capable workflows enqueue work from an explicit `merge` phase; workflows without that phase are not merge-queued by workflow execution. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. The Elixir server also reconciles recorded GitHub PRs after creation, so a PR merged outside `foreman merge` is observed and the associated Foreman task becomes `merged`.
 
@@ -1482,7 +1541,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
@@ -1522,8 +1581,8 @@ behavior cannot diverge.
 > **GO CLI NOT IMPLEMENTED.** Neither `foreman inbox` nor `foreman inbox send` exists in the Go CLI.
 > MCP does expose `foreman_inbox_get` and the write-gated `foreman_inbox_send`.
 > The **Go CLI**'s command switch
-> (`packages/foreman_cli/cmd/foreman/main.go:85-98`) dispatches exactly
-> `project`, `task`, `run`, `workflow` and `init`; anything else returns
+> (`packages/foreman_cli/cmd/foreman/main.go`) dispatches exactly
+> `project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init` and `doctor`; anything else returns
 > `foreman: unknown command`. That is the only `foreman` entry point in the
 > repository — `packages/` holds `foreman_cli`, `foreman_server` and
 > `jido_harness`, and the string `inbox` appears in no Go, TypeScript or
@@ -1944,4 +2003,23 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 
 ## Messaging CLI status
 
-No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. Outbound Telegram/Slack delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
+No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. `foreman project update --notification-preference every_turn|blocked_only|off <id>` sets a project's notification preference (see the user guide's Outbound messaging delivery section). Outbound Telegram/Slack/webhook delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
+
+### `foreman approvals`
+
+```
+foreman approvals list (--project <id> | --run <id>) [--all] [--format table|json]
+foreman approvals approve --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
+foreman approvals deny    --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
+```
+
+Agent tool-permission requests (`GET /api/projects/:id/approvals`, `GET /api/runs/:run_id/approvals`). `approve`/`deny` post `tool.approve` / `tool.deny` to `/api/commands` for ONE tool call; they never touch the run's merge gate (`foreman run approve-merge` / `merge` stay the only way to merge). `--all` includes decided, expired and finished requests. An approval relaxes the approval mode for the NEXT PHASE ONLY, but phase-wide: pi/claude have no per-tool grant (the claude path is unverified live). The `approval_delivery` column is `resume_with_override` (the run is resumed with a one-phase approval-mode override) or `live`.
+
+### `foreman questions`
+
+```
+foreman questions list --project <id> [--all] [--format table|json]
+foreman questions answer --run <id|global> --question <id> --text <answer> [--by <name>]
+```
+
+Questions agents asked the operator (`GET /api/projects/:id/questions`); `answer` posts `question.answer`. Unanswered requests expire after the configured timeout and then show as `approval_expired` / `question_expired` in the Overview.

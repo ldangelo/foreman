@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -185,7 +186,81 @@ func (c *Client) do(method, path string, body any, out any) error {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
-	resp, err := c.HTTP.Do(req)
+	return c.send(c.HTTP, req, full, out)
+}
+
+// UploadFile is one `files[]` multipart part: the file at Path is streamed from
+// disk and sent under the filename Name (the entry-relative path on the server).
+type UploadFile struct {
+	Name string
+	Path string
+}
+
+// SendMultipart sends `fields` and `files` as multipart/form-data (method POST or
+// PUT) and decodes the JSON response into `out`. Files are streamed, never held in
+// memory, so a large library upload does not need a matching amount of RAM.
+func (c *Client) SendMultipart(method, path string, fields map[string]string, files []UploadFile, out any) error {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+
+	go func() {
+		pw.CloseWithError(writeMultipart(mw, fields, files))
+	}()
+
+	full := c.BaseURL + path
+	req, err := http.NewRequest(method, full, pr)
+	if err != nil {
+		pr.Close()
+		return fmt.Errorf("foreman: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+
+	// An upload of many large files legitimately outlives the 30s whole-exchange
+	// timeout of ordinary JSON calls, so it uses the same client without one.
+	// (Dial/TLS/header timeouts of the transport still apply.)
+	hc := *c.HTTP
+	hc.Timeout = 0
+
+	return c.send(&hc, req, full, out)
+}
+
+func writeMultipart(mw *multipart.Writer, fields map[string]string, files []UploadFile) error {
+	for name, value := range fields {
+		if err := mw.WriteField(name, value); err != nil {
+			return err
+		}
+	}
+
+	for _, f := range files {
+		part, err := mw.CreateFormFile("files[]", f.Name)
+		if err != nil {
+			return err
+		}
+
+		src, err := os.Open(f.Path)
+		if err != nil {
+			return err
+		}
+
+		_, copyErr := io.Copy(part, src)
+		src.Close()
+
+		if copyErr != nil {
+			return copyErr
+		}
+	}
+
+	return mw.Close()
+}
+
+// send executes the request and decodes a 2xx JSON response into `out`; any other
+// status is surfaced as *Error.
+func (c *Client) send(hc *http.Client, req *http.Request, full string, out any) error {
+	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("foreman: request: %w", err)
 	}

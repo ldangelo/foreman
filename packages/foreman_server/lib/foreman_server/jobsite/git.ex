@@ -386,7 +386,7 @@ defmodule ForemanServer.Jobsite.Git do
     timeout_ms = Keyword.get(opts, :timeout_ms, 120_000)
     args = ["-C", path, "push", remote, "refs/heads/#{branch}:refs/heads/#{branch}"]
 
-    case cmd_with_deadline(args, timeout_ms) do
+    case cmd_with_deadline(args, timeout_ms, "push") do
       {_output, 0} ->
         :ok
 
@@ -403,7 +403,7 @@ defmodule ForemanServer.Jobsite.Git do
   end
 
   # `git` under a port so the deadline can kill the OS process; prompts disabled.
-  defp cmd_with_deadline(args, timeout_ms) do
+  defp cmd_with_deadline(args, timeout_ms, label) do
     port =
       Port.open({:spawn_executable, System.find_executable("git")}, [
         :binary,
@@ -414,8 +414,17 @@ defmodule ForemanServer.Jobsite.Git do
         env: [{~c"GIT_TERMINAL_PROMPT", ~c"0"}]
       ])
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [])
+    # A git that fails instantly (bad ref, missing remote) can exit before the OS
+    # pid is read: `Port.info/2` is then `nil`. Its output and exit status are
+    # already queued in the mailbox, so `collect/4` returns them and never needs
+    # to kill anything.
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        nil -> nil
+      end
+
+    collect(port, os_pid, System.monotonic_time(:millisecond) + timeout_ms, [], label)
   end
 
   # git spawns helpers (receive-pack, ssh) that outlive a kill of git alone, so
@@ -423,6 +432,8 @@ defmodule ForemanServer.Jobsite.Git do
   # Known limit: the descendant snapshot (`pgrep -P`) is not atomic, so a helper
   # git forks after it can outlive the kill. A process group (`setsid`) would close
   # that, but macOS ships no `setsid` binary, so it is not used.
+  defp kill_tree(nil), do: :ok
+
   defp kill_tree(os_pid) do
     pid = Integer.to_string(os_pid)
 
@@ -434,11 +445,11 @@ defmodule ForemanServer.Jobsite.Git do
     System.cmd("kill", ["-KILL", pid], stderr_to_stdout: true)
   end
 
-  defp collect(port, os_pid, deadline, acc) do
+  defp collect(port, os_pid, deadline, acc, label) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {^port, {:data, data}} -> collect(port, os_pid, deadline, [acc, data])
+      {^port, {:data, data}} -> collect(port, os_pid, deadline, [acc, data], label)
       {^port, {:exit_status, status}} -> {IO.iodata_to_binary(acc), status}
     after
       remaining ->
@@ -451,7 +462,7 @@ defmodule ForemanServer.Jobsite.Git do
         end
 
         drain_port_messages(port)
-        {IO.iodata_to_binary(acc) <> "push timed out", :timeout}
+        {IO.iodata_to_binary(acc) <> "#{label} timed out", :timeout}
     end
   end
 
@@ -462,6 +473,86 @@ defmodule ForemanServer.Jobsite.Git do
       {^port, _} -> drain_port_messages(port)
     after
       0 -> :ok
+    end
+  end
+
+  @doc """
+  Fetch `branch` from `remote` into the remote-tracking ref
+  `refs/remotes/<remote>/<branch>` (forced, so a force-pushed branch is followed).
+  `remote` and `branch` are ref-guarded like every other ref argument: a name that
+  begins with `-` or holds control/whitespace characters is rejected before git runs.
+  Runs under the same killable deadline as `push/4`; prompts are disabled.
+  """
+  @spec fetch_branch(String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, Error.t()}
+  def fetch_branch(repo, remote, branch, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, 120_000)
+
+    with :ok <- check_ref(:remote, remote),
+         :ok <- check_ref(:branch, branch) do
+      refspec = "+refs/heads/#{branch}:refs/remotes/#{remote}/#{branch}"
+
+      case cmd_with_deadline(
+             ["-C", repo, "fetch", "--no-tags", remote, refspec],
+             timeout_ms,
+             "fetch"
+           ) do
+        {_output, 0} ->
+          :ok
+
+        {output, code} ->
+          {:error,
+           Error.new(:git_failed, "git fetch #{remote} #{branch} failed", %{
+             remote: remote,
+             branch: branch,
+             exit_code: code,
+             timed_out: code == :timeout,
+             output: String.trim(output)
+           })}
+      end
+    end
+  end
+
+  @doc "Full SHA a fully-qualified `ref` (for example `refs/heads/x`) points at in `repo`."
+  @spec ref_sha(String.t(), String.t()) :: {:ok, String.t()} | {:error, Error.t()}
+  def ref_sha(repo, ref) do
+    with :ok <- check_ref(:ref, ref) do
+      run(["-C", repo, "rev-parse", "--verify", "--quiet", ref <> "^{commit}"])
+      |> map_ok(&String.trim/1)
+      |> tag_error(:git_failed)
+    end
+  end
+
+  @doc "Whether commit `ancestor` is an ancestor of (or equal to) `descendant` in `repo`."
+  @spec ancestor?(String.t(), String.t(), String.t()) :: boolean()
+  def ancestor?(repo, ancestor, descendant) do
+    with :ok <- check_ref(:ancestor, ancestor),
+         :ok <- check_ref(:descendant, descendant) do
+      match?(
+        {_output, 0},
+        System.cmd("git", ["-C", repo, "merge-base", "--is-ancestor", ancestor, descendant],
+          stderr_to_stdout: true
+        )
+      )
+    else
+      {:error, _} -> false
+    end
+  end
+
+  @doc "Point local branch `branch` at `commit`, creating it when absent (`git branch -f`)."
+  @spec set_branch(String.t(), String.t(), String.t()) :: :ok | {:error, Error.t()}
+  def set_branch(repo, branch, commit) do
+    with :ok <- check_ref(:branch, branch),
+         :ok <- check_ref(:commit, commit) do
+      run(["-C", repo, "branch", "-f", branch, commit]) |> as_ok() |> tag_error(:git_failed)
+    end
+  end
+
+  @doc "Fast-forward the branch checked out in the worktree at `path` to `commit` (`merge --ff-only`)."
+  @spec fast_forward(String.t(), String.t()) :: :ok | {:error, Error.t()}
+  def fast_forward(path, commit) do
+    with :ok <- check_ref(:commit, commit) do
+      run(["-C", path, "merge", "--ff-only", commit]) |> as_ok() |> tag_error(:git_failed)
     end
   end
 

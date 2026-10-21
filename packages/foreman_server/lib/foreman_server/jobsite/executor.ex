@@ -192,6 +192,8 @@ defmodule ForemanServer.Jobsite.Executor do
          {:ok, {sandbox_provider, sandbox_config}} <-
            fetch(opts, :sandbox, :sandbox_create_failed, "sandbox"),
          :ok <- Hooks.validate(Keyword.get(opts, :hooks)),
+         {agent, sandbox_config} =
+           apply_library(agent, sandbox_provider, sandbox_config, Keyword.get(opts, :project_id)),
          {:ok, sandbox_config, network_cleanup} <-
            apply_network_policy(
              Keyword.get(opts, :project_id),
@@ -223,6 +225,36 @@ defmodule ForemanServer.Jobsite.Executor do
          project_id: Keyword.get(opts, :project_id)
        }}
     end
+  end
+
+  # Library delivery (E5): see `ForemanServer.Library.delivery/2`. The library
+  # variable is Foreman's own namespace, so it overrides the spec's agent env.
+  defp apply_library(agent, provider, config, project_id) do
+    sandbox = if provider.name() == "docker", do: :docker, else: :host
+
+    case ForemanServer.Library.delivery(project_id, sandbox) do
+      %{env: env, mounts: []} when map_size(env) == 0 ->
+        {agent, config}
+
+      %{env: env, mounts: []} ->
+        {%{agent | env: Map.merge(agent.env || %{}, env)}, config}
+
+      %{env: env, mounts: mounts} ->
+        {%{agent | env: Map.merge(agent.env || %{}, env)},
+         Map.put(config, :mounts, mounts ++ other_mounts(config, mounts))}
+    end
+  end
+
+  # Existing mounts minus any that target the same sandbox path as `mounts` (a
+  # resumed jobsite's persisted config already holds the library mount).
+  defp other_mounts(config, mounts) do
+    taken = MapSet.new(mounts, & &1.sandbox_path)
+
+    config
+    |> Map.get(:mounts, [])
+    |> Enum.reject(fn m ->
+      MapSet.member?(taken, ForemanServer.Aggregate.get(m, :sandbox_path))
+    end)
   end
 
   # The project's resolved env (vars + secret store) is the BASE of the agent
@@ -323,7 +355,8 @@ defmodule ForemanServer.Jobsite.Executor do
       path: Keyword.get(spec.opts, :path),
       base: Keyword.get(spec.opts, :base),
       exclude_paths: Keyword.get(spec.opts, :exclude_paths, []),
-      copy_to_worktree: Keyword.get(spec.opts, :copy_to_worktree, [])
+      copy_to_worktree: Keyword.get(spec.opts, :copy_to_worktree, []),
+      sync_remote: Keyword.get(spec.opts, :sync_remote)
     }
 
     agent_opts = %{
@@ -818,7 +851,15 @@ defmodule ForemanServer.Jobsite.Executor do
     with {:ok, sandbox_provider} <- Sandboxes.resolve(agg_state.sandbox_provider),
          {:ok, agent} <- agent_from_state(agg_state.agent),
          {:ok, agent} <- apply_project_environment(agent, agg_state.project_id) do
-      sandbox_config = agg_state.sandbox_config || %{}
+      # The agent env is not persisted, so the library variable is re-derived; the
+      # persisted sandbox config already carries the library mount (deduplicated).
+      {agent, sandbox_config} =
+        apply_library(
+          agent,
+          sandbox_provider,
+          agg_state.sandbox_config || %{},
+          agg_state.project_id
+        )
 
       worktree = %Worktree{
         repo_path: agg_state.repo_path,

@@ -12,8 +12,24 @@ defmodule ForemanServerWeb.Endpoint do
     longpoll: false
   )
 
+  # The workspace LiveViews' client libraries, served straight from the deps
+  # (no asset pipeline): exactly these two files, nothing else.
+  plug(Plug.Static,
+    at: "/assets/vendor",
+    from: {:phoenix_live_view, "priv/static"},
+    only: ~w(phoenix_live_view.min.js)
+  )
+
+  plug(Plug.Static,
+    at: "/assets/vendor",
+    from: {:phoenix, "priv/static"},
+    only: ~w(phoenix.min.js)
+  )
+
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
+
+  plug(ForemanServerWeb.Plugs.LibraryUploadParser)
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

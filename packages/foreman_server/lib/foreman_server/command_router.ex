@@ -595,11 +595,14 @@ defmodule ForemanServer.CommandRouter do
   def aggregate_module_for("jobsite_audit:" <> _), do: ForemanServer.Aggregates.JobsiteAudit
   def aggregate_module_for("review:" <> _), do: ForemanServer.Aggregates.Review
   def aggregate_module_for("project_memory:" <> _), do: ForemanServer.Aggregates.ProjectMemory
+  def aggregate_module_for("project_library:" <> _), do: ForemanServer.Aggregates.ProjectLibrary
 
   def aggregate_module_for("project_secret:" <> _),
     do: ForemanServer.Aggregates.ProjectSecret
 
   def aggregate_module_for("thread:" <> _), do: ForemanServer.Aggregates.Thread
   def aggregate_module_for("schedule:" <> _), do: ForemanServer.Aggregates.Schedule
+  def aggregate_module_for("tool_call:" <> _), do: ForemanServer.Aggregates.ToolCall
+  def aggregate_module_for("question:" <> _), do: ForemanServer.Aggregates.OperatorQuestion
   def aggregate_module_for("coordinator:" <> _), do: ForemanServer.Aggregates.Coordinator
 end

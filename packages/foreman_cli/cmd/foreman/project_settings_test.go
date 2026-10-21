@@ -135,7 +135,7 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"--thread-model", "m1", "--thread-effort", "high",
 		"--coordinator-provider", "claude", "--coordinator-model", "m2", "--coordinator-effort", "low",
 		"--max-concurrent-runs", "4", "--daily-thread-cap", "20",
-		"--coordinator-propose-before-start=false", "--coordinator-max-active-threads", "7", "--coordinator-reuse-threads",
+		"--coordinator-propose-before-start=false", "--coordinator-max-active-threads", "7", "--coordinator-reuse-threads", "--notification-preference", "every_turn",
 		"--clear", "goal", "--clear", "thread_model",
 		"p1")
 	if err != nil {
@@ -147,7 +147,8 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"coordinator_provider": "claude", "coordinator_model": "m2", "coordinator_effort": "low",
 		"max_concurrent_runs": float64(4), "daily_thread_cap": float64(20),
 		"coordinator_propose_before_start": false, "coordinator_max_active_threads": float64(7), "coordinator_reuse_threads": true,
-		"cleared_settings": []any{"goal", "thread_model"},
+		"notification_preference": "every_turn",
+		"cleared_settings":        []any{"goal", "thread_model"},
 	}
 	if !reflect.DeepEqual(env.Payload, want) {
 		t.Fatalf("payload = %v\nwant     %v", env.Payload, want)
@@ -354,5 +355,45 @@ func TestProjectContextUnknownProjectIsAnError(t *testing.T) {
 	c, _ := recordingServer(t, http.StatusNotFound, `{"error":"not_found","reason":":project_not_found"}`)
 	if err := projectContext(c, []string{"ghost"}); err == nil {
 		t.Fatal("expected an error for an unknown project")
+	}
+}
+
+func TestProjectUpdatePrAutoFixSendsObjectAndRejectsNonObjects(t *testing.T) {
+	env, err := runUpdate(t, "--pr-auto-fix", `{"kinds":["ci"],"max_attempts":2}`, "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"kinds": []any{"ci"}, "max_attempts": float64(2)}
+	if !reflect.DeepEqual(env.Payload["pr_auto_fix"], want) {
+		t.Fatalf("pr_auto_fix = %v, want %v", env.Payload["pr_auto_fix"], want)
+	}
+	for _, bad := range []string{`not json`, `null`, `["ci"]`} {
+		if _, err := runUpdate(t, "--pr-auto-fix", bad, "p1"); err == nil {
+			t.Fatalf("--pr-auto-fix %q must be rejected before any request", bad)
+		}
+	}
+}
+
+func TestProjectSettingsShowsPrAutoFixAsCompactJSON(t *testing.T) {
+	resp := `{"project_id":"p1","status":"active","settings":{"pr_auto_fix":{"kinds":["ci"],"max_attempts":2,"cooldown_seconds":300}},"limits":{}}`
+	c, _ := recordingServer(t, http.StatusOK, resp)
+	stdout := captureStdout(t, func() {
+		if err := runProject(c, []string{"settings", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := `pr_auto_fix: {"cooldown_seconds":300,"kinds":["ci"],"max_attempts":2}`
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("stdout missing %q:\n%s", want, stdout)
+	}
+
+	c, _ = recordingServer(t, http.StatusOK, `{"project_id":"p1","status":"active","settings":{},"limits":{}}`)
+	unset := captureStdout(t, func() {
+		if err := runProject(c, []string{"settings", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(unset, "pr_auto_fix: (unset)") {
+		t.Fatalf("stdout missing unset pr_auto_fix:\n%s", unset)
 	}
 }

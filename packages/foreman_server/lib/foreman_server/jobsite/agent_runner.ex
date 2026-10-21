@@ -15,18 +15,40 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   `{:result, _}` always wins the race, so a healthy run pays nothing for this.
   """
 
+  require Logger
+
   alias ForemanServer.Jobsite.{Error, IterationResult, Sandbox}
   alias Jido.Harness.{Run, RunRequest, RunResult}
 
   @default_idle_timeout_ms 600_000
   @default_completion_timeout_ms 60_000
+  @spawn_retries 3
+  @spawn_failure_signature "Cannot set effective group to"
 
   @spec run(ForemanServer.Jobsite.Agent.t(), String.t(), Sandbox.t(), keyword()) ::
           {:ok, IterationResult.t()} | {:error, Error.t()}
   def run(agent, prompt, %Sandbox{} = sandbox, opts \\ []) do
     agent
-    |> run_iteration_once(prompt, sandbox, opts)
+    |> run_with_spawn_retry(prompt, sandbox, opts, @spawn_retries)
     |> redact_result(agent.secrets)
+  end
+
+  # erlexec (the harness's process driver) starts each agent with `setpgid(0, 0)`
+  # in the child while the parent also calls `setpgid(child, child)`. On macOS
+  # the two race, and the child then dies with "Cannot set effective group to
+  # 0: Operation not permitted" and exit status 1 BEFORE it execs the agent
+  # (reproduced with a bare fork/setpgid loop: ~0.2% of spawns under CPU load).
+  # The agent never ran, so repeating the spawn is side-effect free; any other
+  # failure, including every real agent exit, is returned untouched.
+  defp run_with_spawn_retry(agent, prompt, sandbox, opts, retries_left) do
+    case run_iteration_once(agent, prompt, sandbox, opts) do
+      {:error, %Error{details: %{spawn_failed?: true}}} when retries_left > 0 ->
+        Logger.warning("agent process failed to spawn (setpgid race); retrying the iteration")
+        run_with_spawn_retry(agent, prompt, sandbox, opts, retries_left - 1)
+
+      other ->
+        other
+    end
   end
 
   # Agent output reaches events and archives only through the result text, so
@@ -367,9 +389,26 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   defp failed_result_error(%RunResult{error: error} = result) do
     Error.new(:agent_failed, (error && error.message) || "agent run failed", %{
       reason: error,
-      session_id: result.provider_session_id
+      session_id: result.provider_session_id,
+      spawn_failed?: spawn_failed?(result)
     })
   end
+
+  # The child's stderr (erlexec's own `perror` line) arrives as a harness
+  # provider event. The session id is NOT a usable signal here: a resumed
+  # iteration is handed its session id up front, so the result carries one
+  # even though the agent never started.
+  defp spawn_failed?(%RunResult{events: events}) when is_list(events) do
+    Enum.any?(events, fn
+      %{payload: %{"stream" => "stderr", "data" => data}} when is_binary(data) ->
+        String.contains?(data, @spawn_failure_signature)
+
+      _event ->
+        false
+    end)
+  end
+
+  defp spawn_failed?(_result), do: false
 
   defp poll_timeout(nil, _completion_timeout_ms, nil), do: :infinity
   defp poll_timeout(nil, _completion_timeout_ms, _intent_fun), do: @intent_poll_ms

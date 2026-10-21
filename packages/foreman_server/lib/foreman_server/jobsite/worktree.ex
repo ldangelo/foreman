@@ -96,7 +96,115 @@ defmodule ForemanServer.Jobsite.Worktree do
     end
   end
 
+  defp do_create(repo_path, :merge_to_head, opts) do
+    with {:ok, target_branch} <- Git.current_branch(repo_path),
+         {:ok, base_sha} <- Git.head_sha(repo_path) do
+      branch = "jobsite/" <> random_hex(8)
+      explicit_path = Keyword.get(opts, :path)
+      path = explicit_path || default_worktree_path(repo_path, branch)
+      if is_nil(explicit_path), do: ensure_foreman_gitignore(repo_path)
+
+      with :ok <- Git.worktree_add(repo_path, path, branch, base_sha) do
+        {:ok,
+         %__MODULE__{
+           repo_path: repo_path,
+           path: path,
+           branch: branch,
+           strategy: :merge_to_head,
+           base_sha: base_sha,
+           target_branch: target_branch,
+           temp?: true
+         }}
+      end
+    end
+  end
+
+  # `sync_remote: "origin"` (a system-set option; `Jobsite.Spec` never accepts it from a
+  # remote caller) attaches to a branch that lives on the remote - a PR head branch:
+  # fetch it, then make the local branch equal to the remote tip (create it, or
+  # fast-forward a branch that is behind) BEFORE the worktree is added. A local branch
+  # that has commits the remote lacks is refused rather than merged or discarded.
+  # `base_sha` is then the branch tip at attach time, so a later "commits since base"
+  # counts only what the jobsite adds.
   defp do_create(repo_path, {:branch, name} = strategy, opts) do
+    case Keyword.get(opts, :sync_remote) do
+      nil ->
+        attach_branch(repo_path, name, strategy, opts)
+
+      remote when is_binary(remote) ->
+        with {:ok, tip} <- sync_branch(repo_path, remote, name),
+             {:ok, worktree} <- attach_branch(repo_path, name, strategy, opts) do
+          {:ok, %{worktree | base_sha: tip}}
+        end
+    end
+  end
+
+  defp sync_branch(repo_path, remote, name) do
+    remote_ref = "refs/remotes/#{remote}/#{name}"
+
+    with :ok <- Git.fetch_branch(repo_path, remote, name),
+         {:ok, remote_sha} <- Git.ref_sha(repo_path, remote_ref) do
+      case Git.ref_sha(repo_path, "refs/heads/#{name}") do
+        {:error, _} ->
+          with :ok <- Git.set_branch(repo_path, name, remote_sha), do: {:ok, remote_sha}
+
+        {:ok, ^remote_sha} ->
+          {:ok, remote_sha}
+
+        {:ok, local_sha} ->
+          catch_up(repo_path, name, local_sha, remote_sha)
+      end
+    end
+  end
+
+  defp catch_up(repo_path, name, local_sha, remote_sha) do
+    if Git.ancestor?(repo_path, local_sha, remote_sha) do
+      fast_forward(repo_path, name, remote_sha)
+    else
+      {:error,
+       Error.new(
+         :worktree_create_failed,
+         "local branch has unpushed commits: it is not an ancestor of its remote tip",
+         %{branch: name, local: local_sha, remote: remote_sha}
+       )}
+    end
+  end
+
+  # A branch checked out in a linked worktree moves with `merge --ff-only` run there
+  # (git refuses to move a checked-out branch with `branch -f`). Nothing moves when the
+  # branch is checked out in the repo's MAIN worktree (the operator's live checkout,
+  # which `attach_branch/4` refuses anyway) or the linked worktree has uncommitted
+  # changes: the refusal must precede any side effect.
+  defp fast_forward(repo_path, name, remote_sha) do
+    with {:ok, [main | _] = existing} <- Git.worktree_list(repo_path) do
+      case Enum.find(existing, &(&1.branch == name)) do
+        nil ->
+          with :ok <- Git.set_branch(repo_path, name, remote_sha), do: {:ok, remote_sha}
+
+        %{path: path} when path == main.path ->
+          {:error,
+           Error.new(
+             :worktree_create_failed,
+             "branch #{inspect(name)} is checked out in the repository's main worktree; it was not fast-forwarded",
+             %{branch: name, path: path}
+           )}
+
+        %{path: path} ->
+          if Git.dirty?(path) do
+            {:error,
+             Error.new(
+               :worktree_create_failed,
+               "branch #{inspect(name)} is checked out in a worktree with uncommitted changes; it was not fast-forwarded",
+               %{branch: name, path: path}
+             )}
+          else
+            with :ok <- Git.fast_forward(path, remote_sha), do: {:ok, remote_sha}
+          end
+      end
+    end
+  end
+
+  defp attach_branch(repo_path, name, strategy, opts) do
     with {:ok, existing} <- Git.worktree_list(repo_path),
          {:ok, target_branch} <- Git.current_branch(repo_path) do
       main_path = existing |> List.first() |> then(&(&1 && &1.path))
@@ -146,29 +254,6 @@ defmodule ForemanServer.Jobsite.Worktree do
                temp?: false
              }}
           end
-      end
-    end
-  end
-
-  defp do_create(repo_path, :merge_to_head, opts) do
-    with {:ok, target_branch} <- Git.current_branch(repo_path),
-         {:ok, base_sha} <- Git.head_sha(repo_path) do
-      branch = "jobsite/" <> random_hex(8)
-      explicit_path = Keyword.get(opts, :path)
-      path = explicit_path || default_worktree_path(repo_path, branch)
-      if is_nil(explicit_path), do: ensure_foreman_gitignore(repo_path)
-
-      with :ok <- Git.worktree_add(repo_path, path, branch, base_sha) do
-        {:ok,
-         %__MODULE__{
-           repo_path: repo_path,
-           path: path,
-           branch: branch,
-           strategy: :merge_to_head,
-           base_sha: base_sha,
-           target_branch: target_branch,
-           temp?: true
-         }}
       end
     end
   end
