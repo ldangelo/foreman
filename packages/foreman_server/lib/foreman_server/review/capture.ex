@@ -18,13 +18,16 @@ defmodule ForemanServer.Review.Capture do
 
   @doc "Append an iteration's harness events to the transcript and record its provider session id."
   @spec put_iteration(String.t() | nil, Jido.Harness.RunResult.t()) :: :ok | {:error, Error.t()}
-  def put_iteration(nil, _result), do: :ok
+  def put_iteration(archive_dir, result, secrets \\ [])
 
-  def put_iteration(archive_dir, %Jido.Harness.RunResult{} = result)
-      when is_binary(archive_dir) do
+  def put_iteration(nil, _result, _secrets), do: :ok
+
+  def put_iteration(archive_dir, %Jido.Harness.RunResult{} = result, secrets)
+      when is_binary(archive_dir) and is_list(secrets) do
     if Archive.capture_enabled?() do
       guarded("put_iteration", archive_dir, fn ->
-        with :ok <- Archive.append_events(archive_dir, result.events || []) do
+        with :ok <-
+               Archive.append_events(archive_dir, redact_events(result.events || [], secrets)) do
           put_session_id(archive_dir, result.provider_session_id)
         end
       end)
@@ -465,6 +468,28 @@ defmodule ForemanServer.Review.Capture do
   end
 
   # Capture must never fail a run: any exception becomes a recorded error.
+  # Project secrets must not reach the on-disk transcript (E4-S2): redact every
+  # event's text with the same policy the workflow door's run logs use.
+  defp redact_events(events, []), do: events
+
+  defp redact_events(events, secrets) do
+    Enum.map(events, fn
+      %{payload: %{"text" => text} = payload} = event when is_binary(text) ->
+        %{
+          event
+          | payload:
+              Map.put(
+                payload,
+                "text",
+                ForemanServer.Overwatch.WorkerLogPolicy.redact(text, secrets)
+              )
+        }
+
+      event ->
+        event
+    end)
+  end
+
   defp guarded(stage, dir, fun) do
     fun.()
   rescue

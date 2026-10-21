@@ -51,7 +51,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
@@ -288,7 +288,13 @@ defmodule ForemanServer.CommandGateway do
          aggregate_id: aggregate_id,
          payload: payload
        })
-       when type in ["project.reactivate", "project.pause", "project.resume", "project.adopt"] do
+       when type in [
+              "project.reactivate",
+              "project.pause",
+              "project.resume",
+              "project.adopt",
+              "project.environment.set"
+            ] do
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
 
     cond do

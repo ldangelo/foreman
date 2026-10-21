@@ -75,6 +75,13 @@ defmodule ForemanServer.Jobsite.BootRecovery do
 
   @impl true
   def handle_continue(:scan, state) do
+    # Network-policy networks/sidecars of jobsites that died with the previous
+    # node: at boot none of them is live, so every one is an orphan.
+    if :foreman_server
+       |> Application.get_env(:network_policy, [])
+       |> Keyword.get(:sweep_on_boot, true),
+       do: ForemanServer.Jobsite.NetworkPolicy.sweep_orphans()
+
     case scan() do
       {:ok, outcomes} -> log_summary(outcomes)
       {:error, %Error{}} -> :ok

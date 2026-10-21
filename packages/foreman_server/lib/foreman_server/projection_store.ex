@@ -266,6 +266,23 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:jobsite, jobsite_id})
   end
 
+  @doc """
+  Names, versions and last-update times of a project's CURRENTLY SET secrets,
+  sorted by name. Never contains a value (events carry none).
+  """
+  @spec project_secret_names(String.t()) :: [
+          %{name: String.t(), version: pos_integer(), updated_at: String.t()}
+        ]
+  def project_secret_names(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:project_secret_names, project_id})
+  end
+
+  @doc "Latest event version per secret name (set or unset), `%{}` for none."
+  @spec project_secret_versions(String.t()) :: %{String.t() => pos_integer()}
+  def project_secret_versions(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:project_secret_versions, project_id})
+  end
+
   @doc "Return every projected jobsite, newest-started-first."
   @spec list_jobsites() :: [map()]
   def list_jobsites do
@@ -710,6 +727,28 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:project_secret_names, project_id}, _from, state) do
+    names =
+      state.project_secrets
+      |> Map.get(project_id, %{})
+      |> Enum.filter(fn {_name, entry} -> entry.set? end)
+      |> Enum.map(fn {name, entry} ->
+        %{name: name, version: entry.version, updated_at: entry.updated_at}
+      end)
+      |> Enum.sort_by(& &1.name)
+
+    {:reply, names, state}
+  end
+
+  def handle_call({:project_secret_versions, project_id}, _from, state) do
+    versions =
+      state.project_secrets
+      |> Map.get(project_id, %{})
+      |> Map.new(fn {name, entry} -> {name, entry.version} end)
+
+    {:reply, versions, state}
+  end
+
   def handle_call({:jobsite, jobsite_id}, _from, state) do
     {:reply, Map.get(state.jobsites, jobsite_id), state}
   end
@@ -733,6 +772,9 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:adoption, key}, _from, state) do
     {:reply, Map.get(state.adoptions, key), state}
+  end
+
+  @impl true
   def handle_call({:schedules, project_id, include_deleted?}, _from, state) do
     list =
       for {{^project_id, _id}, schedule} <- state.schedules,
@@ -1349,6 +1391,7 @@ defmodule ForemanServer.ProjectionStore do
       adoptions: %{},
       reviews: %{},
       project_memory: %{},
+      project_secrets: %{},
       thread_flags: %{},
       schedules: %{}
     }
@@ -2507,6 +2550,12 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp apply_event_by_type(state, "ProjectSecretSet", payload),
+    do: put_project_secret(state, "ProjectSecretSet", payload, true)
+
+  defp apply_event_by_type(state, "ProjectSecretUnset", payload),
+    do: put_project_secret(state, "ProjectSecretUnset", payload, false)
+
   # A malformed ReviewRecorded must not crash `init/1`'s event-log rebuild, so
   # a decode failure is logged and the event skipped rather than raised.
   defp apply_event_by_type(state, "ReviewRecorded", payload) do
@@ -3587,6 +3636,22 @@ defmodule ForemanServer.ProjectionStore do
       _, acc -> acc
     end)
     |> Enum.sort()
+  end
+
+  # Secret events carry name + version only (no value field exists), so the
+  # projection cannot leak one. A malformed event is skipped, not fatal to the
+  # event-log rebuild in `init/1`.
+  defp put_project_secret(state, event_type, payload, set?) do
+    case decode_or_skip(event_type, payload) do
+      {:ok, %{project_id: project_id, name: name, version: version, at: at}}
+      when is_binary(project_id) and project_id != "" and is_binary(name) and is_integer(version) ->
+        entry = %{set?: set?, version: version, updated_at: at}
+        per_project = state.project_secrets |> Map.get(project_id, %{}) |> Map.put(name, entry)
+        %{state | project_secrets: Map.put(state.project_secrets, project_id, per_project)}
+
+      _ ->
+        state
+    end
   end
 
   defp put_state(state, projects, runs) do

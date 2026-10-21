@@ -4,6 +4,7 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectMemory
   alias ForemanServer.ProjectSettings
+  alias ForemanServer.ProjectEnvironmentDTO
   alias ForemanServer.ProjectSettingsDTO
   alias ForemanServer.UsageDTO
   alias ForemanServer.Threads
@@ -388,6 +389,22 @@ defmodule ForemanServer.MCP.Tools do
           description: "Return only this breakdown"
         },
         limit: %{type: "integer", description: "Max threads returned (1..500, default 50)"}
+      },
+      required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_project_environment_get %{
+    name: "foreman_project_environment_get",
+    description:
+      "Get a project's environment configuration: variable NAMES, network policy " <>
+        "(mode, hosts, where it is enforced), whether a setup script is configured and secret NAMES " <>
+        "with versions. Never returns any variable or secret value. Read-only: environment and " <>
+        "secrets are written only by operators via the HTTP API or CLI.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
       },
       required: ["project_id"]
     }
@@ -992,6 +1009,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_get,
     @schema_foreman_project_recommendations,
     @schema_foreman_project_settings_get,
+    @schema_foreman_project_environment_get,
     @schema_foreman_project_settings_update,
     @schema_foreman_project_pause,
     @schema_foreman_project_resume,
@@ -1739,6 +1757,29 @@ defmodule ForemanServer.MCP.Tools do
       {:error, {code, message}} ->
         Telemetry.mcp_tool_call(duration_us, "foreman_usage_get", :invalid_params)
         {:error, %ToolError{code: Atom.to_string(code), message: message}}
+    end
+  end
+
+  defp tool_foreman_project_environment_get(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ProjectEnvironmentDTO.fetch(project_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, dto} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_environment_get", :ok)
+
+        view =
+          dto
+          |> ProjectEnvironmentDTO.names_only()
+          |> Map.put("has_setup_script", is_binary(dto["setup_script"]))
+          |> Map.delete("setup_script")
+
+        {:ok, view}
+
+      :not_found ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_environment_get", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
     end
   end
 

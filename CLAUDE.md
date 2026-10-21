@@ -363,6 +363,20 @@ provides them. `FOREMAN_EXPECTED_BASE` is **not** injected; the base
 is resolved lazily at completion time to honor pushes that landed
 during the phase.
 
+**Project environment (E4).** `ForemanServer.ProjectEnvironment.resolve/2` is the
+single producer of a project's agent env and redaction list; `RunExecutor`,
+`Overwatch` and `Jobsite.Executor` all call it, never `config.env` directly.
+Secret VALUES live only in `ForemanServer.SecretStore` (file backend, dir from
+`config :foreman_server, :secret_store, dir:`; tests point it at a tmp dir) and
+must never enter an event, command payload, log, projection or API response:
+`ProjectSecrets.set/4` stores the value then dispatches the system-only
+`project.secret.set` carrying name+version. `config.environment` (vars,
+`setup_script`, network) is written only by the operator command
+`project.environment.set`; `project.update`/`register` reject the key. The setup
+script (`ProjectSetup`, run via `Jobsite.HostCommand` in its own process group)
+runs once after worktree creation on both doors; network policy
+(`Jobsite.NetworkPolicy`) is enforced on docker jobsites only.
+
 `RunExecutor.init/1` parses the persisted `workflow_snapshot` via
 `extract_phase_specs/1`, which uses the dual-key pattern
 `Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the

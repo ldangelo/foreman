@@ -294,5 +294,14 @@ config :foreman_server, :schedule,
   min_interval_seconds: 300,
   max_per_project: 50,
   default_misfire_grace_seconds: 600
+# Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
+# Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
+config :foreman_server, :secret_store,
+  backend: ForemanServer.SecretStore.File,
+  dir: Path.join(System.user_home!(), ".foreman/secrets")
+
+# Secret values arrive as `value` in PUT /api/projects/:id/secrets/:name; Phoenix
+# must never log them (E4-S6).
+config :phoenix, :filter_parameters, ["password", "value"]
 
 import_config "#{config_env()}.exs"
