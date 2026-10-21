@@ -38,7 +38,11 @@ defmodule ForemanServer.Coordinator.Runner do
   def init(%Runtime{} = rt) do
     case ProjectionStore.subscribe(replay_existing: false) do
       :ok ->
-        Enum.each(ProjectionStore.coordinator_pending_projects(), &ProjectWorker.notify(rt, &1))
+        for project_id <- ProjectionStore.coordinator_pending_projects(),
+            Runtime.serves?(rt, project_id) do
+          ProjectWorker.notify(rt, project_id)
+        end
+
         {:ok, rt}
 
       {:error, reason} ->
@@ -49,7 +53,8 @@ defmodule ForemanServer.Coordinator.Runner do
   @impl true
   def handle_info({:projection_event, event}, rt) when is_map(event) do
     with type when type in @wake_events <- field(event, :event_type),
-         project_id when is_binary(project_id) <- project_id(event) do
+         project_id when is_binary(project_id) <- project_id(event),
+         true <- Runtime.serves?(rt, project_id) do
       ProjectWorker.notify(rt, project_id)
     end
 

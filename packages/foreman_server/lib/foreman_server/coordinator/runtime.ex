@@ -16,6 +16,7 @@ defmodule ForemanServer.Coordinator.Runtime do
     :task_sup,
     :agent,
     agent_opts: [],
+    only: nil,
     gateway: ForemanServer.CommandGateway,
     sources: Live,
     threads: ForemanServer.Threads,
@@ -33,6 +34,11 @@ defmodule ForemanServer.Coordinator.Runtime do
 
   @type t :: %__MODULE__{}
 
+  @doc "True when this runtime serves `project_id` (`:only` restricts it; tests use that to isolate)."
+  @spec serves?(t(), String.t()) :: boolean()
+  def serves?(%__MODULE__{only: nil}, _project_id), do: true
+  def serves?(%__MODULE__{only: only}, project_id), do: project_id in only
+
   @doc "Build a runtime named `name`; `opts` override `config :foreman_server, :coordinator`."
   @spec new(atom(), keyword()) :: t()
   def new(name, opts \\ []) when is_atom(name) do
@@ -46,6 +52,7 @@ defmodule ForemanServer.Coordinator.Runtime do
       task_sup: Module.concat(name, TaskSupervisor),
       agent: get.(:agent, ForemanServer.Coordinator.Agent.Harness),
       agent_opts: Keyword.get(opts, :agent_opts, []),
+      only: Keyword.get(opts, :only),
       gateway: get.(:gateway, ForemanServer.CommandGateway),
       sources: get.(:sources, Live),
       threads: get.(:threads, ForemanServer.Threads),

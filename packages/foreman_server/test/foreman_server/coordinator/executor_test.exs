@@ -187,20 +187,20 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
     } do
       {:ok, _} =
         ForemanServer.CommandGateway.dispatch_system(%{
-          command_id: "seed-task",
-          aggregate_id: "task:seed",
+          command_id: "seed-task-#{p}",
+          aggregate_id: "task:seed-#{p}",
           type: "task.create",
           payload: %{
-            task_id: "seed",
+            task_id: "seed-#{p}",
             project_id: p,
             title: "seed",
-            external_id: "bd-7",
+            external_id: "bd-#{p}",
             provider_tracked: false,
             status: "open"
           }
         })
 
-      FakeThreads.put([H.thread(p, 1, "in_progress", task_id: "seed")])
+      FakeThreads.put([H.thread(p, 1, "in_progress", task_id: "seed-#{p}")])
 
       assert [
                %{
@@ -208,7 +208,7 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
                  result_ref: %{"thread_id" => "run:r1", "reused_thread" => true}
                }
              ] =
-               run(p, [start("again", %{"bead_id" => "bd-7"})])
+               run(p, [start("again", %{"bead_id" => "bd-#{p}"})])
 
       assert_received {:follow_up, "run:r1", text, [message_id: "coord-" <> _]}
       assert text =~ "Trace: boom"
@@ -216,7 +216,7 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
 
       # With reuse off the same action starts a new thread.
       assert [%{status: "executed", result_ref: %{"task_ids" => [_]}}] =
-               run(p, [start("again", %{"bead_id" => "bd-7"})], %{
+               run(p, [start("again", %{"bead_id" => "bd-#{p}"})], %{
                  tuning: %Tuning{reuse_threads: false},
                  trigger_key: "m2"
                })
@@ -255,14 +255,15 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
       {:ok, conv} = ProjectionStore.coordinator_state(p)
 
       other = H.register_project(Path.join(dir, "other") |> tap(&File.mkdir_p!/1))
+      foreign = "foreign-#{other}"
 
       {:ok, _} =
         CommandGateway.dispatch_system(%{
-          command_id: "foreign",
-          aggregate_id: "task:foreign-1",
+          command_id: "foreign-#{p}",
+          aggregate_id: "task:foreign-#{other}",
           type: "task.create",
           payload: %{
-            task_id: "foreign-1",
+            task_id: "foreign-#{other}",
             project_id: other,
             title: "x",
             status: "open",
@@ -270,7 +271,7 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
           }
         })
 
-      approve = %{"kind" => "approve_proposed", "task_ids" => [a, "foreign-1", "never-proposed"]}
+      approve = %{"kind" => "approve_proposed", "task_ids" => [a, foreign, "never-proposed"]}
 
       assert [
                %{
@@ -280,10 +281,10 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
              ] =
                run(p, [approve], %{recorded: conv.actions, trigger_key: "m2"})
 
-      assert Enum.map(skipped, & &1["task_id"]) == ["foreign-1", "never-proposed"]
+      assert Enum.map(skipped, & &1["task_id"]) == [foreign, "never-proposed"]
       assert ProjectionStore.task_projection(a).status != "open"
       assert ProjectionStore.task_projection(b).status == "open"
-      assert ProjectionStore.task_projection("foreign-1").status == "open"
+      assert ProjectionStore.task_projection(foreign).status == "open"
     end
   end
 

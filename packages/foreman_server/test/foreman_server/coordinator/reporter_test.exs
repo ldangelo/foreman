@@ -17,6 +17,7 @@ defmodule ForemanServer.Coordinator.ReporterTest do
     SpyGateway.watch()
     H.subscribe!()
     on_exit(&SpyGateway.unwatch/0)
+    Process.put(:co_project, project_id)
     script = start_supervised!({Stub, responses: []})
     {:ok, project_id: project_id, script: script}
   end
@@ -30,6 +31,7 @@ defmodule ForemanServer.Coordinator.ReporterTest do
           name: name,
           agent: Stub,
           agent_opts: [script: script],
+          only: [Process.get(:co_project)],
           gateway: SpyGateway,
           retry_backoff_ms: 0,
           backfill?: false
