@@ -247,6 +247,13 @@ Foreman command computed from what was observed, or manual advice. Checks are
 read-only and bounded (5 s per external command); a check that cannot run
 produces no recommendation rather than a false alarm. `foreman doctor` reports
 server, provider and workflow readiness (`--project` adds this summary).
+### Chat with the project coordinator
+
+```
+foreman project chat project-123 "fix the login bug"
+```
+
+Posts the message, then prints the coordinator's reply and action notes as they arrive. Use `--no-wait` to return immediately, `--history 20` or `--since <seq>` to read the conversation, `--format ndjson` for scripting and `--restart` to restart a wedged coordinator (exit code 3 means it is unhealthy). See `docs/cli-reference.md`.
 
 ### Project settings
 
@@ -269,6 +276,7 @@ foreman project settings project-123
 | `coordinator_provider` (`pi`/`claude`), `coordinator_model`, `coordinator_effort` | | Stored and validated for the coordinator (consumed by the coordinator epic) |
 | `max_concurrent_runs` | 1..1000 | Runs the project may have active at once |
 | `daily_thread_cap` | 1..10000 | Threads (workflow runs plus jobsites) the project may start per UTC day |
+| `coordinator_propose_before_start` (bool), `coordinator_max_active_threads` (1..50), `coordinator_reuse_threads` (bool) | | Coordinator tuning enforced by the server; clearable with `--clear` |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim
@@ -1157,6 +1165,25 @@ The write-gated thread tools are `foreman_thread_stop` and
 `foreman_schedule_pause`, `foreman_schedule_resume`, `foreman_schedule_delete`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
+**Coordinator conversation tools.** `foreman_project_conversation` (read-only:
+`project_id`, `after?`, `limit?` 1..200) returns the same page as
+`GET /api/projects/<id>/coordinator/messages` (`messages`, `next_cursor`,
+`has_more`, `truncated_before_seq`, `status`). `foreman_project_message`
+(`project_id`, `text`, `message_id?`) sends an operator message to the
+coordinator; it is write-gated like the tools above, its source is always
+`mcp` (the caller cannot choose it), and it is rate limited per project by
+`config :foreman_server, :coordinator, mcp_messages_per_minute` (default 6;
+beyond it the tool returns `RATE_LIMITED`). No coordinator tool can merge,
+approve, archive, register, retry, cancel, reset or remove anything.
+
+Coordinator HTTP routes (bearer token): `POST /api/projects/:id/coordinator/messages`
+(`{text, message_id?, source?}` with `source` one of `cli|http|dashboard`, -> 202
+`{message_id, seq}`; a repeated `message_id` is a no-op), `GET
+/api/projects/:id/coordinator/messages?after=&limit=&wait_ms=` (long-poll, `wait_ms`
+0..25000), `GET /api/projects/:id/coordinator` (status) and `POST
+/api/projects/:id/coordinator/restart`. Errors: 404 `project_not_found`, 409
+`project_archived`, 413 `message_too_large`, 422 `invalid_*`.
+
 `foreman_project_settings_get` returns the same typed payload as
 `GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
 no env values). Project reads over HTTP and MCP replace `config.env` /
@@ -1164,7 +1191,8 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 `database_path` stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
-`max_concurrent_runs`, `daily_thread_cap`, `clear`, `idempotency_key`; nothing
+`max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
@@ -1515,6 +1543,26 @@ Empty parts are omitted entirely: a project with no instructions and no memory g
 **Budget and truncation.** Defaults: 24 000 bytes total, instructions 16 000, repositories 1 000, memory 6 000, library 3 000 (`config :foreman_server, :project_context, max_bytes:, section_caps:`). Over-cap content is cut at a line boundary (never inside a UTF-8 character) and the injected text says so: `[truncated: N lines omitted from <section>; <how to fetch the rest>]`. If the total is still over budget, Library shrinks first, then Memory, then Repositories; instructions last.
 
 **Inspecting what an agent received.** `foreman project context <project-id>` (or `GET /api/projects/:id/context`) shows what a launch would receive now. With session capture on, the text each run/jobsite actually launched with is archived as `project-context.md` beside `request.md` (workflow runs: first agent launch; jobsite: its single build) and the manifest carries a `project_context` block (`sha256`, `bytes`, `truncated`, `redactions`). There is no CLI write surface: edit instructions with `project update`, memory with `project memory`.
+
+## 14. Project coordinator
+
+Every project has one durable **coordinator conversation**: paste a bug, a stack trace or a task list, ask a quick question, or say "go ahead". A coordinator agent triages it, answers in place, and asks Foreman to start, propose or steer **threads** (workers, each with its own session, branch and PR). It hears back when threads report (review verdicts, failures).
+
+**How it works.** The conversation is event-sourced on the `coordinator:<project>` stream (`CoordinatorMessageAppended`, `CoordinatorTurnStarted/Completed/Failed`, `CoordinatorActionRecorded`, `CoordinatorRestarted`). `ForemanServer.Coordinator.Runner` wakes one `ProjectWorker` per project; turns run strictly one at a time per project (messages that arrive mid-turn are coalesced into the next turn) and different projects run in parallel. Each turn renders a bounded prompt (about 12k tokens: instructions, memory index, thread cards, recent messages, limits, workflow list, never the full history; cuts are announced in the text), runs a provider agent through the harness (default `pi` + `minimax/MiniMax-M2.7-highspeed`; per project `coordinator_provider`, `coordinator_model`, `coordinator_effort`), and parses ONE fenced JSON block `{"reply": ..., "actions": [...]}`. The agent has no Foreman tools and no MCP: its only effect is that block, which Foreman validates and executes (spike S1, docs/spikes/S1.md).
+
+**Actions** (closed set): `answer`, `ask`, `start_thread`, `propose_threads`, `approve_proposed`, `route_followup`, `remember`, `forget`, `set_tuning`, `add_repo`, `schedule`. `start_thread`/`propose_threads` create tasks with `task.create` (`propose_threads`, or `propose_before_start`, leaves them `open`: that is the proposal gate; say "go ahead" and `approve_proposed` runs `task.approve`). The workflow is chosen by Foreman, never by free text: an explicit `workflow` must be installed (else the rejection lists the valid ones), otherwise `task_type` maps through the workflow catalog, otherwise the coordinator is told to ask. `add_repo` (E12) and `schedule` (E11) are recorded as rejected with a clear reason until those features exist. Every action's outcome (`executed`, `proposed`, `rejected`, `failed`) is recorded and shown to the next turn; a rejection never aborts a turn, and the operator sees a notice for anything that did not run.
+
+**Tuning is enforced, not advisory** (settings `coordinator_propose_before_start`, `coordinator_max_active_threads` 1..50, `coordinator_reuse_threads`; also set by `set_tuning`, which stores a memory note too): `propose_before_start` forces every thread the coordinator creates to stay a proposal; `max_active_threads` rejects a start beyond the cap (`cap_exceeded: active_threads N`) and "max N at a time" also tightens `max_concurrent_runs` (it never raises a project cap); `reuse_threads` turns a start into a follow-up when a live thread has the same `bead_id` or the model names one (otherwise advisory, because "same area" is semantic). Loosening a limit needs the operator's exact words (`quote`) to appear in their message.
+
+**Security model.** Capability, not prompt: the coordinator is a system actor that can dispatch only `task.create`, `task.approve` (for tasks it created or proposed), `project.update` (tuning keys only) and its own `coordinator.*` commands (`Coordinator.Dispatch.command_types/0`); it cannot call `merge_approve`, `run.pr.merge`, `project.archive`, `task.retry` or any other operator gate, and no handler builds such a command. Turns triggered by reports, agent-authored text or MCP messages have `:machine` authority and may only answer, ask, propose, route a follow-up or remember; they cannot start or approve work, forget, change tuning, add repositories or schedule. Every thread/task/memory id is checked against the turn's project (`out_of_project`). Pasted text is rendered inside `<untrusted_input>` blocks whose delimiters are neutralised, and conversation text is redacted of project secrets before it is stored. Notes that read as merge/approve automation are refused. Prompt framing is best-effort; the boundary is the closed allowlist plus Policy, and the adversarial tests keep it honest even when the model obeys an injection.
+
+**Health and restart.** A failed turn (provider error, malformed output, timeout, interrupted by a server stop) is recorded and retried; three consecutive failures mark the coordinator `unhealthy`, post one visible system notice ("the coordinator has not responded - last error ...") and stop automatic turns until `foreman project chat <id> --restart` (`POST /api/projects/:id/coordinator/restart`, command `coordinator.restart`). A turn found open at startup is closed as `interrupted` and re-run; the reply id and every command id derive from the triggering message, so a restart never duplicates a reply or a thread and a message appended while the server was down is processed after startup.
+
+**Reports.** `ReviewRecorded` and failed/cancelled run and jobsite events append a report message per thread (`report_key` makes duplicates and the 24 h startup backfill harmless) and wake a machine-authority turn; at most `report_turns_per_hour` (default 6) report turns per project (the rest are listed `suppressed`, announced once), and reports about review-gap-bead threads never start a turn.
+
+**Surfaces.** CLI `foreman project chat`; HTTP `POST /api/projects/:id/coordinator/messages`, `GET .../messages?after=&limit=&wait_ms=` (long-poll), `GET .../coordinator`, `POST .../coordinator/restart`; MCP `foreman_project_conversation` (read) and `foreman_project_message` (a write tool: hidden unless `allow_workflow_writes`, always stored with source `mcp`, rate limited by `mcp_messages_per_minute`). The LiveView workspace is a later epic.
+
+**Config** (`config :foreman_server, :coordinator`): `enabled`, `agent`, `default_provider/model/effort`, `agent_timeout_ms`, `turn_timeout_ms`, `retry_backoff_ms`, `unhealthy_after`, `max_message_bytes`, `max_actions_per_turn`, `max_threads_per_turn`, `untrusted_sources` (default `["mcp"]`: MCP messages never carry operator authority), `report_turns_per_hour`, `report_backfill_hours`, `mcp_messages_per_minute`, `report_events`, `context: [max_total_tokens: ...]`.
 
 ## Day-to-day workflow
 

@@ -51,7 +51,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E8: agent tool-call decisions. Kept out of the long lists above so concurrent
   # allowlist edits do not collide. These address `tool_call:` streams only (never
@@ -568,6 +568,26 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in ["coordinator.message", "coordinator.restart"] do
+    project_id = get_value(payload, :project_id)
+
+    cond do
+      not is_binary(project_id) or String.trim(project_id) == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      not is_binary(aggregate_id) or aggregate_id != stream_id("coordinator", project_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        case ProjectionStore.project_projection(project_id) do
+          nil -> {:error, {:project_not_found, project_id}}
+          %{archived?: true} -> {:error, {:project_archived, project_id}}
+          _ -> :ok
+        end
+    end
+  end
+
   defp validate_aggregate_id(%{
          type: "run.report_stall",
          aggregate_id: aggregate_id,
@@ -787,6 +807,19 @@ defmodule ForemanServer.CommandGateway do
       |> Map.put_new(:decided_by, "operator")
 
     {:ok, %{command | payload: payload}}
+  end
+
+  # Secrets pasted into the coordinator conversation never reach the event log.
+  defp enrich_operator_command(%{type: "coordinator.message", payload: payload} = command) do
+    project_id = get_value(payload, :project_id)
+    text = get_value(payload, :text)
+
+    if is_binary(project_id) and is_binary(text) do
+      redacted = ForemanServer.Coordinator.Redact.text(project_id, text)
+      {:ok, %{command | payload: Map.put(payload, :text, redacted)}}
+    else
+      {:ok, command}
+    end
   end
 
   # Schedule timestamps are stamped here, never taken from the client: the
