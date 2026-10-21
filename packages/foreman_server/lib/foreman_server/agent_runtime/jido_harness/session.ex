@@ -42,11 +42,43 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.Session do
 
   Upstream exposes `start/3` (`provider, request, options`). Foreman
   callers only need the ergonomic `start/2` form, so this wrapper
-  supplies an empty request map and forwards `opts` as upstream options.
+  supplies a request map carrying an explicit, finite `approval_timeout_ms`
+  and forwards the remaining `opts` as upstream options.
+
+  Upstream defaults `approval_timeout_ms` to `:infinity`, which on a headless
+  ACP session (opencode, kimi) waits forever for an operator who is not there
+  (spike S2). So the timeout is always set here: `opts[:approval_timeout_ms]`
+  or `ForemanServer.Approvals.Config.approval_timeout_ms/0`; anything but a
+  positive integer raises `ArgumentError`.
   """
   @spec start(provider(), keyword()) :: result(session_id())
   def start(provider, opts \\ []) when is_atom(provider) and is_list(opts) do
-    UpstreamSession.start(provider, %{}, opts)
+    {timeout, opts} = Keyword.pop(opts, :approval_timeout_ms)
+    timeout = timeout || ForemanServer.Approvals.Config.approval_timeout_ms()
+
+    unless is_integer(timeout) and timeout > 0 do
+      raise ArgumentError,
+            "approval_timeout_ms must be a positive integer, got: #{inspect(timeout)}"
+    end
+
+    UpstreamSession.start(provider, %{approval_timeout_ms: timeout}, opts)
+  end
+
+  @doc """
+  Answers a pending provider approval request (`:approval_requested` event) with
+  `:approve` or `:deny` for this one request (`scope: :once`). Only ACP-style
+  transports declare approvals; any other session returns upstream's
+  `{:error, :not_found}` / unsupported error unchanged.
+  """
+  @spec respond_approval(session_id(), String.t(), :approve | :deny) :: :ok | {:error, term()}
+  def respond_approval(session_id, request_id, decision)
+      when is_binary(request_id) and decision in [:approve, :deny] do
+    with :ok <- validate_session_id(session_id) do
+      UpstreamSession.respond_approval(session_id, request_id, %{
+        decision: decision,
+        scope: :once
+      })
+    end
   end
 
   @doc """

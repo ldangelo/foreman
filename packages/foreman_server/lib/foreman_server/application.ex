@@ -131,6 +131,7 @@ defmodule ForemanServer.Application do
         maybe_threads_children() ++
         maybe_overview_children() ++
         maybe_review_children() ++
+        maybe_approvals_children() ++
         maybe_coordinator_children() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
@@ -257,6 +258,21 @@ defmodule ForemanServer.Application do
       [
         {Task.Supervisor, name: ForemanServer.Review.TaskSupervisor},
         ForemanServer.Review.Analyzer
+      ]
+    else
+      []
+    end
+  end
+
+  # E8: the live-approval registry, the decision and answer deliverers (the sweeper
+  # joins in the timeouts story). Off in test config; tests start them explicitly.
+  defp maybe_approvals_children do
+    if ForemanServer.Approvals.Config.start_children?() do
+      [
+        ForemanServer.Approvals.Live,
+        ForemanServer.Approvals.Deliverer,
+        ForemanServer.Questions.Deliverer,
+        ForemanServer.Approvals.Sweeper
       ]
     else
       []

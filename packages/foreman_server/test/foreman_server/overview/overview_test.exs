@@ -96,6 +96,39 @@ defmodule ForemanServer.OverviewTest do
     assert %{needed: false, count: 0, reasons: []} = Overview.attention("calm-project")
   end
 
+  test "a working thread with a pending tool-call approval is waiting on you until it is decided" do
+    :ok =
+      ProjectionStore.apply_events(
+        run("needs-ok") ++
+          [
+            ev("ToolCallRequested", %{
+              run_id: "needs-ok",
+              tool_call_id: "c1",
+              tool_name: "Write",
+              requested_at: "2026-10-21T00:01:00Z"
+            })
+          ]
+      )
+
+    {:ok, waiting} = Overview.build("p", now_fun: fn -> @now end)
+    assert ["run:needs-ok"] == ids(waiting.groups.waiting_on_you)
+    assert [%{reason: :approval}] = waiting.groups.waiting_on_you
+    assert %{needed: true, reasons: [:approval]} = waiting.attention
+
+    :ok =
+      ProjectionStore.apply_events([
+        ev("ToolCallApproved", %{
+          run_id: "needs-ok",
+          tool_call_id: "c1",
+          decided_at: "2026-10-21T00:02:00Z"
+        })
+      ])
+
+    {:ok, after_decision} = Overview.build("p", now_fun: fn -> @now end)
+    assert ["run:needs-ok"] == ids(after_decision.groups.working)
+    assert after_decision.groups.waiting_on_you == []
+  end
+
   test "include_resolved false skips resolved cards but keeps the count; limit bounds them" do
     seed()
     :ok = ProjectionStore.apply_events([ev("PrMerged", %{run_id: "idle"})])

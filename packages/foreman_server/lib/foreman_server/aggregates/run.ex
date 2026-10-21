@@ -480,6 +480,7 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_steer_text_length(text),
          :ok <- Aggregate.optional_binary(Aggregate.get(payload, :steered_by), :steered_by),
          {:ok, resume} <- steer_resume_flag(Aggregate.get(payload, :resume)),
+         {:ok, override} <- steer_override(Aggregate.get(payload, :approval_mode_override)),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
       if MapSet.member?(state.steer_message_ids, message_id) do
@@ -489,13 +490,15 @@ defmodule ForemanServer.Aggregates.Run do
          %{
            stream_id: "run:#{run_id}",
            event_type: "RunSteerQueued",
-           payload: %{
-             run_id: run_id,
-             message_id: message_id,
-             text: text,
-             steered_by: Aggregate.get(payload, :steered_by),
-             resume: resume
-           }
+           payload:
+             %{
+               run_id: run_id,
+               message_id: message_id,
+               text: text,
+               steered_by: Aggregate.get(payload, :steered_by),
+               resume: resume
+             }
+             |> Aggregate.put_if(:approval_mode_override, override)
          }}
       end
     end
@@ -942,6 +945,20 @@ defmodule ForemanServer.Aggregates.Run do
   defp steer_resume_flag(nil), do: {:ok, true}
   defp steer_resume_flag(flag) when is_boolean(flag), do: {:ok, flag}
   defp steer_resume_flag(_flag), do: {:error, {:missing_or_invalid, :resume}}
+
+  # E8 resume-with-override: the one-phase `approval_mode` an approved tool call
+  # needs. Only names `Jobsite.Agent` knows are accepted, so the executor's total
+  # match on the resumed phase can never see an unknown mode.
+  defp steer_override(nil), do: {:ok, nil}
+
+  defp steer_override(name) when is_binary(name) do
+    case ForemanServer.Jobsite.Agent.parse_approval_mode(name) do
+      {:ok, _mode} -> {:ok, name}
+      :error -> {:error, {:invalid_approval_mode_override, name}}
+    end
+  end
+
+  defp steer_override(_name), do: {:error, {:missing_or_invalid, :approval_mode_override}}
 
   defp steer_message_ids([_ | _] = ids) do
     if Enum.all?(ids, &(is_binary(&1) and &1 != "")),
