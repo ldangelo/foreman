@@ -189,11 +189,11 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   defp do_handle(type, state, run_id, pr_url, payload) when is_map_key(@kinds, type) do
     kind = Map.fetch!(@kinds, type)
     trigger = Aggregate.get(payload, :trigger) || "operator"
-    auto? = trigger == "auto"
+    auto? = trigger in ["auto", "coordinator"]
     force? = Aggregate.get(payload, :force) == true and not auto?
 
     with {:ok, ids} <- identity(state, payload),
-         {:ok, _trigger} <- one_of(trigger, ["operator", "auto"], :trigger),
+         {:ok, _trigger} <- one_of(trigger, ["operator", "auto", "coordinator"], :trigger),
          {:ok, note} <- note(Aggregate.get(payload, :note)),
          {:ok, record} <- watched_open(state, pr_url),
          fixes = Map.get(state.pr_fixes, pr_url, new_fixes()),
