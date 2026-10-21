@@ -3,8 +3,13 @@ defmodule ForemanServer.Aggregates.Run do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.Aggregates.Run.PrWatch
   alias ForemanServer.Workflow.ApproverAuthorizer
   alias ForemanServer.PrGate
+
+  @pr_watch_types PrWatch.command_types()
+  @pr_watch_events ~w(PrChecksChanged PrReviewChanged PrFixRequested PrFixStarted PrFixFinished
+                      PrFixExhausted PrWatchStopped PrWatchStarted PrCreated)
 
   defmodule PhaseStatus do
     @moduledoc "Phase status keyed by phase_id."
@@ -41,7 +46,9 @@ defmodule ForemanServer.Aggregates.Run do
       retry_history: [],
       reported_stall_keys: MapSet.new(),
       pending_steer: [],
-      steer_message_ids: MapSet.new()
+      steer_message_ids: MapSet.new(),
+      pr_watch: %{},
+      pr_fixes: %{}
     ]
   end
 
@@ -62,7 +69,9 @@ defmodule ForemanServer.Aggregates.Run do
       retry_history: [],
       reported_stall_keys: MapSet.new(),
       pending_steer: [],
-      steer_message_ids: MapSet.new()
+      steer_message_ids: MapSet.new(),
+      pr_watch: %{},
+      pr_fixes: %{}
     }
 
   @impl true
@@ -91,15 +100,23 @@ defmodule ForemanServer.Aggregates.Run do
         }
 
       type when type in ["PrUpdated", "PrRetargeted", "PrReset", "PrMerged"] ->
-        %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id)}
+        PrWatch.apply_event(
+          %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id)},
+          type,
+          payload
+        )
 
       "PrReady" ->
-        %State{
-          state
-          | exists?: true,
-            run_id: Aggregate.get(payload, :run_id),
-            merge_gate: :pending
-        }
+        PrWatch.apply_event(
+          %State{
+            state
+            | exists?: true,
+              run_id: Aggregate.get(payload, :run_id),
+              merge_gate: :pending
+          },
+          "PrReady",
+          payload
+        )
 
       "MergeGateApproved" ->
         %State{
@@ -275,6 +292,15 @@ defmodule ForemanServer.Aggregates.Run do
           | base_branch: Aggregate.get(payload, :base_branch),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
+
+      # E9 PR-watch events fold into `pr_watch` / `pr_fixes`.
+      type when type in @pr_watch_events ->
+        PrWatch.apply_event(state, type, payload)
+
+      # An event type this fold does not know replays as a no-op: a new event type
+      # on a run stream must never make `Aggregate.load/2` crash.
+      _other ->
+        state
     end
   end
 
@@ -622,6 +648,12 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  def handle_command(state, %{type: type, payload: payload}) when type in @pr_watch_types do
+    with :ok <- allow_pr_lifecycle_on_terminal_runs(state, type) do
+      PrWatch.handle(state, type, payload)
+    end
+  end
+
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "run.pr.update",
@@ -851,6 +883,10 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # Every PR command (the original lifecycle ones and the E9 watch/fix ones) is
+  # accepted on a terminal run: a PR outlives the run that opened it. A command
+  # type in neither list is refused with a typed error on a terminal run instead
+  # of raising `FunctionClauseError` inside the aggregate actor.
   defp allow_pr_lifecycle_on_terminal_runs(_state, type)
        when type in [
               "run.pr.update",
@@ -860,6 +896,13 @@ defmodule ForemanServer.Aggregates.Run do
               "run.pr.merge"
             ],
        do: :ok
+
+  defp allow_pr_lifecycle_on_terminal_runs(_state, type) when type in @pr_watch_types, do: :ok
+
+  defp allow_pr_lifecycle_on_terminal_runs(%State{terminal?: true, status: status}, _type),
+    do: {:error, {:run_terminal, status}}
+
+  defp allow_pr_lifecycle_on_terminal_runs(_state, _type), do: :ok
 
   defp require_absent(%State{exists?: true}, run_id),
     do: {:error, {:already_exists, :run, run_id}}
