@@ -81,9 +81,10 @@ defmodule ForemanServer.Library do
   @spec list(String.t()) :: {:ok, [Entry.t()]} | {:error, Error.t()}
   def list(project_id) when is_binary(project_id) do
     with {:ok, path} <- readable_path(project_id) do
-      root = Store.root(path)
-      Store.sweep(root, @orphan_max_age_seconds)
-      Store.list(root)
+      # No orphan sweep here: it would run outside the per-project lock and could
+      # delete a `.trash-*` directory an in-flight rollback still needs. Writes sweep
+      # under the lock.
+      Store.list(Store.root(path))
     end
   end
 
@@ -359,7 +360,11 @@ defmodule ForemanServer.Library do
   defp add_command(project_id, entry, plan, author) do
     %{
       type: "project.library.add",
-      command_id: "project_library:#{project_id}:#{entry.entry_id}:#{entry.manifest_sha256}",
+      # Unique per call: a produced entry has a deterministic id, so after a remove a
+      # re-add with the same content must not collapse into the first add's event id.
+      command_id:
+        "project_library:#{project_id}:#{entry.entry_id}:#{entry.manifest_sha256}:add:" <>
+          unique_suffix(),
       aggregate_id: "project_library:" <> project_id,
       payload: payload(project_id, entry, plan, author)
     }
