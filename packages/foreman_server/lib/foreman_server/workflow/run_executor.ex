@@ -1269,9 +1269,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp project_env(state) do
     case project_id(state) do
       nil -> {:ok, %{}}
-      id when is_binary(id) and id != "" -> {:ok, WorkerEnvironment.build_env_map(id)}
+      id when is_binary(id) and id != "" -> build_project_env(id)
       other -> {:error, {:invalid_project_id, other}}
     end
+  end
+
+  # A project persisted before env validation can hold a value that cannot be
+  # stringified (e.g. a map); `to_string/1` then raises. Only that conversion
+  # error is converted, so the phase fails through the normal bounded path.
+  defp build_project_env(project_id) do
+    {:ok, WorkerEnvironment.build_env_map(project_id)}
+  rescue
+    Protocol.UndefinedError -> {:error, {:invalid_project_env, project_id}}
   end
 
   # Strip `-trd` suffix from workflow type so both `implement-trd` and

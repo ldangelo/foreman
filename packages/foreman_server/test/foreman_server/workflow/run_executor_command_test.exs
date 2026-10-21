@@ -691,6 +691,26 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end
   end
 
+  test "a project env value that cannot be stringified is a typed error, not a raise" do
+    previous = Application.get_env(:foreman_server, :worker_environment)
+    project_id = unique_id("legacy-env-project")
+
+    Application.put_env(:foreman_server, :worker_environment, %{
+      projects: %{project_id => %{env: %{"BAD" => %{"nested" => 1}}}}
+    })
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :worker_environment, previous),
+        else: Application.delete_env(:foreman_server, :worker_environment)
+    end)
+
+    state = %{task: %{project_id: project_id}, run_id: "run-legacy-env"}
+
+    assert {:error, {:invalid_project_env, ^project_id}} =
+             RunExecutor.phase_launch(state, %{name: :implement}, 0, %{})
+  end
+
   test "a project with no config.env gets only the FOREMAN_* env" do
     %{run_id: run_id} =
       run_plan_capture_phase!(write_paths: ["docs/PRD/PRD-2026-22222222-no-project-env.md"])
