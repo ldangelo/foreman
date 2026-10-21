@@ -34,12 +34,15 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
   setup do
     {:ok, _} = Application.ensure_all_started(:meck)
     :meck.new(CommandGateway, [:passthrough, :no_link])
+    # Register the unload BEFORE any call that can fail: a setup that raised after `meck.new`
+    # used to leave CommandGateway mocked, so every later test died on `{:already_started, _}`
+    # and one root failure was reported as 17.
+    on_exit(fn -> :meck.unload(CommandGateway) end)
     {:ok, _} = AdapterCatalog.register(StubBackendAdapter)
     original_projection_state = :sys.get_state(ProjectionStore)
     original_mcp_config = Application.get_env(:foreman_server, :mcp, [])
 
     on_exit(fn ->
-      :meck.unload(CommandGateway)
       AdapterCatalog.unregister(StubBackendAdapter)
       :sys.replace_state(ProjectionStore, fn _ -> original_projection_state end)
       Application.put_env(:foreman_server, :mcp, original_mcp_config)
