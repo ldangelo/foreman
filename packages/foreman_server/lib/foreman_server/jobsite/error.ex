@@ -26,6 +26,8 @@ defmodule ForemanServer.Jobsite.Error do
       (`:not_resumable` covers a terminal jobsite and one that never
       provisioned a worktree)
     * `:dispatch_rejected` — `Jobsite.Executor`
+    * `:orphan_agent_survived` — `Jobsite.Executor.resume/2` (an agent process left by a dead
+      server in the worktree would not terminate; resume refused)
     * `:thread_cap_reached` — `Jobsite.Executor.reserve_thread/2` (project daily thread cap)
     * `:runner_capability` / `:unsupported_phase_action` — `Workflow.Lowering`
     * `:executor_lost` / `:boot_recovery_failed` — `Jobsite.BootRecovery`

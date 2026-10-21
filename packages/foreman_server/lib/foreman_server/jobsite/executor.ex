@@ -797,7 +797,19 @@ defmodule ForemanServer.Jobsite.Executor do
   def resume(jobsite_id, opts) do
     with {:ok, agg_state} <- check_resumable(jobsite_id) do
       if File.dir?(agg_state.worktree_path) do
-        resume_with_network(jobsite_id, agg_state, opts)
+        # An agent a dead server left running here would race the resumed one.
+        case ForemanServer.Workflow.OrphanReaper.reap(agg_state.worktree_path) do
+          {:error, {:orphan_survived, survivors}} ->
+            {:error,
+             Error.new(
+               :orphan_agent_survived,
+               "an orphaned agent process in #{agg_state.worktree_path} would not terminate",
+               %{path: agg_state.worktree_path, processes: survivors}
+             )}
+
+          _reaped_or_scan_unavailable ->
+            resume_with_network(jobsite_id, agg_state, opts)
+        end
       else
         {:error,
          Error.new(:worktree_vanished, "worktree #{agg_state.worktree_path} no longer exists", %{

@@ -63,6 +63,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
   alias ForemanServer.Workflow.RunRepoSet
@@ -720,25 +721,46 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:ok, state}
 
       entry ->
-        case resolve_run_base(state, state.worktree_spec || %{}) do
-          {:ok, _project_root, _base_ref, implementation_key, trd_scope} ->
-            run_worktree = %{
-              operation_id: entry.operation_id,
-              worktree_path: entry.worktree_path,
-              branch: entry.branch,
-              base_ref: entry.base_ref,
-              project_root: entry.repo_path,
-              project_id: entry.project_id,
-              cleanup: entry.cleanup,
-              implementation_key: implementation_key,
-              trd_scope: trd_scope
-            }
+        with :ok <- reap_orphaned_agents(state, entry.worktree_path),
+             {:ok, _project_root, _base_ref, implementation_key, trd_scope} <-
+               resolve_run_base(state, state.worktree_spec || %{}) do
+          run_worktree = %{
+            operation_id: entry.operation_id,
+            worktree_path: entry.worktree_path,
+            branch: entry.branch,
+            base_ref: entry.base_ref,
+            project_root: entry.repo_path,
+            project_id: entry.project_id,
+            cleanup: entry.cleanup,
+            implementation_key: implementation_key,
+            trd_scope: trd_scope
+          }
 
-            {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
-
-          {:error, reason} ->
-            {:error, reason}
+          {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
         end
+    end
+  end
+
+  # A resumed run reuses its worktree, so an agent the dead server left running
+  # in it would race the new one. `:lsof_*` failures only mean the scan could
+  # not run; they are logged and the run continues. An orphan that survives
+  # SIGKILL is a hard failure: reusing the worktree would be unsafe.
+  defp reap_orphaned_agents(state, worktree_path) do
+    case OrphanReaper.reap(worktree_path) do
+      {:ok, _reaped} ->
+        :ok
+
+      {:error, {:orphan_survived, _} = reason} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        Logger.warning(
+          "RunExecutor #{state.run_id} could not scan for orphaned agents in #{worktree_path}: #{inspect(reason)}",
+          run_id: state.run_id,
+          operation: "run_executor.resume"
+        )
+
+        :ok
     end
   end
 
