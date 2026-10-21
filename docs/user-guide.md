@@ -276,6 +276,7 @@ foreman project settings project-123
 | `coordinator_provider` (`pi`/`claude`), `coordinator_model`, `coordinator_effort` | | Stored and validated for the coordinator (consumed by the coordinator epic) |
 | `max_concurrent_runs` | 1..1000 | Runs the project may have active at once |
 | `daily_thread_cap` | 1..10000 | Threads (workflow runs plus jobsites) the project may start per UTC day |
+| `coordinator_propose_before_start` (bool), `coordinator_max_active_threads` (1..50), `coordinator_reuse_threads` (bool) | | Coordinator tuning enforced by the server; clearable with `--clear` |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim
@@ -1190,7 +1191,8 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 `database_path` stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
-`max_concurrent_runs`, `daily_thread_cap`, `clear`, `idempotency_key`; nothing
+`max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).

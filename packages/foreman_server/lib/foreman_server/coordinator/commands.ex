@@ -12,7 +12,7 @@ defmodule ForemanServer.Coordinator.Commands do
   @doc "Append a coordinator/system message. `message_id` MUST be deterministic."
   @spec append(module(), String.t(), String.t(), map()) :: Dispatch.result()
   def append(gateway, project_id, message_id, attrs) do
-    text = Redact.text(project_id, Map.fetch!(attrs, :text))
+    text = project_id |> Redact.text(Map.fetch!(attrs, :text)) |> clip()
 
     payload =
       attrs
@@ -103,6 +103,27 @@ defmodule ForemanServer.Coordinator.Commands do
       "coordinator:action:#{project_id}:#{action_id}:#{status}",
       payload
     )
+  end
+
+  # The aggregate refuses text over the message cap; a long model reply must be
+  # shortened (visibly), never lost.
+  @marker "\n[truncated]"
+
+  defp clip(text) do
+    max = Aggregate.max_message_bytes()
+
+    if byte_size(text) <= max do
+      text
+    else
+      keep = max - byte_size(@marker)
+      text |> binary_part(0, keep) |> trim_partial_codepoint() |> Kernel.<>(@marker)
+    end
+  end
+
+  defp trim_partial_codepoint(binary) do
+    if String.valid?(binary),
+      do: binary,
+      else: binary |> binary_part(0, byte_size(binary) - 1) |> trim_partial_codepoint()
   end
 
   defp send_command(gateway, project_id, type, command_id, payload) do

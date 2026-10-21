@@ -20,7 +20,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -325,6 +325,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
 | `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
+| `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
 | `--clear <setting>` | Clear a setting (repeatable) |
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
 | `--format json` | Print the raw command response as JSON |
@@ -1480,7 +1481,8 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 `database_path` stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
-`max_concurrent_runs`, `daily_thread_cap`, `clear`, `idempotency_key`; nothing
+`max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
