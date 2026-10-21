@@ -28,6 +28,7 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisorSnapshotTest d
   alias ForemanServer.TaskProviders.BeadsOrphanJanitor
   alias ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor
   alias ForemanServer.TaskProviders.BrRunnerMock
+  alias ForemanServer.TestSupport.JanitorSupervisorStop
 
   setup_all do
     {:ok, _mox} = Application.ensure_all_started(:mox)
@@ -41,40 +42,13 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisorSnapshotTest d
   setup do
     # Make sure the supervisor isn't already up from a prior module that
     # may have started it; we always start it ourselves under __MODULE__.
-    case Process.whereis(BeadsOrphanJanitorSupervisor) do
-      nil ->
-        :ok
-
-      pid ->
-        if Process.alive?(pid) do
-          try do
-            # 5s, not 1s: under full-suite load a slow supervisor stop
-            # here would otherwise time out and GenServer.stop escalates
-            # to Process.exit(pid, :kill) — an untrappable kill signal
-            # that (unlike a :normal exit) also kills the co-located
-            # Registry linked to this supervisor in its own init/1.
-            GenServer.stop(pid, :normal, 5_000)
-          catch
-            :exit, _ -> :ok
-          end
-        end
-
-        :ok
-    end
+    JanitorSupervisorStop.stop_named()
 
     {:ok, sup} = BeadsOrphanJanitorSupervisor.start_link()
 
-    on_exit(fn ->
-      # Each test owns its own janitor children; the parent setup's
-      # on_exit only needs to stop the supervisor — children die with it.
-      if Process.alive?(sup) do
-        try do
-          GenServer.stop(sup, :normal, 5_000)
-        catch
-          :exit, _ -> :ok
-        end
-      end
-    end)
+    # Children die with the supervisor; the helper also awaits the
+    # co-located Registry's async shutdown so the next start is clean.
+    on_exit(fn -> JanitorSupervisorStop.stop(sup) end)
 
     # Stub br --where so janitor init resolves the JSONL path; every child
     # the supervisor starts uses the same stub.
