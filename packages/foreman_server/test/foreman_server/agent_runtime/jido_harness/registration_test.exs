@@ -37,13 +37,65 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RegistrationTest do
     cat_name =
       :"AdapterCatalog.JidoHarness.RegistrationTest.#{System.unique_integer([:positive])}"
 
-    {:ok, _catalog_pid} = AdapterCatalog.start_link(name: cat_name)
+    # `AdapterCatalog.lookup/2` reads the GLOBAL `AdapterRegistry`, not the catalog
+    # named above, and a dead catalog's entries are removed asynchronously. Without
+    # this wait a previous case's `:jido_harness` entry can still be visible here
+    # under load, which made the "enabled: false" case find an adapter it never
+    # registered.
+    await_registry_clear()
+
+    {:ok, catalog_pid} = AdapterCatalog.start_link(name: cat_name)
 
     on_exit(fn ->
       Application.put_env(:foreman_server, :jido_harness, original)
+      stop_catalog(catalog_pid)
     end)
 
     {:ok, catalog: cat_name}
+  end
+
+  @registry ForemanServer.AgentRuntime.AdapterRegistry
+
+  defp registry_clear? do
+    Registry.lookup(@registry, :jido_harness) == []
+  rescue
+    # The registry is owned by (linked to) the catalog that created it and is gone
+    # with it: nothing is registered.
+    ArgumentError -> true
+  end
+
+  defp await_registry_clear(deadline \\ System.monotonic_time(:millisecond) + 5_000) do
+    cond do
+      registry_clear?() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("a :jido_harness entry stayed in the global AdapterRegistry for 5s")
+
+      true ->
+        Process.sleep(5)
+        await_registry_clear(deadline)
+    end
+  end
+
+  defp stop_catalog(pid) do
+    ref = Process.monitor(pid)
+
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      5_000 -> flunk("the test's AdapterCatalog did not stop")
+    end
+
+    await_registry_clear()
   end
 
   # Mirrors the conditional registration block in
