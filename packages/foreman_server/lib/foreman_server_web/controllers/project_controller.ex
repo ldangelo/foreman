@@ -47,7 +47,10 @@ defmodule ForemanServerWeb.ProjectController do
 
         conn
         |> put_status(:ok)
-        |> json(%{project: projection |> ProjectSettings.public_view() |> with_attention() |> stringify_keys()})
+        |> json(%{
+          project:
+            projection |> ProjectSettings.public_view() |> with_attention() |> stringify_keys()
+        })
     end
   end
 

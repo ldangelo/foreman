@@ -1270,10 +1270,12 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_project_list(%{}) do
     start_us = System.monotonic_time(:microsecond)
+
     result =
       ProjectionStore.list_projects()
       |> Enum.map(&ProjectSettings.public_view/1)
       |> Enum.map(&with_attention/1)
+
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_project_list", :ok)
     {:ok, result}
