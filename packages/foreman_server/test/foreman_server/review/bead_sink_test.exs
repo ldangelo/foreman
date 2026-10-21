@@ -6,6 +6,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Review.BeadSink
+  alias ForemanServer.Review.BeadSink.Result
   alias ForemanServer.Review.Error
   alias ForemanServer.Review.Gap
   alias ForemanServer.Review.Subject
@@ -65,14 +66,14 @@ defmodule ForemanServer.Review.BeadSinkTest do
     test "returns an empty result and never invokes br" do
       # The default stub for this suite flunks on any BrRunnerMock call; the
       # project is not even registered, so any provider lookup would error too.
-      assert {:ok, %{gap_bead_ids: [], note: nil}} =
+      assert {:ok, %Result{gap_bead_ids: [], note: nil}} =
                BeadSink.publish(subject(bead_id: nil), verdict(gaps: [gap(:major, "A")]))
     end
   end
 
   describe "publish/2 with a bead but no project_id" do
     test "skips the bead step with a note and never resolves a provider or invokes br" do
-      assert {:ok, %{gap_bead_ids: [], note: "no project_id: bead step skipped"}} =
+      assert {:ok, %Result{gap_bead_ids: [], note: "no project_id: bead step skipped"}} =
                BeadSink.publish(
                  subject(project_id: nil, bead_id: "bead-src"),
                  verdict(gaps: [gap(:major, "A")])
@@ -88,7 +89,8 @@ defmodule ForemanServer.Review.BeadSinkTest do
       gaps = [gap(:major, "Missing route"), gap(:minor, "Docs stale")]
       v = verdict(gaps: gaps)
 
-      assert {:ok, %{gap_bead_ids: ["bead-for-Missing route", "bead-for-Docs stale"], note: nil}} =
+      assert {:ok,
+              %Result{gap_bead_ids: ["bead-for-Missing route", "bead-for-Docs stale"], note: nil}} =
                BeadSink.publish(subject(), v)
 
       expected_body = Verdict.to_markdown(v) <> "\n\nFull analysis: #{@archive}/analysis.md"
@@ -138,7 +140,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
       install_stub([])
       record_review_filing_gap_bead!("bead-src")
 
-      assert {:ok, %{gap_bead_ids: [], note: note}} =
+      assert {:ok, %Result{gap_bead_ids: [], note: note}} =
                BeadSink.publish(subject(), verdict(gaps: [gap(:major, "A"), gap(:minor, "B")]))
 
       assert note == "gap creation suppressed: source bead is itself a foreman-gap bead"
@@ -151,7 +153,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
       install_stub([])
       record_review_filing_gap_bead!("some-other-bead")
 
-      assert {:ok, %{gap_bead_ids: ["bead-for-A"], note: nil}} =
+      assert {:ok, %Result{gap_bead_ids: ["bead-for-A"], note: nil}} =
                BeadSink.publish(subject(), verdict(gaps: [gap(:major, "A")]))
 
       assert_received {:br, :comment, %{id: "bead-src"}}
@@ -162,7 +164,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
       register_project!()
       install_stub([])
 
-      assert {:ok, %{gap_bead_ids: [], note: note}} =
+      assert {:ok, %Result{gap_bead_ids: [], note: note}} =
                BeadSink.publish(
                  subject(status: "cancelled"),
                  verdict(gaps: [gap(:major, "A")])
@@ -177,7 +179,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
       register_project!()
       install_stub([])
 
-      assert {:ok, %{gap_bead_ids: [], note: nil}} =
+      assert {:ok, %Result{gap_bead_ids: [], note: nil}} =
                BeadSink.publish(subject(), verdict(gaps: []))
 
       assert_received {:br, :comment, %{id: "bead-src"}}
@@ -190,7 +192,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
       v = verdict(verdict: :undetermined, gaps: [gap(:major, "A")], error_code: :evaluator_failed)
 
-      assert {:ok, %{gap_bead_ids: [], note: nil}} = BeadSink.publish(subject(), v)
+      assert {:ok, %Result{gap_bead_ids: [], note: nil}} = BeadSink.publish(subject(), v)
       assert_received {:br, :comment, _}
       refute_received {:br, :create, _}
     end
@@ -202,7 +204,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
       gaps = for n <- 1..3, do: gap(:major, "G#{n}")
 
-      assert {:ok, %{gap_bead_ids: ["bead-for-G1", "bead-for-G2"], note: note}} =
+      assert {:ok, %Result{gap_bead_ids: ["bead-for-G1", "bead-for-G2"], note: note}} =
                BeadSink.publish(subject(), verdict(gaps: gaps))
 
       assert note =~ "1 gap(s) beyond max_gap_beads=2 not filed"
@@ -215,7 +217,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
       gaps = for n <- 1..3, do: gap(:major, "G#{n}")
 
-      assert {:ok, %{gap_bead_ids: ["bead-for-G1", "bead-for-G3"], note: note}} =
+      assert {:ok, %Result{gap_bead_ids: ["bead-for-G1", "bead-for-G3"], note: note}} =
                BeadSink.publish(subject(), verdict(gaps: gaps))
 
       assert note =~ "gap bead creation failed"

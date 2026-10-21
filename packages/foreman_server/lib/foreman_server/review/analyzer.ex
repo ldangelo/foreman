@@ -9,6 +9,13 @@ defmodule ForemanServer.Review.Analyzer do
   `ForemanServer.Review.TaskSupervisor` so a slow evaluator never blocks the
   projection subscriber.
 
+  At most one analysis per subject runs at a time: a terminal event for a
+  subject whose analysis is still running is dropped (`start_analysis/3`).
+
+  `RunCancelled` and `RunFailed` are recorded before the run's executor has
+  finished with the run's archive, so their task first waits (bounded) for the
+  executor to exit (`settle_run/2`).
+
   `analyze/1` order: finalize archive -> evaluate -> write `analysis.json`/`.md`
   -> `BeadSink.publish/2` -> dispatch `review.record`. A failed evaluation is
   still recorded as an `undetermined` verdict: an analysis that silently did not
@@ -41,8 +48,9 @@ defmodule ForemanServer.Review.Analyzer do
     "JobsiteFailed" => "failed",
     "JobsiteCancelled" => "cancelled"
   }
-  # `run.cancel` is recorded before the run's executor has actually stopped, so
-  # the workflow door waits (bounded) for it to exit before capturing the diff.
+  # `run.cancel` and a phase-failure `run.fail` are recorded before the run's
+  # executor has finished with the archive, so the workflow door waits (bounded)
+  # for it to exit first; see `settle_run/2`.
   @executor_settle_ms 30_000
   @executor_poll_ms 100
   @task_supervisor ForemanServer.Review.TaskSupervisor
@@ -53,6 +61,10 @@ defmodule ForemanServer.Review.Analyzer do
           project_id: String.t() | nil
         }
 
+  @type subject_key :: {:run | :jobsite, String.t()}
+  # `in_flight` maps a subject to the monitor of the task analysing it.
+  @type state :: %{in_flight: %{subject_key() => reference()}}
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
@@ -60,7 +72,7 @@ defmodule ForemanServer.Review.Analyzer do
   @impl true
   def init(_opts) do
     case ProjectionStore.subscribe(replay_existing: false) do
-      :ok -> {:ok, %{}}
+      :ok -> {:ok, %{in_flight: %{}}}
       {:error, reason} -> {:stop, {:projection_subscribe_failed, reason}}
     end
   end
@@ -70,20 +82,15 @@ defmodule ForemanServer.Review.Analyzer do
     type = Map.get(event, :event_type) || Map.get(event, "event_type")
 
     if type in @terminal_events do
-      payload = unwrap_data(event)
-
-      case Task.Supervisor.start_child(@task_supervisor, fn -> handle_event(type, payload) end) do
-        {:ok, _pid} ->
-          :ok
-
-        other ->
-          Logger.error(
-            "review analyzer: could not start analysis task for #{type}: #{inspect(other)}"
-          )
-      end
+      {:noreply, start_analysis(type, unwrap_data(event), state)}
+    else
+      {:noreply, state}
     end
+  end
 
-    {:noreply, state}
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    in_flight = Map.reject(state.in_flight, fn {_key, task_ref} -> task_ref == ref end)
+    {:noreply, %{state | in_flight: in_flight}}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
@@ -91,7 +98,7 @@ defmodule ForemanServer.Review.Analyzer do
   @doc false
   @spec handle_event(String.t(), map()) :: :ok
   def handle_event(type, payload) do
-    if type == "RunCancelled", do: settle_cancelled_run(field(payload, :run_id))
+    settle_run(type, field(payload, :run_id))
 
     case subject_from_event(type, payload) do
       {:ok, %Subject{} = subject} -> analyze(subject)
@@ -172,31 +179,98 @@ defmodule ForemanServer.Review.Analyzer do
     end
   end
 
-  # A cancelled run never reaches `cleanup_run_worktree/2` (the executor's
-  # capture point), so the archive is built here from the projections once the
-  # executor has stopped writing. The run's worktree is retained on cancel, so
-  # the diff includes the uncommitted work the agent left behind.
-  defp settle_cancelled_run(run_id) when is_binary(run_id) and run_id != "" do
-    deadline = System.monotonic_time(:millisecond) + @executor_settle_ms
-    await_executor_exit(run_id, deadline)
+  # One analysis per subject at a time. The recorded review is the durable guard
+  # (`analyze/1` skips a reviewed subject and `review.record` is idempotent by
+  # command id), but it is written last, after the evaluator has run and the bead
+  # sink has posted its comment and filed its gap beads. A second terminal event
+  # for a subject whose analysis is still running (a reset run failing again, a
+  # duplicate delivery) would pass that check and repeat those side effects, none
+  # of which is idempotent. The running analysis records the review, so the
+  # duplicate is dropped.
+  defp start_analysis(type, payload, state) do
+    key = subject_key(type, payload)
+
+    if key != nil and Map.has_key?(state.in_flight, key) do
+      {kind, subject_id} = key
+
+      Logger.info(
+        "review analyzer: #{type} for #{kind} #{subject_id} ignored; its analysis is already running"
+      )
+
+      state
+    else
+      case Task.Supervisor.start_child(@task_supervisor, fn -> handle_event(type, payload) end) do
+        {:ok, pid} ->
+          track(state, key, pid)
+
+        other ->
+          Logger.error(
+            "review analyzer: could not start analysis task for #{type}: #{inspect(other)}"
+          )
+
+          state
+      end
+    end
+  end
+
+  # An event carrying no subject id cannot be guarded: `handle_event/2` logs and
+  # drops it.
+  defp track(state, nil, _pid), do: state
+
+  defp track(state, key, pid),
+    do: %{state | in_flight: Map.put(state.in_flight, key, Process.monitor(pid))}
+
+  defp subject_key("Run" <> _, payload), do: keyed(:run, field(payload, :run_id))
+  defp subject_key("Jobsite" <> _, payload), do: keyed(:jobsite, field(payload, :jobsite_id))
+
+  defp keyed(kind, id) when is_binary(id) and id != "", do: {kind, id}
+  defp keyed(_kind, _id), do: nil
+
+  # The archive must not be read until the run's executor has finished with it.
+  # Two terminal events are recorded before that:
+  #
+  #   * `RunCancelled`: a cancelled run never reaches `cleanup_run_worktree/2`
+  #     (the executor's capture point), so the archive is built here from the
+  #     projections once the executor has stopped writing. The run's worktree is
+  #     retained on cancel, so the diff includes the uncommitted work the agent
+  #     left behind.
+  #   * `RunFailed`: `RunExecutor.emit_phase_failure/4` dispatches `run.fail` and
+  #     only afterwards does `finalize_terminal_and_stop/2` capture the archive
+  #     (`cleanup_run_worktree/2` -> `Capture.close_run/2`). The executor does
+  #     that capture itself, so there is nothing to add here but the wait.
+  #
+  # `RunCompleted` is deliberately not waited for: `finalize_run/1` captures
+  # before `run.complete` and the executor then stays alive, so a wait would
+  # always run to its timeout. A run with no registered executor (it has already
+  # stopped) proceeds at once.
+  defp settle_run("RunCancelled", run_id) when is_binary(run_id) and run_id != "" do
+    await_executor_exit("RunCancelled", run_id)
     Capture.close_cancelled_run(run_id)
   end
 
-  defp settle_cancelled_run(_no_run_id), do: :ok
+  defp settle_run("RunFailed", run_id) when is_binary(run_id) and run_id != "",
+    do: await_executor_exit("RunFailed", run_id)
 
-  defp await_executor_exit(run_id, deadline) do
+  defp settle_run(_type, _run_id), do: :ok
+
+  defp await_executor_exit(type, run_id) do
+    deadline = System.monotonic_time(:millisecond) + @executor_settle_ms
+    await_executor_exit(type, run_id, deadline)
+  end
+
+  defp await_executor_exit(type, run_id, deadline) do
     cond do
       Registry.lookup(ForemanServer.RunExecutorRegistry, run_id) == [] ->
         :ok
 
       System.monotonic_time(:millisecond) >= deadline ->
         Logger.warning(
-          "review analyzer: executor for cancelled run #{run_id} still alive after #{@executor_settle_ms}ms; capturing anyway"
+          "review analyzer: executor for run #{run_id} still alive #{@executor_settle_ms}ms after #{type}; proceeding anyway"
         )
 
       true ->
         Process.sleep(@executor_poll_ms)
-        await_executor_exit(run_id, deadline)
+        await_executor_exit(type, run_id, deadline)
     end
   end
 
@@ -273,7 +347,7 @@ defmodule ForemanServer.Review.Analyzer do
 
   defp publish(subject, verdict) do
     case BeadSink.publish(subject, verdict) do
-      {:ok, %{gap_bead_ids: ids, note: note}} -> {ids, note}
+      {:ok, %BeadSink.Result{gap_bead_ids: ids, note: note}} -> {ids, note}
       {:error, %Error{code: code}} -> {[], "bead sink failed: #{code}"}
     end
   rescue

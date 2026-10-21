@@ -8,6 +8,7 @@ defmodule ForemanServer.Review.AnalyzerTest do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Review.Analyzer
   alias ForemanServer.Review.Archive
+  alias ForemanServer.Review.Capture
   alias ForemanServer.Review.Error
   alias ForemanServer.Review.Gap
   alias ForemanServer.Review.Subject
@@ -527,6 +528,100 @@ defmodule ForemanServer.Review.AnalyzerTest do
     end
   end
 
+  describe "failed runs" do
+    # `cancelled_checkout/1` with its edit committed: the state a failed run's
+    # worktree is in when its executor captures `base..HEAD`.
+    defp failed_checkout(repo) do
+      base = cancelled_checkout(repo)
+      File.write!(Path.join(repo, "README.md"), "seed\ndelivered before the failure\n")
+      git!(repo, ["commit", "--no-gpg-sign", "-am", "agent work", "--quiet"])
+      base
+    end
+
+    # Stands in for a run's `RunExecutor`: holds the run's registry entry until it
+    # is sent `:finish`, runs `on_finish` (what the real executor does before it
+    # stops) and exits.
+    defp start_fake_executor(run_id, on_finish) do
+      parent = self()
+
+      executor =
+        spawn(fn ->
+          {:ok, _} = Registry.register(ForemanServer.RunExecutorRegistry, run_id, nil)
+          send(parent, {:executor_registered, run_id})
+
+          receive do
+            :finish -> on_finish.()
+          end
+        end)
+
+      on_exit(fn -> Process.exit(executor, :kill) end)
+      assert_receive {:executor_registered, ^run_id}, 1_000
+      executor
+    end
+
+    # `RunExecutor.emit_phase_failure/4` dispatches `run.fail` first; only then
+    # does `finalize_terminal_and_stop/2` write the archive
+    # (`cleanup_run_worktree/2` -> `Capture.close_run/2`) and stop the executor.
+    # `RunFailed` therefore reaches the Analyzer while the archive does not exist
+    # yet, and reviewing it then would record a permanent `archive_missing`.
+    test "RunFailed is reviewed only after the executor has written the archive and stopped",
+         %{repo: repo} do
+      base = failed_checkout(repo)
+      run_id = uid("run")
+      seed_run(run_id, repo, worktree_path: repo, base_ref: base)
+      dir = Archive.dir(:run, run_id, repo)
+      worktree = %{worktree_path: repo, base_ref: base, branch: "agent/x"}
+
+      executor =
+        start_fake_executor(run_id, fn ->
+          :ok = Capture.close_run(%{run_id: run_id, run_worktree: worktree}, :failure)
+        end)
+
+      task = Task.async(fn -> Analyzer.handle_event("RunFailed", %{run_id: run_id}) end)
+
+      # While the executor is alive there is no archive and nothing may be
+      # recorded against its absence.
+      Process.sleep(400)
+      assert Task.yield(task, 0) == nil
+      refute File.exists?(Path.join(dir, "manifest.json"))
+      assert recorded_events(:run, run_id) == []
+
+      ref = Process.monitor(executor)
+      send(executor, :finish)
+      assert_receive {:DOWN, ^ref, :process, ^executor, _}, 1_000
+
+      assert :ok = Task.await(task, 5_000)
+
+      assert {:ok, %{"status" => "failed", "diff_status" => "captured"}} =
+               Archive.read_manifest(dir)
+
+      assert File.read!(Path.join(dir, "diff.patch")) =~ "+delivered before the failure"
+
+      assert [event] = recorded_events(:run, run_id)
+      assert event.event_type == "ReviewRecorded"
+
+      review = await(fn -> ProjectionStore.review("run", run_id) end)
+      assert review.verdict == "met"
+      assert review.error_code == nil
+      assert review.archive_path == dir
+    end
+
+    # `finalize_run/1` captures before `run.complete` and the executor then stays
+    # alive, so waiting for it would stall the review of every successful run for
+    # the whole timeout.
+    test "RunCompleted is reviewed without waiting for the executor to stop", %{repo: repo} do
+      run_id = uid("run")
+      seed_run(run_id, repo)
+      init_archive(subject(:run, run_id, repo))
+      start_fake_executor(run_id, fn -> :ok end)
+
+      task = Task.async(fn -> Analyzer.handle_event("RunCompleted", %{run_id: run_id}) end)
+
+      assert {:ok, :ok} = Task.yield(task, 5_000)
+      assert await(fn -> ProjectionStore.review("run", run_id) end).verdict == "met"
+    end
+  end
+
   describe "subscriber" do
     setup do
       start_supervised!({Task.Supervisor, name: ForemanServer.Review.TaskSupervisor})
@@ -627,6 +722,107 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
       assert log =~ "dropping run \"ghost-run\""
       assert ProjectionStore.review("run", "ghost-run") == nil
+    end
+
+    defmodule GatedEvaluator do
+      @behaviour ForemanServer.Review.Evaluator
+
+      # Tells the test it is evaluating and blocks until told to `:release` (return
+      # a verdict) or `:crash` (kill its own process), so the test decides how long
+      # the analysis stays in flight. The test's pid travels in the application env
+      # because the analysis runs in a task under the Analyzer's supervisor.
+      @impl true
+      def evaluate(%ForemanServer.Review.Subject{subject_id: id}) do
+        test = Application.fetch_env!(:foreman_server, :review_gated_evaluator_test)
+        send(test, {:evaluating, id, self()})
+
+        receive do
+          :release -> {:ok, %ForemanServer.Review.Verdict{verdict: :met, summary: "released"}}
+          :crash -> Process.exit(self(), :kill)
+        end
+      end
+    end
+
+    defp gate_evaluator! do
+      Application.put_env(:foreman_server, :review_gated_evaluator_test, self())
+      on_exit(fn -> Application.delete_env(:foreman_server, :review_gated_evaluator_test) end)
+
+      review = Application.get_env(:foreman_server, :review)
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.put(review, :evaluator, GatedEvaluator)
+      )
+    end
+
+    defp started_jobsite(repo) do
+      id = uid("js")
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "JobsiteStarted",
+                   payload: %{
+                     jobsite_id: id,
+                     repo_path: repo,
+                     project_id: "proj",
+                     strategy: "head"
+                   }
+                 }
+               ])
+
+      init_archive(subject(:jobsite, id, repo))
+      id
+    end
+
+    defp deliver_jobsite_failed(id) do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{event_type: "JobsiteFailed", payload: %{jobsite_id: id}}
+               ])
+    end
+
+    test "a terminal event for a subject whose analysis is still running is dropped",
+         %{repo: repo, analyzer: analyzer} do
+      gate_evaluator!()
+      id = started_jobsite(repo)
+
+      deliver_jobsite_failed(id)
+      assert_receive {:evaluating, ^id, evaluating}, 5_000
+
+      # The same event arrives again while the evaluator is still running. The
+      # review is not recorded yet, so only the in-flight guard can stop a second
+      # evaluation (and, behind it, a second bead comment and second gap beads).
+      deliver_jobsite_failed(id)
+      _ = :sys.get_state(analyzer)
+      refute_receive {:evaluating, ^id, _}, 300
+
+      send(evaluating, :release)
+      assert await(fn -> ProjectionStore.review("jobsite", id) end).verdict == "met"
+      assert [_only] = recorded_events(:jobsite, id)
+    end
+
+    test "a subject whose analysis died without recording is analysed again on its next event",
+         %{repo: repo, analyzer: analyzer} do
+      gate_evaluator!()
+      id = started_jobsite(repo)
+
+      deliver_jobsite_failed(id)
+      assert_receive {:evaluating, ^id, doomed}, 5_000
+      ref = Process.monitor(doomed)
+      send(doomed, :crash)
+      assert_receive {:DOWN, ^ref, :process, ^doomed, :killed}, 1_000
+      assert ProjectionStore.review("jobsite", id) == nil
+
+      # The Analyzer releases the subject once it sees its task go down.
+      assert :released ==
+               await(fn -> if :sys.get_state(analyzer).in_flight == %{}, do: :released end)
+
+      deliver_jobsite_failed(id)
+      assert_receive {:evaluating, ^id, retry}, 5_000
+      send(retry, :release)
+      assert await(fn -> ProjectionStore.review("jobsite", id) end).verdict == "met"
     end
   end
 end

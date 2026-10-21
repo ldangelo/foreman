@@ -14,6 +14,7 @@ defmodule ForemanServer.Review.BeadSink do
   require Logger
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Review.BeadSink.Result
   alias ForemanServer.Review.Error
   alias ForemanServer.Review.Gap
   alias ForemanServer.Review.Subject
@@ -24,15 +25,13 @@ defmodule ForemanServer.Review.BeadSink do
   @exec_label "foreman-exec"
   @truncation_marker "\n\n[…truncated]"
 
-  @type result :: %{gap_bead_ids: [String.t()], note: String.t() | nil}
-
-  @spec publish(Subject.t(), Verdict.t()) :: {:ok, result()} | {:error, Error.t()}
+  @spec publish(Subject.t(), Verdict.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def publish(%Subject{bead_id: nil} = subject, %Verdict{}) do
     Logger.info(
       "review bead sink skipped: #{subject.kind} #{subject.subject_id} has no originating bead"
     )
 
-    {:ok, %{gap_bead_ids: [], note: nil}}
+    {:ok, %Result{gap_bead_ids: [], note: nil}}
   end
 
   def publish(%Subject{bead_id: bead_id, project_id: project_id} = subject, %Verdict{})
@@ -41,7 +40,7 @@ defmodule ForemanServer.Review.BeadSink do
       "review bead sink skipped: #{subject.kind} #{subject.subject_id} has bead #{bead_id} but no project_id"
     )
 
-    {:ok, %{gap_bead_ids: [], note: "no project_id: bead step skipped"}}
+    {:ok, %Result{gap_bead_ids: [], note: "no project_id: bead step skipped"}}
   end
 
   def publish(%Subject{bead_id: bead_id} = subject, %Verdict{} = verdict)
@@ -126,11 +125,11 @@ defmodule ForemanServer.Review.BeadSink do
   defp file_gaps(provider, subject, verdict, suppressed?) do
     cond do
       not files_gaps?(verdict) ->
-        {:ok, %{gap_bead_ids: [], note: nil}}
+        {:ok, %Result{gap_bead_ids: [], note: nil}}
 
       to_string(subject.status) == "cancelled" ->
         {:ok,
-         %{
+         %Result{
            gap_bead_ids: [],
            note:
              "gap creation suppressed: #{subject.kind} was cancelled, so unfinished work is not filed as gaps"
@@ -138,7 +137,7 @@ defmodule ForemanServer.Review.BeadSink do
 
       suppressed? ->
         {:ok,
-         %{
+         %Result{
            gap_bead_ids: [],
            note: "gap creation suppressed: source bead is itself a foreman-gap bead"
          }}
@@ -183,7 +182,7 @@ defmodule ForemanServer.Review.BeadSink do
          failures: failures
        })}
     else
-      {:ok, %{gap_bead_ids: ids, note: note}}
+      {:ok, %Result{gap_bead_ids: ids, note: note}}
     end
   end
 

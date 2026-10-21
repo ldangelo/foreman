@@ -1364,6 +1364,14 @@ is recorded before the run's executor has actually stopped, so the review step
 waits up to 30 seconds for the executor to exit before it archives the run from
 its retained worktree (after the timeout it captures anyway and logs a warning).
 
+A failed workflow run has the same ordering problem: the phase failure records
+`run.fail` before the executor has written the run's archive, so the review step
+waits up to 30 seconds for the executor to exit and then reviews the archive the
+executor wrote. After the timeout it reviews anyway and logs a warning; if the
+archive still does not exist the review is recorded `undetermined` with
+`error_code: archive_missing`. A completed run is not waited for: its archive is
+written before `run.complete`.
+
 After the archive is written, a fixed reviewer agent grades the diff and
 transcript against the original request on correctness, tests, documentation
 and robustness, and records a `ReviewRecorded` event (command `review.record`,
@@ -1391,6 +1399,7 @@ tokens become `[REDACTED]`).
 Known limits: a review is write-once per subject — a recorded `undetermined`
 is never retried, and re-reviewing needs a new mechanism. The Analyzer does not
 replay history on boot, so runs that finish while it is down are not reviewed.
+A second terminal event for a subject whose review is still running is ignored.
 With `:pi` the harness surfaced zero text events in a smoke test, and with
 `:claude` the authentication must be valid; verify the reviewer provider by
 running a jobsite end to end before relying on verdicts.
