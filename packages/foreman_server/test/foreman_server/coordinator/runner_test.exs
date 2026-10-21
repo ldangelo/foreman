@@ -219,6 +219,22 @@ defmodule ForemanServer.Coordinator.RunnerTest do
     end
   end
 
+  test "a reply longer than the message cap is shortened visibly, never lost", %{
+    project_id: p,
+    script: script
+  } do
+    long = String.duplicate("é", ForemanServer.Aggregates.Coordinator.max_message_bytes())
+    Stub.push(script, [reply_turn(long)])
+    _rt = start_runtime(script)
+    say(p, "m1", "write an essay")
+    completed(p)
+
+    [reply] = texts(p, "coordinator")
+    assert byte_size(reply) <= ForemanServer.Aggregates.Coordinator.max_message_bytes()
+    assert String.valid?(reply)
+    assert String.ends_with?(reply, "[truncated]")
+  end
+
   describe "failures" do
     test "an agent error and malformed output are recorded turn failures, never a crash",
          %{project_id: p, script: script} do

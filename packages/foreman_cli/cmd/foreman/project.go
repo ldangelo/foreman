@@ -17,7 +17,7 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
@@ -168,6 +168,9 @@ func projectUpdate(c *client.Client, args []string) error {
 	coordinatorEffort := fs.String("coordinator-effort", "", "Coordinator effort (low|medium|high)")
 	maxConcurrentRuns := fs.Int("max-concurrent-runs", 0, "Maximum concurrent runs")
 	dailyThreadCap := fs.Int("daily-thread-cap", 0, "Maximum threads started per day")
+	coordinatorProposeBeforeStart := fs.Bool("coordinator-propose-before-start", false, "Coordinator proposes before starting threads (true|false; enforced by the server)")
+	coordinatorMaxActiveThreads := fs.Int("coordinator-max-active-threads", 0, "Coordinator's maximum active threads (1..50; enforced by the server)")
+	coordinatorReuseThreads := fs.Bool("coordinator-reuse-threads", false, "Coordinator reuses existing threads (true|false; enforced by the server)")
 	var clear repeatedFlag
 	fs.Var(&clear, "clear", "Clear a setting back to its default (repeatable)")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
@@ -238,6 +241,18 @@ func projectUpdate(c *client.Client, args []string) error {
 	}
 	if set["daily-thread-cap"] {
 		payload["daily_thread_cap"] = *dailyThreadCap
+		changes++
+	}
+	if set["coordinator-propose-before-start"] {
+		payload["coordinator_propose_before_start"] = *coordinatorProposeBeforeStart
+		changes++
+	}
+	if set["coordinator-max-active-threads"] {
+		payload["coordinator_max_active_threads"] = *coordinatorMaxActiveThreads
+		changes++
+	}
+	if set["coordinator-reuse-threads"] {
+		payload["coordinator_reuse_threads"] = *coordinatorReuseThreads
 		changes++
 	}
 	if len(clear) > 0 {
@@ -400,6 +415,7 @@ var projectSettingNames = []string{
 	"goal", "instructions", "thread_model", "thread_effort",
 	"coordinator_provider", "coordinator_model", "coordinator_effort",
 	"max_concurrent_runs", "daily_thread_cap",
+	"coordinator_propose_before_start", "coordinator_max_active_threads", "coordinator_reuse_threads",
 }
 
 var projectLimitNames = []string{

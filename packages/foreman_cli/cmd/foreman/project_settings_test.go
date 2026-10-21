@@ -135,6 +135,7 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"--thread-model", "m1", "--thread-effort", "high",
 		"--coordinator-provider", "claude", "--coordinator-model", "m2", "--coordinator-effort", "low",
 		"--max-concurrent-runs", "4", "--daily-thread-cap", "20",
+		"--coordinator-propose-before-start=false", "--coordinator-max-active-threads", "7", "--coordinator-reuse-threads",
 		"--clear", "goal", "--clear", "thread_model",
 		"p1")
 	if err != nil {
@@ -145,6 +146,7 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"thread_model": "m1", "thread_effort": "high",
 		"coordinator_provider": "claude", "coordinator_model": "m2", "coordinator_effort": "low",
 		"max_concurrent_runs": float64(4), "daily_thread_cap": float64(20),
+		"coordinator_propose_before_start": false, "coordinator_max_active_threads": float64(7), "coordinator_reuse_threads": true,
 		"cleared_settings": []any{"goal", "thread_model"},
 	}
 	if !reflect.DeepEqual(env.Payload, want) {
@@ -255,7 +257,7 @@ func TestProjectUpdateErrorTextReachesStderrAndExitCode(t *testing.T) {
 }
 
 func TestProjectSettingsPrintsSettingsAndLimits(t *testing.T) {
-	resp := `{"project_id":"p1","status":"paused","settings":{"goal":"ship","instructions":null,"thread_model":"m1","thread_effort":null,"coordinator_provider":"pi","coordinator_model":null,"coordinator_effort":null,"max_concurrent_runs":4,"daily_thread_cap":null},"limits":{"max_concurrent_runs":4,"active_runs":1,"daily_thread_cap":null,"threads_started_today":3,"remaining_today":null,"cap_reached?":false,"resets_at":"2026-10-22T00:00:00Z","deferred_tasks":2}}`
+	resp := `{"project_id":"p1","status":"paused","settings":{"goal":"ship","instructions":null,"thread_model":"m1","thread_effort":null,"coordinator_provider":"pi","coordinator_model":null,"coordinator_effort":null,"max_concurrent_runs":4,"daily_thread_cap":null,"coordinator_propose_before_start":true,"coordinator_max_active_threads":5,"coordinator_reuse_threads":false},"limits":{"max_concurrent_runs":4,"active_runs":1,"daily_thread_cap":null,"threads_started_today":3,"remaining_today":null,"cap_reached?":false,"resets_at":"2026-10-22T00:00:00Z","deferred_tasks":2}}`
 	c, rec := recordingServer(t, http.StatusOK, resp)
 	stdout := captureStdout(t, func() {
 		if err := runProject(c, []string{"settings", "p1"}); err != nil {
@@ -265,7 +267,7 @@ func TestProjectSettingsPrintsSettingsAndLimits(t *testing.T) {
 	if rec.method != http.MethodGet || rec.path != "/api/projects/p1/settings" {
 		t.Fatalf("request = %s %s", rec.method, rec.path)
 	}
-	for _, want := range []string{"status: paused", "goal: ship", "instructions: (unset)", "max_concurrent_runs: 4", "active_runs: 1", "cap_reached: false", "deferred_tasks: 2", "resets_at: 2026-10-22T00:00:00Z", "remaining_today: (unset)"} {
+	for _, want := range []string{"status: paused", "goal: ship", "instructions: (unset)", "max_concurrent_runs: 4", "active_runs: 1", "cap_reached: false", "deferred_tasks: 2", "resets_at: 2026-10-22T00:00:00Z", "remaining_today: (unset)", "coordinator_propose_before_start: true", "coordinator_max_active_threads: 5", "coordinator_reuse_threads: false"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout missing %q:\n%s", want, stdout)
 		}
