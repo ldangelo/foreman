@@ -1,0 +1,60 @@
+foreman_server	Format check	﻿2026-10-21T00:27:10.2827368Z ##[group]Run cd packages/foreman_server && mix format --check-formatted
+foreman_server	Format check	2026-10-21T00:27:10.2827808Z ^[[36;1mcd packages/foreman_server && mix format --check-formatted^[[0m
+foreman_server	Format check	2026-10-21T00:27:10.2874181Z shell: /usr/bin/bash -e {0}
+foreman_server	Format check	2026-10-21T00:27:10.2874401Z env:
+foreman_server	Format check	2026-10-21T00:27:10.2874578Z   MIX_ENV: test
+foreman_server	Format check	2026-10-21T00:27:10.2874755Z   SHELL: /bin/bash
+foreman_server	Format check	2026-10-21T00:27:10.2874936Z   POSTGRES_HOST: localhost
+foreman_server	Format check	2026-10-21T00:27:10.2875134Z   POSTGRES_PORT: 55432
+foreman_server	Format check	2026-10-21T00:27:10.2875319Z   POSTGRES_USER: postgres
+foreman_server	Format check	2026-10-21T00:27:10.2875516Z   POSTGRES_PASSWORD: postgres
+foreman_server	Format check	2026-10-21T00:27:10.2875719Z   POSTGRES_DB: foreman_test
+foreman_server	Format check	2026-10-21T00:27:10.2875974Z   INSTALL_DIR_FOR_OTP: /home/runner/work/_temp/.setup-beam/otp
+foreman_server	Format check	2026-10-21T00:27:10.2876341Z   INSTALL_DIR_FOR_ELIXIR: /home/runner/work/_temp/.setup-beam/elixir
+foreman_server	Format check	2026-10-21T00:27:10.2876620Z ##[endgroup]
+foreman_server	Format check	2026-10-21T00:27:11.4101479Z ** (Mix) mix format failed due to --check-formatted.
+foreman_server	Format check	2026-10-21T00:27:11.4103127Z The following files are not formatted:
+foreman_server	Format check	2026-10-21T00:27:11.4105386Z 
+foreman_server	Format check	2026-10-21T00:27:11.4106462Z ^[[1m^[[31m/home/runner/work/foreman/foreman/packages/foreman_server/test/foreman_server/review/bead_sink_test.exs
+foreman_server	Format check	2026-10-21T00:27:11.4107170Z ^[[0m
+foreman_server	Format check	2026-10-21T00:27:11.4107409Z          |
+foreman_server	Format check	2026-10-21T00:27:11.4107825Z 128 128  |      assert message_lines |> Enum.drop(-1) |> Enum.join("\n") ==
+foreman_server	Format check	2026-10-21T00:27:11.4108602Z 129 129  |               expected_body |> String.split("\n", trim: true) |> Enum.join("\n")
+foreman_server	Format check	2026-10-21T00:27:11.4109097Z     130 +|
+foreman_server	Format check	2026-10-21T00:27:11.4109437Z 130 131  |      create_argv = argv_for(tmp, {:create, major})
+foreman_server	Format check	2026-10-21T00:27:11.4110076Z 131 132  |      assert ["--labels", "foreman-exec,foreman-gap"] = slice_after(create_argv, "--labels")
+foreman_server	Format check	2026-10-21T00:27:11.4111021Z          |
+foreman_server	Format check	2026-10-21T00:27:11.4111292Z 177 178  |      install_stub([])
+foreman_server	Format check	2026-10-21T00:27:11.4111601Z 178 179  |
+foreman_server	Format check	2026-10-21T00:27:11.4112083Z 179     -|      assert {:ok, %{gap_bead_ids: [], note: nil}} = BeadSink.publish(subject(), verdict(gaps: []))
+foreman_server	Format check	2026-10-21T00:27:11.4112601Z     180 +|      assert {:ok, %{gap_bead_ids: [], note: nil}} =
+foreman_server	Format check	2026-10-21T00:27:11.4112926Z     181 +|               BeadSink.publish(subject(), verdict(gaps: []))
+foreman_server	Format check	2026-10-21T00:27:11.4113226Z 180 182  |
+foreman_server	Format check	2026-10-21T00:27:11.4113453Z 181 183  |      assert_received {:br, :comment, %{id: "bead-src"}}
+foreman_server	Format check	2026-10-21T00:27:11.4113714Z          |
+foreman_server	Format check	2026-10-21T00:27:11.4113882Z 467 469  |    %{
+foreman_server	Format check	2026-10-21T00:27:11.4114075Z 468 470  |      "type" => "object",
+foreman_server	Format check	2026-10-21T00:27:11.4114489Z 469     -|      "required" => ~w(id title status priority dependencies assignee description notes design labels metadata),
+foreman_server	Format check	2026-10-21T00:27:11.4114909Z     471 +|      "required" =>
+foreman_server	Format check	2026-10-21T00:27:11.4115280Z     472 +|        ~w(id title status priority dependencies assignee description notes design labels metadata),
+foreman_server	Format check	2026-10-21T00:27:11.4115673Z 470 473  |      "properties" => %{
+foreman_server	Format check	2026-10-21T00:27:11.4115913Z 471 474  |        "id" => %{"type" => "string"},
+foreman_server	Format check	2026-10-21T00:27:11.4116149Z          |
+foreman_server	Format check	2026-10-21T00:27:11.4116245Z 
+foreman_server	Format check	2026-10-21T00:27:11.4116702Z ^[[1m^[[31m/home/runner/work/foreman/foreman/packages/foreman_server/test/foreman_server/review/capture_test.exs
+foreman_server	Format check	2026-10-21T00:27:11.4117109Z ^[[0m
+foreman_server	Format check	2026-10-21T00:27:11.4117267Z          |
+foreman_server	Format check	2026-10-21T00:27:11.4117428Z  13  13  |
+foreman_server	Format check	2026-10-21T00:27:11.4117613Z  14  14  |    root = Path.join(tmp, "archive")
+foreman_server	Format check	2026-10-21T00:27:11.4118044Z  15     -|    Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: true, archive_root: root))
+foreman_server	Format check	2026-10-21T00:27:11.4118621Z  16  15  |
+foreman_server	Format check	2026-10-21T00:27:11.4118885Z      16 +|    Application.put_env(
+foreman_server	Format check	2026-10-21T00:27:11.4119114Z      17 +|      :foreman_server,
+foreman_server	Format check	2026-10-21T00:27:11.4119330Z      18 +|      :review,
+foreman_server	Format check	2026-10-21T00:27:11.4119612Z      19 +|      Keyword.merge(original, capture: true, archive_root: root)
+foreman_server	Format check	2026-10-21T00:27:11.4119898Z      20 +|    )
+foreman_server	Format check	2026-10-21T00:27:11.4120062Z      21 +|
+foreman_server	Format check	2026-10-21T00:27:11.4120269Z  17  22  |    repo = Path.join(tmp, "repo")
+foreman_server	Format check	2026-10-21T00:27:11.4120510Z  18  23  |    File.mkdir_p!(repo)
+foreman_server	Format check	2026-10-21T00:27:11.4120965Z          |
+foreman_server	Format check	2026-10-21T00:27:11.4121146Z  79  84  |      assert m["repo_path"] == repo
