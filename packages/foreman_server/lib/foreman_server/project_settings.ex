@@ -38,4 +38,32 @@ defmodule ForemanServer.ProjectSettings do
       :error -> Map.get(config, Atom.to_string(key))
     end
   end
+
+  @redacted "[redacted]"
+
+  @doc """
+  The project projection as handed to readers (HTTP and MCP): `config.env` and
+  `config.environment` keep their keys but every value is replaced with
+  `"[redacted]"`, because they hold secrets. `name`, `task_provider` and
+  `database_path` stay visible. Accepts atom or string keys (persisted config
+  has both after replay) and never raises on a malformed projection.
+  """
+  @spec public_view(map()) :: map()
+  def public_view(%{} = projection) do
+    case Map.fetch(projection, :config) do
+      {:ok, %{} = config} -> Map.put(projection, :config, redact_config(config))
+      _ -> projection
+    end
+  end
+
+  defp redact_config(config) do
+    Map.new(config, fn {key, value} ->
+      if to_string(key) in ["env", "environment"],
+        do: {key, redact_values(value)},
+        else: {key, value}
+    end)
+  end
+
+  defp redact_values(%{} = env), do: Map.new(env, fn {key, _value} -> {key, @redacted} end)
+  defp redact_values(other), do: other
 end
