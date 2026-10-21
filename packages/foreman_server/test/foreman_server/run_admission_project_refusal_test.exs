@@ -113,4 +113,23 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
 
     refute Map.has_key?(slot_holders(), second)
   end
+
+  test "run limit: the next run is refused, its slot is not taken, and it is admitted once the limit is raised" do
+    project_id = unique("project")
+    register!(project_id)
+    dispatch!(project_id, "project.update", %{max_concurrent_runs: 1})
+
+    assert {:ok, _} = RunAdmission.start(project_id, payload(unique("run")))
+    second = unique("run")
+
+    assert {:error, :run_limit_exceeded} = RunAdmission.start(project_id, payload(second))
+    refute Map.has_key?(slot_holders(), second)
+
+    dispatch!(project_id, "project.update", %{max_concurrent_runs: 2})
+
+    assert {:ok, %{"event_type" => "RunStarted"}} =
+             RunAdmission.start(project_id, payload(second))
+
+    assert Map.has_key?(slot_holders(), second)
+  end
 end

@@ -419,8 +419,7 @@ defmodule ForemanServer.Aggregates.Project do
       # reservation count.
       max_concurrent_runs_per_project =
         Aggregate.get(payload, :max_concurrent_runs_per_project) ||
-          Aggregate.get(state.config, :max_concurrent_runs) ||
-          Config.max_concurrent_runs_per_project()
+          effective_run_limit(state)
 
       day = today()
 
@@ -623,6 +622,34 @@ defmodule ForemanServer.Aggregates.Project do
         with :ok <- reject_paused(state, state.project_id) do
           reject_at_daily_cap(state, today(), "run", run_id)
         end
+    end
+  end
+
+  @doc """
+  The project's per-project run ceiling: its `max_concurrent_runs` setting, else
+  the global per-project default.
+  """
+  @spec effective_run_limit(%State{}) :: non_neg_integer()
+  def effective_run_limit(%State{} = state) do
+    Aggregate.get(state.config, :max_concurrent_runs) || Config.max_concurrent_runs_per_project()
+  end
+
+  @doc """
+  `{:error, :run_limit_exceeded}` when starting `run_id` would exceed the
+  project's run ceiling; `:ok` for a run that already holds a reservation.
+
+  Pure over aggregate state. `RunAdmission` consults it BEFORE acquiring the
+  global run slot: the slot-acquire command id is per run id, so a refused run
+  can neither keep its slot without starving other projects nor hand it back
+  and re-acquire it on the retry. `project.reserve_run` still enforces the
+  limit authoritatively.
+  """
+  @spec run_limit_refusal(%State{}, String.t() | nil) :: :ok | {:error, :run_limit_exceeded}
+  def run_limit_refusal(%State{} = state, run_id) do
+    if is_binary(run_id) and reserved_run(state, run_id) do
+      :ok
+    else
+      reject_at_run_limit(state, effective_run_limit(state))
     end
   end
 

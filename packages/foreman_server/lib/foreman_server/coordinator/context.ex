@@ -20,12 +20,12 @@ defmodule ForemanServer.Coordinator.Context do
     3. memory index lines, oldest first (headers kept)
     4. working / ready cards collapse to `id | state | title`
 
-  Never cut: the system skeleton, waiting-on-you and ready-for-review cards,
+  Never cut: the system skeleton, the STATUS counts, waiting-on-you and ready-for-review cards,
   the new message(s), the project instructions. All third-party text (messages,
   reports, thread titles, memory) is wrapped by `Coordinator.Untrusted`.
   """
 
-  alias ForemanServer.Coordinator.{Conversation, Error, Untrusted}
+  alias ForemanServer.Coordinator.{Conversation, Error, StatusBlock, Untrusted}
   alias ForemanServer.Coordinator.Context.Sources.Live
   alias ForemanServer.Threads.Thread
 
@@ -35,6 +35,7 @@ defmodule ForemanServer.Coordinator.Context do
           text: String.t(),
           estimated_tokens: non_neg_integer(),
           trigger_key: String.t(),
+          status_counts: %{ForemanServer.Overview.Group.group() => non_neg_integer()},
           trigger_messages: [Conversation.message()],
           omitted_message_count: non_neg_integer(),
           truncations: [String.t()],
@@ -45,6 +46,7 @@ defmodule ForemanServer.Coordinator.Context do
     :text,
     :trigger_key,
     trigger_messages: [],
+    status_counts: %{},
     estimated_tokens: 0,
     omitted_message_count: 0,
     truncations: [],
@@ -96,6 +98,7 @@ defmodule ForemanServer.Coordinator.Context do
         workflows: sources.workflows(),
         tuning: sources.tuning(project_id),
         limits: sources.limits(project_id),
+        status_counts: sources.status_counts(project_id),
         history: history(conv, first.seq),
         actions: recent_actions(conv, first, cfg),
         memory_lines: memory_lines(project.memory_index)
@@ -195,6 +198,7 @@ defmodule ForemanServer.Coordinator.Context do
       estimated_tokens: tokens,
       trigger_key: hd(model.triggers).message_id,
       trigger_messages: model.triggers,
+      status_counts: model.status_counts,
       omitted_message_count: length(model.history) - cuts.history_keep,
       truncations: truncations(model, cuts),
       over_budget?: tokens > cfg[:max_total_tokens]
@@ -262,6 +266,7 @@ defmodule ForemanServer.Coordinator.Context do
       workflows_section(model.workflows),
       project_section(model.project),
       memory_section(model.memory_lines, cuts.memory_dropped),
+      status_section(model.status_counts),
       threads_section(model.cards, dropped, cuts),
       limits_section(model),
       actions_section(model.actions),
@@ -314,6 +319,11 @@ defmodule ForemanServer.Coordinator.Context do
       end)
 
     {Enum.reverse(kept), count - omitted}
+  end
+
+  defp status_section(counts) do
+    "# STATUS (authoritative Overview counts; quote these numbers, never recount the threads)\n" <>
+      StatusBlock.line(counts)
   end
 
   defp threads_section([], _dropped, _cuts), do: "# THREADS\n(none)"

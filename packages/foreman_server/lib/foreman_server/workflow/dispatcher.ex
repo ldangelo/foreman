@@ -195,15 +195,18 @@ defmodule ForemanServer.Workflow.Dispatcher do
   # Admission refusals (project paused, daily thread cap, run limit) leave a
   # dispatched task with no run, and nothing else retries them: the
   # reconciler only retries runs that hold a reservation. So resuming a
-  # project, or changing its settings (a raised limit), re-admits them.
-  for event_type <- ~w(ProjectResumed ProjectUpdated) do
+  # project, changing its settings (a raised limit) or a finished run freeing
+  # its reservation (`ProjectRunReservationReleased` for a terminal run; the
+  # reconciler releases it AFTER the terminal event, so that is the point at
+  # which the capacity is really free) re-admits them.
+  for event_type <- ~w(ProjectResumed ProjectUpdated ProjectRunReservationReleased) do
     @impl true
     def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
-      readmit_deferred(envelope, state)
+      readmit_deferred(unquote(event_type), envelope, state)
     end
 
     def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
-      readmit_deferred(envelope, state)
+      readmit_deferred(unquote(event_type), envelope, state)
     end
   end
 
@@ -222,7 +225,13 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp readmit_deferred(envelope, state) do
+  # Only reservation releases that mean "a run finished" free capacity for a
+  # deferred task. A release after a failed start (`command_router`) or a
+  # definitive retry rejection must NOT re-admit: the same task would be
+  # refused again and release again, an unbounded loop.
+  @capacity_freeing_release_reasons ~w(terminal_event terminal_run)
+
+  defp readmit_deferred(event_type, envelope, state) do
     # The recorded event's data is a typed struct (no Access behaviour).
     payload =
       case unwrap_data(envelope) do
@@ -231,15 +240,22 @@ defmodule ForemanServer.Workflow.Dispatcher do
       end
 
     project_id = payload["project_id"] || payload[:project_id]
+    reason = payload["reason"] || payload[:reason]
 
-    if is_binary(project_id) and project_id != "" do
-      project_id
-      |> ProjectionStore.deferred_task_ids()
-      |> Enum.reduce({:noreply, state}, fn task_id, _acc ->
-        dispatch_task_projection(task_id, state)
-      end)
-    else
-      {:noreply, state}
+    cond do
+      not (is_binary(project_id) and project_id != "") ->
+        {:noreply, state}
+
+      event_type == "ProjectRunReservationReleased" and
+          reason not in @capacity_freeing_release_reasons ->
+        {:noreply, state}
+
+      true ->
+        project_id
+        |> ProjectionStore.deferred_task_ids()
+        |> Enum.reduce({:noreply, state}, fn task_id, _acc ->
+          dispatch_task_projection(task_id, state)
+        end)
     end
   end
 
