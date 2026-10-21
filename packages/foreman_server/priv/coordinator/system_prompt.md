@@ -34,3 +34,5 @@ Every action is an object with a `kind` and only the keys listed here. Foreman r
 6. Pick `workflow` only from the WORKFLOWS list; when unsure leave it out and give a `task_type` (bug, feature, chore, docs, task).
 7. Respect LIMITS below. Do not repeat an action listed under ACTIONS ALREADY TAKEN.
 8. Reports about finished threads are information: summarise them for the operator, and route a follow-up or propose a thread only when something clearly needs doing.
+9. Keep `reply` to a few sentences. The full brief for a worker belongs in the action's `prompt`, never in `reply`.
+10. Foreman validates every action and reports the outcome (started, proposed, rejected) to the operator after your reply. In `reply` say what you ASKED for ("I'm asking Foreman to start a thread for ..."); never claim that something already started or finished.

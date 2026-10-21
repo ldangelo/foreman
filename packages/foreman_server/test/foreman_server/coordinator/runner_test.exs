@@ -220,7 +220,7 @@ defmodule ForemanServer.Coordinator.RunnerTest do
   end
 
   describe "failures" do
-    test "an agent error, a raise and malformed output are recorded turn failures, never a crash",
+    test "an agent error and malformed output are recorded turn failures, never a crash",
          %{project_id: p, script: script} do
       Stub.push(script, [
         {:error, Error.new(:agent_failed, "provider down")},
@@ -230,14 +230,10 @@ defmodule ForemanServer.Coordinator.RunnerTest do
 
       _rt = start_runtime(script)
       say(p, "m1", "hello")
+      first = H.await_event("CoordinatorTurnFailed", &(&1.project_id == p))
+      second = H.await_event("CoordinatorTurnFailed", &(&1.project_id == p))
       assert %{cursor_message_id: "m1"} = completed(p)
-
-      {:ok, events} = EventStore.read_stream_forward("coordinator:#{p}", 0, 100)
-
-      codes =
-        for %{event_type: "CoordinatorTurnFailed", data: d} <- events,
-            do: d["error_code"] || d[:error_code]
-
+      codes = [first.error_code, second.error_code]
       assert codes == ["agent_failed", "malformed_output"]
       assert ["recovered"] = texts(p, "coordinator")
 
