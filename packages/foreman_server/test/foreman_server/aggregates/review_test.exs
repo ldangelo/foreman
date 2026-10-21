@@ -32,7 +32,15 @@ defmodule ForemanServer.Aggregates.ReviewTest do
     do: Review.handle_command(state, %{type: "review.record", payload: p})
 
   test "emits exactly one ReviewRecorded on the per-subject stream with all fields" do
-    p = payload(%{subject_kind: "jobsite", subject_id: "js-1"})
+    p =
+      payload(%{
+        subject_kind: "jobsite",
+        subject_id: "js-1",
+        model: "m1",
+        usage: %{"input_tokens" => 5},
+        usage_provider: "claude"
+      })
+
     assert {:ok, spec} = handle(p)
     assert spec.stream_id == "review:jobsite:js-1"
     assert spec.event_type == "ReviewRecorded"
@@ -50,6 +58,9 @@ defmodule ForemanServer.Aggregates.ReviewTest do
              analysis_path: "/tmp/archive/analysis.json",
              evaluator: "agent:claude",
              error_code: nil,
+             model: "m1",
+             usage: %{"input_tokens" => 5},
+             usage_provider: "claude",
              at: "2026-10-20T00:00:00Z"
            }
   end
