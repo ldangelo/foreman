@@ -11,6 +11,20 @@ defmodule ForemanServer.ProjectMemory.StoreTest do
 
   defp mem(dir), do: Path.join(dir, ".foreman/memory")
 
+  # Bring a project to `count` topics (`<prefix>1..count`) with one real `Store.write` plus
+  # byte-for-byte copies of the file it produced, so the on-disk format is the store's own.
+  # Filling the caps through `count` real writes is quadratic (each write re-reads every
+  # topic) and ran past the 60 s test timeout on a CPU-starved machine; the caps are checked
+  # against what is on disk, so this exercises them identically. The index is regenerated
+  # from the files by the next real write.
+  defp seed_topics(dir, prefix, count, content, description) do
+    first = "#{prefix}1"
+    assert {:ok, _} = write(dir, first, content, description)
+    raw = File.read!(Path.join(mem(dir), "#{first}.md"))
+    for i <- 2..count, do: File.write!(Path.join(mem(dir), "#{prefix}#{i}.md"), raw)
+    :ok
+  end
+
   defp snapshot(dir) do
     case File.ls(mem(dir)) do
       {:ok, files} -> Map.new(files, &{&1, File.read!(Path.join(mem(dir), &1))})
@@ -48,7 +62,7 @@ defmodule ForemanServer.ProjectMemory.StoreTest do
     tmp_dir: dir
   } do
     # Short descriptions keep the index under its byte cap so only the count cap is exercised.
-    for i <- 1..200, do: assert({:ok, _} = write(dir, "t#{i}", "fact #{i}", ""))
+    seed_topics(dir, "t", 200, "fact", "")
     assert {:error, %Error{code: :too_many_topics}} = write(dir, "t201", "fact", "")
     assert {:ok, _} = write(dir, "t7", "updated fact", "")
   end
@@ -78,8 +92,11 @@ defmodule ForemanServer.ProjectMemory.StoreTest do
   test "a write rejected by :index_full leaves the directory byte-identical", %{tmp_dir: dir} do
     long = String.duplicate("d", 200)
 
+    # ~25 KiB of index at ~235 bytes a line is ~110 topics: start just below the cap.
+    seed_topics(dir, "topic-", 100, "c", long)
+
     filled =
-      Enum.find(1..200, fn i ->
+      Enum.find(101..200, fn i ->
         match?({:error, %Error{code: :index_full}}, write(dir, "topic-#{i}", "c", long))
       end)
 
