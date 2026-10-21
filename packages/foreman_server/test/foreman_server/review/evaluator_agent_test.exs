@@ -245,7 +245,8 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       assert transcript =~ "Review done."
     end
 
-    test "the reviewer never runs inside the project checkout or its archive (foreman-qp5d3)", ctx do
+    test "the reviewer never runs inside the project checkout or its archive (foreman-qp5d3)",
+         ctx do
       # Default layout: the archive lives under the project's `.foreman/`.
       archive = Path.join([ctx.repo, ".foreman", "sessions", "run", "run-1"])
       :ok = Archive.init(archive, %{"kind" => "run", "subject_id" => "run-1"})
@@ -265,7 +266,9 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       refute String.starts_with?(Path.expand(request.cwd) <> "/", Path.expand(archive) <> "/")
 
       # Nothing for an auto-commit hook to commit to: not a git work tree.
-      {_, status} = System.cmd("git", ["-C", request.cwd, "rev-parse", "--git-dir"], stderr_to_stdout: true)
+      {_, status} =
+        System.cmd("git", ["-C", request.cwd, "rev-parse", "--git-dir"], stderr_to_stdout: true)
+
       assert status != 0
       assert File.dir?(request.cwd)
     end

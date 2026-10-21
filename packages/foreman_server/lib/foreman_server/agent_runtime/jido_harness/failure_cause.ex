@@ -66,14 +66,18 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.FailureCause do
   defp describe(%RunResult{status: status}), do: "run ended with status #{status}"
 
   defp details_text(details) when map_size(details) == 0, do: ""
-  defp details_text(details), do: "(details: #{inspect(details, limit: 10, printable_limit: 200)})"
+
+  defp details_text(details),
+    do: "(details: #{inspect(details, limit: 10, printable_limit: 200)})"
 
   defp cause_text(nil), do: ""
   defp cause_text(cause), do: "(cause: #{inspect(cause, limit: 10, printable_limit: 200)})"
 
   defp last_failure_text(events) do
     events
-    |> Enum.filter(&match?(%Event{type: :run_failed, payload: %{"error" => e}} when is_binary(e), &1))
+    |> Enum.filter(
+      &match?(%Event{type: :run_failed, payload: %{"error" => e}} when is_binary(e), &1)
+    )
     |> List.last()
     |> case do
       %Event{payload: %{"error" => text}} -> text

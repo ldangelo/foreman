@@ -37,7 +37,13 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.FailureCauseTest do
   end
 
   test "a failure with no error uses the provider's run_failed text" do
-    event = Event.new!(provider: :pi, type: :run_failed, payload: %{"error" => "coderabbit: review exited 2"})
+    event =
+      Event.new!(
+        provider: :pi,
+        type: :run_failed,
+        payload: %{"error" => "coderabbit: review exited 2"}
+      )
+
     assert FailureCause.render(cause(failed(error: nil, events: [event]))) =~ "review exited 2"
   end
 
@@ -47,7 +53,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.FailureCauseTest do
 
   test "secrets are redacted, text is single-line and bounded" do
     error =
-      Error.execution("auth failed token=abc123 with key s3cr3t-value\nsecond line " <> String.duplicate("x", 2_000))
+      Error.execution(
+        "auth failed token=abc123 with key s3cr3t-value\nsecond line " <>
+          String.duplicate("x", 2_000)
+      )
 
     detail = cause(failed(error: error), ["s3cr3t-value"]).detail
     refute detail =~ "abc123"
