@@ -21,6 +21,7 @@ defmodule ForemanServer.Aggregates.Project do
     ProjectResumed,
     ProjectRunReservationReleased,
     ProjectRunReserved,
+    ProjectSubjectAdopted,
     ProjectThreadStarted
   }
 
@@ -37,7 +38,8 @@ defmodule ForemanServer.Aggregates.Project do
       config: %{},
       health: %{ok: true},
       thread_day: nil,
-      thread_ids: MapSet.new()
+      thread_ids: MapSet.new(),
+      adopted_keys: []
     ]
   end
 
@@ -125,6 +127,9 @@ defmodule ForemanServer.Aggregates.Project do
 
       "ProjectRunReservationReleased" ->
         release_run_reservation(state, payload)
+
+      "ProjectSubjectAdopted" ->
+        record_adoption(state, payload)
 
       _ ->
         state
@@ -349,7 +354,131 @@ defmodule ForemanServer.Aggregates.Project do
     end
   end
 
+  # `project.adopt` runs on the TARGET project's stream. The facts about the
+  # subject (`from_project_id`, `subject_status`, `moved`, `repo_path`,
+  # `archive_paths`, `new_task_id`) are resolved from projections by
+  # `ForemanServer.Projects.Adoption.resolve/1` in `CommandGateway`; the
+  # aggregate only re-validates their shape and the target's own state.
+  def handle_command(state, %{type: "project.adopt", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, kind} <- validate_subject_kind(Aggregate.get(payload, :subject_kind)),
+         {:ok, subject_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :subject_id), :subject_id),
+         {:ok, mode} <- validate_adopt_mode(Aggregate.get(payload, :mode, "move")),
+         {:ok, from_project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :from_project_id), :from_project_id),
+         {:ok, moved} <- validate_moved(Aggregate.get(payload, :moved)),
+         :ok <- require_exists(state, project_id) do
+      new_task_id = Aggregate.get(payload, :new_task_id)
+      key = adopted_key(mode, kind, subject_id, new_task_id)
+
+      cond do
+        mode == "move" and from_project_id == project_id ->
+          {:ok, nil}
+
+        mode == "continue" and key in state.adopted_keys ->
+          {:ok, nil}
+
+        true ->
+          with :ok <- reject_archived(state, project_id),
+               :ok <- reject_paused(state, project_id),
+               :ok <- require_inactive_subject(payload, mode),
+               :ok <- require_continue_thread(mode, new_task_id) do
+            {:ok,
+             %{
+               stream_id: "project:#{project_id}",
+               event_type: "ProjectSubjectAdopted",
+               payload: %ProjectSubjectAdopted{
+                 project_id: project_id,
+                 subject_kind: kind,
+                 subject_id: subject_id,
+                 mode: mode,
+                 from_project_id: from_project_id,
+                 moved: moved,
+                 repo_path: Aggregate.get(payload, :repo_path),
+                 archive_paths: List.wrap(Aggregate.get(payload, :archive_paths, [])),
+                 new_task_id: new_task_id,
+                 adopted_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+               }
+             }}
+          end
+      end
+    end
+  end
+
   def handle_command(_state, _command), do: :unhandled
+
+  @adopt_subject_kinds ~w(task run jobsite)
+  @adopt_modes ~w(move continue)
+  @adopted_keys_limit 1_000
+
+  defp validate_subject_kind(nil), do: {:error, {:missing_or_invalid, :subject_kind}}
+
+  defp validate_subject_kind(kind) when kind in @adopt_subject_kinds, do: {:ok, kind}
+  defp validate_subject_kind(kind), do: {:error, {:invalid_subject_kind, kind}}
+
+  defp validate_adopt_mode(mode) when mode in @adopt_modes, do: {:ok, mode}
+  defp validate_adopt_mode(mode), do: {:error, {:invalid_adopt_mode, mode}}
+
+  # `moved` is enrichment output: a map of id lists. Anything else means the
+  # command bypassed `Projects.Adoption.resolve/1`.
+  defp validate_moved(%{} = moved) do
+    ids = fn key -> Aggregate.get(moved, key, []) end
+
+    if Enum.all?([:task_ids, :run_ids, :jobsite_ids], fn key ->
+         list = ids.(key)
+         is_list(list) and Enum.all?(list, &is_binary/1)
+       end) do
+      {:ok,
+       %{
+         task_ids: ids.(:task_ids),
+         run_ids: ids.(:run_ids),
+         jobsite_ids: ids.(:jobsite_ids)
+       }}
+    else
+      {:error, {:missing_or_invalid, :moved}}
+    end
+  end
+
+  defp validate_moved(_moved), do: {:error, {:missing_or_invalid, :moved}}
+
+  defp adopted_key("move", kind, id, _new_task_id), do: "move:#{kind}:#{id}"
+  defp adopted_key("continue", kind, id, new_task_id), do: "continue:#{kind}:#{id}:#{new_task_id}"
+
+  # Moving a live session is unsupported: its worker keeps writing under the
+  # old project. Continuing one is the supported path, so `continue` skips this.
+  defp require_inactive_subject(_payload, "continue"), do: :ok
+
+  defp require_inactive_subject(payload, "move") do
+    case Aggregate.get(payload, :subject_active) do
+      false -> :ok
+      true -> {:error, {:subject_active, Aggregate.get(payload, :subject_status)}}
+      _ -> {:error, {:missing_or_invalid, :subject_active}}
+    end
+  end
+
+  defp require_continue_thread("continue", new_task_id) do
+    case Aggregate.required_binary(new_task_id, :new_task_id) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp require_continue_thread("move", _new_task_id), do: :ok
+
+  defp record_adoption(%State{} = state, payload) do
+    mode = Aggregate.get(payload, :mode, "move")
+    kind = Aggregate.get(payload, :subject_kind)
+    id = Aggregate.get(payload, :subject_id)
+
+    if is_binary(kind) and is_binary(id) and mode in @adopt_modes do
+      key = adopted_key(mode, kind, id, Aggregate.get(payload, :new_task_id))
+      %State{state | adopted_keys: Enum.take([key | state.adopted_keys], @adopted_keys_limit)}
+    else
+      state
+    end
+  end
 
   @doc """
   The non-terminal refusals that apply to starting a NEW run: paused project,

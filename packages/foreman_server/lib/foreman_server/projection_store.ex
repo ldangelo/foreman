@@ -281,6 +281,14 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:review, subject_kind, subject_id})
   end
 
+  @doc """
+  The adoption record for a subject: the `project.adopt` move that re-homed it
+  (`{kind, id}`), or the continuation recorded against it (`{"continue", kind,
+  id}`). `nil` when none.
+  """
+  @spec adoption(tuple()) :: map() | nil
+  def adoption(key) when is_tuple(key), do: GenServer.call(__MODULE__, {:adoption, key})
+
   @doc "True when a recorded review filed `bead_id` as a gap bead."
   @spec gap_bead?(String.t()) :: boolean()
   def gap_bead?(bead_id) when is_binary(bead_id) and bead_id != "" do
@@ -595,6 +603,11 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:review, subject_kind, subject_id}, _from, state) do
     {:reply, Map.get(state.reviews, {subject_kind, subject_id}), state}
+  end
+
+  @impl true
+  def handle_call({:adoption, key}, _from, state) do
+    {:reply, Map.get(state.adoptions, key), state}
   end
 
   @impl true
@@ -1126,6 +1139,7 @@ defmodule ForemanServer.ProjectionStore do
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       inbox_threads: %{},
       jobsites: %{},
+      adoptions: %{},
       reviews: %{},
       thread_flags: %{}
     }
@@ -1292,6 +1306,24 @@ defmodule ForemanServer.ProjectionStore do
         |> remove_project_run_id(project_id, run_id)
 
       Map.put(state, :project_active_runs, active_runs)
+    else
+      state
+    end
+  end
+
+  # `project.adopt` re-homes a session by rewriting `project_id` on its
+  # projected task(s), run(s) and jobsite; the original events keep their
+  # `project_id` (history is immutable). Malformed payloads are skipped: this
+  # fold also runs on every rebuild from the event log.
+  defp apply_event_by_type(state, "ProjectSubjectAdopted", payload) do
+    target = get(payload, :project_id)
+    kind = get(payload, :subject_kind)
+    id = get(payload, :subject_id)
+    mode = get(payload, :mode)
+
+    if valid_id?(target) and kind in ["task", "run", "jobsite"] and valid_id?(id) and
+         mode in ["move", "continue"] do
+      adopt_subject(state, mode, kind, id, target, payload)
     else
       state
     end
@@ -2566,6 +2598,79 @@ defmodule ForemanServer.ProjectionStore do
   # -------------------------------------------------------------------------
   # Helpers
   # -------------------------------------------------------------------------
+
+  defp adopt_subject(state, "move", kind, id, target, payload) do
+    moved = get(payload, :moved)
+    moved = if is_map(moved), do: moved, else: %{}
+    run_ids = adopted_ids(moved, :run_ids)
+
+    rehome = fn entries, ids ->
+      Enum.reduce(ids, entries, fn entry_id, acc ->
+        case Map.get(acc, entry_id) do
+          %{project_id: current} = entry when current != target ->
+            Map.put(acc, entry_id, entry |> Map.put(:project_id, target) |> Map.put(:adopted_from, current))
+
+          _already_there_or_unknown ->
+            acc
+        end
+      end)
+    end
+
+    worktrees =
+      Map.new(state.worktrees, fn
+        {key, %{run_id: run_id, project_id: current} = wt} when current != target ->
+          if run_id in run_ids, do: {key, %{wt | project_id: target}}, else: {key, wt}
+
+        other ->
+          other
+      end)
+
+    record = %{
+      mode: "move",
+      project_id: target,
+      from_project_id: get(payload, :from_project_id),
+      adopted_at: get(payload, :adopted_at)
+    }
+
+    %{
+      state
+      | tasks: rehome.(state.tasks, adopted_ids(moved, :task_ids)),
+        runs: rehome.(state.runs, run_ids),
+        jobsites: rehome.(state.jobsites, adopted_ids(moved, :jobsite_ids)),
+        worktrees: worktrees,
+        adoptions: Map.put(state.adoptions, {kind, id}, record)
+    }
+  end
+
+  # `continue` re-homes nothing: it links the NEW thread (`new_task_id`) to the
+  # source subject, on the task once it is projected and in `adoptions` always.
+  defp adopt_subject(state, "continue", kind, id, target, payload) do
+    new_task_id = get(payload, :new_task_id)
+    link = %{kind: kind, id: id, project_id: get(payload, :from_project_id)}
+
+    state =
+      case valid_id?(new_task_id) && Map.get(state.tasks, new_task_id) do
+        %{} = task -> %{state | tasks: Map.put(state.tasks, new_task_id, Map.put(task, :continued_from, link))}
+        _ -> state
+      end
+
+    record = %{
+      mode: "continue",
+      project_id: target,
+      from_project_id: get(payload, :from_project_id),
+      new_task_id: new_task_id,
+      adopted_at: get(payload, :adopted_at)
+    }
+
+    %{state | adoptions: Map.put(state.adoptions, {"continue", kind, id}, record)}
+  end
+
+  defp adopted_ids(moved, key) do
+    case get(moved, key) do
+      ids when is_list(ids) -> Enum.filter(ids, &valid_id?/1)
+      _ -> []
+    end
+  end
 
   # Pause/resume flip `status` only; an unknown project is left alone (the
   # aggregate guarantees the project exists, so this is a replay-gap guard).
