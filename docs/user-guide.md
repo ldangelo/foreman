@@ -1039,6 +1039,25 @@ The write-gated thread tools are `foreman_thread_stop` and
 `foreman_project_memory_forget`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
+**Coordinator conversation tools.** `foreman_project_conversation` (read-only:
+`project_id`, `after?`, `limit?` 1..200) returns the same page as
+`GET /api/projects/<id>/coordinator/messages` (`messages`, `next_cursor`,
+`has_more`, `truncated_before_seq`, `status`). `foreman_project_message`
+(`project_id`, `text`, `message_id?`) sends an operator message to the
+coordinator; it is write-gated like the tools above, its source is always
+`mcp` (the caller cannot choose it), and it is rate limited per project by
+`config :foreman_server, :coordinator, mcp_messages_per_minute` (default 6;
+beyond it the tool returns `RATE_LIMITED`). No coordinator tool can merge,
+approve, archive, register, retry, cancel, reset or remove anything.
+
+Coordinator HTTP routes (bearer token): `POST /api/projects/:id/coordinator/messages`
+(`{text, message_id?, source?}` with `source` one of `cli|http|dashboard`, -> 202
+`{message_id, seq}`; a repeated `message_id` is a no-op), `GET
+/api/projects/:id/coordinator/messages?after=&limit=&wait_ms=` (long-poll, `wait_ms`
+0..25000), `GET /api/projects/:id/coordinator` (status) and `POST
+/api/projects/:id/coordinator/restart`. Errors: 404 `project_not_found`, 409
+`project_archived`, 413 `message_too_large`, 422 `invalid_*`.
+
 `foreman_project_settings_get` returns the same typed payload as
 `GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
 no env values). Project reads over HTTP and MCP replace `config.env` /

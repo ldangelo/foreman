@@ -18,7 +18,8 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_project_pause",
     "foreman_project_resume",
     "foreman_project_memory_write",
-    "foreman_project_memory_forget"
+    "foreman_project_memory_forget",
+    "foreman_project_message"
   ]
 
   @spec authorized?(String.t()) :: boolean()

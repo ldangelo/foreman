@@ -84,7 +84,9 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_project_memory_list",
                "foreman_project_memory_read",
                "foreman_project_memory_write",
-               "foreman_project_memory_forget"
+               "foreman_project_memory_forget",
+               "foreman_project_conversation",
+               "foreman_project_message"
              ]
 
       Enum.each(tools, fn tool ->

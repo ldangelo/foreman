@@ -36,10 +36,13 @@ defmodule ForemanServer.Coordinator.Reporter do
   def start_link(opts) do
     rt = Keyword.fetch!(opts, :runtime)
 
-    GenServer.start_link(__MODULE__, {rt, Keyword.get(opts, :backfill?, true)},
-      name: Module.concat(rt.name, Reporter)
-    )
+    GenServer.start_link(__MODULE__, {rt, Keyword.get(opts, :backfill?, true)}, name: name(rt))
   end
+
+  @doc "Registered name of a runtime's reporter."
+  @spec name(Runtime.t() | atom()) :: atom()
+  def name(%Runtime{name: name}), do: name(name)
+  def name(name) when is_atom(name), do: Module.concat(name, "Reporter")
 
   @doc "Events reported, honouring config and the review-analysis switch."
   @spec report_events() :: [String.t()]
@@ -80,7 +83,7 @@ defmodule ForemanServer.Coordinator.Reporter do
 
     if type in report_events() do
       data = field(event, :data) || field(event, :payload) || %{}
-      handle_event(state.rt, type, data)
+      safe_handle(state.rt, type, data)
     end
 
     {:noreply, state}
@@ -132,6 +135,15 @@ defmodule ForemanServer.Coordinator.Reporter do
   defp terminal_type(%{status: "cancelled"}), do: "RunCancelled"
   defp terminal_type(_), do: nil
 
+  # A malformed event must never take the reporter down: it is logged and dropped.
+  defp safe_handle(rt, type, data) do
+    handle_event(rt, type, data)
+  rescue
+    exception ->
+      Logger.warning("coordinator reporter: dropped #{type}: #{Exception.message(exception)}")
+      :ok
+  end
+
   # ------------------------------------------------------------------- mapping
 
   defp handle_event(rt, "ReviewRecorded", data) do
@@ -139,7 +151,10 @@ defmodule ForemanServer.Coordinator.Reporter do
     id = field(data, :subject_id)
 
     with project_id when is_binary(project_id) <- field(data, :project_id) || project_of(kind, id) do
-      subject = subject(kind, id)
+      subject =
+        kind
+        |> subject(id)
+        |> Map.update(:bead_id, field(data, :bead_id), &(field(data, :bead_id) || &1))
 
       review = %{
         verdict: field(data, :verdict),
@@ -177,8 +192,12 @@ defmodule ForemanServer.Coordinator.Reporter do
 
   defp handle_event(_rt, _type, _data), do: :ok
 
-  defp project_of("run", id), do: with(%{project_id: p} <- ProjectionStore.run(id), do: p)
-  defp project_of("jobsite", id), do: with(%{project_id: p} <- ProjectionStore.jobsite(id), do: p)
+  defp project_of("run", id) when is_binary(id) and id != "",
+    do: with(%{project_id: p} <- ProjectionStore.run(id), do: p)
+
+  defp project_of("jobsite", id) when is_binary(id) and id != "",
+    do: with(%{project_id: p} <- ProjectionStore.jobsite(id), do: p)
+
   defp project_of(_, _), do: nil
 
   defp subject("run", id) do

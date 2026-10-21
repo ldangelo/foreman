@@ -471,7 +471,8 @@ defmodule ForemanServer.Application do
         "foreman_prompt_put",
         "foreman_project_settings_update",
         "foreman_project_pause",
-        "foreman_project_resume"
+        "foreman_project_resume",
+        "foreman_project_message"
       ]
 
       safe_tools =
