@@ -6,11 +6,19 @@ scratch = "/tmp/s2-scratch-pi2"; File.rm_rf!(scratch); File.mkdir_p!(scratch); S
 req = %{cwd: scratch, model: "MiniMax-M2.7-highspeed", provider_options: %{model_provider: "minimax"}, approval_mode: :default}
 ps = fn pat -> {o, _} = System.cmd("sh", ["-c", "ps -axo pid,ppid,command | grep -v grep | grep -E '#{pat}' | cut -c1-140"]); String.trim(o) end
 events = fn sid -> {:ok, e} = Session.replay(sid, cursor: 0, limit: 10_000); e end
+# Bounded poll: returns the first truthy value of fun, or nil once timeout_ms elapsed.
+wait_for = fn fun, timeout_ms ->
+  deadline = System.monotonic_time(:millisecond) + timeout_ms
+  Stream.repeatedly(fn -> Process.sleep(100); fun.() || (System.monotonic_time(:millisecond) > deadline && :timeout) end)
+  |> Enum.find(& &1)
+  |> case do :timeout -> nil; v -> v end
+end
 
 {:ok, sid} = Session.start(:pi, req)
 log.("pi procs after start", ps.("rpc"))
 {:ok, t} = Session.send_message(sid, "Run the bash command `sleep 117` and nothing else.")
-Stream.repeatedly(fn -> Process.sleep(100); Enum.any?(events.(sid), &(&1.type == :tool_call)) end) |> Enum.find(& &1)
+saw_tool_call = wait_for.(fn -> Enum.any?(events.(sid), &(&1.type == :tool_call)) end, 60_000)
+log.("tool_call seen before deadline", saw_tool_call || false)
 Process.sleep(500)
 log.("before interrupt", ps.("sleep 117|rpc"))
 log.("interrupt", Session.interrupt(sid, :active))

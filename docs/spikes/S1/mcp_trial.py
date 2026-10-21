@@ -30,7 +30,9 @@ def run(item, n_t=0, n_m=0, timeout=240):
     env = dict(os.environ, PI_CODING_AGENT_DIR=AGENT_DIR)
     t0 = time.time()
     try: p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, cwd=tempfile.gettempdir(), stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired: return {"id": item["id"], "category": item["category"], "ok": False, "error": "timeout", "latency": time.time() - t0, "calls": []}
+    except subprocess.TimeoutExpired:
+        return {"id": item["id"], "category": item["category"], "ok": False, "error": "timeout", "latency": time.time() - t0,
+                "calls": [], "turns": 0, "in": 0, "out": 0, "cost": 0.0, "leaked_text_toolcall": False}
     lat = time.time() - t0
     tin = tout = 0; cost = 0.0; turns = 0; leaked_text_toolcall = False
     for ln in p.stdout.splitlines():

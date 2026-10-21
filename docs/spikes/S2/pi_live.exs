@@ -39,6 +39,10 @@ bounded = fn label, f ->
 end
 res = fn r -> case r do {:ok, %Jido.Harness.TurnResult{} = tr} -> Map.take(tr, [:status, :text, :provider_session_id]); o -> o end end
 
+# Snapshot pre-existing pi session files so E can select only the session created by THIS run.
+session_glob = Path.expand("~/.pi/agent/sessions/*s2-scratch-pi*/*.jsonl")
+preexisting_session_files = MapSet.new(Path.wildcard(session_glob))
+
 {:ok, sid} = Session.start(:pi, req)
 log.("session", sid)
 log.("info", Session.info(sid))
@@ -78,7 +82,7 @@ dump.(sid, "pi-C-events.txt")
 
 # --- D: interrupt
 n0 = length(events.(sid))
-{:ok, t4} = Session.send_message(sid, "Remember the secret word PINEAPPLE. Then run the bash command `sleep 120`.")
+{:ok, t4} = Session.send_message(sid, "The secret word for this conversation is PINEAPPLE. Do NOT call memory_write or any other memory tool and do NOT write it to any file; just keep it in this conversation. Then run the bash command `sleep 120`.")
 bounded.("D wait tool_call", fn -> Stream.repeatedly(fn -> Process.sleep(100); length(Enum.filter(Enum.drop(events.(sid), n0), &(&1.type == :tool_call))) >= 1 end) |> Enum.find(& &1) end)
 {o, _} = System.cmd("sh", ["-c", "pgrep -fl 'sleep 120'; pgrep -f 'pi --mode rpc' | wc -l"]); log.("D procs before interrupt", o)
 log.("D interrupt", Session.interrupt(sid, :active))
@@ -92,10 +96,11 @@ log.("D turn5 same session after interrupt", res.(Session.await(sid, t5, 90_000)
 dump.(sid, "pi-D-events.txt")
 
 # --- E: resume
-files = Path.wildcard(Path.expand("~/.pi/agent/sessions/*s2-scratch-pi*/*.jsonl")) |> Enum.sort()
+files = Path.wildcard(session_glob) |> Enum.reject(&MapSet.member?(preexisting_session_files, &1)) |> Enum.sort()
 file_ids = for f <- files, do: (f |> File.stream!() |> Enum.take(1) |> hd() |> Jason.decode!() |> Map.get("id"))
 log.("E session file ids", file_ids)
 psids = file_ids
+if length(psids) != 1, do: raise("E: expected exactly one session file created by this run, got #{inspect(psids)}; refusing to resume an unrelated session")
 _unused = events.(sid) |> Enum.map(& &1.provider_session_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 log.("E provider_session_ids in events", psids)
 log.("E pi session files", Path.wildcard(Path.expand("~/.pi/agent/sessions/*s2-scratch-pi*/*")))
@@ -104,7 +109,7 @@ Process.sleep(1500)
 {o, _} = System.cmd("sh", ["-c", "pgrep -f 'pi --mode rpc' | wc -l"]); log.("E pi procs after close", o)
 
 for {label, extra, ropts} <- [
-      {"E1 --session <captured id>", List.first(psids), %{}},
+      {"E1 --session <captured id>", hd(psids), %{}},
       {"E2 --continue", nil, %{continue: true}}
     ] do
   r = req |> Map.merge(if extra, do: %{provider_session_id: extra}, else: %{}) |> Map.update!(:provider_options, &Map.merge(&1, ropts))

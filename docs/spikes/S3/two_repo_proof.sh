@@ -133,8 +133,15 @@ git -C "$ROOT/origin-a.git" rev-parse "refs/heads/$BRANCH" > "$ROOT/a.sha"
 assert_eq "a untouched by b's retry" "$(cat "$ROOT/a.sha")" "$(git -C "${WT[a]}" rev-parse HEAD)"
 
 echo "== 7. cleanup removes every worktree and branch"
-for i in a b c; do git -C "$ROOT/repo-$i" worktree remove --force "${WT[$i]}" && git -C "$ROOT/repo-$i" branch -D -q "$BRANCH"; done
-for i in a b c; do [ -d "${WT[$i]}" ] && fail "$i worktree remains"; done; ok "all worktrees removed"
+for i in a b c; do
+  git -C "$ROOT/repo-$i" worktree remove --force "${WT[$i]}" || fail "$i worktree remove failed"
+  git -C "$ROOT/repo-$i" branch -D -q "$BRANCH" || fail "$i branch delete failed"
+done
+for i in a b c; do
+  [ -d "${WT[$i]}" ] && fail "$i worktree remains"
+  git -C "$ROOT/repo-$i" rev-parse --verify -q "refs/heads/$BRANCH" >/dev/null && fail "$i branch ref remains"
+done
+ok "all worktrees and branches removed"
 
 echo "== 8. rollback: second worktree creation fails (branch already exists in b)"
 git -C "$ROOT/repo-b" branch "$BRANCH"        # simulate a stale branch
