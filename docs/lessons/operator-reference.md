@@ -45,6 +45,17 @@ Open `http://127.0.0.1:4766/dashboard/runs` with the configured browser bearer t
 `--task-provider=beads`; the CLI writes this as
 `task_provider.config.database_path`.
 
+### Project settings, pause and limits
+
+`foreman project update` also sets `--goal`, `--instructions`/`--instructions-file`
+(<= 16000 chars), `--thread-model`/`--thread-effort`, `--coordinator-*`,
+`--max-concurrent-runs` and `--daily-thread-cap`; `--clear <setting>` removes one.
+`project pause|resume|reactivate <id>` change lifecycle (`status` is not settable via
+update); a paused project refuses task.create, run reservation, jobsite start and
+BeadsWatcher imports with `{:project_paused, id}` while in-flight work continues.
+`project delete` archives (never purges). See `docs/user-guide.md` ("Project
+settings", "Pause, resume and reactivate") and `docs/decisions/project-delete.md`.
+
 ### Stopping the Server
 
 ```bash

@@ -1,6 +1,8 @@
 defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.ProjectSettings
+  alias ForemanServer.ProjectSettingsDTO
   alias ForemanServer.Telemetry
   alias ForemanServer.Workflow.CatalogWriter
   alias ForemanServer.Workflow.PromptWriter
@@ -155,6 +157,85 @@ defmodule ForemanServer.MCP.Tools do
         project_id: %{type: "string", description: "The project ID"}
       },
       required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_project_settings_get %{
+    name: "foreman_project_settings_get",
+    description:
+      "Get a project's typed settings (goal, instructions, thread/coordinator model and effort, " <>
+        "limits), its status (active|paused|archived) and its live limits/usage. Never includes env values.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_project_settings_update %{
+    name: "foreman_project_settings_update",
+    description:
+      "Update a project's settings. Only the listed settings can change; a setting named in `clear` is removed. " <>
+        "Requires allow_workflow_writes. Retries with the same idempotency_key and arguments are one command.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        goal: %{type: "string", description: "Project goal (max 2000 characters)"},
+        instructions: %{
+          type: "string",
+          description: "Standing instructions for every thread (max 16000 characters)"
+        },
+        thread_model: %{type: "string", description: "Default model for threads"},
+        thread_effort: %{type: "string", description: "Default effort: low, medium or high"},
+        coordinator_provider: %{type: "string", description: "Coordinator provider: pi or claude"},
+        coordinator_model: %{type: "string", description: "Coordinator model"},
+        coordinator_effort: %{
+          type: "string",
+          description: "Coordinator effort: low, medium or high"
+        },
+        max_concurrent_runs: %{type: "integer", description: "Concurrent runs limit (1..1000)"},
+        daily_thread_cap: %{type: "integer", description: "Threads per UTC day (1..10000)"},
+        clear: %{
+          type: "array",
+          items: %{type: "string"},
+          description: "Names of settings to clear"
+        },
+        idempotency_key: %{type: "string", description: "Caller supplied retry key"}
+      },
+      required: ["project_id"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_project_pause %{
+    name: "foreman_project_pause",
+    description:
+      "Pause a project: new tasks, runs, jobsites and bead imports are refused (in-flight work continues). Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        reason: %{type: "string", description: "Why the project is paused"}
+      },
+      required: ["project_id"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_project_resume %{
+    name: "foreman_project_resume",
+    description:
+      "Resume a paused project; held work is admitted again. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"],
+      additionalProperties: false
     }
   }
 
@@ -524,6 +605,10 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
+    @schema_foreman_project_settings_get,
+    @schema_foreman_project_settings_update,
+    @schema_foreman_project_pause,
+    @schema_foreman_project_resume,
     @schema_foreman_workflow_list,
     @schema_foreman_workflow_get,
     @schema_foreman_workflow_validate,
@@ -765,7 +850,7 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_project_list(%{}) do
     start_us = System.monotonic_time(:microsecond)
-    result = ProjectionStore.list_projects()
+    result = Enum.map(ProjectionStore.list_projects(), &ProjectSettings.public_view/1)
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_project_list", :ok)
     {:ok, result}
@@ -779,9 +864,146 @@ defmodule ForemanServer.MCP.Tools do
     Telemetry.mcp_tool_call(duration_us, "foreman_project_get", outcome)
 
     if result,
-      do: {:ok, result},
+      do: {:ok, ProjectSettings.public_view(result)},
       else: {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
   end
+
+  defp tool_foreman_project_settings_get(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ProjectSettingsDTO.fetch(project_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, dto} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_settings_get", :ok)
+        {:ok, dto}
+
+      :not_found ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_settings_get", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+    end
+  end
+
+  @settings_update_keys ~w(goal instructions thread_model thread_effort coordinator_provider
+                           coordinator_model coordinator_effort max_concurrent_runs
+                           daily_thread_cap)a
+
+  # The command id is content-derived (tool + canonical args + caller key), so a
+  # retry of the same update collapses into one command while two different
+  # updates of the same project stay two commands.
+  defp tool_foreman_project_settings_update(%{project_id: project_id} = args) do
+    tool = "foreman_project_settings_update"
+
+    with :ok <- authorize_write(tool) do
+      payload =
+        args
+        |> Map.take(@settings_update_keys)
+        |> Map.put(:project_id, project_id)
+        |> put_cleared(Map.get(args, :clear))
+
+      dispatch_project_command(tool, "project.update", project_id, payload, args)
+    end
+  end
+
+  defp put_cleared(payload, clear) when is_list(clear),
+    do: Map.put(payload, :cleared_settings, clear)
+
+  defp put_cleared(payload, _none), do: payload
+
+  # Pause/resume are not idempotent over time (pause, resume, pause again are
+  # three real commands), so without a caller key they get a random id.
+  defp tool_foreman_project_pause(%{project_id: project_id} = args) do
+    tool = "foreman_project_pause"
+
+    with :ok <- authorize_write(tool) do
+      payload =
+        case Map.get(args, :reason) do
+          reason when is_binary(reason) and reason != "" ->
+            %{project_id: project_id, reason: reason}
+
+          _ ->
+            %{project_id: project_id}
+        end
+
+      dispatch_project_command(tool, "project.pause", project_id, payload, nil)
+    end
+  end
+
+  defp tool_foreman_project_resume(%{project_id: project_id}) do
+    tool = "foreman_project_resume"
+
+    with :ok <- authorize_write(tool) do
+      dispatch_project_command(tool, "project.resume", project_id, %{project_id: project_id}, nil)
+    end
+  end
+
+  defp authorize_write(tool) do
+    if Policy.authorized?(tool) do
+      :ok
+    else
+      {:error,
+       %ToolError{
+         code: "WRITE_NOT_ALLOWED",
+         message: "#{tool} requires allow_workflow_writes to be enabled"
+       }}
+    end
+  end
+
+  defp dispatch_project_command(tool, type, project_id, payload, idempotent_args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    envelope = %{
+      type: type,
+      command_id: project_command_id(tool, project_id, idempotent_args),
+      aggregate_id: "project:#{project_id}",
+      payload: payload
+    }
+
+    result = CommandGateway.dispatch_operator(envelope)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, event} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :ok)
+        {:ok, event}
+
+      {:error, reason} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        {:error, %ToolError{code: error_code(reason), message: inspect(reason)}}
+    end
+  end
+
+  defp project_command_id(tool, project_id, nil),
+    do: "mcp:#{tool}:#{project_id}:#{System.unique_integer([:positive])}"
+
+  defp project_command_id(tool, _project_id, args) do
+    key = Map.get(args, :idempotency_key) || ""
+
+    canonical =
+      args |> Map.delete(:idempotency_key) |> canonical_json() |> Jason.encode!()
+
+    "mcp:" <> Base.encode16(:crypto.hash(:sha256, tool <> canonical <> key), case: :lower)
+  end
+
+  defp canonical_json(%{} = map) do
+    map
+    |> Enum.map(fn {k, v} -> {to_string(k), canonical_json(v)} end)
+    |> Enum.sort()
+    |> Jason.OrderedObject.new()
+  end
+
+  defp canonical_json(list) when is_list(list), do: Enum.map(list, &canonical_json/1)
+  defp canonical_json(other), do: other
+
+  # Stable machine code: the head atom of the error tuple (`instructions_too_long`,
+  # `project_paused`, ...). The full tuple stays in the message.
+  defp error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp error_code(reason)
+       when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0)),
+       do: Atom.to_string(elem(reason, 0))
+
+  defp error_code(_reason), do: "DOMAIN_ERROR"
 
   defp tool_foreman_workflow_list(%{}) do
     start_us = System.monotonic_time(:microsecond)

@@ -54,7 +54,7 @@ defmodule ForemanServer.RunAdmission do
   derived from `db_path` and `run_id` so retries collapse through
   the router's idempotency path.
   """
-  alias ForemanServer.EventStore
+  alias ForemanServer.{Aggregate, EventStore}
   alias ForemanServer.{Aggregate.Actor, CommandGateway, CommandRouter, Telemetry}
   alias ForemanServer.RunSlots.Config
 
@@ -72,6 +72,27 @@ defmodule ForemanServer.RunAdmission do
       Map.get(payload, :task_id)
     )
 
+    # ── Project gate (before any slot is touched) ───────────────────────────
+    # A paused project or an exhausted daily thread cap refuses the admission
+    # BEFORE the global slot is acquired. Acquiring first would leave the
+    # refused run holding a slot (and it cannot be handed back and re-acquired:
+    # the slot-acquire command id is per run id on purpose, so a replayed
+    # admission can never re-take a finished run's slot). The project
+    # aggregate re-checks authoritatively at `project.reserve_run`.
+    with :ok <- project_admission_gate(project_id, payload) do
+      admit_through_slot(project_id, payload, timeout)
+    end
+  end
+
+  def start(project_id, _payload, _timeout),
+    do: {:error, {:missing_or_invalid, :project_id, project_id}}
+
+  defp project_admission_gate(project_id, payload) do
+    {state, _version} = Aggregate.load(ForemanServer.Aggregates.Project, "project:#{project_id}")
+    ForemanServer.Aggregates.Project.admission_refusal(state, Map.get(payload, :run_id))
+  end
+
+  defp admit_through_slot(project_id, payload, timeout) do
     # ── Slot gate (outermost) ───────────────────────────────────────────────
     case acquire_slot(payload, timeout) do
       {:error, _reason} = err ->
@@ -107,9 +128,6 @@ defmodule ForemanServer.RunAdmission do
         end
     end
   end
-
-  def start(project_id, _payload, _timeout),
-    do: {:error, {:missing_or_invalid, :project_id, project_id}}
 
   @doc """
   Re-acquires the global run-slot and (if applicable) the per-DB Beads

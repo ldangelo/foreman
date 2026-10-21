@@ -7,6 +7,10 @@ defmodule ForemanServer.Events.ProjectRunReserved do
   workflow snapshot. When nonblank it identifies the single TRD being
   implemented; the project aggregate uses it to reject a concurrent
   same-key reservation while still admitting distinct keys.
+
+  `reserved_on` is the UTC date (`Date.to_iso8601/1`) the aggregate stamped at
+  command time; it feeds the project's daily thread cap and is absent on events
+  recorded before the cap existed (those are not counted).
   """
   @enforce_keys [:project_id, :run_id, :sequence, :command_id, :run_start_payload]
   @type t :: %__MODULE__{
@@ -15,7 +19,8 @@ defmodule ForemanServer.Events.ProjectRunReserved do
           sequence: integer(),
           command_id: String.t(),
           run_start_payload: map(),
-          implementation_key: String.t() | nil
+          implementation_key: String.t() | nil,
+          reserved_on: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -24,6 +29,7 @@ defmodule ForemanServer.Events.ProjectRunReserved do
     :sequence,
     :command_id,
     :run_start_payload,
-    :implementation_key
+    :implementation_key,
+    :reserved_on
   ]
 end

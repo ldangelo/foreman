@@ -208,7 +208,7 @@ func TestProjectUpdateEnvelope(t *testing.T) {
 		t.Fatalf("type = %q, want project.update", env.Type)
 	}
 
-	wantCommandID := sha256HexTest("project.update.project-123.beads./tmp/project-123.beads")
+	wantCommandID := sha256HexTest(`project.update.{"project_id":"project-123","task_provider":{"config":{"database_path":"/tmp/project-123.beads"},"provider":"beads"}}`)
 	if env.CommandID != wantCommandID {
 		t.Fatalf("command_id = %q, want %q", env.CommandID, wantCommandID)
 	}

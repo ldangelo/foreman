@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,11 +17,14 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]"
+
+// runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project: missing subcommand (create|get|update|delete|list)",
-			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
+			"foreman project: missing subcommand (create|get|update|settings|pause|resume|reactivate|delete|list)",
+			projectUsageText,
 		)
 	}
 
@@ -31,6 +35,14 @@ func runProject(c *client.Client, args []string) error {
 		return projectGet(c, args[1:])
 	case "update":
 		return projectUpdate(c, args[1:])
+	case "settings":
+		return projectSettings(c, args[1:])
+	case "pause":
+		return projectPause(c, args[1:])
+	case "resume":
+		return projectLifecycle(c, "project resume", "project.resume", "resumed", args[1:])
+	case "reactivate":
+		return projectLifecycle(c, "project reactivate", "project.reactivate", "reactivated", args[1:])
 	case "delete":
 		return projectDelete(c, args[1:])
 	case "list":
@@ -38,7 +50,7 @@ func runProject(c *client.Client, args []string) error {
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman project: unknown subcommand %q", args[0]),
-			"Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [--format=json] [--idempotency-key=<key>] --task-provider=<provider> [--task-provider-database-path=<path>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n  foreman project list [--include-archived] [--format=json|ndjson]",
+			projectUsageText,
 		)
 	}
 }
@@ -122,36 +134,116 @@ func projectGet(c *client.Client, args []string) error {
 	return printProject(out)
 }
 
+// repeatedFlag collects every occurrence of a repeatable string flag.
+type repeatedFlag []string
+
+func (r *repeatedFlag) String() string { return strings.Join(*r, ",") }
+
+func (r *repeatedFlag) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}
+
 func projectUpdate(c *client.Client, args []string) error {
 	fs := newFlagSet("project update")
-	taskProvider := fs.String("task-provider", "", "Task provider (required)")
+	taskProvider := fs.String("task-provider", "", "Task provider (required only when changing provider)")
 	taskProviderDatabasePath := fs.String("task-provider-database-path", "", "Task provider database path (required for beads)")
+	goal := fs.String("goal", "", "Project goal")
+	instructions := fs.String("instructions", "", "Project instructions (mutually exclusive with --instructions-file)")
+	instructionsFile := fs.String("instructions-file", "", "Read project instructions from this file (mutually exclusive with --instructions)")
+	threadModel := fs.String("thread-model", "", "Default thread model")
+	threadEffort := fs.String("thread-effort", "", "Default thread effort (low|medium|high)")
+	coordinatorProvider := fs.String("coordinator-provider", "", "Coordinator provider (pi|claude)")
+	coordinatorModel := fs.String("coordinator-model", "", "Coordinator model")
+	coordinatorEffort := fs.String("coordinator-effort", "", "Coordinator effort (low|medium|high)")
+	maxConcurrentRuns := fs.Int("max-concurrent-runs", 0, "Maximum concurrent runs")
+	dailyThreadCap := fs.Int("daily-thread-cap", 0, "Maximum threads started per day")
+	var clear repeatedFlag
+	fs.Var(&clear, "clear", "Clear a setting back to its default (repeatable)")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
 	format := fs.String("format", "", "Output format (json)")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), "Usage of project update:\n  foreman project update [flags] <id>\n\nUpdate project settings and/or task provider. At least one change flag is required.\nThe server validates values and its errors are shown verbatim.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
 	if err := fs.parse(args); err != nil {
 		return err
 	}
 
-	if fs.NArg() != 1 || *taskProvider == "" {
-		return usageError(fs, "foreman project update: --task-provider and <project-id> are required")
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman project update: expected one argument: <project-id>")
 	}
 	switch *format {
 	case "", "json":
 	default:
 		return usageError(fs, "foreman project update: unsupported format %q", *format)
 	}
-	if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project update"); err != nil {
-		return err
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if set["instructions"] && set["instructions-file"] {
+		return usageError(fs, "foreman project update: --instructions and --instructions-file are mutually exclusive")
+	}
+
+	payload := map[string]any{"project_id": fs.Arg(0)}
+	changes := 0
+
+	if set["task-provider-database-path"] && *taskProvider == "" {
+		return usageError(fs, "foreman project update: --task-provider-database-path requires --task-provider")
+	}
+	if *taskProvider != "" {
+		if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project update"); err != nil {
+			return err
+		}
+		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath)
+		changes++
+	}
+
+	for name, value := range map[string]*string{
+		"goal":                 goal,
+		"instructions":         instructions,
+		"thread_model":         threadModel,
+		"thread_effort":        threadEffort,
+		"coordinator_provider": coordinatorProvider,
+		"coordinator_model":    coordinatorModel,
+		"coordinator_effort":   coordinatorEffort,
+	} {
+		if set[strings.ReplaceAll(name, "_", "-")] {
+			payload[name] = *value
+			changes++
+		}
+	}
+	if set["instructions-file"] {
+		data, err := os.ReadFile(*instructionsFile)
+		if err != nil {
+			return fmt.Errorf("foreman project update: read --instructions-file: %w", err)
+		}
+		payload["instructions"] = string(data)
+		changes++
+	}
+	if set["max-concurrent-runs"] {
+		payload["max_concurrent_runs"] = *maxConcurrentRuns
+		changes++
+	}
+	if set["daily-thread-cap"] {
+		payload["daily_thread_cap"] = *dailyThreadCap
+		changes++
+	}
+	if len(clear) > 0 {
+		payload["cleared_settings"] = []string(clear)
+		changes++
+	}
+
+	if changes == 0 {
+		return usageError(fs, "foreman project update: at least one change flag is required")
 	}
 
 	projectID := fs.Arg(0)
 	body := commandEnvelope{
 		Type:      "project.update",
-		CommandID: projectUpdateCommandID(projectID, *taskProvider, *taskProviderDatabasePath, *idempotencyKey),
-		Payload: map[string]any{
-			"project_id":    projectID,
-			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath),
-		},
+		CommandID: projectUpdateCommandID(payload, *idempotencyKey),
+		Payload:   payload,
 	}
 
 	out, err := postCommandWithResponse(c, body)
@@ -161,7 +253,11 @@ func projectUpdate(c *client.Client, args []string) error {
 
 	switch *format {
 	case "":
-		_, err = fmt.Fprintf(os.Stdout, "updated project %s with task provider %s\n", projectID, *taskProvider)
+		summary := "updated project " + projectID
+		if *taskProvider != "" {
+			summary += " with task provider " + *taskProvider
+		}
+		_, err = fmt.Fprintln(os.Stdout, summary)
 		return err
 	case "json":
 		return printJSON(out)
@@ -170,12 +266,144 @@ func projectUpdate(c *client.Client, args []string) error {
 	}
 }
 
+func projectPause(c *client.Client, args []string) error {
+	fs := newFlagSet("project pause")
+	reason := fs.String("reason", "", "Reason recorded with the pause")
+	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), "Usage of project pause:\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n\nPause a project: new tasks and run reservations are refused until `foreman project resume <id>`.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman project pause: expected one argument: <project-id>")
+	}
+
+	projectID := fs.Arg(0)
+	payload := map[string]any{"project_id": projectID}
+	seed := "project.pause." + projectID
+	if *reason != "" {
+		payload["reason"] = *reason
+		seed += "." + *reason
+	}
+	commandID := sha256Hex(seed)
+	if *idempotencyKey != "" {
+		commandID = sha256Hex("project.pause." + *idempotencyKey)
+	}
+
+	if _, err := postCommandWithResponse(c, commandEnvelope{Type: "project.pause", CommandID: commandID, Payload: payload}); err != nil {
+		return err
+	}
+
+	_, err := fmt.Fprintf(os.Stdout, "paused project %s; resume with `foreman project resume %s`\n", projectID, projectID)
+	return err
+}
+
+func projectLifecycle(c *client.Client, name, commandType, verb string, args []string) error {
+	fs := newFlagSet(name)
+	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman %s: expected one argument: <project-id>", name)
+	}
+
+	projectID := fs.Arg(0)
+	commandID := sha256Hex(commandType + "." + projectID)
+	if *idempotencyKey != "" {
+		commandID = sha256Hex(commandType + "." + *idempotencyKey)
+	}
+
+	body := commandEnvelope{Type: commandType, CommandID: commandID, Payload: map[string]any{"project_id": projectID}}
+	if _, err := postCommandWithResponse(c, body); err != nil {
+		return err
+	}
+
+	_, err := fmt.Fprintf(os.Stdout, "%s project %s\n", verb, projectID)
+	return err
+}
+
+func projectSettings(c *client.Client, args []string) error {
+	fs := newFlagSet("project settings")
+	format := fs.String("format", "", "Output format (json)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman project settings: expected one argument: <project-id>")
+	}
+	switch *format {
+	case "", "json":
+	default:
+		return usageError(fs, "foreman project settings: unsupported format %q", *format)
+	}
+
+	var out map[string]any
+	if err := c.GetJSON(client.JoinPath("/api/projects", fs.Arg(0), "settings"), &out); err != nil {
+		return err
+	}
+	if *format == "json" {
+		return printJSON(out)
+	}
+
+	return printProjectSettings(out)
+}
+
+var projectSettingNames = []string{
+	"goal", "instructions", "thread_model", "thread_effort",
+	"coordinator_provider", "coordinator_model", "coordinator_effort",
+	"max_concurrent_runs", "daily_thread_cap",
+}
+
+var projectLimitNames = []string{
+	"max_concurrent_runs", "active_runs", "daily_thread_cap", "threads_started_today",
+	"remaining_today", "cap_reached?", "resets_at", "deferred_tasks",
+}
+
+func printProjectSettings(out map[string]any) error {
+	fmt.Printf("project: %s\n", projectStringField(out, "project_id"))
+	fmt.Printf("status: %s\n", projectStringField(out, "status"))
+
+	settings, _ := out["settings"].(map[string]any)
+	fmt.Println("settings:")
+	for _, name := range projectSettingNames {
+		fmt.Printf("  %s: %s\n", name, projectSettingValue(settings[name]))
+	}
+
+	limits, _ := out["limits"].(map[string]any)
+	fmt.Println("limits:")
+	for _, name := range projectLimitNames {
+		fmt.Printf("  %s: %s\n", strings.TrimSuffix(name, "?"), projectSettingValue(limits[name]))
+	}
+
+	return nil
+}
+
+func projectSettingValue(v any) string {
+	switch value := v.(type) {
+	case nil:
+		return "(unset)"
+	case string:
+		if strings.Contains(value, "\n") {
+			return strconv.Quote(value)
+		}
+		return value
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
 func projectDelete(c *client.Client, args []string) error {
 	fs := newFlagSet("project delete")
 	force := fs.Bool("force", false, "Print active run ids if archive is blocked")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage of project delete:\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n\nSoft-delete (archive) a project. The server rejects the archive while active runs remain.\n\nFlags:\n")
+		fmt.Fprint(fs.Output(), "Usage of project delete:\n  foreman project delete [--force] [--idempotency-key=<key>] <id>\n\nSoft delete: archives the project; it does not purge anything. Runs, tasks and the event history are kept;\nreactivate with `foreman project reactivate <id>`. The server rejects the archive while active runs remain.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.parse(args); err != nil {
@@ -203,7 +431,7 @@ func projectDelete(c *client.Client, args []string) error {
 		return err
 	}
 
-	_, err := fmt.Fprintf(os.Stdout, "archived project %s\n", projectID)
+	_, err := fmt.Fprintf(os.Stdout, "archived project %s (soft delete: runs, tasks and event history are kept); reactivate with `foreman project reactivate %s`\n", projectID, projectID)
 	return err
 }
 
@@ -431,16 +659,20 @@ func projectCreateCommandID(path, taskProvider, taskProviderDatabasePath, idempo
 	return sha256Hex(seed)
 }
 
-func projectUpdateCommandID(projectID, taskProvider, taskProviderDatabasePath, idempotencyKey string) string {
+// projectUpdateCommandID hashes the full payload so two different updates for
+// one project are two commands while an identical retry stays idempotent.
+// json.Marshal sorts map keys, so the encoding is deterministic.
+func projectUpdateCommandID(payload map[string]any, idempotencyKey string) string {
 	if idempotencyKey != "" {
 		return sha256Hex("project.update." + idempotencyKey)
 	}
 
-	seed := "project.update." + projectID + "." + taskProvider
-	if taskProviderDatabasePath != "" {
-		seed += "." + taskProviderDatabasePath
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("project update payload is not JSON-encodable: %v", err))
 	}
-	return sha256Hex(seed)
+
+	return sha256Hex("project.update." + string(encoded))
 }
 
 func projectDeleteCommandID(projectID, idempotencyKey string) string {
