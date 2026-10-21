@@ -14,7 +14,11 @@ config :foreman_server, ForemanServer.EventStore,
   # DBConnection.Holder.checkout timeouts/shutdowns late in full `mix
   # test` runs. Postgres itself allows up to 100 connections (see
   # `foreman-postgres` container), so there's ample headroom.
-  pool_size: 30
+  #
+  # `TEST_DB_POOL_SIZE` lowers it for a targeted run (the default is unchanged):
+  # every ExUnit run opens this many connections, so several concurrent runs
+  # against one Postgres can hit `too_many_connections` at the default.
+  pool_size: String.to_integer(System.get_env("TEST_DB_POOL_SIZE", "30"))
 
 config :foreman_server, ForemanServer.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")
