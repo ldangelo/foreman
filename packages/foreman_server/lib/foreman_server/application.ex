@@ -509,22 +509,8 @@ defmodule ForemanServer.Application do
   # Safe tools = all tools minus write tools (controlled by Policy instead).
   defp seed_mcp_allowlist do
     if Application.get_env(:foreman_server, :mcp, [])[:enabled] do
-      write_tools = [
-        "foreman_work_submit",
-        "foreman_work_cancel",
-        "foreman_workflow_put",
-        "foreman_workflow_delete",
-        "foreman_prompt_put",
-        "foreman_project_settings_update",
-        "foreman_project_pause",
-        "foreman_project_resume",
-        "foreman_project_message"
-      ]
-
-      safe_tools =
-        ForemanServer.MCP.Tools.list_tools()
-        |> Enum.reject(fn %{name: name} -> name in write_tools end)
-        |> Enum.map(fn %{name: name} -> name end)
+      # Allowlist = advertised tools minus `Policy.write_tools/0`, the same list the MCP write gate uses.
+      safe_tools = ForemanServer.MCP.Policy.read_tool_names()
 
       Enum.each(safe_tools, &ForemanServer.Agents.McpAllowlist.add/1)
     end

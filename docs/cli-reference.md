@@ -11,7 +11,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 
 > ## Read this first: most of this file documents commands that do not exist
 >
-> The Go CLI dispatches exactly six top-level verbs (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
+> The Go CLI dispatches exactly ten top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
@@ -30,6 +30,10 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project secret    list --format | set --from-env | unset
 > foreman project setup-script show | set --file | clear
 > foreman project network   show | set --mode --allow
+> foreman project adopt     --kind --id --into --new-project --format
+> foreman project recommend --format --fail-on
+> foreman project memory    list|read|write|forget|sync
+> foreman project schedule  list|create|pause|resume|delete --project-id
 > foreman project library   list --format | add --name --format | replace --name --format | remove
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
@@ -55,6 +59,16 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run approve-merge --approver --id --identity
 > foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
+> foreman run prs           <run-id>
+> foreman run fix-ci        <run-id> --pr --note
+> foreman run address-comments <run-id> --pr --note
+> foreman run resolve-conflicts <run-id> --pr --note
+> foreman run create-pr     <run-id>
+> foreman run watch-start   <run-id> --pr
+> foreman run watch-stop    <run-id> --pr
+>
+> foreman commands          inventory|generate|install|validate
+> foreman doctor            --project --strict --format
 >
 > foreman thread list       --door --limit --project --status
 > foreman thread get        (no flags)
@@ -75,8 +89,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > task-verb handlers); invoking any of them now produces the CLI's
 > standard "unknown command" error.
 >
-> Every verb except `init` REQUIRES a subcommand: bare `foreman run`,
-> `foreman task`, `foreman project` or `foreman workflow` returns
+> Every verb that has subcommands REQUIRES one: bare `foreman run`,
+> `foreman thread`, `foreman project` or `foreman workflow` returns
 > `missing subcommand`. Any section below showing flags directly on a bare verb
 > (notably `foreman run --prompt …`) is not a real invocation.
 >
@@ -147,8 +161,8 @@ This repository's Devbox/direnv setup starts Docker Compose services before you 
 > handling, and its `default:` branch returns `unknown command`, so every
 > spelling in the table below — including the `Use instead` column — is
 > unroutable. Of the 23 distinct verbs listed in the groups, three exist —
-> `init`, `run`, `task`; `retry` and `reset` exist only as the subcommands
-> `task retry` and `run reset`.
+> `init`, `run`, `doctor`; `reset` exists only as the subcommand `run reset`
+> (`task` and `task retry` were removed, TRD-018).
 >
 > `foreman server start` in the closing line does not exist either; use
 > `mix phx.server`.
@@ -555,7 +569,7 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 ### `foreman run`
 
 > **NOT IMPLEMENTED as described.** `foreman run` is not a dispatch verb; it
-> requires one of `list`, `get`, `cancel`, `remove`, `reset`, `submit`, and a
+> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-start`, `watch-stop`, and a
 > bare `foreman run` returns `missing subcommand`. None of the twenty flags this
 > section documents exist anywhere in `run.go` — `--model`, `--watch`,
 > `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
@@ -1173,7 +1187,7 @@ Reset Foreman to a clean operator state by intentionally dropping stale/obsolete
 
 ### `foreman run kill-switch`
 
-> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-stop`, `watch-start`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 
@@ -1239,7 +1253,7 @@ Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
 
-> **NOT IMPLEMENTED.** `foreman merge` is not dispatched. PR creation is automatic and server-side (`Workflow.AutoPR.maybe_create_pr/1`, called from `RunExecutor.finalize_run/1`); there is no operator merge verb.
+> **NOT IMPLEMENTED.** `foreman merge` is not dispatched. PR creation is automatic and server-side (`Workflow.AutoPR.maybe_create_pr/1`, called from `RunExecutor.finalize_run/1`); the operator-only merge gate is `foreman run approve-merge --id <run-id> --approver <name> --identity github:<login>` followed by `foreman run merge --id <run-id>` (never an MCP/agent path).
 
 Merge completed agent work into the target branch via the refinery. Merge-capable workflows enqueue work from an explicit `merge` phase; workflows without that phase are not merge-queued by workflow execution. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. The Elixir server also reconciles recorded GitHub PRs after creation, so a PR merged outside `foreman merge` is observed and the associated Foreman task becomes `merged`.
 
@@ -1560,8 +1574,8 @@ behavior cannot diverge.
 > **GO CLI NOT IMPLEMENTED.** Neither `foreman inbox` nor `foreman inbox send` exists in the Go CLI.
 > MCP does expose `foreman_inbox_get` and the write-gated `foreman_inbox_send`.
 > The **Go CLI**'s command switch
-> (`packages/foreman_cli/cmd/foreman/main.go:85-98`) dispatches exactly
-> `project`, `task`, `run`, `workflow` and `init`; anything else returns
+> (`packages/foreman_cli/cmd/foreman/main.go`) dispatches exactly
+> `project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init` and `doctor`; anything else returns
 > `foreman: unknown command`. That is the only `foreman` entry point in the
 > repository — `packages/` holds `foreman_cli`, `foreman_server` and
 > `jido_harness`, and the string `inbox` appears in no Go, TypeScript or
