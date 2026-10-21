@@ -106,7 +106,9 @@ defmodule ForemanServer.Approvals.DelivererTest do
         Requester.request(
           %{run_id: run_id, project_id: project_id, provider: :claude},
           "Write",
-          "a.txt", phase_index: 1)
+          "a.txt",
+          phase_index: 1
+        )
 
       pause!(run_id)
       decide!("tool.approve", run_id, id)

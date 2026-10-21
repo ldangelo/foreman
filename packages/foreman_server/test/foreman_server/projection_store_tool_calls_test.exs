@@ -76,7 +76,12 @@ defmodule ForemanServer.ProjectionStoreToolCallsTest do
       |> Map.new(&{&1.tool_call_id, &1.status})
 
     assert statuses == %{"a" => "approved", "d" => "denied", "e" => "expired", "f" => "finished"}
-    assert ProjectionStore.approval_counts(["r1"]) == %{pending: 0, expired: 1}
+
+    assert ProjectionStore.approval_counts(["r1"]) == %{
+             pending: 0,
+             expired: 1,
+             failed_deliveries: 0
+           }
   end
 
   test "a worker's ToolCallFinished (no tool_call_id) never settles a pending call" do
