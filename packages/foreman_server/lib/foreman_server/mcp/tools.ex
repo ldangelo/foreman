@@ -339,6 +339,20 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_project_repo_list %{
+    name: "foreman_project_repo_list",
+    description:
+      "List a project's repositories (E12): the primary (id \"main\", the project path) first, " <>
+        "then attached repositories, each with id, path, default_branch and primary. Read-only.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
+    }
+  }
+
   @schema_foreman_project_settings_get %{
     name: "foreman_project_settings_get",
     description:
@@ -1043,7 +1057,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_memory_list,
     @schema_foreman_project_memory_read,
     @schema_foreman_project_memory_write,
-    @schema_foreman_project_memory_forget
+    @schema_foreman_project_memory_forget,
+    @schema_foreman_project_repo_list
   ]
 
   def list_tools, do: @tools
@@ -1718,6 +1733,24 @@ defmodule ForemanServer.MCP.Tools do
         {:error, %ToolError{code: "TIMEOUT", message: "Recommendations timed out"}}
     end
   end
+
+  defp tool_foreman_project_repo_list(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ProjectionStore.project_repositories(project_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      nil ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_repo_list", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+
+      repos ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_repo_list", :ok)
+        {:ok, %{"project_id" => project_id, "repositories" => Enum.map(repos, &repo_view/1)}}
+    end
+  end
+
+  defp repo_view(repo), do: Map.new(repo, fn {key, value} -> {to_string(key), value} end)
 
   defp tool_foreman_project_settings_get(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)

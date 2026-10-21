@@ -391,6 +391,16 @@ foreman project context project-123
 foreman project context --format json project-123
 ```
 
+### `foreman project repo add|remove|list <id>`
+
+Manage the repositories of a multi-repository project (E12). The project's own `path` is the synthesised **primary** repository (id `main`, cannot be removed); `repo add` attaches further checkouts that already exist on the server host (no clone). `add --id <repo-id> --path <abs-path> [--default-branch B] [--by NAME]` and `remove --id <repo-id> [--by NAME]` post the operator commands `project.repo.add` / `project.repo.remove` (`--idempotency-key` makes retries collapse). Ids match `^[a-z0-9][a-z0-9-]{0,31}$`. Before dispatch the server resolves the path with realpath (symlinks cannot alias a repository), requires the root of a git work tree, and rejects a path equal to the primary or another attached repository (`repo_path_duplicate`) or a checkout with the same normalised `origin` URL as another repository (`repo_remote_duplicate`). A `project update --path` that moves the primary goes through the same checks. `list [--format=json]` reads `GET /api/projects/<id>/repositories` (primary first); the project JSON carries the same list under `repositories`. Run-start still refuses more than one repository (`multi_repo_runs_disabled`) until the multi-repo gate is lifted. Project settings `repo_allowlist` (absolute path prefixes) and `max_repos_per_run` (default 4) are set with the `project.update` command; they are validated (`invalid_repo_allowlist`, `max_repos_per_run_invalid`) but not yet consumed.
+
+```
+foreman project repo add --id api --path /srv/api project-123
+foreman project repo list project-123
+foreman project repo remove --id api project-123
+```
+
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 
 `pause [--reason <text>]` refuses new work (`task.create`, run reservation, jobsite start, BeadsWatcher imports) with `{:project_paused, id}` while in-flight runs continue; it is reversible. `resume` restores admission and re-admits held work. `reactivate` un-archives an archived project. Each takes `--idempotency-key <key>`.
@@ -1398,7 +1408,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only),
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_repo_list` (repositories, primary first), `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only),
 `foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events),
 `foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,

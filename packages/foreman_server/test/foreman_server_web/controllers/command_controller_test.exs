@@ -127,6 +127,16 @@ defmodule ForemanServerWeb.CommandControllerTest do
     assert response["status"] == "accepted"
   end
 
+  # `project.update` with a changed `path` is validated against a real git
+  # checkout (E12), so these tests move the project to a genuine work tree.
+  defp git_repo!(name) do
+    path = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(path)
+    {_, 0} = System.cmd("git", ["init", "-q", path])
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(path) end)
+    path
+  end
+
   test "POST /api/commands accepts project.update and returns the project_id envelope" do
     project_id = unique_id("proj")
 
@@ -143,7 +153,7 @@ defmodule ForemanServerWeb.CommandControllerTest do
       build_conn()
       |> post("/api/commands", %{
         type: "project.update",
-        payload: %{project_id: project_id, path: "/tmp/#{project_id}/updated"}
+        payload: %{project_id: project_id, path: git_repo!("cc-updated")}
       })
 
     assert %{"status" => "accepted", "result" => %{"project_id" => ^project_id}} =

@@ -15,7 +15,9 @@ defmodule ForemanServer.ProjectSettings do
           coordinator_model: String.t() | nil,
           coordinator_effort: String.t() | nil,
           max_concurrent_runs: pos_integer() | nil,
-          daily_thread_cap: pos_integer() | nil
+          daily_thread_cap: pos_integer() | nil,
+          repo_allowlist: [String.t()] | nil,
+          max_repos_per_run: pos_integer() | nil
         }
 
   defstruct @keys

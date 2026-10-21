@@ -295,6 +295,22 @@ retried when the project resumes or its settings change. `project settings` (and
 `GET /api/projects/<id>/settings`) shows the effective limits, usage today,
 `resets_at` and the count of deferred tasks.
 
+### Repositories
+
+A project's `path` is its primary repository (id `main`). Extra checkouts that
+already exist on the server host can be attached with
+`foreman project repo add --id <repo-id> --path <abs-path> <project-id>` and
+detached with `repo remove`; `repo list` (or `GET /api/projects/<id>/repositories`,
+also `repositories` in the project JSON) shows them, primary first. Adding is
+operator-only (there is no MCP write tool; `foreman_project_repo_list` is
+read-only). The server canonicalises the path (symlinks resolved), requires a git
+work-tree root, and refuses a duplicate path or a second checkout of the same
+`origin`. Changing the primary with `project update --path` is validated the same
+way. Policy settings `repo_allowlist` (absolute path prefixes; `..`, relative
+entries and `/` are rejected) and `max_repos_per_run` (default 4) are stored via
+`project.update`. Runs still use a single repository until multi-repo runs are
+enabled.
+
 ### Usage and cost
 
 `foreman usage` shows what a project's threads (workflow runs and jobsites) consumed, grouped by model
@@ -1128,7 +1144,7 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get`, `foreman_project_environment_get`,
+`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_repo_list`, `foreman_usage_get`, `foreman_project_environment_get`,
 `foreman_project_recommendations`, `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
 `foreman_thread_find`, `foreman_overview`.
 The write-gated thread tools are `foreman_thread_stop` and

@@ -284,6 +284,8 @@ The MCP `foreman_inbox_send` write tool appends concise run progress notes to th
 
 Project memory (`<project>/.foreman/memory/`, `MEMORY.md` index plus topic files; redacted, size-capped, audited by `ProjectMemoryWritten`/`ProjectMemoryForgotten` events) is exposed through the MCP tools `foreman_project_memory_list` / `foreman_project_memory_read` and the write-gated `foreman_project_memory_write` / `foreman_project_memory_forget`, the HTTP endpoints `/api/projects/:id/memory[/:name|/sync]`, and `foreman project memory list|read|write|forget|sync`. See the user guide section "Project memory".
 
+Project repositories (E12): the project `path` is the primary repository (`main`); extra checkouts are attached with `foreman project repo add|remove|list` (operator commands `project.repo.add|remove`, `GET /api/projects/:id/repositories`, read-only MCP `foreman_project_repo_list`). Runs still use one repository until multi-repo runs are enabled. See the user guide section "Repositories".
+
 Standing context: every agent launch (workflow phases and jobsite iterations) receives the project instructions, repository list and memory index as its system prompt, built by `ForemanServer.ProjectContext.build/2` with a byte budget and visible truncation markers. Inspect it with `foreman project context <project-id>` / `GET /api/projects/:id/context`. See the user guide section "Standing context".
 
 `foreman_run_status` returns a bounded run-status DTO from run and phase projections: `run_id`, `status`, `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`, timestamps, and `failure_reason`.

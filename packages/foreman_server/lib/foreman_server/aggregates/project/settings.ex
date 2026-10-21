@@ -28,12 +28,14 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @max_model_chars 200
   @max_concurrent_runs_range 1..1000
   @daily_thread_cap_range 1..10_000
+  @max_repos_per_run_range 1..1000
+  @default_max_repos_per_run 4
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
   # would validate here and then fail the launch.
   @efforts ~w(low medium high)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
-           coordinator_effort max_concurrent_runs daily_thread_cap)a
+           coordinator_effort max_concurrent_runs daily_thread_cap repo_allowlist max_repos_per_run)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -50,6 +52,8 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_effort
           | :max_concurrent_runs
           | :daily_thread_cap
+          | :repo_allowlist
+          | :max_repos_per_run
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -65,7 +69,13 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:coordinator_effort_invalid, term(), [String.t()]}
           | {:max_concurrent_runs_invalid, term(), Range.t()}
           | {:daily_thread_cap_invalid, term(), Range.t()}
+          | {:invalid_repo_allowlist, term()}
+          | {:max_repos_per_run_invalid, term(), Range.t()}
           | {:unknown_setting, String.t()}
+
+  @doc "Default `max_repos_per_run` when the project does not set one."
+  @spec default_max_repos_per_run() :: pos_integer()
+  def default_max_repos_per_run, do: @default_max_repos_per_run
 
   @doc "Maximum characters of project instructions (`String.length/1`)."
   @spec max_instructions_chars() :: pos_integer()
@@ -202,6 +212,41 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:daily_thread_cap, value),
     do: ranged(value, :daily_thread_cap_invalid, @daily_thread_cap_range)
+
+  defp validate(:max_repos_per_run, value),
+    do: ranged(value, :max_repos_per_run_invalid, @max_repos_per_run_range)
+
+  defp validate(:repo_allowlist, nil), do: {:ok, nil}
+
+  defp validate(:repo_allowlist, entries) when is_list(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      case allowlist_entry(entry) do
+        {:ok, clean} -> {:cont, {:ok, [clean | acc]}}
+        :error -> {:halt, {:error, {:invalid_repo_allowlist, entry}}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, acc |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
+
+  defp validate(:repo_allowlist, other), do: {:error, {:invalid_repo_allowlist, other}}
+
+  # An absolute path prefix: no `..` segments, not the bare root. Trailing
+  # slashes are dropped so prefix matching is segment-based.
+  defp allowlist_entry(entry) when is_binary(entry) do
+    segments = Path.split(entry)
+
+    cond do
+      Path.type(entry) != :absolute -> :error
+      ".." in segments -> :error
+      segments == ["/"] -> :error
+      true -> {:ok, entry |> Path.expand() |> String.trim_trailing("/")}
+    end
+  end
+
+  defp allowlist_entry(_entry), do: :error
 
   defp unknown_provider(value),
     do: {:error, {:invalid_setting, :coordinator_provider, {:unknown_provider, value}}}

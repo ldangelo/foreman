@@ -22,6 +22,8 @@ defmodule ForemanServer.Events.ProjectUpdated do
           coordinator_effort: String.t() | nil,
           max_concurrent_runs: pos_integer() | nil,
           daily_thread_cap: pos_integer() | nil,
+          repo_allowlist: [String.t()] | nil,
+          max_repos_per_run: pos_integer() | nil,
           cleared_settings: [String.t()]
         }
   @derive Jason.Encoder
@@ -37,6 +39,8 @@ defmodule ForemanServer.Events.ProjectUpdated do
     :coordinator_effort,
     :max_concurrent_runs,
     :daily_thread_cap,
+    :repo_allowlist,
+    :max_repos_per_run,
     config: %{},
     cleared_settings: []
   ]

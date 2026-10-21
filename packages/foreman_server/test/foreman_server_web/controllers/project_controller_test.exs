@@ -98,6 +98,16 @@ defmodule ForemanServerWeb.ProjectControllerTest do
              json_response(conn, 201)
   end
 
+  # `project.update` with a changed `path` is validated against a real git
+  # checkout (E12), so these tests move the project to a genuine work tree.
+  defp git_repo!(name) do
+    path = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(path)
+    {_, 0} = System.cmd("git", ["init", "-q", path])
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(path) end)
+    path
+  end
+
   test "project.update is allowlisted on the actual HTTP mutation surface and currently returns 201" do
     project_id = unique_project_id()
 
@@ -112,7 +122,7 @@ defmodule ForemanServerWeb.ProjectControllerTest do
     update_conn =
       dispatch_json_conn(:post, "/api/commands", %{
         type: "project.update",
-        payload: %{project_id: project_id, path: "/tmp/#{project_id}/updated"}
+        payload: %{project_id: project_id, path: git_repo!("pc-updated")}
       })
 
     assert %{"status" => "accepted", "result" => %{"project_id" => ^project_id}} =

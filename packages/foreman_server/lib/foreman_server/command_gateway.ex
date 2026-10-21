@@ -6,7 +6,9 @@ defmodule ForemanServer.CommandGateway do
 
     * `dispatch_operator/2` — public operator commands. Currently allows
       `project.register`, `project.update`, `project.archive`,
-      `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
+      `project.reactivate`, `project.pause`, `project.resume`,
+      `project.repo.add`, `project.repo.remove` (E12; `add` and a `project.update`
+      that moves `path` are validated by `Projects.RepoValidation`), `task.create`, `task.approve`, `task.retry`,
       `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
       `run.reset`, `run.steer`, `merge_approve`, `run.pr.merge`, `inbox.send`,
       `thread.resolve`, and `thread.reopen`. The
@@ -46,12 +48,13 @@ defmodule ForemanServer.CommandGateway do
   """
 
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
@@ -147,7 +150,49 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  # `project.repo.add` and a `project.update` that moves the primary `path` run
+  # the impure repository checks (realpath, git work tree, remote identity)
+  # here, never inside the aggregate. The canonical path replaces the caller's,
+  # so the aggregate's pure uniqueness check compares realpaths. Nothing is
+  # cloned. An unknown project falls through so the aggregate reports it.
+  defp perform_operator_side_effects(%{type: "project.repo.add", payload: payload} = command) do
+    project_id = get_value(payload, :project_id)
+
+    with {:ok, repos} <- known_repositories(project_id),
+         {:ok, info} <- RepoValidation.check_candidate(get_value(payload, :path), repos) do
+      {:ok, %{command | payload: Map.put(payload, :path, info.path)}}
+    else
+      :unknown_project -> {:ok, command}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp perform_operator_side_effects(%{type: "project.update", payload: payload} = command) do
+    project_id = get_value(payload, :project_id)
+    path = get_value(payload, :path)
+
+    with true <- is_binary(path),
+         {:ok, [%{path: current} | _] = repos} <- known_repositories(project_id),
+         true <- current != path do
+      case RepoValidation.check_candidate(path, repos, replacing: RepoValidation.primary_id()) do
+        {:ok, info} -> {:ok, %{command | payload: Map.put(payload, :path, info.path)}}
+        {:error, _} = error -> error
+      end
+    else
+      _ -> {:ok, command}
+    end
+  end
+
   defp perform_operator_side_effects(command), do: {:ok, command}
+
+  defp known_repositories(project_id) when is_binary(project_id) do
+    case ProjectionStore.project_repositories(project_id) do
+      nil -> :unknown_project
+      repos -> {:ok, repos}
+    end
+  end
+
+  defp known_repositories(_project_id), do: :unknown_project
 
   # ---------------------------------------------------------------------------
   # Operator envelope
@@ -293,7 +338,9 @@ defmodule ForemanServer.CommandGateway do
               "project.pause",
               "project.resume",
               "project.adopt",
-              "project.environment.set"
+              "project.environment.set",
+              "project.repo.add",
+              "project.repo.remove"
             ] do
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
 
