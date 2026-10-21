@@ -156,13 +156,15 @@ defmodule ForemanServer.Threads.Actions do
   Other errors are those of `steer/3` (`:thread_not_found`, `{:invalid_text, _}`,
   `{:steer_failed, _}`, and `{:not_steerable, status}` for a terminal thread
   without a branch).
+
+  `opts` are `steer/3`'s (`:message_id` makes a repeated follow-up a no-op).
   """
-  @spec follow_up(String.t(), term()) ::
+  @spec follow_up(String.t(), term(), keyword()) ::
           {:ok, %{message_id: String.t(), mode: :pause_resume}} | {:error, follow_up_error()}
-  def follow_up(thread_id, text) when is_binary(thread_id) do
+  def follow_up(thread_id, text, opts \\ []) when is_binary(thread_id) and is_list(opts) do
     with {:ok, %Thread{} = thread} <- Threads.get(thread_id),
          :ok <- ensure_unresolved(thread) do
-      case steer(thread_id, text) do
+      case steer(thread_id, text, opts) do
         {:error, {:not_steerable, _status}} = error -> needs_new_run(thread, error)
         other -> other
       end

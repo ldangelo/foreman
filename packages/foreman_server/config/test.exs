@@ -162,3 +162,10 @@ config :foreman_server, :secret_store,
 # BootRecovery must not shell out to docker in the suite; the sweep is tested
 # directly against a stub binary.
 config :foreman_server, :network_policy, sweep_on_boot: false
+
+# The coordinator runtime is not started by the application under test; tests
+# start their own with a scripted agent. No retry delay: tests await events.
+config :foreman_server, :coordinator,
+  enabled: false,
+  agent: ForemanServer.Coordinator.Agent.Stub,
+  retry_backoff_ms: 0

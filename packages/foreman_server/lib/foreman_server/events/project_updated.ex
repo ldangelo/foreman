@@ -24,6 +24,9 @@ defmodule ForemanServer.Events.ProjectUpdated do
           daily_thread_cap: pos_integer() | nil,
           repo_allowlist: [String.t()] | nil,
           max_repos_per_run: pos_integer() | nil,
+          coordinator_propose_before_start: boolean() | nil,
+          coordinator_max_active_threads: pos_integer() | nil,
+          coordinator_reuse_threads: boolean() | nil,
           cleared_settings: [String.t()]
         }
   @derive Jason.Encoder
@@ -41,6 +44,9 @@ defmodule ForemanServer.Events.ProjectUpdated do
     :daily_thread_cap,
     :repo_allowlist,
     :max_repos_per_run,
+    :coordinator_propose_before_start,
+    :coordinator_max_active_threads,
+    :coordinator_reuse_threads,
     config: %{},
     cleared_settings: []
   ]

@@ -1,5 +1,6 @@
 defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.CommandGateway
+  alias ForemanServer.CoordinatorAPI
   alias ForemanServer.Overview
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectMemory
@@ -138,6 +139,26 @@ defmodule ForemanServer.MCP.Tools do
           }
     @derive Jason.Encoder
     defstruct [:name, :sha256, :bytes, :redactions]
+  end
+
+  defmodule ProjectConversationResult do
+    @enforce_keys [:messages, :next_cursor, :has_more, :truncated_before_seq, :status]
+    @type t :: %__MODULE__{
+            messages: [map()],
+            next_cursor: non_neg_integer(),
+            has_more: boolean(),
+            truncated_before_seq: pos_integer() | nil,
+            status: String.t()
+          }
+    @derive Jason.Encoder
+    defstruct [:messages, :next_cursor, :has_more, :truncated_before_seq, :status]
+  end
+
+  defmodule ProjectMessageResult do
+    @enforce_keys [:message_id, :seq]
+    @type t :: %__MODULE__{message_id: String.t(), seq: pos_integer()}
+    @derive Jason.Encoder
+    defstruct [:message_id, :seq]
   end
 
   defmodule ProjectMemoryForgetResult do
@@ -448,6 +469,18 @@ defmodule ForemanServer.MCP.Tools do
         },
         max_concurrent_runs: %{type: "integer", description: "Concurrent runs limit (1..1000)"},
         daily_thread_cap: %{type: "integer", description: "Threads per UTC day (1..10000)"},
+        coordinator_propose_before_start: %{
+          type: "boolean",
+          description: "Coordinator creates proposals (open tasks) instead of starting threads"
+        },
+        coordinator_max_active_threads: %{
+          type: "integer",
+          description: "Most active threads the coordinator may keep running (1..50)"
+        },
+        coordinator_reuse_threads: %{
+          type: "boolean",
+          description: "Coordinator routes follow-ups to an existing thread where one matches"
+        },
         clear: %{
           type: "array",
           items: %{type: "string"},
@@ -1008,6 +1041,44 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_project_conversation %{
+    name: "foreman_project_conversation",
+    description:
+      "Read a project's coordinator conversation (read-only): a page of messages after a seq cursor plus the coordinator status.",
+    inputSchema: %{
+      type: "object",
+      required: ["project_id"],
+      properties: %{
+        "project_id" => %{type: "string", description: "The project ID."},
+        "after" => %{type: "integer", minimum: 0, description: "Return messages after this seq."},
+        "limit" => %{
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Page size (default 50)."
+        }
+      }
+    }
+  }
+
+  @schema_foreman_project_message %{
+    name: "foreman_project_message",
+    description:
+      "Send a message to a project's coordinator (source is always \"mcp\"; rate limited per project). Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      required: ["project_id", "text"],
+      properties: %{
+        "project_id" => %{type: "string", description: "The project ID."},
+        "text" => %{type: "string", maxLength: 16_000, description: "The message text."},
+        "message_id" => %{
+          type: "string",
+          description: "Optional idempotency key; the same id twice appends once."
+        }
+      }
+    }
+  }
+
   @tools [
     @schema_foreman_run_get,
     @schema_foreman_run_status,
@@ -1058,6 +1129,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_memory_read,
     @schema_foreman_project_memory_write,
     @schema_foreman_project_memory_forget,
+    @schema_foreman_project_conversation,
+    @schema_foreman_project_message,
     @schema_foreman_project_repo_list
   ]
 
@@ -1508,6 +1581,102 @@ defmodule ForemanServer.MCP.Tools do
     project_memory_reply("foreman_project_memory_forget", start_us, result)
   end
 
+  defp tool_foreman_project_conversation(%{project_id: project_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with {:ok, after_seq} <- conversation_int(args, :after, 0, 0, nil),
+           {:ok, limit} <-
+             conversation_int(
+               args,
+               :limit,
+               CoordinatorAPI.default_limit(),
+               1,
+               CoordinatorAPI.max_limit()
+             ),
+           {:ok, view} <- CoordinatorAPI.read_page(project_id, after: after_seq, limit: limit) do
+        {:ok,
+         %__MODULE__.ProjectConversationResult{
+           messages: view["messages"],
+           next_cursor: view["next_cursor"],
+           has_more: view["has_more"],
+           truncated_before_seq: view["truncated_before_seq"],
+           status: view["status"]
+         }}
+      end
+
+    coordinator_reply("foreman_project_conversation", start_us, result)
+  end
+
+  # `source` is pinned to "mcp": the caller cannot choose it.
+  defp tool_foreman_project_message(%{project_id: project_id, text: text} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with :ok <- authorize_write_tool("foreman_project_message"),
+           {:ok, message_id} <- optional_nonblank(args, :message_id, fn -> nil end),
+           {:ok, sent} <-
+             CoordinatorAPI.post_message(project_id, %{
+               text: text,
+               source: "mcp",
+               message_id: message_id
+             }) do
+        {:ok, %__MODULE__.ProjectMessageResult{message_id: sent.message_id, seq: sent.seq}}
+      end
+
+    coordinator_reply("foreman_project_message", start_us, result)
+  end
+
+  defp conversation_int(args, key, default, min, max) do
+    case Map.fetch(args, key) do
+      :error ->
+        {:ok, default}
+
+      {:ok, n} when is_integer(n) and n >= min and (is_nil(max) or n <= max) ->
+        {:ok, n}
+
+      {:ok, _} ->
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} is out of range"}}
+    end
+  end
+
+  defp coordinator_reply(tool, start_us, result) do
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _} = ok ->
+        Telemetry.mcp_tool_call(duration_us, tool, :ok)
+        ok
+
+      {:error, error} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        {:error, coordinator_tool_error(error)}
+    end
+  end
+
+  defp coordinator_tool_error(%ToolError{} = error), do: error
+
+  defp coordinator_tool_error(:project_not_found),
+    do: %ToolError{code: "NOT_FOUND", message: "Project not found"}
+
+  defp coordinator_tool_error({:project_archived, id}),
+    do: %ToolError{code: "DOMAIN_ERROR", message: "project_archived: #{id}"}
+
+  defp coordinator_tool_error({:message_too_large, bytes, max}),
+    do: %ToolError{
+      code: "INVALID_PARAMS",
+      message: "text is #{bytes} bytes; max is #{max}"
+    }
+
+  defp coordinator_tool_error({:invalid, field}),
+    do: %ToolError{code: "INVALID_PARAMS", message: "invalid #{field}"}
+
+  defp coordinator_tool_error(:rate_limited),
+    do: %ToolError{
+      code: "RATE_LIMITED",
+      message: "Too many coordinator messages from MCP for this project; retry later"
+    }
+
   # An MCP caller is an agent; operators use the CLI/HTTP surfaces.
   defp project_memory_author(args),
     do: %{kind: :agent, ref: Map.get(args, :run_id) || Map.get(args, :session_id)}
@@ -1818,7 +1987,8 @@ defmodule ForemanServer.MCP.Tools do
 
   @settings_update_keys ~w(goal instructions thread_model thread_effort coordinator_provider
                            coordinator_model coordinator_effort max_concurrent_runs
-                           daily_thread_cap)a
+                           daily_thread_cap coordinator_propose_before_start
+                           coordinator_max_active_threads coordinator_reuse_threads)a
 
   # The command id is content-derived (tool + canonical args + caller key), so a
   # retry of the same update collapses into one command while two different

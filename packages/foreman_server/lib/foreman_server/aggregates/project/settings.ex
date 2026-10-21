@@ -30,12 +30,15 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @daily_thread_cap_range 1..10_000
   @max_repos_per_run_range 1..1000
   @default_max_repos_per_run 4
+  @max_active_threads_range 1..50
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
   # would validate here and then fail the launch.
   @efforts ~w(low medium high)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
-           coordinator_effort max_concurrent_runs daily_thread_cap repo_allowlist max_repos_per_run)a
+           coordinator_effort max_concurrent_runs daily_thread_cap
+           coordinator_propose_before_start coordinator_max_active_threads
+           coordinator_reuse_threads repo_allowlist max_repos_per_run)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -54,6 +57,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :daily_thread_cap
           | :repo_allowlist
           | :max_repos_per_run
+          | :coordinator_propose_before_start
+          | :coordinator_max_active_threads
+          | :coordinator_reuse_threads
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -71,6 +77,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:daily_thread_cap_invalid, term(), Range.t()}
           | {:invalid_repo_allowlist, term()}
           | {:max_repos_per_run_invalid, term(), Range.t()}
+          | {:coordinator_max_active_threads_invalid, term(), Range.t()}
+          | {:coordinator_propose_before_start_invalid, term()}
+          | {:coordinator_reuse_threads_invalid, term()}
           | {:unknown_setting, String.t()}
 
   @doc "Default `max_repos_per_run` when the project does not set one."
@@ -232,6 +241,18 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   end
 
   defp validate(:repo_allowlist, other), do: {:error, {:invalid_repo_allowlist, other}}
+
+  defp validate(:coordinator_propose_before_start, value),
+    do: boolean(value, :coordinator_propose_before_start)
+
+  defp validate(:coordinator_reuse_threads, value), do: boolean(value, :coordinator_reuse_threads)
+
+  defp validate(:coordinator_max_active_threads, value),
+    do: ranged(value, :coordinator_max_active_threads_invalid, @max_active_threads_range)
+
+  defp boolean(nil, _name), do: {:ok, nil}
+  defp boolean(value, _name) when is_boolean(value), do: {:ok, value}
+  defp boolean(value, name), do: {:error, {:"#{name}_invalid", value}}
 
   # An absolute path prefix: no `..` segments, not the bare root. Trailing
   # slashes are dropped so prefix matching is segment-based.

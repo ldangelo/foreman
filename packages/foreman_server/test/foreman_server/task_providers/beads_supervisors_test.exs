@@ -155,8 +155,9 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
 
   describe "BeadsOrphanJanitorSupervisor lifecycle (default module name)" do
     setup do
+      ForemanServer.TestSupport.JanitorSupervisorStop.stop_named()
       {:ok, sup} = BeadsOrphanJanitorSupervisor.start_link()
-      on_exit(fn -> safe_stop(sup) end)
+      on_exit(fn -> ForemanServer.TestSupport.JanitorSupervisorStop.stop(sup) end)
       :ok
     end
 
