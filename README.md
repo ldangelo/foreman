@@ -23,6 +23,18 @@ service in `packages/foreman_server`. This repository contains:
 | Jido migration (TRD-2026-4212be7e) | `JIDO_FORKS.md` (fork inventory), `docs/guides/adding-a-jido-harness-provider.md` (provider extension), and per-PR notes in `docs/TRD/`. |
 | Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` (or the `config :foreman_server, :workflow_root` override) has no `*.yaml`. |
 
+## Threads
+
+A thread is the operator-facing unit of work (a workflow run, `run:<id>`, or a jobsite, `jobsite:<id>`) with its own branch/PR. Surfaces:
+
+- HTTP: `GET /api/projects/:project_id/threads`, `GET /api/threads/:id`, `GET /api/threads/:id/transcript`, `GET /api/threads/:id/stream` (SSE), `POST /api/threads/:id/stop`, `POST /api/threads/:id/steer`, and the deterministic lookup `GET /api/projects/:project_id/threads/find?q=&external_id=&branch=&pr=`.
+- MCP: `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`, `foreman_thread_find` (read) and the write-gated `foreman_thread_stop`, `foreman_thread_steer`.
+- CLI: `foreman thread list|get|stop|steer|resolve|reopen`.
+- Commands/events: `thread.resolve` / `thread.reopen` (`ThreadResolved` / `ThreadReopened`) and `run.steer` (`RunSteerQueued`, consumed by the system-only `run.steer.consume` -> `RunSteerConsumed`; deliberately not operator-allowlisted).
+- Config: `config :foreman_server, :threads, idle_resolver:, idle_resolve_after_days:, sweep_interval_ms:` (idle auto-resolve of terminal, PR-less threads).
+
+Steering v1 is `"pause_resume"` (the thread DTO's `steering` field): pause, commit partial work, resume with the operator message in the next phase prompt (jobsite door: `POST /api/jobsites/:id/resume` with a `prompt`, i.e. `Jobsite.steer/3`). Transcripts are bounded: `omitted_entries`/`truncated` flag dropped `run_logs`, and jobsite turns carry no timestamps or operator turns. Details: [`docs/user-guide.md`](./docs/user-guide.md), [`docs/cli-reference.md`](./docs/cli-reference.md).
+
 ## Operator run dashboard
 
 The Phoenix server exposes two bearer-token guarded browser dashboards:

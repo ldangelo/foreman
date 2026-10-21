@@ -240,6 +240,23 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
+  Return the run's pending steering messages (`RunSteerQueued` minus
+  `RunSteerConsumed`) in queue order as `[%{message_id, text, resume}]`.
+
+  This is the durable source of truth for operator steering: `RunControl`'s
+  ETS mailbox is cleared across every pause/resume and is only a cache.
+  """
+  @spec pending_steering(String.t()) :: [
+          %{message_id: String.t(), text: String.t(), resume: boolean()}
+        ]
+  def pending_steering(run_id) when is_binary(run_id) and run_id != "" do
+    case run(run_id) do
+      nil -> []
+      run -> Map.get(run, :pending_steering, [])
+    end
+  end
+
+  @doc """
   Return the projected state for a jobsite, or nil if not found.
   """
   @spec jobsite(String.t()) :: map() | nil
@@ -268,6 +285,27 @@ defmodule ForemanServer.ProjectionStore do
   @spec gap_bead?(String.t()) :: boolean()
   def gap_bead?(bead_id) when is_binary(bead_id) and bead_id != "" do
     GenServer.call(__MODULE__, {:gap_bead?, bead_id})
+  end
+
+  @typedoc """
+  Operator disposition of a thread: `resolved`, when (`resolved_at`, ISO-8601)
+  and why, who resolved it, and when it was last reopened (`reopened_at`).
+  """
+  @type thread_flags :: %{
+          resolved: boolean(),
+          resolved_at: String.t() | nil,
+          reason: String.t() | nil,
+          resolved_by: String.t() | nil,
+          reopened_at: String.t() | nil
+        }
+
+  @doc """
+  Return the folded `ThreadResolved`/`ThreadReopened` flags for a thread id, or
+  nil when the thread was never resolved or reopened.
+  """
+  @spec thread_flags(String.t()) :: thread_flags() | nil
+  def thread_flags(thread_id) when is_binary(thread_id) and thread_id != "" do
+    GenServer.call(__MODULE__, {:thread_flags, thread_id})
   end
 
   @doc """
@@ -425,6 +463,25 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:list_runs, opts})
   end
 
+  @doc """
+  Return every projection the thread read model composes, in one call:
+  `%{runs, tasks, jobsites, worktrees, pr_associations, reviews}`. `reviews` is
+  keyed by `{subject_kind, subject_id}`, `pr_associations` by run id. Exists so
+  `Threads.list/2` never makes a GenServer call per row.
+  """
+  @spec thread_inputs() :: %{
+          runs: [map()],
+          tasks: [map()],
+          jobsites: [map()],
+          worktrees: [map()],
+          pr_associations: %{String.t() => map()},
+          reviews: %{{String.t(), String.t()} => map()},
+          thread_flags: %{String.t() => thread_flags()}
+        }
+  def thread_inputs do
+    GenServer.call(__MODULE__, :thread_inputs)
+  end
+
   @doc "Return every projected scheduler intent."
   @spec list_scheduler_intents() :: [map()]
   def list_scheduler_intents do
@@ -538,6 +595,11 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:review, subject_kind, subject_id}, _from, state) do
     {:reply, Map.get(state.reviews, {subject_kind, subject_id}), state}
+  end
+
+  @impl true
+  def handle_call({:thread_flags, thread_id}, _from, state) do
+    {:reply, Map.get(state.thread_flags, thread_id), state}
   end
 
   @impl true
@@ -744,6 +806,21 @@ defmodule ForemanServer.ProjectionStore do
     }
 
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:thread_inputs, _from, state) do
+    inputs = %{
+      runs: Map.values(state.runs),
+      tasks: Map.values(state.tasks),
+      jobsites: Map.values(state.jobsites),
+      worktrees: state.worktrees |> Map.values() |> Enum.sort_by(&get(&1, :operation_id, "")),
+      pr_associations: state.pr_associations,
+      reviews: state.reviews,
+      thread_flags: state.thread_flags
+    }
+
+    {:reply, inputs, state}
   end
 
   @impl true
@@ -1049,7 +1126,8 @@ defmodule ForemanServer.ProjectionStore do
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       inbox_threads: %{},
       jobsites: %{},
-      reviews: %{}
+      reviews: %{},
+      thread_flags: %{}
     }
   end
 
@@ -1398,6 +1476,40 @@ defmodule ForemanServer.ProjectionStore do
       run
       |> Map.put(:status, "awaiting_worker")
       |> Map.put(:terminal?, false)
+    end)
+  end
+
+  # E6-S4 steering mailbox: pending steering is RunSteerQueued minus
+  # RunSteerConsumed, in queue order. This projection field is the durable
+  # source `RunControl`'s ETS mailbox is rebuilt from.
+  defp apply_event_by_type(state, "RunSteerQueued", payload) do
+    message_id = get(payload, :message_id)
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      pending = Map.get(run, :pending_steering, [])
+
+      if is_binary(message_id) and message_id != "" and
+           not Enum.any?(pending, &(&1.message_id == message_id)) do
+        entry = %{
+          message_id: message_id,
+          text: get(payload, :text),
+          resume: get(payload, :resume) != false
+        }
+
+        Map.put(run, :pending_steering, pending ++ [entry])
+      else
+        run
+      end
+    end)
+  end
+
+  defp apply_event_by_type(state, "RunSteerConsumed", payload) do
+    consumed = MapSet.new(List.wrap(get(payload, :message_ids)))
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.update(run, :pending_steering, [], fn pending ->
+        Enum.reject(pending, &MapSet.member?(consumed, &1.message_id))
+      end)
     end)
   end
 
@@ -2149,6 +2261,48 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # Operator disposition flags per thread id. A malformed payload is logged and
+  # skipped (never raised) so `init/1`'s event-log rebuild survives it.
+  defp apply_event_by_type(state, "ThreadResolved", payload) do
+    case decode_or_skip("ThreadResolved", payload) do
+      {:ok, %ForemanServer.Events.ThreadResolved{thread_id: id} = event}
+      when is_binary(id) and id != "" ->
+        flags = %{
+          resolved: true,
+          resolved_at: event.at,
+          reason: event.reason,
+          resolved_by: event.resolved_by,
+          reopened_at: nil
+        }
+
+        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ThreadResolved")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ThreadReopened", payload) do
+    case decode_or_skip("ThreadReopened", payload) do
+      {:ok, %ForemanServer.Events.ThreadReopened{thread_id: id} = event}
+      when is_binary(id) and id != "" ->
+        flags = %{
+          resolved: false,
+          resolved_at: nil,
+          reason: nil,
+          resolved_by: nil,
+          reopened_at: event.at
+        }
+
+        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ThreadReopened")
+        state
+    end
+  end
+
   defp apply_event_by_type(state, "JobsiteStarted", payload) do
     case decode_for_projection("JobsiteStarted", payload) do
       %ForemanServer.Events.JobsiteStarted{jobsite_id: jobsite_id} = event ->
@@ -2236,6 +2390,7 @@ defmodule ForemanServer.ProjectionStore do
           index: get(payload, :index),
           status: get(payload, :status),
           text: get(payload, :text),
+          text_truncated?: get(payload, :text_truncated?, false) == true,
           session_id: get(payload, :session_id),
           signalled?: get(payload, :signalled?, false),
           matched_signal: get(payload, :matched_signal)

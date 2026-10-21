@@ -8,7 +8,7 @@ defmodule ForemanServerWeb.CommandController do
   (`project.register`, `project.update`, `project.archive`,
   `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
   `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
-  `merge_approve`, and `run.pr.merge`),
+  `run.steer`, `merge_approve`, and `run.pr.merge`),
   enriches the payload, and dispatches to
   `CommandRouter`.
 
@@ -22,7 +22,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset merge_approve run.pr.merge)
+  @allowed_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -178,8 +178,11 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("run.resume"), do: "run"
   defp aggregate_prefix("run.remove"), do: "run"
   defp aggregate_prefix("run.reset"), do: "run"
+  defp aggregate_prefix("run.steer"), do: "run"
   defp aggregate_prefix("merge_approve"), do: "run"
   defp aggregate_prefix("run.pr.merge"), do: "run"
+  defp aggregate_prefix("thread.resolve"), do: "thread"
+  defp aggregate_prefix("thread.reopen"), do: "thread"
   defp aggregate_prefix(_), do: ""
 
   defp id_field_for("project.register"), do: :project_id
@@ -197,8 +200,11 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("run.resume"), do: :run_id
   defp id_field_for("run.remove"), do: :run_id
   defp id_field_for("run.reset"), do: :run_id
+  defp id_field_for("run.steer"), do: :run_id
   defp id_field_for("merge_approve"), do: :run_id
   defp id_field_for("run.pr.merge"), do: :run_id
+  defp id_field_for("thread.resolve"), do: :thread_id
+  defp id_field_for("thread.reopen"), do: :thread_id
   defp id_field_for(_), do: nil
 
   defp default_command_id do

@@ -10,9 +10,10 @@ import (
 // commandEnvelope is the JSON envelope sent to /api/commands.
 // The server derives the aggregate_id from the payload.
 type commandEnvelope struct {
-	Type      string         `json:"type"`
-	CommandID string         `json:"command_id,omitempty"`
-	Payload   map[string]any `json:"payload"`
+	Type        string         `json:"type"`
+	CommandID   string         `json:"command_id,omitempty"`
+	AggregateID string         `json:"aggregate_id,omitempty"`
+	Payload     map[string]any `json:"payload"`
 }
 
 // postCommandWithResponse centralizes the POST /api/commands path.
