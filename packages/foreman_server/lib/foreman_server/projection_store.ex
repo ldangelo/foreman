@@ -1778,27 +1778,30 @@ defmodule ForemanServer.ProjectionStore do
         if valid_id?(run_id) do
           event_at_ms = payload_event_at_ms(payload)
 
-          run = %{
-            run_id: run_id,
-            task_id: event.task_id,
-            project_id: event.project_id,
-            workflow_name: event.workflow_name,
-            workflow_digest: event.workflow_digest,
-            workflow_snapshot: event.workflow_snapshot,
-            phase_ids: [],
-            last_sequence: event.sequence,
-            status: "awaiting_worker",
-            terminal?: false,
-            started_at_ms: event_at_ms,
-            last_event_at_ms: event_at_ms,
-            failure_reason: nil,
-            pr_url: nil,
-            phase_prs: [],
-            notifications: [],
-            provider_session_id: nil,
-            provider_sessions: [],
-            usage: nil
-          }
+          run =
+            %{
+              run_id: run_id,
+              task_id: event.task_id,
+              project_id: event.project_id,
+              workflow_name: event.workflow_name,
+              workflow_digest: event.workflow_digest,
+              workflow_snapshot: event.workflow_snapshot,
+              phase_ids: [],
+              last_sequence: event.sequence,
+              status: "awaiting_worker",
+              terminal?: false,
+              started_at_ms: event_at_ms,
+              last_event_at_ms: event_at_ms,
+              failure_reason: nil,
+              pr_url: nil,
+              phase_prs: [],
+              notifications: [],
+              provider_session_id: nil,
+              provider_sessions: [],
+              usage: nil
+            }
+            |> maybe_put(:repo_id, event.repo_id)
+            |> maybe_put(:repo_ids, event.repo_ids)
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
         else
@@ -1928,7 +1931,18 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, "RunBaseBranchRecorded", payload) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
-      maybe_put(run, :base_branch, get(payload, :base_branch))
+      case get(payload, :repo_id) do
+        repo_id when is_binary(repo_id) ->
+          Map.update(
+            run,
+            :repo_base_branches,
+            %{repo_id => get(payload, :base_branch)},
+            &Map.put(&1, repo_id, get(payload, :base_branch))
+          )
+
+        _ ->
+          maybe_put(run, :base_branch, get(payload, :base_branch))
+      end
     end)
   end
 
@@ -2026,46 +2040,49 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_event_by_type(state, "TaskCreated", payload) do
     case decode_for_projection("TaskCreated", payload) do
       %ForemanServer.Events.TaskCreated{task_id: task_id} = event ->
-        task = %{
-          task_id: task_id,
-          external_id: event.external_id,
-          project_id: event.project_id,
-          title: event.title,
-          description: event.description,
-          priority: event.priority,
-          status: event.status,
-          task_type: event.task_type,
-          workflow_type: event.workflow_type,
-          trd_path: event.trd_path,
-          prompt: event.prompt,
-          # Carried because `CommandGateway` gates `task.approve` on it. Until
-          # this line existed the field was accepted by `task.create`, stored on
-          # the aggregate, and written onto `TaskCreated` — then dropped here, so
-          # no cross-task reader could see it and dependencies had no effect on
-          # anything.
-          #
-          # `event.dependencies || []` was wrong and is exactly the shape
-          # AGENTS.md §5.4b names: `false || []` returns `[]` just as `nil || []`
-          # does, so a malformed value arrived here as "no dependencies" and the
-          # approval guard waved it through. Verified before fixing — a
-          # `task.create` carrying `dependencies: false` returned `{:ok, ...}`,
-          # the event stored `false`, and this projection reported `[]`.
-          # `task.create` now refuses a non-list, but historical events keep
-          # theirs, so the malformed value is PRESERVED here rather than
-          # flattened; the guard refuses that approval by its own clause. A read
-          # model must not raise on replay (`ProjectionStore.init/1` rebuilds
-          # from the event log), and must not launder bad data either.
-          dependencies: normalize_dependencies(event.dependencies),
-          provider_tracked: event.provider_tracked,
-          approval_id: nil,
-          approved_by: nil,
-          approved_at: nil,
-          run_id: nil,
-          workflow_snapshot: nil,
-          failure_reason: nil,
-          created_at_ms: payload_event_at_ms(payload),
-          last_event_at_ms: payload_event_at_ms(payload)
-        }
+        task =
+          %{
+            task_id: task_id,
+            external_id: event.external_id,
+            project_id: event.project_id,
+            title: event.title,
+            description: event.description,
+            priority: event.priority,
+            status: event.status,
+            task_type: event.task_type,
+            workflow_type: event.workflow_type,
+            trd_path: event.trd_path,
+            prompt: event.prompt,
+            # Carried because `CommandGateway` gates `task.approve` on it. Until
+            # this line existed the field was accepted by `task.create`, stored on
+            # the aggregate, and written onto `TaskCreated` — then dropped here, so
+            # no cross-task reader could see it and dependencies had no effect on
+            # anything.
+            #
+            # `event.dependencies || []` was wrong and is exactly the shape
+            # AGENTS.md §5.4b names: `false || []` returns `[]` just as `nil || []`
+            # does, so a malformed value arrived here as "no dependencies" and the
+            # approval guard waved it through. Verified before fixing — a
+            # `task.create` carrying `dependencies: false` returned `{:ok, ...}`,
+            # the event stored `false`, and this projection reported `[]`.
+            # `task.create` now refuses a non-list, but historical events keep
+            # theirs, so the malformed value is PRESERVED here rather than
+            # flattened; the guard refuses that approval by its own clause. A read
+            # model must not raise on replay (`ProjectionStore.init/1` rebuilds
+            # from the event log), and must not launder bad data either.
+            dependencies: normalize_dependencies(event.dependencies),
+            provider_tracked: event.provider_tracked,
+            approval_id: nil,
+            approved_by: nil,
+            approved_at: nil,
+            run_id: nil,
+            workflow_snapshot: nil,
+            failure_reason: nil,
+            created_at_ms: payload_event_at_ms(payload),
+            last_event_at_ms: payload_event_at_ms(payload)
+          }
+          |> maybe_put(:repo_id, event.repo_id)
+          |> maybe_put(:repo_ids, event.repo_ids)
 
         %{state | tasks: Map.put(state.tasks, task_id, task)}
     end

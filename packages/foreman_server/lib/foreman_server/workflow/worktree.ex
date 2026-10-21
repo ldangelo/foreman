@@ -80,18 +80,21 @@ defmodule ForemanServer.Workflow.Worktree do
     * `WorktreeCreated` is NEVER fabricated.
   """
   @spec create(map()) :: {:ok, String.t()} | {:error, term()}
-  def create(%{
-        operation_id: op_id,
-        project_id: project_id,
-        run_id: run_id,
-        phase_id: phase_id,
-        repo_path: repo_path,
-        worktree_path: worktree_path,
-        base_ref: base_ref,
-        branch: branch
-      })
+  def create(
+        %{
+          operation_id: op_id,
+          project_id: project_id,
+          run_id: run_id,
+          phase_id: phase_id,
+          repo_path: repo_path,
+          worktree_path: worktree_path,
+          base_ref: base_ref,
+          branch: branch
+        } = args
+      )
       when is_binary(op_id) and op_id != "" do
     started_ms = System.monotonic_time(:millisecond)
+    repo_id = Map.get(args, :repo_id)
 
     case run_create_git(
            op_id,
@@ -112,7 +115,8 @@ defmodule ForemanServer.Workflow.Worktree do
                repo_path,
                worktree_path,
                branch,
-               base_ref
+               base_ref,
+               repo_id
              ) do
           :ok ->
             emit_create(
@@ -140,7 +144,8 @@ defmodule ForemanServer.Workflow.Worktree do
               worktree_path,
               base_ref,
               branch,
-              append_error
+              append_error,
+              repo_id
             )
         end
 
@@ -186,7 +191,7 @@ defmodule ForemanServer.Workflow.Worktree do
       %{status: "cleaned"} ->
         {:ok, :already_cleaned}
 
-      %{status: "created", worktree_path: worktree_path}
+      %{status: "created", worktree_path: worktree_path} = entry
       when is_binary(worktree_path) and worktree_path != "" ->
         case run_clean_git(op_id, repo_path, worktree_path, project_id, run_id, phase_id) do
           {:ok, _git_result} ->
@@ -196,7 +201,8 @@ defmodule ForemanServer.Workflow.Worktree do
                    run_id,
                    phase_id,
                    repo_path,
-                   worktree_path
+                   worktree_path,
+                   Map.get(entry, :repo_id)
                  ) do
               :ok ->
                 emit_clean(op_id, project_id, run_id, phase_id, worktree_path, started_ms,
@@ -337,7 +343,8 @@ defmodule ForemanServer.Workflow.Worktree do
          worktree_path,
          base_ref,
          branch,
-         append_error
+         append_error,
+         repo_id
        ) do
     emit_create_failed(
       op_id,
@@ -381,19 +388,29 @@ defmodule ForemanServer.Workflow.Worktree do
           started_ms
         )
 
-        record_orphan(op_id, project_id, run_id, phase_id, worktree_path, :compensation_failed)
+        record_orphan(
+          op_id,
+          project_id,
+          run_id,
+          phase_id,
+          worktree_path,
+          :compensation_failed,
+          repo_id
+        )
+
         {:error, {:worktree_create_orphaned, append_error}}
     end
   end
 
-  defp record_orphan(op_id, project_id, run_id, phase_id, worktree_path, reason) do
+  defp record_orphan(op_id, project_id, run_id, phase_id, worktree_path, reason, repo_id) do
     case dispatch_worktree_create_orphan(
            op_id,
            project_id,
            run_id,
            phase_id,
            worktree_path,
-           reason
+           reason,
+           repo_id
          ) do
       :ok ->
         :ok
@@ -468,22 +485,25 @@ defmodule ForemanServer.Workflow.Worktree do
          repo_path,
          worktree_path,
          branch,
-         base_ref
+         base_ref,
+         repo_id
        ) do
     command = %{
       command_id: "vcs.worktree.create:" <> op_id,
       aggregate_id: "vcs:" <> op_id,
       type: "vcs.worktree.create",
-      payload: %{
-        operation_id: op_id,
-        project_id: project_id,
-        run_id: run_id,
-        phase_id: phase_id,
-        repo_path: repo_path,
-        worktree_path: worktree_path,
-        branch: branch,
-        base_ref: base_ref
-      }
+      payload:
+        %{
+          operation_id: op_id,
+          project_id: project_id,
+          run_id: run_id,
+          phase_id: phase_id,
+          repo_path: repo_path,
+          worktree_path: worktree_path,
+          branch: branch,
+          base_ref: base_ref
+        }
+        |> Map.merge(repo_fields(repo_id))
     }
 
     case CommandGateway.dispatch_system(command) do
@@ -492,19 +512,29 @@ defmodule ForemanServer.Workflow.Worktree do
     end
   end
 
-  defp dispatch_worktree_cleaned(op_id, project_id, run_id, phase_id, repo_path, worktree_path) do
+  defp dispatch_worktree_cleaned(
+         op_id,
+         project_id,
+         run_id,
+         phase_id,
+         repo_path,
+         worktree_path,
+         repo_id
+       ) do
     command = %{
       command_id: "vcs.worktree.clean:" <> op_id,
       aggregate_id: "vcs:" <> op_id,
       type: "vcs.worktree.clean",
-      payload: %{
-        operation_id: op_id,
-        project_id: project_id,
-        run_id: run_id,
-        phase_id: phase_id,
-        repo_path: repo_path,
-        worktree_path: worktree_path
-      }
+      payload:
+        %{
+          operation_id: op_id,
+          project_id: project_id,
+          run_id: run_id,
+          phase_id: phase_id,
+          repo_path: repo_path,
+          worktree_path: worktree_path
+        }
+        |> Map.merge(repo_fields(repo_id))
     }
 
     case CommandGateway.dispatch_system(command) do
@@ -513,19 +543,29 @@ defmodule ForemanServer.Workflow.Worktree do
     end
   end
 
-  defp dispatch_worktree_create_orphan(op_id, project_id, run_id, phase_id, worktree_path, reason) do
+  defp dispatch_worktree_create_orphan(
+         op_id,
+         project_id,
+         run_id,
+         phase_id,
+         worktree_path,
+         reason,
+         repo_id
+       ) do
     command = %{
       command_id: "vcs.worktree.create.orphan_record:" <> op_id,
       aggregate_id: "vcs:" <> op_id,
       type: "vcs.worktree.create.orphan_record",
-      payload: %{
-        operation_id: op_id,
-        project_id: project_id,
-        run_id: run_id,
-        phase_id: phase_id,
-        worktree_path: worktree_path,
-        reason: to_string(reason)
-      }
+      payload:
+        %{
+          operation_id: op_id,
+          project_id: project_id,
+          run_id: run_id,
+          phase_id: phase_id,
+          worktree_path: worktree_path,
+          reason: to_string(reason)
+        }
+        |> Map.merge(repo_fields(repo_id))
     }
 
     case CommandGateway.dispatch_system(command) do
@@ -533,6 +573,11 @@ defmodule ForemanServer.Workflow.Worktree do
       {:error, _} = err -> err
     end
   end
+
+  # `repo_id` is ABSENT for a run's primary repository (E12): single-repo
+  # commands and events stay byte-identical.
+  defp repo_fields(nil), do: %{}
+  defp repo_fields(repo_id) when is_binary(repo_id), do: %{repo_id: repo_id}
 
   defp duration_ms(started_ms), do: System.monotonic_time(:millisecond) - started_ms
 

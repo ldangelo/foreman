@@ -8,13 +8,17 @@ defmodule ForemanServer.Events.RunBaseBranchRecorded do
   ORIGINAL base branch back from the projection instead of re-deriving
   it from whatever branch the registered checkout happens to be on at
   resume time — the failure mode this event exists to close.
+
+  `repo_id` (E12) is ABSENT for the run's primary repository and present for a
+  secondary repository's base branch.
   """
   @enforce_keys [:run_id, :base_branch]
   @type t :: %__MODULE__{
           run_id: String.t(),
           base_branch: String.t(),
+          repo_id: String.t() | nil,
           sequence: non_neg_integer() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :base_branch, :sequence]
+  defstruct [:run_id, :base_branch, :repo_id, :sequence]
 end

@@ -269,10 +269,17 @@ defmodule ForemanServer.Aggregates.Run do
               Enum.reject(state.pending_steer, &MapSet.member?(consumed, &1.message_id))
         }
 
+      # A secondary repository's base branch (`repo_id` present) is a read-model
+      # fact only: `State.base_branch` stays the run primary's.
       "RunBaseBranchRecorded" ->
+        base_branch =
+          if Aggregate.get(payload, :repo_id),
+            do: state.base_branch,
+            else: Aggregate.get(payload, :base_branch)
+
         %State{
           state
-          | base_branch: Aggregate.get(payload, :base_branch),
+          | base_branch: base_branch,
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 

@@ -64,6 +64,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
+  alias ForemanServer.Workflow.RunRepoSet
+  alias ForemanServer.Workflow.RunWorktreeLayout
   require Logger
 
   @command_phase_inbox_progress_system_prompt """
@@ -356,29 +358,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
         finalize_terminal_and_stop(state, {:plan_context_error, reason})
 
       :ok ->
-        case preflight_providers_and_models(state) do
-          {:error, failures} ->
-            # `PreflightFailure.summarize/1` renders one clause per refusal as
-            # the stable phrase an operator (or a log grep) keys on. The class
-            # atoms the struct carries name the same four causes, so both
-            # appear: the phrase is the human-facing contract, the struct is
-            # what the run's terminal reason persists.
-            summaries = Enum.map_join(failures, "; ", &PreflightFailure.summarize/1)
+        case resolve_run_repo_set(state) do
+          {:ok, state} ->
+            kickoff_preflight(state)
 
+          {:error, reason} ->
             Logger.warning(
-              "RunExecutor provider/model preflight for #{state.run_id} rejected: #{summaries}",
+              "RunExecutor repository set for #{state.run_id} rejected: #{inspect(reason)}",
               run_id: state.run_id,
               task_id: task_id(state),
-              operation: "run_executor.provider_model_preflight",
+              operation: "run_executor.repo_set",
               outcome: "error",
-              reason: inspect(failures)
+              reason: inspect(reason)
             )
 
-            _ = dispatch_task_execution_fail(state, {:provider_model_preflight_failed, failures})
-            finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
-
-          :ok ->
-            handle_kickoff_ready(state)
+            _ = dispatch_task_execution_fail(state, {:run_repo_set_rejected, reason})
+            finalize_terminal_and_stop(state, {:run_repo_set_rejected, reason})
         end
     end
   end
@@ -419,6 +414,33 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
 
     {:noreply, state}
+  end
+
+  defp kickoff_preflight(state) do
+    case preflight_providers_and_models(state) do
+      {:error, failures} ->
+        # `PreflightFailure.summarize/1` renders one clause per refusal as
+        # the stable phrase an operator (or a log grep) keys on. The class
+        # atoms the struct carries name the same four causes, so both
+        # appear: the phrase is the human-facing contract, the struct is
+        # what the run's terminal reason persists.
+        summaries = Enum.map_join(failures, "; ", &PreflightFailure.summarize/1)
+
+        Logger.warning(
+          "RunExecutor provider/model preflight for #{state.run_id} rejected: #{summaries}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.provider_model_preflight",
+          outcome: "error",
+          reason: inspect(failures)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:provider_model_preflight_failed, failures})
+        finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
+
+      :ok ->
+        handle_kickoff_ready(state)
+    end
   end
 
   # TRD-016: Verify claim/3 fires before phase 1 dispatch
@@ -711,7 +733,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               trd_scope: trd_scope
             }
 
-            {:ok, Map.put(state, :run_worktree, run_worktree)}
+            {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
 
           {:error, reason} ->
             {:error, reason}
@@ -1036,8 +1058,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
       # boundary would destroy the very checkout the next phase continues in.
       # Disk is reclaimed once, by `cleanup_run_worktree/2` in `finalize_run/1`,
       # and by the `RunDeleted` fan-out for runs that end some other way.
-      {:ok, state |> remember_run_worktree(worktree_record) |> remember_worktree(worktree_record),
-       worktree_record}
+      {:ok,
+       state
+       |> remember_run_worktree(worktree_record)
+       |> remember_worktree(worktree_record)
+       |> load_run_worktrees(), worktree_record}
     end
   end
 
@@ -1060,7 +1085,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def phase_finish(state, phase_spec, index, worktree_record, artifact_path) do
     phase_index = phase_number(phase_spec, index)
 
-    with :ok <-
+    with :ok <- commit_secondary_worktrees(state, phase_spec, phase_index),
+         :ok <-
            maybe_record_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
@@ -2340,7 +2366,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # The project's registered path, unless the run's PRIMARY repository is a
+  # non-primary repository of the project (a run targeted at repository `b`),
+  # in which case it is that repository's path.
   defp project_path(state) do
+    primary_override_path(state) || registered_path_of_project(state)
+  end
+
+  defp registered_path_of_project(state) do
     with id when is_binary(id) and id != "" <- project_id(state),
          %{} = projection <- ProjectionStore.project_projection(id),
          path when is_binary(path) and path != "" <-
@@ -2348,6 +2381,95 @@ defmodule ForemanServer.Workflow.RunExecutor do
       path
     else
       _ -> nil
+    end
+  end
+
+  defp primary_override_path(state) do
+    case Map.get(state, :run_repos) do
+      %{primary: %{id: id, path: path}, project_primary_id: project_primary_id}
+      when id != project_primary_id and is_binary(path) ->
+        path
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Checkout root of one repository of the run's project.
+
+  `nil` is the run's primary repository. Any other id must be registered on
+  the run's project (`ProjectionStore.project_repository/2`); an unregistered
+  id is `{:error, {:unknown_repo, id}}`, so a caller can never reach a path
+  that is not one of the project's repositories.
+  """
+  @spec repo_root(map(), String.t() | nil) ::
+          {:ok, String.t()} | {:error, {:unknown_repo, term()} | :project_path_missing}
+  def repo_root(state, nil) do
+    case project_path(state) do
+      nil -> {:error, :project_path_missing}
+      path -> {:ok, path}
+    end
+  end
+
+  def repo_root(state, repo_id) when is_binary(repo_id) do
+    with id when is_binary(id) and id != "" <- project_id(state),
+         %{path: path} when is_binary(path) and path != "" <-
+           ProjectionStore.project_repository(id, repo_id) do
+      {:ok, path}
+    else
+      _ -> {:error, {:unknown_repo, repo_id}}
+    end
+  end
+
+  def repo_root(_state, repo_id), do: {:error, {:unknown_repo, repo_id}}
+
+  # Resolves the run's repository set from the task (or, for a work run with
+  # no task fields, the run projection) and applies the run-start gate. A run
+  # that names no repository is the single-repository run: nothing is read,
+  # `state` is returned untouched.
+  defp resolve_run_repo_set(state) do
+    with id when is_binary(id) and id != "" <- project_id(state),
+         request = run_repo_request(state),
+         {:ok, resolved} <-
+           RunRepoSet.resolve(id, request, max_repos_per_run(state)),
+         :ok <- RunRepoSet.gate(resolved) do
+      case resolved do
+        :single -> {:ok, state}
+        %{} -> {:ok, Map.put(state, :run_repos, resolved)}
+      end
+    else
+      {:error, _reason} = error -> error
+      _no_project -> {:ok, state}
+    end
+  end
+
+  defp run_repo_request(state) do
+    from_task = repo_request(state.task)
+
+    if from_task == %{} do
+      case ProjectionStore.run(state.run_id) do
+        %{} = run -> repo_request(run)
+        _ -> %{}
+      end
+    else
+      from_task
+    end
+  end
+
+  defp repo_request(source) do
+    Enum.reduce([:repo_id, :repo_ids], %{}, fn key, acc ->
+      case Map.get(source, key) || Map.get(source, Atom.to_string(key)) do
+        nil -> acc
+        value -> Map.put(acc, key, value)
+      end
+    end)
+  end
+
+  defp max_repos_per_run(state) do
+    case Map.get(state, :project_settings) do
+      %ForemanServer.ProjectSettings{max_repos_per_run: max} when is_integer(max) -> max
+      _ -> ForemanServer.Aggregates.Project.Settings.default_max_repos_per_run()
     end
   end
 
@@ -2400,7 +2522,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp ensure_run_worktree(state, phase_index) do
     case Map.get(state, :run_worktree) do
       %{worktree_path: path} = record when is_binary(path) and path != "" ->
-        reuse_run_worktree(record, path)
+        with {:ok, reused} <- reuse_run_worktree(record, path),
+             :ok <- verify_secondary_worktrees(state) do
+          {:ok, reused}
+        end
 
       nil ->
         create_run_worktree(state, phase_index)
@@ -2473,7 +2598,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          operation_id = Worktree.operation_id(state.run_id, nil),
          worktree_path = run_worktree_path(project_id, state, spec),
          :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
-         branch = render_worktree_template(branch_template(spec), state),
+         branch = RunWorktreeLayout.branch(spec, worktree_task_id(state), state.run_id),
          :ok <- ensure_worktree_parent_dir(worktree_path) do
       Worktree.create(%{
         operation_id: operation_id,
@@ -2499,7 +2624,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
             cleanup: cleanup
           }
 
-          run_project_setup(state, record)
+          with {:ok, record} <- run_project_setup(state, record) do
+            create_repo_worktrees(state, phase_index, record)
+          end
 
         {:ok, other_path} ->
           # Worktree.create guarantees the returned path matches the requested
@@ -2533,6 +2660,241 @@ defmodule ForemanServer.Workflow.RunExecutor do
         if record.cleanup == :always, do: do_clean_run_worktree(state, record)
         error
     end
+  end
+
+  # Eager provisioning of the run's secondary repositories, primary first
+  # (S3 §5). Sequential: on a failure at repository N, repositories 1..N-1
+  # (the primary included) are compensated - worktree removed, branch deleted -
+  # so a failed start leaves no half-provisioned run, and the phase fails with
+  # `{:multi_repo_worktree_failed, repo_id, reason}`. A single-repository run
+  # (no `:run_repos` extras) returns the primary record untouched.
+  defp create_repo_worktrees(state, phase_index, primary_record) do
+    case Map.get(state, :run_repos) do
+      %{extras: [_ | _] = extras} ->
+        provision_secondaries(state, phase_index, primary_record, extras)
+
+      _ ->
+        {:ok, primary_record}
+    end
+  end
+
+  defp provision_secondaries(state, phase_index, primary_record, extras) do
+    Enum.reduce_while(extras, {:ok, []}, fn repo, {:ok, created} ->
+      case create_repo_worktree(state, phase_index, primary_record, repo) do
+        {:ok, record} ->
+          {:cont, {:ok, [record | created]}}
+
+        {:error, reason} ->
+          _ =
+            compensate_run_worktrees(state, phase_index, [primary_record | Enum.reverse(created)])
+
+          {:halt, {:error, {:multi_repo_worktree_failed, repo.id, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, _created} -> {:ok, primary_record}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp create_repo_worktree(state, phase_index, primary_record, repo) do
+    task_id = worktree_task_id(state)
+    project_id = primary_record.project_id
+    operation_id = RunWorktreeLayout.operation_id(state.run_id, repo.id)
+
+    worktree_path =
+      RunWorktreeLayout.path(project_id, task_id, state.run_id, {:secondary, repo.id})
+
+    with :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
+         :ok <- assert_git_repo(repo.path),
+         {:ok, base_branch, base_ref} <- repo_base(repo),
+         :ok <- ensure_worktree_parent_dir(worktree_path),
+         {:ok, ^worktree_path} <-
+           Worktree.create(%{
+             operation_id: operation_id,
+             project_id: project_id,
+             run_id: state.run_id,
+             phase_id: Identity.phase_id(state.run_id, phase_index),
+             repo_path: repo.path,
+             worktree_path: worktree_path,
+             base_ref: base_ref,
+             branch: primary_record.branch,
+             repo_id: repo.id
+           }) do
+      dispatch_repo_base_branch(state.run_id, repo.id, base_branch)
+
+      {:ok,
+       %{
+         operation_id: operation_id,
+         worktree_path: worktree_path,
+         branch: primary_record.branch,
+         base_ref: base_ref,
+         base_branch: base_branch,
+         project_root: repo.path,
+         project_id: project_id,
+         implementation_key: nil,
+         trd_scope: nil,
+         cleanup: primary_record.cleanup,
+         repo_id: repo.id
+       }}
+    else
+      {:ok, other_path} -> {:error, {:worktree_path_drift, worktree_path, other_path}}
+      {:error, _} = error -> error
+    end
+  end
+
+  # A secondary repository's base: its registered `default_branch` when set
+  # (base_ref = that branch's tip), else the branch checked out right now with
+  # base_ref = HEAD - exactly the primary's rule. Plan-context `source_revision`
+  # pinning stays primary-only.
+  defp repo_base(%{path: path, default_branch: default_branch}) do
+    case default_branch do
+      branch when is_binary(branch) and branch != "" ->
+        case resolve_revision(path, branch) do
+          {:ok, sha} -> {:ok, branch, sha}
+          {:error, reason} -> {:error, {:worktree_base_unresolvable, branch, reason}}
+        end
+
+      _ ->
+        with {:ok, branch} <- checkout_branch(path),
+             {:ok, sha} <- resolve_revision(path, "HEAD") do
+          {:ok, branch, sha}
+        end
+    end
+  end
+
+  # Best-effort, like the primary's: persisting the base is what makes it
+  # resume-safe, but a dispatch failure must not fail the run.
+  defp dispatch_repo_base_branch(run_id, repo_id, branch) do
+    CommandGateway.dispatch_system(%{
+      type: "run.record_base_branch",
+      command_id: "run_executor:base-branch:" <> run_id <> ":" <> repo_id,
+      aggregate_id: "run:#{run_id}",
+      payload: %{run_id: run_id, base_branch: branch, repo_id: repo_id}
+    })
+  end
+
+  # Removes the given run worktrees and their branches, continuing past a
+  # failure. Returns the `{repo_id, reason}` pairs that could not be removed.
+  defp compensate_run_worktrees(state, phase_index, records) do
+    Enum.flat_map(records, fn record ->
+      repo_id = Map.get(record, :repo_id)
+
+      case remove_run_worktree_and_branch(state, phase_index, record) do
+        :ok ->
+          []
+
+        {:error, reason} ->
+          Logger.warning(
+            "RunExecutor #{state.run_id} rollback of #{inspect(repo_id || :primary)} worktree failed: #{inspect(reason)}",
+            run_id: state.run_id,
+            operation: "run_executor.worktree_rollback",
+            outcome: "error"
+          )
+
+          [{repo_id, reason}]
+      end
+    end)
+  end
+
+  defp remove_run_worktree_and_branch(state, phase_index, record) do
+    clean =
+      Worktree.clean(%{
+        operation_id: record.operation_id,
+        project_id: record.project_id,
+        run_id: state.run_id,
+        phase_id: Identity.phase_id(state.run_id, phase_index),
+        repo_path: record.project_root
+      })
+
+    case clean do
+      result when result in [:ok, {:ok, :already_cleaned}] -> delete_run_branch(record)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp delete_run_branch(%{project_root: root, branch: branch}) do
+    if branch in ["main", "master", "trunk"] do
+      :ok
+    else
+      case JobsiteGit.delete_branch(root, branch) do
+        :ok ->
+          :ok
+
+        {:error, %JobsiteError{details: %{reason: output}}} ->
+          {:error, {:branch_delete_failed, branch, output}}
+      end
+    end
+  end
+
+  # Secondary worktrees must still exist and resolve a HEAD at every phase
+  # start (`reuse_run_worktree/2`'s hard-failure rule, per repository). Their
+  # `base_ref` is NOT refreshed: it is the point the repository's PR is cut
+  # from, fixed at creation.
+  defp verify_secondary_worktrees(state) do
+    state
+    |> secondary_run_worktrees()
+    |> Enum.reduce_while(:ok, fn record, :ok ->
+      case reuse_run_worktree(record, record.worktree_path) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  # Every run worktree other than the primary, in repository-id order.
+  defp secondary_run_worktrees(state) do
+    primary_id = primary_repo_id(state)
+
+    state
+    |> Map.get(:run_worktrees, %{})
+    |> Enum.reject(fn {repo_id, _record} -> repo_id == primary_id end)
+    |> Enum.sort_by(fn {repo_id, _record} -> repo_id end)
+    |> Enum.map(fn {_repo_id, record} -> record end)
+  end
+
+  defp primary_repo_id(state) do
+    case Map.get(state, :run_repos) do
+      %{primary: %{id: id}} -> id
+      _ -> ForemanServer.Projects.RepoValidation.primary_id()
+    end
+  end
+
+  # `state.run_worktrees`: repository id => worktree record, the primary
+  # included (`state.run_worktree` stays the primary's alias). Rebuilt from the
+  # run's worktree projection - the registry of a run's repositories - so a
+  # worktree attached by another process is visible without a state message.
+  defp load_run_worktrees(state) do
+    case Map.get(state, :run_worktree) do
+      nil ->
+        state
+
+      primary ->
+        secondaries =
+          for %{repo_id: repo_id, status: "created"} = entry <-
+                ProjectionStore.worktrees_for_run(state.run_id),
+              is_binary(repo_id),
+              into: %{} do
+            {repo_id, record_from_entry(entry, primary)}
+          end
+
+        Map.put(state, :run_worktrees, Map.put(secondaries, primary_repo_id(state), primary))
+    end
+  end
+
+  defp record_from_entry(entry, primary) do
+    %{
+      operation_id: entry.operation_id,
+      worktree_path: entry.worktree_path,
+      branch: entry.branch,
+      base_ref: entry.base_ref,
+      project_root: entry.repo_path,
+      project_id: entry.project_id,
+      implementation_key: nil,
+      trd_scope: nil,
+      cleanup: primary.cleanup,
+      repo_id: entry.repo_id
+    }
   end
 
   # An ImplementationContext is detected by the presence of the values it
@@ -2599,10 +2961,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
     leaf =
       case Map.get(spec, :path) do
         path when is_binary(path) and path != "" -> render_worktree_template(path, state)
-        _ -> "workspace"
+        _ -> nil
       end
 
-    Path.join([worktree_base_root(), project_id, task_id, run_id, leaf])
+    RunWorktreeLayout.path(project_id, task_id, run_id, :primary, leaf)
   end
 
   # Resolve the project_root for default-on worktrees. Prefers
@@ -2610,6 +2972,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # the project's registered path on disk (set for work requests via
   # `foreman project create --path ...`).
   defp default_project_root(project_id, state) do
+    case primary_override_path(state) do
+      nil -> registered_default_project_root(project_id, state)
+      path -> {:ok, path}
+    end
+  end
+
+  defp registered_default_project_root(project_id, state) do
     home = System.fetch_env!("HOME")
     project_root = working_directory(state.task)
 
@@ -2800,30 +3169,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp worktree_base_root do
-    Path.join([System.user_home!(), ".foreman", "worktrees"])
-  end
-
-  # The run's branch. The workflow may name it with `worktree: branch:`; the
-  # default is `foreman/{task_id}/{run_id}`.
-  #
-  # The default used to be `foreman/{run_id}/{phase}` and then
-  # `foreman/{run_id}`. The former named a per-phase branch that no longer
-  # exists; the latter was stable but operator-hostile because run ids are long
-  # hashes. `{task_id}` renders the provider-facing task id when available, then
-  # falls back to Foreman's task/work ids and finally the run id for ad-hoc
-  # legacy projections.
-  #
-  # `{run_id}` is always included so retrying the same task (same task_id,
-  # different run_id) produces a unique branch and does not collide with the
-  # retained worktree of a failed run using `cleanup: never`.
-  defp branch_template(spec) do
-    case Map.get(spec, :branch) do
-      branch when is_binary(branch) and branch != "" -> branch
-      _ -> "foreman/{task_id}/{run_id}"
-    end
-  end
-
   # Whether the run's worktree directory is removed once the run finalizes.
   # Declared per manifest as `cleanup: always | never` inside a `worktree:`
   # block.
@@ -2877,9 +3222,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # move to a workflow-level, run-scoped worktree: it named a per-phase branch
   # and directory that no longer exist.
   defp render_worktree_template(template, state) when is_map(state) do
-    template
-    |> String.replace("{run_id}", state.run_id)
-    |> String.replace("{task_id}", worktree_task_id(state))
+    RunWorktreeLayout.render(template, worktree_task_id(state), state.run_id)
   end
 
   # Containment check: the rendered worktree path MUST resolve to a
@@ -2887,16 +3230,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # This guards against template payloads that smuggle `..` segments through
   # placeholders or that render to absolute paths.
   defp assert_worktree_path_contained(project_id, %{run_id: run_id} = state, worktree_path) do
-    expected_root =
-      Path.join([worktree_base_root(), project_id, worktree_task_id(state), run_id])
-      |> Path.expand()
+    task_id = worktree_task_id(state)
 
-    actual_root = Path.expand(worktree_path)
-
-    if String.starts_with?(actual_root, expected_root <> "/") or actual_root == expected_root do
+    if RunWorktreeLayout.contained?(project_id, task_id, run_id, worktree_path) do
       :ok
     else
-      {:error, {:worktree_path_escape, expected_root, actual_root}}
+      expected_root = project_id |> RunWorktreeLayout.run_root(task_id, run_id) |> Path.expand()
+      {:error, {:worktree_path_escape, expected_root, Path.expand(worktree_path)}}
     end
   end
 
@@ -2933,7 +3273,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp commit_phase_worktree(state, phase_spec, phase_index, %{worktree_path: path})
        when is_binary(path) and path != "" do
     if phase_commits?(phase_spec) do
-      commit_dirty_worktree(state, phase_index, path)
+      primary = commit_dirty_worktree(state, phase_index, path)
+
+      case {primary, commit_secondary_worktrees(state, phase_spec, phase_index)} do
+        {{:ok, _}, {:error, _} = secondary_error} -> secondary_error
+        {primary_result, _secondaries} -> primary_result
+      end
     else
       # `commit: false` — the phase's work stays in the worktree for a later
       # phase to commit. Nothing is inspected and nothing is staged.
@@ -2961,6 +3306,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp commit_phase_worktree(_state, _phase_spec, phase_index, record) do
     raise ArgumentError,
           "phase #{phase_index} worktree record carries no worktree_path: #{inspect(record)}"
+  end
+
+  # Foreman owns every run worktree, so it commits every one (E12): the engine's
+  # `:commit` step commits the primary only, and this commits each secondary
+  # right after it (`phase_finish/5`) or at a pause. All repositories are
+  # attempted; the first failure is returned and fails the phase. A run with no
+  # secondary worktree returns `:ok` without inspecting anything.
+  defp commit_secondary_worktrees(state, phase_spec, phase_index) do
+    case secondary_run_worktrees(state) do
+      [] ->
+        :ok
+
+      records ->
+        if phase_commits?(phase_spec) do
+          records
+          |> Enum.map(&commit_dirty_worktree(state, phase_index, &1.worktree_path))
+          |> Enum.find(:ok, &match?({:error, _}, &1))
+        else
+          :ok
+        end
+    end
   end
 
   # Absent defaults to committing. That preserves the behavior from when the
@@ -3041,12 +3407,30 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     warn_uncommitted_work(state)
 
-    case {Map.get(state, :run_worktree), outcome} do
-      {%{cleanup: :always} = record, _} -> do_clean_run_worktree(state, record)
-      {%{cleanup: :on_success} = record, :success} -> do_clean_run_worktree(state, record)
-      _ -> :ok
+    case Map.get(state, :run_worktree) do
+      nil ->
+        :ok
+
+      primary ->
+        # Every repository, the primary first; a failing one never stops the
+        # rest, and the failures are aggregated.
+        failures =
+          [primary | secondary_run_worktrees(state)]
+          |> Enum.filter(&reclaim_run_worktree?(&1, outcome))
+          |> Enum.flat_map(fn record ->
+            case do_clean_run_worktree(state, record) do
+              :ok -> []
+              {:error, reason} -> [{Map.get(record, :repo_id), reason}]
+            end
+          end)
+
+        if failures == [], do: :ok, else: {:error, {:worktree_cleanup_failed, failures}}
     end
   end
+
+  defp reclaim_run_worktree?(%{cleanup: :always}, _outcome), do: true
+  defp reclaim_run_worktree?(%{cleanup: :on_success}, :success), do: true
+  defp reclaim_run_worktree?(_record, _outcome), do: false
 
   # REQ-006. `Interpreter` refuses a manifest whose deferred work would be
   # DESTROYED by cleanup, because that is unsatisfiable; a manifest that merely
@@ -3080,6 +3464,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
             "later phase that ran committed it. The changes remain in the run's worktree; " <>
             "AutoPR proposes commits only, so this run has no PR to show for that work."
         )
+
+        # One warning per further repository, naming it: the operator needs to
+        # know WHICH checkout holds the stranded work.
+        for %{repo_id: repo_id, worktree_path: path} <- secondary_run_worktrees(state) do
+          Logger.warning(
+            "RunExecutor #{state.run_id} left work uncommitted in repository #{repo_id} " <>
+              "(#{path}): phase #{pending} (#{phase_spec_name(Enum.at(executed, pending))}) " <>
+              "declared \"commit: false\" and no later phase that ran committed it."
+          )
+        end
+
+        :ok
     end
   end
 
@@ -3116,12 +3512,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       {:ok, :already_cleaned} ->
         :ok
 
-      {:error, reason} ->
+      {:error, reason} = error ->
         Logger.warning(
           "RunExecutor #{state.run_id} worktree cleanup reported: #{inspect(reason)}"
         )
 
-        :ok
+        error
     end
   end
 
@@ -3715,6 +4111,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __rehydrate_resume_context_for_test__(state), do: rehydrate_resume_context(state)
+
+  @doc false
+  def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
+
+  @doc false
+  def __load_run_worktrees_for_test__(state), do: load_run_worktrees(state)
+
+  @doc false
+  def __commit_secondary_worktrees_for_test__(state, phase_spec, phase_index),
+    do: commit_secondary_worktrees(state, phase_spec, phase_index)
+
+  @doc false
+  def __ensure_run_worktree_for_test__(state, phase_index),
+    do: ensure_run_worktree(state, phase_index)
 
   # Provider-facing identifier for the task. Shares `task_identity/1` with
   # `worktree_task_id/1` (CodeRabbit review) so the worktree and the
