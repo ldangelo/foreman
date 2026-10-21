@@ -50,7 +50,7 @@ defmodule ForemanServer.Jobsite.SteerTest do
     path
   end
 
-  defp start_running!(repo, {_log, agent_bin}) do
+  defp start_running!(repo, {log, agent_bin}) do
     agent =
       Agents.pi("x",
         binary: agent_bin,
@@ -72,6 +72,16 @@ defmodule ForemanServer.Jobsite.SteerTest do
       )
 
     await_event("JobsiteIterationStarted", id)
+
+    # `JobsiteIterationStarted` is recorded before the agent process exists. Pausing in that
+    # gap cancels an iteration that never ran, so the prompt log would hold only the resumed
+    # invocation. Wait until the agent has really started (it logs its prompt first thing).
+    ForemanServer.TestSupport.Eventually.await(
+      fn -> match?({:ok, "--invocation--" <> _}, File.read(log)) end,
+      timeout: 30_000,
+      message: "the agent process never started"
+    )
+
     id
   end
 
