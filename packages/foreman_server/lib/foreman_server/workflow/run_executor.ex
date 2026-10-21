@@ -1270,7 +1270,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     # `FOREMAN_*` always wins: `ProjectEnvironment.resolve/2` refuses a project
     # that stores a reserved name, so no project key can reach this merge.
-    env = Map.merge(resolved.env, foreman_env)
+    env =
+      resolved.env
+      |> Map.merge(ForemanServer.Library.env(project_id(state)))
+      |> Map.merge(foreman_env)
 
     {:ok,
      %{

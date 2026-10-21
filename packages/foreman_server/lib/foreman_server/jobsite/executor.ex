@@ -192,6 +192,8 @@ defmodule ForemanServer.Jobsite.Executor do
          {:ok, {sandbox_provider, sandbox_config}} <-
            fetch(opts, :sandbox, :sandbox_create_failed, "sandbox"),
          :ok <- Hooks.validate(Keyword.get(opts, :hooks)),
+         {agent, sandbox_config} =
+           apply_library(agent, sandbox_provider, sandbox_config, Keyword.get(opts, :project_id)),
          {:ok, sandbox_config, network_cleanup} <-
            apply_network_policy(
              Keyword.get(opts, :project_id),
@@ -222,6 +224,24 @@ defmodule ForemanServer.Jobsite.Executor do
          bead_id: Keyword.get(opts, :bead_id),
          project_id: Keyword.get(opts, :project_id)
        }}
+    end
+  end
+
+  # Library delivery (E5): see `ForemanServer.Library.delivery/2`. The library
+  # variable is Foreman's own namespace, so it overrides the spec's agent env.
+  defp apply_library(agent, provider, config, project_id) do
+    sandbox = if provider.name() == "docker", do: :docker, else: :host
+
+    case ForemanServer.Library.delivery(project_id, sandbox) do
+      %{env: env, mounts: []} when map_size(env) == 0 ->
+        {agent, config}
+
+      %{env: env, mounts: []} ->
+        {%{agent | env: Map.merge(agent.env || %{}, env)}, config}
+
+      %{env: env, mounts: mounts} ->
+        {%{agent | env: Map.merge(agent.env || %{}, env)},
+         Map.put(config, :mounts, mounts ++ Map.get(config, :mounts, []))}
     end
   end
 
