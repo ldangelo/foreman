@@ -28,6 +28,24 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_pr_watch_stop"
   ]
 
+  @doc """
+  The single source of truth for which MCP tools mutate state. Both
+  `authorized?/1` / `list_tools/1` (the write gate) and the MCP allowlist seed in
+  `ForemanServer.Application` read this list, so a write tool can never be gated
+  by one and silently allowed by the other. The merge gate is never an MCP tool.
+  """
+  @spec write_tools() :: [String.t()]
+  def write_tools, do: @write_tools
+
+  @doc """
+  Names of every advertised tool that is not a write tool: the set the MCP
+  allowlist is seeded with. Derived, never hand-maintained.
+  """
+  @spec read_tool_names() :: [String.t()]
+  def read_tool_names do
+    for %{name: name} <- ForemanServer.MCP.Tools.list_tools(), name not in @write_tools, do: name
+  end
+
   @spec authorized?(String.t()) :: boolean()
   def authorized?(tool_name) do
     if allow_workflow_writes?() do
