@@ -54,6 +54,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_project_settings_update",
                "foreman_project_pause",
                "foreman_project_resume",
+               "foreman_usage_get",
                "foreman_workflow_list",
                "foreman_workflow_get",
                "foreman_workflow_validate",

@@ -329,9 +329,27 @@ defmodule ForemanServer.Review.Analyzer do
       {:error, Error.new(:evaluator_failed, "evaluator #{kind}: #{inspect(reason)}", %{})}
   end
 
-  defp undetermined(%Error{code: code, message: message}) do
-    %Verdict{verdict: :undetermined, error_code: code, summary: message}
+  defp undetermined(%Error{code: code, message: message, details: details}) do
+    spent = if is_map(details), do: Map.get(details, :usage), else: nil
+
+    verdict = %Verdict{verdict: :undetermined, error_code: code, summary: message}
+
+    case spent do
+      %{usage: %ForemanServer.Usage{} = usage, model: model, provider: provider} ->
+        %Verdict{verdict | usage: usage, model: model, usage_provider: provider}
+
+      _ ->
+        verdict
+    end
   end
+
+  defp verdict_usage(%ForemanServer.Usage{} = usage) do
+    if ForemanServer.Usage.empty?(usage),
+      do: nil,
+      else: ForemanServer.Usage.to_event_fields(usage)
+  end
+
+  defp verdict_usage(_), do: nil
 
   # Returns nil on success, otherwise a note for the recorded summary.
   defp write_analysis(subject, verdict) do
@@ -378,6 +396,9 @@ defmodule ForemanServer.Review.Analyzer do
       analysis_path: if(analysis_written?, do: Path.join(subject.archive_dir, "analysis.md")),
       evaluator: evaluator_name(),
       error_code: verdict.error_code && Atom.to_string(verdict.error_code),
+      model: verdict.model,
+      usage: verdict_usage(verdict.usage),
+      usage_provider: verdict.usage_provider,
       at: DateTime.to_iso8601(DateTime.utc_now())
     }
 

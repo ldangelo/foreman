@@ -34,6 +34,7 @@ defmodule ForemanServer.ProjectionStore do
   alias ForemanServer.{EventCodec, EventStore}
   alias ForemanServer.Events.{UsageRecorded, WorkerSessionBound, WorkerStderr, WorkerStdout}
   alias ForemanServer.Usage
+  alias ForemanServer.Usage.Ledger, as: UsageLedger
 
   @active_run_statuses ["awaiting_worker", "in_progress"]
 
@@ -407,6 +408,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:project_limits, project_id, now})
   end
 
+  @doc """
+  Usage rollup of a project (`ForemanServer.Usage.Rollup`) over the UTC days
+  `opts[:from]..opts[:to]` (inclusive ISO dates, both optional), or `nil` for an
+  unknown project. A known project without usage returns an empty rollup.
+  """
+  @spec usage(String.t(), keyword()) :: ForemanServer.Usage.Rollup.t() | nil
+  def usage(project_id, opts \\ []) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:usage, project_id, opts[:from], opts[:to]})
+  end
+
   @doc "Return every projected project."
   @spec list_projects() :: [map()]
   def list_projects do
@@ -676,10 +687,24 @@ defmodule ForemanServer.ProjectionStore do
             project_id
           )
 
+        usage_ledgers =
+          replace_project_entry(
+            Map.get(state, :usage, %{}),
+            Map.get(rebuilt_project_state, :usage, %{}),
+            project_id
+          )
+
         project_thread_days =
           replace_project_entry(
             Map.get(state, :project_thread_days, %{}),
             Map.get(rebuilt_project_state, :project_thread_days, %{}),
+            project_id
+          )
+
+        project_deferrals =
+          replace_project_entry(
+            Map.get(state, :project_deferrals, %{}),
+            Map.get(rebuilt_project_state, :project_deferrals, %{}),
             project_id
           )
 
@@ -688,6 +713,8 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:projects, projects)
           |> Map.put(:project_active_runs, project_active_runs)
           |> Map.put(:project_thread_days, project_thread_days)
+          |> Map.put(:project_deferrals, project_deferrals)
+          |> Map.put(:usage, usage_ledgers)
           |> broadcast_events(recovered_events)
 
         {:reply, :ok, new_state}
@@ -783,6 +810,19 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:usage, project_id, from, to}, _from, state) do
+    reply =
+      if Map.has_key?(state.projects, project_id) do
+        state
+        |> Map.get(:usage, %{})
+        |> Map.get(project_id, UsageLedger.new())
+        |> UsageLedger.rollup(from, to)
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
   def handle_call({:project_limits, project_id, now}, _from, state) do
     reply =
       case Map.get(state.projects, project_id) do
@@ -801,13 +841,21 @@ defmodule ForemanServer.ProjectionStore do
 
           deferred = state |> deferred_task_ids(project_id) |> length()
 
+          deferred_by_reason =
+            state
+            |> Map.get(:project_deferrals, %{})
+            |> Map.get(project_id, %{})
+            |> Map.get(day, %{})
+            |> Map.new(fn {reason, task_ids} -> {reason, MapSet.size(task_ids)} end)
+
           ForemanServer.ProjectLimits.build(
             project,
             %{
               active_runs:
                 state |> Map.get(:project_active_runs, %{}) |> Map.get(project_id, []) |> length(),
               threads_started_today: threads_today,
-              deferred_tasks: deferred
+              deferred_tasks: deferred,
+              deferred_by_reason: deferred_by_reason
             },
             now
           )
@@ -1044,6 +1092,8 @@ defmodule ForemanServer.ProjectionStore do
       subscribers: %{},
       project_active_runs: %{},
       project_thread_days: %{},
+      project_deferrals: %{},
+      usage: %{},
       worktrees: %{},
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
@@ -1198,6 +1248,31 @@ defmodule ForemanServer.ProjectionStore do
 
     if valid_id?(project_id) and valid_id?(thread_id) and is_binary(kind) do
       count_project_thread(state, project_id, kind, thread_id, get(payload, :day))
+    else
+      state
+    end
+  end
+
+  # Admission refusals are retried, so they are counted per project/day/reason
+  # as distinct tasks (a MapSet: replaying the event cannot inflate the count).
+  defp apply_event_by_type(state, "ProjectAdmissionDeferred", payload) do
+    project_id = get(payload, :project_id)
+    task_id = get(payload, :task_id)
+    reason = get(payload, :reason)
+    day = get(payload, :day)
+
+    if valid_id?(project_id) and valid_id?(task_id) and is_binary(reason) and is_binary(day) do
+      all = Map.get(state, :project_deferrals, %{})
+
+      per_day =
+        all
+        |> Map.get(project_id, %{})
+        |> Map.update(day, %{reason => MapSet.new([task_id])}, fn by_reason ->
+          Map.update(by_reason, reason, MapSet.new([task_id]), &MapSet.put(&1, task_id))
+        end)
+        |> retain_recent_days()
+
+      Map.put(state, :project_deferrals, Map.put(all, project_id, per_day))
     else
       state
     end
@@ -1712,7 +1787,8 @@ defmodule ForemanServer.ProjectionStore do
       {:ok, %UsageRecorded{} = event} ->
         usage = Usage.from_fields(Map.from_struct(event))
 
-        update_run_projection(state, event.run_id, payload_event_at_ms(payload), fn run ->
+        state
+        |> update_run_projection(event.run_id, payload_event_at_ms(payload), fn run ->
           workers =
             run
             |> Map.get(:workers, %{})
@@ -1729,6 +1805,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:workers, workers)
           |> Map.put(:usage, total)
         end)
+        |> record_worker_usage(event, usage, payload)
 
       :error ->
         state
@@ -2142,7 +2219,9 @@ defmodule ForemanServer.ProjectionStore do
       %ForemanServer.Events.ReviewRecorded{subject_kind: kind, subject_id: id}
       when is_binary(kind) and kind != "" and is_binary(id) and id != "" ->
         review = Map.from_struct(event)
+
         %{state | reviews: Map.put(state.reviews, {kind, id}, review)}
+        |> record_review_usage(event)
 
       _ ->
         state
@@ -2160,6 +2239,7 @@ defmodule ForemanServer.ProjectionStore do
             status: "starting",
             repo_path: event.repo_path,
             bead_id: event.bead_id,
+            agent: event.agent || %{},
             project_id: event.project_id,
             strategy: event.strategy,
             branch: event.branch,
@@ -2227,8 +2307,8 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "JobsiteIterationCompleted", payload) do
-    update_jobsite_projection(
-      state,
+    state
+    |> update_jobsite_projection(
       get(payload, :jobsite_id),
       payload_event_at_ms(payload),
       fn jobsite ->
@@ -2246,6 +2326,7 @@ defmodule ForemanServer.ProjectionStore do
         |> Map.put(:session_id, get(payload, :session_id) || Map.get(jobsite, :session_id))
       end
     )
+    |> record_iteration_usage(payload)
   end
 
   defp apply_event_by_type(state, "JobsiteIterationFailed", payload) do
@@ -2450,6 +2531,13 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.new()
 
     Map.put(state, :project_thread_days, Map.put(days, project_id, per_day))
+  end
+
+  defp retain_recent_days(per_day) do
+    per_day
+    |> Enum.sort_by(fn {d, _} -> d end, :desc)
+    |> Enum.take(@thread_day_retention)
+    |> Map.new()
   end
 
   @doc """
@@ -3272,6 +3360,136 @@ defmodule ForemanServer.ProjectionStore do
 
   defp maybe_put(project, _key, nil), do: project
   defp maybe_put(project, key, value), do: Map.put(project, key, value)
+
+  # -- usage ledger (E14) ------------------------------------------------------
+
+  defp record_usage(state, project_id, key, record) when is_binary(project_id) do
+    usage = Map.get(state, :usage, %{})
+    ledger = usage |> Map.get(project_id, UsageLedger.new()) |> UsageLedger.put(key, record)
+    Map.put(state, :usage, Map.put(usage, project_id, ledger))
+  end
+
+  defp record_usage(state, _project_id, _key, _record), do: state
+
+  defp usage_at(at, payload) do
+    case is_binary(at) && DateTime.from_iso8601(at) do
+      {:ok, datetime, _offset} ->
+        DateTime.to_iso8601(datetime)
+
+      _ ->
+        payload
+        |> payload_event_at_ms()
+        |> DateTime.from_unix!(:millisecond)
+        |> DateTime.to_iso8601()
+    end
+  end
+
+  defp usage_provider_atom(provider) do
+    case to_string(provider) do
+      "claude" -> :claude
+      "pi" -> :pi
+      _ -> :unknown
+    end
+  end
+
+  defp usage_from_map(%{} = fields) do
+    Usage.from_fields(
+      Map.new(
+        [
+          :input_tokens,
+          :output_tokens,
+          :cache_read_tokens,
+          :cache_write_tokens,
+          :total_tokens,
+          :cost_usd
+        ],
+        &{&1, get(fields, &1)}
+      )
+    )
+  end
+
+  defp usage_from_map(_), do: %Usage{}
+
+  defp record_worker_usage(state, %UsageRecorded{} = event, usage, payload) do
+    jobsite = Map.get(state.jobsites, event.run_id)
+    run = Map.get(state.runs, event.run_id)
+
+    {kind, project_id} =
+      cond do
+        is_map(jobsite) ->
+          {"jobsite", event.project_id || Map.get(jobsite, :project_id)}
+
+        true ->
+          {"workflow", event.project_id || (is_map(run) && Map.get(run, :project_id)) || nil}
+      end
+
+    if Usage.empty?(usage) do
+      state
+    else
+      record_usage(state, project_id, {kind, event.run_id, {:worker, event.worker_id}}, %{
+        thread_kind: kind,
+        thread_id: event.run_id,
+        role: event.role || "thread",
+        model: event.model,
+        provider: event.provider,
+        at: usage_at(event.at, payload),
+        usage: usage
+      })
+    end
+  end
+
+  defp record_iteration_usage(state, payload) do
+    jobsite_id = get(payload, :jobsite_id)
+    jobsite = Map.get(state.jobsites, jobsite_id)
+    raw = get(payload, :usage)
+
+    if is_map(jobsite) and is_map(raw) and map_size(raw) > 0 do
+      agent = Map.get(jobsite, :agent) || %{}
+      provider = get(agent, :provider)
+      usage = Usage.normalize(usage_provider_atom(provider), raw, nil)
+
+      if Usage.empty?(usage) do
+        state
+      else
+        record_usage(
+          state,
+          Map.get(jobsite, :project_id),
+          {"jobsite", jobsite_id, {:iteration, get(payload, :index)}},
+          %{
+            thread_kind: "jobsite",
+            thread_id: jobsite_id,
+            role: "thread",
+            model: get(agent, :model),
+            provider: provider && to_string(provider),
+            at: usage_at(nil, payload),
+            usage: usage
+          }
+        )
+      end
+    else
+      state
+    end
+  end
+
+  defp record_review_usage(state, %ForemanServer.Events.ReviewRecorded{} = event) do
+    usage = usage_from_map(event.usage)
+
+    if Usage.empty?(usage) do
+      state
+    else
+      kind = if event.subject_kind == "jobsite", do: "jobsite", else: "workflow"
+
+      record_usage(state, event.project_id, {kind, event.subject_id, {:worker, "review"}}, %{
+        thread_kind: kind,
+        thread_id: event.subject_id,
+        role: "review",
+        model: event.model,
+        provider: event.usage_provider,
+        at: usage_at(event.at, %{}),
+        usage: usage
+      })
+    end
+  end
 
   defp get(%{} = m, k), do: get(m, k, nil)
 

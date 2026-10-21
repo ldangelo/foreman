@@ -95,6 +95,9 @@ defmodule ForemanServer.Aggregates.Review do
            analysis_path: Aggregate.get(payload, :analysis_path),
            evaluator: Aggregate.get(payload, :evaluator),
            error_code: Aggregate.get(payload, :error_code),
+           model: Aggregate.get(payload, :model),
+           usage: Aggregate.get(payload, :usage),
+           usage_provider: Aggregate.get(payload, :usage_provider),
            at: Aggregate.get(payload, :at) || DateTime.to_iso8601(DateTime.utc_now())
          }
        }}

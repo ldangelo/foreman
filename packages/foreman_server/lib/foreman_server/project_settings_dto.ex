@@ -11,7 +11,8 @@ defmodule ForemanServer.ProjectSettingsDTO do
         "limits" => %{"max_concurrent_runs" => 3, "active_runs" => 0,
                       "daily_thread_cap" => nil, "threads_started_today" => 0,
                       "remaining_today" => nil, "cap_reached?" => false,
-                      "resets_at" => "2026-03-05T00:00:00Z", "deferred_tasks" => 0}
+                      "resets_at" => "2026-03-05T00:00:00Z", "deferred_tasks" => 0,
+                      "deferred_today" => 0, "deferred_by_reason" => %{}}
       }
 
   `settings` carries exactly the keys of `ForemanServer.ProjectSettings`.

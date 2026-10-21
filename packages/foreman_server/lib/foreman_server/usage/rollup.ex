@@ -23,35 +23,11 @@ defmodule ForemanServer.Usage.Rollup do
   """
 
   alias ForemanServer.Usage
+  alias ForemanServer.Usage.{Bucket, ThreadUsage}
 
   @unknown "unknown"
   @retention_days 366
   @recent_events 5
-
-  defmodule Bucket do
-    @moduledoc "Summed usage of a set of events plus how many of them had no cost."
-    @type t :: %__MODULE__{
-            usage: Usage.t(),
-            events: non_neg_integer(),
-            cost_unknown_events: non_neg_integer()
-          }
-    defstruct usage: %Usage{}, events: 0, cost_unknown_events: 0
-  end
-
-  defmodule ThreadUsage do
-    @moduledoc "One thread's (run or jobsite) bucket, its last activity and its most recent events."
-    @type recent :: %{at: String.t(), usage: Usage.t()}
-    @type t :: %__MODULE__{
-            thread_kind: String.t(),
-            thread_id: String.t(),
-            role: String.t(),
-            last_at: String.t(),
-            bucket: ForemanServer.Usage.Rollup.Bucket.t(),
-            recent: [recent()]
-          }
-    @enforce_keys [:thread_kind, :thread_id, :role, :last_at]
-    defstruct [:thread_kind, :thread_id, :role, :last_at, bucket: %Bucket{}, recent: []]
-  end
 
   @type t :: %__MODULE__{
           total: Bucket.t(),
@@ -69,7 +45,7 @@ defmodule ForemanServer.Usage.Rollup do
             by_provider: %{},
             by_role: %{}
 
-  @type record :: %{
+  @type usage_record :: %{
           required(:thread_kind) => String.t(),
           required(:thread_id) => String.t(),
           required(:role) => String.t(),
@@ -88,7 +64,7 @@ defmodule ForemanServer.Usage.Rollup do
   def day(at) when is_binary(at), do: String.slice(at, 0, 10)
 
   @doc "Fold one record in. Pure and total."
-  @spec add(t(), record()) :: t()
+  @spec add(t(), usage_record()) :: t()
   def add(%__MODULE__{} = rollup, %{usage: %Usage{} = usage, at: at} = record)
       when is_binary(at) do
     day = day(at)
@@ -107,7 +83,7 @@ defmodule ForemanServer.Usage.Rollup do
   end
 
   @doc "Fold a list of records."
-  @spec from_records([record()]) :: t()
+  @spec from_records([usage_record()]) :: t()
   def from_records(records), do: Enum.reduce(records, %__MODULE__{}, &add(&2, &1))
 
   @doc "Add a whole bucket (used to carry the totals of pruned days)."
@@ -134,7 +110,8 @@ defmodule ForemanServer.Usage.Rollup do
     }
   end
 
-  defp bump(map, key, usage), do: Map.update(map, key, add_bucket(%Bucket{}, usage), &add_bucket(&1, usage))
+  defp bump(map, key, usage),
+    do: Map.update(map, key, add_bucket(%Bucket{}, usage), &add_bucket(&1, usage))
 
   defp add_thread(threads, %{thread_id: id, usage: usage, at: at} = record) do
     recent = %{at: at, usage: usage}
@@ -146,6 +123,7 @@ defmodule ForemanServer.Usage.Rollup do
         thread_kind: record.thread_kind,
         thread_id: id,
         role: record.role,
+        provider: record.provider,
         last_at: at,
         bucket: add_bucket(%Bucket{}, usage),
         recent: [recent]
@@ -154,6 +132,7 @@ defmodule ForemanServer.Usage.Rollup do
         %ThreadUsage{
           thread
           | last_at: max(thread.last_at, at),
+            provider: record.provider || thread.provider,
             bucket: add_bucket(thread.bucket, usage),
             recent: thread.recent |> Kernel.++([recent]) |> newest(@recent_events)
         }
@@ -164,8 +143,6 @@ defmodule ForemanServer.Usage.Rollup do
   defp newest(events, count) do
     events |> Enum.sort_by(& &1.at) |> Enum.take(-count)
   end
-
-  defp prune_days(by_day) when map_size(by_day) <= @retention_days, do: by_day
 
   defp prune_days(by_day) do
     newest = by_day |> Map.keys() |> Enum.max() |> Date.from_iso8601!()

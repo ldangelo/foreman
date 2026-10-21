@@ -549,8 +549,54 @@ defmodule ForemanServer.Workflow.Dispatcher do
           reason_code: admission_reason_code(reason)
         )
 
+        note_deferral(run_payload.project_id, task_id, reason)
+
         {:noreply, state}
     end
+  end
+
+  @deferral_reason_codes [:daily_thread_cap_exceeded, :run_limit_exceeded, :project_paused]
+
+  # Durable, idempotent counter of genuine admission refusals (cap, run limit,
+  # pause), read by the usage/limits surfaces. Best effort: this runs in the
+  # Dispatcher's subscriber loop, so a failed command or a dead actor is
+  # logged and never raised.
+  defp note_deferral(project_id, task_id, reason) do
+    code = admission_reason_code(reason)
+
+    if code in @deferral_reason_codes and is_binary(project_id) and is_binary(task_id) do
+      day = ForemanServer.ProjectLimits.day(DateTime.utc_now())
+      command_id = "deferral:#{task_id}:#{code}:#{day}"
+
+      try do
+        case CommandGateway.dispatch_system(%{
+               command_id: command_id,
+               aggregate_id: "project:#{project_id}",
+               type: "project.note_deferral",
+               payload: %{
+                 project_id: project_id,
+                 task_id: task_id,
+                 reason: Atom.to_string(code),
+                 command_id: command_id
+               }
+             }) do
+          {:ok, _} ->
+            :ok
+
+          other ->
+            Logger.warning(
+              "ForemanServer.Workflow.Dispatcher: could not record deferral for #{task_id}: #{inspect(other)}"
+            )
+        end
+      catch
+        kind, error ->
+          Logger.warning(
+            "ForemanServer.Workflow.Dispatcher: deferral record for #{task_id} #{kind}: #{inspect(error)}"
+          )
+      end
+    end
+
+    :ok
   end
 
   # Typed reason atom for the admission-failed telemetry (`:project_paused`,
@@ -810,6 +856,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
               reason: inspect(reason),
               reason_code: admission_reason_code(reason)
             )
+
+            note_deferral(project_id, task_id, reason)
 
             {:noreply, state}
         end

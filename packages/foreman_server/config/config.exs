@@ -255,6 +255,11 @@ config :foreman_server, :jido_vfs,
   # may be in /tmp). Default true in dev/prod.
   enforce_allowlist: System.get_env("FOREMAN_VFS_ENFORCE_ALLOWLIST", "true") == "true"
 
+# Prompt-cache lifetime per provider, seconds (ForemanServer.Usage.CacheHint).
+# claude: Anthropic's documented 5-minute default [assumption: tune per provider;
+# providers without an entry report `likely_cold: null`].
+config :foreman_server, :usage, cache_ttl_seconds: %{claude: 300}
+
 # Per-run session archive + automated review (ForemanServer.Review).
 config :foreman_server, :review,
   capture: true,
