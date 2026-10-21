@@ -1033,6 +1033,7 @@ and behavior cannot diverge.
 `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`,
 `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
 `foreman_thread_find`, `foreman_overview`.
+`foreman_thread_find`.
 The write-gated thread tools are `foreman_thread_stop` and
 `foreman_thread_steer`.
 
