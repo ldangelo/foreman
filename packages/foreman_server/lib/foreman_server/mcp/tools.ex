@@ -911,7 +911,8 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp transcript_opts(args) do
-    opts = for key <- [:after, :limit], Map.get(args, key) != nil, do: {key, Map.fetch!(args, key)}
+    opts =
+      for key <- [:after, :limit], Map.get(args, key) != nil, do: {key, Map.fetch!(args, key)}
 
     if Enum.all?(opts, fn {_key, value} -> is_integer(value) end),
       do: {:ok, opts},
