@@ -42,6 +42,12 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 >
+> foreman thread list       --door --limit --project --status
+> foreman thread get        (no flags)
+> foreman thread stop       --reason
+> foreman thread resolve    --reason
+> foreman thread reopen     (no flags)
+>
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
 >
@@ -588,6 +594,18 @@ It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless t
 | Option | Description |
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
+
+### `foreman thread list|get|stop|resolve|reopen`
+
+A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a jobsite (`jobsite:<id>`). All verbs print the server's JSON.
+
+| Verb | Request |
+|------|---------|
+| `foreman thread list --project <project-id> [--status <s>] [--door workflow\|jobsite] [--limit <n>]` | `GET /api/projects/:id/threads` (`--project` is required). |
+| `foreman thread get <thread-id>` | `GET /api/threads/:id`. |
+| `foreman thread stop [--reason <r>] <thread-id>` | `POST /api/threads/:id/stop`: `run.cancel` for a workflow thread, the jobsite cancel for a jobsite thread. A terminal thread exits 3 (HTTP 409 `not_stoppable`, naming its status). |
+| `foreman thread resolve [--reason <r>] <thread-id>` | Reads the thread's project, then sends the `thread.resolve` operator command (aggregate `thread:<thread-id>`). A disposition flag only; it never stops a run. |
+| `foreman thread reopen <thread-id>` | Sends `thread.reopen`; a thread that is not resolved is rejected. |
 
 
 ---

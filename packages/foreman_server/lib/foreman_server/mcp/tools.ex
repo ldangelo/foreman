@@ -159,6 +159,37 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_thread_transcript %{
+    name: "foreman_thread_transcript",
+    description:
+      "Read a thread's structured transcript turns after a cursor (seq). Returns " <>
+        "turns, next_cursor, truncated, omitted_entries and terminal. Read-only.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"},
+        after: %{type: "integer", description: "Return turns with seq > after (default -1)"},
+        limit: %{type: "integer", description: "Page size, 1..1000 (default 200)"}
+      },
+      required: ["thread_id"]
+    }
+  }
+
+  @schema_foreman_thread_stop %{
+    name: "foreman_thread_stop",
+    description:
+      "Stop a thread (workflow run or jobsite). Terminal threads are rejected with " <>
+        "their status. Never merges or approves.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"},
+        reason: %{type: "string", description: "Why it is stopped (default operator_stop)"}
+      },
+      required: ["thread_id"]
+    }
+  }
+
   @schema_foreman_queue_status %{
     name: "foreman_queue_status",
     description: "Get the current run slot queue status",
@@ -554,6 +585,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_run_status,
     @schema_foreman_thread_list,
     @schema_foreman_thread_get,
+    @schema_foreman_thread_transcript,
+    @schema_foreman_thread_stop,
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
@@ -757,6 +790,81 @@ defmodule ForemanServer.MCP.Tools do
       {:error, :thread_not_found} ->
         Telemetry.mcp_tool_call(duration_us, "foreman_thread_get", :not_found)
         {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+    end
+  end
+
+  defp tool_foreman_thread_transcript(%{thread_id: thread_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with true <- is_binary(thread_id),
+           {:ok, opts} <- transcript_opts(args) do
+        ForemanServer.Threads.Transcript.page(thread_id, opts)
+      else
+        false -> {:error, :thread_not_found}
+        {:error, _} = error -> error
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, page} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :ok)
+        {:ok, ForemanServer.Threads.Transcript.Page.to_dto(page)}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+
+      {:error, {:invalid_option, key}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} is out of range"}}
+
+      {:error, reason} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :error)
+
+        {:error,
+         %ToolError{code: "DOMAIN_ERROR", message: "transcript unavailable: #{inspect(reason)}"}}
+    end
+  end
+
+  defp transcript_opts(args) do
+    opts = for key <- [:after, :limit], Map.get(args, key) != nil, do: {key, Map.fetch!(args, key)}
+
+    if Enum.all?(opts, fn {_key, value} -> is_integer(value) end),
+      do: {:ok, opts},
+      else: {:error, {:invalid_option, :after}}
+  end
+
+  defp tool_foreman_thread_stop(%{thread_id: thread_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+    reason = Map.get(args, :reason)
+
+    result =
+      cond do
+        not is_binary(thread_id) -> {:error, :thread_not_found}
+        not (is_nil(reason) or is_binary(reason)) -> {:error, :invalid_reason}
+        true -> ForemanServer.Threads.Actions.stop(thread_id, reason)
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, :stopping} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :ok)
+        {:ok, %{thread_id: thread_id, requested: "stopping"}}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+
+      {:error, :invalid_reason} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "reason must be a string"}}
+
+      {:error, other} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :error)
+        {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(other)}}
     end
   end
 

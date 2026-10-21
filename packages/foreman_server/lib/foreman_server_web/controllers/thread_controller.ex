@@ -10,6 +10,7 @@ defmodule ForemanServerWeb.ThreadController do
   use ForemanServerWeb, :controller
 
   alias ForemanServer.Threads
+  alias ForemanServer.Threads.Actions
   alias ForemanServer.Threads.Thread
 
   def index(conn, %{"project_id" => project_id} = params) do
@@ -36,6 +37,40 @@ defmodule ForemanServerWeb.ThreadController do
         conn
         |> put_status(:not_found)
         |> json(%{error: "thread_not_found", thread_id: id})
+    end
+  end
+
+  @doc """
+  `POST /api/threads/:id/stop` with optional `reason` and `idempotency_key`.
+  200 `{thread_id, requested: "stopping"}`; 404 unknown thread; 409 when the
+  thread is terminal (`not_stoppable`) or its jobsite has no executor
+  (`no_executor`), both naming `status`; 422 when the cancel is rejected.
+  """
+  def stop(conn, %{"id" => id} = params) do
+    opts =
+      case Map.get(params, "idempotency_key") do
+        key when is_binary(key) and key != "" -> [idempotency_key: key]
+        _ -> []
+      end
+
+    case Actions.stop(id, Map.get(params, "reason"), opts) do
+      {:ok, :stopping} ->
+        conn |> put_status(:ok) |> json(%{thread_id: id, requested: "stopping"})
+
+      {:error, :thread_not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "thread_not_found", thread_id: id})
+
+      {:error, {code, status}} when code in [:not_stoppable, :no_executor] ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: Atom.to_string(code), thread_id: id, status: status})
+
+      {:error, {:cancel_failed, cause}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "cancel_failed", thread_id: id, detail: inspect(cause)})
     end
   end
 

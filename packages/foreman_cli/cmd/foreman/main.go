@@ -18,6 +18,7 @@
 //	run resume          Resume a paused run
 //	run remove          Remove a run and clean worktree/branch
 //	run reset           Reset a failed or stuck run projection
+//	thread list|get|stop|resolve|reopen  Inspect and act on threads
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
 //
@@ -58,6 +59,11 @@ Commands:
   run resume          Resume a paused run
   run remove          Remove a run and clean worktree/branch
   run reset           Reset a failed or stuck run projection
+  thread list         List a project's threads (--project <id>)
+  thread get <id>     Fetch a thread
+  thread stop <id>    Stop a thread (workflow run or jobsite)
+  thread resolve <id> Mark a thread resolved
+  thread reopen <id>  Reopen a resolved thread
   workflow install    Install workflow assets
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
 Env:
@@ -89,6 +95,8 @@ func main() {
 		err = runCommands(args)
 	case "run":
 		err = runRun(c, args)
+	case "thread":
+		err = runThread(c, args)
 	case "workflow":
 		err = runWorkflow(c, args)
 	case "init":
