@@ -3,8 +3,11 @@ defmodule ForemanServer.Jobsite.HostCommand do
   Runs one `sh -c` command on the server host with an environment overlay, a
   wall-clock timeout and bounded output (E4-S4).
 
-  The command runs inside its OWN process group (`set -m`), and on timeout the
-  wrapper is sent TERM, which trap-kills that whole group: no orphan child
+  The command runs inside its OWN process group, and on timeout the wrapper is
+  sent TERM, which trap-kills that whole group. The group is made with `setsid`
+  where it exists (Linux: dash's `set -m` creates NO new group without a
+  controlling terminal, so `kill -- -PID` then hit nothing and the script's
+  children survived) and with `set -m` otherwise (macOS has no `setsid`): no orphan child
   survives a timeout, unlike `System.cmd/3` under `Task.shutdown/2` (see
   `Sandboxes.ExecTimeout`). stderr is merged into stdout. Only the LAST
   `:max_output_bytes` of output are kept, so a chatty script cannot grow the
@@ -20,10 +23,14 @@ defmodule ForemanServer.Jobsite.HostCommand do
   # The script is `$1` so it is never interpolated into the wrapper text.
   @wrapper """
   exec 2>/dev/null
-  set -m
-  sh -c "$1" 2>&1 &
+  if command -v setsid >/dev/null 2>&1; then
+    setsid sh -c "$1" 2>&1 &
+  else
+    set -m
+    sh -c "$1" 2>&1 &
+  fi
   PID=$!
-  trap 'kill -KILL -- -$PID 2>/dev/null; exit 143' TERM
+  trap 'kill -s KILL -- -$PID 2>/dev/null; exit 143' TERM
   wait $PID
   exit $?
   """

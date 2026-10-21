@@ -42,17 +42,21 @@ defmodule ForemanServer.Jobsite.HostCommandTest do
     assert eventually_dead?(grandchild), "grandchild #{grandchild} survived the timeout"
   end
 
-  defp eventually_dead?(pid, attempts \\ 40) do
-    case System.cmd("kill", ["-0", pid], stderr_to_stdout: true) do
-      {_, 0} when attempts > 0 ->
-        Process.sleep(50)
-        eventually_dead?(pid, attempts - 1)
+  # Dead = gone, or a zombie (killed but not yet reaped: a container whose PID 1
+  # does not reap orphans leaves the corpse visible to `kill -0`).
+  defp eventually_dead?(pid, attempts \\ 100) do
+    if alive?(pid) and attempts > 0 do
+      Process.sleep(50)
+      eventually_dead?(pid, attempts - 1)
+    else
+      not alive?(pid)
+    end
+  end
 
-      {_, 0} ->
-        false
-
-      {_, _} ->
-        true
+  defp alive?(pid) do
+    case System.cmd("ps", ["-o", "stat=", "-p", pid], stderr_to_stdout: true) do
+      {out, 0} -> not String.starts_with?(String.trim(out), "Z")
+      {_, _} -> false
     end
   end
 end
