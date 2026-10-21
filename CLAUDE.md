@@ -377,6 +377,23 @@ script (`ProjectSetup`, run via `Jobsite.HostCommand` in its own process group)
 runs once after worktree creation on both doors; network policy
 (`Jobsite.NetworkPolicy`) is enforced on docker jobsites only.
 
+**Project repositories (E12, design `docs/spikes/S3.md`).** A project's `path` is
+its PRIMARY repository; further repositories are the `ProjectRepositoryAdded` /
+`ProjectRepositoryRemoved` events on `project:<id>` (`project.repo.add|remove` in
+`Aggregates.Project`: pure checks only — id `^[a-z0-9][a-z0-9-]{0,31}$`, `"main"`
+reserved, absolute unique paths, `task_provider` reserved nil). There is no event
+for the primary: `ProjectionStore.project_repositories/1` synthesises
+`%{id: "main", path: path, default_branch: nil, primary: true, ...}` at READ time,
+so legacy projects need no backfill and a `project.update` path change moves it
+(`default_branch` is nil = "branch checked out at run start", never `"main"`).
+Impure checks (realpath, git work tree, same-`origin` duplicate) live in
+`Projects.RepoValidation.check_candidate/3` and belong in the CommandGateway
+side-effect step before dispatch — for `project.repo.add` AND `project.update`
+with a new `path` (`replacing: "main"`). Replay rule: `repo_id` on worktree/PR
+events is absent for a run's primary repo (`Workflow.Worktree.operation_id/2`
+keeps `wt-<run_id>`), and any key written to a strictly decoded event must be a
+declared struct field in the same commit as its writer.
+
 `RunExecutor.init/1` parses the persisted `workflow_snapshot` via
 `extract_phase_specs/1`, which uses the dual-key pattern
 `Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the
