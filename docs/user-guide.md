@@ -1648,7 +1648,7 @@ not merge it until an operator runs `foreman run approve-merge` and then
 `foreman run merge` (see the run commands above). The server can also follow
 the PR's state on GitHub in two opt-in ways, each appending a `PrUpdated`
 event to the run (neither changes task status or the PR fields `foreman run
-get` shows yet): `POST /webhooks/github`, which needs
+get` shows; the richer PR record is `foreman run prs`, see "PR watching and auto-fix"): `POST /webhooks/github`, which needs
 `FOREMAN_GITHUB_WEBHOOK_SECRET` — every delivery must carry a valid
 `X-Hub-Signature-256`, a missing or wrong signature gets `401`, and with no
 secret configured the endpoint answers `503` to everything — and a polling
@@ -1885,3 +1885,61 @@ Defaults: agent no-output = 900000 ms; messaging no-progress = 1800000 ms. Disab
 ## Outbound messaging delivery
 
 Enable outbound Telegram/Slack delivery with `config :foreman_server, :messaging`. Runtime config keys: `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, `telegram: [token:, chat_id:]`, and `slack: [webhook_url:]`. `ForemanServer.Messaging.notify/2` never calls provider HTTP directly; it persists notification lifecycle state. The supervised dispatcher starts after `CommandRouter`, performs restart catch-up from the event log, subscribes to projection events, redelivers notifications with no durable terminal outcome (an in-flight attempt or a retryable failure is retried; only a recorded success or a non-retryable failure is skipped), guarantees at most one delivery per notification within one dispatcher process lifetime even if both catch-up and a live projection event observe it, and records redacted success/failure state. A catch-up or subscribe failure crashes the dispatcher under supervision rather than silently dropping live/replay delivery. Delivery failure is notification state only; it must not turn a healthy run into failed.
+
+## PR watching and auto-fix
+
+Foreman watches the pull requests its runs open and can start small, bounded
+"fix threads" on them. Nothing here ever merges: the merge gate
+(`foreman run approve-merge`, `foreman run merge`) stays operator-only, and no
+MCP tool, auto-fix policy or background reactor can approve or merge a PR.
+
+**Observation.** `ForemanServer.PrWatcher` is on by default
+(`config :foreman_server, :pr_watcher, enabled:`; `FOREMAN_PR_WATCHER_ENABLED=false`
+stops it). It reads each PR (checks, review decision, comments, unresolved
+threads, merge conflicts) and folds changes into the run's PR projection as
+`PrChecksChanged` / `PrReviewChanged` events. Two things trigger a read:
+
+- a polling monitor, `ForemanServer.PrMonitor`, **opt-in** with
+  `FOREMAN_PR_MONITOR_ENABLED=true`. It needs the `gh` CLI installed and
+  authenticated on the server host. Polling is adaptive per PR: 30 s while checks
+  are pending, 60 s within ten minutes of a change, 5 minutes when stable
+  (`:pr_monitor_interval_ms`), 15 minutes after a day idle, with jitter, a
+  per-tick cap (`:pr_monitor_max_per_tick`, 25) and back-off on failures or rate
+  limits;
+- `POST /webhooks/github` (needs `FOREMAN_GITHUB_WEBHOOK_SECRET`). Subscribe the
+  webhook to `check_run`, `check_suite`, `pull_request`, `pull_request_review`,
+  `pull_request_review_comment`, `pull_request_review_thread` and `issue_comment`.
+  A delivery only refreshes the PR sooner; the signature is still mandatory and
+  unknown PRs are ignored.
+
+**Reading.** `foreman run prs <run-id>` (HTTP `GET /api/runs/:id/prs`, MCP
+`foreman_pr_status`) returns one record per PR: URL, status, checks state, failing
+checks, review decision, comment count, whether it is still watched, fix counters
+(`ci`, `comments`, `conflicts` attempts and what is in flight) and the merge gate.
+
+**Fix threads.** `foreman run fix-ci|address-comments|resolve-conflicts <run-id>
+[--pr <url>] [--note <text>]` starts a jobsite that checks out the PR head
+branch, fast-forwards it to the remote (never force), lets the agent fix the
+problem and pushes to that same branch. PR comments, review text and CI logs are
+untrusted and are passed to the agent inside a fence it cannot close. The agent is
+the one the run used (its provider session is resumed only when the original
+worktree path still exists), else `config :foreman_server, :pr_fix, agent:`.
+`foreman run create-pr <run-id>` opens the PR when the run has none;
+`foreman run watch-stop|watch-start <run-id> [--pr <url>]` pauses or resumes
+watching one PR (a merged or closed PR is dropped automatically).
+
+**Loop guard.** Per PR and kind there is at most one fix in flight, a hard cap of
+5 attempts (operators included), and a fix that left the PR head unchanged is
+recorded as `PrFixExhausted` (`no_progress`) instead of being retried. Exhaustion
+is an event (`run.pr.fix_exhausted`), visible in `foreman run prs`.
+
+**Auto-fix is opt-in per project.** Set the `pr_auto_fix` project setting, e.g.
+`foreman project update <project> --pr-auto-fix '{"kinds":["ci"],"max_attempts":2,"cooldown_seconds":300}'`
+(kinds from `ci`, `comments`, `conflicts`; attempts 1..5; cooldown 0..86400 s).
+Without it PRs are observed but never changed unless an operator asks.
+
+**Not verified against real GitHub (spike S4).** Live webhook deliveries, force
+pushes to the PR branch, check re-run, merge-conflict resolution and unresolved
+review-thread reads were designed from the GitHub API documentation and tested
+with fakes only. Resuming a Claude provider session from a new directory is also
+unverified; pi sessions are bound to their working directory.
