@@ -222,6 +222,14 @@ work, stay readable by id and with `--include-archived`, and come back with
 `.foreman/` artifacts are kept (see `docs/decisions/project-delete.md`); there is
 no operator command that hard-deletes a project.
 
+### Chat with the project coordinator
+
+```
+foreman project chat project-123 "fix the login bug"
+```
+
+Posts the message, then prints the coordinator's reply and action notes as they arrive. Use `--no-wait` to return immediately, `--history 20` or `--since <seq>` to read the conversation, `--format ndjson` for scripting and `--restart` to restart a wedged coordinator (exit code 3 means it is unhealthy). See `docs/cli-reference.md`.
+
 ### Project settings
 
 A project carries a goal, standing instructions and per-project defaults and

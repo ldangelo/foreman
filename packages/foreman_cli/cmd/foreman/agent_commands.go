@@ -270,6 +270,7 @@ func buildAgentCommandInventory(_ []string) []agentCommandSpec {
 		{ID: "foreman-run-get", DisplayName: "Foreman run detail", Description: "Fetch one Foreman run projection by run ID.", Kind: "run", Args: []agentCommandArg{{Name: "run-id", Required: true, Description: "Run ID positional argument"}}, CLI: []string{"foreman", "run", "get", "$RUN_ID"}, Tags: []string{"foreman", "run"}},
 		{ID: "foreman-project-memory-list", DisplayName: "Foreman project memory list", Description: "List a project's memory topics (MEMORY.md index entries). Agents write memory through the foreman_project_memory_write MCP tool, not this CLI.", Kind: "project", Args: []agentCommandArg{{Name: "project-id", Required: true, Description: "Project ID positional argument"}}, CLI: []string{"foreman", "project", "memory", "list", "$PROJECT_ID"}, Tags: []string{"foreman", "project"}},
 		{ID: "foreman-project-memory-read", DisplayName: "Foreman project memory read", Description: "Read one project memory topic by name.", Kind: "project", Args: []agentCommandArg{{Name: "name", Flag: "--name", Required: true, Description: "Memory topic name"}, {Name: "project-id", Required: true, Description: "Project ID positional argument"}}, CLI: []string{"foreman", "project", "memory", "read", "--name", "$NAME", "$PROJECT_ID"}, Tags: []string{"foreman", "project"}},
+		{ID: "foreman-project-chat", DisplayName: "Foreman project chat", Description: "Send one message to a project's coordinator and print its replies as NDJSON (exit 3 if the coordinator is unhealthy).", Kind: "project", Args: []agentCommandArg{{Name: "project-id", Required: true, Description: "Project ID positional argument"}, {Name: "message", Required: true, Description: "Message text for the coordinator"}}, CLI: []string{"foreman", "project", "chat", "--format", "ndjson", "$PROJECT_ID", "$MESSAGE"}, Tags: []string{"foreman", "project"}},
 	}
 }
 
@@ -329,6 +330,7 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 		"run get":    {},
 
 		"project memory": {},
+		"project chat":   {},
 	}
 
 	cliRoot, err := findCLIRoot()
@@ -347,6 +349,10 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	memoryPath := filepath.Join(cliRoot, "cmd", "foreman", "project_memory.go")
 	if err := extractFlagsFromAST(memoryPath, "projectMemoryRead", allowed["project memory"]); err != nil {
 		return nil, fmt.Errorf("extractFlagsFromAST project_memory.go (projectMemoryRead): %w", err)
+	}
+	chatPath := filepath.Join(cliRoot, "cmd", "foreman", "project_chat.go")
+	if err := extractFlagsFromAST(chatPath, "projectChat", allowed["project chat"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST project_chat.go (projectChat): %w", err)
 	}
 
 	return allowed, nil
@@ -532,6 +538,8 @@ func shellBodyForSpec(spec agentCommandSpec) string {
 		fmt.Fprintln(&b, "args=(foreman project memory list \"$PROJECT_ID\")")
 	case "foreman-project-memory-read":
 		fmt.Fprintln(&b, "args=(foreman project memory read --name \"$NAME\" \"$PROJECT_ID\")")
+	case "foreman-project-chat":
+		fmt.Fprintln(&b, "args=(foreman project chat --format ndjson \"$PROJECT_ID\" \"$MESSAGE\")")
 	case "foreman-run-submit":
 		fmt.Fprintln(&b, "args=(foreman run submit --workflow \"$WORKFLOW\" --prompt \"$PROMPT\" --project-id \"$PROJECT_ID\")")
 		fmt.Fprintln(&b, "[ -n \"${WORK_ID:-}\" ] && args+=(--work-id \"$WORK_ID\")")
