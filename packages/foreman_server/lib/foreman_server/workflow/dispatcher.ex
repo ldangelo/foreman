@@ -43,7 +43,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   alias ForemanServer.Work.RunPayload
   alias ForemanServer.{ProjectionStore, RunAdmission, Telemetry}
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Workflow.{BootReconciliation, RunSupervisor, Worktree}
+  alias ForemanServer.Workflow.{BootReconciliation, RunExecutor, RunSupervisor, Worktree}
   alias ForemanServer.RunControl
 
   @spec start_link(term()) :: GenServer.on_start()
@@ -55,6 +55,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   def init(_init_arg) do
     case safe_subscribe() do
       :ok ->
+        rebuild_steering_mailbox()
         {:ok, %{}}
 
       _other ->
@@ -68,6 +69,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   def handle_info(:retry_subscribe, state) do
     case safe_subscribe() do
       :ok ->
+        rebuild_steering_mailbox()
         {:noreply, %{state | subscriber: :subscribed}}
 
       _ ->
@@ -110,6 +112,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @slot_promotion_event_types ~w(RunSlotTransferred)
   @run_stop_event_types ~w(RunPaused)
   @run_resume_event_types ~w(RunResumed)
+  @run_steer_event_types ~w(RunSteerQueued)
+  @steer_reason "steer"
 
   for event_type <- @task_dispatch_event_types do
     @impl true
@@ -177,9 +181,27 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  for event_type <- @run_steer_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_steer_queued(envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_steer_queued(envelope, state)
+    end
+  end
+
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
     {:noreply, state}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{steer_waits: waits} = state)
+      when is_map_key(waits, ref) do
+    {run_id, waits} = Map.pop(waits, ref)
+    auto_resume_steered_run(run_id)
+    {:noreply, %{state | steer_waits: waits}}
   end
 
   @impl true
@@ -242,7 +264,103 @@ defmodule ForemanServer.Workflow.Dispatcher do
       terminate_slot(run_id, "run_paused")
     end
 
+    state =
+      if is_binary(run_id) and steer_pause?(payload),
+        do: schedule_steer_resume(run_id, state),
+        else: state
+
     {:noreply, state}
+  end
+
+  # ---------------------------------------------------------------------
+  # Operator steering (E6-S4). v1 steering is pause -> resume with the
+  # message injected into the rebuilt phase prompt. The durable queue is the
+  # projection (`ProjectionStore.pending_steering/1`); `RunControl`'s ETS
+  # mailbox is a cache that every pause/resume wipes, so every decision
+  # below reads the projection, never the mailbox.
+  # ---------------------------------------------------------------------
+  defp handle_steer_queued(envelope, state) do
+    payload = unwrap_data(envelope)
+    run_id = payload["run_id"] || payload[:run_id]
+    message_id = payload["message_id"] || payload[:message_id]
+
+    with true <- is_binary(run_id) and run_id != "",
+         %{message_id: _} = message <- pending_steer_message(run_id, message_id) do
+      RunControl.push_message(run_id, %{message_id: message.message_id, text: message.text})
+
+      case ProjectionStore.run(run_id) do
+        %{status: status} when status in ["in_progress", "awaiting_worker"] ->
+          safe_dispatch_system(%{
+            type: "run.pause",
+            command_id: "steer-pause:#{run_id}:#{message_id}",
+            aggregate_id: "run:#{run_id}",
+            payload: %{run_id: run_id, reason: @steer_reason}
+          })
+
+        _already_paused_or_terminal ->
+          :ok
+      end
+    end
+
+    {:noreply, state}
+  end
+
+  defp pending_steer_message(run_id, message_id) when is_binary(message_id) do
+    Enum.find(ProjectionStore.pending_steering(run_id), &(&1.message_id == message_id))
+  end
+
+  defp pending_steer_message(_run_id, _message_id), do: nil
+
+  defp steer_pause?(payload), do: (payload["reason"] || payload[:reason]) == @steer_reason
+
+  # The paused run's executor may still be unwinding (committing partial
+  # work); starting a second one under the same registry name would fail,
+  # so wait for the old process to exit before resuming.
+  defp schedule_steer_resume(run_id, state) do
+    case RunExecutor.pid_for(run_id) do
+      nil ->
+        auto_resume_steered_run(run_id)
+        state
+
+      pid ->
+        ref = Process.monitor(pid)
+        Map.update(state, :steer_waits, %{ref => run_id}, &Map.put(&1, ref, run_id))
+    end
+  end
+
+  # Resumes only a run that is still paused, has pending steering, and whose
+  # pending messages all allow auto-resume. A pause nobody steered (no
+  # pending message) is never resumed here.
+  defp auto_resume_steered_run(run_id) do
+    with %{status: "paused"} <- ProjectionStore.run(run_id),
+         [first | _] = pending <- ProjectionStore.pending_steering(run_id),
+         true <- Enum.all?(pending, & &1.resume) do
+      safe_dispatch_system(%{
+        type: "run.resume",
+        command_id: "steer-resume:#{run_id}:#{first.message_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id, reason: @steer_reason}
+      })
+    else
+      _ -> :ok
+    end
+  end
+
+  # Re-populates the mailbox cache for live runs after a restart.
+  defp rebuild_steering_mailbox do
+    for %{run_id: run_id, terminal?: false} <- ProjectionStore.list_runs(),
+        %{message_id: message_id, text: text} <- ProjectionStore.pending_steering(run_id) do
+      RunControl.push_message(run_id, %{message_id: message_id, text: text})
+    end
+
+    :ok
+  catch
+    :exit, exit_reason ->
+      Logger.warning(
+        "ForemanServer.Workflow.Dispatcher: steering mailbox rebuild exited: #{inspect(exit_reason)}"
+      )
+
+      :ok
   end
 
   # TRD-009: Release the global slot on terminal run events.
