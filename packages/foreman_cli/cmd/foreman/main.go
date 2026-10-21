@@ -77,6 +77,7 @@ Commands:
   project memory      list|read|write|forget|sync project memory topics
   project library     list|add|replace|remove project library files
   project schedule list|create|pause|resume|delete  Manage scheduled tasks (--project-id <id>)
+  project repo        add|remove|list a project's repositories (add --id --path <abs-path> <project-id>)
   project chat <id> [message...] Chat with a project's coordinator (--no-wait --since --history --format --restart)
   approvals list|approve|deny  Agent tool-permission requests (list --project|--run, approve/deny --run --call)
   questions list|answer        Operator questions (list --project, answer --run --question --text)
@@ -90,13 +91,14 @@ Commands:
   run remove          Remove a run and clean worktree/branch
   run reset           Reset a failed or stuck run projection
   run submit          Submit an ad-hoc run (--project-id --workflow --prompt --work-id --backend)
-  run approve-merge   Record the operator's merge approval for a run (--id --approver --identity)
-  run merge           Merge an approved run's PR (--id)
+  run approve-merge   Record the operator's merge approval for a run (--id --approver --identity [--repo-id])
+  run merge           Merge an approved run's PR (--id [--repo-id])
   run prs <id>        List the run's pull requests
   run fix-ci <id>     Request a CI-fix thread for a watched PR (--pr --note)
   run address-comments <id> Request a thread to address PR review comments (--pr --note)
   run resolve-conflicts <id> Request a thread to resolve PR merge conflicts (--pr --note)
   run create-pr <id>  Create the run's pull request
+  run retry-pr        Re-open the PR of one repository of a multi-repo run (--id --repo-id)
   run watch-start <id> Start watching a run's PR (--pr)
   run watch-stop <id>  Stop watching a run's PR (--pr)
   thread list         List a project's threads (--project <id>)
