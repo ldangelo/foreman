@@ -1143,9 +1143,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record) do
     # One snapshot of the registered project's `config.env` feeds both the
     # delivered env and the redaction list, so they cannot disagree.
-    project_env = project_env(state)
-
-    with :ok <- assert_no_reserved_project_env(project_env) do
+    with {:ok, project_env} <- project_env(state),
+         :ok <- assert_no_reserved_project_env(project_env) do
       build_agent_launch(
         state,
         phase_spec,
@@ -1261,10 +1260,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Map.get(state.task, :project_id) || Map.get(state.task, "project_id")
   end
 
+  # A task with no project has no project env (documented: unscoped runs).
+  # A project id that is present but not a non-empty binary would otherwise
+  # launch the agent with no env and no redaction secrets, silently.
   defp project_env(state) do
     case project_id(state) do
-      id when is_binary(id) -> WorkerEnvironment.build_env_map(id)
-      _ -> %{}
+      nil -> {:ok, %{}}
+      id when is_binary(id) and id != "" -> {:ok, WorkerEnvironment.build_env_map(id)}
+      other -> {:error, {:invalid_project_id, other}}
     end
   end
 

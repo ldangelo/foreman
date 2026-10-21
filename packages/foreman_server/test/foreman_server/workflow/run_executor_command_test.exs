@@ -621,6 +621,76 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     await_run_failure!(run_id)
   end
 
+  test "a configured project secret is redacted from the persisted WorkerStdout event" do
+    # The launch opts are what `prepare_agent_launch` produced; the REAL worker
+    # is started from them with a fresh worker id and fed agent output that
+    # contains the secret. What counts is the event in the store.
+    %{run_id: run_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-44444444-redaction.md"],
+        project_config: %{env: %{"API_TOKEN" => "s3cr3t-value"}}
+      )
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    worker_id = unique_id("wkr")
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             launch_opts
+             |> Keyword.put(:worker_id, worker_id)
+             |> ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init()
+
+    log_events = [
+      %{
+        channel: :worker_stdout,
+        data: "calling api with s3cr3t-value now",
+        timestamp: "2026-08-27T00:00:00Z"
+      }
+    ]
+
+    assert {:stop, :normal, _} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.handle_info(
+               {:agent_done, {:ok, "done"}, log_events, nil},
+               worker_state
+             )
+
+    {:ok, events} =
+      ForemanServer.EventStore.read_stream_forward(
+        ForemanServer.Overwatch.Tracker.stream_id(worker_id, run_id),
+        0,
+        99_999
+      )
+
+    assert [stdout] = Enum.filter(events, &(&1.event_type == "WorkerStdout"))
+    assert stdout.data["line"] =~ "[REDACTED]"
+    refute stdout.data["line"] =~ "s3cr3t-value"
+  end
+
+  test "a task whose project id is present but not a usable id is refused before a launch is built" do
+    # Upstream gates reject these ids for whole runs; this boundary must not
+    # depend on that, because a launch built from `%{}` carries no env and no
+    # redaction secrets.
+    for bad <- ["", 123, :project] do
+      state = %{task: %{project_id: bad}, run_id: "run-bad-project"}
+
+      assert {:error, {:invalid_project_id, ^bad}} =
+               RunExecutor.phase_launch(state, %{name: :implement}, 0, %{})
+    end
+  end
+
   test "a project with no config.env gets only the FOREMAN_* env" do
     %{run_id: run_id} =
       run_plan_capture_phase!(write_paths: ["docs/PRD/PRD-2026-22222222-no-project-env.md"])
