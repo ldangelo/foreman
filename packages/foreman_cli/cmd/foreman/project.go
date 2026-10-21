@@ -349,7 +349,6 @@ func printProject(out map[string]any) error {
 	path := projectStringField(project, "path")
 	status := projectStringField(project, "status")
 	version := intField(project, "version")
-	defaultBranch := projectStringField(project, "default_branch")
 	registered := projectStringField(project, "registered_at")
 
 	// Task provider info
@@ -377,9 +376,6 @@ func printProject(out map[string]any) error {
 		fmt.Printf("status: %s\n", status)
 	}
 	fmt.Printf("path: %s\n", path)
-	if defaultBranch != "" {
-		fmt.Printf("default_branch: %s\n", defaultBranch)
-	}
 	fmt.Printf("version: %d\n", version)
 	fmt.Printf("health: %s\n", healthOK)
 	fmt.Printf("registered: %s\n", registered)
