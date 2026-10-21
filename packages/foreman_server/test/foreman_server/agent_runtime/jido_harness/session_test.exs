@@ -167,7 +167,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
 
     test "rejects a blank session id and an unknown decision" do
       assert {:error, :invalid_session} = Session.respond_approval("", "req", :approve)
-      assert_raise FunctionClauseError, fn -> Session.respond_approval("s", "r", :allow) end
+
+      assert_raise FunctionClauseError, fn ->
+        apply(Session, :respond_approval, ["s", "r", :allow])
+      end
     end
   end
 
