@@ -285,7 +285,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       agent_id = "agent-ok-#{System.unique_integer()}"
 
       assert :ok = VfsIsolation.bind_with_check(agent_id, worktree)
-      assert {:ok, ^worktree} = VfsIsolation.lookup(agent_id)
+      assert {:ok, [VfsIsolation.canonical_path(worktree)]} == VfsIsolation.lookup(agent_id)
     end
 
     test "bind_with_check rejects worktree outside allowed roots" do
@@ -303,7 +303,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       agent_id = "agent-ub-#{System.unique_integer()}"
 
       :ok = VfsIsolation.bind(agent_id, worktree)
-      assert {:ok, ^worktree} = VfsIsolation.lookup(agent_id)
+      assert {:ok, [VfsIsolation.canonical_path(worktree)]} == VfsIsolation.lookup(agent_id)
 
       :ok = VfsIsolation.unbind(agent_id)
       assert :not_found = VfsIsolation.lookup(agent_id)
@@ -317,10 +317,10 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       File.mkdir_p!(wt_b)
 
       :ok = VfsIsolation.bind(agent_id, wt_a)
-      assert {:ok, ^wt_a} = VfsIsolation.lookup(agent_id)
+      assert {:ok, [VfsIsolation.canonical_path(wt_a)]} == VfsIsolation.lookup(agent_id)
 
       :ok = VfsIsolation.bind(agent_id, wt_b)
-      assert {:ok, ^wt_b} = VfsIsolation.lookup(agent_id)
+      assert {:ok, [VfsIsolation.canonical_path(wt_b)]} == VfsIsolation.lookup(agent_id)
       refute VfsIsolation.allowed?(agent_id, wt_a)
     end
   end

@@ -1257,6 +1257,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          resolved,
          steering
        ) do
+    state = with_run_worktrees(state, worktree_record)
     request = build_request(state, phase_spec, phase_index, worktree_record)
     request = %{request | prompt: append_steering_block(request.prompt, steering)}
 
@@ -1317,6 +1318,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> append_system_prompt(context_system_text)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec)
+         |> maybe_put_add_dirs(state, JidoHarness.request_provider(request))
        end,
        launch_opts: [
          prompt_path: materialize_prompt(state, phase_index, prompt),
@@ -2142,6 +2144,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> Map.new()
 
     context_bundle = project_context_bundle(state, :debug)
+    repositories = prompt_repositories(state)
 
     Map.merge(base, %{
       "project_context" => (context_bundle && context_bundle.system_text) || "",
@@ -2167,8 +2170,30 @@ defmodule ForemanServer.Workflow.RunExecutor do
             Map.get(state.task, :workflow_type) || Map.get(state.task, "workflow_type")
         ),
       "input.prompt" => input_prompt(workflow_snapshot),
-      "input.prompt_argument" => input_prompt_argument(workflow_snapshot)
+      "input.prompt_argument" => input_prompt_argument(workflow_snapshot),
+      "repositories" => render_template_value(repositories),
+      "repositories_count" => Integer.to_string(length(repositories))
     })
+  end
+
+  # The run's repositories for prompt templates: string-keyed
+  # `%{"id", "path", "branch", "primary"}` (`path` is the run's WORKTREE for
+  # that repository), primary first. Empty for a run without a worktree.
+  defp prompt_repositories(state) do
+    case Map.get(state, :run_worktree) do
+      nil ->
+        []
+
+      primary_record ->
+        for entry <- repo_entries(state, primary_record) do
+          %{
+            "id" => entry.id,
+            "path" => entry.path,
+            "branch" => entry.branch,
+            "primary" => entry.primary
+          }
+        end
+    end
   end
 
   defp input_prompt(workflow_snapshot) do
@@ -3554,8 +3579,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     plan_context = state.plan_context || %{}
     implementation_key = worktree_record.implementation_key || ""
 
-    _ = bind_vfs(state.run_id, worktree_record.worktree_path)
-
     base_env =
       %{
         "FOREMAN_WORKTREE" => "1",
@@ -3569,6 +3592,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> put_plan_env(state, worktree_record)
       |> maybe_put_base_branch_env(state)
       |> maybe_put_shell_session_env(state)
+      |> put_repo_env(state, worktree_record)
 
     case Map.get(plan_context, "beads_database_path") do
       nil ->
@@ -3597,8 +3621,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
     plan_context = Map.put(state.plan_context || %{}, "FOREMAN_MODEL", model)
     implementation_key = worktree_record.implementation_key || ""
 
-    _ = bind_vfs(state.run_id, worktree_record.worktree_path)
-
     base_env =
       %{
         "FOREMAN_WORKTREE" => "1",
@@ -3613,6 +3635,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> maybe_put_base_branch_env(state)
       |> maybe_put_foreman_model(model)
       |> maybe_put_shell_session_env(state)
+      |> put_repo_env(state, worktree_record)
 
     case Map.get(plan_context, "beads_database_path") do
       nil ->
@@ -3948,9 +3971,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # continue without binding (fail-open at the env layer — the shell
   # session itself still enforces isolation via JidoShellRunner's
   # in-memory VFS mount).
-  defp bind_vfs(run_id, worktree_path)
-       when is_binary(run_id) and run_id != "" and is_binary(worktree_path) and
-              worktree_path != "" do
+  defp bind_vfs(run_id, worktree_path) when is_binary(worktree_path),
+    do: bind_vfs(run_id, [worktree_path])
+
+  # All of a run's worktree roots are bound in ONE call: a re-bind replaces the
+  # previous binding, so binding repositories one by one would leave only the
+  # last.
+  defp bind_vfs(run_id, roots)
+       when is_binary(run_id) and run_id != "" and is_list(roots) and roots != [] do
     case Process.whereis(VfsIsolation) do
       nil ->
         _ =
@@ -3959,13 +3987,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         :ok
 
       _pid ->
-        case VfsIsolation.bind_with_check(run_id, worktree_path) do
+        case VfsIsolation.bind_with_check(run_id, roots) do
           :ok ->
             :ok
 
           {:error, :worktree_not_in_allowed_list} ->
             Logger.warning(
-              "RunExecutor #{run_id}: VFS bind refused for #{worktree_path} (outside allowlist)"
+              "RunExecutor #{run_id}: VFS bind refused for #{Enum.join(roots, ",")} (outside allowlist)"
             )
 
             :ok
@@ -3973,7 +4001,125 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp bind_vfs(_run_id, _worktree_path), do: :ok
+  defp bind_vfs(_run_id, _roots), do: :ok
+
+  # The run's repositories as `[{repo_id, record}]`, primary first, then the
+  # others in id order. `state.run_worktrees` is the registry (primary
+  # included); it is rebuilt from the worktree projection when the state has
+  # not been refreshed, so a repository attached mid-run shows up at the
+  # next phase.
+  defp run_repo_records(state, primary_record) do
+    state = with_run_worktrees(state, primary_record)
+    primary_id = primary_repo_id(state)
+    secondaries = secondary_run_worktrees(state)
+    [{primary_id, primary_record} | Enum.map(secondaries, &{&1.repo_id, &1})]
+  end
+
+  defp with_run_worktrees(state, nil), do: state
+
+  defp with_run_worktrees(state, primary_record) do
+    state |> Map.put(:run_worktree, primary_record) |> load_run_worktrees()
+  end
+
+  # Env + prompt view of one repository. `base_branch` is the run's recorded
+  # base branch (primary) or the per-repository one from the run projection.
+  defp repo_entries(state, primary_record) do
+    records = run_repo_records(state, primary_record)
+    primary_id = primary_repo_id(state)
+
+    repo_base_branches =
+      case ProjectionStore.run(state.run_id) do
+        %{repo_base_branches: %{} = map} -> map
+        _ -> %{}
+      end
+
+    for {repo_id, record} <- records do
+      base_branch =
+        if repo_id == primary_id do
+          case run_base_branch(state) do
+            {:ok, branch} -> branch
+            _ -> nil
+          end
+        else
+          Map.get(record, :base_branch) || Map.get(repo_base_branches, repo_id)
+        end
+
+      %{
+        id: repo_id,
+        path: record.worktree_path,
+        branch: record.branch,
+        base_ref: record.base_ref,
+        base_branch: base_branch,
+        primary: repo_id == primary_id
+      }
+    end
+  end
+
+  # `FOREMAN_PRIMARY_REPO`, `FOREMAN_REPOS` (compact JSON, keys sorted at both
+  # levels) and one `FOREMAN_REPO_<ID>_WORKTREE` per repository, the primary
+  # included. Emitted whenever the phase has a worktree, single-repository runs
+  # too. The primary-only vars (`FOREMAN_WORKTREE_PATH`, ...) keep their
+  # meaning; `FOREMAN_*` can never be overridden by project `config.env`
+  # (`ProjectEnvironment` refuses the reserved prefix and the executor merges
+  # these last). Also binds every root for VFS isolation, once.
+  defp put_repo_env(env, state, primary_record) do
+    entries = repo_entries(state, primary_record)
+    _ = bind_vfs(state.run_id, Enum.map(entries, & &1.path))
+
+    repos =
+      entries
+      |> Enum.sort_by(& &1.id)
+      |> Enum.map(fn entry ->
+        {entry.id,
+         Jason.OrderedObject.new(
+           base_branch: entry.base_branch,
+           base_ref: entry.base_ref,
+           branch: entry.branch,
+           path: entry.path,
+           primary: entry.primary
+         )}
+      end)
+
+    worktree_vars =
+      Map.new(entries, fn entry ->
+        {"FOREMAN_REPO_#{String.upcase(String.replace(entry.id, "-", "_"))}_WORKTREE", entry.path}
+      end)
+
+    env
+    |> Map.merge(worktree_vars)
+    |> Map.put("FOREMAN_PRIMARY_REPO", primary_repo_id(state))
+    |> Map.put("FOREMAN_REPOS", Jason.encode!(Jason.OrderedObject.new(repos)))
+  end
+
+  # `add_dirs` for the agent: every NON-primary worktree (the primary is the
+  # agent's cwd). Only for a provider whose adapter declares `add_dirs` as a
+  # normalized option - `Jido.Harness.RequestResolver` rejects the whole
+  # request for the others (e.g. `pi`). Omitted when there is nothing to add,
+  # so single-repository runs are unchanged.
+  defp maybe_put_add_dirs(driver_opts, state, provider) do
+    case secondary_run_worktrees(state) do
+      [] ->
+        driver_opts
+
+      secondaries ->
+        if add_dirs_supported?(provider),
+          do: Keyword.put(driver_opts, :add_dirs, Enum.map(secondaries, & &1.worktree_path)),
+          else: driver_opts
+    end
+  end
+
+  defp add_dirs_supported?(provider) when is_atom(provider) do
+    case Jido.Harness.Registry.spec(provider) do
+      {:ok, %{normalized_options: options}} -> :add_dirs in options
+      _ -> false
+    end
+  end
+
+  defp add_dirs_supported?(_provider), do: false
+
+  @doc false
+  def __maybe_put_add_dirs_for_test__(driver_opts, state, provider),
+    do: maybe_put_add_dirs(driver_opts, state, provider)
 
   # Symmetric to `bind_vfs/2`. Idempotent — calling `unbind/1` on an
   # unbound run_id is a no-op in VfsIsolation. Failures from the

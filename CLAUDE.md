@@ -414,6 +414,26 @@ stays the primary alias. Every run worktree is committed at phase end
 (`phase_finish/5`) and on pause, and cleaned at terminal (continue-on-error).
 `RunExecutor.repo_root/2` refuses ids not registered on the run's project.
 
+**Env, isolation and prompt contract of a multi-repo run (E12-S4).** Whenever a
+phase has a worktree (single-repo runs too) `RunExecutor.foreman_env/4` adds
+`FOREMAN_PRIMARY_REPO` (primary repo id, `main` for legacy projects),
+`FOREMAN_REPOS` (compact JSON, keys sorted at both levels:
+`{"<id>":{"base_branch","base_ref","branch","path","primary"}}`) and
+`FOREMAN_REPO_<ID>_WORKTREE` per repo (id upper-cased, `-` -> `_`), recomputed
+each phase from the worktree projections. The older `FOREMAN_*` vars keep
+describing the primary only. Project `config.env` can never carry any
+`FOREMAN_*` name (`ProjectEnvironment` refuses it; the executor merges its own
+env last). `VfsIsolation.bind/2` takes a list of roots (a single path is
+`[p]`), the executor binds ALL of a run's worktrees in one call per phase (a
+re-bind replaces), and roots are `realpath`-canonicalised at bind and the
+candidate at check with a `/` boundary, so `..` and symlink escapes are denied.
+`add_dirs` (the other worktrees) is passed to the harness only when the
+provider's adapter declares `add_dirs` (claude yes; `pi` NO - the resolver
+rejects the whole request), so a pi agent works on the other repos through the
+absolute paths in `FOREMAN_REPOS` / the `repositories` prompt assign (JSON list
+of `{"id","path","branch","primary"}`, with `repositories_count`; both are
+strings like every other assign).
+
 `RunExecutor.init/1` parses the persisted `workflow_snapshot` via
 `extract_phase_specs/1`, which uses the dual-key pattern
 `Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the
