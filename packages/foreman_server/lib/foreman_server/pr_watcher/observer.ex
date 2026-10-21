@@ -27,6 +27,7 @@ defmodule ForemanServer.PrWatcher.Observer do
 
   alias ForemanServer.CommandGateway
   alias ForemanServer.GitHub.PrStatus
+  alias ForemanServer.PrWatcher.AutoFix
   alias ForemanServer.PrObservation
   alias ForemanServer.ProjectionStore
 
@@ -35,7 +36,8 @@ defmodule ForemanServer.PrWatcher.Observer do
   @type result :: %{
           status: PrStatus.t(),
           runs: [String.t()],
-          dispatched: [String.t()]
+          dispatched: [String.t()],
+          requested: [String.t()]
         }
 
   @type error ::
@@ -48,7 +50,10 @@ defmodule ForemanServer.PrWatcher.Observer do
   Observe `pr_url` once.
 
   Options: `:fetch_fun` (`(pr_url -> {:ok, PrStatus.t()} | {:error, term()})`,
-  default reads checks, reviews, comments and review threads through `gh`).
+  default reads checks, reviews, comments and review threads through `gh`);
+  `:auto_fix` (default `true`) - whether to evaluate the project's opt-in auto-fix
+  policy after observing (`AutoFix`; the fix reactor passes `false` while it still has a
+  fix in flight and calls `auto_fix/3` itself once the fix finished).
   Returns `{:error, :not_watched}` when no run owns the PR or every owner's
   watch was stopped by the operator.
   """
@@ -61,8 +66,14 @@ defmodule ForemanServer.PrWatcher.Observer do
         {:error, :not_watched}
 
       runs ->
-        with {:ok, %PrStatus{} = status} <- safe_fetch(fetch, pr_url) do
-          dispatch_for_runs(runs, pr_url, status)
+        with {:ok, %PrStatus{} = status} <- safe_fetch(fetch, pr_url),
+             {:ok, result} <- dispatch_for_runs(runs, pr_url, status) do
+          requested =
+            if Keyword.get(opts, :auto_fix, true),
+              do: auto_fix(result.runs, pr_url, status),
+              else: []
+
+          {:ok, %{result | requested: requested}}
         end
     end
   end
@@ -106,10 +117,53 @@ defmodule ForemanServer.PrWatcher.Observer do
 
     case failures do
       [] ->
-        {:ok, %{status: status, runs: Enum.map(runs, &elem(&1, 0)), dispatched: dispatched}}
+        {:ok,
+         %{
+           status: status,
+           runs: Enum.map(runs, &elem(&1, 0)),
+           dispatched: dispatched,
+           requested: []
+         }}
 
       failures ->
         {:error, {:dispatch_failed, failures}}
+    end
+  end
+
+  @doc """
+  Evaluate the auto-fix policy for `pr_url` (already observed as `status`) on each of
+  `run_ids` and dispatch the resulting fix request. Returns the request types that
+  were accepted. A refusal because the PR keeps failing, or because the last fix changed
+  nothing, is recorded as `run.pr.fix_exhausted`; every other refusal is expected and
+  silent. A dispatch error is logged, never raised.
+  """
+  @spec auto_fix([String.t()], String.t(), PrStatus.t()) :: [String.t()]
+  def auto_fix(run_ids, pr_url, %PrStatus{} = status) do
+    now = System.system_time(:millisecond)
+
+    Enum.flat_map(run_ids, fn run_id ->
+      record = watch_record(run_id, pr_url)
+      settings = record && AutoFix.settings(record.project_id)
+
+      case AutoFix.decide(run_id, pr_url, status, record, settings, now) do
+        {:request, command} -> request_fix(command, run_id, pr_url, status)
+        :none -> []
+      end
+    end)
+  end
+
+  defp request_fix(command, run_id, pr_url, status) do
+    case CommandGateway.dispatch_system(command) do
+      {:ok, _spec} ->
+        [command.type]
+
+      {:error, reason} ->
+        case AutoFix.exhausted_command(run_id, pr_url, command, reason, status.head_sha) do
+          {:ok, exhausted} -> CommandGateway.dispatch_system(exhausted)
+          :none -> Logger.debug("PrWatcher auto-fix not requested: #{inspect(reason)}")
+        end
+
+        []
     end
   end
 

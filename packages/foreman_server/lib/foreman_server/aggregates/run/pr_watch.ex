@@ -75,6 +75,18 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @spec command_types() :: [String.t()]
   def command_types, do: @command_types
 
+  @operator_types ~w(run.pr.fix_ci run.pr.address_comments run.pr.resolve_conflicts
+                     run.pr.watch_stop run.pr.watch_start run.pr.create)
+
+  @doc """
+  The PR commands an operator may issue (`CommandGateway` / `CommandController`
+  allowlists). The rest of `command_types/0` (observations, fix start/finish/exhausted)
+  is system-only. Merging (`run.pr.merge`, `merge_approve`) is NOT here and is never
+  issued by the watcher.
+  """
+  @spec operator_types() :: [String.t()]
+  def operator_types, do: @operator_types
+
   @doc "Fix kinds, `ci | comments | conflicts`."
   @spec kinds() :: [String.t()]
   def kinds, do: Map.values(@kinds)

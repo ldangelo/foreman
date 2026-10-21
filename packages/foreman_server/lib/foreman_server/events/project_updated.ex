@@ -22,6 +22,7 @@ defmodule ForemanServer.Events.ProjectUpdated do
           coordinator_effort: String.t() | nil,
           max_concurrent_runs: pos_integer() | nil,
           daily_thread_cap: pos_integer() | nil,
+          pr_auto_fix: map() | nil,
           cleared_settings: [String.t()]
         }
   @derive Jason.Encoder
@@ -37,6 +38,7 @@ defmodule ForemanServer.Events.ProjectUpdated do
     :coordinator_effort,
     :max_concurrent_runs,
     :daily_thread_cap,
+    :pr_auto_fix,
     config: %{},
     cleared_settings: []
   ]

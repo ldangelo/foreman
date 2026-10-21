@@ -465,6 +465,82 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
+  @doc """
+  Fetch `branch` from `remote` into the remote-tracking ref
+  `refs/remotes/<remote>/<branch>` (forced, so a force-pushed branch is followed).
+  `remote` and `branch` are ref-guarded like every other ref argument: a name that
+  begins with `-` or holds control/whitespace characters is rejected before git runs.
+  Runs under the same killable deadline as `push/4`; prompts are disabled.
+  """
+  @spec fetch_branch(String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, Error.t()}
+  def fetch_branch(repo, remote, branch, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, 120_000)
+
+    with :ok <- check_ref(:remote, remote),
+         :ok <- check_ref(:branch, branch) do
+      refspec = "+refs/heads/#{branch}:refs/remotes/#{remote}/#{branch}"
+
+      case cmd_with_deadline(["-C", repo, "fetch", "--no-tags", remote, refspec], timeout_ms) do
+        {_output, 0} ->
+          :ok
+
+        {output, code} ->
+          {:error,
+           Error.new(:git_failed, "git fetch #{remote} #{branch} failed", %{
+             remote: remote,
+             branch: branch,
+             exit_code: code,
+             timed_out: code == :timeout,
+             output: String.trim(output)
+           })}
+      end
+    end
+  end
+
+  @doc "Full SHA a fully-qualified `ref` (for example `refs/heads/x`) points at in `repo`."
+  @spec ref_sha(String.t(), String.t()) :: {:ok, String.t()} | {:error, Error.t()}
+  def ref_sha(repo, ref) do
+    with :ok <- check_ref(:ref, ref) do
+      run(["-C", repo, "rev-parse", "--verify", "--quiet", ref <> "^{commit}"])
+      |> map_ok(&String.trim/1)
+      |> tag_error(:git_failed)
+    end
+  end
+
+  @doc "Whether commit `ancestor` is an ancestor of (or equal to) `descendant` in `repo`."
+  @spec ancestor?(String.t(), String.t(), String.t()) :: boolean()
+  def ancestor?(repo, ancestor, descendant) do
+    with :ok <- check_ref(:ancestor, ancestor),
+         :ok <- check_ref(:descendant, descendant) do
+      match?(
+        {_output, 0},
+        System.cmd("git", ["-C", repo, "merge-base", "--is-ancestor", ancestor, descendant],
+          stderr_to_stdout: true
+        )
+      )
+    else
+      {:error, _} -> false
+    end
+  end
+
+  @doc "Point local branch `branch` at `commit`, creating it when absent (`git branch -f`)."
+  @spec set_branch(String.t(), String.t(), String.t()) :: :ok | {:error, Error.t()}
+  def set_branch(repo, branch, commit) do
+    with :ok <- check_ref(:branch, branch),
+         :ok <- check_ref(:commit, commit) do
+      run(["-C", repo, "branch", "-f", branch, commit]) |> as_ok() |> tag_error(:git_failed)
+    end
+  end
+
+  @doc "Fast-forward the branch checked out in the worktree at `path` to `commit` (`merge --ff-only`)."
+  @spec fast_forward(String.t(), String.t()) :: :ok | {:error, Error.t()}
+  def fast_forward(path, commit) do
+    with :ok <- check_ref(:commit, commit) do
+      run(["-C", path, "merge", "--ff-only", commit]) |> as_ok() |> tag_error(:git_failed)
+    end
+  end
+
   @doc "Abort an in-progress merge in `repo`."
   @spec merge_abort(String.t()) :: :ok | {:error, Error.t()}
   def merge_abort(repo) do
