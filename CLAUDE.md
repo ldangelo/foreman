@@ -394,6 +394,26 @@ events is absent for a run's primary repo (`Workflow.Worktree.operation_id/2`
 keeps `wt-<run_id>`), and any key written to a strictly decoded event must be a
 declared struct field in the same commit as its writer.
 
+**One worktree per repository per run (E12-S3).** A run's repo set comes from the
+task/run request (`repo_id` = the run's PRIMARY, default the project primary;
+`repo_ids` = extra repos) and is resolved at kickoff by `Workflow.RunRepoSet`:
+no duplicates, none equal to the effective primary, every id registered
+(`{:unknown_repo, id}`), primary + extras <= `max_repos_per_run` (default 4).
+A request naming no repo is the single-repo run and reads nothing. The run-start
+gate `config :foreman_server, :multi_repo, runs: false` rejects (typed
+`{:run_repo_set_rejected, :multi_repo_runs_disabled}`, like other start failures)
+any resolved set > 1 OR a run primary that is not the project primary; tests
+open it per test with `ForemanServer.MultiRepoRuns.enable!/0`. Layout/branch/op-id
+arithmetic is `Workflow.RunWorktreeLayout` (primary `<run>/workspace`, secondary
+`<run>/repos/<repo_id>`, one branch name in every repo); secondaries are created
+eagerly after the primary with `repo_id` on their events and rolled back (worktree
+and branch, primary included) on failure as `{:multi_repo_worktree_failed, id,
+reason}`. `state.run_worktrees` (repo id => record, rebuilt from the run's
+worktree projection each phase and on resume) holds every repo; `run_worktree`
+stays the primary alias. Every run worktree is committed at phase end
+(`phase_finish/5`) and on pause, and cleaned at terminal (continue-on-error).
+`RunExecutor.repo_root/2` refuses ids not registered on the run's project.
+
 `RunExecutor.init/1` parses the persisted `workflow_snapshot` via
 `extract_phase_specs/1`, which uses the dual-key pattern
 `Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the
