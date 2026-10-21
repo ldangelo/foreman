@@ -490,9 +490,8 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
            name: :"janitor-grace-post-#{state.project_id}"}
         )
 
-      # Sleep well above grace_ms (100ms) so the deferred :scan has fired.
-      Process.sleep(250)
-      assert_received {:scan_started, _}
+      # The deferred :scan fires after grace_ms; wait for it with a deadline.
+      assert_receive {:scan_started, _}, 5_000
     end
   end
 

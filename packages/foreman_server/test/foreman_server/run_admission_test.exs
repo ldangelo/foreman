@@ -32,9 +32,6 @@ defmodule ForemanServer.RunAdmissionTest do
         payload: %{run_id: init_run_id, capacity: capacity}
       })
 
-    # Wait for state to settle — dispatch is synchronous but presence update is async.
-    Process.sleep(10)
-
     on_exit(fn ->
       # Release the init slot to avoid polluting later tests.
       try do

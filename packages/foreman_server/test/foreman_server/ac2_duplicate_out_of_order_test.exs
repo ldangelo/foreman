@@ -20,6 +20,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
 
   alias ForemanServer.{CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.TestSupport.Eventually
   alias ForemanServer.TestSupport.RunSlotsReset
 
   setup do
@@ -61,8 +62,6 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
 
     seed_run(run_id)
 
-    :timer.sleep(100)
-
     # AC2 step 1: run.complete with sequence 1
     {:ok, event_spec} =
       dispatch(%{
@@ -85,8 +84,6 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     cmd_id = "dup-#{uuid()}"
 
     seed_run(run_id)
-
-    :timer.sleep(100)
 
     # AC2 step 1: first run.complete with sequence 1
     {:ok, first} =
@@ -121,8 +118,6 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
 
     seed_run(run_id)
 
-    :timer.sleep(100)
-
     count_before = run_completed_count(run_id)
 
     # AC2 step 4: send run.complete skipping sequence 2 (go straight to 3)
@@ -148,8 +143,6 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     cmd_id = "dup2-#{uuid()}"
 
     seed_run(run_id)
-
-    :timer.sleep(100)
 
     state_after_start = run_state(run_id)
     assert state_after_start.status == "awaiting_worker"
@@ -217,5 +210,11 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
         workflow_snapshot: %{phases: []},
         phase_specs: []
       })
+
+    # Wait for the run aggregate to be live and admitted rather than sleeping.
+    Eventually.await(
+      fn -> match?(%{status: "awaiting_worker"}, run_state(run_id)) end,
+      message: "run #{run_id} did not reach awaiting_worker"
+    )
   end
 end

@@ -26,7 +26,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
   defmodule SlowFakeCommandGateway do
     @moduledoc false
     def dispatch_system(_command, _timeout) do
+      # Tell the test the watcher is now inside its (slow) dispatch, i.e. it
+      # already holds the lease.
+      {test_pid, order_agent} = :persistent_term.get({__MODULE__, :notify})
+      Agent.update(order_agent, &[:watcher_dispatch_start | &1])
+      send(test_pid, :gateway_dispatching)
+
       Process.sleep(150)
+
+      # Still inside the watcher's lease window: the lease is released only
+      # after this returns, so the runner cannot have started holding yet.
+      Agent.update(order_agent, &[:watcher_dispatch_end | &1])
       {:ok, nil}
     end
 
@@ -94,6 +104,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
     }
 
     {:ok, order_agent} = Agent.start_link(fn -> [] end)
+    :persistent_term.put({SlowFakeCommandGateway, :notify}, {self(), order_agent})
+    on_exit(fn -> :persistent_term.erase({SlowFakeCommandGateway, :notify}) end)
+
     on_exit(fn -> if Process.alive?(order_agent), do: Agent.stop(order_agent) end)
 
     watcher_task =
@@ -103,9 +116,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
         Agent.update(order_agent, &[:watcher_end | &1])
       end)
 
-    # Give the watcher time to acquire the lease and enter its (slow)
+    # Wait until the watcher holds the lease and is inside its (slow)
     # dispatch before the concurrent runner attempts the same lease.
-    Process.sleep(40)
+    assert_receive :gateway_dispatching, 5_000
 
     runner_task =
       Task.async(fn ->
@@ -130,15 +143,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
 
     events = Agent.get(order_agent, &Enum.reverse/1)
 
-    watcher_end_index = Enum.find_index(events, &(&1 == :watcher_end))
+    # `:watcher_end` is logged after the lease is released, so the runner (queued
+    # behind it) can legitimately log `:runner_holding` first; the deterministic
+    # evidence of the watcher's lease window is the end of its slow dispatch.
+    watcher_end_index = Enum.find_index(events, &(&1 == :watcher_dispatch_end))
     runner_holding_index = Enum.find_index(events, &(&1 == :runner_holding))
 
     refute is_nil(watcher_end_index), "watcher never completed: #{inspect(events)}"
     refute is_nil(runner_holding_index), "runner never acquired the lease: #{inspect(events)}"
 
     # The runner could only start HOLDING the lease after the watcher
-    # released it — proving the two never interleaved their reads/writes
-    # against the same database_path.
+    # finished its work inside the lease — proving the two never interleaved
+    # their reads/writes against the same database_path.
     assert watcher_end_index < runner_holding_index, inspect(events)
 
     # The runner did attempt while the watcher was still mid-flight —

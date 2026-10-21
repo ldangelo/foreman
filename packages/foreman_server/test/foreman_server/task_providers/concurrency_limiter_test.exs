@@ -86,11 +86,16 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiterTest do
     waiting_acquire =
       Task.async(fn ->
         send(parent, :waiting_acquire_started)
-        ConcurrencyLimiter.acquire(project_id, 200)
+        ConcurrencyLimiter.acquire(project_id, 5_000)
       end)
 
-    assert_receive :waiting_acquire_started, 100
-    Process.sleep(25)
+    assert_receive :waiting_acquire_started, 5_000
+
+    # Wait until the acquire is actually queued behind the full slots.
+    ForemanServer.TestSupport.Eventually.await(
+      fn -> not :queue.is_empty(:sys.get_state(ConcurrencyLimiter).waiters) end,
+      message: "acquire was never queued"
+    )
 
     assert :ok = ConcurrencyLimiter.release(project_id)
     assert Task.await(waiting_acquire, 500) == :ok
@@ -109,8 +114,11 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiterTest do
 
     elapsed_ms = System.monotonic_time(:millisecond) - started_at
 
+    # Lower bound: the call really waited for its own 100ms timeout. Upper
+    # bound only distinguishes it from the 30s default, so it is generous
+    # enough not to depend on scheduler load.
     assert elapsed_ms >= 80
-    assert elapsed_ms < 1_000
+    assert elapsed_ms < 10_000
 
     release_slots(project_id, 4)
   end
