@@ -343,7 +343,8 @@ defmodule ForemanServer.Jobsite.Executor do
       path: Keyword.get(spec.opts, :path),
       base: Keyword.get(spec.opts, :base),
       exclude_paths: Keyword.get(spec.opts, :exclude_paths, []),
-      copy_to_worktree: Keyword.get(spec.opts, :copy_to_worktree, [])
+      copy_to_worktree: Keyword.get(spec.opts, :copy_to_worktree, []),
+      sync_remote: Keyword.get(spec.opts, :sync_remote)
     }
 
     agent_opts = %{

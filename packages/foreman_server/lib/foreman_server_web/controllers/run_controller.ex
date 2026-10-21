@@ -4,6 +4,7 @@ defmodule ForemanServerWeb.RunController do
 
   `GET /api/runs` returns projected runs with optional filters.
   `GET /api/runs/:id` returns the projected state for a single run.
+  `GET /api/runs/:id/prs` returns the run's watched PRs as `ForemanServer.PrWatch.DTO`s.
   """
 
   use ForemanServerWeb, :controller
@@ -33,6 +34,18 @@ defmodule ForemanServerWeb.RunController do
         conn
         |> put_status(:ok)
         |> json(%{run: stringify_keys(projection)})
+    end
+  end
+
+  def prs(conn, %{"id" => run_id}) do
+    case ForemanServer.PrWatch.DTO.fetch(run_id) do
+      {:ok, body} ->
+        conn |> put_status(:ok) |> json(body)
+
+      {:error, :run_not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "run_not_found", run_id: run_id})
     end
   end
 

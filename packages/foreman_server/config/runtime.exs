@@ -64,6 +64,11 @@ if config_env() != :test do
     config :foreman_server, :pr_monitor_enabled, true
   end
 
+  # PR watcher (E9): on by default; the exact string `false` turns it off.
+  if System.get_env("FOREMAN_PR_WATCHER_ENABLED") == "false" do
+    config :foreman_server, :pr_watcher, enabled: false
+  end
+
   # Scheduled-task ticker: on by default (config.exs); "false" turns it off,
   # "true" forces it on.
   case System.get_env("FOREMAN_SCHEDULE_TICKER_ENABLED") do

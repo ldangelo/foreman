@@ -9,7 +9,7 @@ defmodule ForemanServer.Jobsite.Engine do
 
   | kind | opts keys | effect |
   |---|---|---|
-  | `:worktree` | `repo_path, strategy, path, base, exclude_paths, copy_to_worktree, provided` | `Worktree.create/1`; reuses `ctx.worktree` when already provisioned; `provided` (set by the observer's `step_started/3`) is a worktree the observer already provisioned and wins over both |
+  | `:worktree` | `repo_path, strategy, path, base, exclude_paths, copy_to_worktree, sync_remote, provided` | `Worktree.create/1`; reuses `ctx.worktree` when already provisioned; `provided` (set by the observer's `step_started/3`) is a worktree the observer already provisioned and wins over both |
   | `:sandbox` | `provider, config` | `Worktree.create_sandbox/2`; sets `ctx.sandbox` |
   | `:hook` | `command, target (:host \\| :sandbox)` | runs the command; non-zero aborts the program |
   | `:agent` | `runner, prompt, prompt_file, prompt_args, max_iterations, completion_signals, idle_timeout_seconds, completion_timeout_seconds, resume_session, output, launch` | the iteration loop; observer's `step_completed/4` fires once per iteration; `launch` is forwarded to the runner untouched |
@@ -215,7 +215,15 @@ defmodule ForemanServer.Jobsite.Engine do
         {nil, nil} ->
           worktree_opts =
             step.opts
-            |> Map.take([:repo_path, :strategy, :path, :base, :exclude_paths, :copy_to_worktree])
+            |> Map.take([
+              :repo_path,
+              :strategy,
+              :path,
+              :base,
+              :exclude_paths,
+              :copy_to_worktree,
+              :sync_remote
+            ])
             |> Map.put_new(:repo_path, ctx.repo_path)
             |> Map.to_list()
 

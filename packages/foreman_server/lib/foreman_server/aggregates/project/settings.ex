@@ -28,6 +28,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @max_model_chars 200
   @max_concurrent_runs_range 1..1000
   @daily_thread_cap_range 1..10_000
+  @pr_fix_kinds ~w(ci comments conflicts)
+  @pr_fix_attempts_range 1..5
+  @pr_fix_cooldown_range 0..86_400
   @max_active_threads_range 1..50
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
   # would validate here and then fail the launch.
@@ -36,7 +39,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @notification_preferences ~w(every_turn blocked_only off)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
-           coordinator_effort max_concurrent_runs daily_thread_cap
+           coordinator_effort max_concurrent_runs daily_thread_cap pr_auto_fix
            coordinator_propose_before_start coordinator_max_active_threads
            coordinator_reuse_threads library_collect_produced notification_preference)a
 
@@ -56,6 +59,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :max_concurrent_runs
           | :daily_thread_cap
           | :library_collect_produced
+          | :pr_auto_fix
           | :coordinator_propose_before_start
           | :coordinator_max_active_threads
           | :coordinator_reuse_threads
@@ -76,6 +80,10 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:max_concurrent_runs_invalid, term(), Range.t()}
           | {:daily_thread_cap_invalid, term(), Range.t()}
           | {:library_collect_produced_invalid, term()}
+          | {:pr_auto_fix_invalid, term()}
+          | {:pr_auto_fix_unknown_kind, term()}
+          | {:pr_auto_fix_max_attempts_invalid, term(), Range.t()}
+          | {:pr_auto_fix_cooldown_invalid, term(), Range.t()}
           | {:coordinator_max_active_threads_invalid, term(), Range.t()}
           | {:coordinator_propose_before_start_invalid, term()}
           | {:coordinator_reuse_threads_invalid, term()}
@@ -219,6 +227,8 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   defp validate(:max_concurrent_runs, value),
     do: ranged(value, :max_concurrent_runs_invalid, @max_concurrent_runs_range)
 
+  defp validate(:pr_auto_fix, value), do: pr_auto_fix(value)
+
   defp validate(:daily_thread_cap, value),
     do: ranged(value, :daily_thread_cap_invalid, @daily_thread_cap_range)
 
@@ -307,6 +317,57 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   end
 
   defp effort(value, name), do: {:error, {:"#{name}_invalid", value, @efforts}}
+
+  # `pr_auto_fix` (E9-S4): which PR problems Foreman may fix by itself. `nil`, an empty
+  # map, or an empty `kinds` list all mean "off" (stored as nil). The normalised value
+  # is a STRING-keyed map `%{"kinds", "max_attempts", "cooldown_seconds"}` so the live
+  # value and the one replayed from the JSON event log are identical.
+  defp pr_auto_fix(nil), do: {:ok, nil}
+
+  defp pr_auto_fix(value) when is_map(value) do
+    kinds = pr_field(value, :kinds) || []
+
+    with {:ok, kinds} <- pr_auto_fix_kinds(kinds),
+         {:ok, attempts} <-
+           ranged(
+             pr_field(value, :max_attempts) || 2,
+             :pr_auto_fix_max_attempts_invalid,
+             @pr_fix_attempts_range
+           ),
+         {:ok, cooldown} <-
+           ranged(
+             pr_field(value, :cooldown_seconds) || 0,
+             :pr_auto_fix_cooldown_invalid,
+             @pr_fix_cooldown_range
+           ) do
+      if kinds == [],
+        do: {:ok, nil},
+        else:
+          {:ok, %{"kinds" => kinds, "max_attempts" => attempts, "cooldown_seconds" => cooldown}}
+    end
+  end
+
+  defp pr_auto_fix(value), do: {:error, {:pr_auto_fix_invalid, value}}
+
+  defp pr_auto_fix_kinds(kinds) when is_list(kinds) do
+    case Enum.find(kinds, &(to_string_safe(&1) not in @pr_fix_kinds)) do
+      nil -> {:ok, kinds |> Enum.map(&to_string_safe/1) |> Enum.uniq() |> Enum.sort()}
+      bad -> {:error, {:pr_auto_fix_unknown_kind, bad}}
+    end
+  end
+
+  defp pr_auto_fix_kinds(other), do: {:error, {:pr_auto_fix_invalid, other}}
+
+  defp to_string_safe(value) when is_binary(value), do: value
+  defp to_string_safe(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
+  defp to_string_safe(_value), do: nil
+
+  defp pr_field(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
 
   defp ranged(nil, _error, _range), do: {:ok, nil}
 
