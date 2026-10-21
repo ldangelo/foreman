@@ -162,9 +162,11 @@ one project at a time via `--project-id`/`--project`.
 
 **Project environment.** A project's `config.env` (a map of variable name to
 value) is delivered to every workflow-phase agent of that project's runs. It is
-the base layer: Foreman's own `FOREMAN_*` variables (`FOREMAN_RUN_ID`,
-`FOREMAN_ARTIFACT_PATH`, ...) are applied on top and always win, so project
-config cannot override the artifact contract. Values of secret-named keys
+the base layer. The `FOREMAN_*` namespace is reserved for Foreman
+(`FOREMAN_RUN_ID`, `FOREMAN_ARTIFACT_PATH`, ...): a `config.env` key with that
+prefix fails the phase before any agent launches
+(`reserved_project_env_keys`) instead of being silently overridden or passed
+through. Values of secret-named keys
 (names containing `API_KEY`, `TOKEN`, `PASSWORD`, `SECRET`, `CREDENTIAL`, ... as
 underscore-delimited words) are redacted from
 worker logs, but `config.env` itself is still stored in project event payloads;

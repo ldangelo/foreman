@@ -553,7 +553,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
-  test "project config.env reaches the worker env; FOREMAN_* wins; secrets are delivered and redacted" do
+  test "project config.env reaches the worker env and its secrets are delivered for redaction" do
     # Asserted at the worker boundary: the opts the Overwatch adapter was
     # launched with are fed to the real `JidoHarnessWorker.init/1`, whose
     # `put_env` decides the env the agent process gets.
@@ -563,8 +563,6 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         project_config: %{
           env: %{
             "FOO" => "bar",
-            "FOREMAN_RUN_ID" => "evil",
-            "FOREMAN_ARTIFACT_PATH" => "/evil",
             "API_TOKEN" => "s3cr3t-value"
           }
         }
@@ -579,7 +577,6 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     assert delivered["FOO"] == "bar"
     assert delivered["FOREMAN_RUN_ID"] == run_id
-    assert delivered["FOREMAN_ARTIFACT_PATH"] != "/evil"
     assert is_binary(delivered["FOREMAN_ARTIFACT_PATH"])
     assert delivered["API_TOKEN"] == "s3cr3t-value"
 
@@ -598,6 +595,30 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
              )
 
     assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+  end
+
+  test "a project config.env key in the FOREMAN_ namespace fails the phase before any worker launches" do
+    # `FOREMAN_BASE_BRANCH` is the sharp case: this repo has no resolvable
+    # base branch, so Foreman emits no such key and a project-supplied one
+    # would reach the agent as an unverified base branch.
+    %{run_id: run_id, phase_id: phase_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-33333333-reserved-env.md"],
+        expect_launch?: false,
+        project_config: %{
+          env: %{"FOO" => "bar", "FOREMAN_BASE_BRANCH" => "evil", "FOREMAN_RUN_ID" => "evil"}
+        }
+      )
+
+    failure_reason = await_phase_failure!(phase_id)
+
+    assert failure_reason =~ "reserved_project_env_keys"
+    assert failure_reason =~ "FOREMAN_BASE_BRANCH"
+    assert failure_reason =~ "FOREMAN_RUN_ID"
+    refute failure_reason =~ "FOO"
+    refute_received {:adapter_execute, _, _}
+
+    await_run_failure!(run_id)
   end
 
   test "a project with no config.env gets only the FOREMAN_* env" do
@@ -1677,7 +1698,10 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       })
 
     assert is_pid(run_pid)
-    assert_receive {:adapter_execute, _prompt, _context}, @poll_timeout_ms
+
+    # A phase refused before launch never reaches the adapter.
+    if Keyword.get(opts, :expect_launch?, true),
+      do: assert_receive({:adapter_execute, _prompt, _context}, @poll_timeout_ms)
 
     %{run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
   end

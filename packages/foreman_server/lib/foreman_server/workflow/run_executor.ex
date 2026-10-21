@@ -1141,6 +1141,37 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # the run sits in awaiting_worker forever (WorkerStarted is the only
   # transition trigger).
   defp prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record) do
+    # One snapshot of the registered project's `config.env` feeds both the
+    # delivered env and the redaction list, so they cannot disagree.
+    project_env = project_env(state)
+
+    with :ok <- assert_no_reserved_project_env(project_env) do
+      build_agent_launch(
+        state,
+        phase_spec,
+        index,
+        phase_index,
+        worktree_record,
+        project_env
+      )
+    end
+  end
+
+  # `FOREMAN_*` is Foreman's own namespace: the artifact/run-id contract and
+  # keys Foreman emits only for some phases (`FOREMAN_BASE_BRANCH` is absent
+  # when no base branch resolves) must not be supplied by project config, or
+  # the agent receives a plausible but unverified value. A loud failure
+  # (AGENTS.md 5) rather than a silent strip; it runs before any worker
+  # launches. Broader reserved-variable policy belongs to the E4 environment
+  # record.
+  defp assert_no_reserved_project_env(project_env) do
+    case project_env |> Map.keys() |> Enum.filter(&String.starts_with?(&1, "FOREMAN_")) do
+      [] -> :ok
+      keys -> {:error, {:reserved_project_env_keys, Enum.sort(keys)}}
+    end
+  end
+
+  defp build_agent_launch(state, phase_spec, index, phase_index, worktree_record, project_env) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
 
     prompt =
@@ -1163,12 +1194,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     foreman_env =
       foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
 
-    # One snapshot of the registered project's `config.env` feeds both the
-    # delivered env and the redaction list, so they cannot disagree. The
-    # project env is the BASE and FOREMAN_* always wins on collision: the
-    # artifact/run-id contract must not be spoofable by project config.
-    # Reserved-variable policy belongs to the E4 environment record, not here.
-    project_env = project_env(state)
+    # No key can collide: reserved `FOREMAN_*` project keys were rejected above.
     env = Map.merge(project_env, foreman_env)
 
     {:ok,
