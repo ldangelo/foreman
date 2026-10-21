@@ -42,6 +42,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.RunControl
   alias ForemanServer.Identity
   alias ForemanServer.PrAssociate
+  alias ForemanServer.ProjectContext
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.AutoPR
@@ -1285,6 +1286,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
           request.prompt
       end
 
+    # One context build per launch. `ProjectContext.deliver/3` picks system
+    # prompt vs prompt prefix by provider capability.
+    context_bundle = project_context_bundle(state, :warning)
+
+    {context_system_text, prompt} =
+      ProjectContext.deliver(
+        context_bundle && context_bundle.system_text,
+        JidoHarness.request_provider(request),
+        prompt
+      )
+
+    log_project_context(state, context_bundle)
+    ForemanServer.Review.Capture.put_run_project_context(state.run_id, context_bundle)
+
     task_type = phase_spec_name(phase_spec)
     policy = AgentRuntime.FailurePolicy.resolve(task_type, phase_timeout_opts(phase_spec))
     timeout_ms = Map.fetch!(policy, :timeout_ms)
@@ -1315,6 +1330,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          [timeout: remaining_ms, await_timeout: remaining_ms, cwd: cwd]
          |> maybe_put_driver_model(model)
          |> maybe_put_driver_effort(state, request)
+         |> append_system_prompt(context_system_text)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec, steering)
        end,
@@ -1998,9 +2014,61 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp maybe_put_command_phase_inbox_system_prompt(driver_opts, state, phase_spec) do
     if command_phase_inbox_progress_covered?(state, phase_spec) do
-      Keyword.put(driver_opts, :system_prompt, command_phase_inbox_progress_system_prompt())
+      append_system_prompt(driver_opts, command_phase_inbox_progress_system_prompt())
     else
       driver_opts
+    end
+  end
+
+  defp log_project_context(state, %{system_text: text} = bundle) when is_binary(text) do
+    Logger.info(
+      "project context built run_id=#{state.run_id} sha256=#{bundle.sha256} " <>
+        "bytes=#{bundle.bytes} truncated=#{length(bundle.truncated)}"
+    )
+  end
+
+  defp log_project_context(_state, _bundle), do: :ok
+
+  # Context first, then any later source, separated by a blank line.
+  defp append_system_prompt(driver_opts, text) when text in [nil, ""], do: driver_opts
+
+  defp append_system_prompt(driver_opts, text) do
+    case Keyword.get(driver_opts, :system_prompt) do
+      existing when is_binary(existing) and existing != "" ->
+        Keyword.put(driver_opts, :system_prompt, existing <> "\n\n" <> text)
+
+      _ ->
+        Keyword.put(driver_opts, :system_prompt, text)
+    end
+  end
+
+  defp project_context_bundle(state, failure_level) do
+    case project_id(state) do
+      id when is_binary(id) and id != "" ->
+        case ProjectContext.build(id) do
+          {:ok, bundle} ->
+            bundle
+
+          {:error, reason} ->
+            Logger.log(
+              failure_level,
+              "project context unavailable run_id=#{state.run_id} reason=#{inspect(reason)}"
+            )
+
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp project_context_section_body(nil, _id), do: ""
+
+  defp project_context_section_body(bundle, id) do
+    case Enum.find(bundle.sections, &(&1.id == id)) do
+      nil -> ""
+      section -> section.body
     end
   end
 
@@ -2102,7 +2170,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> Enum.map(fn {key, value} -> {to_string(key), render_template_value(value)} end)
       |> Map.new()
 
+    context_bundle = project_context_bundle(state, :debug)
+
     Map.merge(base, %{
+      "project_context" => (context_bundle && context_bundle.system_text) || "",
+      "project_instructions" => project_context_section_body(context_bundle, :instructions),
+      "project_memory" => project_context_section_body(context_bundle, :memory),
       "artifact_path" => artifact_path,
       "phase_index" => Integer.to_string(phase_index),
       "phase_name" => phase_spec_name(phase_spec),
@@ -3660,6 +3733,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __command_phase_inbox_progress_system_prompt_for_test__,
     do: command_phase_inbox_progress_system_prompt()
 
+  def __append_system_prompt_for_test__(driver_opts, text),
+    do: append_system_prompt(driver_opts, text)
+
+  @doc false
   def __maybe_put_command_phase_inbox_system_prompt_for_test__(driver_opts, state, phase_spec),
     do:
       maybe_put_command_phase_inbox_system_prompt(

@@ -304,4 +304,9 @@ config :foreman_server, :secret_store,
 # must never log them (E4-S6).
 config :phoenix, :filter_parameters, ["password", "value"]
 
+config :foreman_server, :project_context,
+  max_bytes: 24_000,
+  section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
+  section_providers: [ForemanServer.ProjectContext.Memory]
+
 import_config "#{config_env()}.exs"
