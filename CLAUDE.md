@@ -682,6 +682,12 @@ secrets, home-directory paths).
 - `Overview.Signals` returns zero approvals/questions until E8 lands.
 - `Overview.MergeResolver` (a `ProjectionStore` subscriber with a bounded catch-up sweep) dispatches `thread.resolve` (reason `pr_merged`, `command_id` `thread-merged:<thread>:<sha>`) when a PR merges; it respects `ThreadReopened` and never merges or approves.
 - **The merge gate stays operator-only** (`merge_approve` -> `run.pr.merge`). No overview/MCP surface may merge or approve; `test/foreman_server/mcp/no_merge_tool_test.exs` pins this for every advertised MCP tool and cards carry only a text hint.
+## 20.3 Scheduled tasks (E11)
+
+- `Aggregates.Schedule` (`schedule:<project_id>:<schedule_id>`): operator commands `schedule.create|update|pause|resume|delete` (allowlisted in `CommandGateway` and `CommandController`; the controller/gateway derive the composite id, `schedule.create` without an id generates `sch-<hex>`), system commands `schedule.mark_fired` / `schedule.skip_fire` (never operator-allowlisted). Events `ScheduleCreated|Updated|Paused|Resumed|Deleted|Fired|FireSkipped`. The aggregate is pure: `at` is stamped by the gateway (client values overwritten) or the ticker; slot dedupe is `slot <= last_slot` -> `{:slot_already_processed, slot}`.
+- `Schedule.Spec` is the typed boundary (hand-written 5-field cron with Vixie dom/dow OR, interval specs, UTC only). `crontab` (transitive via jido) was evaluated and NOT adopted: it ANDs dom/dow and accepts syntax Foreman rejects. `latest_slot_at_or_before/3` returns ONE slot: that is the no-catch-up-storm primitive.
+- `Schedule.Planner` (pure) decides fire/skip/wait; `Schedule.Ticker` (supervised, `:schedule, ticker_enabled`) runs the idempotent fire sequence over `SchedulerIntent` (the crash marker) and redoes interrupted intents via `Recovery.interrupted_intents/2`. `Aggregates.Scheduler` (tick/claim/skip, never routed) was removed; `Recovery.detect_unconfirmed_intents/1` was replaced.
+- Reads: `ProjectionStore.schedules/2`, `schedule/2`, `all_active_schedules/0`; wire shape `Schedule.DTO` (`GET /api/projects/:id/schedules`, MCP `foreman_schedule_list`). Write MCP tools are in `MCP.Policy` `@write_tools`.
 
 ## 21. Outbound messaging delivery
 

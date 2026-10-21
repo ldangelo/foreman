@@ -430,6 +430,97 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_schedule_list %{
+    name: "foreman_schedule_list",
+    description:
+      "List a project's schedules (scheduled tasks) with next_fire_at, last_outcome (why the last fire was skipped, if it was) and whether the ticker is running.",
+    inputSchema: %{
+      type: "object",
+      properties: %{project_id: %{type: "string", description: "The project ID"}},
+      required: ["project_id"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_schedule_create %{
+    name: "foreman_schedule_create",
+    description:
+      "Create a schedule: a task created in the project on an interval (`every`, e.g. 30m, min 5m) or cron (`cron`, 5 fields, UTC) schedule. " <>
+        "Pass the same request_id on a retry to get the same schedule instead of a second one (without it each call creates a new schedule). Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        name: %{type: "string", description: "Schedule name"},
+        every: %{type: "string", description: "Interval such as 30m, 6h, 1d (use this OR cron)"},
+        cron: %{type: "string", description: "5-field cron expression (use this OR every)"},
+        timezone: %{type: "string", description: "UTC only"},
+        prompt: %{type: "string", description: "Task prompt (max 16000 characters)"},
+        workflow: %{type: "string", description: "Installed workflow name"},
+        auto_approve: %{
+          type: "boolean",
+          description: "Approve each task as it is created (default true)"
+        },
+        overlap: %{
+          type: "string",
+          enum: ["skip", "allow"],
+          description: "skip a fire while the previous task is unfinished (default skip)"
+        },
+        misfire_grace_seconds: %{
+          type: "integer",
+          description: "How late a due slot may still fire (default 600)"
+        },
+        request_id: %{type: "string", description: "Caller supplied retry key"}
+      },
+      required: ["project_id", "name", "prompt", "workflow"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_schedule_pause %{
+    name: "foreman_schedule_pause",
+    description:
+      "Pause a schedule: it stops firing until resumed. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        schedule_id: %{type: "string", description: "The schedule ID"}
+      },
+      required: ["project_id", "schedule_id"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_schedule_resume %{
+    name: "foreman_schedule_resume",
+    description:
+      "Resume a paused schedule. Slots that fell due while paused do not fire. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        schedule_id: %{type: "string", description: "The schedule ID"}
+      },
+      required: ["project_id", "schedule_id"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_schedule_delete %{
+    name: "foreman_schedule_delete",
+    description: "Delete a schedule permanently. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        schedule_id: %{type: "string", description: "The schedule ID"}
+      },
+      required: ["project_id", "schedule_id"],
+      additionalProperties: false
+    }
+  }
+
   @schema_foreman_workflow_list %{
     name: "foreman_workflow_list",
     description: "List all available workflows",
@@ -876,6 +967,11 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_settings_update,
     @schema_foreman_project_pause,
     @schema_foreman_project_resume,
+    @schema_foreman_schedule_list,
+    @schema_foreman_schedule_create,
+    @schema_foreman_schedule_pause,
+    @schema_foreman_schedule_resume,
+    @schema_foreman_schedule_delete,
     @schema_foreman_workflow_list,
     @schema_foreman_workflow_get,
     @schema_foreman_workflow_validate,
@@ -1644,6 +1740,126 @@ defmodule ForemanServer.MCP.Tools do
       dispatch_project_command(tool, "project.resume", project_id, %{project_id: project_id}, nil)
     end
   end
+
+  defp tool_foreman_schedule_list(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      case ProjectionStore.project_projection(project_id) do
+        nil ->
+          {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+
+        _project ->
+          {:ok,
+           %{
+             ticker: ForemanServer.Schedule.DTO.ticker_status(),
+             schedules: ForemanServer.Schedule.DTO.list(project_id)
+           }}
+      end
+
+    Telemetry.mcp_tool_call(
+      System.monotonic_time(:microsecond) - start_us,
+      "foreman_schedule_list",
+      if(match?({:ok, _}, result), do: :ok, else: :not_found)
+    )
+
+    result
+  end
+
+  # The schedule id is derived from request_id, so a retried create targets the
+  # same stream (and the same command id): the second call returns the first
+  # event instead of creating a second schedule. Without a request_id both are
+  # random, i.e. every call creates a new schedule.
+  defp tool_foreman_schedule_create(%{project_id: project_id} = args) do
+    tool = "foreman_schedule_create"
+
+    with :ok <- authorize_write(tool) do
+      {schedule_id, command_id} =
+        case Map.get(args, :request_id) do
+          request_id when is_binary(request_id) and request_id != "" ->
+            digest =
+              :crypto.hash(:sha256, "schedule.create\0" <> project_id <> "\0" <> request_id)
+              |> Base.encode16(case: :lower)
+
+            {"sch-" <> binary_part(digest, 0, 12), "schedule.create:#{project_id}:#{request_id}"}
+
+          _ ->
+            random = :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)
+            {"sch-" <> random, "mcp:#{tool}:#{project_id}:#{random}"}
+        end
+
+      spec =
+        [
+          every: Map.get(args, :every),
+          cron: Map.get(args, :cron),
+          timezone: Map.get(args, :timezone)
+        ]
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+
+      payload =
+        args
+        |> Map.take([:name, :prompt, :workflow, :auto_approve, :overlap, :misfire_grace_seconds])
+        |> Map.merge(%{project_id: project_id, schedule_id: schedule_id, spec: spec})
+
+      dispatch_schedule_command(
+        tool,
+        "schedule.create",
+        project_id,
+        schedule_id,
+        command_id,
+        payload
+      )
+    end
+  end
+
+  for verb <- ~w(pause resume delete) do
+    tool = "foreman_schedule_#{verb}"
+    function = String.to_atom("tool_" <> tool)
+    type = "schedule." <> verb
+
+    defp unquote(function)(%{project_id: project_id, schedule_id: schedule_id}) do
+      with :ok <- authorize_write(unquote(tool)) do
+        dispatch_schedule_command(
+          unquote(tool),
+          unquote(type),
+          project_id,
+          schedule_id,
+          "mcp:#{unquote(tool)}:#{project_id}:#{schedule_id}:#{System.unique_integer([:positive])}",
+          %{project_id: project_id, schedule_id: schedule_id}
+        )
+      end
+    end
+  end
+
+  defp dispatch_schedule_command(tool, type, project_id, schedule_id, command_id, payload) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      CommandGateway.dispatch_operator(%{
+        type: type,
+        command_id: command_id,
+        aggregate_id: "schedule:#{project_id}:#{schedule_id}",
+        payload: payload
+      })
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, event} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :ok)
+        {:ok, schedule_result(event, schedule_id)}
+
+      {:error, reason} ->
+        Telemetry.mcp_tool_call(duration_us, tool, :error)
+        {:error, %ToolError{code: error_code(reason), message: inspect(reason)}}
+    end
+  end
+
+  defp schedule_result(event, schedule_id) when is_map(event),
+    do: Map.put(event, "schedule_id", schedule_id)
+
+  defp schedule_result(_event, schedule_id), do: %{"schedule_id" => schedule_id}
 
   defp authorize_write(tool) do
     if Policy.authorized?(tool) do

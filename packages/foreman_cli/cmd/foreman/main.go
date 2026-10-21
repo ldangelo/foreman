@@ -18,6 +18,7 @@
 //	project delete <id> POST /api/commands with type=project.archive (soft delete)
 //	project list        GET /api/projects
 //	project memory      list|read|write|forget|sync a project's memory (/api/projects/:id/memory)
+//	project schedule list|create|pause|resume|delete  scheduled tasks (GET /api/projects/:id/schedules, POST /api/commands schedule.*)
 //	commands           Generate/install agent command assets
 //	run list            List run projections
 //	run get <id>        Fetch a run projection
@@ -67,6 +68,7 @@ Commands:
   project delete <id> Soft-delete (archive) a project; history is kept, reactivate to restore
   project list        List project projections
   project memory      list|read|write|forget|sync project memory topics
+  project schedule list|create|pause|resume|delete  Manage scheduled tasks (--project-id <id>)
   commands           Generate/install agent command assets
   run list            List run projections
   run get <id>        Fetch a run projection

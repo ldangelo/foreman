@@ -10,9 +10,11 @@ defmodule ForemanServer.Recovery do
     event is older than `:foreman_server, :run_stale_after_ms` (default 5
     minutes). For each, emits a `RunRecoveryEvent` so downstream recovery
     aggregates can mark `recovery.require` and re-drive the run.
-  * `detect_unconfirmed_intents/1` — walks the projection of recorded
-    `ScheduledFireRecorded` events that lack a confirmation and emits a
-    `SchedulerIntentStale` for each, so the scheduler can re-dispatch.
+  * `interrupted_intents/2` — pure read: recorded fire intents older than a
+    grace period that were never confirmed or skipped. `Schedule.Ticker` redoes
+    each one on boot and every N ticks.
+  * `mark_interrupted/1` — emits `SchedulerIntentStale` (terminal) for an
+    interrupted intent that cannot be redone.
   * `confirm_execution/1` — emits `ScheduledFireConfirmed` for an intent.
   * `skip_fire/2` — emits `ScheduledFireSkipped` for an intent.
   * `record_intent/3` — emits `ScheduledFireRecorded` for an intent.
@@ -80,47 +82,50 @@ defmodule ForemanServer.Recovery do
   end
 
   @doc """
-  Detect unconfirmed scheduler intents and re-dispatch them.
+  Recorded fire intents that were neither confirmed, skipped nor marked stale
+  within `grace_ms` of being recorded.
 
-  Walks the projection of `ScheduledFireRecorded` events looking for any whose
-  stream hasn't seen a `ScheduledFireConfirmed` or `ScheduledFireSkipped`.
-  Emits one `SchedulerIntentStale` per stale intent so the scheduler runtime
-  can re-fire. Returns the number of staleness events dispatched.
+  Pure read of `ProjectionStore.list_scheduler_intents/0` plus the arguments:
+  `now_ms` is an explicit unix-millisecond instant, so the same call with the
+  same inputs always returns the same intents. An intent still inside the grace
+  window may be mid-flight in the live scheduler and is NOT returned. An intent
+  with no recorded time cannot be proven fresh and is returned.
+
+  The redo is the caller's job (`Schedule.Ticker` re-runs the fire steps, all of
+  which are idempotent); this function never writes.
   """
-  @spec detect_unconfirmed_intents(scan_opts()) :: {:ok, non_neg_integer()}
-  def detect_unconfirmed_intents(opts \\ []) do
-    prefix = Keyword.get(opts, :command_id_prefix, "recovery-scheduler-stale")
-
-    intents = ProjectionStore.list_scheduler_intents()
-
-    stale =
-      Enum.flat_map(intents, fn intent ->
-        case intent.status do
-          "recorded" -> [intent]
-          _ -> []
+  @spec interrupted_intents(integer(), non_neg_integer()) :: [map()]
+  def interrupted_intents(now_ms, grace_ms)
+      when is_integer(now_ms) and is_integer(grace_ms) and grace_ms >= 0 do
+    Enum.filter(ProjectionStore.list_scheduler_intents(), fn intent ->
+      intent.status == "recorded" and
+        case Map.get(intent, :recorded_at) do
+          recorded_at when is_integer(recorded_at) -> now_ms - recorded_at > grace_ms
+          _ -> true
         end
-      end)
-
-    Enum.reduce_while(stale, {:ok, 0}, fn intent, {:ok, count} ->
-      command_id = "#{prefix}:#{intent.intent_id}:#{unique_token()}"
-
-      command = %{
-        aggregate_id: "scheduler_intent:#{intent.intent_id}",
-        command_id: command_id,
-        type: "scheduler_intent.mark_stale",
-        payload: %{
-          intent_id: intent.intent_id,
-          task_id: intent.task_id,
-          run_id: intent.run_id,
-          marked_stale_at: DateTime.to_iso8601(DateTime.utc_now())
-        }
-      }
-
-      case CommandGateway.dispatch_system(command) do
-        {:ok, _spec} -> {:cont, {:ok, count + 1}}
-        {:error, _} -> {:halt, {:ok, count}}
-      end
     end)
+  end
+
+  @doc """
+  Mark an interrupted intent stale via `scheduler_intent.mark_stale`.
+
+  Stale is terminal: the intent can no longer be confirmed. Use it for intents
+  that cannot be redone (no schedule/slot to fire). The command id is derived
+  from the intent id, so marking twice appends one `SchedulerIntentStale`.
+  """
+  @spec mark_interrupted(map()) :: {:ok, map() | nil} | {:error, term()}
+  def mark_interrupted(%{intent_id: intent_id} = intent) when is_binary(intent_id) do
+    CommandGateway.dispatch_system(%{
+      aggregate_id: "scheduler_intent:#{intent_id}",
+      command_id: "scheduler_intent.stale:#{intent_id}",
+      type: "scheduler_intent.mark_stale",
+      payload: %{
+        intent_id: intent_id,
+        task_id: Map.get(intent, :task_id),
+        run_id: Map.get(intent, :run_id),
+        marked_stale_at: DateTime.to_iso8601(DateTime.utc_now())
+      }
+    })
   end
 
   @doc """
@@ -146,7 +151,7 @@ defmodule ForemanServer.Recovery do
   def confirm_execution(intent_id) when is_binary(intent_id) do
     command = %{
       aggregate_id: "scheduler_intent:#{intent_id}",
-      command_id: "scheduler_intent.confirm:#{intent_id}:#{unique_token()}",
+      command_id: "scheduler_intent.confirm:#{intent_id}",
       type: "scheduler_intent.confirm",
       payload: %{intent_id: intent_id, confirmed_at: DateTime.to_iso8601(DateTime.utc_now())}
     }
@@ -161,7 +166,7 @@ defmodule ForemanServer.Recovery do
   def skip_fire(intent_id, reason) when is_binary(intent_id) do
     command = %{
       aggregate_id: "scheduler_intent:#{intent_id}",
-      command_id: "scheduler_intent.skip:#{intent_id}:#{unique_token()}",
+      command_id: "scheduler_intent.skip:#{intent_id}",
       type: "scheduler_intent.skip",
       payload: %{intent_id: intent_id, reason: reason}
     }

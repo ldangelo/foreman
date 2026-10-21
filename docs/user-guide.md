@@ -1081,7 +1081,8 @@ The write-gated thread tools are `foreman_thread_stop` and
 `foreman_run_resume`, `foreman_inbox_send`, `foreman_workflow_put`,
 `foreman_workflow_delete`, `foreman_prompt_put`, `foreman_project_settings_update`,
 `foreman_project_pause`, `foreman_project_resume`, `foreman_project_memory_write`,
-`foreman_project_memory_forget`) are unadvertised and refused unless
+`foreman_project_memory_forget`, `foreman_schedule_create`,
+`foreman_schedule_pause`, `foreman_schedule_resume`, `foreman_schedule_delete`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
 
 `foreman_project_settings_get` returns the same typed payload as
@@ -1097,6 +1098,10 @@ operator commands as the CLI, are refused unless `allow_workflow_writes: true`, 
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
 Retries of `foreman_project_settings_update` with the same arguments and
 `idempotency_key` are one command. No MCP tool can merge or approve.
+
+`foreman_schedule_list` (read, always available) returns the same DTOs as
+`GET /api/projects/<id>/schedules`; the four schedule write tools are described in
+[Scheduled tasks](#12-scheduled-tasks).
 
 `foreman_inbox_send` appends concise progress to the run inbox via the public
 `inbox.send` operator command. It requires `run_id` plus a 1-2,000 character
@@ -1349,6 +1354,77 @@ foreman project memory sync <project-id>
 ```
 
 - **Hand edits and drift.** Editing `.foreman/memory/*.md` in an editor is fine. `POST /api/projects/:id/memory/sync` (or `foreman project memory sync`) compares file hashes with the audit index, re-redacts the edited content and records each difference as an operator-authored write or forget. A second sync reports nothing.
+## 12.1 Scheduled tasks
+
+A project can own **schedules**: a prompt, a workflow and a timetable. Each time a
+slot falls due the server creates one task in the project (id
+`sched-<schedule_id>-<slot>`, `slot` = unix seconds) and, unless the schedule says
+otherwise, approves it so the normal dispatcher runs it. Scheduled tasks are ad hoc
+(`provider_tracked: false`): no Beads issue is created per fire.
+
+```bash
+foreman project schedule create --project-id myproj --name "Daily triage" \
+  --cron "0 9 * * 1-5" --prompt "Triage new issues and summarise" --workflow fix
+foreman project schedule create --project-id myproj --name "Dep bump" \
+  --every 24h --prompt-file prompts/deps.md --workflow implement --auto-approve=false
+foreman project schedule list --project-id myproj
+foreman project schedule pause|resume|delete --project-id myproj --id <schedule-id>
+```
+
+Over HTTP the same commands are `POST /api/commands` (`schedule.create`,
+`schedule.update`, `schedule.pause`, `schedule.resume`, `schedule.delete`) and the
+read is `GET /api/projects/<id>/schedules` (`{ticker, schedules: [...]}`; this is
+the data behind the Scheduled tab). MCP: `foreman_schedule_list` plus the four write
+tools (`foreman_schedule_create` takes an optional `request_id`: repeating it returns
+the same schedule instead of creating a second one; without it every call creates a
+new schedule). Typed rejections such as `{:invalid_schedule_spec, :every,
+:below_minimum}`, `{:schedule_limit_reached, 50}` or `{:unknown_workflow, name}` are
+returned verbatim.
+
+**Syntax.** `every` is `<n>s|m|h|d` with a minimum of `min_interval_seconds`
+(default 300), aligned to an anchor (creation time unless given), so `every: 30m`
+fires at creation+30m, +60m, ... `cron` is the standard five fields (minute hour
+day-of-month month day-of-week) with `*`, lists, ranges and `*/n` / `a-b/n` steps,
+`JAN-DEC` and `SUN-SAT` names; when both day-of-month and day-of-week are restricted
+a day matches if **either** matches (Vixie cron). `@daily`, `?`, `L`, `W`, `#` and a
+seconds field are rejected (`unsupported_syntax`), as are expressions that can never
+fire (`0 0 30 2 *`).
+
+**Time zones.** UTC only: cron times are UTC wall-clock times, and `timezone` accepts
+only `UTC` / `Etc/UTC`. There is no tz database in the dependency set, so DST rules
+do not exist to define. The decision is recorded in `Schedule.Spec`.
+
+**Misfire grace and no catch-up.** A due slot may fire up to
+`misfire_grace_seconds` late (default 600). Only the single *latest* due slot is
+ever considered: after downtime the latest slot fires if it is within grace (the
+older ones are counted in `last_outcome.missed_count` and never fire), otherwise it
+is recorded as skipped with reason `missed` and the count of slots that were due.
+A skipped slot is consumed and never retried. Slots that fell due while a schedule
+was paused do not fire on resume, and editing a schedule's spec restarts its
+baseline.
+
+**Overlap, pause and caps.** `overlap: skip` (default) skips a fire while the previous
+fire's task is still `open`, `ready` or `in_progress`; `allow` fires regardless. A
+fire is skipped with `project_paused` while the project is paused or archived, and
+with `daily_cap` once the project's daily thread cap is reached. Every skip is
+recorded with its reason: `last_outcome` in `schedule list` (`skipped: overlap`) is
+how you see why a fire did not happen. `auto_approve: false` leaves each created task
+`open` as a proposal for an operator to approve.
+
+**Exactly once.** Each fire is `scheduler_intent.record` -> `task.create` ->
+(`task.approve`) -> `schedule.mark_fired` -> `scheduler_intent.confirm`, every step
+with a deterministic command id. After a crash, `Schedule.Ticker` redoes intents that
+were recorded but not confirmed within `recovery_grace_ms` (on boot and every 20
+ticks) without creating duplicate tasks.
+
+**Operations.** The ticker (`Schedule.Ticker`) is supervised and enabled by default
+(`config :foreman_server, :schedule, ticker_enabled:`; env
+`FOREMAN_SCHEDULE_TICKER_ENABLED=true|false`; tick every `tick_interval_ms`, default
+30 s). Other keys: `min_interval_seconds` (300), `max_per_project` (50 non-deleted
+schedules), `default_misfire_grace_seconds` (600). `schedule list` and the HTTP
+response report `ticker: running|disabled`; while it is `disabled`, schedules exist
+but do not fire. Schedule prompts are operator-authored data stored in the event log
+(`ScheduleCreated`, `ScheduleUpdated`): do not put secrets in them.
 
 ## Day-to-day workflow
 
