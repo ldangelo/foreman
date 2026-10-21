@@ -1,0 +1,63 @@
+[
+ {
+  "threads": 0,
+  "msgs": 0,
+  "pass": 13,
+  "n": 14,
+  "ctx_tokens_mean": 1129.4285714285713,
+  "p50": 3.34132719039917,
+  "failed": [
+   "amb4"
+  ],
+  "route_ok_followups": 3,
+  "provider_errors": 0
+ },
+ {
+  "threads": 30,
+  "msgs": 20,
+  "pass": 14,
+  "n": 14,
+  "ctx_tokens_mean": 1681.142857142857,
+  "p50": 3.5514914989471436,
+  "failed": [],
+  "route_ok_followups": 3,
+  "provider_errors": 0
+ },
+ {
+  "threads": 100,
+  "msgs": 60,
+  "pass": 14,
+  "n": 14,
+  "ctx_tokens_mean": 3341.4285714285716,
+  "p50": 4.1960859298706055,
+  "failed": [],
+  "route_ok_followups": 3,
+  "provider_errors": 0
+ },
+ {
+  "threads": 300,
+  "msgs": 150,
+  "pass": 13,
+  "n": 14,
+  "ctx_tokens_mean": 7439.428571428572,
+  "p50": 4.785705089569092,
+  "failed": [
+   "amb4"
+  ],
+  "route_ok_followups": 3,
+  "provider_errors": 0
+ },
+ {
+  "threads": 800,
+  "msgs": 300,
+  "pass": 13,
+  "n": 14,
+  "ctx_tokens_mean": 17297.428571428572,
+  "p50": 4.425158619880676,
+  "failed": [
+   "amb4"
+  ],
+  "route_ok_followups": 3,
+  "provider_errors": 0
+ }
+]

@@ -34,22 +34,31 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @doc """
   Emit a `jido.llm` span capturing the model, token counts, cost, and routing
   reason. Called from the LiteLLM/Langfuse call site (TRD-061).
+
+  `token_count` and `cost_usd` are `nil` when the provider reported none; the
+  `llm.tokens` / `llm.cost_usd` attributes are then omitted rather than
+  recorded as misleading zeros.
   """
-  @spec emit_llm_span(String.t(), non_neg_integer(), number(), String.t()) :: :ok
+  @spec emit_llm_span(String.t(), non_neg_integer() | nil, number() | nil, String.t()) :: :ok
   def emit_llm_span(model, token_count, cost_usd, routing_reason)
-      when is_binary(model) and is_integer(token_count) and is_binary(routing_reason) do
-    OpenTelemetry.Tracer.with_span "jido.llm",
-                                   %{
-                                     attributes: %{
-                                       "llm.model" => model,
-                                       "llm.tokens" => token_count,
-                                       "llm.cost_usd" => cost_usd,
-                                       "llm.routing_reason" => routing_reason
-                                     }
-                                   } do
+      when is_binary(model) and (is_integer(token_count) or is_nil(token_count)) and
+             is_binary(routing_reason) and
+             (is_number(cost_usd) or is_nil(cost_usd)) do
+    attributes =
+      %{
+        "llm.model" => model,
+        "llm.routing_reason" => routing_reason
+      }
+      |> put_unless_nil("llm.tokens", token_count)
+      |> put_unless_nil("llm.cost_usd", cost_usd)
+
+    OpenTelemetry.Tracer.with_span "jido.llm", %{attributes: attributes} do
       :ok
     end
   end
+
+  defp put_unless_nil(attrs, _key, nil), do: attrs
+  defp put_unless_nil(attrs, key, value), do: Map.put(attrs, key, value)
 
   @doc """
   Emit a `jido.signal` span capturing the signal type, topic, and delivery

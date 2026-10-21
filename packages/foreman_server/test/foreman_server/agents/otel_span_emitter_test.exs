@@ -19,6 +19,10 @@ defmodule ForemanServer.Agents.OtelSpanEmitterTest do
              )
   end
 
+  test "emit_llm_span/4 accepts an unknown (nil) token count" do
+    assert :ok == OtelSpanEmitter.emit_llm_span("gpt-4o-mini", nil, nil, "auto")
+  end
+
   test "emit_signal_span/3 returns :ok and accepts signal attributes" do
     assert :ok ==
              OtelSpanEmitter.emit_signal_span(

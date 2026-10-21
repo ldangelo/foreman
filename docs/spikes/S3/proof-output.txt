@@ -1,0 +1,44 @@
+== 1. provision worktrees (primary at <run>/workspace, others at <run>/repos/<id>)
+  ok   - 3 worktrees created
+  ok   - primary worktree path keeps legacy leaf 'workspace'
+  ok   - op id of primary unchanged
+  ok   - base branch of b is its own checkout branch
+  ok   - worktrees_for_run sort (by operation_id) lists primary first
+== 2. env contract, phase 1 and phase 2 (legacy vars are the PRIMARY's)
+  ok   - phase 1 == phase 2 env (repo set is run-scoped)
+  ok   - FOREMAN_WORKTREE_PATH is primary
+  ok   - FOREMAN_REPO_B_WORKTREE
+  ok   - FOREMAN_REPOS lists 3 repos
+  ok   - FOREMAN_REPOS.b.base_branch
+     FOREMAN_REPO_A_WORKTREE=/tmp/s3-proof.PjycNC/worktrees/proj/task-1/run-abc/workspace
+     FOREMAN_REPO_B_WORKTREE=/tmp/s3-proof.PjycNC/worktrees/proj/task-1/run-abc/repos/b
+     FOREMAN_REPO_C_WORKTREE=/tmp/s3-proof.PjycNC/worktrees/proj/task-1/run-abc/repos/c
+== 3. the agent, cwd = primary worktree, edits siblings via env paths
+  ok   - commits made in a and b; c untouched
+== 4. per-repo touched detection + diff capture (Review.Capture archive layout)
+  ok   - a ahead
+  ok   - b ahead
+  ok   - c ahead (no PR)
+  ok   - diff.patch (primary) non-empty
+  ok   - diffs/b.patch non-empty
+  ok   - diffs/c.patch empty -> diff_status 'empty' (untouched)
+== 5. per-repo push; b's origin made read-only => partial failure
+  ok   - a pushed
+  ok   - b create_failed (typed per-repo state)
+  ok   - derived completed_with_errors
+  ok   - b worktree RETAINED for retry (cleanup deferred)
+  ok   - a branch exists on origin-a
+  ok   - b not on origin-b
+== 6. operator fixes permissions; run.pr.retry --repo-id b (re-runs push for b only)
+  ok   - retry for b pushed
+  ok   - a untouched by b's retry
+== 7. cleanup removes every worktree and branch
+  ok   - all worktrees removed
+== 8. rollback: second worktree creation fails (branch already exists in b)
+     provisioning b failed -> {:multi_repo_worktree_failed, "b", reason}
+  ok   - a compensated (no half-provisioned run)
+  ok   - a branch deleted
+== 9. VfsIsolation: prefix check vs list of roots
+  ok   - single-root bind denies sibling repos; starts_with? admits 'workspace-evil'; list-of-roots with '/' boundary fixes both
+
+S3 PROOF: ALL ASSERTIONS PASSED

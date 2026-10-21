@@ -1,0 +1,52 @@
+[
+ {
+  "call": 0,
+  "item": "bug2",
+  "latency": 8.599105834960938,
+  "input": 3038,
+  "output": 307,
+  "cacheRead": 128,
+  "cacheWrite": 0,
+  "cost": 0.00256728
+ },
+ {
+  "call": 1,
+  "item": "bug2",
+  "latency": 3.1793301105499268,
+  "input": 2654,
+  "output": 297,
+  "cacheRead": 512,
+  "cacheWrite": 0,
+  "cost": 0.00233592
+ },
+ {
+  "call": 2,
+  "item": "bug2",
+  "latency": 2.4364659786224365,
+  "input": 350,
+  "output": 216,
+  "cacheRead": 2816,
+  "cacheWrite": 0,
+  "cost": 0.00089736
+ },
+ {
+  "call": 3,
+  "item": "q1",
+  "latency": 3.015688180923462,
+  "input": 3018,
+  "output": 84,
+  "cacheRead": 128,
+  "cacheWrite": 0,
+  "cost": 0.00202008
+ },
+ {
+  "call": 4,
+  "item": "q1",
+  "latency": 2.769150972366333,
+  "input": 1,
+  "output": 100,
+  "cacheRead": 3145,
+  "cacheWrite": 0,
+  "cost": 0.00042929999999999997
+ }
+]
