@@ -45,9 +45,15 @@ defmodule ForemanServer.Approvals.Deliverer do
   @impl true
   def init(opts) do
     case ProjectionStore.subscribe(replay_existing: false) do
-      :ok -> {:ok, %{opts: opts}}
+      :ok -> {:ok, %{opts: opts}, {:continue, :recover}}
       {:error, reason} -> {:stop, {:projection_subscribe_failed, reason}}
     end
+  end
+
+  @impl true
+  def handle_continue(:recover, state) do
+    recover(state.opts)
+    {:noreply, state}
   end
 
   @impl true
@@ -62,6 +68,32 @@ defmodule ForemanServer.Approvals.Deliverer do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  @doc """
+  Re-deliver decisions that may have been lost while the server was down: every
+  `approved` call that was never settled, and every `denied` call whose run is
+  still paused. The subscription stays non-replaying; this reads the projection
+  once. Safe to repeat: the steer, resume and finish commands have deterministic
+  ids, so a decision that did arrive is a no-op. Returns the number attempted.
+  """
+  @spec recover(keyword()) :: non_neg_integer()
+  def recover(opts \\ []) do
+    calls =
+      Enum.filter(ProjectionStore.undelivered_tool_calls(), fn
+        %{status: "approved"} ->
+          true
+
+        %{status: "denied", run_id: run_id} ->
+          match?(%{status: "paused"}, ProjectionStore.run(run_id))
+      end)
+
+    for %{status: status} = call <- calls do
+      decision = if status == "approved", do: :approve, else: :deny
+      deliver(decision, call.run_id, call.tool_call_id, opts)
+    end
+
+    length(calls)
+  end
 
   @doc """
   Deliver one decision (public so tests and recovery can drive it without a
@@ -188,6 +220,10 @@ defmodule ForemanServer.Approvals.Deliverer do
 
     case Dispatch.system(finish, gateway) do
       {:ok, _} ->
+        :ok
+
+      # A recovery re-delivery of a call that was already finished.
+      {:error, {:tool_call_terminal, _status}} ->
         :ok
 
       other ->

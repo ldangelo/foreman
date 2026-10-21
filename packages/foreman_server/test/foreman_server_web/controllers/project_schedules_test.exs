@@ -129,8 +129,23 @@ defmodule ForemanServerWeb.ProjectSchedulesTest do
     create(id, "s4", "aaa-paused")
     command(id, "schedule.pause", "s4", %{})
 
-    names = get_json("/api/projects/#{id}/schedules", 200)["schedules"] |> Enum.map(& &1["name"])
-    assert names == ["early", "alpha", "zeta", "aaa-paused"]
+    schedules = get_json("/api/projects/#{id}/schedules", 200)["schedules"]
+    names = Enum.map(schedules, & &1["name"])
+
+    # The "5m" and "1h" schedules next fire at the SAME instant during the last five
+    # minutes of every hour (both land on the top of the hour), and the tie then breaks
+    # by name. So the contract is asserted from the response itself - ordered by
+    # (next_fire_at, name), schedules without a next fire last - not from a wall-clock
+    # dependent literal list.
+    keys = Enum.map(schedules, &{is_nil(&1["next_fire_at"]), &1["next_fire_at"], &1["name"]})
+    assert keys == Enum.sort(keys)
+
+    assert List.last(names) == "aaa-paused"
+    assert Enum.find_index(names, &(&1 == "alpha")) < Enum.find_index(names, &(&1 == "zeta"))
+
+    by_name = Map.new(schedules, &{&1["name"], &1["next_fire_at"]})
+    assert by_name["early"] <= by_name["alpha"]
+    assert by_name["alpha"] == by_name["zeta"]
   end
 
   test "empty project lists no schedules", %{id: id} do

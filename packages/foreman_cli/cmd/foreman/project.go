@@ -17,13 +17,13 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --notification-preference --pr-auto-fix <json> --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix <json> --notification-preference --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project library list|add|replace|remove [flags] <project-id> ...   (project files for agents; see `foreman project library`)\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project: missing subcommand (create|get|update|settings|context|env|secret|setup-script|network|pause|resume|reactivate|delete|list|recommend|adopt|memory|schedule|chat)",
+			"foreman project: missing subcommand (create|get|update|settings|context|env|secret|setup-script|network|pause|resume|reactivate|delete|list|recommend|adopt|memory|library|schedule|chat)",
 			projectUsageText,
 		)
 	}
@@ -61,6 +61,8 @@ func runProject(c *client.Client, args []string) error {
 		return projectRecommend(c, args[1:])
 	case "adopt":
 		return projectAdopt(c, args[1:])
+	case "library":
+		return projectLibrary(c, args[1:])
 	case "memory":
 		return projectMemory(c, args[1:])
 	case "schedule":
@@ -178,6 +180,7 @@ func projectUpdate(c *client.Client, args []string) error {
 	coordinatorEffort := fs.String("coordinator-effort", "", "Coordinator effort (low|medium|high)")
 	maxConcurrentRuns := fs.Int("max-concurrent-runs", 0, "Maximum concurrent runs")
 	dailyThreadCap := fs.Int("daily-thread-cap", 0, "Maximum threads started per day")
+	libraryCollectProduced := fs.Bool("library-collect-produced", false, "Register each run's artifacts and session archive files in the project library (--library-collect-produced=false turns it off)")
 	coordinatorProposeBeforeStart := fs.Bool("coordinator-propose-before-start", false, "Coordinator proposes before starting threads (true|false; enforced by the server)")
 	coordinatorMaxActiveThreads := fs.Int("coordinator-max-active-threads", 0, "Coordinator's maximum active threads (1..50; enforced by the server)")
 	coordinatorReuseThreads := fs.Bool("coordinator-reuse-threads", false, "Coordinator reuses existing threads (true|false; enforced by the server)")
@@ -254,6 +257,10 @@ func projectUpdate(c *client.Client, args []string) error {
 	}
 	if set["daily-thread-cap"] {
 		payload["daily_thread_cap"] = *dailyThreadCap
+		changes++
+	}
+	if set["library-collect-produced"] {
+		payload["library_collect_produced"] = *libraryCollectProduced
 		changes++
 	}
 	if set["coordinator-propose-before-start"] {
@@ -437,6 +444,7 @@ var projectSettingNames = []string{
 	"coordinator_provider", "coordinator_model", "coordinator_effort",
 	"max_concurrent_runs", "daily_thread_cap",
 	"coordinator_propose_before_start", "coordinator_max_active_threads", "coordinator_reuse_threads",
+	"library_collect_produced",
 	"notification_preference", "pr_auto_fix",
 }
 

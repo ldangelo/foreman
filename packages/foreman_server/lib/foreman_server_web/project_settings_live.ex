@@ -17,11 +17,13 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
 
   use ForemanServerWeb, :live_view
 
+  require Logger
+
   alias ForemanServer.Aggregates.Project.Settings
-  alias ForemanServer.{ProjectMemory, ProjectSettings, ProjectStore, UsageDTO}
+  alias ForemanServer.{ProjectMemory, ProjectionStore, ProjectSettings, ProjectStore, UsageDTO}
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.ProjectMemory.Error, as: MemoryError
-  alias ForemanServerWeb.Workspace.{Actions, ProjectNotFound, Refresh}
+  alias ForemanServerWeb.Workspace.{Actions, ProjectNotFound, ProjectView, Refresh}
 
   @text_fields ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
                   coordinator_effort)a
@@ -73,7 +75,10 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   def handle_info(:workspace_refresh, socket),
     do: {:noreply, socket |> Refresh.begin_refresh() |> load()}
 
-  def handle_info(_other, socket), do: {:noreply, socket}
+  def handle_info(other, socket) do
+    Logger.warning("settings page received an unexpected message: #{inspect(other, limit: 5)}")
+    {:noreply, socket}
+  end
 
   @impl true
   def handle_event("validate", %{"settings" => params}, socket) do
@@ -84,13 +89,34 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
     form = Map.merge(socket.assigns.form, params)
     socket = socket |> assign(:form, form) |> sync_counter()
 
-    case Actions.update_settings(socket.assigns.project_id, to_settings(form)) do
-      :ok ->
-        {:noreply,
-         socket |> assign(errors: %{}, notice: "Settings saved.", notice_kind: :ok) |> load()}
+    # Only what the operator changed since the page (or the last save) loaded:
+    # a setting changed elsewhere in the meantime is never written back.
+    case changed_settings(form, socket.assigns.baseline) do
+      changed when map_size(changed) == 0 ->
+        {:noreply, assign(socket, errors: %{}, notice: "No changes to save.", notice_kind: :ok)}
 
-      {:error, reason} ->
-        {:noreply, assign_error(socket, reason)}
+      changed ->
+        case Actions.update_settings(
+               socket.assigns.project_id,
+               to_settings(changed),
+               Refresh.intent(socket)
+             ) do
+          :ok ->
+            baseline = Map.merge(socket.assigns.baseline, Map.take(form, Map.keys(changed)))
+
+            {:noreply,
+             socket
+             |> assign(
+               baseline: baseline,
+               errors: %{},
+               notice: "Settings saved.",
+               notice_kind: :ok
+             )
+             |> load()}
+
+          {:error, reason} ->
+            {:noreply, assign_error(socket, reason)}
+        end
     end
   end
 
@@ -102,7 +128,11 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
 
   def handle_event("lifecycle", %{"op" => op}, socket) when is_map_key(@lifecycle, op) do
     {kind, message} =
-      Actions.project_lifecycle(socket.assigns.project_id, Map.fetch!(@lifecycle, op))
+      Actions.project_lifecycle(
+        socket.assigns.project_id,
+        Map.fetch!(@lifecycle, op),
+        Refresh.intent(socket)
+      )
 
     {:noreply,
      socket |> assign(confirm_lifecycle: nil, notice: message, notice_kind: kind) |> load()}
@@ -185,22 +215,39 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
     end
   end
 
-  def handle_event(_event, _params, socket), do: {:noreply, socket}
+  def handle_event("memory_delete", _params, socket),
+    do:
+      {:noreply,
+       assign(socket, memory_confirm_delete: false, memory_error: "No topic is selected.")}
 
   # -- state -----------------------------------------------------------------
 
   defp load(socket) do
     project_id = socket.assigns.project_id
-    project = ProjectStore.get(project_id)
 
-    assign(socket,
-      project: project,
-      status: Map.get(project, :status),
-      env_names: env_names(project),
-      usage: usage(project_id),
-      limits: limits(project_id),
-      memory: memory(project_id)
-    )
+    case ProjectStore.get(project_id) do
+      %{} = project ->
+        view = ProjectView.build(project, project_id)
+
+        assign(socket,
+          project: project,
+          status: view.status,
+          env_names: view.env_names,
+          usage: usage(project_id),
+          limits: limits(project_id),
+          memory: memory(project_id)
+        )
+
+      nil ->
+        # The project vanished while the page was open (for example the
+        # projection was rebuilt): say so, and show the reads as failed.
+        assign(socket,
+          usage: usage(project_id),
+          limits: limits(project_id),
+          notice: "This project no longer exists.",
+          notice_kind: :error
+        )
+    end
   end
 
   defp load_form(socket) do
@@ -211,7 +258,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         {Atom.to_string(key), form_value(Map.get(settings, key))}
       end)
 
-    assign(socket, :form, form)
+    assign(socket, form: form, baseline: form)
   end
 
   defp form_value(nil), do: ""
@@ -225,16 +272,28 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         String.length(socket.assigns.form["instructions"] || "")
       )
 
+  # `{:ok, dto}` or `{:error, message}`: a failed read renders as an error, not
+  # as an absent pane.
   defp usage(project_id) do
     with {:ok, params} <- UsageDTO.parse_params(%{}),
          {:ok, dto} <- UsageDTO.build(project_id, params, DateTime.utc_now()) do
-      dto
+      {:ok, dto}
     else
-      _ -> nil
+      :not_found ->
+        {:error, "Usage unavailable: project not found."}
+
+      {:error, {code, message}} ->
+        Logger.warning("usage read failed: #{code}: #{message}")
+        {:error, "Usage unavailable: #{message}"}
     end
   end
 
-  defp limits(project_id), do: ForemanServer.ProjectionStore.project_limits(project_id)
+  defp limits(project_id) do
+    case ProjectionStore.project_limits(project_id) do
+      %{} = limits -> {:ok, limits}
+      nil -> {:error, "Limits unavailable: project not found."}
+    end
+  end
 
   defp memory(project_id) do
     case ProjectMemory.list(project_id) do
@@ -243,28 +302,24 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
     end
   end
 
-  # Names only, from either the legacy flat `env` map or the environment record.
-  defp env_names(project) do
-    config = Map.get(project, :config) || %{}
-    environment = fetch(config, :environment)
-    vars = if is_map(environment), do: fetch(environment, :vars), else: nil
-
-    [fetch(config, :env), vars]
-    |> Enum.flat_map(fn m -> if is_map(m), do: Map.keys(m), else: [] end)
-    |> Enum.map(&to_string/1)
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  defp fetch(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
-
   # -- form -> command -------------------------------------------------------
 
-  defp to_settings(form) do
-    text = Map.new(@text_fields, &{&1, blank_to_nil(form[Atom.to_string(&1)])})
-    ints = Map.new(@int_fields, &{&1, int_or_raw(form[Atom.to_string(&1)])})
-    bools = Map.new(@bool_fields, &{&1, bool(form[Atom.to_string(&1)])})
-    text |> Map.merge(ints) |> Map.merge(bools)
+  # Form fields whose value differs from the baseline (string key => raw value).
+  defp changed_settings(form, baseline) do
+    for {key, base} <- baseline, Map.get(form, key, base) != base, into: %{}, do: {key, form[key]}
+  end
+
+  # Typed command payload for the changed fields only (atom key => typed value).
+  defp to_settings(changed) do
+    Map.new(changed, fn {key, raw} ->
+      atom = String.to_existing_atom(key)
+
+      cond do
+        atom in @text_fields -> {atom, blank_to_nil(raw)}
+        atom in @int_fields -> {atom, int_or_raw(raw)}
+        atom in @bool_fields -> {atom, bool(raw)}
+      end
+    end)
   end
 
   defp blank_to_nil(value) when is_binary(value),
@@ -389,16 +444,26 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
 
       <section aria-labelledby="limits-h">
         <h2 id="limits-h">Limits and usage</h2>
-        <dl :if={@limits}>
-          <dt>Active runs</dt><dd>{@limits.active_runs} / {@limits.max_concurrent_runs}</dd>
-          <dt>Threads started today</dt><dd>{@limits.threads_started_today}<span :if={@limits.daily_thread_cap}> / {@limits.daily_thread_cap}</span></dd>
-          <dt>Deferred tasks</dt><dd>{@limits.deferred_tasks}</dd>
-        </dl>
-        <dl :if={@usage}>
-          <dt>Total tokens</dt><dd>{@usage["totals"]["total_tokens"]}</dd>
-          <dt>Cost (USD)</dt><dd>{@usage["totals"]["cost_usd"] || "unknown"}</dd>
-          <dt>Threads with usage</dt><dd>{@usage["thread_count"]}</dd>
-        </dl>
+        <%= case @limits do %>
+          <% {:ok, limits} -> %>
+            <dl id="limits-pane">
+              <dt>Active runs</dt><dd>{limits.active_runs} / {limits.max_concurrent_runs}</dd>
+              <dt>Threads started today</dt><dd>{limits.threads_started_today}<span :if={limits.daily_thread_cap}> / {limits.daily_thread_cap}</span></dd>
+              <dt>Deferred tasks</dt><dd>{limits.deferred_tasks}</dd>
+            </dl>
+          <% {:error, message} -> %>
+            <p id="limits-error" class="ws-error" role="alert">{message}</p>
+        <% end %>
+        <%= case @usage do %>
+          <% {:ok, usage} -> %>
+            <dl id="usage-pane">
+              <dt>Total tokens</dt><dd>{usage["totals"]["total_tokens"]}</dd>
+              <dt>Cost (USD)</dt><dd>{usage["totals"]["cost_usd"] || "unknown"}</dd>
+              <dt>Threads with usage</dt><dd>{usage["thread_count"]}</dd>
+            </dl>
+          <% {:error, message} -> %>
+            <p id="usage-error" class="ws-error" role="alert">{message}</p>
+        <% end %>
       </section>
 
       <section aria-labelledby="memory-h">

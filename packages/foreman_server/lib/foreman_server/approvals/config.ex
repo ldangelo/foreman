@@ -37,14 +37,27 @@ defmodule ForemanServer.Approvals.Config do
   @spec on_timeout() :: :surface | :deny
   def on_timeout do
     case get(:on_timeout, :surface) do
-      :deny -> :deny
-      _ -> :surface
+      policy when policy in [:surface, :deny] ->
+        policy
+
+      other ->
+        raise ArgumentError,
+              "config :foreman_server, :approvals, on_timeout must be :surface or :deny, got: #{inspect(other)}"
     end
   end
 
   @doc "Whether a permission-denied phase pauses the run for an operator decision."
   @spec pause_on_permission_denied?() :: boolean()
-  def pause_on_permission_denied?, do: get(:pause_on_permission_denied, true) == true
+  def pause_on_permission_denied? do
+    case get(:pause_on_permission_denied, true) do
+      flag when is_boolean(flag) ->
+        flag
+
+      other ->
+        raise ArgumentError,
+              "config :foreman_server, :approvals, pause_on_permission_denied must be a boolean, got: #{inspect(other)}"
+    end
+  end
 
   @doc "Whether the application supervisor starts the approvals processes."
   @spec start_children?() :: boolean()

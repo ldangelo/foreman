@@ -339,9 +339,25 @@ config :foreman_server, :secret_store,
 # must never log them (E4-S6).
 config :phoenix, :filter_parameters, ["password", "value"]
 
+# Project library (E5): limits mirror Claude Projects. `folder_*` apply to a folder add;
+# `produced_*` bound thread-produced files registered by `Library.Collector`;
+# `allow_server_paths` lets an operator add a directory that lives on the server host
+# (off by default: it lets the caller read arbitrary server directories).
+config :foreman_server, :library,
+  max_files_per_add: 100,
+  max_file_bytes: 480 * 1024 * 1024,
+  folder_max_files: 100,
+  folder_max_bytes: 200 * 1024 * 1024,
+  folder_skip_file_bytes: 30 * 1024 * 1024,
+  upload_max_bytes: 512 * 1024 * 1024,
+  allow_server_paths: false,
+  collector: true,
+  produced_max_bytes_per_run: 50 * 1024 * 1024,
+  produced_max_files_per_run: 100
+
 config :foreman_server, :project_context,
   max_bytes: 24_000,
   section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
-  section_providers: [ForemanServer.ProjectContext.Memory]
+  section_providers: [ForemanServer.ProjectContext.Memory, ForemanServer.ProjectContext.Library]
 
 import_config "#{config_env()}.exs"
