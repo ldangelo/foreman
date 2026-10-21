@@ -287,6 +287,27 @@ defmodule ForemanServer.ProjectionStore do
 
   Worker liveness events are appended to those streams, never to
   `run:<run_id>`, so `run_events/1` does not surface them: a live run shows a
+  @typedoc """
+  Operator disposition of a thread: `resolved`, when (`resolved_at`, ISO-8601)
+  and why, who resolved it, and when it was last reopened (`reopened_at`).
+  """
+  @type thread_flags :: %{
+          resolved: boolean(),
+          resolved_at: String.t() | nil,
+          reason: String.t() | nil,
+          resolved_by: String.t() | nil,
+          reopened_at: String.t() | nil
+        }
+
+  @doc """
+  Return the folded `ThreadResolved`/`ThreadReopened` flags for a thread id, or
+  nil when the thread was never resolved or reopened.
+  """
+  @spec thread_flags(String.t()) :: thread_flags() | nil
+  def thread_flags(thread_id) when is_binary(thread_id) and thread_id != "" do
+    GenServer.call(__MODULE__, {:thread_flags, thread_id})
+  end
+
   single `RunStarted` event on its run stream while its worker stream grows a
   `WorkerHeartbeat` every few seconds. This read is therefore the only way to
   judge worker liveness without reading the server console.
@@ -402,7 +423,8 @@ defmodule ForemanServer.ProjectionStore do
           jobsites: [map()],
           worktrees: [map()],
           pr_associations: %{String.t() => map()},
-          reviews: %{{String.t(), String.t()} => map()}
+          reviews: %{{String.t(), String.t()} => map()},
+          thread_flags: %{String.t() => thread_flags()}
         }
   def thread_inputs do
     GenServer.call(__MODULE__, :thread_inputs)
@@ -539,6 +561,11 @@ defmodule ForemanServer.ProjectionStore do
       state.jobsites
       |> Map.values()
       |> Enum.sort_by(fn jobsite -> get(jobsite, :started_at_ms, 0) end, :desc)
+
+  @impl true
+  def handle_call({:thread_flags, thread_id}, _from, state) do
+    {:reply, Map.get(state.thread_flags, thread_id), state}
+  end
 
     {:reply, jobsites, state}
   end
@@ -729,7 +756,8 @@ defmodule ForemanServer.ProjectionStore do
       jobsites: Map.values(state.jobsites),
       worktrees: state.worktrees |> Map.values() |> Enum.sort_by(&get(&1, :operation_id, "")),
       pr_associations: state.pr_associations,
-      reviews: state.reviews
+      reviews: state.reviews,
+      thread_flags: state.thread_flags
     }
 
     {:reply, inputs, state}
@@ -986,7 +1014,8 @@ defmodule ForemanServer.ProjectionStore do
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       inbox_threads: %{},
       jobsites: %{},
-      reviews: %{}
+      reviews: %{},
+      thread_flags: %{}
     }
   end
 
@@ -2116,6 +2145,48 @@ defmodule ForemanServer.ProjectionStore do
       end
     )
   end
+  # Operator disposition flags per thread id. A malformed payload is logged and
+  # skipped (never raised) so `init/1`'s event-log rebuild survives it.
+  defp apply_event_by_type(state, "ThreadResolved", payload) do
+    case decode_or_skip("ThreadResolved", payload) do
+      {:ok, %ForemanServer.Events.ThreadResolved{thread_id: id} = event}
+      when is_binary(id) and id != "" ->
+        flags = %{
+          resolved: true,
+          resolved_at: event.at,
+          reason: event.reason,
+          resolved_by: event.resolved_by,
+          reopened_at: nil
+        }
+
+        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ThreadResolved")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ThreadReopened", payload) do
+    case decode_or_skip("ThreadReopened", payload) do
+      {:ok, %ForemanServer.Events.ThreadReopened{thread_id: id} = event}
+      when is_binary(id) and id != "" ->
+        flags = %{
+          resolved: false,
+          resolved_at: nil,
+          reason: nil,
+          resolved_by: nil,
+          reopened_at: event.at
+        }
+
+        %{state | thread_flags: Map.put(state.thread_flags, id, flags)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ThreadReopened")
+        state
+    end
+  end
+
 
   defp apply_event_by_type(state, "JobsiteSandboxProvisioned", payload) do
     update_jobsite_projection(

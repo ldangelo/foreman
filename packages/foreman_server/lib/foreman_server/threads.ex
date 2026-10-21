@@ -13,7 +13,12 @@ defmodule ForemanServer.Threads do
   @default_limit 100
   @max_limit 500
 
-  @type opts :: [status: String.t(), door: Thread.door(), limit: pos_integer()]
+  @type opts :: [
+          status: String.t(),
+          door: Thread.door(),
+          resolved: boolean(),
+          limit: pos_integer()
+        ]
 
   @doc "Maximum accepted `:limit`."
   @spec max_limit() :: pos_integer()
@@ -22,7 +27,8 @@ defmodule ForemanServer.Threads do
   @doc """
   Threads of a project, most recently updated first.
 
-  Options: `:status` (raw status), `:door` (`:workflow | :jobsite`), `:limit`
+  Options: `:status` (raw status), `:door` (`:workflow | :jobsite`), `:resolved`
+  (`true | false`, omitted = both), `:limit`
   (default #{@default_limit}, clamped to 1..#{@max_limit}).
   """
   @spec list(String.t(), opts()) :: [Thread.t()]
@@ -30,13 +36,15 @@ defmodule ForemanServer.Threads do
     status = Keyword.get(opts, :status)
     door = Keyword.get(opts, :door)
     limit = opts |> Keyword.get(:limit, @default_limit) |> clamp_limit()
+    resolved = Keyword.get(opts, :resolved)
 
     ProjectionStore.thread_inputs()
     |> build_all()
     |> Enum.filter(fn thread ->
       thread.project_id == project_id and
         (is_nil(status) or thread.status == status) and
-        (is_nil(door) or thread.door == door)
+        (is_nil(door) or thread.door == door) and
+        (is_nil(resolved) or thread.resolved == resolved)
     end)
     |> Enum.take(limit)
   end
@@ -61,6 +69,8 @@ defmodule ForemanServer.Threads do
       pr_associations: pr_associations,
       reviews: reviews
     } = inputs
+
+    thread_flags = Map.get(inputs, :thread_flags, %{})
 
     tasks_by_id = Map.new(tasks, &{&1.task_id, &1})
 
@@ -108,7 +118,16 @@ defmodule ForemanServer.Threads do
         )
       end
 
-    Enum.sort_by(run_threads ++ jobsite_threads, &{&1.updated_at || 0, &1.id}, :desc)
+    (run_threads ++ jobsite_threads)
+    |> Enum.map(&apply_flags(&1, thread_flags))
+    |> Enum.sort_by(&{&1.updated_at || 0, &1.id}, :desc)
+  end
+
+  defp apply_flags(%Thread{id: id} = thread, thread_flags) do
+    case Map.get(thread_flags, id) do
+      %{resolved: true} -> %Thread{thread | resolved: true}
+      _ -> thread
+    end
   end
 
   defp pr_association(pr_associations, run_id) do
