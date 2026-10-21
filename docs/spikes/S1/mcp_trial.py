@@ -33,7 +33,7 @@ def run(item, n_t=0, n_m=0, timeout=240):
     except subprocess.TimeoutExpired:
         # keep MCP calls the server logged before the timeout: they executed, and hiding them misreports partial execution
         return {"id": item["id"], "category": item["category"], "ok": False, "error": "timeout", "latency": time.time() - t0,
-                "calls": [json.loads(l) for line in open(LOG) if '"call"' in line], "turns": 0, "in": 0, "out": 0, "cost": 0.0, "leaked_text_toolcall": False}
+                "calls": [json.loads(line) for line in open(LOG) if '"call"' in line], "turns": 0, "in": 0, "out": 0, "cost": 0.0, "leaked_text_toolcall": False}
     lat = time.time() - t0
     tin = tout = 0; cost = 0.0; turns = 0; leaked_text_toolcall = False
     for ln in p.stdout.splitlines():
