@@ -210,7 +210,7 @@ defmodule ForemanServer.Aggregates.ProjectTest do
                  payload: %{
                    project_id: "project-1",
                    path: "/tmp/project-1",
-                   config: %{env: %{"ALPHA" => "1"}, retries: 3},
+                   config: %{env: %{"ALPHA" => "1"}, name: "Alpha"},
                    task_provider: task_provider
                  }
                })
@@ -233,7 +233,7 @@ defmodule ForemanServer.Aggregates.ProjectTest do
 
       assert updated.config == %{
                env: %{"ALPHA" => "1"},
-               retries: 3,
+               name: "Alpha",
                task_provider: task_provider
              }
     end

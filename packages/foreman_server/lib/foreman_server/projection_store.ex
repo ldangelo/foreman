@@ -372,6 +372,19 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:project_projection, project_id})
   end
 
+  @doc """
+  Typed settings of a project (`nil` only when the project is unknown). Reads
+  accept both key conventions found in persisted config (atom live, string
+  after replay).
+  """
+  @spec project_settings(String.t()) :: ForemanServer.ProjectSettings.t() | nil
+  def project_settings(project_id) when is_binary(project_id) do
+    case project_projection(project_id) do
+      nil -> nil
+      project -> ForemanServer.ProjectSettings.from_config(Map.get(project, :config))
+    end
+  end
+
   @doc "Return every projected project."
   @spec list_projects() :: [map()]
   def list_projects do
@@ -1029,6 +1042,7 @@ defmodule ForemanServer.ProjectionStore do
         |> maybe_put(:name, get(payload, :name))
         |> maybe_put(:task_provider, get(payload, :task_provider))
         |> put_project_config(get(payload, :config, %{}))
+        |> put_project_settings(payload)
         |> put_project_projection_metadata(payload)
 
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
@@ -2307,8 +2321,39 @@ defmodule ForemanServer.ProjectionStore do
       health: get(payload, :health, %{ok: true}),
       name: get(payload, :name)
     }
+    |> put_project_settings(payload)
     |> put_project_projection_metadata(payload)
   end
+
+  # Folds the typed settings fields of ProjectRegistered/ProjectUpdated into the
+  # projected config under atom keys. Persisted payloads carry string keys after
+  # replay, so any string-key variant already in config is removed first.
+  # Never raises: a malformed value (not a map payload) is skipped.
+  defp put_project_settings(project, payload) when is_map(project) and is_map(payload) do
+    cleared =
+      case get(payload, :cleared_settings, []) do
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    config = get(project, :config, %{})
+    config = if is_map(config), do: config, else: %{}
+
+    config =
+      Enum.reduce(ForemanServer.ProjectSettings.keys(), config, fn key, acc ->
+        string_key = Atom.to_string(key)
+        acc = if key in cleared or string_key in cleared, do: drop_setting(acc, key), else: acc
+
+        case get(payload, key) do
+          nil -> acc
+          value -> acc |> drop_setting(key) |> Map.put(key, value)
+        end
+      end)
+
+    Map.put(project, :config, config)
+  end
+
+  defp drop_setting(config, key), do: Map.drop(config, [key, Atom.to_string(key)])
 
   defp put_project_projection_metadata(project, payload)
        when is_map(project) and is_map(payload) do

@@ -14,6 +14,7 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.Aggregate
   alias ForemanServer.RunSlots.Config
 
+  alias ForemanServer.Aggregates.Project.Settings
   alias ForemanServer.Events.{ProjectRunReservationReleased, ProjectRunReserved}
 
   defmodule State do
@@ -63,7 +64,7 @@ defmodule ForemanServer.Aggregates.Project do
             status: Aggregate.get(payload, :status, "active"),
             task_provider: task_provider,
             active_run_reservations: %{},
-            config: project_config(payload, task_provider),
+            config: payload |> project_config(task_provider) |> fold_settings(payload),
             health: Aggregate.get(payload, :health, %{ok: true}),
             archived?: false
         }
@@ -76,6 +77,7 @@ defmodule ForemanServer.Aggregates.Project do
           |> merge_config(Aggregate.get(payload, :config, %{}))
           |> maybe_put_name(Aggregate.get(payload, :name))
           |> maybe_put_task_provider(task_provider)
+          |> fold_settings(payload)
 
         state
         |> update_status(payload)
@@ -113,7 +115,8 @@ defmodule ForemanServer.Aggregates.Project do
            payload
            |> Map.put(:project_id, project_id)
            |> Map.put(:path, path)
-           |> normalize_task_provider_payload() do
+           |> normalize_settings_payload(),
+         {:ok, payload} <- normalize_task_provider_payload(payload) do
       {:ok,
        %{
          stream_id: "project:#{project_id}",
@@ -131,7 +134,8 @@ defmodule ForemanServer.Aggregates.Project do
          {:ok, payload} <-
            payload
            |> Map.put(:project_id, project_id)
-           |> normalize_task_provider_payload() do
+           |> normalize_settings_payload(),
+         {:ok, payload} <- normalize_task_provider_payload(payload) do
       {:ok,
        %{
          stream_id: "project:#{project_id}",
@@ -307,6 +311,75 @@ defmodule ForemanServer.Aggregates.Project do
     do: %State{state | task_provider: task_provider}
 
   defp put_config(%State{} = state, config), do: %State{state | config: config}
+
+  # Every settings value, wherever the caller put it (typed top-level field or
+  # inside the open `config` map), goes through `Settings`. The emitted payload
+  # carries settings ONLY as typed top-level fields plus `cleared_settings`;
+  # `config` keeps just the non-setting keys.
+  defp normalize_settings_payload(payload) do
+    raw_config = Aggregate.get(payload, :config, %{})
+
+    with {:ok, raw_config} <- validate_config_map(raw_config),
+         :ok <- Settings.check_config_keys(raw_config),
+         {:ok, from_config} <- Settings.normalize(raw_config),
+         {:ok, from_top} <- Settings.normalize(payload),
+         {:ok, cleared} <- Settings.normalize_cleared(Aggregate.get(payload, :cleared_settings)) do
+      merged = Map.merge(from_config, from_top)
+      cleared = Enum.uniq(cleared ++ for({key, nil} <- merged, do: key))
+      set = for {key, value} <- merged, not is_nil(value), into: %{}, do: {key, value}
+
+      case Enum.find(cleared, &Map.has_key?(set, &1)) do
+        nil -> {:ok, emit_settings(payload, raw_config, set, cleared)}
+        key -> {:error, {:setting_set_and_cleared, key}}
+      end
+    end
+  end
+
+  defp validate_config_map(config) when is_map(config), do: {:ok, config}
+  defp validate_config_map(_config), do: {:error, {:missing_or_invalid, :config}}
+
+  defp emit_settings(payload, raw_config, set, cleared) do
+    setting_keys = Settings.keys()
+    drop = setting_keys ++ Enum.map(setting_keys, &Atom.to_string/1)
+
+    config = Map.drop(raw_config, drop)
+
+    payload
+    |> Map.drop(drop ++ [:cleared_settings, "cleared_settings", :config, "config"])
+    |> Map.put(:config, config)
+    |> Map.merge(set)
+    |> then(fn payload ->
+      if cleared == [],
+        do: payload,
+        else: Map.put(payload, :cleared_settings, Enum.map(cleared, &Atom.to_string/1))
+    end)
+  end
+
+  # Folds the typed settings fields of an event into `config` (atom keys,
+  # replay-safe: string-key variants from JSON are removed first).
+  defp fold_settings(config, payload) do
+    cleared =
+      payload
+      |> Aggregate.get(:cleared_settings, [])
+      |> List.wrap()
+      |> Enum.flat_map(fn item ->
+        case Settings.to_key(item) do
+          {:ok, key} -> [key]
+          :error -> []
+        end
+      end)
+
+    config = Enum.reduce(cleared, config, &delete_setting(&2, &1))
+
+    Enum.reduce(Settings.keys(), config, fn key, acc ->
+      case Aggregate.get(payload, key) do
+        nil -> acc
+        value -> acc |> delete_setting(key) |> Map.put(key, value)
+      end
+    end)
+  end
+
+  defp delete_setting(config, key), do: Map.drop(config, [key, Atom.to_string(key)])
 
   defp normalize_task_provider_payload(payload) do
     case payload |> task_provider_from() |> normalize_task_provider() do
