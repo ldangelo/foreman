@@ -994,6 +994,23 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_approvals_list %{
+    name: "foreman_approvals_list",
+    description:
+      "List tool-call permission requests from agents that are waiting on the operator, oldest first. " <>
+        "Read-only: deciding a request is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
+        "Pass project_id (the project's requests) or run_id (one run or jobsite). status=all also lists decided, expired and finished ones.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        run_id: %{type: "string", description: "A run or jobsite ID (instead of project_id)"},
+        status: %{type: "string", enum: ["pending", "all"], description: "Default pending"}
+      },
+      additionalProperties: false
+    }
+  }
+
   @tools [
     @schema_foreman_run_get,
     @schema_foreman_run_status,
@@ -1043,7 +1060,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_memory_list,
     @schema_foreman_project_memory_read,
     @schema_foreman_project_memory_write,
-    @schema_foreman_project_memory_forget
+    @schema_foreman_project_memory_forget,
+    @schema_foreman_approvals_list
   ]
 
   def list_tools, do: @tools
@@ -1606,6 +1624,14 @@ defmodule ForemanServer.MCP.Tools do
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)
         {:error, %ToolError{code: "RUN_DETAIL_FAILED", message: inspect(reason)}}
     end
+  end
+
+  defp tool_foreman_approvals_list(args) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.MCP.ApprovalsTool.call(args)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_approvals_list", overview_outcome(result))
+    result
   end
 
   defp tool_foreman_queue_status(%{}) do

@@ -300,6 +300,85 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:review, subject_kind, subject_id})
   end
 
+  @typedoc """
+  One projected tool-call approval request. `status` is `requested`, `approved`,
+  `denied`, `expired` or `finished`; `project_id` is nil only when neither the event
+  nor the run/jobsite projection knew it.
+  """
+  @type tool_call :: %{
+          run_id: String.t(),
+          tool_call_id: String.t(),
+          project_id: String.t() | nil,
+          tool_name: String.t(),
+          input_summary: String.t() | nil,
+          provider: String.t() | nil,
+          delivery: String.t() | nil,
+          status: String.t(),
+          requested_at: String.t(),
+          requested_at_ms: integer() | nil,
+          decided_at: String.t() | nil,
+          decided_by: String.t() | nil,
+          reason: String.t() | nil,
+          outcome: String.t() | nil
+        }
+
+  @approvals_limit 200
+
+  @doc "Maximum approvals returned by one `project_approvals/2` / `run_approvals/2` read."
+  @spec approvals_limit() :: pos_integer()
+  def approvals_limit, do: @approvals_limit
+
+  @doc """
+  A project's tool-call approvals, oldest request first. `status: :pending`
+  (default) returns only `requested` calls; `status: :all` includes decided,
+  expired and finished ones. Bounded by `:limit` (default and max 200).
+  """
+  @spec project_approvals(String.t(), keyword()) :: [tool_call()]
+  def project_approvals(project_id, opts \\ []) when is_binary(project_id) and is_list(opts),
+    do: read_tool_calls({:project, project_id}, opts)
+
+  @doc "A run's (or jobsite's) tool-call approvals; same options as `project_approvals/2`."
+  @spec run_approvals(String.t(), keyword()) :: [tool_call()]
+  def run_approvals(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
+    do: read_tool_calls({:run, run_id}, opts)
+
+  @doc "The `requested` tool calls of a project, oldest first (the Waiting-on-you source)."
+  @spec pending_approvals(String.t()) :: [tool_call()]
+  def pending_approvals(project_id), do: project_approvals(project_id)
+
+  @doc "Pending approval counts per run id for a project."
+  @spec pending_approvals_by_run(String.t()) :: %{String.t() => pos_integer()}
+  def pending_approvals_by_run(project_id) when is_binary(project_id) do
+    project_id |> pending_approvals() |> Enum.frequencies_by(& &1.run_id)
+  end
+
+  @doc "One tool call, or nil."
+  @spec tool_call(String.t(), String.t()) :: tool_call() | nil
+  def tool_call(run_id, tool_call_id) when is_binary(run_id) and is_binary(tool_call_id),
+    do: GenServer.call(__MODULE__, {:tool_call, run_id, tool_call_id})
+
+  @doc """
+  `%{pending: n, expired: n}` tool-call counts over `run_ids` (a thread's runs, or
+  its jobsite id): what `Overview.Signals` reads.
+  """
+  @spec approval_counts([String.t()]) :: %{pending: non_neg_integer(), expired: non_neg_integer()}
+  def approval_counts(run_ids) when is_list(run_ids),
+    do: GenServer.call(__MODULE__, {:approval_counts, run_ids})
+
+  defp read_tool_calls(scope, opts) do
+    statuses =
+      case Keyword.get(opts, :status, :pending) do
+        :all -> :all
+        :pending -> ["requested"]
+      end
+
+    limit = opts |> Keyword.get(:limit, @approvals_limit) |> min(@approvals_limit) |> max(1)
+    GenServer.call(__MODULE__, {:tool_calls, scope, statuses, limit})
+  end
+
+  defp tool_call_in_scope?(call, {:project, project_id}), do: call.project_id == project_id
+  defp tool_call_in_scope?(call, {:run, run_id}), do: call.run_id == run_id
+
   @doc """
   The adoption record for a subject: the `project.adopt` move that re-homed it
   (`{kind, id}`), or the continuation recorded against it (`{"continue", kind,
@@ -782,6 +861,39 @@ defmodule ForemanServer.ProjectionStore do
           do: schedule
 
     {:reply, Enum.sort_by(list, &{&1.name, &1.schedule_id}), state}
+  end
+
+  @impl true
+  def handle_call({:tool_calls, scope, statuses, limit}, _from, state) do
+    calls =
+      state.tool_calls
+      |> Map.values()
+      |> Enum.filter(&tool_call_in_scope?(&1, scope))
+      |> Enum.filter(&(statuses == :all or &1.status in statuses))
+      |> Enum.sort_by(&{&1.requested_at_ms || 0, &1.tool_call_id})
+      |> Enum.take(limit)
+
+    {:reply, calls, state}
+  end
+
+  @impl true
+  def handle_call({:tool_call, run_id, tool_call_id}, _from, state) do
+    {:reply, Map.get(state.tool_calls, {run_id, tool_call_id}), state}
+  end
+
+  @impl true
+  def handle_call({:approval_counts, run_ids}, _from, state) do
+    counts =
+      Enum.reduce(state.tool_calls, %{pending: 0, expired: 0}, fn {{run_id, _}, call}, acc ->
+        cond do
+          run_id not in run_ids -> acc
+          call.status == "requested" -> Map.update!(acc, :pending, &(&1 + 1))
+          call.status == "expired" -> Map.update!(acc, :expired, &(&1 + 1))
+          true -> acc
+        end
+      end)
+
+    {:reply, counts, state}
   end
 
   @impl true
@@ -1393,7 +1505,8 @@ defmodule ForemanServer.ProjectionStore do
       project_memory: %{},
       project_secrets: %{},
       thread_flags: %{},
-      schedules: %{}
+      schedules: %{},
+      tool_calls: %{}
     }
   end
 
@@ -2316,7 +2429,70 @@ defmodule ForemanServer.ProjectionStore do
     |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
   end
 
+  # E8 tool-call folds. A decision event for an unknown call is ignored (never
+  # raised) so `init/1`'s event-log rebuild survives partial or reordered history.
+  defp apply_event_by_type(state, "ToolCallRequested", payload) do
+    case decode_or_skip("ToolCallRequested", payload) do
+      {:ok, %ForemanServer.Events.ToolCallRequested{run_id: run_id, tool_call_id: id} = e}
+      when is_binary(run_id) and run_id != "" and is_binary(id) and id != "" ->
+        entry = %{
+          run_id: run_id,
+          tool_call_id: id,
+          project_id: e.project_id || subject_project_id(state, run_id),
+          tool_name: e.tool_name,
+          input_summary: e.input_summary,
+          provider: e.provider,
+          delivery: e.delivery,
+          status: "requested",
+          requested_at: e.requested_at,
+          requested_at_ms: iso_to_ms(e.requested_at),
+          decided_at: nil,
+          decided_by: nil,
+          reason: nil,
+          outcome: nil
+        }
+
+        %{state | tool_calls: Map.put_new(state.tool_calls, {run_id, id}, entry)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ToolCallRequested")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ToolCallApproved", payload),
+    do: decide_tool_call(state, "ToolCallApproved", payload, "approved")
+
+  defp apply_event_by_type(state, "ToolCallDenied", payload),
+    do: decide_tool_call(state, "ToolCallDenied", payload, "denied")
+
+  defp apply_event_by_type(state, "ToolCallExpired", payload) do
+    case decode_or_skip("ToolCallExpired", payload) do
+      {:ok, %ForemanServer.Events.ToolCallExpired{} = e} ->
+        update_tool_call(state, e.run_id, e.tool_call_id, fn call ->
+          %{call | status: "expired", decided_at: e.at, reason: e.reason}
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ToolCallExpired")
+        state
+    end
+  end
+
+  # Worker-emitted `ToolCallFinished` events carry no `tool_call_id`; only the
+  # approvals path (`tool.finish`) does, and only that one settles a call.
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
+    state =
+      case get(payload, :tool_call_id) do
+        id when is_binary(id) and id != "" ->
+          update_tool_call(state, get(payload, :run_id), id, fn call ->
+            %{call | status: "finished", outcome: get(payload, :outcome)}
+          end)
+
+        _ ->
+          state
+      end
+
     state
     |> touch_run_for_payload(payload)
     |> touch_active_phase_activity(get(payload, :run_id), :output, payload_event_at_ms(payload))
@@ -4056,6 +4232,53 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp iso_to_unix(_), do: nil
+
+  defp iso_to_ms(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> DateTime.to_unix(dt, :millisecond)
+      _ -> nil
+    end
+  end
+
+  defp iso_to_ms(_), do: nil
+
+  # A tool call / question is owned by a run id, or by a jobsite id for the jobsite door.
+  defp subject_project_id(state, subject_id) do
+    case {Map.get(state.runs, subject_id), Map.get(state.jobsites, subject_id)} do
+      {%{project_id: pid}, _} when is_binary(pid) -> pid
+      {_, %{project_id: pid}} when is_binary(pid) -> pid
+      _ -> nil
+    end
+  end
+
+  defp decide_tool_call(state, event_type, payload, status) do
+    case decode_or_skip(event_type, payload) do
+      {:ok, %{run_id: run_id, tool_call_id: id} = e} ->
+        update_tool_call(state, run_id, id, fn call ->
+          %{
+            call
+            | status: status,
+              decided_at: e.decided_at,
+              decided_by: e.decided_by,
+              reason: e.reason
+          }
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed #{event_type}")
+        state
+    end
+  end
+
+  defp update_tool_call(state, run_id, tool_call_id, fun) do
+    case Map.fetch(state.tool_calls, {run_id, tool_call_id}) do
+      {:ok, call} ->
+        %{state | tool_calls: Map.put(state.tool_calls, {run_id, tool_call_id}, fun.(call))}
+
+      :error ->
+        state
+    end
+  end
 
   defp valid_id?(value) when is_binary(value), do: value != ""
   defp valid_id?(_value), do: false
