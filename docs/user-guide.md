@@ -214,9 +214,76 @@ foreman project list
 
 Use `foreman project list --include-archived --format json` when you need archived projects or raw JSON.
 
-`project delete` soft-deletes (archives) a project and is **rejected**
-while the project has active runs; pass `--force` to print the blocking
-run IDs.
+`project delete` **archives** a project; it never purges anything. It is
+**rejected** while the project has active runs; pass `--force` to print the
+blocking run IDs. Archived projects are hidden from the default list, refuse new
+work, stay readable by id and with `--include-archived`, and come back with
+`foreman project reactivate <id>`. The event history, runs, tasks and any
+`.foreman/` artifacts are kept (see `docs/decisions/project-delete.md`); there is
+no operator command that hard-deletes a project.
+
+### Project settings
+
+A project carries a goal, standing instructions and per-project defaults and
+limits. Set them with `project update`; read them with `project settings`:
+
+```
+foreman project update --goal "Ship the v2 importer" --instructions-file ./INSTRUCTIONS.md project-123
+foreman project update --thread-model opus --thread-effort high project-123
+foreman project update --max-concurrent-runs 2 --daily-thread-cap 20 project-123
+foreman project update --clear instructions project-123
+foreman project settings project-123
+```
+
+| Setting | Limit | Meaning |
+|---------|-------|---------|
+| `goal` | 2000 characters | What the project is for |
+| `instructions` | 16000 characters (`String.length`, like Claude Projects) | Standing instructions for every thread |
+| `thread_model`, `thread_effort` (`low`/`medium`/`high`) | | Default model/effort for the project's threads |
+| `coordinator_provider` (`pi`/`claude`), `coordinator_model`, `coordinator_effort` | | Stored and validated for the coordinator (consumed by the coordinator epic) |
+| `max_concurrent_runs` | 1..1000 | Runs the project may have active at once |
+| `daily_thread_cap` | 1..10000 | Threads (workflow runs plus jobsites) the project may start per UTC day |
+
+Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
+setting. Validation is done once, by the server, and its error is shown verbatim
+(for example `{:instructions_too_long, 16001, 16000}`). `status` is not settable
+through `project update`: use `pause` / `resume` / `reactivate`. Unknown config keys
+are rejected (`{:unknown_setting, key}`).
+
+**Model and effort precedence.** An explicit phase `models.default` or jobsite
+`agent.model` / `agent.effort` wins over the project's `thread_model` /
+`thread_effort`, which win over the provider default. The project value is read
+once when a run's executor starts (a resumed run reads the project's current
+value). `thread_effort` is delivered as `reasoning_effort` only to providers whose
+adapter declares it (logged and ignored otherwise, never an error); a jobsite
+spec with only `agent.provider` records the project's model/effort in
+`JobsiteStarted`.
+
+**Limits.** `max_concurrent_runs` is enforced inside the project aggregate at run
+reservation, and is further capped by the global run-slot capacity (a project value
+above the global one cannot raise it). The daily thread cap counts a workflow run at
+reservation and a jobsite at start; the (N+1)th thread of the UTC day is refused
+(`{:daily_thread_cap_exceeded, N, day}`; HTTP `429 thread_cap_reached` for a
+jobsite). Refused admissions are not terminal: the task stays approved and is
+retried when the project resumes or its settings change. `project settings` (and
+`GET /api/projects/<id>/settings`) shows the effective limits, usage today,
+`resets_at` and the count of deferred tasks.
+
+### Pause, resume and reactivate
+
+```
+foreman project pause project-123 --reason "release freeze"
+foreman project resume project-123
+foreman project reactivate project-123
+```
+
+`pause` is reversible and **enforced**: while paused, `task.create`, run
+reservation, jobsite start (`spec_project_unavailable`) and BeadsWatcher imports
+are refused with `{:project_paused, project_id}`. In-flight runs and jobsites keep
+running (cancel them with `run.cancel`). Held beads are not skipped: the watcher
+holds their line and imports it after `resume`, and tasks refused at admission are
+re-admitted on resume. `reactivate` is for archived projects (and clears any
+earlier pause); `resume` is for paused ones.
 
 ### Tasks
 
@@ -888,7 +955,7 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`.
+`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,
@@ -907,9 +974,24 @@ and behavior cannot diverge.
 **Write tools** (`foreman_task_create`, `foreman_task_update`,
 `foreman_task_add_comment`, `foreman_run_cancel`, `foreman_run_pause`,
 `foreman_run_resume`, `foreman_inbox_send`, `foreman_workflow_put`,
-`foreman_workflow_delete`, `foreman_prompt_put`, `foreman_project_memory_write`,
+`foreman_workflow_delete`, `foreman_prompt_put`, `foreman_project_settings_update`,
+`foreman_project_pause`, `foreman_project_resume`, `foreman_project_memory_write`,
 `foreman_project_memory_forget`) are unadvertised and refused unless
 `allow_workflow_writes: true` is set in `:foreman_server, :mcp` config.
+
+`foreman_project_settings_get` returns the same typed payload as
+`GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
+no env values). Project reads over HTTP and MCP replace `config.env` /
+`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` and
+`database_path` stay visible). The write tools `foreman_project_settings_update`
+(arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
+`coordinator_provider`, `coordinator_model`, `coordinator_effort`,
+`max_concurrent_runs`, `daily_thread_cap`, `clear`, `idempotency_key`; nothing
+else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
+operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
+report the server's error code (`instructions_too_long`, `project_paused`, ...).
+Retries of `foreman_project_settings_update` with the same arguments and
+`idempotency_key` are one command. No MCP tool can merge or approve.
 
 `foreman_inbox_send` appends concise progress to the run inbox via the public
 `inbox.send` operator command. It requires `run_id` plus a 1-2,000 character

@@ -13,15 +13,15 @@ import (
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
 
-type recordedRequest struct {
+type memoryRecordedRequest struct {
 	method string
 	path   string
 	body   []byte
 }
 
-func memoryServer(t *testing.T, status int, response string) (*client.Client, *recordedRequest) {
+func memoryServer(t *testing.T, status int, response string) (*client.Client, *memoryRecordedRequest) {
 	t.Helper()
-	rec := &recordedRequest{}
+	rec := &memoryRecordedRequest{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.method = r.Method
 		rec.path = r.URL.Path

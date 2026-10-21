@@ -12,6 +12,9 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_workflow_put",
     "foreman_workflow_delete",
     "foreman_prompt_put",
+    "foreman_project_settings_update",
+    "foreman_project_pause",
+    "foreman_project_resume",
     "foreman_project_memory_write",
     "foreman_project_memory_forget"
   ]

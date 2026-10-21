@@ -9,7 +9,11 @@
 //	project create      POST /api/commands with type=project.register
 //	project get <id>    GET /api/projects/:id
 //	project update <id> POST /api/commands with type=project.update
-//	project delete <id> POST /api/commands with type=project.archive
+//	project settings <id> GET /api/projects/:id/settings
+//	project pause <id>  POST /api/commands with type=project.pause
+//	project resume <id> POST /api/commands with type=project.resume
+//	project reactivate <id> POST /api/commands with type=project.reactivate
+//	project delete <id> POST /api/commands with type=project.archive (soft delete)
 //	project list        GET /api/projects
 //	project memory      list|read|write|forget|sync a project's memory (/api/projects/:id/memory)
 //	commands           Generate/install agent command assets
@@ -49,8 +53,12 @@ Usage:
 Commands:
   project create      Register a new project
   project get <id>    Fetch a project projection
-  project update <id> Update a project's task provider
-  project delete <id> Soft-delete (archive) a project
+  project update <id> Update project settings (goal, instructions, models, limits) and/or task provider
+  project settings <id> Show project status, settings and limits
+  project pause <id>  Pause a project (--reason text)
+  project resume <id> Resume a paused project
+  project reactivate <id> Reactivate an archived project
+  project delete <id> Soft-delete (archive) a project; history is kept, reactivate to restore
   project list        List project projections
   project memory      list|read|write|forget|sync project memory topics
   commands           Generate/install agent command assets

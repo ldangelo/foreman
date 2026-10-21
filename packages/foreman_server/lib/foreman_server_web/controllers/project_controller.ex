@@ -4,11 +4,15 @@ defmodule ForemanServerWeb.ProjectController do
 
   `GET /api/projects/:id` returns the projected state for a single project.
   `GET /api/projects` returns the projected state for matching projects.
+  `GET /api/projects/:id/settings` returns the typed settings and limits.
+
+  Both project reads redact `config.env` / `config.environment` values
+  (`ForemanServer.ProjectSettings.public_view/1`).
   """
 
   use ForemanServerWeb, :controller
 
-  alias ForemanServer.{ProjectStore, Telemetry}
+  alias ForemanServer.{ProjectSettings, ProjectSettingsDTO, ProjectStore, Telemetry}
 
   @default_projects_list_max 1000
 
@@ -37,7 +41,35 @@ defmodule ForemanServerWeb.ProjectController do
 
         conn
         |> put_status(:ok)
-        |> json(%{project: stringify_keys(projection)})
+        |> json(%{project: projection |> ProjectSettings.public_view() |> stringify_keys()})
+    end
+  end
+
+  @doc "GET /api/projects/:id/settings: typed settings + limits + status (no env)."
+  def settings(conn, %{"id" => project_id}) do
+    started_at = System.monotonic_time()
+    conn = maybe_echo_request_id(conn)
+
+    case ProjectSettingsDTO.fetch(project_id) do
+      :not_found ->
+        Telemetry.project_read(duration_ms_since(started_at), %{
+          project_id: project_id,
+          outcome: :error,
+          code: "not_found",
+          retryable: false
+        })
+
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "not_found", reason: ":project_not_found"})
+
+      {:ok, dto} ->
+        Telemetry.project_read(duration_ms_since(started_at), %{
+          project_id: project_id,
+          outcome: :ok
+        })
+
+        conn |> put_status(:ok) |> json(dto)
     end
   end
 
@@ -61,7 +93,8 @@ defmodule ForemanServerWeb.ProjectController do
       |> put_resp_header("x-total-count", Integer.to_string(total_count))
       |> put_status(:ok)
       |> json(%{
-        projects: Enum.map(visible_projects, &stringify_keys/1),
+        projects:
+          Enum.map(visible_projects, &(&1 |> ProjectSettings.public_view() |> stringify_keys())),
         meta: %{truncated: truncated?}
       })
     else

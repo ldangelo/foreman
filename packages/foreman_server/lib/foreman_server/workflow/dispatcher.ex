@@ -177,6 +177,21 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  # Admission refusals (project paused, daily thread cap, run limit) leave a
+  # dispatched task with no run, and nothing else retries them: the
+  # reconciler only retries runs that hold a reservation. So resuming a
+  # project, or changing its settings (a raised limit), re-admits them.
+  for event_type <- ~w(ProjectResumed ProjectUpdated) do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      readmit_deferred(envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      readmit_deferred(envelope, state)
+    end
+  end
+
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
     {:noreply, state}
@@ -184,6 +199,27 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp readmit_deferred(envelope, state) do
+    # The recorded event's data is a typed struct (no Access behaviour).
+    payload =
+      case unwrap_data(envelope) do
+        %_{} = struct -> Map.from_struct(struct)
+        map -> map
+      end
+
+    project_id = payload["project_id"] || payload[:project_id]
+
+    if is_binary(project_id) and project_id != "" do
+      project_id
+      |> ProjectionStore.deferred_task_ids()
+      |> Enum.reduce({:noreply, state}, fn task_id, _acc ->
+        dispatch_task_projection(task_id, state)
+      end)
+    else
+      {:noreply, state}
+    end
+  end
 
   defp apply_task_dispatch_handler(event_type, envelope, state) do
     dispatch_task_event(event_type, envelope, state)
@@ -507,10 +543,23 @@ defmodule ForemanServer.Workflow.Dispatcher do
           "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
         )
 
-        Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
+        Telemetry.run_dispatcher_admission_failed(
+          task_id: task_id,
+          reason: inspect(reason),
+          reason_code: admission_reason_code(reason)
+        )
+
         {:noreply, state}
     end
   end
+
+  # Typed reason atom for the admission-failed telemetry (`:project_paused`,
+  # `:daily_thread_cap_exceeded`, `:run_limit_exceeded`, ...), so dashboards and
+  # alerts do not have to parse `inspect/1` text.
+  defp admission_reason_code({code, _detail}) when is_atom(code), do: code
+  defp admission_reason_code({code, _detail, _more}) when is_atom(code), do: code
+  defp admission_reason_code(code) when is_atom(code), do: code
+  defp admission_reason_code(_other), do: :unknown
 
   defp task_ready_for_approval?(task_id, approval_id) do
     case ProjectionStore.task_projection(task_id) do
@@ -756,7 +805,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
               "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
             )
 
-            Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
+            Telemetry.run_dispatcher_admission_failed(
+              task_id: task_id,
+              reason: inspect(reason),
+              reason_code: admission_reason_code(reason)
+            )
+
             {:noreply, state}
         end
     end
