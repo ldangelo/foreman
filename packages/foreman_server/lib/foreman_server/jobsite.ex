@@ -87,7 +87,8 @@ defmodule ForemanServer.Jobsite do
   """
   @spec resume_async(String.t(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def resume_async(jobsite_id, opts \\ []) do
-    with {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id),
+    with :ok <- validate_resume_prompt(Keyword.get(opts, :prompt)),
+         {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id),
          :ok <- require_not_running(jobsite_id),
          {:ok, _pid} <- resume_child(jobsite_id, opts) do
       {:ok, jobsite_id}
@@ -95,9 +96,109 @@ defmodule ForemanServer.Jobsite do
   end
 
   defp resume_child(jobsite_id, opts) do
-    case Supervisor.resume_jobsite(jobsite_id, Keyword.take(opts, [:max_concurrent])) do
+    case Supervisor.resume_jobsite(jobsite_id, Keyword.take(opts, [:max_concurrent, :prompt])) do
       {:ok, pid} -> {:ok, pid}
       {:error, reason} -> {:error, start_failed_error(reason)}
+    end
+  end
+
+  @max_resume_prompt_chars 8_000
+
+  # `nil` means "use the default continuation prompt"; anything else must be a
+  # real operator message, bounded so it cannot bloat an agent request.
+  defp validate_resume_prompt(nil), do: :ok
+
+  defp validate_resume_prompt(prompt) when is_binary(prompt) do
+    cond do
+      String.trim(prompt) == "" ->
+        {:error, Error.new(:spec_option_invalid, "prompt must not be blank", %{key: "prompt"})}
+
+      String.length(prompt) > @max_resume_prompt_chars ->
+        {:error,
+         Error.new(
+           :spec_option_invalid,
+           "prompt must be at most #{@max_resume_prompt_chars} characters",
+           %{key: "prompt", max_chars: @max_resume_prompt_chars}
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_resume_prompt(_other),
+    do: {:error, Error.new(:spec_option_invalid, "prompt must be a string", %{key: "prompt"})}
+
+  @default_steer_timeout_ms 60_000
+
+  @doc """
+  Steer a jobsite with an operator message (steering v1: pause, then resume).
+
+  * running (an executor is alive): request a pause with reason `"steer"`, wait
+    for that executor to exit (bounded by `:timeout_ms`, default
+    #{@default_steer_timeout_ms}), then `resume_async/2` with `prompt: text`. The
+    message becomes the next iteration's prompt instead of `"Continue."`.
+    `{:error, :steer_timeout}` if the executor has not exited in time; the pause
+    request is withdrawn so a late pause cannot surprise the operator.
+  * paused (or crashed, non-terminal): `resume_async/2` directly.
+  * terminal: `{:error, {:not_steerable, status}}`.
+  * unknown id: `:jobsite_not_found`; blank/oversize text: `:spec_option_invalid`
+    (validated before anything is paused).
+
+  Returns `{:ok, jobsite_id}` once the resume has been accepted.
+  """
+  @spec steer(String.t(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, Error.t() | :steer_timeout | {:not_steerable, String.t()}}
+  def steer(jobsite_id, text, opts \\ []) when is_binary(jobsite_id) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, @default_steer_timeout_ms)
+
+    with :ok <- validate_steer_text(text),
+         :ok <- fetch_steerable(jobsite_id) do
+      resume_opts = Keyword.take(opts, [:max_concurrent]) ++ [prompt: text]
+
+      case ForemanServer.Jobsite.Executor.pid_for(jobsite_id) do
+        nil -> resume_async(jobsite_id, resume_opts)
+        pid -> pause_then_resume(jobsite_id, pid, resume_opts, timeout_ms)
+      end
+    end
+  end
+
+  defp validate_steer_text(text) when is_binary(text), do: validate_resume_prompt(text)
+
+  defp validate_steer_text(_other),
+    do: {:error, Error.new(:spec_option_invalid, "prompt must be a string", %{key: "prompt"})}
+
+  defp fetch_steerable(jobsite_id) do
+    case get(jobsite_id) do
+      nil ->
+        {:error,
+         Error.new(:jobsite_not_found, "jobsite #{jobsite_id} does not exist", %{
+           jobsite_id: jobsite_id
+         })}
+
+      %{terminal?: true, status: status} ->
+        {:error, {:not_steerable, status}}
+
+      _live_or_paused ->
+        :ok
+    end
+  end
+
+  defp pause_then_resume(jobsite_id, pid, resume_opts, timeout_ms) do
+    ref = Process.monitor(pid)
+    :ok = pause(jobsite_id, "steer")
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} ->
+        case get(jobsite_id) do
+          %{terminal?: true, status: status} -> {:error, {:not_steerable, status}}
+          _paused_or_crashed -> resume_async(jobsite_id, resume_opts)
+        end
+    after
+      timeout_ms ->
+        Process.demonitor(ref, [:flush])
+        Control.clear(jobsite_id)
+        {:error, :steer_timeout}
     end
   end
 

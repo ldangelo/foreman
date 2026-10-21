@@ -39,7 +39,9 @@ defmodule ForemanServer.Aggregates.Run do
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
-      reported_stall_keys: MapSet.new()
+      reported_stall_keys: MapSet.new(),
+      pending_steer: [],
+      steer_message_ids: MapSet.new()
     ]
   end
 
@@ -58,7 +60,9 @@ defmodule ForemanServer.Aggregates.Run do
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
-      reported_stall_keys: MapSet.new()
+      reported_stall_keys: MapSet.new(),
+      pending_steer: [],
+      steer_message_ids: MapSet.new()
     }
 
   @impl true
@@ -237,6 +241,32 @@ defmodule ForemanServer.Aggregates.Run do
           state
           | merge_gate: :pending,
             run_id: Aggregate.get(payload, :run_id) || state.run_id
+        }
+
+      "RunSteerQueued" ->
+        message_id = Aggregate.get(payload, :message_id)
+
+        %State{
+          state
+          | pending_steer:
+              state.pending_steer ++
+                [
+                  %{
+                    message_id: message_id,
+                    text: Aggregate.get(payload, :text),
+                    resume: Aggregate.get(payload, :resume, true)
+                  }
+                ],
+            steer_message_ids: MapSet.put(state.steer_message_ids, message_id)
+        }
+
+      "RunSteerConsumed" ->
+        consumed = MapSet.new(Aggregate.get(payload, :message_ids, []))
+
+        %State{
+          state
+          | pending_steer:
+              Enum.reject(state.pending_steer, &MapSet.member?(consumed, &1.message_id))
         }
 
       "RunBaseBranchRecorded" ->
@@ -433,6 +463,64 @@ defmodule ForemanServer.Aggregates.Run do
            |> Map.put(:project_id, state.project_id)
            |> Map.put_new(:status, "cancelled")
        }}
+    end
+  end
+
+  # run.steer — emits `RunSteerQueued` (E6-S4): an operator message for a
+  # run, delivered by pausing then resuming the run with the text injected
+  # into the next prompt. The event log is the durable mailbox; a
+  # re-submitted `message_id` is an idempotent no-op. Steering a terminal
+  # run is rejected. `resume: false` keeps the run paused after the
+  # steer-pause until an operator resumes it.
+  def handle_command(state, %{type: "run.steer", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, message_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :message_id), :message_id),
+         {:ok, text} <- Aggregate.required_binary(Aggregate.get(payload, :text), :text),
+         :ok <- require_steer_text_length(text),
+         :ok <- Aggregate.optional_binary(Aggregate.get(payload, :steered_by), :steered_by),
+         {:ok, resume} <- steer_resume_flag(Aggregate.get(payload, :resume)),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      if MapSet.member?(state.steer_message_ids, message_id) do
+        {:ok, nil}
+      else
+        {:ok,
+         %{
+           stream_id: "run:#{run_id}",
+           event_type: "RunSteerQueued",
+           payload: %{
+             run_id: run_id,
+             message_id: message_id,
+             text: text,
+             steered_by: Aggregate.get(payload, :steered_by),
+             resume: resume
+           }
+         }}
+      end
+    end
+  end
+
+  # run.steer.consume — system-only: appends `RunSteerConsumed` once the
+  # executor has built a prompt carrying the listed messages. Consuming
+  # ids that are not pending is a no-op, so a retried dispatch is safe.
+  def handle_command(state, %{type: "run.steer.consume", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, message_ids} <- steer_message_ids(Aggregate.get(payload, :message_ids)),
+         :ok <- require_exists(state, run_id) do
+      pending_ids = MapSet.new(state.pending_steer, & &1.message_id)
+      consumable = Enum.filter(message_ids, &MapSet.member?(pending_ids, &1))
+
+      if consumable == [] do
+        {:ok, nil}
+      else
+        {:ok,
+         %{
+           stream_id: "run:#{run_id}",
+           event_type: "RunSteerConsumed",
+           payload: %{run_id: run_id, message_ids: consumable}
+         }}
+      end
     end
   end
 
@@ -841,6 +929,27 @@ defmodule ForemanServer.Aggregates.Run do
        do: :ok
 
   defp require_resettable(%State{status: status}), do: {:error, {:run_not_resettable, status}}
+
+  @steer_text_max_chars 8000
+
+  defp require_steer_text_length(text) do
+    case String.length(text) do
+      n when n <= @steer_text_max_chars -> :ok
+      n -> {:error, {:text_too_long, n}}
+    end
+  end
+
+  defp steer_resume_flag(nil), do: {:ok, true}
+  defp steer_resume_flag(flag) when is_boolean(flag), do: {:ok, flag}
+  defp steer_resume_flag(_flag), do: {:error, {:missing_or_invalid, :resume}}
+
+  defp steer_message_ids([_ | _] = ids) do
+    if Enum.all?(ids, &(is_binary(&1) and &1 != "")),
+      do: {:ok, ids},
+      else: {:error, {:missing_or_invalid, :message_ids}}
+  end
+
+  defp steer_message_ids(_ids), do: {:error, {:missing_or_invalid, :message_ids}}
 
   defp require_resumable(%State{status: "paused"}), do: :ok
   defp require_resumable(%State{status: status}), do: {:error, {:run_not_resumable, status}}

@@ -12,7 +12,12 @@ defmodule ForemanServer.PrMonitorTest do
       :persistent_term.erase({PrMonitor, :fetch_fun})
     end)
 
-    {:ok, _} = PrMonitor.start_link([])
+    # Supervised by ExUnit: the instance is terminated synchronously before the
+    # next test's setup runs, so the registered name is always free again. A bare
+    # `start_link/1` died asynchronously on the test process's exit signal; the
+    # next test's `start_link` then saw the dying instance as `already_started`
+    # and its first call failed with `noproc`.
+    start_supervised!(PrMonitor)
     :ok
   end
 
@@ -58,8 +63,12 @@ defmodule ForemanServer.PrMonitorTest do
     # carried none of them, so the aggregate rejected every update while
     # `poll_now/0` still counted it as a success.
     setup do
-      run_id = "run-pr-monitor-#{System.unique_integer([:positive])}"
-      pr_url = "https://github.com/acme/repo/pull/#{System.unique_integer([:positive])}"
+      # The event store outlives the VM and `unique_integer/1` restarts at 1 on
+      # every boot, so a bare counter reuses ids (and PR URLs) of earlier runs'
+      # persisted associations. A random token keeps this test's run and URLs its own.
+      token = Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+      run_id = "run-pr-monitor-#{token}"
+      pr_url = "https://github.com/acme/repo-#{token}/pull/1"
       started = %{run_id: run_id, project_id: "project-pr-monitor", task_id: "task-pr-monitor"}
 
       :ok =
@@ -138,7 +147,7 @@ defmodule ForemanServer.PrMonitorTest do
 
     test "a second PR URL on the same run is observed even at an identical status and head",
          ctx do
-      second_url = ctx.pr_url <> "9"
+      second_url = String.replace_suffix(ctx.pr_url, "/pull/1", "/pull/2")
       stub_for(ctx.pr_url, {:ok, status()})
       assert PrMonitor.poll_now() == 1
 
