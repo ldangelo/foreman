@@ -229,7 +229,13 @@ defmodule ForemanServer.Review.Archive do
         _ -> {nil, nil}
       end
 
-    encode_line(to_string(Map.get(event, :type)), Map.get(event, :timestamp), text, stream, secrets)
+    encode_line(
+      to_string(Map.get(event, :type)),
+      Map.get(event, :timestamp),
+      text,
+      stream,
+      secrets
+    )
   end
 
   @doc """

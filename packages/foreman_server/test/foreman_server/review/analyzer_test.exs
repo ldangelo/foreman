@@ -190,12 +190,18 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
       # A GenServer.call into a supervisor that is not running exits; it does not raise.
       @impl true
-      def evaluate(_subject), do: exit({:noproc, {GenServer, :call, [:no_such_supervisor, :start, 5000]}})
+      def evaluate(_subject),
+        do: exit({:noproc, {GenServer, :call, [:no_such_supervisor, :start, 5000]}})
     end
 
     test "an evaluator that exits is recorded as undetermined, not lost", %{repo: repo} do
       review_env = Application.get_env(:foreman_server, :review)
-      Application.put_env(:foreman_server, :review, Keyword.put(review_env, :evaluator, ExitingEvaluator))
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.put(review_env, :evaluator, ExitingEvaluator)
+      )
 
       s = subject(:jobsite, uid("js"), repo)
       init_archive(s)
@@ -262,7 +268,12 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
     test "a failed evaluation for a project-less subject is recorded as undetermined",
          %{repo: repo} do
-      Application.put_env(:foreman_server, :review_stub_verdict, {:error, Error.new(:evaluator_failed, "boom")})
+      Application.put_env(
+        :foreman_server,
+        :review_stub_verdict,
+        {:error, Error.new(:evaluator_failed, "boom")}
+      )
+
       s = subject(:jobsite, uid("js"), repo, project_id: nil)
       init_archive(s)
 
@@ -331,7 +342,9 @@ defmodule ForemanServer.Review.AnalyzerTest do
       run_id = uid("run")
       seed_run(run_id, repo)
 
-      assert {:ok, %Subject{} = s} = Analyzer.subject_from_event("RunFailed", %{"run_id" => run_id})
+      assert {:ok, %Subject{} = s} =
+               Analyzer.subject_from_event("RunFailed", %{"run_id" => run_id})
+
       assert s.kind == :run
       assert s.subject_id == run_id
       assert s.project_id == "proj"
@@ -409,7 +422,12 @@ defmodule ForemanServer.Review.AnalyzerTest do
                ProjectionStore.apply_events([
                  %{
                    event_type: "JobsiteStarted",
-                   payload: %{jobsite_id: id, repo_path: repo, project_id: "proj", strategy: "head"}
+                   payload: %{
+                     jobsite_id: id,
+                     repo_path: repo,
+                     project_id: "proj",
+                     strategy: "head"
+                   }
                  }
                ])
 
@@ -501,7 +519,10 @@ defmodule ForemanServer.Review.AnalyzerTest do
       assert_receive {:DOWN, ^ref, :process, ^executor, _}, 1_000
 
       assert :ok = Task.await(task, 5_000)
-      assert {:ok, %{"status" => "cancelled", "diff_status" => "captured"}} = Archive.read_manifest(dir)
+
+      assert {:ok, %{"status" => "cancelled", "diff_status" => "captured"}} =
+               Archive.read_manifest(dir)
+
       assert await(fn -> ProjectionStore.review("run", run_id) end).verdict == "met"
     end
   end

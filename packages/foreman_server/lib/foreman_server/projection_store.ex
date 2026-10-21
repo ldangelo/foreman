@@ -1945,7 +1945,9 @@ defmodule ForemanServer.ProjectionStore do
         decode_for_projection("ReviewRecorded", payload)
       rescue
         error in ArgumentError ->
-          Logger.warning("ProjectionStore skipped malformed ReviewRecorded: #{Exception.message(error)}")
+          Logger.warning(
+            "ProjectionStore skipped malformed ReviewRecorded: #{Exception.message(error)}"
+          )
 
           nil
       end

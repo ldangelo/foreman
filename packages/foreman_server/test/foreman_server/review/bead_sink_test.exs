@@ -127,6 +127,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
       assert message_lines |> Enum.drop(-1) |> Enum.join("\n") ==
                expected_body |> String.split("\n", trim: true) |> Enum.join("\n")
+
       create_argv = argv_for(tmp, {:create, major})
       assert ["--labels", "foreman-exec,foreman-gap"] = slice_after(create_argv, "--labels")
       assert Enum.at(create_argv, 0) == "create"
@@ -176,7 +177,8 @@ defmodule ForemanServer.Review.BeadSinkTest do
       register_project!()
       install_stub([])
 
-      assert {:ok, %{gap_bead_ids: [], note: nil}} = BeadSink.publish(subject(), verdict(gaps: []))
+      assert {:ok, %{gap_bead_ids: [], note: nil}} =
+               BeadSink.publish(subject(), verdict(gaps: []))
 
       assert_received {:br, :comment, %{id: "bead-src"}}
       refute_received {:br, :create, _}
@@ -466,7 +468,8 @@ defmodule ForemanServer.Review.BeadSinkTest do
   defp schema_document("ready-issue") do
     %{
       "type" => "object",
-      "required" => ~w(id title status priority dependencies assignee description notes design labels metadata),
+      "required" =>
+        ~w(id title status priority dependencies assignee description notes design labels metadata),
       "properties" => %{
         "id" => %{"type" => "string"},
         "title" => %{"type" => "string"},

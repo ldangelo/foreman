@@ -51,7 +51,13 @@ defmodule ForemanServer.Review.ArchiveTest do
       assert manifest["capture_errors"] == []
       assert manifest["transcript_truncated"] == false
       assert manifest["diff_status"] == "unavailable"
-      assert manifest["request"] == %{"source" => nil, "title" => nil, "prompt" => nil, "workflow_name" => nil}
+
+      assert manifest["request"] == %{
+               "source" => nil,
+               "title" => nil,
+               "prompt" => nil,
+               "workflow_name" => nil
+             }
     end
 
     test "merge_manifest overlays keys and keeps the rest", %{tmp_dir: tmp} do
@@ -65,7 +71,8 @@ defmodule ForemanServer.Review.ArchiveTest do
     end
 
     test "read_manifest distinguishes missing from malformed", %{tmp_dir: tmp} do
-      assert {:error, %Error{code: :archive_missing}} = Archive.read_manifest(Path.join(tmp, "none"))
+      assert {:error, %Error{code: :archive_missing}} =
+               Archive.read_manifest(Path.join(tmp, "none"))
 
       dir = Path.join(tmp, "c")
       File.mkdir_p!(dir)
@@ -91,7 +98,8 @@ defmodule ForemanServer.Review.ArchiveTest do
       assert :ok =
                Archive.append_events(dir, [event(:output_text_final, "hello"), event(:usage, nil)])
 
-      lines = dir |> Path.join("transcript.jsonl") |> File.read!() |> String.split("\n", trim: true)
+      lines =
+        dir |> Path.join("transcript.jsonl") |> File.read!() |> String.split("\n", trim: true)
 
       assert Enum.map(lines, &Jason.decode!/1) == [
                %{
@@ -100,13 +108,21 @@ defmodule ForemanServer.Review.ArchiveTest do
                  "text" => "hello",
                  "stream" => nil
                },
-               %{"type" => "usage", "timestamp" => "2026-01-01T00:00:00Z", "text" => nil, "stream" => nil}
+               %{
+                 "type" => "usage",
+                 "timestamp" => "2026-01-01T00:00:00Z",
+                 "text" => nil,
+                 "stream" => nil
+               }
              ]
 
       assert {:ok, %{"transcript_truncated" => false}} = Archive.read_manifest(dir)
     end
 
-    test "stops at max_transcript_bytes and flags the manifest", %{tmp_dir: tmp, original: original} do
+    test "stops at max_transcript_bytes and flags the manifest", %{
+      tmp_dir: tmp,
+      original: original
+    } do
       put_review(original, max_transcript_bytes: 200)
       dir = Path.join(tmp, "f")
       :ok = Archive.init(dir, %{})

@@ -85,7 +85,7 @@ defmodule ForemanServer.Aggregates.Review do
          payload: %{
            subject_kind: kind,
            subject_id: subject_id,
-          project_id: Aggregate.get(payload, :project_id),
+           project_id: Aggregate.get(payload, :project_id),
            bead_id: Aggregate.get(payload, :bead_id),
            verdict: verdict,
            scores: scores,
@@ -121,7 +121,8 @@ defmodule ForemanServer.Aggregates.Review do
 
   defp validate_verdict(_), do: {:error, {:missing_or_invalid, :verdict}}
 
-  defp optional_binary(payload, key), do: Aggregate.optional_binary(Aggregate.get(payload, key), key)
+  defp optional_binary(payload, key),
+    do: Aggregate.optional_binary(Aggregate.get(payload, key), key)
 
   defp validate_scores(nil), do: {:ok, nil}
   defp validate_scores(value) when is_map(value), do: {:ok, value}

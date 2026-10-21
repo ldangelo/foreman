@@ -25,7 +25,12 @@ defmodule ForemanServer.Review.VerdictTest do
     assert map == %{
              "verdict" => "partially_met",
              "summary" => "Mostly done.",
-             "scores" => %{"correctness" => 4, "tests" => 2, "documentation" => 3, "robustness" => 5},
+             "scores" => %{
+               "correctness" => 4,
+               "tests" => 2,
+               "documentation" => 3,
+               "robustness" => 5
+             },
              "gaps" => [
                %{
                  "title" => "No tests",
@@ -57,7 +62,12 @@ defmodule ForemanServer.Review.VerdictTest do
   end
 
   test "to_markdown omits empty sections but shows the error" do
-    md = Verdict.to_markdown(%Verdict{verdict: :undetermined, summary: "boom", error_code: :evaluator_failed})
+    md =
+      Verdict.to_markdown(%Verdict{
+        verdict: :undetermined,
+        summary: "boom",
+        error_code: :evaluator_failed
+      })
 
     assert md =~ "boom"
     assert md =~ "Error: `evaluator_failed`"

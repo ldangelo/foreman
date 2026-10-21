@@ -114,7 +114,8 @@ defmodule ForemanServer.Aggregates.ReviewTest do
   end
 
   test "unrelated commands are unhandled" do
-    assert :unhandled = Review.handle_command(Review.initial_state(), %{type: "nope", payload: %{}})
+    assert :unhandled =
+             Review.handle_command(Review.initial_state(), %{type: "nope", payload: %{}})
   end
 
   test "EventCodec registers the event and CommandRouter routes the prefix" do

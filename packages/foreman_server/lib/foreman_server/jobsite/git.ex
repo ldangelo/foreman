@@ -296,7 +296,9 @@ defmodule ForemanServer.Jobsite.Git do
           :ok
 
         {:error, reason} ->
-          Logger.warning("git add --intent-to-add failed in #{repo_path}; new files omitted from diff: #{inspect(reason)}")
+          Logger.warning(
+            "git add --intent-to-add failed in #{repo_path}; new files omitted from diff: #{inspect(reason)}"
+          )
       end
 
       run(["-C", repo_path] ++ git_args ++ [base, "--"])

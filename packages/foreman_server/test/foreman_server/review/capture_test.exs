@@ -12,7 +12,12 @@ defmodule ForemanServer.Review.CaptureTest do
     on_exit(fn -> Application.put_env(:foreman_server, :review, original) end)
 
     root = Path.join(tmp, "archive")
-    Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: true, archive_root: root))
+
+    Application.put_env(
+      :foreman_server,
+      :review,
+      Keyword.merge(original, capture: true, archive_root: root)
+    )
 
     repo = Path.join(tmp, "repo")
     File.mkdir_p!(repo)
@@ -78,7 +83,14 @@ defmodule ForemanServer.Review.CaptureTest do
       assert m["subject_id"] == "j-1"
       assert m["repo_path"] == repo
       assert m["bead_id"] == "bd-42"
-      assert m["request"] == %{"source" => "jobsite", "title" => "my-jobsite", "prompt" => prompt, "workflow_name" => nil}
+
+      assert m["request"] == %{
+               "source" => "jobsite",
+               "title" => "my-jobsite",
+               "prompt" => prompt,
+               "workflow_name" => nil
+             }
+
       assert m["agent"] == %{"provider" => "claude", "model" => "opus"}
       assert m["strategy"] == "branch:feature/x"
       assert m["transcript_source"] == "harness_events"
@@ -97,17 +109,32 @@ defmodule ForemanServer.Review.CaptureTest do
     end
 
     test "is a no-op when capture is disabled", %{repo: repo, root: root, original: original} do
-      Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: false, archive_root: root))
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.merge(original, capture: false, archive_root: root)
+      )
+
       assert :ok = Capture.open_jobsite("j-3", spec(repo), "p")
       refute File.exists?(root)
     end
 
-    test "returns archive_write_failed when the archive cannot be created", %{repo: repo, tmp_dir: tmp, original: original} do
+    test "returns archive_write_failed when the archive cannot be created", %{
+      repo: repo,
+      tmp_dir: tmp,
+      original: original
+    } do
       blocker = Path.join(tmp, "blocker")
       File.write!(blocker, "i am a file")
-      Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: true, archive_root: Path.join(blocker, "root")))
 
-      assert {:error, %Error{code: :archive_write_failed}} = Capture.open_jobsite("j-4", spec(repo), "p")
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.merge(original, capture: true, archive_root: Path.join(blocker, "root"))
+      )
+
+      assert {:error, %Error{code: :archive_write_failed}} =
+               Capture.open_jobsite("j-4", spec(repo), "p")
     end
   end
 
@@ -139,7 +166,12 @@ defmodule ForemanServer.Review.CaptureTest do
     end
 
     test "disabled capture writes nothing", %{dir: dir, original: original, root: root} do
-      Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: false, archive_root: root))
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.merge(original, capture: false, archive_root: root)
+      )
+
       assert :ok = Capture.put_iteration(dir, run_result("s", ["x"]))
       refute File.exists?(Path.join(dir, "transcript.jsonl"))
       assert {:ok, %{"provider_session_ids" => []}} = Archive.read_manifest(dir)
@@ -172,14 +204,29 @@ defmodule ForemanServer.Review.CaptureTest do
       assert m["capture_errors"] == []
     end
 
-    test "an empty diff is recorded as empty, with files written", %{dir: dir, repo: repo, base: base} do
+    test "an empty diff is recorded as empty, with files written", %{
+      dir: dir,
+      repo: repo,
+      base: base
+    } do
       assert :ok = Capture.put_diff(dir, repo, base, "HEAD")
       assert File.read!(Path.join(dir, "diff.patch")) == ""
       assert {:ok, %{"diff_status" => "empty"}} = Archive.read_manifest(dir)
     end
 
-    test "oversized diffs are truncated and the truncation is recorded", %{dir: dir, repo: repo, base: base, original: original, root: root} do
-      Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: true, archive_root: root, max_diff_bytes: 50))
+    test "oversized diffs are truncated and the truncation is recorded", %{
+      dir: dir,
+      repo: repo,
+      base: base,
+      original: original,
+      root: root
+    } do
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.merge(original, capture: true, archive_root: root, max_diff_bytes: 50)
+      )
+
       File.write!(Path.join(repo, "a.txt"), String.duplicate("line\n", 100))
       git!(repo, ["commit", "-qam", "big"])
 
@@ -188,11 +235,14 @@ defmodule ForemanServer.Review.CaptureTest do
 
       {:ok, m} = Archive.read_manifest(dir)
       assert m["diff_status"] == "captured"
-      assert [%{"stage" => "diff", "message" => "diff truncated at 50 bytes" <> _}] = m["capture_errors"]
+
+      assert [%{"stage" => "diff", "message" => "diff truncated at 50 bytes" <> _}] =
+               m["capture_errors"]
     end
 
     test "git failure marks diff unavailable and records the error", %{dir: dir, repo: repo} do
-      assert {:error, %Error{code: :diff_failed}} = Capture.put_diff(dir, repo, "nonexistent-ref", "HEAD")
+      assert {:error, %Error{code: :diff_failed}} =
+               Capture.put_diff(dir, repo, "nonexistent-ref", "HEAD")
 
       {:ok, m} = Archive.read_manifest(dir)
       assert m["diff_status"] == "unavailable"
@@ -202,13 +252,28 @@ defmodule ForemanServer.Review.CaptureTest do
 
     test "an option-like base never reaches git", %{dir: dir, repo: repo, tmp_dir: tmp} do
       target = Path.join(tmp, "pwned")
-      assert {:error, %Error{code: :diff_failed}} = Capture.put_diff(dir, repo, "--output=" <> target, "HEAD")
+
+      assert {:error, %Error{code: :diff_failed}} =
+               Capture.put_diff(dir, repo, "--output=" <> target, "HEAD")
+
       refute File.exists?(target)
     end
 
-    test "nil archive_dir and disabled capture are no-ops", %{repo: repo, base: base, dir: dir, original: original, root: root} do
+    test "nil archive_dir and disabled capture are no-ops", %{
+      repo: repo,
+      base: base,
+      dir: dir,
+      original: original,
+      root: root
+    } do
       assert :ok = Capture.put_diff(nil, repo, base, "HEAD")
-      Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: false, archive_root: root))
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.merge(original, capture: false, archive_root: root)
+      )
+
       assert :ok = Capture.put_diff(dir, repo, base, "HEAD")
       refute File.exists?(Path.join(dir, "diff.patch"))
     end

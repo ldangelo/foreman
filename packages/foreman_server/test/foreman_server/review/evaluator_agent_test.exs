@@ -98,6 +98,7 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
 
     test "the LAST json block wins" do
       first = block(%{@valid | "verdict" => "not_met"})
+
       assert {:ok, %Verdict{verdict: :met}} =
                Agent.parse_verdict(first <> block(%{@valid | "verdict" => "met", "gaps" => []}))
     end
@@ -168,7 +169,14 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       repo = Path.join(tmp, "repo")
       File.mkdir_p!(repo)
       archive = Path.join(tmp, "archive")
-      :ok = Archive.init(archive, %{"kind" => "run", "subject_id" => "run-1", "diff_status" => "captured"})
+
+      :ok =
+        Archive.init(archive, %{
+          "kind" => "run",
+          "subject_id" => "run-1",
+          "diff_status" => "captured"
+        })
+
       File.write!(Path.join(archive, "request.md"), "Add /healthz")
 
       envs = [
@@ -214,9 +222,14 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
     end
 
     test "sends a read-only configured request and turns the reply into a verdict", ctx do
-      Application.put_env(:foreman_server, :review_evaluator_test_stub, {self(), {:reply, block(@valid)}})
+      Application.put_env(
+        :foreman_server,
+        :review_evaluator_test_stub,
+        {self(), {:reply, block(@valid)}}
+      )
 
-      assert {:ok, %Verdict{verdict: :partially_met, gaps: [%Gap{}]}} = Agent.evaluate(ctx.subject)
+      assert {:ok, %Verdict{verdict: :partially_met, gaps: [%Gap{}]}} =
+               Agent.evaluate(ctx.subject)
 
       assert_received {:request, request}
       assert request.sandbox_mode == :read_only
@@ -234,7 +247,11 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
     end
 
     test "malformed reviewer output is surfaced, transcript still archived", ctx do
-      Application.put_env(:foreman_server, :review_evaluator_test_stub, {self(), {:reply, "looks good"}})
+      Application.put_env(
+        :foreman_server,
+        :review_evaluator_test_stub,
+        {self(), {:reply, "looks good"}}
+      )
 
       assert {:error, %Error{code: :evaluator_malformed_output}} = Agent.evaluate(ctx.subject)
       assert File.exists?(Path.join(ctx.archive, "evaluator-transcript.jsonl"))
@@ -250,7 +267,12 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
     test "an unregistered provider is :evaluator_failed", ctx do
       Application.put_env(:foreman_server, :review_evaluator_test_stub, {self(), :fail})
       review = Application.get_env(:foreman_server, :review)
-      Application.put_env(:foreman_server, :review, Keyword.put(review, :agent, %{provider: :nonesuch}))
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.put(review, :agent, %{provider: :nonesuch})
+      )
 
       assert {:error, %Error{code: :evaluator_failed}} = Agent.evaluate(ctx.subject)
     end

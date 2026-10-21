@@ -132,7 +132,8 @@ defmodule ForemanServer.Review.BeadSink do
         {:ok,
          %{
            gap_bead_ids: [],
-           note: "gap creation suppressed: #{subject.kind} was cancelled, so unfinished work is not filed as gaps"
+           note:
+             "gap creation suppressed: #{subject.kind} was cancelled, so unfinished work is not filed as gaps"
          }}
 
       suppressed? ->

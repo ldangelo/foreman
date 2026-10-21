@@ -20,7 +20,12 @@ defmodule ForemanServer.Review.CaptureRunTest do
     end)
 
     root = Path.join(tmp, "archive")
-    Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: true, archive_root: root))
+
+    Application.put_env(
+      :foreman_server,
+      :review,
+      Keyword.merge(original, capture: true, archive_root: root)
+    )
 
     repo = Path.join(tmp, "repo")
     File.mkdir_p!(repo)
@@ -62,7 +67,12 @@ defmodule ForemanServer.Review.CaptureRunTest do
       },
       %{
         event_type: "RunStarted",
-        payload: %{run_id: run_id, task_id: task_id, project_id: "proj", workflow_name: "implement"}
+        payload: %{
+          run_id: run_id,
+          task_id: task_id,
+          project_id: "proj",
+          workflow_name: "implement"
+        }
       },
       %{
         event_type: "WorktreeCreated",
@@ -118,7 +128,9 @@ defmodule ForemanServer.Review.CaptureRunTest do
     assert m["status"] == "failed"
   end
 
-  test "an unreachable base ref records diff unavailable, never a clean empty archive", %{repo: repo} do
+  test "an unreachable base ref records diff unavailable, never a clean empty archive", %{
+    repo: repo
+  } do
     seed("run-3", repo)
 
     assert :ok =
@@ -138,8 +150,18 @@ defmodule ForemanServer.Review.CaptureRunTest do
     assert Enum.any?(m["capture_errors"], &(&1["stage"] == "diff"))
   end
 
-  test "close_run writes nothing when capture is disabled", %{repo: repo, base: base, root: root, original: original} do
-    Application.put_env(:foreman_server, :review, Keyword.merge(original, capture: false, archive_root: root))
+  test "close_run writes nothing when capture is disabled", %{
+    repo: repo,
+    base: base,
+    root: root,
+    original: original
+  } do
+    Application.put_env(
+      :foreman_server,
+      :review,
+      Keyword.merge(original, capture: false, archive_root: root)
+    )
+
     seed("run-5", repo)
 
     assert :ok = Capture.close_run(state("run-5", repo, base), :success)
@@ -237,19 +259,28 @@ defmodule ForemanServer.Review.CaptureRunTest do
       assert :ok = Capture.close_run(state("run-8", repo, base), :success)
 
       s = subject("run-8", repo)
-      assert {:error, %Error{code: :archive_missing}} = Capture.transcript_from_run_logs(s.archive_dir, "ghost-run")
+
+      assert {:error, %Error{code: :archive_missing}} =
+               Capture.transcript_from_run_logs(s.archive_dir, "ghost-run")
 
       assert {:ok, m} = Archive.read_manifest(s.archive_dir)
       assert Enum.any?(m["capture_errors"], &(&1["stage"] == "transcript"))
     end
 
     test "missing archive is an error, not a silent ok", %{repo: repo} do
-      assert {:error, %Error{code: :archive_missing}} = Capture.finalize(subject("never-captured", repo))
+      assert {:error, %Error{code: :archive_missing}} =
+               Capture.finalize(subject("never-captured", repo))
     end
 
     test "jobsite finalize only merges status and finished_at", %{repo: repo} do
       dir = Archive.dir(:jobsite, "js-1", repo)
-      assert :ok = Archive.init(dir, %{"kind" => "jobsite", "subject_id" => "js-1", "transcript_source" => "harness_events"})
+
+      assert :ok =
+               Archive.init(dir, %{
+                 "kind" => "jobsite",
+                 "subject_id" => "js-1",
+                 "transcript_source" => "harness_events"
+               })
 
       s = %Subject{subject("js-1", repo) | kind: :jobsite, archive_dir: dir, status: :failed}
       assert :ok = Capture.finalize(s)

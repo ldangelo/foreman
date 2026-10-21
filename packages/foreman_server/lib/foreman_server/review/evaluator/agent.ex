@@ -164,9 +164,14 @@ defmodule ForemanServer.Review.Evaluator.Agent do
 
   defp decode(json) do
     case Jason.decode(json) do
-      {:ok, %{} = decoded} -> {:ok, decoded}
-      {:ok, _other} -> malformed("json block is not an object")
-      {:error, error} -> malformed("json block does not decode", %{reason: Exception.message(error)})
+      {:ok, %{} = decoded} ->
+        {:ok, decoded}
+
+      {:ok, _other} ->
+        malformed("json block is not an object")
+
+      {:error, error} ->
+        malformed("json block does not decode", %{reason: Exception.message(error)})
     end
   end
 

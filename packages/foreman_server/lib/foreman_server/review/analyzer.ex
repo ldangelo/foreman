@@ -47,7 +47,11 @@ defmodule ForemanServer.Review.Analyzer do
   @executor_poll_ms 100
   @task_supervisor ForemanServer.Review.TaskSupervisor
 
-  @type unresolved :: %{kind: :run | :jobsite, subject_id: String.t(), project_id: String.t() | nil}
+  @type unresolved :: %{
+          kind: :run | :jobsite,
+          subject_id: String.t(),
+          project_id: String.t() | nil
+        }
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -73,7 +77,9 @@ defmodule ForemanServer.Review.Analyzer do
           :ok
 
         other ->
-          Logger.error("review analyzer: could not start analysis task for #{type}: #{inspect(other)}")
+          Logger.error(
+            "review analyzer: could not start analysis task for #{type}: #{inspect(other)}"
+          )
       end
     end
 
@@ -93,7 +99,10 @@ defmodule ForemanServer.Review.Analyzer do
     end
   rescue
     exception ->
-      Logger.error("review analyzer: #{type} handling crashed: #{Exception.format(:error, exception, __STACKTRACE__)}")
+      Logger.error(
+        "review analyzer: #{type} handling crashed: #{Exception.format(:error, exception, __STACKTRACE__)}"
+      )
+
       :ok
   end
 
@@ -103,7 +112,8 @@ defmodule ForemanServer.Review.Analyzer do
   """
   @spec subject_from_event(String.t(), map()) ::
           {:ok, Subject.t()} | {:unresolved, unresolved(), Error.t()}
-  def subject_from_event(type, payload) when type in ["RunCompleted", "RunFailed", "RunCancelled"] do
+  def subject_from_event(type, payload)
+      when type in ["RunCompleted", "RunFailed", "RunCancelled"] do
     run_id = field(payload, :run_id)
     ctx = %{kind: :run, subject_id: run_id, project_id: nil}
     status = Map.fetch!(@event_status, type)
@@ -129,17 +139,26 @@ defmodule ForemanServer.Review.Analyzer do
     end
   end
 
-  def subject_from_event(type, payload) when type in ["JobsiteCompleted", "JobsiteFailed", "JobsiteCancelled"] do
+  def subject_from_event(type, payload)
+      when type in ["JobsiteCompleted", "JobsiteFailed", "JobsiteCancelled"] do
     jobsite_id = field(payload, :jobsite_id)
     ctx = %{kind: :jobsite, subject_id: jobsite_id, project_id: nil}
     status = Map.fetch!(@event_status, type)
 
     with :ok <- require_id(jobsite_id, ctx, "event carries no jobsite_id"),
          {:ok, jobsite} <-
-           fetch(ProjectionStore.jobsite(jobsite_id), ctx, "jobsite #{jobsite_id} is not projected"),
+           fetch(
+             ProjectionStore.jobsite(jobsite_id),
+             ctx,
+             "jobsite #{jobsite_id} is not projected"
+           ),
          ctx = %{ctx | project_id: field(jobsite, :project_id)},
          {:ok, repo_path} <-
-           fetch(non_empty(field(jobsite, :repo_path)), ctx, "jobsite #{jobsite_id} has no repo_path") do
+           fetch(
+             non_empty(field(jobsite, :repo_path)),
+             ctx,
+             "jobsite #{jobsite_id} has no repo_path"
+           ) do
       {:ok,
        %Subject{
          kind: :jobsite,
@@ -171,7 +190,9 @@ defmodule ForemanServer.Review.Analyzer do
         :ok
 
       System.monotonic_time(:millisecond) >= deadline ->
-        Logger.warning("review analyzer: executor for cancelled run #{run_id} still alive after #{@executor_settle_ms}ms; capturing anyway")
+        Logger.warning(
+          "review analyzer: executor for cancelled run #{run_id} still alive after #{@executor_settle_ms}ms; capturing anyway"
+        )
 
       true ->
         Process.sleep(@executor_poll_ms)
@@ -225,8 +246,7 @@ defmodule ForemanServer.Review.Analyzer do
        })}
   catch
     kind, reason ->
-      {:error,
-       Error.new(:evaluator_failed, "evaluator #{kind}: #{inspect(reason)}", %{})}
+      {:error, Error.new(:evaluator_failed, "evaluator #{kind}: #{inspect(reason)}", %{})}
   end
 
   defp undetermined(%Error{code: code, message: message}) do
@@ -238,11 +258,15 @@ defmodule ForemanServer.Review.Analyzer do
     json = Jason.encode!(Verdict.to_map(verdict), pretty: true)
 
     with :ok <- Archive.write_file(subject.archive_dir, "analysis.json", json),
-         :ok <- Archive.write_file(subject.archive_dir, "analysis.md", Verdict.to_markdown(verdict)) do
+         :ok <-
+           Archive.write_file(subject.archive_dir, "analysis.md", Verdict.to_markdown(verdict)) do
       nil
     else
       {:error, %Error{code: code}} ->
-        Logger.warning("review analyzer: analysis write failed for #{subject.subject_id}: #{code}")
+        Logger.warning(
+          "review analyzer: analysis write failed for #{subject.subject_id}: #{code}"
+        )
+
         "analysis write failed: #{code}"
     end
   end
@@ -362,7 +386,8 @@ defmodule ForemanServer.Review.Analyzer do
   defp non_empty(value) when is_binary(value) and value != "", do: value
   defp non_empty(_), do: nil
 
-  defp field(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp field(map, key) when is_map(map),
+    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
   defp unwrap_data(%{data: data}), do: unwrap_data(data)
   defp unwrap_data(%{"data" => data}), do: unwrap_data(data)
