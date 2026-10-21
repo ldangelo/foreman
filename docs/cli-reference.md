@@ -22,6 +22,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project get       --format
 > foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
 > foreman project settings  --format
+> foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
 > foreman project env       list --format | set --replace | unset
 > foreman project secret    list --format | set --from-env | unset
@@ -380,6 +381,15 @@ worktree is created (fatal on non-zero exit or timeout); `clear` removes it; `sh
 ### `foreman project network show|set <id>`
 `set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only;
 workflow runs and the host sandbox do not enforce it (host sandbox + policy is a typed error).
+
+### `foreman project context <id>`
+
+Print the standing context an agent launched now would receive (`GET /api/projects/<id>/context`, read-only): project instructions, repositories and the memory index, exactly as injected. `--format json` returns `system_text`, `bytes`, `sha256`, `sections`, `truncated` (sections cut to fit the budget) and `redactions`. A project with no instructions or memory prints `no standing context`; an unknown project exits non-zero.
+
+```
+foreman project context project-123
+foreman project context --format json project-123
+```
 
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 

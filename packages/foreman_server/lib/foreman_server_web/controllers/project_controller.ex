@@ -5,6 +5,8 @@ defmodule ForemanServerWeb.ProjectController do
   `GET /api/projects/:id` returns the projected state for a single project.
   `GET /api/projects` returns the projected state for matching projects.
   `GET /api/projects/:id/settings` returns the typed settings and limits.
+  `GET /api/projects/:id/context` returns the standing context an agent launched
+  now would receive (`ForemanServer.ProjectContext.build/2`, read-only).
   `GET /api/projects/:id/schedules` returns the project's schedules (Scheduled-tab data).
 
   Both project reads redact `config.env` / `config.environment` values
@@ -83,6 +85,27 @@ defmodule ForemanServerWeb.ProjectController do
         })
 
         conn |> put_status(:ok) |> json(dto)
+    end
+  end
+
+  @doc "GET /api/projects/:id/context: the exact standing context a launch would inject."
+  def context(conn, %{"id" => project_id}) do
+    case ForemanServer.ProjectContext.build(project_id) do
+      {:error, :project_not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "not_found", reason: ":project_not_found"})
+
+      {:ok, bundle} ->
+        json(conn, %{
+          project_id: project_id,
+          system_text: bundle.system_text,
+          bytes: bundle.bytes,
+          sha256: bundle.sha256,
+          sections: Enum.map(bundle.sections, &%{id: &1.id, bytes: byte_size(&1.body)}),
+          truncated: bundle.truncated,
+          redactions: bundle.redactions
+        })
     end
   end
 

@@ -337,7 +337,8 @@ defmodule ForemanServer.Jobsite.Executor do
       completion_timeout_seconds: div(spec.completion_ms, 1000),
       resume_session: spec.resume_session,
       output: spec.output_opts,
-      archive_spec: spec
+      archive_spec: spec,
+      project_context: project_context_bundle(spec)
     }
 
     steps =
@@ -393,6 +394,34 @@ defmodule ForemanServer.Jobsite.Executor do
       }
     ]
   end
+
+  # Standing project context, built once per jobsite start so every iteration of
+  # an in-flight jobsite sees the same text. A jobsite without a registered
+  # project, or a build failure, runs without context.
+  defp project_context_bundle(%{project_id: project_id})
+       when is_binary(project_id) and project_id != "" do
+    case ForemanServer.ProjectContext.build(project_id) do
+      {:ok, bundle} ->
+        bundle
+
+      {:error, reason} ->
+        Logger.warning(
+          "jobsite project context unavailable project_id=#{project_id}: #{inspect(reason)}"
+        )
+
+        nil
+    end
+  end
+
+  defp project_context_bundle(_spec), do: nil
+
+  defp put_system_prompt(runner_opts, text) when is_binary(text),
+    do: Keyword.put(runner_opts, :system_prompt, text)
+
+  defp put_system_prompt(runner_opts, nil), do: runner_opts
+
+  defp bundle_text(%{system_text: text}), do: text
+  defp bundle_text(nil), do: nil
 
   defp hook_steps(nil, _target, _phase), do: []
 
@@ -484,6 +513,7 @@ defmodule ForemanServer.Jobsite.Executor do
          sandbox,
          agent,
          prompt,
+         system_prompt,
          index,
          max_iterations,
          signals,
@@ -499,6 +529,7 @@ defmodule ForemanServer.Jobsite.Executor do
           sandbox,
           agent,
           prompt,
+          system_prompt,
           index,
           max_iterations,
           signals,
@@ -518,6 +549,7 @@ defmodule ForemanServer.Jobsite.Executor do
          sandbox,
          agent,
          prompt,
+         system_prompt,
          index,
          max_iterations,
          signals,
@@ -531,15 +563,17 @@ defmodule ForemanServer.Jobsite.Executor do
              index: index,
              resumed_session_id: resume_session
            }) do
-      runner_opts = [
-        index: index,
-        resume_session: resume_session,
-        idle_timeout_ms: idle_ms,
-        completion_timeout_ms: completion_ms,
-        completion_signals: signals,
-        intent_fun: fn -> Control.intent(jobsite_id) end,
-        archive_dir: resume_archive_dir(jobsite_id, sandbox)
-      ]
+      runner_opts =
+        [
+          index: index,
+          resume_session: resume_session,
+          idle_timeout_ms: idle_ms,
+          completion_timeout_ms: completion_ms,
+          completion_signals: signals,
+          intent_fun: fn -> Control.intent(jobsite_id) end,
+          archive_dir: resume_archive_dir(jobsite_id, sandbox)
+        ]
+        |> put_system_prompt(system_prompt)
 
       case AgentRunner.run(agent, prompt, sandbox, runner_opts) do
         {:ok, %IterationResult{status: :cancelled} = result} ->
@@ -588,6 +622,7 @@ defmodule ForemanServer.Jobsite.Executor do
                   sandbox,
                   agent,
                   prompt,
+                  system_prompt,
                   index + 1,
                   max_iterations,
                   signals,
@@ -812,6 +847,10 @@ defmodule ForemanServer.Jobsite.Executor do
              ) do
         resume_index = agg_state.iteration_index + 1
         prompt_text = Keyword.get(opts, :prompt, "Continue.")
+
+        system_prompt =
+          bundle_text(project_context_bundle(%{project_id: Map.get(agg_state, :project_id)}))
+
         prior_iterations = prior_iteration_results(agg_state)
 
         with {:ok, _} <- maybe_fail_open_iteration(jobsite_id, agg_state),
@@ -821,6 +860,7 @@ defmodule ForemanServer.Jobsite.Executor do
                  sandbox,
                  agent,
                  prompt_text,
+                 system_prompt,
                  resume_index,
                  max(agg_state.max_iterations, resume_index),
                  agg_state.completion_signals,
