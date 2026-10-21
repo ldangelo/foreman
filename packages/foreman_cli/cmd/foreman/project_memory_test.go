@@ -148,6 +148,9 @@ func TestProjectMemoryReadPrintsContentAndSyncPosts(t *testing.T) {
 	if out != "body text" {
 		t.Fatalf("stdout = %q", out)
 	}
+	if rec.method != "GET" || rec.path != "/api/projects/proj-1/memory/a" {
+		t.Fatalf("read request = %s %s", rec.method, rec.path)
+	}
 
 	c, rec = memoryServer(t, 200, `{"recorded":["a"],"forgotten":[],"failed":[]}`)
 	out = captureStdout(t, func() {

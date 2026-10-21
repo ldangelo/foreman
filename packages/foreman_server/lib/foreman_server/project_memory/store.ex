@@ -39,17 +39,6 @@ defmodule ForemanServer.ProjectMemory.Store do
   @min_repeat_lines 4
   @header_pattern ~r/\A<!-- description: (.*?) -->\n/
 
-  @defaults [
-    max_topic_bytes: 65_536,
-    max_index_lines: 200,
-    max_index_bytes: 25_600,
-    max_topics: 200,
-    max_description_chars: 200,
-    max_repeat_ratio: 0.5,
-    max_redaction_ratio: 0.5,
-    min_guard_bytes: 200
-  ]
-
   defmodule Entry do
     @moduledoc "Metadata of one stored topic (never the content)."
     @enforce_keys [:name, :sha256, :bytes]
@@ -96,8 +85,9 @@ defmodule ForemanServer.ProjectMemory.Store do
          entry = build_entry(name, description, file, body_redactions + desc_redactions),
          {:ok, index} <- render_index(replace_entry(entries, entry)),
          :ok <- ignore_memory(project_path),
+         {:ok, previous} <- previous_raw(project_path, name),
          :ok <- put(project_path, topic_file(name), file),
-         :ok <- put(project_path, @index_file, index) do
+         :ok <- put_index_or_restore(project_path, name, previous, index) do
       {:ok, entry}
     end
   end
@@ -107,10 +97,32 @@ defmodule ForemanServer.ProjectMemory.Store do
   def forget(project_path, name) when is_binary(project_path) do
     with :ok <- validate_name(name),
          {:ok, entry, _content} <- read(project_path, name),
+         {:ok, previous} <- previous_raw(project_path, name),
          :ok <- remove(project_path, topic_file(name)),
          {:ok, entries} <- list_entries(project_path),
-         :ok <- put(project_path, @index_file, render_index!(entries)) do
+         :ok <- put_index_or_restore(project_path, name, previous, render_index!(entries)) do
       {:ok, entry}
+    end
+  end
+
+  defp previous_raw(project_path, name) do
+    case read_raw(project_path, name) do
+      {:ok, raw} -> {:ok, raw}
+      {:error, %Error{code: :not_found}} -> {:ok, nil}
+      {:error, %Error{}} = error -> error
+    end
+  end
+
+  # If the index cannot be written, put the topic file back as it was so a
+  # failed operation leaves the directory unchanged.
+  defp put_index_or_restore(project_path, name, previous, index) do
+    case put(project_path, @index_file, index) do
+      :ok ->
+        :ok
+
+      {:error, %Error{}} = error ->
+        _ = restore_file(project_path, name, previous)
+        error
     end
   end
 
@@ -185,8 +197,8 @@ defmodule ForemanServer.ProjectMemory.Store do
   @spec config(atom()) :: term()
   def config(key) do
     :foreman_server
-    |> Application.get_env(:project_memory, [])
-    |> Keyword.get_lazy(key, fn -> Keyword.fetch!(@defaults, key) end)
+    |> Application.fetch_env!(:project_memory)
+    |> Keyword.fetch!(key)
   end
 
   # --- internals -------------------------------------------------------
@@ -310,18 +322,21 @@ defmodule ForemanServer.ProjectMemory.Store do
 
     case File.ls(dir) do
       {:ok, files} ->
-        entries =
-          files
-          |> Enum.flat_map(&topic_name/1)
-          |> Enum.sort()
-          |> Enum.flat_map(fn name ->
-            case read_raw(project_path, name) do
-              {:ok, raw} -> [raw |> then(&decode_file(name, &1)) |> elem(0)]
-              {:error, _} -> []
-            end
-          end)
-
-        {:ok, entries}
+        files
+        |> Enum.flat_map(&topic_name/1)
+        |> Enum.sort()
+        |> Enum.reduce_while({:ok, []}, fn name, {:ok, acc} ->
+          case read_raw(project_path, name) do
+            {:ok, raw} -> {:cont, {:ok, [raw |> then(&decode_file(name, &1)) |> elem(0) | acc]}}
+            # deleted between ls and read: a concurrent forget, not an error
+            {:error, %Error{code: :not_found}} -> {:cont, {:ok, acc}}
+            {:error, %Error{}} = error -> {:halt, error}
+          end
+        end)
+        |> case do
+          {:ok, acc} -> {:ok, Enum.reverse(acc)}
+          {:error, _} = error -> error
+        end
 
       {:error, :enoent} ->
         {:ok, []}

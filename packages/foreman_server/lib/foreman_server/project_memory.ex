@@ -10,8 +10,8 @@ defmodule ForemanServer.ProjectMemory do
   `write/3` and `forget/3` run under a per-project `:global` lock so two
   callers cannot interleave a file write with an index regeneration. Order:
   resolve project -> (archived projects rejected) -> `Store` mutation
-  (redacted, capped) -> dispatch the audit command with a deterministic
-  `command_id`. If the dispatch fails after the file landed, the previous
+  (redacted, capped) -> dispatch the audit command with a unique
+  `command_id` (see `command_id/3`). If the dispatch fails after the file landed, the previous
   bytes are restored and `{:error, %Error{code: :audit_failed}}` is returned:
   disk and audit index never diverge silently.
 
@@ -116,7 +116,8 @@ defmodule ForemanServer.ProjectMemory do
   # --- write / forget --------------------------------------------------
 
   defp do_write(project_id, path, attrs, author) do
-    with {:ok, previous} <- previous_bytes(path, attrs.name),
+    with :ok <- Store.validate_name(attrs.name),
+         {:ok, previous} <- previous_bytes(path, attrs.name),
          {:ok, entry} <- Store.write(path, secrets_for(project_id), attrs) do
       command = write_command(project_id, entry, author)
 
@@ -132,7 +133,8 @@ defmodule ForemanServer.ProjectMemory do
   end
 
   defp do_forget(project_id, path, name, author) do
-    with {:ok, previous} <- previous_bytes(path, name),
+    with :ok <- Store.validate_name(name),
+         {:ok, previous} <- previous_bytes(path, name),
          {:ok, entry} <- Store.forget(path, name) do
       case dispatch(forget_command(project_id, name, entry, author)) do
         :ok ->

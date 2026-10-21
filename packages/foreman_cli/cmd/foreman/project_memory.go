@@ -220,7 +220,9 @@ func projectMemorySync(c *client.Client, args []string) error {
 			return err
 		}
 	} else {
-		fmt.Fprintf(os.Stdout, "recorded %d, forgotten %d, failed %d\n", len(out.Recorded), len(out.Forgotten), len(out.Failed))
+		if _, err := fmt.Fprintf(os.Stdout, "recorded %d, forgotten %d, failed %d\n", len(out.Recorded), len(out.Forgotten), len(out.Failed)); err != nil {
+			return err
+		}
 	}
 
 	if len(out.Failed) > 0 {

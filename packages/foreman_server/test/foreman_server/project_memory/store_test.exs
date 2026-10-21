@@ -121,4 +121,20 @@ defmodule ForemanServer.ProjectMemory.StoreTest do
     assert {:ok, [%Store.Entry{name: "hand", description: ""}]} = Store.list(dir)
     assert {:ok, _, "plain\n"} = Store.read(dir, "hand")
   end
+
+  test "an index write failure restores the topic file (write and forget)", %{tmp_dir: dir} do
+    {:ok, _} = write(dir, "a", "original")
+    before = File.read!(Path.join(mem(dir), "a.md"))
+
+    # A directory in place of MEMORY.md makes the index rename fail.
+    File.rm!(Path.join(mem(dir), "MEMORY.md"))
+    File.mkdir_p!(Path.join(mem(dir), "MEMORY.md"))
+
+    assert {:error, %Error{code: :write_failed}} = write(dir, "a", "changed")
+    assert File.read!(Path.join(mem(dir), "a.md")) == before
+    assert {:error, %Error{code: :write_failed}} = write(dir, "fresh", "x")
+    refute File.exists?(Path.join(mem(dir), "fresh.md"))
+    assert {:error, %Error{code: :write_failed}} = Store.forget(dir, "a")
+    assert File.read!(Path.join(mem(dir), "a.md")) == before
+  end
 end
