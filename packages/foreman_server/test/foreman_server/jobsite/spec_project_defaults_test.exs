@@ -77,4 +77,25 @@ defmodule ForemanServer.Jobsite.SpecProjectDefaultsTest do
     assert {:error, %Error{code: :spec_agent_invalid}} =
              Spec.from_json(spec("pd-5", %{"provider" => "claude", "effort" => "turbo"}))
   end
+
+  test "a paused project refuses a jobsite spec as unavailable; resume lets it through" do
+    register("pd-6", %{thread_model: "m"})
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectPaused", payload: %{project_id: "pd-6"}}
+      ])
+
+    assert {:error, %Error{code: :spec_project_unavailable, message: message}} =
+             Spec.from_json(spec("pd-6", %{"provider" => "claude"}))
+
+    assert message =~ "paused"
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectResumed", payload: %{project_id: "pd-6"}}
+      ])
+
+    assert {:ok, _} = Spec.from_json(spec("pd-6", %{"provider" => "claude"}))
+  end
 end
