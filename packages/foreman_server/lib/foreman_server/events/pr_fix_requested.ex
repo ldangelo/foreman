@@ -3,7 +3,7 @@ defmodule ForemanServer.Events.PrFixRequested do
   Typed event on `run:<run_id>`: a fix thread was requested for a watched PR
   (E9-S3). `kind` is `ci`, `comments` or `conflicts`; `attempt` is the
   aggregate's authoritative per-PR, per-kind counter after this request;
-  `trigger` is `operator` or `auto`. The reactor in `ForemanServer.PrWatcher`
+  `trigger` is `operator`, `auto` or `coordinator` (guarded like `auto`). The reactor in `ForemanServer.PrWatcher`
   reacts to this event and starts the follow-up jobsite.
   """
   @enforce_keys [:run_id, :project_id, :task_id, :pr_url, :kind, :attempt, :trigger, :head_sha]
