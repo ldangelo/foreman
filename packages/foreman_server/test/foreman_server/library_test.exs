@@ -205,6 +205,51 @@ defmodule ForemanServer.LibraryTest do
     end
   end
 
+  describe "list" do
+    test "does not sweep orphans: an old trash dir an in-flight rollback needs survives", %{
+      project_id: p,
+      src: src,
+      repo: repo
+    } do
+      add_folder!(p, src)
+      trash = Path.join(repo, ".foreman/library/.trash-inflight")
+      File.mkdir_p!(trash)
+      past = System.os_time(:second) - 7_200
+      File.touch!(trash, :calendar.system_time_to_universal_time(past, :second))
+
+      assert {:ok, [_]} = Library.list(p)
+      assert {:ok, _} = Library.index(p)
+      assert File.dir?(trash)
+    end
+  end
+
+  describe "produced entries" do
+    test "re-registering after the entry was removed brings it back", %{
+      project_id: p,
+      repo: repo,
+      dir: dir
+    } do
+      file = Path.join(repo, "report.md")
+      File.write!(file, "# r")
+      files = [%{relative_path: "phase-1/report.md", source_path: file}]
+      roots = [repo, dir]
+
+      assert {:ok, %{entry: entry}} =
+               Library.register_produced(p, "run-x", files, allowed_roots: roots)
+
+      {:ok, _} = Library.remove(p, entry.entry_id, @operator)
+      assert [] = ProjectionStore.project_library(p)
+
+      assert {:ok, %{entry: again}} =
+               Library.register_produced(p, "run-x", files, allowed_roots: roots)
+
+      assert again.entry_id == entry.entry_id
+      assert [%{entry_id: id}] = ProjectionStore.project_library(p)
+      assert id == entry.entry_id
+      assert {:ok, "# r"} = Library.read(p, id, "phase-1/report.md")
+    end
+  end
+
   describe "remove" do
     test "deletes the files and the projection entry", %{project_id: p, src: src, repo: repo} do
       {entry, _} = add_folder!(p, src)

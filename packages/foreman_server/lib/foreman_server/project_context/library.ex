@@ -28,7 +28,7 @@ defmodule ForemanServer.ProjectContext.Library do
          )}
 
       {:error, error} ->
-        Logger.debug("project library index unavailable for #{project_id}: #{inspect(error)}")
+        Logger.warning("project library index unavailable for #{project_id}: #{inspect(error)}")
         :skip
     end
   end

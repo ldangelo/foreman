@@ -3477,7 +3477,7 @@ defmodule ForemanServer.ProjectionStore do
         put_project_library(state, pid, &Map.delete(&1, entry_id))
 
       _ ->
-        skip_malformed("ProjectLibraryRemoved")
+        skip_malformed_library("ProjectLibraryRemoved", payload)
         state
     end
   end
@@ -4927,7 +4927,7 @@ defmodule ForemanServer.ProjectionStore do
         put_project_library(state, pid, &Map.put(&1, entry_id, entry))
 
       _ ->
-        skip_malformed(type)
+        skip_malformed_library(type, payload)
         state
     end
   end
@@ -4939,6 +4939,21 @@ defmodule ForemanServer.ProjectionStore do
 
   defp skip_malformed(event_type),
     do: Logger.warning("ProjectionStore skipped malformed #{event_type}")
+
+  # A malformed library event means the audit index silently disagrees with the
+  # disk, so it is logged at :error (with the payload's keys) rather than as a
+  # routine warning. Replay still continues: `init/1` must not crash on one bad event.
+  defp skip_malformed_library(event_type, payload) do
+    keys =
+      if is_map(payload),
+        do: payload |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort(),
+        else: []
+
+    Logger.error(
+      "ProjectionStore skipped malformed #{event_type}: library index is missing this event " <>
+        "(payload keys: #{inspect(keys)})"
+    )
+  end
 
   defp decode_for_projection(event_type, payload)
        when is_binary(event_type) and is_map(payload) do

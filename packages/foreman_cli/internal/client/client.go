@@ -186,7 +186,7 @@ func (c *Client) do(method, path string, body any, out any) error {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
-	return c.send(req, full, out)
+	return c.send(c.HTTP, req, full, out)
 }
 
 // UploadFile is one `files[]` multipart part: the file at Path is streamed from
@@ -219,7 +219,13 @@ func (c *Client) SendMultipart(method, path string, fields map[string]string, fi
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
-	return c.send(req, full, out)
+	// An upload of many large files legitimately outlives the 30s whole-exchange
+	// timeout of ordinary JSON calls, so it uses the same client without one.
+	// (Dial/TLS/header timeouts of the transport still apply.)
+	hc := *c.HTTP
+	hc.Timeout = 0
+
+	return c.send(&hc, req, full, out)
 }
 
 func writeMultipart(mw *multipart.Writer, fields map[string]string, files []UploadFile) error {
@@ -253,8 +259,8 @@ func writeMultipart(mw *multipart.Writer, fields map[string]string, files []Uplo
 
 // send executes the request and decodes a 2xx JSON response into `out`; any other
 // status is surfaced as *Error.
-func (c *Client) send(req *http.Request, full string, out any) error {
-	resp, err := c.HTTP.Do(req)
+func (c *Client) send(hc *http.Client, req *http.Request, full string, out any) error {
+	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("foreman: request: %w", err)
 	}

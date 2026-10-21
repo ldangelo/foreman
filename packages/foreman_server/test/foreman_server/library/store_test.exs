@@ -164,6 +164,21 @@ defmodule ForemanServer.Library.StoreTest do
     assert {:error, %Error{code: :not_found}} = Store.read_file(root, "docs-1", "escape.txt", 100)
   end
 
+  test "a symlinked parent directory cannot be read through", %{root: root, src: src, dir: dir} do
+    {:ok, _e, p} = Store.write(root, "docs-1", plan!(src))
+    :ok = Store.commit(p)
+
+    outside = Path.join(dir, "outside")
+    File.mkdir_p!(outside)
+    File.write!(Path.join(outside, "secret.txt"), "TOP-SECRET")
+    files = Store.files_dir(root, "docs-1")
+    File.chmod!(files, 0o755)
+    File.ln_s!(outside, Path.join(files, "linkdir"))
+
+    assert {:error, %Error{code: :not_found}} =
+             Store.read_file(root, "docs-1", "linkdir/secret.txt", 100)
+  end
+
   test "read_file enforces the byte cap and refuses traversal and unknown ids", %{
     root: root,
     src: src

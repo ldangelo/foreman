@@ -241,8 +241,20 @@ defmodule ForemanServer.Jobsite.Executor do
 
       %{env: env, mounts: mounts} ->
         {%{agent | env: Map.merge(agent.env || %{}, env)},
-         Map.put(config, :mounts, mounts ++ Map.get(config, :mounts, []))}
+         Map.put(config, :mounts, mounts ++ other_mounts(config, mounts))}
     end
+  end
+
+  # Existing mounts minus any that target the same sandbox path as `mounts` (a
+  # resumed jobsite's persisted config already holds the library mount).
+  defp other_mounts(config, mounts) do
+    taken = MapSet.new(mounts, & &1.sandbox_path)
+
+    config
+    |> Map.get(:mounts, [])
+    |> Enum.reject(fn m ->
+      MapSet.member?(taken, ForemanServer.Aggregate.get(m, :sandbox_path))
+    end)
   end
 
   # The project's resolved env (vars + secret store) is the BASE of the agent
@@ -839,7 +851,15 @@ defmodule ForemanServer.Jobsite.Executor do
     with {:ok, sandbox_provider} <- Sandboxes.resolve(agg_state.sandbox_provider),
          {:ok, agent} <- agent_from_state(agg_state.agent),
          {:ok, agent} <- apply_project_environment(agent, agg_state.project_id) do
-      sandbox_config = agg_state.sandbox_config || %{}
+      # The agent env is not persisted, so the library variable is re-derived; the
+      # persisted sandbox config already carries the library mount (deduplicated).
+      {agent, sandbox_config} =
+        apply_library(
+          agent,
+          sandbox_provider,
+          agg_state.sandbox_config || %{},
+          agg_state.project_id
+        )
 
       worktree = %Worktree{
         repo_path: agg_state.repo_path,
