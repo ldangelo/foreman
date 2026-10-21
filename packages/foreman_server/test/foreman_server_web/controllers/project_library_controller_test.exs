@@ -45,7 +45,7 @@ defmodule ForemanServerWeb.ProjectLibraryControllerTest do
 
   # A real multipart body, so the endpoint's parsers (and the library upload
   # parser) run, not just the controller.
-  defp multipart(files, fields \\ %{}) do
+  defp multipart(files, fields) do
     field_parts =
       for {name, value} <- fields do
         "--#{@boundary}\r\ncontent-disposition: form-data; name=\"#{name}\"\r\n\r\n#{value}\r\n"
