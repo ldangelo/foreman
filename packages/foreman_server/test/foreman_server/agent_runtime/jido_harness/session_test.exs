@@ -104,6 +104,73 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
     end
   end
 
+  # Spike S2: upstream defaults `approval_timeout_ms` to :infinity, which hangs a
+  # headless ACP session forever. The wrapper must always send a finite one.
+  describe "approval_timeout_ms (E8)" do
+    setup do
+      {:ok, _} = Application.ensure_all_started(:meck)
+      :meck.new(Jido.Harness.Session, [:passthrough, :no_link])
+      test_pid = self()
+
+      :meck.expect(Jido.Harness.Session, :start, fn provider, request, options ->
+        send(test_pid, {:upstream_start, provider, request, options})
+        {:ok, "session-1"}
+      end)
+
+      on_exit(fn -> :meck.unload(Jido.Harness.Session) end)
+      :ok
+    end
+
+    test "defaults to the configured finite approval timeout" do
+      assert {:ok, "session-1"} = Session.start(:opencode, model: "m")
+
+      assert_received {:upstream_start, :opencode, request, [model: "m"]}
+
+      assert request == %{
+               approval_timeout_ms: ForemanServer.Approvals.Config.approval_timeout_ms()
+             }
+
+      assert is_integer(request.approval_timeout_ms) and request.approval_timeout_ms > 0
+    end
+
+    test "an explicit timeout wins and is not forwarded as an option" do
+      assert {:ok, _} = Session.start(:opencode, approval_timeout_ms: 1_234)
+      assert_received {:upstream_start, :opencode, %{approval_timeout_ms: 1_234}, []}
+    end
+
+    test "an infinite or non-positive timeout is refused before any session starts" do
+      for bad <- [:infinity, 0, -5, "30"] do
+        assert_raise ArgumentError, ~r/approval_timeout_ms/, fn ->
+          Session.start(:opencode, approval_timeout_ms: bad)
+        end
+      end
+
+      refute_received {:upstream_start, _, _, _}
+    end
+  end
+
+  describe "respond_approval/3 (E8)" do
+    test "answers once with the decision" do
+      {:ok, _} = Application.ensure_all_started(:meck)
+      :meck.new(Jido.Harness.Session, [:passthrough, :no_link])
+      on_exit(fn -> :meck.unload(Jido.Harness.Session) end)
+      test_pid = self()
+
+      :meck.expect(Jido.Harness.Session, :respond_approval, fn sid, rid, response ->
+        send(test_pid, {:upstream_respond, sid, rid, response})
+        :ok
+      end)
+
+      assert :ok = Session.respond_approval("ses-1", "req-0", :deny)
+      assert_received {:upstream_respond, "ses-1", "req-0", %{decision: :deny, scope: :once}}
+    end
+
+    test "rejects a blank session id and an unknown decision" do
+      assert {:error, :invalid_session} = Session.respond_approval("", "req", :approve)
+      assert_raise FunctionClauseError, fn -> Session.respond_approval("s", "r", :allow) end
+    end
+  end
+
   describe "send_message/3" do
     test "returns the upstream turn result (response) for a valid session_id" do
       assert {:ok, session_id} = Session.start(:pi, [])

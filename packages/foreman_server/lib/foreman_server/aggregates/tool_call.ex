@@ -62,7 +62,7 @@ defmodule ForemanServer.Aggregates.ToolCall do
     end
   end
 
-  defp transition(state, id, status, terminal?),
+  defp transition(%State{} = state, id, status, terminal?),
     do: %State{state | exists?: true, tool_call_id: id, status: status, terminal?: terminal?}
 
   @impl true

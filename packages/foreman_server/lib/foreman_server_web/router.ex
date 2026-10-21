@@ -66,6 +66,7 @@ defmodule ForemanServerWeb.Router do
     delete("/projects/:id/memory/:name", ProjectMemoryController, :delete)
     get("/projects/:id/schedules", ProjectController, :schedules)
     get("/projects/:id/approvals", ApprovalController, :index_for_project)
+    get("/projects/:id/questions", QuestionController, :index)
     get("/projects/:id/usage", UsageController, :show)
     get("/projects/:id/environment", ProjectEnvironmentController, :show)
     put("/projects/:id/environment", ProjectEnvironmentController, :update)

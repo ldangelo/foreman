@@ -32,8 +32,12 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   - `ForemanServer.Workflow.Catalog` (workflow manifest lookup)
   """
 
+  require Logger
+
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Agents.OperatorTimeout
+  alias ForemanServer.Aggregates.OperatorQuestion
+  alias ForemanServer.Approvals.Dispatch
   alias ForemanServer.Inbox.SharedInbox
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.Catalog
@@ -68,6 +72,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
 
         if question_id && agent_id do
           timeout_ms = resolve_operator_timeout(agent_id)
+          record_question(data, question_id, agent_id, timeout_ms)
           _ = OperatorTimeout.schedule(question_id, agent_id, timeout_ms)
         end
 
@@ -80,6 +85,47 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
 
   def dispatch(other) do
     {:error, {:invalid_payload, other}}
+  end
+
+  # E8: a started question becomes first-class state (`question.open`), so it is
+  # visible as pending in the API and Overview and can be answered. The run is
+  # the asking task's run (`"global"` when the question belongs to no run).
+  # Idempotent on the question id, so a re-ingested signal opens it once. A
+  # failure is logged, never raised: the inbox item already exists.
+  defp record_question(data, question_id, agent_id, timeout_ms) do
+    task = ProjectionStore.task_projection(agent_id)
+    run_id = (task && Map.get(task, :run_id)) || "global"
+
+    command = %{
+      type: "question.open",
+      command_id: "question-open:" <> question_id,
+      aggregate_id: OperatorQuestion.stream_id(run_id, question_id),
+      payload: %{
+        run_id: run_id,
+        question_id: question_id,
+        agent_id: agent_id,
+        project_id: task && Map.get(task, :project_id),
+        text: question_text(data),
+        timeout_ms: timeout_ms
+      }
+    }
+
+    case Dispatch.system(command) do
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.error(
+          "OperatorQuestionDispatcher: question.open for #{question_id} failed: #{inspect(other)}"
+        )
+    end
+  end
+
+  defp question_text(data) do
+    case Map.get(data, "question") || Map.get(data, :question) do
+      text when is_binary(text) -> text
+      _ -> nil
+    end
   end
 
   # Resolve operator_timeout_ms from the workflow manifest, falling back to the

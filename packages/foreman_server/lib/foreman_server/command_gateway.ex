@@ -57,6 +57,8 @@ defmodule ForemanServer.CommandGateway do
   # allowlist edits do not collide. These address `tool_call:` streams only (never
   # the run's merge gate, which stays `merge_approve` / `run.pr.merge`).
   @approval_operator_types ~w(tool.approve tool.deny)
+  # E8 operator answers to agent questions (`question:<run_id>:<question_id>`).
+  @question_operator_types ~w(question.answer)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -180,7 +182,8 @@ defmodule ForemanServer.CommandGateway do
       not is_map(payload) ->
         {:error, {:invalid_envelope, :invalid_payload}}
 
-      type not in @allowed_operator_types and type not in @approval_operator_types ->
+      type not in @allowed_operator_types and type not in @approval_operator_types and
+          type not in @question_operator_types ->
         {:error, {:command_not_allowed, type}}
 
       type == "task.create" and is_map(payload) and
@@ -450,6 +453,27 @@ defmodule ForemanServer.CommandGateway do
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
       aggregate_id != stream_id("run", run_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  # An answer addresses exactly one `question:` stream (never a run).
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in @question_operator_types do
+    run_id = get_value(payload, :run_id)
+    question_id = get_value(payload, :question_id)
+
+    cond do
+      not is_binary(run_id) or run_id == "" ->
+        {:error, {:invalid_envelope, :missing_run_id}}
+
+      not is_binary(question_id) or question_id == "" ->
+        {:error, {:invalid_envelope, :missing_question_id}}
+
+      aggregate_id != ForemanServer.Aggregates.OperatorQuestion.stream_id(run_id, question_id) ->
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
       true ->
@@ -741,6 +765,17 @@ defmodule ForemanServer.CommandGateway do
     with {:ok, enriched} <- ForemanServer.Projects.Adoption.resolve(payload) do
       {:ok, %{command | payload: enriched}}
     end
+  end
+
+  # `question.answer`: `at` is server-stamped (no back-dating) and `answered_by`
+  # defaults to "operator".
+  defp enrich_operator_command(%{type: type} = command) when type in @question_operator_types do
+    payload =
+      command.payload
+      |> Map.put(:at, DateTime.utc_now() |> DateTime.to_iso8601())
+      |> Map.put_new(:answered_by, "operator")
+
+    {:ok, %{command | payload: payload}}
   end
 
   # `decided_at` is stamped here, never taken from the client (no back-dating a

@@ -15,6 +15,8 @@ defmodule ForemanServer.Events.RunSteerQueued do
       the same id twice emits one event.
     * `text` - Operator message, verbatim (enforced, at most 8000 chars).
     * `steered_by` - Actor identifier, nil when the caller names none.
+    * `approval_mode_override` - Optional `approval_mode` name for the ONE phase
+      that consumes this message (E8 resume-with-override: an approved tool call).
     * `resume` - When `false` the run stays paused after the steer-pause
       until an operator resumes it; default `true` (auto-resume).
   """
@@ -25,8 +27,17 @@ defmodule ForemanServer.Events.RunSteerQueued do
           text: String.t(),
           steered_by: String.t() | nil,
           resume: boolean(),
+          approval_mode_override: String.t() | nil,
           sequence: non_neg_integer() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :message_id, :text, :steered_by, :sequence, resume: true]
+  defstruct [
+    :run_id,
+    :message_id,
+    :text,
+    :steered_by,
+    :approval_mode_override,
+    :sequence,
+    resume: true
+  ]
 end

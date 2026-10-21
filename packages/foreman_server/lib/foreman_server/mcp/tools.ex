@@ -1011,6 +1011,22 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_questions_list %{
+    name: "foreman_questions_list",
+    description:
+      "List questions that agents have asked the operator, oldest first. Read-only: answering is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
+        "status=all also lists answered and expired questions.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        status: %{type: "string", enum: ["pending", "all"], description: "Default pending"}
+      },
+      required: ["project_id"],
+      additionalProperties: false
+    }
+  }
+
   @tools [
     @schema_foreman_run_get,
     @schema_foreman_run_status,
@@ -1061,7 +1077,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_memory_read,
     @schema_foreman_project_memory_write,
     @schema_foreman_project_memory_forget,
-    @schema_foreman_approvals_list
+    @schema_foreman_approvals_list,
+    @schema_foreman_questions_list
   ]
 
   def list_tools, do: @tools
@@ -1631,6 +1648,14 @@ defmodule ForemanServer.MCP.Tools do
     result = ForemanServer.MCP.ApprovalsTool.call(args)
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_approvals_list", overview_outcome(result))
+    result
+  end
+
+  defp tool_foreman_questions_list(args) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.MCP.QuestionsTool.call(args)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_questions_list", overview_outcome(result))
     result
   end
 

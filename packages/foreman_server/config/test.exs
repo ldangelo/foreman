@@ -63,6 +63,8 @@ config :foreman_server, :start_messaging_dispatcher?, false
 config :foreman_server, :threads, idle_resolver: false
 # Overview.MergeResolver resolves real threads; tests start it explicitly.
 config :foreman_server, :overview, merge_resolver: false
+# Approvals.Deliverer/Sweeper react to real projections; tests start them explicitly.
+config :foreman_server, :approvals, start_children: false
 
 config :foreman_server, :start_json_schema_cache?, false
 

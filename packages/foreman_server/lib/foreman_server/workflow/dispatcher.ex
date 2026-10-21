@@ -322,7 +322,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
     with true <- is_binary(run_id) and run_id != "",
          %{message_id: _} = message <- pending_steer_message(run_id, message_id) do
-      RunControl.push_message(run_id, %{message_id: message.message_id, text: message.text})
+      RunControl.push_message(
+        run_id,
+        Map.take(message, [:message_id, :text, :approval_mode_override])
+      )
 
       case ProjectionStore.run(run_id) do
         %{status: status} when status in ["in_progress", "awaiting_worker"] ->
@@ -387,8 +390,11 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @spec rebuild_steering_mailbox() :: :ok
   def rebuild_steering_mailbox do
     for %{run_id: run_id, terminal?: false} <- ProjectionStore.list_runs(),
-        %{message_id: message_id, text: text} <- ProjectionStore.pending_steering(run_id) do
-      RunControl.push_message(run_id, %{message_id: message_id, text: text})
+        message <- ProjectionStore.pending_steering(run_id) do
+      RunControl.push_message(
+        run_id,
+        Map.take(message, [:message_id, :text, :approval_mode_override])
+      )
     end
 
     :ok
