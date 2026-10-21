@@ -62,7 +62,9 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
       ~s({"reply": "...", "actions": []}) <> " and nothing after it."
   end
 
-  defp build_request(prompt, opts) do
+  @doc false
+  @spec build_request(String.t(), keyword()) :: {:ok, RunRequest.t()} | {:error, Error.t()}
+  def build_request(prompt, opts) do
     provider = Keyword.get(opts, :provider, :pi)
     timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
 
@@ -71,7 +73,7 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
       provider: provider,
       cwd: scratch_dir(Keyword.get(opts, :project_id, "default")),
       model: Keyword.get(opts, :model),
-      reasoning_effort: Keyword.get(opts, :effort),
+      reasoning_effort: effort(Keyword.get(opts, :effort)),
       approval_mode: :default,
       sandbox_mode: :read_only,
       runtime_timeout_ms: timeout,
@@ -89,11 +91,20 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
     end
   end
 
+  # Project settings store the effort as a string; `RunRequest` wants the atom.
+  defp effort(value) when value in [:low, :medium, :high], do: value
+  defp effort("low"), do: :low
+  defp effort("medium"), do: :medium
+  defp effort("high"), do: :high
+  defp effort(_other), do: nil
+
   defp provider_options(:pi), do: @pi_isolation
   defp provider_options(_provider), do: %{}
 
   defp scratch_dir(project_id) do
-    safe = String.replace(project_id, ~r/[^A-Za-z0-9_.-]/, "_")
+    safe =
+      project_id |> String.replace(~r/[^A-Za-z0-9_.-]/, "_") |> String.replace(~r/\A\.+/, "_")
+
     dir = Path.join([System.tmp_dir!(), "foreman-coordinator", safe])
     File.mkdir_p!(dir)
     dir
