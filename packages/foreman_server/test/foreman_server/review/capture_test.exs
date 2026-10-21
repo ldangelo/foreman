@@ -250,6 +250,59 @@ defmodule ForemanServer.Review.CaptureTest do
       refute File.exists?(Path.join(dir, "diff.patch"))
     end
 
+    test ":worktree head captures new files and records no error when they can be marked", %{
+      dir: dir,
+      repo: repo,
+      base: base
+    } do
+      File.write!(Path.join(repo, "a.txt"), "one\ntwo\n")
+      File.write!(Path.join(repo, "new.txt"), "brand new\n")
+
+      assert :ok = Capture.put_diff(dir, repo, base, :worktree)
+
+      patch = File.read!(Path.join(dir, "diff.patch"))
+      assert patch =~ "+two"
+      assert patch =~ "+brand new"
+
+      assert dir
+             |> Path.join("changed-files.txt")
+             |> File.read!()
+             |> String.split("\n", trim: true) ==
+               ["M\ta.txt", "A\tnew.txt"]
+
+      {:ok, m} = Archive.read_manifest(dir)
+      assert m["diff_status"] == "captured"
+      assert m["capture_errors"] == []
+    end
+
+    test "a failed intent-to-add is recorded and the tracked-file diff is still captured", %{
+      dir: dir,
+      repo: repo,
+      base: base
+    } do
+      File.write!(Path.join(repo, "a.txt"), "one\ntwo\n")
+      File.write!(Path.join(repo, "new.txt"), "brand new\n")
+      # A held index lock makes `git add --intent-to-add` fail; `git diff` still reads.
+      File.write!(Path.join([repo, ".git", "index.lock"]), "")
+
+      assert :ok = Capture.put_diff(dir, repo, base, :worktree)
+
+      # The tracked edit is archived; the new file the agent created cannot be.
+      patch = File.read!(Path.join(dir, "diff.patch"))
+      assert patch =~ "+two"
+      refute patch =~ "new.txt"
+      assert File.read!(Path.join(dir, "changed-files.txt")) == "M\ta.txt\n"
+
+      # The manifest says the diff is partial instead of presenting it as complete.
+      {:ok, m} = Archive.read_manifest(dir)
+      assert m["diff_status"] == "captured"
+
+      assert [%{"stage" => "intent_to_add", "code" => "diff_failed", "message" => message}] =
+               m["capture_errors"]
+
+      assert message =~ "new files are missing from the diff"
+    end
+
     test "an option-like base never reaches git", %{dir: dir, repo: repo, tmp_dir: tmp} do
       target = Path.join(tmp, "pwned")
 

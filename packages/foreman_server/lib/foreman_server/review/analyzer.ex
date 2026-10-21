@@ -54,6 +54,8 @@ defmodule ForemanServer.Review.Analyzer do
   @executor_settle_ms 30_000
   @executor_poll_ms 100
   @task_supervisor ForemanServer.Review.TaskSupervisor
+  # The only event-payload fields this module reads; see `unwrap_data/1`.
+  @payload_keys [:run_id, :jobsite_id]
 
   @type unresolved :: %{
           kind: :run | :jobsite,
@@ -64,6 +66,10 @@ defmodule ForemanServer.Review.Analyzer do
   @type subject_key :: {:run | :jobsite, String.t()}
   # `in_flight` maps a subject to the monitor of the task analysing it.
   @type state :: %{in_flight: %{subject_key() => reference()}}
+
+  # A terminal event's payload as normalised by `unwrap_data/1`: atom-keyed, with
+  # an absent field left out.
+  @type event_payload :: %{optional(:run_id) => String.t(), optional(:jobsite_id) => String.t()}
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -79,7 +85,7 @@ defmodule ForemanServer.Review.Analyzer do
 
   @impl true
   def handle_info({:projection_event, event}, state) when is_map(event) do
-    type = Map.get(event, :event_type) || Map.get(event, "event_type")
+    type = event_type(event)
 
     if type in @terminal_events do
       {:noreply, start_analysis(type, unwrap_data(event), state)}
@@ -96,9 +102,9 @@ defmodule ForemanServer.Review.Analyzer do
   def handle_info(_other, state), do: {:noreply, state}
 
   @doc false
-  @spec handle_event(String.t(), map()) :: :ok
+  @spec handle_event(String.t(), event_payload()) :: :ok
   def handle_event(type, payload) do
-    settle_run(type, field(payload, :run_id))
+    settle_run(type, Map.get(payload, :run_id))
 
     case subject_from_event(type, payload) do
       {:ok, %Subject{} = subject} -> analyze(subject)
@@ -117,17 +123,17 @@ defmodule ForemanServer.Review.Analyzer do
   Build the `%Subject{}` for a terminal event, or `{:unresolved, ctx, error}`
   when the projections cannot supply it.
   """
-  @spec subject_from_event(String.t(), map()) ::
+  @spec subject_from_event(String.t(), event_payload()) ::
           {:ok, Subject.t()} | {:unresolved, unresolved(), Error.t()}
   def subject_from_event(type, payload)
       when type in ["RunCompleted", "RunFailed", "RunCancelled"] do
-    run_id = field(payload, :run_id)
+    run_id = Map.get(payload, :run_id)
     ctx = %{kind: :run, subject_id: run_id, project_id: nil}
     status = Map.fetch!(@event_status, type)
 
     with :ok <- require_id(run_id, ctx, "event carries no run_id"),
          {:ok, run} <- fetch(ProjectionStore.run(run_id), ctx, "run #{run_id} is not projected"),
-         ctx = %{ctx | project_id: field(run, :project_id)},
+         ctx = %{ctx | project_id: Map.get(run, :project_id)},
          {:ok, repo_path} <- run_repo_path(run_id, ctx),
          {:ok, task} <- run_task(run, ctx) do
       {:ok,
@@ -139,16 +145,16 @@ defmodule ForemanServer.Review.Analyzer do
          archive_dir: Archive.dir(:run, run_id, repo_path),
          status: status,
          bead_id: task && Capture.bead_id_for_task(task),
-         request_title: task && field(task, :title),
-         request_text: task && (field(task, :prompt) || field(task, :description)),
-         workflow_name: field(run, :workflow_name)
+         request_title: task && Map.get(task, :title),
+         request_text: task && (Map.get(task, :prompt) || Map.get(task, :description)),
+         workflow_name: Map.get(run, :workflow_name)
        }}
     end
   end
 
   def subject_from_event(type, payload)
       when type in ["JobsiteCompleted", "JobsiteFailed", "JobsiteCancelled"] do
-    jobsite_id = field(payload, :jobsite_id)
+    jobsite_id = Map.get(payload, :jobsite_id)
     ctx = %{kind: :jobsite, subject_id: jobsite_id, project_id: nil}
     status = Map.fetch!(@event_status, type)
 
@@ -159,10 +165,10 @@ defmodule ForemanServer.Review.Analyzer do
              ctx,
              "jobsite #{jobsite_id} is not projected"
            ),
-         ctx = %{ctx | project_id: field(jobsite, :project_id)},
+         ctx = %{ctx | project_id: Map.get(jobsite, :project_id)},
          {:ok, repo_path} <-
            fetch(
-             non_empty(field(jobsite, :repo_path)),
+             non_empty(Map.get(jobsite, :repo_path)),
              ctx,
              "jobsite #{jobsite_id} has no repo_path"
            ) do
@@ -174,7 +180,7 @@ defmodule ForemanServer.Review.Analyzer do
          repo_path: repo_path,
          archive_dir: Archive.dir(:jobsite, jobsite_id, repo_path),
          status: status,
-         bead_id: non_empty(field(jobsite, :bead_id))
+         bead_id: non_empty(Map.get(jobsite, :bead_id))
        }}
     end
   end
@@ -220,8 +226,8 @@ defmodule ForemanServer.Review.Analyzer do
   defp track(state, key, pid),
     do: %{state | in_flight: Map.put(state.in_flight, key, Process.monitor(pid))}
 
-  defp subject_key("Run" <> _, payload), do: keyed(:run, field(payload, :run_id))
-  defp subject_key("Jobsite" <> _, payload), do: keyed(:jobsite, field(payload, :jobsite_id))
+  defp subject_key("Run" <> _, payload), do: keyed(:run, Map.get(payload, :run_id))
+  defp subject_key("Jobsite" <> _, payload), do: keyed(:jobsite, Map.get(payload, :jobsite_id))
 
   defp keyed(kind, id) when is_binary(id) and id != "", do: {kind, id}
   defp keyed(_kind, _id), do: nil
@@ -439,7 +445,7 @@ defmodule ForemanServer.Review.Analyzer do
   # A run always belongs to a task; a missing task projection is unresolvable,
   # not "a run with no request".
   defp run_task(run, ctx) do
-    case field(run, :task_id) do
+    case Map.get(run, :task_id) do
       id when is_binary(id) and id != "" ->
         fetch(ProjectionStore.task_projection(id), ctx, "task #{id} is not projected")
 
@@ -460,14 +466,43 @@ defmodule ForemanServer.Review.Analyzer do
   defp non_empty(value) when is_binary(value) and value != "", do: value
   defp non_empty(_), do: nil
 
-  defp field(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  # The event boundary. A projection event reaches this module as an `%EventData{}`,
+  # a `%{event_type:, payload:}` map or a string-keyed envelope, and its payload may
+  # be keyed either way: the Run and Jobsite aggregates atom-key the ids they emit,
+  # while a payload that went through JSON or `Aggregate.Actor`'s typed-struct path
+  # is string-keyed. `event_type/1` and `unwrap_data/1` are the only readers of
+  # either convention: everything downstream gets atoms, and the payload is
+  # normalised once to the only fields this module reads (`@payload_keys`, an
+  # explicit list: no atom is minted from event data). An absent key stays absent.
+  defp event_type(event) do
+    case fetch_either_key(event, :event_type) do
+      {:ok, type} -> type
+      :error -> nil
+    end
+  end
 
   defp unwrap_data(%{data: data}), do: unwrap_data(data)
   defp unwrap_data(%{"data" => data}), do: unwrap_data(data)
   defp unwrap_data(%{payload: payload}), do: unwrap_data(payload)
-  defp unwrap_data(map) when is_map(map), do: map
+
+  defp unwrap_data(map) when is_map(map) do
+    Enum.reduce(@payload_keys, %{}, fn key, acc ->
+      case fetch_either_key(map, key) do
+        {:ok, value} -> Map.put(acc, key, value)
+        :error -> acc
+      end
+    end)
+  end
+
   defp unwrap_data(_), do: %{}
+
+  # `Map.fetch/2`, not `||`: a present value is never mistaken for an absent key.
+  defp fetch_either_key(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _value} = found -> found
+      :error -> Map.fetch(map, Atom.to_string(key))
+    end
+  end
 
   defp evaluator, do: Keyword.fetch!(config(), :evaluator)
 

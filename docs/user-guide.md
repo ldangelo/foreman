@@ -1358,8 +1358,11 @@ A cancelled run or jobsite is archived and reviewed like any other, with
 manifest `status: "cancelled"`. Cancelled work is never committed, so its
 `diff.patch` is the working-tree diff against the base: uncommitted changes to
 tracked files and new untracked files are included (gitignored files are not;
-the checkout's index is marked intent-to-add). A jobsite cancel captures
-that diff just before its worktree is discarded. For a workflow run, `run.cancel`
+the checkout's index is marked intent-to-add). If that marking fails, for example
+on a held `index.lock`, the diff still holds every tracked change but omits the
+new files, and the manifest's `capture_errors` says so (stage `intent_to_add`).
+A jobsite cancel captures that diff just before its worktree is discarded. For a
+workflow run, `run.cancel`
 is recorded before the run's executor has actually stopped, so the review step
 waits up to 30 seconds for the executor to exit before it archives the run from
 its retained worktree (after the timeout it captures anyway and logs a warning).

@@ -6,8 +6,6 @@ defmodule ForemanServer.Jobsite.Git do
   emitted a warning (CRLF conversion, embedded repository) as a failure.
   """
 
-  require Logger
-
   alias ForemanServer.Jobsite.Error
 
   @type commit :: %{sha: String.t(), subject: String.t()}
@@ -269,9 +267,9 @@ defmodule ForemanServer.Jobsite.Git do
   @doc """
   Unified diff of `head` against `base` (`base..head`, renames detected). A
   `head` of `:worktree` diffs the checked-out working tree against `base`,
-  including uncommitted changes and new untracked files (gitignored files
-  excluded). New files are first marked intent-to-add (`git add -N`), which
-  changes only the index of a checkout whose work is being archived. Used for
+  including uncommitted changes to tracked files (gitignored files excluded). A
+  new, untracked file shows up only once `mark_intent_to_add/1` has marked it, so
+  a caller that archives the diff marks first and handles that error. Used for
   cancelled work, which is never committed.
   """
   @spec diff(String.t(), String.t(), String.t() | :worktree) ::
@@ -287,20 +285,22 @@ defmodule ForemanServer.Jobsite.Git do
     diff_run(repo_path, base, head, ["diff", "--name-status", "--find-renames"])
   end
 
+  @doc """
+  Mark every new, non-ignored file of the checkout intent-to-add
+  (`git add --intent-to-add --all`) so that a `:worktree` diff includes it. This
+  changes only the index of a checkout whose work is being archived. It fails when
+  the index cannot be written (a held `index.lock`, a refused path); a diff taken
+  after that failure still shows every tracked change but omits the new files.
+  """
+  @spec mark_intent_to_add(String.t()) :: :ok | {:error, Error.t()}
+  def mark_intent_to_add(repo_path) do
+    run(["-C", repo_path, "add", "--intent-to-add", "--all"])
+    |> as_ok()
+    |> tag_error(:git_failed)
+  end
+
   defp diff_run(repo_path, base, :worktree, git_args) do
     with :ok <- check_ref(:base, base) do
-      # Best effort: if the index cannot be updated (lock, refused path) the diff
-      # still captures every tracked change, only new files go missing.
-      case run(["-C", repo_path, "add", "--intent-to-add", "--all"]) do
-        {:ok, _} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "git add --intent-to-add failed in #{repo_path}; new files omitted from diff: #{inspect(reason)}"
-          )
-      end
-
       run(["-C", repo_path] ++ git_args ++ [base, "--"])
       |> tag_error(:git_failed)
     end

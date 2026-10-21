@@ -70,8 +70,9 @@ defmodule ForemanServer.Jobsite.GitDiffTest do
       :ok
     end
 
-    test "diff/3 includes uncommitted tracked changes and new untracked files",
+    test "diff/3 includes uncommitted tracked changes and, once marked, new untracked files",
          %{repo: repo, base: base} do
+      assert :ok = Git.mark_intent_to_add(repo)
       assert {:ok, diff} = Git.diff(repo, base, :worktree)
       assert diff =~ "+uncommitted edit"
       assert diff =~ "b/untracked.txt"
@@ -81,8 +82,9 @@ defmodule ForemanServer.Jobsite.GitDiffTest do
       assert diff =~ "b/b.txt"
     end
 
-    test "changed_files/3 includes uncommitted tracked changes and new untracked files",
+    test "changed_files/3 includes uncommitted tracked changes and, once marked, new untracked files",
          %{repo: repo, base: base} do
+      assert :ok = Git.mark_intent_to_add(repo)
       assert {:ok, out} = Git.changed_files(repo, base, :worktree)
 
       assert String.split(out, "\n", trim: true) |> Enum.sort() ==
@@ -94,10 +96,29 @@ defmodule ForemanServer.Jobsite.GitDiffTest do
       refute committed =~ "untracked.txt"
     end
 
+    test "diff/3 and changed_files/3 only read: a new file stays out until it is marked",
+         %{repo: repo, base: base} do
+      assert {:ok, diff} = Git.diff(repo, base, :worktree)
+      assert diff =~ "+uncommitted edit"
+      refute diff =~ "untracked.txt"
+
+      assert {:ok, out} = Git.changed_files(repo, base, :worktree)
+      refute out =~ "untracked.txt"
+
+      # Neither call touched the index: the file is still plainly untracked.
+      assert git!(repo, ["status", "--porcelain"]) =~ "?? untracked.txt"
+
+      assert :ok = Git.mark_intent_to_add(repo)
+      assert git!(repo, ["status", "--porcelain"]) =~ "A untracked.txt"
+      assert {:ok, marked} = Git.diff(repo, base, :worktree)
+      assert marked =~ "+never added"
+    end
+
     test "gitignored files are not included", %{repo: repo, base: base} do
       File.write!(Path.join(repo, ".gitignore"), "*.log\n")
       File.write!(Path.join(repo, "build-noise.log"), "build noise\n")
 
+      assert :ok = Git.mark_intent_to_add(repo)
       assert {:ok, diff} = Git.diff(repo, base, :worktree)
       assert diff =~ "+never added"
       refute diff =~ "build-noise.log"
@@ -105,6 +126,25 @@ defmodule ForemanServer.Jobsite.GitDiffTest do
 
       assert {:ok, out} = Git.changed_files(repo, base, :worktree)
       refute out =~ "build-noise.log"
+    end
+
+    test "mark_intent_to_add/1 is a typed error when the index cannot be written; the diff still reads tracked changes",
+         %{repo: repo, base: base} do
+      lock = Path.join([repo, ".git", "index.lock"])
+      File.write!(lock, "")
+
+      assert {:error, %Error{code: :git_failed, details: %{reason: reason}}} =
+               Git.mark_intent_to_add(repo)
+
+      assert reason =~ "index.lock"
+
+      # Tracked changes stay readable while the index is locked; only new files are missing.
+      assert {:ok, diff} = Git.diff(repo, base, :worktree)
+      assert diff =~ "+uncommitted edit"
+      refute diff =~ "untracked.txt"
+
+      File.rm!(lock)
+      assert :ok = Git.mark_intent_to_add(repo)
     end
 
     test "a git failure is an error, not empty output", %{repo: repo} do

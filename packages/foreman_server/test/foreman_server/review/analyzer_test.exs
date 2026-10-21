@@ -344,7 +344,7 @@ defmodule ForemanServer.Review.AnalyzerTest do
       seed_run(run_id, repo)
 
       assert {:ok, %Subject{} = s} =
-               Analyzer.subject_from_event("RunFailed", %{"run_id" => run_id})
+               Analyzer.subject_from_event("RunFailed", %{run_id: run_id})
 
       assert s.kind == :run
       assert s.subject_id == run_id
@@ -384,7 +384,7 @@ defmodule ForemanServer.Review.AnalyzerTest do
                ])
 
       assert {:ok, %Subject{} = s} =
-               Analyzer.subject_from_event("JobsiteCompleted", %{"jobsite_id" => id})
+               Analyzer.subject_from_event("JobsiteCompleted", %{jobsite_id: id})
 
       assert s.kind == :jobsite
       assert s.project_id == "proj"
@@ -823,6 +823,37 @@ defmodule ForemanServer.Review.AnalyzerTest do
       assert_receive {:evaluating, ^id, retry}, 5_000
       send(retry, :release)
       assert await(fn -> ProjectionStore.review("jobsite", id) end).verdict == "met"
+    end
+
+    # The event boundary (`unwrap_data/1`) is where both key conventions are read,
+    # once; `subject_from_event/2` and `handle_event/2` take the atom-keyed result.
+    test "string-keyed events resolve at the boundary and mint no atoms",
+         %{repo: repo, analyzer: analyzer} do
+      probe = "analyzer_probe_#{System.unique_integer([:positive])}"
+
+      run_id = uid("run")
+      seed_run(run_id, repo, task_id: "task-#{run_id}", external_id: "x")
+      init_archive(subject(:run, run_id, repo))
+      jobsite_id = started_jobsite(repo)
+
+      # A fully string-keyed envelope, and an atom-keyed envelope with a string-keyed payload.
+      send(
+        analyzer,
+        {:projection_event,
+         %{"event_type" => "RunFailed", "data" => %{"run_id" => run_id, probe => 1}}}
+      )
+
+      send(
+        analyzer,
+        {:projection_event,
+         %{event_type: "JobsiteFailed", payload: %{"jobsite_id" => jobsite_id}}}
+      )
+
+      assert await(fn -> ProjectionStore.review("run", run_id) end).verdict == "met"
+      assert await(fn -> ProjectionStore.review("jobsite", jobsite_id) end).verdict == "met"
+
+      # Only the fields this module reads are looked up: event data never becomes an atom.
+      assert_raise ArgumentError, fn -> String.to_existing_atom(probe) end
     end
   end
 end

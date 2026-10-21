@@ -72,7 +72,12 @@ defmodule ForemanServer.Review.Capture do
     end
   end
 
-  @doc "Capture `diff.patch` and `changed-files.txt` for `base..head` of the worktree."
+  @doc """
+  Capture `diff.patch` and `changed-files.txt` for `base..head` of the worktree.
+  For a `:worktree` head new files are first marked intent-to-add; if that fails
+  the tracked-file diff is still captured and the omission of the new files is
+  recorded in the manifest's `capture_errors` (stage `intent_to_add`).
+  """
   @spec put_diff(String.t() | nil, String.t(), String.t(), String.t() | :worktree) ::
           :ok | {:error, Error.t()}
   def put_diff(nil, _worktree_path, _base, _head), do: :ok
@@ -343,12 +348,38 @@ defmodule ForemanServer.Review.Capture do
   defp do_put_diff(dir, worktree_path, base, head) do
     with :ok <-
            Archive.merge_manifest(dir, %{"base_ref" => base, "worktree_path" => worktree_path}) do
+      mark_new_files(dir, worktree_path, head)
+
       case Git.diff(worktree_path, base, head) do
         {:ok, diff} -> store_diff(dir, worktree_path, base, head, diff)
         {:error, git_error} -> diff_unavailable(dir, "diff", git_error)
       end
     end
   end
+
+  # A working-tree diff shows a new file only once it is marked intent-to-add. If
+  # that fails (an index lock, a refused path) the diff of the tracked files is
+  # still worth archiving, but it omits the new files, so the manifest says so: a
+  # partial diff must never read as a complete one.
+  defp mark_new_files(dir, worktree_path, :worktree) do
+    case Git.mark_intent_to_add(worktree_path) do
+      :ok ->
+        :ok
+
+      {:error, git_error} ->
+        error =
+          Error.new(
+            :diff_failed,
+            "git add --intent-to-add failed; new files are missing from the diff",
+            %{git: git_error.details}
+          )
+
+        Logger.warning("review capture: #{inspect(error)}")
+        Archive.record_capture_error(dir, "intent_to_add", error)
+    end
+  end
+
+  defp mark_new_files(_dir, _worktree_path, _committed_head), do: :ok
 
   defp store_diff(dir, worktree_path, base, head, diff) do
     max = max_diff_bytes()
