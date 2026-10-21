@@ -203,7 +203,7 @@ defmodule ForemanServer.Jobsite.AgentRunner do
         parent = self()
         consumer = spawn_consumer(stream, signals, on_event, parent)
         awaiter = spawn_awaiter(run_id, parent, archive_dir, secrets)
-        result = wait(run_id, index, completion_timeout_ms, "", nil, intent_fun)
+        result = wait(run_id, index, signals, completion_timeout_ms, "", nil, intent_fun)
         Process.exit(consumer, :kill)
         Process.exit(awaiter, :kill)
         result
@@ -271,17 +271,26 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   # interrupts an iteration already in flight, not only the gap between
   # iterations. After a signal: a `completion_timeout_ms` grace window,
   # reset by any further progress, so trailing output is still captured.
-  defp wait(run_id, index, completion_timeout_ms, latest_text, matched_signal, intent_fun) do
+  defp wait(
+         run_id,
+         index,
+         signals,
+         completion_timeout_ms,
+         latest_text,
+         matched_signal,
+         intent_fun
+       ) do
     timeout = poll_timeout(matched_signal, completion_timeout_ms, intent_fun)
 
     receive do
       {:text, text} ->
-        wait(run_id, index, completion_timeout_ms, text, matched_signal, intent_fun)
+        wait(run_id, index, signals, completion_timeout_ms, text, matched_signal, intent_fun)
 
       {:signal, matched} ->
         wait(
           run_id,
           index,
+          signals,
           completion_timeout_ms,
           latest_text,
           matched_signal || matched,
@@ -294,11 +303,8 @@ defmodule ForemanServer.Jobsite.AgentRunner do
       # became a "completed" iteration with empty text. A signal that already
       # matched means the agent logically finished, so only an unsignalled
       # failure is one.
-      {:result, {:ok, %RunResult{status: :failed} = result}} when is_nil(matched_signal) ->
-        {:error, failed_result_error(result)}
-
       {:result, {:ok, %RunResult{} = result}} ->
-        {:ok, build_result(result, index, matched_signal, latest_text)}
+        resolve_run_result(result, index, matched_signal, latest_text, signals)
 
       {:result, {:error, reason}} ->
         {:error, Error.new(:agent_failed, "agent run failed", %{reason: reason})}
@@ -306,7 +312,15 @@ defmodule ForemanServer.Jobsite.AgentRunner do
       timeout ->
         case {matched_signal, intent_check(intent_fun)} do
           {nil, :none} ->
-            wait(run_id, index, completion_timeout_ms, latest_text, matched_signal, intent_fun)
+            wait(
+              run_id,
+              index,
+              signals,
+              completion_timeout_ms,
+              latest_text,
+              matched_signal,
+              intent_fun
+            )
 
           {_signal, :none} ->
             Run.cancel(run_id)
@@ -316,6 +330,28 @@ defmodule ForemanServer.Jobsite.AgentRunner do
             Run.cancel(run_id)
             {:ok, cancelled_result(index, latest_text, matched_signal)}
         end
+    end
+  end
+
+  # The stream consumer and the result awaiter are separate processes messaging this one, so
+  # the result can overtake the consumer's `{:signal, _}`: on a busy machine the run's result
+  # arrives first and the signal the agent really printed is never seen, the iteration comes
+  # back unsignalled and the loop pays for another agent run. The result carries the run's
+  # whole text, so look for the signal there too.
+  @doc false
+  @spec resolve_run_result(RunResult.t(), pos_integer(), String.t() | nil, String.t(), [
+          String.t()
+        ]) ::
+          {:ok, IterationResult.t()} | {:error, Error.t()}
+  def resolve_run_result(%RunResult{} = result, index, matched_signal, latest_text, signals) do
+    matched_signal = matched_signal || find_signal(result.text || "", signals)
+
+    case result do
+      %RunResult{status: :failed} when is_nil(matched_signal) ->
+        {:error, failed_result_error(result)}
+
+      _ ->
+        {:ok, build_result(result, index, matched_signal, latest_text)}
     end
   end
 
