@@ -24,6 +24,9 @@ defmodule ForemanServerWeb.CommandController do
   @default_command_gateway_module CommandGateway
   @allowed_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   @schedule_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  # E8 agent tool-call decisions (own attribute so allowlist edits do not collide).
+  # NOT the merge gate: `merge_approve` / `run.pr.merge` are unrelated and unchanged.
+  @approval_types ~w(tool.approve tool.deny)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -93,7 +96,7 @@ defmodule ForemanServerWeb.CommandController do
       not (is_binary(type) and type != "") ->
         {:error, :invalid_envelope}
 
-      not (type in @allowed_types and is_map(payload)) ->
+      not (type in (@allowed_types ++ @approval_types) and is_map(payload)) ->
         {:error, :invalid_envelope}
 
       true ->
@@ -160,6 +163,32 @@ defmodule ForemanServerWeb.CommandController do
 
       true ->
         expected_id = ForemanServer.Aggregates.Schedule.stream_id(project_id, schedule_id)
+
+        cond do
+          is_nil(supplied) or supplied == "" -> {:ok, expected_id}
+          supplied == expected_id -> {:ok, supplied}
+          true -> {:error, :aggregate_id_mismatch}
+        end
+    end
+  end
+
+  # Tool-call decisions live on the composite stream `tool_call:<run_id>:<tool_call_id>`
+  # (`:` escaped), so the `<prefix>:<id>` derivation below cannot build it. The
+  # stream is derived from the payload only; a supplied aggregate_id must equal it.
+  defp resolve_aggregate_id(type, payload, params) when type in @approval_types do
+    run_id = get_value(payload, :run_id)
+    tool_call_id = get_value(payload, :tool_call_id)
+    supplied = get_value(params, :aggregate_id) || get_value(params, "aggregate_id")
+
+    cond do
+      not is_binary(run_id) or run_id == "" ->
+        {:error, :missing_id_field}
+
+      not is_binary(tool_call_id) or tool_call_id == "" ->
+        {:error, :missing_id_field}
+
+      true ->
+        expected_id = ForemanServer.Aggregates.ToolCall.stream_id(run_id, tool_call_id)
 
         cond do
           is_nil(supplied) or supplied == "" -> {:ok, expected_id}

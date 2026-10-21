@@ -53,6 +53,10 @@ defmodule ForemanServer.CommandGateway do
 
   @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  # E8: agent tool-call decisions. Kept out of the long lists above so concurrent
+  # allowlist edits do not collide. These address `tool_call:` streams only (never
+  # the run's merge gate, which stays `merge_approve` / `run.pr.merge`).
+  @approval_operator_types ~w(tool.approve tool.deny)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -176,7 +180,7 @@ defmodule ForemanServer.CommandGateway do
       not is_map(payload) ->
         {:error, {:invalid_envelope, :invalid_payload}}
 
-      type not in @allowed_operator_types ->
+      type not in @allowed_operator_types and type not in @approval_operator_types ->
         {:error, {:command_not_allowed, type}}
 
       type == "task.create" and is_map(payload) and
@@ -453,6 +457,29 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  # A tool decision addresses exactly one `tool_call:` stream; the aggregate id
+  # must be that stream, so `tool.approve|deny` can never be pointed at a run
+  # (merge gate) or any other aggregate.
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in @approval_operator_types do
+    run_id = get_value(payload, :run_id)
+    tool_call_id = get_value(payload, :tool_call_id)
+
+    cond do
+      not is_binary(run_id) or run_id == "" ->
+        {:error, {:invalid_envelope, :missing_run_id}}
+
+      not is_binary(tool_call_id) or tool_call_id == "" ->
+        {:error, {:invalid_envelope, :missing_tool_call_id}}
+
+      aggregate_id != ForemanServer.Aggregates.ToolCall.stream_id(run_id, tool_call_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
   defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
        when type in @schedule_operator_types do
     project_id = get_value(payload, :project_id)
@@ -714,6 +741,17 @@ defmodule ForemanServer.CommandGateway do
     with {:ok, enriched} <- ForemanServer.Projects.Adoption.resolve(payload) do
       {:ok, %{command | payload: enriched}}
     end
+  end
+
+  # `decided_at` is stamped here, never taken from the client (no back-dating a
+  # decision); `decided_by` defaults to "operator" so the audit trail is never blank.
+  defp enrich_operator_command(%{type: type} = command) when type in @approval_operator_types do
+    payload =
+      command.payload
+      |> Map.put(:decided_at, DateTime.utc_now() |> DateTime.to_iso8601())
+      |> Map.put_new(:decided_by, "operator")
+
+    {:ok, %{command | payload: payload}}
   end
 
   # Schedule timestamps are stamped here, never taken from the client: the
