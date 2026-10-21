@@ -151,8 +151,6 @@ defmodule ForemanServerWeb.Workspace.Components do
     """
   end
 
-  defp action_control(assigns), do: ~H""
-
   attr(:messages, :list, required: true)
   attr(:status, :map, default: nil)
   attr(:proposals, :list, default: [])

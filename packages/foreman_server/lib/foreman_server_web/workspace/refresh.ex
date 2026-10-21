@@ -28,7 +28,20 @@ defmodule ForemanServerWeb.Workspace.Refresh do
     socket
     |> Phoenix.Component.assign(:refresh_pending?, false)
     |> Phoenix.Component.assign(:refresh_count, 0)
+    |> Phoenix.Component.assign(
+      :intent_base,
+      Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    )
   end
+
+  @doc """
+  The idempotency intent for an action taken NOW: this view's random session
+  base plus the refresh count. Two clicks before the projection moved on share
+  it (so the command id dedupes them); once a refresh happened the page shows a
+  new state and the next action gets a new intent.
+  """
+  @spec intent(Phoenix.LiveView.Socket.t()) :: String.t()
+  def intent(socket), do: "#{socket.assigns.intent_base}-#{socket.assigns.refresh_count}"
 
   @doc """
   Handles a `{:projection_event, event}` message: returns the socket with the
@@ -69,11 +82,15 @@ defmodule ForemanServerWeb.Workspace.Refresh do
 
   defp relevant?(_event, _project_id), do: false
 
-  defp event_project_id(event) do
-    data = Map.get(event, :data) || Map.get(event, :payload)
+  # Projection events carry atom-keyed data when freshly appended and
+  # string-keyed data when replayed from the log; read the project id once, here.
+  defp event_project_id(%{data: data}) when is_map(data), do: project_id_of(data)
+  defp event_project_id(%{payload: data}) when is_map(data), do: project_id_of(data)
+  defp event_project_id(_event), do: nil
 
-    if is_map(data), do: Map.get(data, :project_id) || Map.get(data, "project_id")
-  end
+  defp project_id_of(%{project_id: id}), do: id
+  defp project_id_of(%{"project_id" => id}), do: id
+  defp project_id_of(_), do: nil
 
   defp coalesce_ms do
     :foreman_server
