@@ -25,8 +25,8 @@ func TestAgentCommandInventoryContainsRunCommandsOnly(t *testing.T) {
 		if !containsString(spec.Tags, "foreman") {
 			t.Fatalf("%s missing foreman tag", spec.ID)
 		}
-		if !containsString(spec.Tags, "task") && !containsString(spec.Tags, "run") {
-			t.Fatalf("%s missing task/run tag", spec.ID)
+		if !containsString(spec.Tags, "task") && !containsString(spec.Tags, "run") && !containsString(spec.Tags, "project") {
+			t.Fatalf("%s missing task/run/project tag", spec.ID)
 		}
 	}
 
@@ -50,6 +50,11 @@ func TestAgentCommandInventoryContainsRunCommandsOnly(t *testing.T) {
 	}
 	if _, ok := byID["foreman-run-get"]; !ok {
 		t.Fatalf("missing run get command")
+	}
+	for _, id := range []string{"foreman-project-memory-list", "foreman-project-memory-read"} {
+		if _, ok := byID[id]; !ok {
+			t.Fatalf("missing %s command", id)
+		}
 	}
 }
 
@@ -215,7 +220,7 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 	}
 
 	// Verify the expected commands are present
-	expectedCommands := []string{"run submit", "run list", "run get"}
+	expectedCommands := []string{"run submit", "run list", "run get", "project memory"}
 	for _, cmd := range expectedCommands {
 		if _, ok := flags[cmd]; !ok {
 			t.Errorf("expected command %q not found in extracted flags", cmd)
@@ -235,6 +240,10 @@ func TestExtractCLIFlagsFromSourceDerivesCorrectFlags(t *testing.T) {
 				t.Errorf("command %q missing expected flag %q", cmd, flag)
 			}
 		}
+	}
+
+	if !flags["project memory"]["--name"] {
+		t.Errorf("project memory should expose --name (from projectMemoryRead), got %v", flags["project memory"])
 	}
 
 	// Assert run get has no flags (it takes a positional ID only)

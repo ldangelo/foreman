@@ -74,7 +74,11 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_run_get_events",
                "foreman_run_get_activity",
                "foreman_inbox_get",
-               "foreman_inbox_send"
+               "foreman_inbox_send",
+               "foreman_project_memory_list",
+               "foreman_project_memory_read",
+               "foreman_project_memory_write",
+               "foreman_project_memory_forget"
              ]
 
       Enum.each(tools, fn tool ->

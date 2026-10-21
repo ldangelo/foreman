@@ -264,6 +264,15 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:review, subject_kind, subject_id})
   end
 
+  @doc """
+  Audit index of a project's memory topics (`ProjectMemoryWritten` /
+  `ProjectMemoryForgotten`), sorted by name. Metadata only; content lives on disk.
+  """
+  @spec project_memory(String.t()) :: [map()]
+  def project_memory(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:project_memory, project_id})
+  end
+
   @doc "True when a recorded review filed `bead_id` as a gap bead."
   @spec gap_bead?(String.t()) :: boolean()
   def gap_bead?(bead_id) when is_binary(bead_id) and bead_id != "" do
@@ -533,6 +542,17 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:jobsite, jobsite_id}, _from, state) do
     {:reply, Map.get(state.jobsites, jobsite_id), state}
+  end
+
+  @impl true
+  def handle_call({:project_memory, project_id}, _from, state) do
+    entries =
+      state.project_memory
+      |> Map.get(project_id, %{})
+      |> Map.values()
+      |> Enum.sort_by(& &1.name)
+
+    {:reply, entries, state}
   end
 
   @impl true
@@ -1049,7 +1069,8 @@ defmodule ForemanServer.ProjectionStore do
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
       inbox_threads: %{},
       jobsites: %{},
-      reviews: %{}
+      reviews: %{},
+      project_memory: %{}
     }
   end
 
@@ -2149,6 +2170,52 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # Malformed memory events are logged and skipped so `init/1`'s rebuild
+  # never crashes on them.
+  defp apply_event_by_type(state, "ProjectMemoryWritten", payload) do
+    case decode_or_skip("ProjectMemoryWritten", payload) do
+      {:ok,
+       %ForemanServer.Events.ProjectMemoryWritten{
+         project_id: pid,
+         name: name,
+         sha256: sha,
+         bytes: bytes
+       } =
+           e}
+      when is_binary(pid) and pid != "" and is_binary(name) and name != "" and is_binary(sha) and
+             is_integer(bytes) ->
+        entry = %{
+          name: name,
+          description: e.description,
+          sha256: e.sha256,
+          bytes: e.bytes,
+          version: e.version,
+          author_kind: e.author_kind,
+          author_ref: e.author_ref,
+          redactions: e.redactions,
+          updated_at: e.at
+        }
+
+        put_project_memory(state, pid, &Map.put(&1, name, entry))
+
+      _ ->
+        skip_malformed("ProjectMemoryWritten")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectMemoryForgotten", payload) do
+    case decode_or_skip("ProjectMemoryForgotten", payload) do
+      {:ok, %ForemanServer.Events.ProjectMemoryForgotten{project_id: pid, name: name}}
+      when is_binary(pid) and pid != "" and is_binary(name) and name != "" ->
+        put_project_memory(state, pid, &Map.delete(&1, name))
+
+      _ ->
+        skip_malformed("ProjectMemoryForgotten")
+        state
+    end
+  end
+
   defp apply_event_by_type(state, "JobsiteStarted", payload) do
     case decode_for_projection("JobsiteStarted", payload) do
       %ForemanServer.Events.JobsiteStarted{jobsite_id: jobsite_id} = event ->
@@ -3080,6 +3147,14 @@ defmodule ForemanServer.ProjectionStore do
   # Strip it HERE, at the one decode boundary, rather than in the worker-log
   # handler: every future typed handler reading a Tracker-produced payload
   # would otherwise re-discover the same crash (AGENTS.md 5.7).
+  defp put_project_memory(state, project_id, fun) do
+    topics = state.project_memory |> Map.get(project_id, %{}) |> fun.()
+    %{state | project_memory: Map.put(state.project_memory, project_id, topics)}
+  end
+
+  defp skip_malformed(event_type),
+    do: Logger.warning("ProjectionStore skipped malformed #{event_type}")
+
   defp decode_for_projection(event_type, payload)
        when is_binary(event_type) and is_map(payload) do
     EventCodec.decode!(event_type, drop_projection_meta(payload))

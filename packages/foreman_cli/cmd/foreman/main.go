@@ -15,6 +15,7 @@
 //	project reactivate <id> POST /api/commands with type=project.reactivate
 //	project delete <id> POST /api/commands with type=project.archive (soft delete)
 //	project list        GET /api/projects
+//	project memory      list|read|write|forget|sync a project's memory (/api/projects/:id/memory)
 //	commands           Generate/install agent command assets
 //	run list            List run projections
 //	run get <id>        Fetch a run projection
@@ -59,6 +60,7 @@ Commands:
   project reactivate <id> Reactivate an archived project
   project delete <id> Soft-delete (archive) a project; history is kept, reactivate to restore
   project list        List project projections
+  project memory      list|read|write|forget|sync project memory topics
   commands           Generate/install agent command assets
   run list            List run projections
   run get <id>        Fetch a run projection
