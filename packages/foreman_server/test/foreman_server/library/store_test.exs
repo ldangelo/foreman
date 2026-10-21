@@ -147,6 +147,23 @@ defmodule ForemanServer.Library.StoreTest do
     assert File.exists?(fresh)
   end
 
+  test "a symlink inside an entry that points outside is never readable", %{
+    root: root,
+    src: src,
+    dir: dir
+  } do
+    {:ok, _e, p} = Store.write(root, "docs-1", plan!(src))
+    :ok = Store.commit(p)
+
+    secret = Path.join(dir, "secret.txt")
+    File.write!(secret, "TOP-SECRET")
+    files = Store.files_dir(root, "docs-1")
+    File.chmod!(files, 0o755)
+    File.ln_s!(secret, Path.join(files, "escape.txt"))
+
+    assert {:error, %Error{code: :not_found}} = Store.read_file(root, "docs-1", "escape.txt", 100)
+  end
+
   test "read_file enforces the byte cap and refuses traversal and unknown ids", %{
     root: root,
     src: src

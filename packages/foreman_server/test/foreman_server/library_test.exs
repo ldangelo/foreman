@@ -185,18 +185,18 @@ defmodule ForemanServer.LibraryTest do
                entry.manifest_sha256
     end
 
-    test "A -> B -> A records three events (a deterministic id would drop the third)", %{
+    test "A -> B -> A -> B records four events (a deterministic id would drop the fourth)", %{
       project_id: p,
       src: src
     } do
       {entry, _} = add_folder!(p, src)
-      File.write!(Path.join(src, "guide.md"), "B")
-      {:ok, _} = Library.replace(p, entry.entry_id, {:folder, src}, %{}, @operator)
-      File.write!(Path.join(src, "guide.md"), "# Guide")
-      {:ok, back} = Library.replace(p, entry.entry_id, {:folder, src}, %{}, @operator)
 
-      assert back.entry.manifest_sha256 == entry.manifest_sha256
-      assert length(stream_events(p)) == 3
+      for content <- ["B", "# Guide", "B"] do
+        File.write!(Path.join(src, "guide.md"), content)
+        {:ok, _} = Library.replace(p, entry.entry_id, {:folder, src}, %{}, @operator)
+      end
+
+      assert length(stream_events(p)) == 4
     end
 
     test "an unknown entry is :not_found", %{project_id: p, src: src} do

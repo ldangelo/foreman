@@ -84,6 +84,39 @@ defmodule ForemanServer.LibraryDeliveryTest do
     end
   end
 
+  describe "docker sandbox argv" do
+    test "the library mount reaches `docker run` as a read-only bind mount at /library", ctx do
+      add!(ctx)
+      # The test's tmp_dir name contains backticks, which a shell script would
+      # execute, so the fake binary lives under a plain temp path.
+      work = Path.join(System.tmp_dir!(), "e5-docker-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(work)
+      on_exit(fn -> File.rm_rf!(work) end)
+      log = Path.join(work, "args.log")
+      fake = Path.join(work, "fake-docker")
+
+      File.write!(fake, """
+      #!/bin/sh
+      for a in "$@"; do echo "$a" >> "#{log}"; done
+      echo fake-container
+      """)
+
+      File.chmod!(fake, 0o755)
+      %{mounts: mounts} = Library.delivery(ctx.project_id, :docker)
+
+      worktree = %{path: ctx.repo, repo_path: ctx.repo}
+
+      assert {:ok, _state, _sandbox_path, _container} =
+               ForemanServer.Jobsite.Sandboxes.Docker.create(
+                 %{binary: fake, image: "img", mounts: mounts, uid: "1", gid: "1"},
+                 worktree
+               )
+
+      args = log |> File.read!() |> String.split("\n", trim: true)
+      assert "#{host_dir(ctx)}:/library:ro" in args
+    end
+  end
+
   describe "workflow door" do
     defp launch_env(project_id) do
       state = %{
