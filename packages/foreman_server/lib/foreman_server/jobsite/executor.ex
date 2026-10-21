@@ -260,7 +260,8 @@ defmodule ForemanServer.Jobsite.Executor do
       completion_timeout_seconds: div(spec.completion_ms, 1000),
       resume_session: spec.resume_session,
       output: spec.output_opts,
-      archive_spec: spec
+      archive_spec: spec,
+      project_context: project_context_bundle(spec)
     }
 
     steps =
@@ -288,6 +289,26 @@ defmodule ForemanServer.Jobsite.Executor do
 
     %Program{steps: steps}
   end
+
+  # Standing project context, built once per jobsite start so every iteration of
+  # an in-flight jobsite sees the same text. A jobsite without a registered
+  # project, or a build failure, runs without context.
+  defp project_context_bundle(%{project_id: project_id})
+       when is_binary(project_id) and project_id != "" do
+    case ForemanServer.ProjectContext.build(project_id) do
+      {:ok, bundle} ->
+        bundle
+
+      {:error, reason} ->
+        Logger.warning(
+          "jobsite project context unavailable project_id=#{project_id}: #{inspect(reason)}"
+        )
+
+        nil
+    end
+  end
+
+  defp project_context_bundle(_spec), do: nil
 
   defp hook_steps(nil, _target, _phase), do: []
 

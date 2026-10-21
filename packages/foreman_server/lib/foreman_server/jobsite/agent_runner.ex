@@ -39,6 +39,13 @@ defmodule ForemanServer.Jobsite.AgentRunner do
 
     env = merged_env(agent, sandbox)
 
+    {system_prompt, prompt} =
+      ForemanServer.ProjectContext.deliver(
+        Keyword.get(opts, :system_prompt),
+        agent.provider,
+        prompt
+      )
+
     {provider_session_id, fork_provider_options} =
       resolve_session_opts(agent.provider, resume_session, fork_session)
 
@@ -52,6 +59,7 @@ defmodule ForemanServer.Jobsite.AgentRunner do
            build_request(
              agent,
              prompt,
+             system_prompt,
              sandbox,
              provider_session_id,
              fork_provider_options,
@@ -108,6 +116,7 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   defp build_request(
          agent,
          prompt,
+         system_prompt,
          sandbox,
          provider_session_id,
          fork_opts,
@@ -137,6 +146,8 @@ defmodule ForemanServer.Jobsite.AgentRunner do
       env: env,
       provider_options: provider_options
     ]
+
+    attrs = if system_prompt, do: Keyword.put(attrs, :system_prompt, system_prompt), else: attrs
 
     attrs =
       if agent.approval_mode,
