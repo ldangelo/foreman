@@ -47,6 +47,13 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 >
+> foreman thread list       --door --limit --project --status
+> foreman thread get        (no flags)
+> foreman thread stop       --reason
+> foreman thread resolve    --reason
+> foreman thread reopen     (no flags)
+> foreman thread steer      --message --message-id --no-resume
+>
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
 >
@@ -613,6 +620,33 @@ It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless t
 | Option | Description |
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
+
+### `foreman thread list|get|stop|steer|resolve|reopen`
+
+A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a jobsite (`jobsite:<id>`). All verbs print the server's JSON.
+
+| Verb | Request |
+|------|---------|
+| `foreman thread list --project <project-id> [--status <s>] [--door workflow\|jobsite] [--limit <n>]` | `GET /api/projects/:id/threads` (`--project` is required). |
+| `foreman thread get <thread-id>` | `GET /api/threads/:id`. |
+| `foreman thread stop [--reason <r>] <thread-id>` | `POST /api/threads/:id/stop`: `run.cancel` for a workflow thread, the jobsite cancel for a jobsite thread. A terminal thread exits 3 (HTTP 409 `not_stoppable`, naming its status). |
+| `foreman thread resolve [--reason <r>] <thread-id>` | Reads the thread's project, then sends the `thread.resolve` operator command (aggregate `thread:<thread-id>`). A disposition flag only; it never stops a run. |
+| `foreman thread reopen <thread-id>` | Sends `thread.reopen`; a thread that is not resolved is rejected. |
+| `foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>` | `POST /api/threads/:id/steer`: queues an operator message (`run.steer` for a workflow thread, `Jobsite.steer` for a jobsite thread); the work is paused then resumed with the message in its next prompt. 202 `{thread_id, message_id, mode}`; a terminal thread exits 3 (409 `not_steerable`); blank or oversize (>8000) text is 400. `--no-resume` keeps a paused run paused (workflow door). |
+
+Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and thread lookup.
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/threads/:id/transcript?after=<seq>&limit=<n>` | One cursor page of structured turns (`after` >= -1, default -1; `limit` 1..1000, default 200). Body `{turns, next_cursor, truncated, omitted_entries, terminal}`. Unknown thread 404, junk params 400. |
+| `GET /api/threads/:id/stream?after=<seq>` | Server-Sent Events tail: replays turns after `after`, then `event: turn` per new turn, `: heartbeat` comments, and `event: end` once the thread is terminal and drained. |
+| `GET /api/projects/:project_id/threads/find?q=&external_id=&branch=&pr=` | Deterministic lookup (`ForemanServer.Threads.Finder`, no LLM): exact `external_id`, branch and PR (URL or number) matches outrank conservative text matches (Jaccard >= 0.5 over title + first 200 chars of prompt; `suggested: true`; resolved/deleted threads are never text matches). `{candidates: [{thread_id, reason, score, title, status, branch, resolved, suggested}]}`; no criterion is 400. Read-only: it never starts a run. |
+
+**Steering v1 (`pause_resume`).** Live mid-turn steering is not built (every thread DTO carries `"steering": "pause_resume"`). Steering pauses the work (the run executor commits partial work as it winds down), then resumes with the operator message appended to the next phase prompt. Workflow door: operator command `run.steer` appends `RunSteerQueued` (idempotent per `message_id`; `--no-resume` keeps the run paused). Once a phase prompt carrying the message is built, the system-only command `run.steer.consume` appends `RunSteerConsumed`, so a message is injected exactly once; the queue is `RunSteerQueued` minus `RunSteerConsumed` in the event log and survives restarts. `run.steer.consume` is deliberately NOT in the operator allowlist. Jobsite door: `Jobsite.steer/3`, equivalent to `POST /api/jobsites/:id/resume` with a `prompt` (see Remote Jobsite API).
+
+**Resolve / reopen.** `thread.resolve` and `thread.reopen` append `ThreadResolved` / `ThreadReopened` on `thread:<thread-id>`. Resolved threads are excluded from text lookup. Terminal threads without a PR are idle-resolved by `IdleResolver`, configured under `config :foreman_server, :threads` (`idle_resolver`, `idle_resolve_after_days`, `sweep_interval_ms`; see the user guide).
+
+**Transcript caveats.** The workflow transcript is built from `run_logs`, which keep a bounded tail: when entries were dropped `omitted_entries` > 0 and `truncated` is true. Jobsite turns carry no timestamps (`at: null`, ordered by iteration) and jobsite threads have no operator turns, because jobsite resume prompts are not persisted as events.
 
 
 ---
@@ -1272,7 +1306,16 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events).
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`,
+`foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events),
+`foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
+`foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,
+optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
+`external_id`, `branch`, `pr`, `limit`; at least one criterion).
+
+Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
+(`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
+`text`, optional `message_id`, `resume`).
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams

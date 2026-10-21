@@ -20,7 +20,9 @@ defmodule ForemanServer.RunControl do
   triggered lazy initialization.
 
   Table key: `run_id`. Table value: `{intent, harness_run_id | nil}`
-  where `intent` is `:pause | :cancel | nil`.
+  where `intent` is `:pause | :cancel | nil`. Steering messages (E6-S4)
+  live under the key `{:messages, run_id}` as an ordered list of
+  `%{message_id, text}`; that mailbox is a cache of the projection.
   """
 
   use GenServer
@@ -105,10 +107,51 @@ defmodule ForemanServer.RunControl do
     end
   end
 
-  @doc "Drops the recorded intent/harness run id for `run_id`. No-op when absent."
+  @doc """
+  Appends a steering `message` (`%{message_id, text}`) to `run_id`'s
+  mailbox. A message whose `message_id` is already queued is ignored.
+
+  The mailbox is only a CACHE of the durable queue
+  (`ProjectionStore.pending_steering/1`): `clear/1` wipes it on every
+  executor terminate and every resume, so nothing may rely on it surviving.
+  """
+  @spec push_message(String.t(), %{message_id: String.t(), text: String.t()}) :: :ok
+  def push_message(run_id, %{message_id: message_id, text: text} = message)
+      when is_binary(run_id) and is_binary(message_id) and is_binary(text) do
+    messages = peek_messages(run_id)
+
+    unless Enum.any?(messages, &(&1.message_id == message_id)) do
+      :ets.insert(@table, {{:messages, run_id}, messages ++ [message]})
+    end
+
+    :ok
+  end
+
+  @doc "Returns `run_id`'s cached steering messages in queue order, without removing them."
+  @spec peek_messages(String.t()) :: [%{message_id: String.t(), text: String.t()}]
+  def peek_messages(run_id) when is_binary(run_id) do
+    case :ets.lookup(@table, {:messages, run_id}) do
+      [{_key, messages}] -> messages
+      [] -> []
+    end
+  end
+
+  @doc "Removes the cached messages whose ids are in `message_ids`; others stay queued."
+  @spec drain_messages(String.t(), [String.t()]) :: :ok
+  def drain_messages(run_id, message_ids) when is_binary(run_id) and is_list(message_ids) do
+    case Enum.reject(peek_messages(run_id), &(&1.message_id in message_ids)) do
+      [] -> :ets.delete(@table, {:messages, run_id})
+      rest -> :ets.insert(@table, {{:messages, run_id}, rest})
+    end
+
+    :ok
+  end
+
+  @doc "Drops the recorded intent/harness run id and cached steering messages for `run_id`. No-op when absent."
   @spec clear(String.t()) :: :ok
   def clear(run_id) when is_binary(run_id) do
     :ets.delete(@table, run_id)
+    :ets.delete(@table, {:messages, run_id})
     :ok
   end
 

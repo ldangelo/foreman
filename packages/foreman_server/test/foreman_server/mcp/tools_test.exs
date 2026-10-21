@@ -47,6 +47,12 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert Enum.map(tools, & &1.name) == [
                "foreman_run_get",
                "foreman_run_status",
+               "foreman_thread_list",
+               "foreman_thread_get",
+               "foreman_thread_find",
+               "foreman_thread_transcript",
+               "foreman_thread_stop",
+               "foreman_thread_steer",
                "foreman_queue_status",
                "foreman_project_list",
                "foreman_project_get",
