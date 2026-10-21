@@ -192,7 +192,11 @@ defmodule ForemanServer.MCP.TransportTest do
         "foreman_run_cancel",
         "foreman_inbox_send",
         "foreman_workflow_put",
-        "foreman_workflow_delete"
+        "foreman_workflow_delete",
+        "foreman_project_memory_list",
+        "foreman_project_memory_read",
+        "foreman_project_memory_write",
+        "foreman_project_memory_forget"
       ]
 
       http_tools = MCP.__components__(:tool)

@@ -268,6 +268,8 @@ func buildAgentCommandInventory(_ []string) []agentCommandSpec {
 		{ID: "foreman-run-submit", DisplayName: "Foreman run submit", Description: "Submit an ad-hoc Foreman run in one step. Backend is a client-side selector; pi is default, codex/opencode acceptance does not prove runtime provider readiness.", Kind: "run", Args: []agentCommandArg{{Name: "project-id", Flag: "--project-id", Required: true, Description: "Foreman project ID"}, {Name: "workflow", Flag: "--workflow", Required: true, Description: "Workflow selector"}, {Name: "prompt", Flag: "--prompt", Required: true, Description: "Run prompt"}, {Name: "work-id", Flag: "--work-id", Description: "Optional caller supplied work/task ID"}, {Name: "backend", Flag: "--backend", Description: "pi, claude, codex, or opencode; runtime readiness is server/provider-confirmed, not proven by CLI acceptance"}}, CLI: []string{"foreman", "run", "submit", "--project-id", "$PROJECT_ID", "--workflow", "$WORKFLOW", "--prompt", "$PROMPT"}, Tags: []string{"foreman", "run"}},
 		{ID: "foreman-run-list", DisplayName: "Foreman run list", Description: "List Foreman runs, optionally filtered by status, project ID, or limit.", Kind: "run", Args: []agentCommandArg{{Name: "status", Flag: "--status", Description: "Optional run status"}, {Name: "project-id", Flag: "--project-id", Description: "Optional project ID"}, {Name: "limit", Flag: "--limit", Description: "Optional max result count"}}, CLI: []string{"foreman", "run", "list"}, Tags: []string{"foreman", "run"}},
 		{ID: "foreman-run-get", DisplayName: "Foreman run detail", Description: "Fetch one Foreman run projection by run ID.", Kind: "run", Args: []agentCommandArg{{Name: "run-id", Required: true, Description: "Run ID positional argument"}}, CLI: []string{"foreman", "run", "get", "$RUN_ID"}, Tags: []string{"foreman", "run"}},
+		{ID: "foreman-project-memory-list", DisplayName: "Foreman project memory list", Description: "List a project's memory topics (MEMORY.md index entries). Agents write memory through the foreman_project_memory_write MCP tool, not this CLI.", Kind: "project", Args: []agentCommandArg{{Name: "project-id", Required: true, Description: "Project ID positional argument"}}, CLI: []string{"foreman", "project", "memory", "list", "$PROJECT_ID"}, Tags: []string{"foreman", "project"}},
+		{ID: "foreman-project-memory-read", DisplayName: "Foreman project memory read", Description: "Read one project memory topic by name.", Kind: "project", Args: []agentCommandArg{{Name: "name", Flag: "--name", Required: true, Description: "Memory topic name"}, {Name: "project-id", Required: true, Description: "Project ID positional argument"}}, CLI: []string{"foreman", "project", "memory", "read", "--name", "$NAME", "$PROJECT_ID"}, Tags: []string{"foreman", "project"}},
 	}
 }
 
@@ -301,8 +303,8 @@ func validateAgentCommandSpecs(specs []agentCommandSpec) error {
 				return fmt.Errorf("%s: unsupported flag %s for foreman %s", spec.ID, token, key)
 			}
 		}
-		if !containsString(spec.Tags, "foreman") || (!containsString(spec.Tags, "task") && !containsString(spec.Tags, "run")) {
-			return fmt.Errorf("%s: tags must include foreman and task or run", spec.ID)
+		if !containsString(spec.Tags, "foreman") || (!containsString(spec.Tags, "task") && !containsString(spec.Tags, "run") && !containsString(spec.Tags, "project")) {
+			return fmt.Errorf("%s: tags must include foreman and task, run or project", spec.ID)
 		}
 	}
 	return nil
@@ -325,6 +327,8 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 		"run submit": {},
 		"run list":   {},
 		"run get":    {},
+
+		"project memory": {},
 	}
 
 	cliRoot, err := findCLIRoot()
@@ -338,6 +342,11 @@ func extractCLIFlagsFromSource() (map[string]map[string]bool, error) {
 	}
 	if err := extractFlagsFromAST(runPath, "runList", allowed["run list"]); err != nil {
 		return nil, fmt.Errorf("extractFlagsFromAST run.go (runList): %w", err)
+	}
+
+	memoryPath := filepath.Join(cliRoot, "cmd", "foreman", "project_memory.go")
+	if err := extractFlagsFromAST(memoryPath, "projectMemoryRead", allowed["project memory"]); err != nil {
+		return nil, fmt.Errorf("extractFlagsFromAST project_memory.go (projectMemoryRead): %w", err)
 	}
 
 	return allowed, nil
@@ -519,13 +528,17 @@ func shellBodyForSpec(spec agentCommandSpec) string {
 		fmt.Fprintln(&b, "[ -n \"${LIMIT:-}\" ] && args+=(--limit \"$LIMIT\")")
 	case "foreman-run-get":
 		fmt.Fprintln(&b, "args=(foreman run get \"$RUN_ID\")")
+	case "foreman-project-memory-list":
+		fmt.Fprintln(&b, "args=(foreman project memory list \"$PROJECT_ID\")")
+	case "foreman-project-memory-read":
+		fmt.Fprintln(&b, "args=(foreman project memory read --name \"$NAME\" \"$PROJECT_ID\")")
 	case "foreman-run-submit":
 		fmt.Fprintln(&b, "args=(foreman run submit --workflow \"$WORKFLOW\" --prompt \"$PROMPT\" --project-id \"$PROJECT_ID\")")
 		fmt.Fprintln(&b, "[ -n \"${WORK_ID:-}\" ] && args+=(--work-id \"$WORK_ID\")")
 		fmt.Fprintln(&b, "[ -n \"${BACKEND:-}\" ] && args+=(--backend \"$BACKEND\")")
 		fmt.Fprintln(&b, "[ -n \"${BASE_BRANCH:-}\" ] && args+=(--base-branch \"$BASE_BRANCH\")")
 	default:
-		// `buildAgentCommandInventory` only ever produces the three IDs
+		// `buildAgentCommandInventory` only ever produces the IDs
 		// above (TRD-018 removed the `foreman task create` shortcuts this
 		// case used to render). Reaching here means a new spec ID was
 		// added without a matching case — panic rather than silently
