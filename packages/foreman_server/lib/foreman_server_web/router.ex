@@ -57,6 +57,7 @@ defmodule ForemanServerWeb.Router do
     get("/projects/:id/recommendations", RecommendationsController, :show)
     get("/projects", ProjectController, :index)
     get("/projects/:id", ProjectController, :show)
+    get("/projects/:project_id/overview", OverviewController, :show)
     get("/projects/:id/settings", ProjectController, :settings)
     get("/projects/:id/memory", ProjectMemoryController, :index)
     post("/projects/:id/memory/sync", ProjectMemoryController, :sync)
