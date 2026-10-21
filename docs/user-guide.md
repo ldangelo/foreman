@@ -398,6 +398,14 @@ Read endpoints are projection-only:
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
   and `GET /api/queue` expose corresponding projections.
+- Threads: `GET /api/projects/{project_id}/threads` (filters `status`,
+  `door=workflow|jobsite`, `limit` 1..500, default 100) and
+  `GET /api/threads/{id}` (`run:<run_id>` or `jobsite:<jobsite_id>`) unify
+  tasks, runs and jobsites. Fields: `id, door, project_id, task_id, title,
+  status, branch, repo_path, pr_url, last_report {verdict, summary, at},
+  provider_session_id, resolved, steering, run_ids, created_at, updated_at`.
+  `steering` is always `"pause_resume"` (steer = pause, then resume with the
+  operator message injected); `resolved` is `false` until resolve ships.
 
 ### Operator run dashboard
 
@@ -888,7 +896,8 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`.
+`foreman_task_list`, `foreman_task_get`, `foreman_thread_list`,
+`foreman_thread_get`.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,

@@ -1,6 +1,8 @@
 defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Threads
+  alias ForemanServer.Threads.Thread
   alias ForemanServer.Telemetry
   alias ForemanServer.Workflow.CatalogWriter
   alias ForemanServer.Workflow.PromptWriter
@@ -125,6 +127,35 @@ defmodule ForemanServer.MCP.Tools do
         run_id: %{type: "string", description: "The run ID"}
       },
       required: ["run_id"]
+    }
+  }
+
+  @schema_foreman_thread_list %{
+    name: "foreman_thread_list",
+    description:
+      "List a project's threads (workflow runs and jobsites), newest first, " <>
+        "with last review report and provider session id",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        status: %{type: "string", description: "Only threads with this raw status"},
+        door: %{type: "string", enum: ["workflow", "jobsite"], description: "Only this door"},
+        limit: %{type: "integer", minimum: 1, maximum: 500, description: "Default 100"}
+      },
+      required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_thread_get %{
+    name: "foreman_thread_get",
+    description: "Get one thread by id (run:<run_id> or jobsite:<jobsite_id>)",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"}
+      },
+      required: ["thread_id"]
     }
   }
 
@@ -521,6 +552,8 @@ defmodule ForemanServer.MCP.Tools do
   @tools [
     @schema_foreman_run_get,
     @schema_foreman_run_status,
+    @schema_foreman_thread_list,
+    @schema_foreman_thread_get,
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
@@ -649,6 +682,82 @@ defmodule ForemanServer.MCP.Tools do
     if result,
       do: {:ok, result},
       else: {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+  end
+
+  defp tool_foreman_thread_list(%{project_id: project_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with true <- is_binary(project_id) and project_id != "",
+           {:ok, opts} <- thread_list_opts(args) do
+        {:ok, project_id |> Threads.list(opts) |> Enum.map(&Thread.to_dto/1)}
+      else
+        false -> {:error, "project_id must be a non-empty string"}
+        {:error, message} -> {:error, message}
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _} = ok ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_list", :ok)
+        ok
+
+      {:error, message} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_list", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: message}}
+    end
+  end
+
+  defp thread_list_opts(args) do
+    with {:ok, limit} <- thread_limit(Map.get(args, :limit)),
+         {:ok, door} <- thread_door(Map.get(args, :door)),
+         {:ok, status} <- thread_status(Map.get(args, :status)) do
+      opts =
+        Enum.reject([limit: limit, door: door, status: status], fn {_k, v} -> is_nil(v) end)
+
+      {:ok, opts}
+    end
+  end
+
+  defp thread_limit(nil), do: {:ok, nil}
+
+  defp thread_limit(limit) when is_integer(limit) do
+    max = Threads.max_limit()
+
+    if limit >= 1 and limit <= max,
+      do: {:ok, limit},
+      else: {:error, "limit must be an integer between 1 and #{max}"}
+  end
+
+  defp thread_limit(_), do: {:error, "limit must be an integer"}
+
+  defp thread_door(nil), do: {:ok, nil}
+  defp thread_door("workflow"), do: {:ok, :workflow}
+  defp thread_door("jobsite"), do: {:ok, :jobsite}
+  defp thread_door(_), do: {:error, "door must be workflow or jobsite"}
+
+  defp thread_status(nil), do: {:ok, nil}
+  defp thread_status(status) when is_binary(status) and status != "", do: {:ok, status}
+  defp thread_status(_), do: {:error, "status must be a non-empty string"}
+
+  defp tool_foreman_thread_get(%{thread_id: thread_id}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      if is_binary(thread_id), do: Threads.get(thread_id), else: {:error, :thread_not_found}
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, thread} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_get", :ok)
+        {:ok, Thread.to_dto(thread)}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_get", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+    end
   end
 
   defp tool_foreman_run_status(%{run_id: run_id}) do

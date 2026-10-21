@@ -1247,7 +1247,9 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`.
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`,
+`foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
+`foreman_thread_get` (`thread_id`).
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams

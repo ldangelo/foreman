@@ -390,6 +390,24 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:list_runs, opts})
   end
 
+  @doc """
+  Return every projection the thread read model composes, in one call:
+  `%{runs, tasks, jobsites, worktrees, pr_associations, reviews}`. `reviews` is
+  keyed by `{subject_kind, subject_id}`, `pr_associations` by run id. Exists so
+  `Threads.list/2` never makes a GenServer call per row.
+  """
+  @spec thread_inputs() :: %{
+          runs: [map()],
+          tasks: [map()],
+          jobsites: [map()],
+          worktrees: [map()],
+          pr_associations: %{String.t() => map()},
+          reviews: %{{String.t(), String.t()} => map()}
+        }
+  def thread_inputs do
+    GenServer.call(__MODULE__, :thread_inputs)
+  end
+
   @doc "Return every projected scheduler intent."
   @spec list_scheduler_intents() :: [map()]
   def list_scheduler_intents do
@@ -701,6 +719,20 @@ defmodule ForemanServer.ProjectionStore do
     }
 
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:thread_inputs, _from, state) do
+    inputs = %{
+      runs: Map.values(state.runs),
+      tasks: Map.values(state.tasks),
+      jobsites: Map.values(state.jobsites),
+      worktrees: state.worktrees |> Map.values() |> Enum.sort_by(&get(&1, :operation_id, "")),
+      pr_associations: state.pr_associations,
+      reviews: state.reviews
+    }
+
+    {:reply, inputs, state}
   end
 
   @impl true
