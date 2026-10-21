@@ -31,6 +31,8 @@ defmodule ForemanServer.Messaging.Dispatcher do
   alias ForemanServer.Messaging.DeliveryResult
 
   @event_page_size 99_999_999
+  # Recipient label meaning "the destination exactly as configured".
+  @default_recipient "default"
 
   defstruct command_router: CommandRouter,
             event_store: Store,
@@ -107,7 +109,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
       Enum.reduce(events, {%{}, MapSet.new()}, fn event, {enqueued, terminal} ->
         case event_type_and_payload(event) do
           {"NotificationEnqueued", payload} ->
-            case Notification.normalize(payload) do
+            case Notification.normalize(drop_aggregate_bookkeeping(payload)) do
               {:ok, notification} ->
                 {Map.put(enqueued, notification.notification_id, notification), terminal}
 
@@ -156,6 +158,17 @@ defmodule ForemanServer.Messaging.Dispatcher do
       MapSet.member?(terminal, notification_id)
     end)
     |> Map.values()
+  end
+
+  # `notification.enqueue` stores the DTO plus the aggregate's own bookkeeping
+  # (`sequence`, `enqueued_at_ms`) in the event. They are not part of the
+  # notification, and `Notification.normalize/1` rejects unknown keys, so
+  # without this every real enqueued event would be treated as malformed and
+  # never delivered.
+  @aggregate_bookkeeping_keys ~w(sequence enqueued_at_ms)
+
+  defp drop_aggregate_bookkeeping(payload) when is_map(payload) do
+    Map.reject(payload, fn {key, _value} -> to_string(key) in @aggregate_bookkeeping_keys end)
   end
 
   defp mark_terminal(terminal, payload) do
@@ -272,7 +285,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
   defp event_to_notification(event) do
     case event_type_and_payload(event) do
       {"NotificationEnqueued", payload} ->
-        case Notification.normalize(payload) do
+        case Notification.normalize(drop_aggregate_bookkeeping(payload)) do
           {:ok, notification} ->
             {:ok, notification}
 
@@ -340,7 +353,8 @@ defmodule ForemanServer.Messaging.Dispatcher do
 
     defaults = %{
       telegram: ForemanServer.Messaging.Providers.Telegram,
-      slack: ForemanServer.Messaging.Providers.Slack
+      slack: ForemanServer.Messaging.Providers.Slack,
+      webhook: ForemanServer.Messaging.Providers.Webhook
     }
 
     defaults
@@ -361,7 +375,7 @@ defmodule ForemanServer.Messaging.Dispatcher do
   def destination(%Notification{provider: provider, recipient: recipient}) do
     case ConfigResolver.resolve() do
       {:ok, %{provider: ^provider, destination: destination}} when is_map(destination) ->
-        {:ok, Map.put(destination, recipient_key(provider), recipient)}
+        {:ok, apply_recipient(destination, provider, recipient)}
 
       {:ok, _config} ->
         # Config resolved, but not for this notification's provider (a
@@ -379,8 +393,14 @@ defmodule ForemanServer.Messaging.Dispatcher do
     end
   end
 
-  defp recipient_key(:telegram), do: :chat_id
-  defp recipient_key(:slack), do: :webhook_url
+  # A telegram recipient other than `@default_recipient` overrides the chat id.
+  # Slack and webhook destinations come from config ONLY: their destination is
+  # a secret (the webhook URL), so the recipient is just a label and must never
+  # be used as, or persisted as, the URL.
+  defp apply_recipient(destination, :telegram, recipient) when recipient != @default_recipient,
+    do: Map.put(destination, :chat_id, recipient)
+
+  defp apply_recipient(destination, _provider, _recipient), do: destination
 
   # A static suffix would collide across retries: since a retryable failure
   # is now redelivered (see pending_notifications/1), a second attempt with

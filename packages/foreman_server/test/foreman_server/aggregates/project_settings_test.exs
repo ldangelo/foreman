@@ -93,6 +93,33 @@ defmodule ForemanServer.Aggregates.ProjectSettingsTest do
     end
   end
 
+  describe "notification_preference" do
+    test "accepts the three preferences, normalising case and whitespace" do
+      for pref <- ~w(every_turn blocked_only off) do
+        assert {:ok, %{notification_preference: ^pref}} =
+                 Settings.normalize(%{notification_preference: " " <> String.upcase(pref) <> " "})
+      end
+    end
+
+    test "rejects anything else with a distinct tuple listing the allowed values" do
+      assert {:error, {:notification_preference_invalid, "always", allowed}} =
+               update(registered(), %{notification_preference: "always"})
+
+      assert allowed == ~w(every_turn blocked_only off)
+
+      assert {:error, {:notification_preference_invalid, true, _}} =
+               update(registered(), %{notification_preference: true})
+    end
+
+    test "nil and blank clear the setting" do
+      assert {:ok, %{notification_preference: nil}} =
+               Settings.normalize(%{notification_preference: nil})
+
+      assert {:ok, %{notification_preference: nil}} =
+               Settings.normalize(%{"notification_preference" => "  "})
+    end
+  end
+
   describe "config whitelist" do
     test "an unknown config key is rejected" do
       assert {:error, {:unknown_setting, "foo"}} = update(registered(), %{config: %{foo: 1}})

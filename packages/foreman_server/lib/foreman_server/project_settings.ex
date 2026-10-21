@@ -20,7 +20,8 @@ defmodule ForemanServer.ProjectSettings do
           coordinator_max_active_threads: pos_integer() | nil,
           coordinator_reuse_threads: boolean() | nil,
           repo_allowlist: [String.t()] | nil,
-          max_repos_per_run: pos_integer() | nil
+          max_repos_per_run: pos_integer() | nil,
+          notification_preference: String.t() | nil
         }
 
   defstruct @keys
