@@ -303,7 +303,9 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     name = :task_provider_registry_restart_test
     pid = start_supervised!({Registry, [name: name]}, id: name)
 
-    refute_receive {:telemetry, @restart_event, _, _}, 50
+    # Pin the registry: the event is global, and the app-tree Registry may
+    # restart (and emit) concurrently with this test.
+    refute_receive {:telemetry, @restart_event, _, %{registry: ^name}}, 50
 
     Process.exit(pid, :shutdown)
 
@@ -504,7 +506,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     pid = ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
-    refute_receive {:telemetry, @restart_event, _, _}, 50
+    refute_receive {:telemetry, @restart_event, _, %{registry: Registry}}, 50
 
     :ok = :sys.terminate(pid, :kill)
     wait_for_restart(Registry, pid)
