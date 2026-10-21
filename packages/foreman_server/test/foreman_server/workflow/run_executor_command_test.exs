@@ -217,6 +217,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       if pid = LifecycleStore.test_pid(script_key) do
         send(pid, {:adapter_execute, prompt, context})
         send(pid, {:adapter_env, env})
+        send(pid, {:adapter_launch_opts, state})
       end
 
       if Map.get(context, "pause_then_fail?") == true and is_binary(working_directory) do
@@ -549,6 +550,193 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     # Same wait as `await_run_failure!/1`: the provider call the terminal
     # dispatch triggers must land before on_exit kills the dispatcher.
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+  end
+
+  test "project config.env reaches the worker env and its secrets are delivered for redaction" do
+    # Asserted at the worker boundary: the opts the Overwatch adapter was
+    # launched with are fed to the real `JidoHarnessWorker.init/1`, whose
+    # `put_env` decides the env the agent process gets.
+    %{run_id: run_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-11111111-project-env.md"],
+        project_config: %{
+          env: %{
+            "FOO" => "bar",
+            "API_TOKEN" => "s3cr3t-value"
+          }
+        }
+      )
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
+
+    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
+
+    assert delivered["FOO"] == "bar"
+    assert delivered["FOREMAN_RUN_ID"] == run_id
+    assert is_binary(delivered["FOREMAN_ARTIFACT_PATH"])
+    assert delivered["API_TOKEN"] == "s3cr3t-value"
+
+    # The redaction list is built from the same snapshot as the delivered env.
+    assert worker_state.secrets == ["s3cr3t-value"]
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+  end
+
+  test "a project config.env key in the FOREMAN_ namespace fails the phase before any worker launches" do
+    # `FOREMAN_BASE_BRANCH` is the sharp case: this repo has no resolvable
+    # base branch, so Foreman emits no such key and a project-supplied one
+    # would reach the agent as an unverified base branch.
+    %{run_id: run_id, phase_id: phase_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-33333333-reserved-env.md"],
+        expect_launch?: false,
+        project_config: %{
+          env: %{"FOO" => "bar", "FOREMAN_BASE_BRANCH" => "evil", "FOREMAN_RUN_ID" => "evil"}
+        }
+      )
+
+    failure_reason = await_phase_failure!(phase_id)
+
+    assert failure_reason =~ "reserved_project_env_keys"
+    assert failure_reason =~ "FOREMAN_BASE_BRANCH"
+    assert failure_reason =~ "FOREMAN_RUN_ID"
+    refute failure_reason =~ "FOO"
+    refute_received {:adapter_execute, _, _}
+
+    await_run_failure!(run_id)
+  end
+
+  test "a configured project secret is redacted from the persisted WorkerStdout event" do
+    # The launch opts are what `prepare_agent_launch` produced; the REAL worker
+    # is started from them with a fresh worker id and fed agent output that
+    # contains the secret. What counts is the event in the store.
+    %{run_id: run_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-44444444-redaction.md"],
+        project_config: %{env: %{"API_TOKEN" => "s3cr3t-value"}}
+      )
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    worker_id = unique_id("wkr")
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             launch_opts
+             |> Keyword.put(:worker_id, worker_id)
+             |> ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init()
+
+    log_events = [
+      %{
+        channel: :worker_stdout,
+        data: "calling api with s3cr3t-value now",
+        timestamp: "2026-08-27T00:00:00Z"
+      }
+    ]
+
+    assert {:stop, :normal, _} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.handle_info(
+               {:agent_done, {:ok, "done"}, log_events, nil},
+               worker_state
+             )
+
+    {:ok, events} =
+      ForemanServer.EventStore.read_stream_forward(
+        ForemanServer.Overwatch.Tracker.stream_id(worker_id, run_id),
+        0,
+        99_999
+      )
+
+    assert [stdout] = Enum.filter(events, &(&1.event_type == "WorkerStdout"))
+    assert stdout.data["line"] =~ "[REDACTED]"
+    refute stdout.data["line"] =~ "s3cr3t-value"
+  end
+
+  test "a task whose project id is present but not a usable id is refused before a launch is built" do
+    # Upstream gates reject these ids for whole runs; this boundary must not
+    # depend on that, because a launch built from `%{}` carries no env and no
+    # redaction secrets.
+    for bad <- ["", 123, :project] do
+      state = %{task: %{project_id: bad}, run_id: "run-bad-project"}
+
+      assert {:error, {:invalid_project_id, ^bad}} =
+               RunExecutor.phase_launch(state, %{name: :implement}, 0, %{})
+    end
+  end
+
+  test "a project env value that cannot be stringified is a typed error, not a raise" do
+    previous = Application.get_env(:foreman_server, :worker_environment)
+    project_id = unique_id("legacy-env-project")
+
+    Application.put_env(:foreman_server, :worker_environment, %{
+      projects: %{project_id => %{env: %{"BAD" => %{"nested" => 1}}}}
+    })
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :worker_environment, previous),
+        else: Application.delete_env(:foreman_server, :worker_environment)
+    end)
+
+    state = %{task: %{project_id: project_id}, run_id: "run-legacy-env"}
+
+    assert {:error, {:invalid_project_env, ^project_id}} =
+             RunExecutor.phase_launch(state, %{name: :implement}, 0, %{})
+  end
+
+  test "a project with no config.env gets only the FOREMAN_* env" do
+    %{run_id: run_id} =
+      run_plan_capture_phase!(write_paths: ["docs/PRD/PRD-2026-22222222-no-project-env.md"])
+
+    assert_receive {:adapter_launch_opts, launch_opts}, @poll_timeout_ms
+
+    assert {:ok, worker_state} =
+             ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init(launch_opts)
+
+    delivered = Keyword.fetch!(worker_state.driver_opts, :env)
+
+    assert delivered["FOREMAN_RUN_ID"] == run_id
+    assert Enum.all?(Map.keys(delivered), &String.starts_with?(&1, "FOREMAN_"))
+    assert worker_state.secrets == []
+
+    assert {:ok, _} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
     assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
@@ -1520,7 +1708,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   # exactly `write_paths` inside its worktree, and return the ids needed to
   # assert on the outcome. The phase's fate is entirely decided by how many
   # new documents appear under `docs/PRD`.
-  defp run_plan_capture_phase!(write_paths: write_paths) do
+  defp run_plan_capture_phase!(opts) do
+    write_paths = Keyword.fetch!(opts, :write_paths)
+    project_config = Keyword.get(opts, :project_config, %{})
     expect_schema_boot_fetches()
     start_supervised!(JsonSchemaCache)
 
@@ -1564,7 +1754,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       run_id,
       workflow_snapshot,
       database_path,
-      repo_dir
+      repo_dir,
+      project_config
     )
 
     expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, _opts ->
@@ -1597,7 +1788,10 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       })
 
     assert is_pid(run_pid)
-    assert_receive {:adapter_execute, _prompt, _context}, @poll_timeout_ms
+
+    # A phase refused before launch never reaches the adapter.
+    if Keyword.get(opts, :expect_launch?, true),
+      do: assert_receive({:adapter_execute, _prompt, _context}, @poll_timeout_ms)
 
     %{run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
   end
@@ -1647,12 +1841,14 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
          run_id,
          workflow_snapshot,
          database_path,
-         project_path
+         project_path,
+         project_config \\ %{}
        ) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,
       name: "Plan #{project_id}",
       path: project_path,
+      config: project_config,
       task_provider: %{
         "provider" => "beads",
         "config" => %{"database_path" => database_path}

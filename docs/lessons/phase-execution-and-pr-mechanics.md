@@ -261,6 +261,26 @@ missing hop: `init/1` folds `:env_map` into `driver_opts` as `env:` (overlay),
 and a non-map raises rather than degrading to no env
 (`jido_harness_worker.ex:90-105`).
 
+**Project `config.env` was a second dead export on the workflow door, until E0-S3.**
+`prepare_agent_launch/5` passed `env_map:` as the `FOREMAN_*` map only, so
+`Overwatch.build_launch_env/2` (which reads `WorkerEnvironment.build_env_map/1`
+only when `:env_map` is nil) never ran for workflow runs; only the redaction
+list used the project env. Now `prepare_agent_launch/5` computes the project env
+once and sends `Map.merge(project_env, foreman_env)` (FOREMAN_* wins on
+collision, so project config cannot spoof `FOREMAN_RUN_ID`/`FOREMAN_ARTIFACT_PATH`)
+and derives `secrets:` from the same snapshot. Reserved-variable policy belongs
+to the E4 environment record. Jobsite `agent.env` is a separate, allowlisted
+mechanism and is unchanged.
+
+**There is no `default_branch` project setting.** It was stored on
+`Aggregates.Project` and projected (defaulting to a fabricated `"main"`) but
+nothing read it; the base branch is the registered checkout's HEAD latched per
+run (above). It is removed: `project.register`/`project.update` carrying it fail
+with `{:setting_removed, :default_branch}`, and historical `ProjectRegistered`/
+`ProjectUpdated` events that still carry the key replay unchanged because the
+aggregate and projection handlers read keys with `get/2` and never decode these
+events through `EventCodec` (which would reject unknown keys).
+
 **`JidoHarnessWorker.init/1` is the single hop every phase env var depends on.**
 When a variable "is exported but has no effect", read that function FIRST. An
 export in `foreman_env/3` proves only that Foreman computed the value; it is not
