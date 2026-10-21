@@ -39,6 +39,19 @@ defmodule ForemanServer.Agents.JidoAiRunner do
   @type strategy :: :react | :cot
 
   @doc """
+  Resolves a model input (alias atom such as `:fast`, or a ReqLLM spec) to the
+  string label recorded on spans and traces. An alias that `jido_ai` cannot
+  resolve is `:invalid_model`, not an exception.
+  """
+  @spec model_label(term()) :: {:ok, String.t()} | {:error, Error.t()}
+  def model_label(model) do
+    {:ok, Jido.AI.model_label(model)}
+  rescue
+    e in ArgumentError ->
+      {:error, Error.new(:invalid_model, Exception.message(e), model)}
+  end
+
+  @doc """
   Run the given `:react` or `:cot` strategy against `prompt`.
 
   Options: `:model` (default `"auto"`), `:max_tokens`, `:timeout_ms`.
@@ -47,12 +60,14 @@ defmodule ForemanServer.Agents.JidoAiRunner do
   def run(strategy, prompt, opts \\ []) when is_atom(strategy) and is_binary(prompt) do
     model = Keyword.get(opts, :model, "auto")
 
-    Logger.info("jido_ai strategy=#{strategy} model=#{model}")
+    with {:ok, label} <- model_label(model) do
+      Logger.info("jido_ai strategy=#{strategy} model=#{label}")
 
-    case strategy do
-      :react -> run_react(prompt, opts)
-      :cot -> run_cot(prompt, opts)
-      other -> {:error, Error.new(:unknown_strategy, "unknown strategy #{inspect(other)}")}
+      case strategy do
+        :react -> run_react(prompt, opts)
+        :cot -> run_cot(prompt, opts)
+        other -> {:error, Error.new(:unknown_strategy, "unknown strategy #{inspect(other)}")}
+      end
     end
   end
 

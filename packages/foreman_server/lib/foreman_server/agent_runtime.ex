@@ -670,77 +670,66 @@ defmodule ForemanServer.AgentRuntime do
     monotonic_start = System.monotonic_time(:microsecond)
     timeout_ms = Map.get(policy, :timeout_ms, 60_000)
 
-    try do
-      Telemetry.execute(
-        [:foreman, :agent_runtime, :execute, :start],
-        %{system_time: start_time, status: :started},
-        %{strategy: strategy, backend: :jido_ai_runner}
-      )
+    Telemetry.execute(
+      [:foreman, :agent_runtime, :execute, :start],
+      %{system_time: start_time, status: :started},
+      %{strategy: strategy, backend: :jido_ai_runner}
+    )
 
-      case JidoAiRunner.run(strategy, prompt,
+    # `model` may be an alias atom (the :fast default); the span and trace
+    # record the resolved model label, never the alias atom.
+    with {:ok, label} <- JidoAiRunner.model_label(model),
+         {:ok, %JidoAiRunner.Result{output: output, usage: usage}} <-
+           JidoAiRunner.run(strategy, prompt,
              model: model,
              max_tokens: 4096,
              timeout_ms: timeout_ms
            ) do
-        {:ok, %JidoAiRunner.Result{output: output, usage: usage}} ->
-          stop_time = System.system_time()
-          token_count = token_count(usage)
-          cost_usd = cost_usd(usage)
-          _ = OtelSpanEmitter.emit_llm_span(model, token_count, cost_usd, "auto")
+      stop_time = System.system_time()
+      token_count = token_count(usage)
+      cost_usd = cost_usd(usage)
+      _ = OtelSpanEmitter.emit_llm_span(label, token_count, cost_usd, "auto")
 
-          _ =
-            emit_langfuse_trace(
-              prompt,
-              output,
-              model,
-              monotonic_start,
-              task_type,
-              token_count,
-              cost_usd
-            )
+      _ =
+        emit_langfuse_trace(
+          prompt,
+          output,
+          label,
+          monotonic_start,
+          task_type,
+          token_count,
+          cost_usd
+        )
 
-          Telemetry.execute(
-            [:foreman, :agent_runtime, :execute, :stop],
-            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
-            %{strategy: strategy, backend: :jido_ai_runner}
-          )
+      Telemetry.execute(
+        [:foreman, :agent_runtime, :execute, :stop],
+        %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
+        %{strategy: strategy, backend: :jido_ai_runner}
+      )
 
-          emit_early_exit_completion(monotonic_start, :ok, task_type)
-          {:ok, output}
-
-        {:error, %JidoAiRunner.Error{code: code, message: message}} ->
-          stop_time = System.system_time()
-
-          Telemetry.execute(
-            [:foreman, :agent_runtime, :execute, :stop],
-            %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
-            %{strategy: strategy, backend: :jido_ai_runner}
-          )
-
-          emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
-
-          # REQ-008 AC-008-2: classify LLM errors and return as agent directives
-          # so the agent can retry or escalate rather than treating them as fatal.
-          error_kind = if code == :strategy_failed, do: :llm_failed, else: :llm_error
-
-          LlmErrorHandler.classify_and_directive(error_kind, %{
-            source: :jido_ai_runner,
-            code: code,
-            message: message
-          })
-      end
-    rescue
-      e ->
+      emit_early_exit_completion(monotonic_start, :ok, task_type)
+      {:ok, output}
+    else
+      {:error, %JidoAiRunner.Error{code: code, message: message}} ->
         stop_time = System.system_time()
 
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :stop],
-          %{duration_us: stop_time - start_time, status: :exception, attempts: 1},
+          %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
           %{strategy: strategy, backend: :jido_ai_runner}
         )
 
-        emit_early_exit_completion(monotonic_start, :exception, task_type)
-        {:error, {:exception, Exception.message(e)}}
+        emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
+
+        # REQ-008 AC-008-2: classify LLM errors and return as agent directives
+        # so the agent can retry or escalate rather than treating them as fatal.
+        error_kind = if code == :strategy_failed, do: :llm_failed, else: :llm_error
+
+        LlmErrorHandler.classify_and_directive(error_kind, %{
+          source: :jido_ai_runner,
+          code: code,
+          message: message
+        })
     end
   end
 

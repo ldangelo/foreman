@@ -81,6 +81,39 @@ defmodule ForemanServer.AgentRuntimeJidoAiTest do
     end
   end
 
+  describe "default model (no :model option)" do
+    for strategy <- [:react, :cot] do
+      test "#{strategy} resolves the :fast alias and records its string label" do
+        FakeReqLlm.install(self(), {:answer, "the answer", @usage})
+
+        assert {:ok, "the answer"} =
+                 AgentRuntime.execute("prompt", %{},
+                   strategy: unquote(strategy),
+                   task_type: :chat
+                 )
+
+        label = Jido.AI.model_label(:fast)
+        assert is_binary(label)
+        assert_receive {:langfuse_trace, "prompt", "the answer", ^label, _cost, _opts}
+      end
+
+      test "#{strategy} with an unresolvable model alias is a typed error, not an exception",
+           %{ref: ref} do
+        FakeReqLlm.install(self(), {:answer, "unused", @usage})
+
+        assert {:escalate, %{kind: :llm_error, context: %{code: :invalid_model}}} =
+                 AgentRuntime.execute("prompt", %{},
+                   strategy: unquote(strategy),
+                   model: :no_such_alias,
+                   task_type: :chat
+                 )
+
+        assert_receive {@completion, ^ref, _measurements, %{status: :adapter_error}}
+        refute_received {:fake_llm_call, _, _, _}
+      end
+    end
+  end
+
   defp run(strategy) do
     AgentRuntime.execute("prompt", %{}, strategy: strategy, model: @model, task_type: :chat)
   end
