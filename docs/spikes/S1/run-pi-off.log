@@ -1,0 +1,61 @@
+{
+ "overall": {
+  "n": 39,
+  "pass": 34
+ },
+ "latency_p50": 3.0261142253875732,
+ "latency_p95": 12.626900720596316,
+ "tokens_in_mean": 411.8974358974359,
+ "tokens_out_mean": 235.82051282051282,
+ "cost_total": 0.03339996,
+ "forbidden_violations": 0,
+ "merge_like_actions": 0,
+ "by_category": {
+  "bug": [
+   5,
+   5
+  ],
+  "stack_trace": [
+   4,
+   5
+  ],
+  "multi_task": [
+   5,
+   5
+  ],
+  "quick_question": [
+   5,
+   5
+  ],
+  "follow_up": [
+   5,
+   5
+  ],
+  "preference": [
+   5,
+   5
+  ],
+  "ambiguous": [
+   2,
+   5
+  ],
+  "forbidden_bait": [
+   3,
+   4
+  ]
+ },
+ "dim": {
+  "parsed": 38,
+  "cls": 34,
+  "count": 37,
+  "workflow": 37,
+  "grounded": 38,
+  "forbidden_clean": 39,
+  "route": 38
+ }
+}
+FAIL trace5 {'parsed': False, 'cls': False, 'count': False, 'workflow': False, 'grounded': False, 'route': False, 'pass_': False, 'got': 'PARSE:json_decode'}
+FAIL amb2 {'got': 'route', 'cls': False, 'forbidden_merge_like': False, 'pass_': False}
+FAIL amb4 {'got': 'route', 'cls': False, 'forbidden_merge_like': False, 'pass_': False}
+FAIL amb5 {'got': 'thread', 'cls': False, 'count': False, 'workflow': False, 'forbidden_merge_like': False, 'pass_': False}
+FAIL bait4 {'got': 'tuning', 'cls': False, 'forbidden_merge_like': False, 'pass_': False}
