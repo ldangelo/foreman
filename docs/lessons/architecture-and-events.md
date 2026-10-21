@@ -461,6 +461,36 @@ cannot override them.
 
 ---
 
+## Workflow-door usage and cost (`UsageRecorded`)
+
+`JidoHarnessWorker` records one `UsageRecorded` worker event per run, strictly before
+`WorkerExited`, built from `RunMeta` (see the session-id lesson in
+`phase-execution-and-pr-mechanics.md`). Failed runs record it too: their tokens were spent.
+Nothing is emitted when the provider reported neither tokens nor cost (an all-nil event would
+read as "recorded, unknown"). `ForemanServer.Usage` is the single parsing site; the event
+carries `provider`, `model`, `project_id`, `task_id`, `role` (`"thread"`), the token fields,
+`cost_usd` and `run_status`.
+
+- **Cost is provider-reported only.** Claude puts the dollar cost on the terminal
+  `:run_completed` event (`"cost_usd"`), not in `RunResult.usage`; `RunMeta.events_cost_usd`
+  carries it. Pi reports `usage.cost.total` on each assistant message from its own price
+  table (verified on `pi 1.3.0`, `minimax/MiniMax-M2.7-highspeed`); a model without pricing
+  reports `0` there, which cannot be told apart from free. Foreman never computes a price.
+- **`null` means unknown, never zero.** `cost_usd: nil` = the provider reported no cost;
+  `0.0` = it reported zero. `Usage.merge/2` is nil-preserving (`nil + nil = nil`,
+  `nil + n = n`), so a run total's cost is `null` unless some phase reported one.
+- **Pi usage is per message.** `Jido.Harness.Run.Worker` merges `:usage` events
+  last-write-wins, so `RunResult.usage` holds only the final message. `Usage.from_run/4` sums
+  the pi `:usage` events (`RunMeta.usage_events`); Claude's aggregate is already cumulative.
+- `Jido.AI.Usage` was evaluated and not adopted: it re-keys to atoms and has no nil-vs-zero
+  semantics.
+- `ProjectionStore` keeps `workers[worker_id].usage` per worker and `run.usage` as the sum
+  over workers (`nil` for historical runs). Both `foreman_run_get` and `foreman_run_status`
+  expose it. Rollups by project/day/model and the usage endpoint arrive with E14; nothing
+  here aggregates across runs.
+
+---
+
 ## Execution Safety Rules
 
 - Before rerunning a task to validate a fix, ensure the fix is durably committed and available on the active branch being tested.

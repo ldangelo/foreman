@@ -185,6 +185,10 @@ defmodule ForemanServer.MCP.ToolsTest do
         last_event_at_ms: 30,
         failure_reason: nil,
         latest_stall: latest_stall,
+        provider_session_id: "c0ffee",
+        provider_sessions: [
+          %{worker_id: "w1", provider: "claude", model: nil, provider_session_id: "c0ffee"}
+        ],
         secret: "not-in-status"
       }
 
@@ -220,6 +224,8 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert dto.workflow_name == "implement"
       assert dto.current_phase.phase_id == "phase-2"
       assert dto.latest_stall == latest_stall
+      assert dto.provider_session_id == "c0ffee"
+      assert [%{worker_id: "w1", provider_session_id: "c0ffee"}] = dto.provider_sessions
 
       assert dto |> Map.from_struct() |> Map.keys() |> Enum.sort() == [
                :current_phase,
@@ -227,11 +233,14 @@ defmodule ForemanServer.MCP.ToolsTest do
                :last_event_at_ms,
                :latest_stall,
                :project_id,
+               :provider_session_id,
+               :provider_sessions,
                :run_id,
                :started_at_ms,
                :status,
                :task_id,
                :terminal,
+               :usage,
                :workflow_name
              ]
 

@@ -892,7 +892,10 @@ and behavior cannot diverge.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,
-  `workflow_name`, `current_phase`, timestamps, and `failure_reason`).
+  `workflow_name`, `current_phase`, timestamps, `failure_reason`, and the
+  provider's own `provider_session_id` / `provider_sessions` once a phase's
+  agent has reported one, and cumulative `usage` tokens and provider-reported
+  `cost_usd`, `null` where unknown).
 - `foreman_run_get_logs` reads durable worker stdout/stderr events from
   `worker:<run_id>:<worker_id>` streams. Known runs with no output return
   an empty result; unknown runs return `NOT_FOUND`.

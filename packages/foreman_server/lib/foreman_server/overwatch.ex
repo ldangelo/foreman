@@ -145,6 +145,7 @@ defmodule ForemanServer.Overwatch do
           # recipient to run the agent and report completion to the caller.
           :provider,
           :prompt,
+          :task_id,
           :driver_opts,
           :result_recipient,
           :secrets
