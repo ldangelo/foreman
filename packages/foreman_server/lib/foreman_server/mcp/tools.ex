@@ -459,6 +459,7 @@ defmodule ForemanServer.MCP.Tools do
           type: "boolean",
           description:
             "Register each run's artifacts and session archive files in the project library"
+        },
         coordinator_propose_before_start: %{
           type: "boolean",
           description: "Coordinator creates proposals (open tasks) instead of starting threads"

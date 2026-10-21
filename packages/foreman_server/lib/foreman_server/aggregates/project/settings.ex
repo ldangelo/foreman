@@ -219,6 +219,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:library_collect_produced, value),
     do: {:error, {:library_collect_produced_invalid, value}}
+
   defp validate(:coordinator_propose_before_start, value),
     do: boolean(value, :coordinator_propose_before_start)
 

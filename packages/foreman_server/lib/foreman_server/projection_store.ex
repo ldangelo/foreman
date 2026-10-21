@@ -326,6 +326,8 @@ defmodule ForemanServer.ProjectionStore do
   def project_library(project_id) when is_binary(project_id) and project_id != "" do
     GenServer.call(__MODULE__, {:project_library, project_id})
   end
+
+  @doc """
   The full bounded coordinator conversation read model of a project (see
   `ForemanServer.Coordinator.Conversation`); a project that never spoke to its
   coordinator has an empty one. `{:error, :project_not_found}` for an unknown
@@ -3995,6 +3997,11 @@ defmodule ForemanServer.ProjectionStore do
   # Strip it HERE, at the one decode boundary, rather than in the worker-log
   # handler: every future typed handler reading a Tracker-produced payload
   # would otherwise re-discover the same crash (AGENTS.md 5.7).
+  defp put_project_memory(state, project_id, fun) do
+    topics = state.project_memory |> Map.get(project_id, %{}) |> fun.()
+    %{state | project_memory: Map.put(state.project_memory, project_id, topics)}
+  end
+
   defp apply_library_upsert(state, type, payload) do
     case decode_or_skip(type, payload) do
       {:ok, %{project_id: pid, entry_id: entry_id, name: name, manifest_sha256: sha} = e}
@@ -4025,11 +4032,6 @@ defmodule ForemanServer.ProjectionStore do
   defp put_project_library(state, project_id, fun) do
     entries = state.project_library |> Map.get(project_id, %{}) |> fun.()
     %{state | project_library: Map.put(state.project_library, project_id, entries)}
-  end
-
-  defp put_project_memory(state, project_id, fun) do
-    topics = state.project_memory |> Map.get(project_id, %{}) |> fun.()
-    %{state | project_memory: Map.put(state.project_memory, project_id, topics)}
   end
 
   defp skip_malformed(event_type),

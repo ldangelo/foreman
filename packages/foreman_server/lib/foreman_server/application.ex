@@ -238,6 +238,11 @@ defmodule ForemanServer.Application do
   defp maybe_library_collector_child do
     if Application.get_env(:foreman_server, :library, [])[:collector] do
       [ForemanServer.Library.Collector]
+    else
+      []
+    end
+  end
+
   defp maybe_coordinator_children do
     if Application.get_env(:foreman_server, :coordinator, [])[:enabled] do
       [{ForemanServer.Coordinator.Supervisor, []}]
