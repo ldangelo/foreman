@@ -33,7 +33,7 @@ def run(item, n_t=0, n_m=0, timeout=240):
     except subprocess.TimeoutExpired:
         # keep MCP calls the server logged before the timeout: they executed, and hiding them misreports partial execution
         return {"id": item["id"], "category": item["category"], "ok": False, "error": "timeout", "latency": time.time() - t0,
-                "calls": [json.loads(l) for l in open(LOG) if '"call"' in l], "turns": 0, "in": 0, "out": 0, "cost": 0.0, "leaked_text_toolcall": False}
+                "calls": [json.loads(l) for line in open(LOG) if '"call"' in line], "turns": 0, "in": 0, "out": 0, "cost": 0.0, "leaked_text_toolcall": False}
     lat = time.time() - t0
     tin = tout = 0; cost = 0.0; turns = 0; leaked_text_toolcall = False
     for ln in p.stdout.splitlines():
@@ -42,7 +42,7 @@ def run(item, n_t=0, n_m=0, timeout=240):
         if e.get("type") == "message_end" and e["message"].get("role") == "assistant":
             u = e["message"].get("usage", {}); tin += u.get("input", 0); tout += u.get("output", 0); cost += (u.get("cost") or {}).get("total", 0); turns += 1
             if any(c.get("type") == "text" and "tool_call" in c.get("text", "") for c in e["message"]["content"]): leaked_text_toolcall = True
-    calls = [json.loads(l) for l in open(LOG) if '"call"' in l]
+    calls = [json.loads(line) for line in open(LOG) if '"call"' in line]
     return {"id": item["id"], "category": item["category"], "ok": True, "latency": lat, "calls": calls, "turns": turns, "in": tin, "out": tout, "cost": cost, "leaked_text_toolcall": leaked_text_toolcall}
 
 TOOLMAP = {"foreman_thread_create": "create_thread", "foreman_thread_message": "message_thread", "foreman_project_reply": "reply", "foreman_memory_write": "remember"}
