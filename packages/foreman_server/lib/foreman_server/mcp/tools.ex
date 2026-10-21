@@ -1237,8 +1237,7 @@ defmodule ForemanServer.MCP.Tools do
       {:ok, recommendations} ->
         Telemetry.mcp_tool_call(duration_us, "foreman_project_recommendations", :ok)
 
-        {:ok,
-         ForemanServer.Projects.Recommendations.View.serialise(project_id, recommendations)}
+        {:ok, ForemanServer.Projects.Recommendations.View.serialise(project_id, recommendations)}
 
       {:error, :project_not_found} ->
         Telemetry.mcp_tool_call(duration_us, "foreman_project_recommendations", :not_found)

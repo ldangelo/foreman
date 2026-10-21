@@ -37,6 +37,7 @@ defmodule ForemanServer.Projects.Recommendations.View do
 
   defp stringify(%{} = map), do: Map.new(map, fn {k, v} -> {to_string(k), stringify(v)} end)
   defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
+
   defp stringify(value) when is_atom(value) and not is_nil(value) and not is_boolean(value),
     do: Atom.to_string(value)
 

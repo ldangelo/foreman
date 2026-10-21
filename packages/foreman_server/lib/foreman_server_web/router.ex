@@ -53,6 +53,7 @@ defmodule ForemanServerWeb.Router do
 
     post("/commands", CommandController, :create)
     post("/project-adoptions", AdoptionController, :create)
+    get("/doctor", DoctorController, :show)
     get("/projects/:id/recommendations", RecommendationsController, :show)
     get("/projects", ProjectController, :index)
     get("/projects/:id", ProjectController, :show)

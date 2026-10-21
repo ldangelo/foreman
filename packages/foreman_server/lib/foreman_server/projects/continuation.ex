@@ -112,9 +112,14 @@ defmodule ForemanServer.Projects.Continuation do
           |> Enum.join("\n")
 
         case String.length(text) do
-          0 -> nil
-          len when len <= @transcript_tail_chars -> defang(text)
-          len -> text |> String.slice(len - @transcript_tail_chars, @transcript_tail_chars) |> defang()
+          0 ->
+            nil
+
+          len when len <= @transcript_tail_chars ->
+            defang(text)
+
+          len ->
+            text |> String.slice(len - @transcript_tail_chars, @transcript_tail_chars) |> defang()
         end
 
       {:error, _} ->

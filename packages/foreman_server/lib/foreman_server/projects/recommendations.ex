@@ -99,7 +99,10 @@ defmodule ForemanServer.Projects.Recommendations do
   defp wire_beads(%Facts{has_beads_dir: true, beads_db_path: db, task_provider: current} = facts)
        when is_binary(db) and current != "beads" do
     [
-      rec("task_provider.wire_beads", :action, "Wire the beads task provider",
+      rec(
+        "task_provider.wire_beads",
+        :action,
+        "Wire the beads task provider",
         "This repository has a beads database (#{db}) but the project's task provider is " <>
           "#{facts.task_provider || "not set"}, so beads tasks are not imported.",
         %{database_path: db},
@@ -119,7 +122,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp br_missing(%Facts{task_provider: "beads", br_binary: false}) do
     [
-      rec("task_provider.br_missing", :warn, "`br` is not installed",
+      rec(
+        "task_provider.br_missing",
+        :warn,
+        "`br` is not installed",
         "The project uses the beads task provider but the `br` binary is not on the server's PATH.",
         %{},
         manual("Install beads_rust (`br`) on the machine running the Foreman server.")
@@ -132,7 +138,10 @@ defmodule ForemanServer.Projects.Recommendations do
   defp agents_md_missing(%Facts{repo_path: repo, files: %{agents_md: false, claude_md: false}})
        when is_binary(repo) do
     [
-      rec("repo.agents_md_missing", :warn, "No AGENTS.md or CLAUDE.md",
+      rec(
+        "repo.agents_md_missing",
+        :warn,
+        "No AGENTS.md or CLAUDE.md",
         "Agents read repository guidance from AGENTS.md or CLAUDE.md in their working directory. " <>
           "Foreman does not inject one for you.",
         %{},
@@ -147,7 +156,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp ci_none(%Facts{repo_path: repo, files: %{ci: []}}) when is_binary(repo) do
     [
-      rec("ci.none_detected", :info, "No CI configuration found",
+      rec(
+        "ci.none_detected",
+        :info,
+        "No CI configuration found",
         "No .github/workflows, .gitlab-ci.yml or .circleci config was found. PR watching relies on checks reported by CI.",
         %{},
         nil
@@ -159,7 +171,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp gh(%Facts{gh: status}) when status in [:unauthenticated, :missing] do
     [
-      rec("gh.unauthenticated", :warn, "GitHub CLI is not authenticated",
+      rec(
+        "gh.unauthenticated",
+        :warn,
+        "GitHub CLI is not authenticated",
         "`gh` is #{if status == :missing, do: "not installed", else: "not logged in"}; opening and watching pull requests needs it.",
         %{gh: Atom.to_string(status)},
         manual("Install the GitHub CLI and run `gh auth login` on the Foreman server.")
@@ -169,7 +184,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp gh(%Facts{gh: :timeout}) do
     [
-      rec("gh.check_timeout", :warn, "GitHub CLI check timed out",
+      rec(
+        "gh.check_timeout",
+        :warn,
+        "GitHub CLI check timed out",
         "`gh auth status` did not answer within #{div(Facts.probe_timeout_ms(), 1000)}s, so GitHub authentication is unknown.",
         %{timeout_ms: Facts.probe_timeout_ms()},
         manual("Run `gh auth status` on the Foreman server and check network access to GitHub.")
@@ -181,7 +199,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp no_remote(%Facts{git_remote: false}) do
     [
-      rec("git.no_remote", :warn, "No git remote configured",
+      rec(
+        "git.no_remote",
+        :warn,
+        "No git remote configured",
         "The repository has no remote, so branches cannot be pushed or pull requests opened.",
         %{},
         manual("Add a remote: `git remote add origin <url>`.")
@@ -193,10 +214,15 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp workflows_not_installed(%Facts{workflows_installed: false}) do
     [
-      rec("workflows.not_installed", :warn, "No workflows installed",
+      rec(
+        "workflows.not_installed",
+        :warn,
+        "No workflows installed",
         "The workflow catalog has no manifests, so runs cannot start.",
         %{},
-        manual("Install the default workflows: `foreman workflow install` (or `foreman init --force`).")
+        manual(
+          "Install the default workflows: `foreman workflow install` (or `foreman init --force`)."
+        )
       )
     ]
   end
@@ -205,7 +231,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp unmapped_types(%Facts{unmapped_issue_types: [_ | _] = types}) do
     [
-      rec("workflows.unmapped_types", :warn, "Some bead types have no workflow",
+      rec(
+        "workflows.unmapped_types",
+        :warn,
+        "Some bead types have no workflow",
         "Beads of these types will not dispatch: #{Enum.join(types, ", ")}.",
         %{unmapped_types: types},
         manual("Map the types to workflows in a workflow manifest, or retype the beads.")
@@ -228,7 +257,10 @@ defmodule ForemanServer.Projects.Recommendations do
     cond do
       configured != nil and configured not in installed ->
         [
-          rec("provider.coordinator_unavailable", :warn, "Configured provider is not installed",
+          rec(
+            "provider.coordinator_unavailable",
+            :warn,
+            "Configured provider is not installed",
             "The project's coordinator provider `#{configured}` is not installed on the Foreman server.",
             %{provider: configured, installed: installed},
             manual("Install the `#{configured}` CLI, or change the coordinator provider setting.")
@@ -237,7 +269,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
       is_nil(configured) and rows != [] and installed == [] ->
         [
-          rec("provider.none_installed", :warn, "No agent provider is installed",
+          rec(
+            "provider.none_installed",
+            :warn,
+            "No agent provider is installed",
             "None of the supported agent provider CLIs is installed on the Foreman server.",
             %{},
             manual("Run `foreman doctor` and install at least one provider CLI.")
@@ -253,7 +288,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp instructions_empty(%Facts{settings: %{instructions: i}}) when i in [nil, ""] do
     [
-      rec("settings.instructions_empty", :info, "No project instructions",
+      rec(
+        "settings.instructions_empty",
+        :info,
+        "No project instructions",
         "Project instructions are added to every thread's context.",
         %{},
         manual("Set them with `foreman project update <id> --instructions-file <file>`.")
@@ -265,7 +303,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp goal_empty(%Facts{settings: %{goal: g}}) when g in [nil, ""] do
     [
-      rec("settings.goal_empty", :info, "No project goal",
+      rec(
+        "settings.goal_empty",
+        :info,
+        "No project goal",
         "A one-line goal helps agents and operators see what the project is for.",
         %{},
         manual("Set it with `foreman project update <id> --goal \"...\"`.")
@@ -277,7 +318,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp env_secrets(%Facts{env_secret_keys: [_ | _] = keys}) do
     [
-      rec("settings.env_plain_secrets", :warn, "Secret-looking values in project config",
+      rec(
+        "settings.env_plain_secrets",
+        :warn,
+        "Secret-looking values in project config",
         "Plain values for #{Enum.join(keys, ", ")} are stored in project config, which is visible through the API.",
         %{keys: keys},
         manual("Export secrets in the Foreman server's environment instead of project config.")
@@ -289,7 +333,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp memory_empty(%Facts{memory_count: 0}) do
     [
-      rec("memory.empty", :info, "Project memory is empty",
+      rec(
+        "memory.empty",
+        :info,
+        "Project memory is empty",
         "Project memory keeps durable facts (conventions, decisions) available to every thread.",
         %{},
         manual("Record conventions with the project memory tools once you have settled them.")
@@ -301,7 +348,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp paused(%Facts{project_status: "paused"} = facts) do
     [
-      rec("project.paused", :action, "Project is paused",
+      rec(
+        "project.paused",
+        :action,
+        "Project is paused",
         "A paused project refuses new runs, threads and imports.",
         %{},
         %{kind: :command, type: "project.resume", payload: %{project_id: facts.project_id}}
@@ -317,7 +367,10 @@ defmodule ForemanServer.Projects.Recommendations do
 
     if command do
       [
-        rec("stack.test_hint", :info, "Draft instructions from the detected stack",
+        rec(
+          "stack.test_hint",
+          :info,
+          "Draft instructions from the detected stack",
           "Found #{first}; a minimal instruction is to tell agents how to run the tests.",
           %{manifest: first},
           manual("Run tests with `#{command}`.")

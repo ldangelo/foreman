@@ -111,11 +111,16 @@ defmodule ForemanServerWeb.AdoptionController do
     |> json(%{error: code, detail: inspect(reason)})
   end
 
-  defp classify({tag, _} = _reason) when tag in [:project_not_found], do: {"project_not_found", :not_found}
+  defp classify({tag, _} = _reason) when tag in [:project_not_found],
+    do: {"project_not_found", :not_found}
+
   defp classify({:subject_not_found, _, _}), do: {"subject_not_found", :not_found}
   defp classify({tag, _}) when is_atom(tag), do: {Atom.to_string(tag), :unprocessable_entity}
   defp classify({tag, _, _}) when is_atom(tag), do: {Atom.to_string(tag), :unprocessable_entity}
-  defp classify({{tag, _} = _inner, _detail}) when is_atom(tag), do: {Atom.to_string(tag), :unprocessable_entity}
+
+  defp classify({{tag, _} = _inner, _detail}) when is_atom(tag),
+    do: {Atom.to_string(tag), :unprocessable_entity}
+
   defp classify(tag) when is_atom(tag), do: {Atom.to_string(tag), :unprocessable_entity}
   defp classify(_other), do: {"adoption_failed", :unprocessable_entity}
 end

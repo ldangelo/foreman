@@ -2608,7 +2608,11 @@ defmodule ForemanServer.ProjectionStore do
       Enum.reduce(ids, entries, fn entry_id, acc ->
         case Map.get(acc, entry_id) do
           %{project_id: current} = entry when current != target ->
-            Map.put(acc, entry_id, entry |> Map.put(:project_id, target) |> Map.put(:adopted_from, current))
+            Map.put(
+              acc,
+              entry_id,
+              entry |> Map.put(:project_id, target) |> Map.put(:adopted_from, current)
+            )
 
           _already_there_or_unknown ->
             acc
@@ -2650,8 +2654,14 @@ defmodule ForemanServer.ProjectionStore do
 
     state =
       case valid_id?(new_task_id) && Map.get(state.tasks, new_task_id) do
-        %{} = task -> %{state | tasks: Map.put(state.tasks, new_task_id, Map.put(task, :continued_from, link))}
-        _ -> state
+        %{} = task ->
+          %{
+            state
+            | tasks: Map.put(state.tasks, new_task_id, Map.put(task, :continued_from, link))
+          }
+
+        _ ->
+          state
       end
 
     record = %{

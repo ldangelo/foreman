@@ -399,7 +399,8 @@ defmodule ForemanServer.Aggregates.Project do
                  repo_path: Aggregate.get(payload, :repo_path),
                  archive_paths: List.wrap(Aggregate.get(payload, :archive_paths, [])),
                  new_task_id: new_task_id,
-                 adopted_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+                 adopted_at:
+                   DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
                }
              }}
           end

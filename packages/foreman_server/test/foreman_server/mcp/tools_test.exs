@@ -56,6 +56,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_queue_status",
                "foreman_project_list",
                "foreman_project_get",
+               "foreman_project_recommendations",
                "foreman_project_settings_get",
                "foreman_project_settings_update",
                "foreman_project_pause",

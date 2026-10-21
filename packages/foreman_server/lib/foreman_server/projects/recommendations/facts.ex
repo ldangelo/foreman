@@ -68,7 +68,9 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     def cmd(executable, args, timeout_ms) do
       call(
         fn ->
-          {_out, status} = System.cmd(executable, args, cd: System.tmp_dir!(), stderr_to_stdout: true)
+          {_out, status} =
+            System.cmd(executable, args, cd: System.tmp_dir!(), stderr_to_stdout: true)
+
           status
         end,
         timeout_ms

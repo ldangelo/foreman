@@ -84,7 +84,10 @@ defmodule ForemanServer.Aggregates.ProjectAdoptTest do
     {:ok, %{payload: payload}} = handle(live, %{mode: "continue", new_task_id: "n1"})
 
     adopted =
-      state([registered(), %{event_type: "ProjectSubjectAdopted", payload: Map.from_struct(payload)}])
+      state([
+        registered(),
+        %{event_type: "ProjectSubjectAdopted", payload: Map.from_struct(payload)}
+      ])
 
     assert {:ok, nil} = handle(adopted, %{mode: "continue", new_task_id: "n1"})
     assert {:ok, %{}} = handle(adopted, %{mode: "continue", new_task_id: "n2"})
