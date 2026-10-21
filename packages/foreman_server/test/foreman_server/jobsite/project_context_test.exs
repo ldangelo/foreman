@@ -48,11 +48,14 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
     def run(request, _context) do
       send(Application.fetch_env!(:jido_harness, :jobsite_context_test_pid), {:request, request})
 
-      # A test may hold the first run open (a long-running agent) so it can pause it.
-      if Application.get_env(:jido_harness, :jobsite_context_hold_first) &&
-           :persistent_term.get({__MODULE__, :held}, false) == false do
-        :persistent_term.put({__MODULE__, :held}, true)
-        Process.sleep(10_000)
+      # A prompt of "hold" keeps the run open until the test releases it: the
+      # stub reports its pid, then blocks on an explicit release message.
+      if request.prompt == "hold" do
+        send(Application.fetch_env!(:jido_harness, :jobsite_context_test_pid), {:held, self()})
+
+        receive do
+          :release -> :ok
+        end
       end
 
       {:ok,
@@ -205,13 +208,6 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
 
   test "a resumed jobsite re-sends the project context", %{repo: repo} do
     register("jc-6", %{instructions: "Resume rules"}, repo)
-    Application.put_env(:jido_harness, :jobsite_context_hold_first, true)
-    :persistent_term.put({Recorder, :held}, false)
-
-    on_exit(fn ->
-      Application.delete_env(:jido_harness, :jobsite_context_hold_first)
-      :persistent_term.erase({Recorder, :held})
-    end)
 
     {:ok, id} =
       Jobsite.run_async(
@@ -219,13 +215,14 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
         strategy: :merge_to_head,
         sandbox: Sandboxes.host(),
         agent: Agents.pi("x", binary: @fake_agent),
-        prompt: "go",
+        prompt: "hold",
         project_id: "jc-6",
         max_iterations: 3,
         completion_signal: "NEVER"
       )
 
     assert_receive {:request, %{system_prompt: first}}, 5_000
+    assert_receive {:held, held_pid}, 5_000
     assert first =~ "Resume rules"
 
     assert :ok = Jobsite.pause(id, "pause for resume")
@@ -233,7 +230,8 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
     await(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
 
     assert {:ok, _result} = Jobsite.resume(id)
-    assert_receive {:request, %{system_prompt: resumed}}, 5_000
+    send(held_pid, :release)
+    assert_receive {:request, %{system_prompt: resumed, prompt: "Continue."}}, 5_000
     assert resumed == first
   end
 
