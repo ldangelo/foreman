@@ -717,6 +717,31 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:worktrees_for_run, run_id})
   end
 
+  @type run_repository :: %{
+          repo_id: String.t(),
+          primary?: boolean(),
+          worktree: map() | nil,
+          base_branch: String.t() | nil,
+          pr_association: map() | nil,
+          gate: :none | :pending | :approved | nil,
+          pr_state: :open | :merged | :closed | :conflicted | nil
+        }
+
+  @doc """
+  The per-repository join of one run: one entry per repository the run touches,
+  primary first then non-primary by `repo_id`. The effective `repo_id` is always
+  a string (the run's selected primary, else the project primary id `"main"`).
+  A worktree entry with no `repo_id` belongs to the run's primary.
+
+  PR association, merge gate and PR state are run-level today, so only the
+  primary entry carries them (`nil` for the rest, and for a primary with no PR
+  event). `[]` for an unknown run with no worktrees or PR events.
+  """
+  @spec run_repositories(String.t()) :: [run_repository()]
+  def run_repositories(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:run_repositories, run_id})
+  end
+
   @doc """
   Return the projected worktree for a given `(project_id, run_id, phase_id)`
   tuple, or nil if not found. Mirrors the deterministic `operation_id`
@@ -1326,6 +1351,11 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
 
     {:reply, worktrees, state}
+  end
+
+  @impl true
+  def handle_call({:run_repositories, run_id}, _from, state) do
+    {:reply, build_run_repositories(state, run_id), state}
   end
 
   @impl true
@@ -3133,6 +3163,82 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state
+
+  defp build_run_repositories(state, run_id) do
+    run = Map.get(state.runs, run_id)
+
+    worktrees =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> get(wt, :run_id) == run_id end)
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    if is_nil(run) and worktrees == [] and not Map.has_key?(state.pr_associations, run_id) and
+         not Map.has_key?(state.pr_states, run_id) do
+      []
+    else
+      primary_id =
+        case run && get(run, :repo_id) do
+          id when is_binary(id) -> id
+          _ -> ForemanServer.Projects.RepoValidation.primary_id()
+        end
+
+      # A repo can have several phase worktrees: prefer the first still-created
+      # one (the live checkout), else the last recorded.
+      by_repo =
+        worktrees
+        |> Enum.group_by(fn wt ->
+          if is_binary(get(wt, :repo_id)), do: get(wt, :repo_id), else: primary_id
+        end)
+        |> Map.new(fn {repo_id, wts} ->
+          {repo_id, Enum.find(wts, &(get(&1, :status) == "created")) || List.last(wts)}
+        end)
+
+      base_branches = (run && get(run, :repo_base_branches)) || %{}
+
+      others =
+        [(run && get(run, :repo_ids)) || [], Map.keys(by_repo), Map.keys(base_branches)]
+        |> Enum.concat()
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.reject(&(&1 == primary_id))
+        |> Enum.sort()
+
+      primary_entry = %{
+        repo_id: primary_id,
+        primary?: true,
+        worktree: Map.get(by_repo, primary_id),
+        base_branch: run && get(run, :base_branch),
+        pr_association: Map.get(state.pr_associations, run_id),
+        gate: nil,
+        pr_state: nil
+      }
+
+      primary_entry =
+        case Map.get(state.pr_states, run_id) do
+          nil when is_nil(run) ->
+            primary_entry
+
+          entry ->
+            view = pr_state_view(run_id, run, entry)
+            %{primary_entry | gate: view.merge_gate, pr_state: view.pr_state}
+        end
+
+      [primary_entry | Enum.map(others, &secondary_run_repository(&1, by_repo, base_branches))]
+    end
+  end
+
+  defp secondary_run_repository(repo_id, by_repo, base_branches) do
+    %{
+      repo_id: repo_id,
+      primary?: false,
+      worktree: Map.get(by_repo, repo_id),
+      base_branch: Map.get(base_branches, repo_id),
+      pr_association: nil,
+      gate: nil,
+      pr_state: nil
+    }
+  end
 
   defp pr_state_view(run_id, run, entry) do
     failure_reason =

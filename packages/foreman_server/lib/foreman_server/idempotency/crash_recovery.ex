@@ -101,11 +101,14 @@ defmodule ForemanServer.Idempotency.CrashRecovery do
   # Internal helpers
   # ---------------------------------------------------------------------------
 
+  # A PR exists for the run when ANY of its repositories has an association.
   defp pr_created?(run_id) do
-    case ProjectionStore.pr_association(run_id) do
-      {:ok, %{pr_url: url}} when is_binary(url) and url != "" -> true
+    run_id
+    |> ProjectionStore.run_repositories()
+    |> Enum.any?(fn
+      %{pr_association: %{pr_url: url}} when is_binary(url) and url != "" -> true
       _ -> false
-    end
+    end)
   end
 
   defp worktrees_created?(run_id) do

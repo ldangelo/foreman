@@ -179,19 +179,24 @@ defmodule ForemanServer.Review.Capture do
   def bead_id_for_task(_other), do: nil
 
   @doc """
-  The single source of a run's repo path: the first non-empty `repo_path` among
-  its projected worktrees. Absent is a typed error, never a guess.
+  The run's repo path: the `repo_path` of the PRIMARY repository's projected
+  worktree (the `primary?` entry of `ProjectionStore.run_repositories/1`),
+  never a secondary repo's. Absent is a typed error, never a guess.
   """
   @spec run_repo_path(String.t()) :: {:ok, String.t()} | {:error, Error.t()}
   def run_repo_path(run_id) when is_binary(run_id) do
     path =
       run_id
-      |> ProjectionStore.worktrees_for_run()
-      |> Enum.find_value(fn wt ->
-        case Map.get(wt, :repo_path) do
-          p when is_binary(p) and p != "" -> p
-          _ -> nil
-        end
+      |> ProjectionStore.run_repositories()
+      |> Enum.find_value(fn
+        %{primary?: true, worktree: %{} = wt} ->
+          case Map.get(wt, :repo_path) do
+            p when is_binary(p) and p != "" -> p
+            _ -> nil
+          end
+
+        _ ->
+          nil
       end)
 
     case path do

@@ -430,7 +430,11 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
   end
 
   defp evidence_source(run_id, run) do
-    worktree = ProjectionStore.worktrees_for_run(run_id) |> Enum.find(&created_worktree?/1)
+    worktree =
+      run_id
+      |> ProjectionStore.worktrees_for_run()
+      |> Enum.sort_by(&(value(&1, :primary?) == false))
+      |> Enum.find(&created_worktree?/1)
 
     cond do
       is_map(worktree) and safe_abs_dir?(worktree_path(worktree)) ->
