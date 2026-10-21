@@ -297,6 +297,13 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       assert %{"error" => "jobsite_not_found"} = json_response(conn, 404)
     end
 
+    test "resume forwards a JSON prompt: a blank or non-string one is rejected 422 before lookup" do
+      for bad <- ["", "   ", 7] do
+        conn = post_json(authed(), "/api/jobsites/js-nope/resume", %{"prompt" => bad})
+        assert %{"error" => "spec_option_invalid"} = json_response(conn, 422)
+      end
+    end
+
     test "resume of a jobsite that never provisioned a worktree => 409 not_resumable, no executor" do
       id = "js-starting-#{System.unique_integer([:positive])}"
 

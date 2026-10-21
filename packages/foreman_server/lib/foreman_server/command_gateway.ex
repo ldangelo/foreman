@@ -8,7 +8,8 @@ defmodule ForemanServer.CommandGateway do
       `project.register`, `project.update`, `project.archive`,
       `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
       `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
-      `run.reset`, `merge_approve`, `run.pr.merge`, and `inbox.send`. The
+      `run.reset`, `run.steer`, `merge_approve`, `run.pr.merge`, `inbox.send`,
+      `thread.resolve`, and `thread.reopen`. The
       command must carry `command_id`, `type`, and a `payload` map.
       `run.pr.merge` performs the real GitHub merge (see
       `ForemanServer.RunPrMerge`) before dispatching and replaces the caller's
@@ -50,7 +51,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset merge_approve run.pr.merge inbox.send)
+  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -418,6 +419,7 @@ defmodule ForemanServer.CommandGateway do
               "run.resume",
               "run.remove",
               "run.reset",
+              "run.steer",
               "merge_approve",
               "run.pr.merge"
             ] do
@@ -459,6 +461,22 @@ defmodule ForemanServer.CommandGateway do
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
       aggregate_id != stream_id("inbox", run_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in ["thread.resolve", "thread.reopen"] do
+    thread_id = get_value(payload, :thread_id)
+
+    cond do
+      not is_binary(thread_id) or String.trim(thread_id) == "" ->
+        {:error, {:invalid_envelope, :missing_thread_id}}
+
+      not is_binary(aggregate_id) or aggregate_id != stream_id("thread", thread_id) ->
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
       true ->

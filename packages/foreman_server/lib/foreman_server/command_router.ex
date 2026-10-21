@@ -597,4 +597,6 @@ defmodule ForemanServer.CommandRouter do
 
   def aggregate_module_for("project_secret:" <> _),
     do: ForemanServer.Aggregates.ProjectSecret
+
+  def aggregate_module_for("thread:" <> _), do: ForemanServer.Aggregates.Thread
 end

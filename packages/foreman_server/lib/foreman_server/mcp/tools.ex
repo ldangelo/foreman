@@ -3,6 +3,8 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectSettings
   alias ForemanServer.{ProjectEnvironmentDTO, ProjectSettingsDTO}
+  alias ForemanServer.Threads
+  alias ForemanServer.Threads.Thread
   alias ForemanServer.Telemetry
   alias ForemanServer.Workflow.CatalogWriter
   alias ForemanServer.Workflow.PromptWriter
@@ -127,6 +129,109 @@ defmodule ForemanServer.MCP.Tools do
         run_id: %{type: "string", description: "The run ID"}
       },
       required: ["run_id"]
+    }
+  }
+
+  @schema_foreman_thread_list %{
+    name: "foreman_thread_list",
+    description:
+      "List a project's threads (workflow runs and jobsites), newest first, " <>
+        "with last review report and provider session id",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        status: %{type: "string", description: "Only threads with this raw status"},
+        door: %{type: "string", enum: ["workflow", "jobsite"], description: "Only this door"},
+        limit: %{type: "integer", minimum: 1, maximum: 500, description: "Default 100"}
+      },
+      required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_thread_find %{
+    name: "foreman_thread_find",
+    description:
+      "Find the existing thread a request most likely belongs to (read-only, deterministic): " <>
+        "ranks exact external_id/branch/PR matches above conservative text matches. " <>
+        "Text matches are suggestions only and skip resolved/deleted threads. Never starts a run.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        q: %{type: "string", description: "Free text to match against thread title and prompt"},
+        external_id: %{type: "string", description: "Exact bead/external task id"},
+        branch: %{type: "string", description: "Exact branch name"},
+        pr: %{type: "string", description: "PR URL or number"},
+        limit: %{type: "integer", minimum: 1, maximum: 500, description: "Default 5"}
+      },
+      required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_thread_get %{
+    name: "foreman_thread_get",
+    description: "Get one thread by id (run:<run_id> or jobsite:<jobsite_id>)",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"}
+      },
+      required: ["thread_id"]
+    }
+  }
+
+  @schema_foreman_thread_transcript %{
+    name: "foreman_thread_transcript",
+    description:
+      "Read a thread's structured transcript turns after a cursor (seq). Returns " <>
+        "turns, next_cursor, truncated, omitted_entries and terminal. Read-only.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"},
+        after: %{type: "integer", description: "Return turns with seq > after (default -1)"},
+        limit: %{type: "integer", description: "Page size, 1..1000 (default 200)"}
+      },
+      required: ["thread_id"]
+    }
+  }
+
+  @schema_foreman_thread_stop %{
+    name: "foreman_thread_stop",
+    description:
+      "Stop a thread (workflow run or jobsite). Terminal threads are rejected with " <>
+        "their status. Never merges or approves.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"},
+        reason: %{type: "string", description: "Why it is stopped (default operator_stop)"}
+      },
+      required: ["thread_id"]
+    }
+  }
+
+  @schema_foreman_thread_steer %{
+    name: "foreman_thread_steer",
+    description:
+      "Send an operator message to a thread (workflow run or jobsite). The work is " <>
+        "paused and resumed with the message in its next prompt. Terminal threads are rejected.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        thread_id: %{type: "string", description: "The thread ID"},
+        text: %{type: "string", description: "The message (1..8000 characters)"},
+        message_id: %{
+          type: "string",
+          description: "Idempotency id; re-sending the same id is a no-op"
+        },
+        resume: %{
+          type: "boolean",
+          description: "Workflow door: false keeps a paused run paused (default true)"
+        }
+      },
+      required: ["thread_id", "text"]
     }
   }
 
@@ -618,6 +723,12 @@ defmodule ForemanServer.MCP.Tools do
   @tools [
     @schema_foreman_run_get,
     @schema_foreman_run_status,
+    @schema_foreman_thread_list,
+    @schema_foreman_thread_get,
+    @schema_foreman_thread_find,
+    @schema_foreman_thread_transcript,
+    @schema_foreman_thread_stop,
+    @schema_foreman_thread_steer,
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
@@ -751,6 +862,240 @@ defmodule ForemanServer.MCP.Tools do
     if result,
       do: {:ok, result},
       else: {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+  end
+
+  defp tool_foreman_thread_list(%{project_id: project_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with true <- is_binary(project_id) and project_id != "",
+           {:ok, opts} <- thread_list_opts(args) do
+        {:ok, project_id |> Threads.list(opts) |> Enum.map(&Thread.to_dto/1)}
+      else
+        false -> {:error, "project_id must be a non-empty string"}
+        {:error, message} -> {:error, message}
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _} = ok ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_list", :ok)
+        ok
+
+      {:error, message} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_list", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: message}}
+    end
+  end
+
+  defp thread_list_opts(args) do
+    with {:ok, limit} <- thread_limit(Map.get(args, :limit)),
+         {:ok, door} <- thread_door(Map.get(args, :door)),
+         {:ok, status} <- thread_status(Map.get(args, :status)) do
+      opts =
+        Enum.reject([limit: limit, door: door, status: status], fn {_k, v} -> is_nil(v) end)
+
+      {:ok, opts}
+    end
+  end
+
+  defp thread_limit(nil), do: {:ok, nil}
+
+  defp thread_limit(limit) when is_integer(limit) do
+    max = Threads.max_limit()
+
+    if limit >= 1 and limit <= max,
+      do: {:ok, limit},
+      else: {:error, "limit must be an integer between 1 and #{max}"}
+  end
+
+  defp thread_limit(_), do: {:error, "limit must be an integer"}
+
+  defp thread_door(nil), do: {:ok, nil}
+  defp thread_door("workflow"), do: {:ok, :workflow}
+  defp thread_door("jobsite"), do: {:ok, :jobsite}
+  defp thread_door(_), do: {:error, "door must be workflow or jobsite"}
+
+  defp thread_status(nil), do: {:ok, nil}
+  defp thread_status(status) when is_binary(status) and status != "", do: {:ok, status}
+  defp thread_status(_), do: {:error, "status must be a non-empty string"}
+
+  defp tool_foreman_thread_find(%{project_id: project_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      if is_binary(project_id) and project_id != "" do
+        opts = [
+          text: Map.get(args, :q),
+          external_id: Map.get(args, :external_id),
+          branch: Map.get(args, :branch),
+          pr: Map.get(args, :pr),
+          limit: Map.get(args, :limit)
+        ]
+
+        case ForemanServer.Threads.Finder.find(project_id, opts) do
+          {:ok, candidates} ->
+            {:ok, Enum.map(candidates, &ForemanServer.Threads.Finder.to_dto/1)}
+
+          {:error, :no_criteria} ->
+            {:error, "one of q, external_id, branch, pr is required"}
+        end
+      else
+        {:error, "project_id must be a non-empty string"}
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, _} = ok ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_find", :ok)
+        ok
+
+      {:error, message} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_find", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: message}}
+    end
+  end
+
+  defp tool_foreman_thread_get(%{thread_id: thread_id}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      if is_binary(thread_id), do: Threads.get(thread_id), else: {:error, :thread_not_found}
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, thread} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_get", :ok)
+        {:ok, Thread.to_dto(thread)}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_get", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+    end
+  end
+
+  defp tool_foreman_thread_transcript(%{thread_id: thread_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with true <- is_binary(thread_id),
+           {:ok, opts} <- transcript_opts(args) do
+        ForemanServer.Threads.Transcript.page(thread_id, opts)
+      else
+        false -> {:error, :thread_not_found}
+        {:error, _} = error -> error
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, page} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :ok)
+        {:ok, ForemanServer.Threads.Transcript.Page.to_dto(page)}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+
+      {:error, {:invalid_option, key}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "#{key} is out of range"}}
+
+      {:error, reason} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_transcript", :error)
+
+        {:error,
+         %ToolError{code: "DOMAIN_ERROR", message: "transcript unavailable: #{inspect(reason)}"}}
+    end
+  end
+
+  defp transcript_opts(args) do
+    opts =
+      for key <- [:after, :limit], Map.get(args, key) != nil, do: {key, Map.fetch!(args, key)}
+
+    if Enum.all?(opts, fn {_key, value} -> is_integer(value) end),
+      do: {:ok, opts},
+      else: {:error, {:invalid_option, :after}}
+  end
+
+  defp tool_foreman_thread_stop(%{thread_id: thread_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+    reason = Map.get(args, :reason)
+
+    result =
+      cond do
+        not is_binary(thread_id) -> {:error, :thread_not_found}
+        not (is_nil(reason) or is_binary(reason)) -> {:error, :invalid_reason}
+        true -> ForemanServer.Threads.Actions.stop(thread_id, reason)
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, :stopping} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :ok)
+        {:ok, %{thread_id: thread_id, requested: "stopping"}}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+
+      {:error, :invalid_reason} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "reason must be a string"}}
+
+      {:error, other} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_stop", :error)
+        {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(other)}}
+    end
+  end
+
+  defp tool_foreman_thread_steer(%{thread_id: thread_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    opts =
+      [resume: Map.get(args, :resume, true)]
+      |> then(fn opts ->
+        case Map.get(args, :message_id) do
+          id when is_binary(id) and id != "" -> Keyword.put(opts, :message_id, id)
+          _ -> opts
+        end
+      end)
+
+    result =
+      cond do
+        not is_binary(thread_id) -> {:error, :thread_not_found}
+        not is_boolean(opts[:resume]) -> {:error, :invalid_resume}
+        true -> ForemanServer.Threads.Actions.steer(thread_id, Map.get(args, :text), opts)
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, %{message_id: message_id, mode: mode}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :ok)
+
+        {:ok, %{thread_id: thread_id, message_id: message_id, mode: Atom.to_string(mode)}}
+
+      {:error, :thread_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Thread not found"}}
+
+      {:error, {:invalid_text, why}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "text is #{why}"}}
+
+      {:error, :invalid_resume} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :error)
+        {:error, %ToolError{code: "INVALID_PARAMS", message: "resume must be a boolean"}}
+
+      {:error, other} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_thread_steer", :error)
+        {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(other)}}
+    end
   end
 
   defp tool_foreman_run_status(%{run_id: run_id}) do

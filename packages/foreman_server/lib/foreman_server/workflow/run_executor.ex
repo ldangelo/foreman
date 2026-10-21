@@ -1144,20 +1144,94 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp prepare_agent_launch(state, phase_spec, index, phase_index, worktree_record) do
     # One resolution of the project's environment feeds both the delivered env
     # and the redaction list, so they cannot disagree (E4-S1).
-    with {:ok, resolved} <- project_env(state) do
-      build_agent_launch(
-        state,
-        phase_spec,
-        index,
-        phase_index,
-        worktree_record,
-        resolved
-      )
+    with {:ok, resolved} <- project_env(state),
+         steering = steering_messages(state, phase_spec),
+         {:ok, launch} <-
+           build_agent_launch(
+             state,
+             phase_spec,
+             index,
+             phase_index,
+             worktree_record,
+             resolved,
+             steering
+           ),
+         # Only a successfully built launch consumes the messages: a failed
+         # build leaves them queued for the next attempt.
+         :ok <- consume_steering(state, steering) do
+      {:ok, launch}
     end
   end
 
-  defp build_agent_launch(state, phase_spec, index, phase_index, worktree_record, resolved) do
+  @steering_heading "## Operator message(s) received while you were paused"
+
+  # E6-S4 operator steering. The projection is the durable queue
+  # (`RunSteerQueued` minus `RunSteerConsumed`); `RunControl`'s mailbox is a
+  # cache that is wiped on every terminate/resume, so it is consulted first
+  # and the projection is the fallback. Command phases never see a prompt,
+  # so they neither inject nor consume.
+  defp steering_messages(state, phase_spec) do
+    if phase_action(phase_spec) == :command do
+      []
+    else
+      case RunControl.peek_messages(state.run_id) do
+        [] ->
+          state.run_id
+          |> ProjectionStore.pending_steering()
+          |> Enum.map(&%{message_id: &1.message_id, text: &1.text})
+
+        cached ->
+          cached
+      end
+    end
+  end
+
+  defp append_steering_block(prompt, []), do: prompt
+
+  defp append_steering_block(prompt, messages) do
+    prompt <> "\n\n" <> @steering_heading <> "\n\n" <> Enum.map_join(messages, "\n\n", & &1.text)
+  end
+
+  defp consume_steering(_state, []), do: :ok
+
+  defp consume_steering(state, messages) do
+    message_ids = Enum.map(messages, & &1.message_id)
+
+    case CommandGateway.dispatch_system(%{
+           type: "run.steer.consume",
+           command_id:
+             "run_executor:steer-consume:#{state.run_id}:#{:erlang.phash2(message_ids)}",
+           aggregate_id: "run:#{state.run_id}",
+           payload: %{run_id: state.run_id, message_ids: message_ids}
+         }) do
+      {:ok, _} ->
+        RunControl.drain_messages(state.run_id, message_ids)
+
+        # Message text is operator-supplied free text: log ids and count only.
+        Logger.info(
+          "RunExecutor #{state.run_id} injected #{length(message_ids)} operator steering message(s)",
+          run_id: state.run_id,
+          operation: "run_executor.steer_consume"
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, {:steer_consume_failed, reason}}
+    end
+  end
+
+  defp build_agent_launch(
+         state,
+         phase_spec,
+         index,
+         phase_index,
+         worktree_record,
+         resolved,
+         steering
+       ) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
+    request = %{request | prompt: append_steering_block(request.prompt, steering)}
 
     prompt =
       case phase_action(phase_spec) do

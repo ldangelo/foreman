@@ -504,6 +504,54 @@ Read endpoints are projection-only:
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
   and `GET /api/queue` expose corresponding projections.
+- Threads: `GET /api/projects/{project_id}/threads` (filters `status`,
+  `door=workflow|jobsite`, `limit` 1..500, default 100) and
+  `GET /api/threads/{id}` (`run:<run_id>` or `jobsite:<jobsite_id>`) unify
+  tasks, runs and jobsites. Fields: `id, door, project_id, task_id, title,
+  status, branch, repo_path, pr_url, last_report {verdict, summary, at},
+  provider_session_id, resolved, steering, run_ids, created_at, updated_at`.
+  `steering` is always `"pause_resume"` (steer = pause, then resume with the
+  operator message injected); `resolved` is `true` after `thread.resolve`
+  until `thread.reopen`.
+- Thread actions: `POST /api/threads/{id}/stop` (`run.cancel` / jobsite
+  cancel), `POST /api/threads/{id}/steer` (`text`, optional `message_id`,
+  `resume`; 202, 409 `not_steerable` for a terminal thread). Operator commands
+  `thread.resolve` / `thread.reopen` (events `ThreadResolved` /
+  `ThreadReopened`) are sent through `POST /api/commands` or
+  `foreman thread resolve|reopen`; resolving is a disposition flag and never
+  stops a run.
+- Thread transcript: `GET /api/threads/{id}/transcript?after=&limit=` pages
+  structured turns; `GET /api/threads/{id}/stream?after=` is the SSE tail.
+  Caveat: the workflow transcript comes from the bounded `run_logs` tail, so
+  `omitted_entries` > 0 / `truncated: true` means older output was dropped;
+  jobsite turns have no timestamps and jobsite threads have no operator turns
+  (jobsite resume prompts are not persisted as events).
+- Thread lookup: `GET /api/projects/{project_id}/threads/find?q=&external_id=&branch=&pr=`
+  (MCP `foreman_thread_find`) ranks exact `external_id`, branch and PR matches
+  above conservative text matches (suggestions only; resolved/deleted threads
+  are never text matches). It is read-only and never starts a run.
+
+#### Steering v1 and thread housekeeping
+
+Steering is pause, partial-work commit, resume. `run.steer` queues a
+`RunSteerQueued` event (durable, idempotent per `message_id`); the run is
+paused (the executor commits partial work while it unwinds) and resumed with
+the message appended to the next phase prompt. When that prompt is built the
+system-only command `run.steer.consume` appends `RunSteerConsumed`, so the
+message is injected once and survives a server restart.
+`run.steer.consume` is deliberately not operator-allowlisted. A jobsite thread
+steers through `Jobsite.steer/3`, i.e. the jobsite `resume` with the message
+as its `prompt` (`POST /api/jobsites/{id}/resume`).
+
+Terminal threads with no PR are resolved automatically after a period of
+inactivity by `ForemanServer.Threads.IdleResolver`:
+
+```elixir
+config :foreman_server, :threads,
+  idle_resolver: true,           # start the resolver (default true)
+  idle_resolve_after_days: 7,    # idle period (default 7)
+  sweep_interval_ms: 3_600_000   # sweep period (default one hour)
+```
 
 ### Operator run dashboard
 
@@ -994,7 +1042,11 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_environment_get`.
+`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_environment_get`,
+`foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
+`foreman_thread_find`.
+The write-gated thread tools are `foreman_thread_stop` and
+`foreman_thread_steer`.
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,
@@ -1208,7 +1260,7 @@ the script: the body is validated data, the repo is a **registered
 | `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}` |
 | `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`, and `paused_reason` while paused) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
-| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 already_running` if its executor is alive, `502` if the executor could not start |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start). Optional JSON `prompt` (non-blank, at most 8000 chars; `422 spec_option_invalid` otherwise) replaces the default `Continue.` prompt of the resumed iteration - this is jobsite steering v1 (pause, then resume with the message; `Jobsite.steer/3` does both); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 already_running` if its executor is alive, `502` if the executor could not start |
 | `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
 
 Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
