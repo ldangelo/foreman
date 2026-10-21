@@ -72,6 +72,11 @@ defmodule ForemanServer.Threads do
 
     thread_flags = Map.get(inputs, :thread_flags, %{})
 
+    # A task entry without `:task_id` is a fragment a lifecycle event (e.g.
+    # `TaskExecutionCompleted`) left for a task whose `TaskCreated` was never
+    # projected. It is not a task, so no thread is built from it.
+    tasks = Enum.filter(tasks, &is_map_key(&1, :task_id))
+
     tasks_by_id = Map.new(tasks, &{&1.task_id, &1})
 
     tasks_by_external_id =
