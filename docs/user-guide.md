@@ -1421,6 +1421,7 @@ and releases, not to `mix test`):
 | `FOREMAN_HTTP_PORT` | `ForemanServerWeb.Endpoint` http port (a valid port number; `127.0.0.1` only; lets a second server run beside the dev one) |
 | `FOREMAN_NOTIFY_WEBHOOK_URL` | `:messaging` (provider `webhook`, delivery enabled for every event class, no run-update rate limit, `webhook.url` from the variable) |
 | `FOREMAN_REVIEW_PROVIDER` / `FOREMAN_REVIEW_MODEL` | `:review, agent:` (the fixed reviewer; `claude` or `pi`, optional model; unset keeps `claude`) |
+| `FOREMAN_PR_FIX_SANDBOX` | `:pr_fix, sandbox:` (`docker` or `host`; unset keeps the jobsite default, docker, which needs a built `foreman-jobsite:<project>` image; `host` also needs `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true`) |
 | `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
 
 A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).

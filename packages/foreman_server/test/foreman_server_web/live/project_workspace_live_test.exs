@@ -214,11 +214,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   end
 
   describe "tabs" do
-    test "library is honestly 'not available yet'", %{id: id} do
+    test "library tab is served by the built-in provider (empty library: nothing to show)", %{
+      id: id
+    } do
       {view, _} = mount_view(id)
 
       html = view |> element("#tab-library") |> render_click()
-      assert html =~ "Not available yet."
+      refute html =~ "Not available yet."
+      assert html =~ "Nothing to show."
       refute has_element?(view, "#panel-library li")
     end
 

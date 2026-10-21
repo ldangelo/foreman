@@ -120,6 +120,17 @@ if config_env() != :test do
       :ok
   end
 
+  # Where PR fix-thread jobsites run (`config :foreman_server, :pr_fix, sandbox:`).
+  # Unset leaves the jobsite default (docker). `host` runs the agent unsandboxed on
+  # this machine; it additionally needs FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true.
+  case System.get_env("FOREMAN_PR_FIX_SANDBOX", "") do
+    sandbox when sandbox in ["docker", "host"] ->
+      config :foreman_server, :pr_fix, sandbox: sandbox
+
+    _ ->
+      :ok
+  end
+
   # The shared secret configured on the GitHub webhook. Without it the endpoint
   # answers 503 to everything (fail closed).
   case System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET") do
