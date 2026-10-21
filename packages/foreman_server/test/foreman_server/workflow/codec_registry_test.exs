@@ -58,23 +58,31 @@ defmodule ForemanServer.Workflow.CodecRegistryTest do
   end
 
   describe "application boot wiring" do
-    test "supervision tree includes RunLifecycleReconciler on boot" do
-      # start_lifecycle_reconciler? is false in test config; add the
-      # reconciler as a child of the application supervisor at runtime
-      # to mirror production supervision structure.
-      Supervisor.start_child(
-        ForemanServer.Application,
-        {ForemanServer.RunLifecycleReconciler, []}
-      )
+    # The app supervisor is process-wide. Adding the reconciler to it at runtime (the old shape
+    # of this test) leaked a permanent, crash-prone child: it replays every terminal run event
+    # other tests write, and its crashes are restarts the app supervisor counts against its
+    # intensity limit, so a burst took the whole tree (AdapterCatalog, Jobsite.Registry, ...)
+    # down for every later test. Assert the boot decision instead and touch nothing live.
+    test "supervision tree includes RunLifecycleReconciler exactly when enabled" do
+      original = Application.fetch_env(:foreman_server, :start_lifecycle_reconciler?)
 
-      assert is_pid(Process.whereis(ForemanServer.RunLifecycleReconciler))
+      on_exit(fn ->
+        case original do
+          {:ok, value} ->
+            Application.put_env(:foreman_server, :start_lifecycle_reconciler?, value)
 
-      child_ids =
-        ForemanServer.Application
-        |> Supervisor.which_children()
-        |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
+          :error ->
+            Application.delete_env(:foreman_server, :start_lifecycle_reconciler?)
+        end
+      end)
 
-      assert ForemanServer.RunLifecycleReconciler in child_ids
+      Application.put_env(:foreman_server, :start_lifecycle_reconciler?, true)
+
+      assert ForemanServer.Application.maybe_lifecycle_reconciler_child() ==
+               [ForemanServer.RunLifecycleReconciler]
+
+      Application.put_env(:foreman_server, :start_lifecycle_reconciler?, false)
+      assert ForemanServer.Application.maybe_lifecycle_reconciler_child() == []
     end
   end
 

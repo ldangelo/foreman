@@ -604,7 +604,6 @@ defmodule ForemanServer.RunLifecycleReconcilerTest do
       project_id: project_id,
       path: "/tmp/#{project_id}",
       status: "active",
-      default_branch: "main",
       archived?: false,
       active_run_reservations: %{
         run_id => %{

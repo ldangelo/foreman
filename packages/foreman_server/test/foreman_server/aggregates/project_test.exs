@@ -121,7 +121,6 @@ defmodule ForemanServer.Aggregates.ProjectTest do
           project_id: "project-1",
           path: "/tmp/project-1",
           status: "active",
-          default_branch: "main",
           archived?: false
       }
 
@@ -147,7 +146,6 @@ defmodule ForemanServer.Aggregates.ProjectTest do
           project_id: "project-1",
           path: "/tmp/project-1",
           status: "active",
-          default_branch: "main",
           archived?: false
       }
 
@@ -224,13 +222,13 @@ defmodule ForemanServer.Aggregates.ProjectTest do
                  type: "project.update",
                  payload: %{
                    project_id: "project-1",
-                   default_branch: "trunk"
+                   status: "paused"
                  }
                })
 
       updated = Project.apply_event(registered, update_event)
 
-      assert updated.default_branch == "trunk"
+      assert updated.status == "paused"
       assert updated.task_provider == task_provider
 
       assert updated.config == %{
@@ -523,7 +521,6 @@ defmodule ForemanServer.Aggregates.ProjectTest do
           project_id: "project-1",
           path: "/tmp/project-1",
           status: "active",
-          default_branch: "main",
           archived?: false,
           task_provider: original_task_provider,
           config: %{env: %{"ALPHA" => "1"}, task_provider: original_task_provider},
@@ -557,7 +554,6 @@ defmodule ForemanServer.Aggregates.ProjectTest do
           project_id: "project-1",
           path: "/tmp/project-1",
           status: "active",
-          default_branch: "main",
           archived?: false,
           task_provider: task_provider,
           config: %{env: %{"ALPHA" => "1"}, task_provider: task_provider},
@@ -591,7 +587,6 @@ defmodule ForemanServer.Aggregates.ProjectTest do
           project_id: "project-1",
           path: "/tmp/project-1",
           status: "active",
-          default_branch: "main",
           archived?: false,
           task_provider: original_task_provider,
           config: %{env: %{"ALPHA" => "1"}, task_provider: original_task_provider}
