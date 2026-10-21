@@ -16,6 +16,7 @@ defmodule ForemanServer.MCP.PolicyTest do
       refute Policy.authorized?("foreman_run_cancel")
       refute Policy.authorized?("foreman_run_pause")
       refute Policy.authorized?("foreman_run_resume")
+      refute Policy.authorized?("foreman_thread_stop")
       refute Policy.authorized?("foreman_inbox_send")
 
       tools = [
@@ -25,6 +26,7 @@ defmodule ForemanServer.MCP.PolicyTest do
         %{name: "foreman_run_cancel", description: "Cancel run"},
         %{name: "foreman_run_pause", description: "Pause run"},
         %{name: "foreman_run_resume", description: "Resume run"},
+        %{name: "foreman_thread_stop", description: "Stop thread"},
         %{name: "foreman_inbox_send", description: "Send inbox progress"},
         %{name: "foreman_work_get", description: "Get work"}
       ]
