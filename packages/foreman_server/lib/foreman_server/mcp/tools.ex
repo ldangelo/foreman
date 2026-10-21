@@ -1,5 +1,6 @@
 defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Overview
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Thread
@@ -144,6 +145,25 @@ defmodule ForemanServer.MCP.Tools do
         limit: %{type: "integer", minimum: 1, maximum: 500, description: "Default 100"}
       },
       required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_overview %{
+    name: "foreman_overview",
+    description:
+      "Project Overview: threads grouped as ready_for_review, waiting_on_you, working, " <>
+        "landing, idle, resolved, with counts, an attention flag and tab data. " <>
+        "Without project_id: one attention line per active project. Read-only; merging " <>
+        "stays operator-only.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "Project to summarise in full"},
+        include_resolved: %{
+          type: "boolean",
+          description: "Include resolved cards (default false)"
+        }
+      }
     }
   }
 
@@ -632,6 +652,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_thread_transcript,
     @schema_foreman_thread_stop,
     @schema_foreman_thread_steer,
+    @schema_foreman_overview,
     @schema_foreman_queue_status,
     @schema_foreman_project_list,
     @schema_foreman_project_get,
@@ -1108,13 +1129,70 @@ defmodule ForemanServer.MCP.Tools do
     {:ok, result}
   end
 
+  defp tool_foreman_overview(args) do
+    start_us = System.monotonic_time(:microsecond)
+    include_resolved = Map.get(args, :include_resolved, false)
+
+    result =
+      cond do
+        not is_boolean(include_resolved) ->
+          {:error,
+           %ToolError{code: "INVALID_PARAMS", message: "include_resolved must be a boolean"}}
+
+        match?(%{project_id: id} when is_binary(id) and id != "", args) ->
+          overview_for_project(args.project_id, include_resolved)
+
+        Map.has_key?(args, :project_id) ->
+          {:error,
+           %ToolError{code: "INVALID_PARAMS", message: "project_id must be a non-empty string"}}
+
+        true ->
+          {:ok, %{"projects" => overview_lines()}}
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_overview", overview_outcome(result))
+    result
+  end
+
+  defp overview_outcome({:ok, _}), do: :ok
+  defp overview_outcome({:error, _}), do: :error
+
+  defp overview_for_project(project_id, include_resolved) do
+    case ProjectionStore.project_projection(project_id) do
+      nil ->
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+
+      _project ->
+        {:ok, overview} = Overview.build(project_id, include_resolved: include_resolved)
+        {:ok, Overview.to_dto(overview)}
+    end
+  end
+
+  defp overview_lines do
+    for %{project_id: id} = project when is_binary(id) <- ProjectionStore.list_projects(),
+        Map.get(project, :archived?) != true do
+      %{counts: counts, attention: attention} = Overview.summary(id)
+
+      %{
+        "project_id" => id,
+        "name" => Map.get(project, :name),
+        "attention" => Overview.attention_dto(attention),
+        "counts" => Map.new(counts, fn {group, n} -> {Atom.to_string(group), n} end)
+      }
+    end
+  end
+
   defp tool_foreman_project_list(%{}) do
     start_us = System.monotonic_time(:microsecond)
-    result = ProjectionStore.list_projects()
+    result = Enum.map(ProjectionStore.list_projects(), &with_attention/1)
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_project_list", :ok)
     {:ok, result}
   end
+
+  # E7-S4: existing keys stay; attention fields are added.
+  defp with_attention(project), do: Map.merge(project, Overview.project_fields(project))
 
   defp tool_foreman_project_get(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)
@@ -1124,7 +1202,7 @@ defmodule ForemanServer.MCP.Tools do
     Telemetry.mcp_tool_call(duration_us, "foreman_project_get", outcome)
 
     if result,
-      do: {:ok, result},
+      do: {:ok, with_attention(result)},
       else: {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
   end
 

@@ -8,7 +8,7 @@ defmodule ForemanServerWeb.ProjectController do
 
   use ForemanServerWeb, :controller
 
-  alias ForemanServer.{ProjectStore, Telemetry}
+  alias ForemanServer.{Overview, ProjectStore, Telemetry}
 
   @default_projects_list_max 1000
 
@@ -37,7 +37,7 @@ defmodule ForemanServerWeb.ProjectController do
 
         conn
         |> put_status(:ok)
-        |> json(%{project: stringify_keys(projection)})
+        |> json(%{project: projection |> with_attention() |> stringify_keys()})
     end
   end
 
@@ -61,7 +61,7 @@ defmodule ForemanServerWeb.ProjectController do
       |> put_resp_header("x-total-count", Integer.to_string(total_count))
       |> put_status(:ok)
       |> json(%{
-        projects: Enum.map(visible_projects, &stringify_keys/1),
+        projects: Enum.map(visible_projects, &(&1 |> with_attention() |> stringify_keys())),
         meta: %{truncated: truncated?}
       })
     else
@@ -77,6 +77,9 @@ defmodule ForemanServerWeb.ProjectController do
         |> json(%{error: "invalid_query", reason: ":invalid_query"})
     end
   end
+
+  # E7-S4: operator attention flag, computed per request (O(threads) per project).
+  defp with_attention(projection), do: Map.merge(projection, Overview.project_fields(projection))
 
   defp parse_include_archived(%{"include_archived" => value}) when is_binary(value) do
     case value do

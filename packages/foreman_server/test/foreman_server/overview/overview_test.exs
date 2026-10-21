@@ -171,7 +171,8 @@ defmodule ForemanServer.OverviewTest do
     {:ok, overview} = Overview.build("p", now_fun: fn -> @now end)
     dto = Overview.to_dto(overview)
 
-    assert dto |> Map.keys() |> Enum.sort() == ~w(attention counts generated_at groups project_id)
+    assert dto |> Map.keys() |> Enum.sort() ==
+             ~w(attention counts generated_at groups project_id tabs)
 
     assert dto["groups"] |> Map.keys() |> Enum.sort() ==
              ~w(idle landing ready_for_review resolved waiting_on_you working)
