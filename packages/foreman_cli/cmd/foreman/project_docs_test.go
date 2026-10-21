@@ -95,6 +95,19 @@ func TestUserGuideProjectExamplesExecuteAgainstCLI(t *testing.T) {
 			t.Fatalf("stderr = %q, want empty stderr", stderr)
 		}
 	}, `{"projects":[{"project_id":"project-123","path":"/srv/foreman/project-123","archived":false,"registered":"2026-08-07T00:00:00Z","version":7}]}`)
+
+	// The same server answers the POST and every poll, so the last request seen is the final long-poll.
+	assertDocCommand(t, doc, "### Chat with the project coordinator", "foreman project chat project-123 \"fix the login bug\"", func(t *testing.T, r *http.Request, body []byte, stdout, stderr string) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/projects/project-123/coordinator/messages" {
+			t.Fatalf("last request = %s %s, want GET .../coordinator/messages", r.Method, r.URL.Path)
+		}
+		if r.URL.RawQuery != "after=1&limit=200&wait_ms=20000" {
+			t.Fatalf("query = %q", r.URL.RawQuery)
+		}
+		if stderr != "" {
+			t.Fatalf("stderr = %q, want empty", stderr)
+		}
+	}, `{"message_id":"cli-1","seq":1,"messages":[],"next_cursor":1,"has_more":false,"truncated_before_seq":null,"status":"idle"}`)
 }
 
 func TestCLIReferenceProjectExamplesExecuteAgainstCLI(t *testing.T) {

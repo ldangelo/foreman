@@ -16,6 +16,9 @@ defmodule ForemanServer.ProjectSettings do
           coordinator_effort: String.t() | nil,
           max_concurrent_runs: pos_integer() | nil,
           daily_thread_cap: pos_integer() | nil,
+          coordinator_propose_before_start: boolean() | nil,
+          coordinator_max_active_threads: pos_integer() | nil,
+          coordinator_reuse_threads: boolean() | nil,
           library_collect_produced: boolean() | nil
         }
 

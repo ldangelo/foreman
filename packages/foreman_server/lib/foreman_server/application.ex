@@ -131,6 +131,7 @@ defmodule ForemanServer.Application do
         maybe_overview_children() ++
         maybe_review_children() ++
         maybe_library_collector_child() ++
+        maybe_coordinator_children() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
         maybe_schedule_ticker_child() ++
@@ -237,6 +238,9 @@ defmodule ForemanServer.Application do
   defp maybe_library_collector_child do
     if Application.get_env(:foreman_server, :library, [])[:collector] do
       [ForemanServer.Library.Collector]
+  defp maybe_coordinator_children do
+    if Application.get_env(:foreman_server, :coordinator, [])[:enabled] do
+      [{ForemanServer.Coordinator.Supervisor, []}]
     else
       []
     end
@@ -481,7 +485,8 @@ defmodule ForemanServer.Application do
         "foreman_prompt_put",
         "foreman_project_settings_update",
         "foreman_project_pause",
-        "foreman_project_resume"
+        "foreman_project_resume",
+        "foreman_project_message"
       ]
 
       safe_tools =

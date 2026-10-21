@@ -28,12 +28,15 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @max_model_chars 200
   @max_concurrent_runs_range 1..1000
   @daily_thread_cap_range 1..10_000
+  @max_active_threads_range 1..50
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
   # would validate here and then fail the launch.
   @efforts ~w(low medium high)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
-           coordinator_effort max_concurrent_runs daily_thread_cap library_collect_produced)a
+           coordinator_effort max_concurrent_runs daily_thread_cap
+           coordinator_propose_before_start coordinator_max_active_threads
+           coordinator_reuse_threads library_collect_produced)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -51,6 +54,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :max_concurrent_runs
           | :daily_thread_cap
           | :library_collect_produced
+          | :coordinator_propose_before_start
+          | :coordinator_max_active_threads
+          | :coordinator_reuse_threads
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -67,6 +73,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:max_concurrent_runs_invalid, term(), Range.t()}
           | {:daily_thread_cap_invalid, term(), Range.t()}
           | {:library_collect_produced_invalid, term()}
+          | {:coordinator_max_active_threads_invalid, term(), Range.t()}
+          | {:coordinator_propose_before_start_invalid, term()}
+          | {:coordinator_reuse_threads_invalid, term()}
           | {:unknown_setting, String.t()}
 
   @doc "Maximum characters of project instructions (`String.length/1`)."
@@ -210,6 +219,17 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:library_collect_produced, value),
     do: {:error, {:library_collect_produced_invalid, value}}
+  defp validate(:coordinator_propose_before_start, value),
+    do: boolean(value, :coordinator_propose_before_start)
+
+  defp validate(:coordinator_reuse_threads, value), do: boolean(value, :coordinator_reuse_threads)
+
+  defp validate(:coordinator_max_active_threads, value),
+    do: ranged(value, :coordinator_max_active_threads_invalid, @max_active_threads_range)
+
+  defp boolean(nil, _name), do: {:ok, nil}
+  defp boolean(value, _name) when is_boolean(value), do: {:ok, value}
+  defp boolean(value, name), do: {:error, {:"#{name}_invalid", value}}
 
   defp unknown_provider(value),
     do: {:error, {:invalid_setting, :coordinator_provider, {:unknown_provider, value}}}

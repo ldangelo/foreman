@@ -115,7 +115,7 @@ func TestLibraryAddFolderStopsAtFileCapAndReportsTheRest(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{}
 	for i := 0; i < libraryFolderMaxFiles+2; i++ {
-		files[filepath.Join("d", strings.Repeat("0", 3-len(itoa(i)))+itoa(i)+".txt")] = "x"
+		files[filepath.Join("d", strings.Repeat("0", 3-len(libItoa(i)))+libItoa(i)+".txt")] = "x"
 	}
 	writeTree(t, root, files)
 
@@ -134,7 +134,7 @@ func TestLibraryAddFolderStopsAtFileCapAndReportsTheRest(t *testing.T) {
 	}
 }
 
-func itoa(i int) string {
+func libItoa(i int) string {
 	b, _ := json.Marshal(i)
 	return string(b)
 }
@@ -144,7 +144,7 @@ func TestLibraryAddFilesRejectsTooManyAndMissingLocally(t *testing.T) {
 	dir := t.TempDir()
 	var paths []string
 	for i := 0; i < libraryMaxFilesPerAdd+1; i++ {
-		p := filepath.Join(dir, "f"+itoa(i)+".txt")
+		p := filepath.Join(dir, "f"+libItoa(i)+".txt")
 		writeTree(t, dir, map[string]string{filepath.Base(p): "x"})
 		paths = append(paths, p)
 	}

@@ -20,7 +20,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --library-collect-produced --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -34,6 +34,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project reactivate --idempotency-key
 > foreman project delete    --force --idempotency-key   # archives; see docs/decisions/project-delete.md
 > foreman project list      --format --include-archived
+> foreman project chat      --m --no-wait --since --history --format --restart --timeout   # exit 2 usage, 3 unhealthy coordinator
 >
 > foreman task create       --description --id --project --status --task-type --title --trd-path --workflow-type  # REMOVED (TRD-018)
 > foreman task approve      --approved-by --command-id --id  # REMOVED (TRD-018)
@@ -271,6 +272,7 @@ Manage Elixir-registered projects.
 | `delete <id>` | Soft-delete (archive) a project |
 | `list` | List project projections |
 | `memory` | List, read, write, forget or sync the project's memory |
+| `chat <id> [message...]` | Chat with the project's coordinator |
 
 ### `foreman project create`
 
@@ -325,6 +327,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
 | `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
+| `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
 | `--clear <setting>` | Clear a setting (repeatable) |
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
 | `--format json` | Print the raw command response as JSON |
@@ -426,6 +429,26 @@ foreman project list --include-archived
 |--------|-------------|
 | `--include-archived` | Include archived projects |
 | `--format json\|ndjson` | Output format |
+
+### `foreman project chat`
+
+Talk to a project's coordinator. A message (arguments, `-m`, or piped stdin) is POSTed to `/api/projects/:id/coordinator/messages`; the CLI then long-polls `GET .../messages?after=<seq>&wait_ms=20000` and prints coordinator/system/agent messages until the coordinator is idle again. With no message on a TTY it runs an interactive loop (`/restart` restarts the coordinator, `/quit` or EOF exits).
+
+```
+foreman project chat project-123 "fix the login bug"
+```
+
+| Option | Description |
+|--------|-------------|
+| `-m <text>` | Message text (alternative to positional words or stdin) |
+| `--no-wait` | Return right after the POST, printing `message_id` and `seq` |
+| `--since <seq>` | Print messages after the cursor, then exit |
+| `--history <n>` | Print the last `n` messages, then exit |
+| `--format text\|json\|ndjson` | `json`/`ndjson` emit the server's message objects |
+| `--restart` | Restart the coordinator (`POST .../coordinator/restart`), then exit |
+| `--timeout <duration>` | Overall wait bound (default `10m`) |
+
+Exit codes: `0` ok, `2` usage error, `3` coordinator `unhealthy` (the notice includes `last_error`), other non-zero for HTTP errors (the server's error envelope is printed).
 
 ### `foreman project memory`
 
@@ -1480,7 +1503,8 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 `database_path` stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
-`max_concurrent_runs`, `daily_thread_cap`, `library_collect_produced`, `clear`, `idempotency_key`; nothing
+`max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).

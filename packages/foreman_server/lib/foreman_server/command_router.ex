@@ -602,4 +602,5 @@ defmodule ForemanServer.CommandRouter do
 
   def aggregate_module_for("thread:" <> _), do: ForemanServer.Aggregates.Thread
   def aggregate_module_for("schedule:" <> _), do: ForemanServer.Aggregates.Schedule
+  def aggregate_module_for("coordinator:" <> _), do: ForemanServer.Aggregates.Coordinator
 end
