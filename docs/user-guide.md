@@ -1878,6 +1878,21 @@ an earlier recorded review filed as a gap bead gets the comment but spawns no
 further gap beads (depth cap of 1); the guard is the review event log, so it
 needs no `br show`. The bead step needs both `bead_id` and `project_id`: a
 jobsite without a `project_id` is still reviewed and the review is recorded,
+A multi-repository run (more than one repository attached) keeps the primary
+repository's `diff.patch` and `changed-files.txt` exactly as above and adds one
+pair per additional repository: `diffs/<repo_id>.patch` and
+`diffs/<repo_id>.files.txt` (same size bound and truncation record in
+`capture_errors`, stages `diff:<repo_id>` / `changed_files:<repo_id>`; the repo
+id is validated, so it cannot escape `diffs/`). The manifest (still
+`foreman.review.manifest.v1`) gains `repositories`:
+`[{id, primary, branch, base_ref, worktree_path, diff_status, pr_url}]`, primary
+first, with `pr_url` taken from the repository's PR association (`null` when it
+opened none). Single-repository archives have no `repositories` key and no
+`diffs/` directory. The automated reviewer is told to read every
+`diffs/*.patch` only when the manifest lists more than one repository. Jobsites
+stay single-repository: a `repositories` key in a jobsite spec is rejected with
+`spec_forbidden_key` (multi-repo jobsites unsupported).
+
 only the bead step (comment and gap beads) is skipped. A cancelled run or
 jobsite gets the verdict comment but no gap beads: unfinished work the operator
 stopped on purpose is not filed as work items (the recorded summary says so).

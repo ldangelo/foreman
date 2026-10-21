@@ -35,7 +35,8 @@ defmodule ForemanServer.Review.Prompt do
       "changed_files_path" => archive_path(subject, "changed-files.txt"),
       "transcript_path" => archive_path(subject, "transcript.jsonl"),
       "manifest_path" => archive_path(subject, "manifest.json"),
-      "manifest_json" => Jason.encode!(manifest, pretty: true)
+      "manifest_json" => Jason.encode!(manifest, pretty: true),
+      "repositories_clause" => repositories_clause(subject, manifest)
     }
 
     Regex.replace(@placeholder, template!(), fn _whole, name ->
@@ -45,6 +46,18 @@ defmodule ForemanServer.Review.Prompt do
       end
     end)
   end
+
+  # Multi-repo archives (manifest `repositories` with more than one entry) hold
+  # one extra diff per non-primary repository; single-repo prompts get "".
+  defp repositories_clause(subject, %{"repositories" => [_, _ | _]}) do
+    "\n- `" <>
+      Path.join(Path.expand(subject.archive_dir), "diffs/*.patch") <>
+      "` — one unified diff per additional repository of this multi-repo run " <>
+      "(`diffs/<repo_id>.patch`, with `diffs/<repo_id>.files.txt`); also read every `diffs/*.patch` " <>
+      "in addition to the primary diff above"
+  end
+
+  defp repositories_clause(_subject, _manifest), do: ""
 
   defp request_text(%Subject{request_text: text}) when is_binary(text) and text != "", do: text
   defp request_text(_), do: "(the archive's request.md holds the request; no text was projected)"

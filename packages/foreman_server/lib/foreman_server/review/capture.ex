@@ -237,11 +237,17 @@ defmodule ForemanServer.Review.Capture do
   @spec close_cancelled_run(String.t()) :: :ok
   def close_cancelled_run(run_id) when is_binary(run_id) and run_id != "" do
     worktree =
-      run_id
-      |> ProjectionStore.worktrees_for_run()
-      |> Enum.find(fn wt ->
-        is_binary(Map.get(wt, :worktree_path)) and is_binary(Map.get(wt, :base_ref))
-      end)
+      case Enum.find(ProjectionStore.run_repositories(run_id), & &1.primary?) do
+        %{worktree: %{} = wt} ->
+          wt
+
+        _ ->
+          run_id
+          |> ProjectionStore.worktrees_for_run()
+          |> Enum.find(fn wt ->
+            is_binary(Map.get(wt, :worktree_path)) and is_binary(Map.get(wt, :base_ref))
+          end)
+      end
 
     close_run(%{run_id: run_id, run_worktree: worktree}, :cancelled)
   end
@@ -358,7 +364,8 @@ defmodule ForemanServer.Review.Capture do
     with :ok <- Archive.init(dir, Map.merge(manifest, carried)),
          :ok <- put_run_session_ids(dir, run),
          :ok <- write_request(dir, request_text) do
-      capture_run_diff(dir, worktree, outcome)
+      _ = capture_run_diff(dir, worktree, outcome)
+      capture_repositories(dir, run_id, worktree, outcome)
     end
   end
 
@@ -427,6 +434,124 @@ defmodule ForemanServer.Review.Capture do
     :ok
   end
 
+  # Multi-repo runs (the run projects more than one repository) archive every
+  # non-primary repository's diff under `diffs/<repo_id>.patch` +
+  # `diffs/<repo_id>.files.txt` and list all repositories in the manifest's
+  # `repositories`. Single-repo runs get neither, so their archives stay
+  # byte-identical.
+  defp capture_repositories(dir, run_id, primary_worktree, outcome) do
+    case ProjectionStore.run_repositories(run_id) do
+      [_, _ | _] = repos ->
+        head = if outcome == :cancelled, do: :worktree, else: "HEAD"
+        prs = Map.new(ProjectionStore.pr_associations_for_run(run_id), &{&1.repo_id, &1})
+
+        entries =
+          Enum.map(repos, fn repo ->
+            repository_entry(dir, repo, primary_worktree, head, prs)
+          end)
+
+        Archive.merge_manifest(dir, %{"repositories" => entries})
+
+      _single_repo ->
+        :ok
+    end
+  end
+
+  defp repository_entry(dir, %{primary?: true} = repo, primary_worktree, _head, prs) do
+    status =
+      case Archive.read_manifest(dir) do
+        {:ok, %{"diff_status" => status}} -> status
+        _ -> "unavailable"
+      end
+
+    repository_view(repo, primary_worktree || repo.worktree, status, prs)
+  end
+
+  defp repository_entry(dir, repo, _primary_worktree, head, prs) do
+    status = capture_repo_diff(dir, repo.repo_id, repo.worktree, head)
+    repository_view(repo, repo.worktree, status, prs)
+  end
+
+  defp repository_view(repo, worktree, status, prs) do
+    %{
+      "id" => repo.repo_id,
+      "primary" => repo.primary?,
+      "branch" => worktree_field(worktree, :branch),
+      "base_ref" => worktree_field(worktree, :base_ref),
+      "worktree_path" => worktree_field(worktree, :worktree_path),
+      "diff_status" => status,
+      "pr_url" => prs |> Map.get(repo.repo_id) |> pr_url()
+    }
+  end
+
+  defp pr_url(%{pr_url: url}) when is_binary(url), do: url
+  defp pr_url(_), do: nil
+
+  # One non-primary repository's diff; same bound, truncation record and ref
+  # guard (`Git.diff/3`) as the primary's. Returns the manifest `diff_status`.
+  defp capture_repo_diff(dir, repo_id, %{worktree_path: path, base_ref: base}, head)
+       when is_binary(path) and is_binary(base) do
+    with :ok <- ForemanServer.Projects.RepoValidation.validate_id(repo_id),
+         status when is_binary(status) <-
+           guarded("diff:" <> repo_id, dir, fn ->
+             mark_new_files(dir, path, head, "intent_to_add:" <> repo_id)
+             store_repo_diff(dir, repo_id, path, base, head)
+           end) do
+      status
+    else
+      _ -> repo_diff_unavailable(dir, repo_id, "repository diff could not be captured")
+    end
+  end
+
+  defp capture_repo_diff(dir, repo_id, _no_worktree, _head),
+    do: repo_diff_unavailable(dir, repo_id, "repository has no worktree/base_ref to diff")
+
+  defp repo_diff_unavailable(dir, repo_id, message) do
+    error = Error.new(:diff_failed, message, %{repo_id: repo_id})
+    Logger.warning("review capture: #{inspect(error)}")
+    Archive.record_capture_error(dir, "diff:" <> inspect(repo_id), error)
+    "unavailable"
+  end
+
+  defp store_repo_diff(dir, repo_id, path, base, head) do
+    case Git.diff(path, base, head) do
+      {:ok, diff} ->
+        max = max_diff_bytes()
+        {body, truncated?} = bound(diff, max)
+
+        if truncated? do
+          Archive.record_capture_error(
+            dir,
+            "diff:" <> repo_id,
+            Error.new(:diff_failed, "diff truncated at #{max} bytes (was #{byte_size(diff)})")
+          )
+        end
+
+        write_repo_files(dir, repo_id, path, base, head, body)
+        if diff == "", do: "empty", else: "captured"
+
+      {:error, git_error} ->
+        error = Error.new(:diff_failed, "git diff failed", %{git: git_error.details})
+        Logger.warning("review capture: #{inspect(error)}")
+        Archive.record_capture_error(dir, "diff:" <> repo_id, error)
+        "unavailable"
+    end
+  end
+
+  defp write_repo_files(dir, repo_id, path, base, head, body) do
+    with :ok <- Archive.write_repo_file(dir, repo_id, "patch", body) do
+      case Git.changed_files(path, base, head) do
+        {:ok, files} ->
+          Archive.write_repo_file(dir, repo_id, "files.txt", files)
+
+        {:error, git_error} ->
+          error = Error.new(:diff_failed, "git changed-files failed", %{git: git_error.details})
+          Logger.warning("review capture: #{inspect(error)}")
+          Archive.record_capture_error(dir, "changed_files:" <> repo_id, error)
+      end
+    end
+  end
+
   defp run_status(:success), do: "completed"
   defp run_status(:failure), do: "failed"
   defp run_status(:cancelled), do: "cancelled"
@@ -453,7 +578,7 @@ defmodule ForemanServer.Review.Capture do
   defp do_put_diff(dir, worktree_path, base, head) do
     with :ok <-
            Archive.merge_manifest(dir, %{"base_ref" => base, "worktree_path" => worktree_path}) do
-      mark_new_files(dir, worktree_path, head)
+      mark_new_files(dir, worktree_path, head, "intent_to_add")
 
       case Git.diff(worktree_path, base, head) do
         {:ok, diff} -> store_diff(dir, worktree_path, base, head, diff)
@@ -466,7 +591,7 @@ defmodule ForemanServer.Review.Capture do
   # that fails (an index lock, a refused path) the diff of the tracked files is
   # still worth archiving, but it omits the new files, so the manifest says so: a
   # partial diff must never read as a complete one.
-  defp mark_new_files(dir, worktree_path, :worktree) do
+  defp mark_new_files(dir, worktree_path, :worktree, stage) do
     case Git.mark_intent_to_add(worktree_path) do
       :ok ->
         :ok
@@ -480,11 +605,11 @@ defmodule ForemanServer.Review.Capture do
           )
 
         Logger.warning("review capture: #{inspect(error)}")
-        Archive.record_capture_error(dir, "intent_to_add", error)
+        Archive.record_capture_error(dir, stage, error)
     end
   end
 
-  defp mark_new_files(_dir, _worktree_path, _committed_head), do: :ok
+  defp mark_new_files(_dir, _worktree_path, _committed_head, _stage), do: :ok
 
   defp store_diff(dir, worktree_path, base, head, diff) do
     max = max_diff_bytes()
