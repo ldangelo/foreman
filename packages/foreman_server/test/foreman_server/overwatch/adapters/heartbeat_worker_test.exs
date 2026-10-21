@@ -20,6 +20,7 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch.Adapters.HeartbeatWorker
   alias ForemanServer.Overwatch.Tracker
+  alias ForemanServer.TestSupport.Eventually
 
   defp uuid, do: EventStore.UUID.uuid4()
 
@@ -49,11 +50,13 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
           id: :hw_imm
         )
 
-      # Wait long enough for the timer to fire.
-      Process.sleep(150)
-
-      events = read_worker_events(worker_id, run_id)
-      assert Enum.any?(events, &(&1.event_type == "WorkerHeartbeat"))
+      Eventually.await(
+        fn ->
+          Enum.any?(read_worker_events(worker_id, run_id), &(&1.event_type == "WorkerHeartbeat"))
+        end,
+        timeout: 10_000,
+        message: "no WorkerHeartbeat was emitted"
+      )
     end
 
     test "emits multiple WorkerHeartbeats over repeated intervals" do
@@ -66,11 +69,15 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
         id: :hw_multi
       )
 
-      Process.sleep(200)
-
-      events = read_worker_events(worker_id, run_id)
-      heartbeat_count = Enum.count(events, &(&1.event_type == "WorkerHeartbeat"))
-      assert heartbeat_count >= 3
+      # The deadline only bounds a broken run: it returns as soon as the third
+      # heartbeat is persisted, however slow the machine is.
+      Eventually.await(
+        fn ->
+          heartbeat_count(read_worker_events(worker_id, run_id)) >= 3
+        end,
+        timeout: 10_000,
+        message: "fewer than 3 WorkerHeartbeats were emitted"
+      )
     end
 
     test "uses 5_000ms default interval when :heartbeat_interval_ms is omitted" do
@@ -133,7 +140,8 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
       send(worker_pid, :hello)
       send(worker_pid, {:no_op, 1, 2, 3})
 
-      Process.sleep(50)
+      # Barrier: handled after the two messages above.
+      _ = :sys.get_state(worker_pid)
       assert Process.alive?(worker_pid)
       refute_receive {:overwatch_activated, ^worker_pid}, 100
     end
@@ -142,6 +150,8 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
   # ---------------------------------------------------------------------------
 
   defp tracker, do: Process.whereis(Tracker)
+
+  defp heartbeat_count(events), do: Enum.count(events, &(&1.event_type == "WorkerHeartbeat"))
 
   defp read_worker_events(worker_id, run_id) do
     stream_id = "worker:#{run_id}:#{worker_id}"
