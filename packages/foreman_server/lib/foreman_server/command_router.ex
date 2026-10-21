@@ -596,4 +596,5 @@ defmodule ForemanServer.CommandRouter do
   def aggregate_module_for("review:" <> _), do: ForemanServer.Aggregates.Review
   def aggregate_module_for("project_memory:" <> _), do: ForemanServer.Aggregates.ProjectMemory
   def aggregate_module_for("thread:" <> _), do: ForemanServer.Aggregates.Thread
+  def aggregate_module_for("coordinator:" <> _), do: ForemanServer.Aggregates.Coordinator
 end
