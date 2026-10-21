@@ -1,0 +1,150 @@
+#!/bin/sh
+# Recording fake `gh` for scripts/e2e/multi_repo.sh (E12-S12).
+#
+# It never talks to GitHub. The harness puts it first on the Foreman server's PATH
+# so the real merge/PR code paths (AutoPR, RepoPr, RunPrMerge, PrStatus) run
+# unmodified against it, and then asserts on what they asked for.
+#
+# State lives in $E2E_GH_STATE:
+#   calls.log             one line per invocation: <pid> TAB <cwd> TAB <argv joined by spaces>
+#   unsupported.log       invocations this fake does not implement (the harness fails on any)
+#   pr/<sanitised-url>/   one directory per PR: url head base title body headsha state
+#
+# Implemented (everything Foreman's multi-repo flow calls):
+#   gh pr create --base B --head H --title T --body BODY   prints a fake PR URL
+#   gh pr view URL --json body --jq .body                  prints the stored body
+#   gh pr view URL --json <fields>                         prints the status JSON PrStatus parses
+#   gh pr edit URL --body BODY                             stores the body (cross-links)
+#   gh pr merge URL --squash --match-head-commit SHA       refuses on a head mismatch, else MERGED
+#   gh api graphql ...                                     no review threads
+#   gh auth status | gh --version
+set -u
+
+state=${E2E_GH_STATE:?E2E_GH_STATE must name the fake gh state directory}
+mkdir -p "$state/pr"
+
+args_line=$(printf '%s ' "$@" | tr '\n\t' '  ' | cut -c1-1500)
+printf '%s\t%s\t%s\n' "$$" "$PWD" "$args_line" >> "$state/calls.log"
+
+pr_dir() { printf '%s/pr/%s' "$state" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"; }
+
+unsupported() {
+  printf '%s\t%s\t%s\n' "$$" "$PWD" "$args_line" >> "$state/unsupported.log"
+  echo "fake gh: unsupported invocation: gh $*" >&2
+  exit 1
+}
+
+field() { cat "$1/$2" 2>/dev/null || true; }
+
+[ $# -ge 1 ] || unsupported
+
+case "$1" in
+  --version)
+    echo "gh version 0.0.0 (e2e fake)"
+    exit 0
+    ;;
+  auth)
+    echo "Logged in to github.com as e2e-fake (fake gh)"
+    exit 0
+    ;;
+  api)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+    exit 0
+    ;;
+  pr) ;;
+  *) unsupported "$@" ;;
+esac
+
+sub=${2:-}
+[ $# -ge 2 ] || unsupported "$@"
+shift 2
+case "$sub" in
+  view|edit|merge) [ $# -ge 1 ] || unsupported "pr $sub" ;;
+esac
+
+case "$sub" in
+  create)
+    base=""; head=""; title=""; body=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --base) base=${2:-}; shift 2 ;;
+        --head) head=${2:-}; shift 2 ;;
+        --title) title=${2:-}; shift 2 ;;
+        --body) body=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$head" ] && [ -n "$base" ] || { echo "fake gh: pr create needs --base and --head" >&2; exit 1; }
+    repo=$(basename "$PWD")
+    seen=$(ls -1 "$state/pr" 2>/dev/null | grep -c "_e2e-owner_${repo}_pull_" || true)
+    n=$((seen + 1))
+    url="https://github.com/e2e-owner/${repo}/pull/${n}"
+    dir=$(pr_dir "$url")
+    mkdir -p "$dir"
+    printf '%s' "$url" > "$dir/url"
+    printf '%s' "$head" > "$dir/head"
+    printf '%s' "$base" > "$dir/base"
+    printf '%s' "$title" > "$dir/title"
+    printf '%s' "$body" > "$dir/body"
+    printf 'OPEN' > "$dir/state"
+    # The branch was pushed from this checkout by AutoPR just before this call.
+    sha=$(git rev-parse --verify "${head}^{commit}" 2>/dev/null || true)
+    printf '%s' "$sha" > "$dir/headsha"
+    echo "$url"
+    exit 0
+    ;;
+  view)
+    url=${1:-}; shift
+    dir=$(pr_dir "$url")
+    [ -d "$dir" ] || { echo "fake gh: no pull request matches $url" >&2; exit 1; }
+    json=""; jq_expr=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --json) json=${2:-}; shift 2 ;;
+        --jq) jq_expr=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ "$json" = "body" ] && [ "$jq_expr" = ".body" ]; then
+      field "$dir" body
+      echo
+      exit 0
+    fi
+    printf '{"state":"%s","mergeable":"MERGEABLE","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","statusCheckRollup":[],"reviewDecision":"","reviews":[],"comments":[],"mergeStateStatus":"CLEAN"}\n' \
+      "$(field "$dir" state)" "$(field "$dir" headsha)" "$(field "$dir" head)" "$(field "$dir" base)"
+    exit 0
+    ;;
+  edit)
+    url=${1:-}; shift
+    dir=$(pr_dir "$url")
+    [ -d "$dir" ] || { echo "fake gh: no pull request matches $url" >&2; exit 1; }
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) printf '%s' "${2:-}" > "$dir/body"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    echo "$url"
+    exit 0
+    ;;
+  merge)
+    url=${1:-}; shift
+    dir=$(pr_dir "$url")
+    [ -d "$dir" ] || { echo "fake gh: no pull request matches $url" >&2; exit 1; }
+    match=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --match-head-commit) match=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ -n "$match" ] && [ "$match" != "$(field "$dir" headsha)" ]; then
+      echo "fake gh: head commit changed since the merge was approved" >&2
+      exit 1
+    fi
+    printf 'MERGED' > "$dir/state"
+    echo "Merged $url (fake)"
+    exit 0
+    ;;
+  *) unsupported "$sub" "$@" ;;
+esac

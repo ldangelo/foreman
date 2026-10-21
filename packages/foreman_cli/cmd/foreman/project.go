@@ -17,7 +17,7 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix <json> --notification-preference --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project library list|add|replace|remove [flags] <project-id> ...   (project files for agents; see `foreman project library`)\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix <json> --notification-preference --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project repo add --id ID --path ABS_PATH [--default-branch B] <project-id> | remove --id ID <project-id> | list [--format=json] <project-id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project library list|add|replace|remove [flags] <project-id> ...   (project files for agents; see `foreman project library`)\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
@@ -69,6 +69,8 @@ func runProject(c *client.Client, args []string) error {
 		return projectSchedule(c, args[1:])
 	case "chat":
 		return projectChat(c, args[1:])
+	case "repo":
+		return projectRepo(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman project: unknown subcommand %q", args[0]),
@@ -834,4 +836,134 @@ func stringSliceField(body map[string]any, key string) []string {
 func sha256Hex(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:])
+}
+
+// projectRepo dispatches `foreman project repo <add|remove|list>` (E12).
+func projectRepo(c *client.Client, args []string) error {
+	if len(args) == 0 {
+		return usageTextError("foreman project repo: missing subcommand (add|remove|list)", projectUsageText)
+	}
+
+	switch args[0] {
+	case "add":
+		return projectRepoAdd(c, args[1:])
+	case "remove":
+		return projectRepoRemove(c, args[1:])
+	case "list":
+		return projectRepoList(c, args[1:])
+	default:
+		return usageTextError(fmt.Sprintf("foreman project repo: unknown subcommand %q", args[0]), projectUsageText)
+	}
+}
+
+func projectRepoAdd(c *client.Client, args []string) error {
+	fs := newFlagSet("project repo add")
+	id := fs.String("id", "", "Repository id (^[a-z0-9][a-z0-9-]{0,31}$)")
+	path := fs.String("path", "", "Absolute path of an existing git checkout on the server host")
+	defaultBranch := fs.String("default-branch", "", "Branch worktrees are cut from (default: the checked-out branch)")
+	by := fs.String("by", "cli", "Operator recorded as having added the repository")
+	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 || *id == "" || *path == "" {
+		return usageError(fs, "foreman project repo add: --id, --path and one argument <project-id> are required")
+	}
+
+	payload := map[string]any{
+		"project_id": fs.Arg(0),
+		"repo_id":    *id,
+		"path":       *path,
+		"added_by":   *by,
+	}
+	if *defaultBranch != "" {
+		payload["default_branch"] = *defaultBranch
+	}
+
+	return postProjectRepoCommand(c, "project.repo.add", payload, *idempotencyKey,
+		fmt.Sprintf("added repository %s to project %s\n", *id, fs.Arg(0)))
+}
+
+func projectRepoRemove(c *client.Client, args []string) error {
+	fs := newFlagSet("project repo remove")
+	id := fs.String("id", "", "Repository id to detach")
+	by := fs.String("by", "cli", "Operator recorded as having removed the repository")
+	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 || *id == "" {
+		return usageError(fs, "foreman project repo remove: --id and one argument <project-id> are required")
+	}
+
+	payload := map[string]any{
+		"project_id": fs.Arg(0),
+		"repo_id":    *id,
+		"removed_by": *by,
+	}
+
+	return postProjectRepoCommand(c, "project.repo.remove", payload, *idempotencyKey,
+		fmt.Sprintf("removed repository %s from project %s\n", *id, fs.Arg(0)))
+}
+
+func postProjectRepoCommand(c *client.Client, commandType string, payload map[string]any, idempotencyKey, summary string) error {
+	commandID := sha256Hex(commandType + "." + idempotencyKey)
+	if idempotencyKey == "" {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			panic(fmt.Sprintf("%s payload is not JSON-encodable: %v", commandType, err))
+		}
+		commandID = sha256Hex(commandType + "." + string(encoded))
+	}
+
+	if _, err := postCommandWithResponse(c, commandEnvelope{Type: commandType, CommandID: commandID, Payload: payload}); err != nil {
+		return err
+	}
+
+	_, err := fmt.Fprint(os.Stdout, summary)
+	return err
+}
+
+func projectRepoList(c *client.Client, args []string) error {
+	fs := newFlagSet("project repo list")
+	format := fs.String("format", "", "Output format (json)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman project repo list: expected one argument: <project-id>")
+	}
+
+	switch *format {
+	case "", "json":
+	default:
+		return usageError(fs, "foreman project repo list: unsupported format %q", *format)
+	}
+
+	var out map[string]any
+	if err := c.GetJSON(client.JoinPath("/api/projects", fs.Arg(0), "repositories"), &out); err != nil {
+		return err
+	}
+
+	if *format == "json" {
+		return printJSON(out)
+	}
+
+	repos, _ := out["repositories"].([]any)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tPRIMARY\tDEFAULT-BRANCH\tPATH")
+	for _, item := range repos {
+		repo, _ := item.(map[string]any)
+		branch := projectStringField(repo, "default_branch")
+		if branch == "" {
+			branch = "-"
+		}
+		primary, _ := repo["primary"].(bool)
+		fmt.Fprintf(tw, "%s\t%t\t%s\t%s\n", projectStringField(repo, "id"), primary, branch, projectStringField(repo, "path"))
+	}
+
+	return tw.Flush()
 }

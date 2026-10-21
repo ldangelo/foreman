@@ -8,6 +8,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     CommandGateway,
     EventStore,
     Identity,
+    MultiRepoRuns,
     ProjectionStore,
     RunAdmission
   }
@@ -2917,6 +2918,75 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     # Proves the phase never even reached PhaseStarted, not merely that
     # no adapter message arrived on this process's mailbox.
+    assert {:error, :stream_not_found} =
+             EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
+  end
+
+  # E12 run-start gate (`config :foreman_server, :multi_repo, runs: false`): a
+  # run whose resolved repository set is larger than one repository fails typed,
+  # before the claim and before any phase, exactly like the other start failures.
+  test "a multi-repo run fails typed at start while the multi-repo gate is closed" do
+    MultiRepoRuns.disable!()
+    start_schema_cache!()
+    project_id = unique_id("multirepo-project")
+    task_id = unique_id("multirepo-task")
+    run_id = unique_id("multirepo-run")
+    script_key = unique_id("multirepo-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("multirepo-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      snapshot([phase_spec(script_key, artifact_dir)]),
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ProjectRepositoryAdded",
+          payload: %{
+            project_id: project_id,
+            repo_id: "b",
+            path: Path.join(System.tmp_dir!(), "repo-b"),
+            default_branch: nil,
+            vcs: %{adapter: "git"},
+            task_provider: nil,
+            added_by: "operator:test",
+            at: "2026-01-01T00:00:00Z"
+          }
+        }
+      ])
+
+    task = Map.put(ProjectionStore.task_projection(task_id), :repo_ids, ["b"])
+
+    start_supervised!(%{
+      id: {RunExecutor, run_id},
+      start: {RunExecutor, :start_link, [run_id, task]},
+      restart: :transient,
+      shutdown: 5_000,
+      type: :worker
+    })
+
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{} = r -> if r.status == "failed", do: {:ok, r}, else: nil
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed"
+      )
+
+    assert run.failure_reason =~ ":run_repo_set_rejected"
+    assert run.failure_reason =~ ":multi_repo_runs_disabled"
+
     assert {:error, :stream_not_found} =
              EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
   end

@@ -1,0 +1,37 @@
+[
+  {
+    "event_type": "ProjectRegistered",
+    "payload": {
+      "project_id": "legacy-1",
+      "path": "/srv/legacy",
+      "name": "Legacy",
+      "status": "active",
+      "default_branch": "main",
+      "config": {"name": "Legacy", "default_branch": "main"},
+      "health": {"ok": true}
+    }
+  },
+  {
+    "event_type": "ProjectUpdated",
+    "payload": {
+      "project_id": "legacy-1",
+      "name": "Legacy renamed",
+      "default_branch": "main",
+      "config": {"labels": ["a"]}
+    }
+  },
+  {
+    "event_type": "WorktreeCreated",
+    "payload": {
+      "operation_id": "wt-run-0123456789abcdef0123456789abcdef",
+      "project_id": "legacy-1",
+      "run_id": "run-0123456789abcdef0123456789abcdef",
+      "phase_id": "phase-1",
+      "repo_path": "/srv/legacy",
+      "worktree_path": "/srv/legacy-wt/run",
+      "branch": "foreman/run",
+      "base_ref": "main",
+      "cleanup": "always"
+    }
+  }
+]

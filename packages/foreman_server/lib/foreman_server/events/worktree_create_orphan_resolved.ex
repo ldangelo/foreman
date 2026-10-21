@@ -12,6 +12,7 @@ defmodule ForemanServer.Events.WorktreeCreateOrphanResolved do
   projection can validate key consistency during replay.
   """
 
+  # `repo_id`: absent = the run's primary repo (E12); declared for strict decode.
   @enforce_keys [:operation_id, :project_id, :run_id, :phase_id]
   @type t :: %__MODULE__{
           operation_id: String.t(),
@@ -20,7 +21,8 @@ defmodule ForemanServer.Events.WorktreeCreateOrphanResolved do
           phase_id: String.t(),
           worktree_path: String.t() | nil,
           repo_path: String.t() | nil,
-          resolution: String.t() | nil
+          resolution: String.t() | nil,
+          repo_id: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -30,6 +32,7 @@ defmodule ForemanServer.Events.WorktreeCreateOrphanResolved do
     :phase_id,
     :worktree_path,
     :repo_path,
-    :resolution
+    :resolution,
+    :repo_id
   ]
 end

@@ -20,7 +20,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 >
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --notification-preference --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -412,6 +412,16 @@ foreman project context project-123
 foreman project context --format json project-123
 ```
 
+### `foreman project repo add|remove|list <id>`
+
+Manage the repositories of a multi-repository project (E12). The project's own `path` is the synthesised **primary** repository (id `main`, cannot be removed); `repo add` attaches further checkouts that already exist on the server host (no clone). `add --id <repo-id> --path <abs-path> [--default-branch B] [--by NAME]` and `remove --id <repo-id> [--by NAME]` post the operator commands `project.repo.add` / `project.repo.remove` (`--idempotency-key` makes retries collapse). Ids match `^[a-z0-9][a-z0-9-]{0,31}$`. Before dispatch the server resolves the path with realpath (symlinks cannot alias a repository), requires the root of a git work tree, and rejects a path equal to the primary or another attached repository (`repo_path_duplicate`) or a checkout with the same normalised `origin` URL as another repository (`repo_remote_duplicate`). A `project update --path` that moves the primary goes through the same checks. `list [--format=json]` reads `GET /api/projects/<id>/repositories` (primary first); the project JSON carries the same list under `repositories`. A run may span several repositories (`task.create` `repo_ids`; the multi-repo run gate `config :foreman_server, :multi_repo, runs` is open by default, and `runs: false` makes run start refuse more than one repository with `multi_repo_runs_disabled`); each repository the run changed gets its own PR, merged with `run approve-merge`/`run merge --repo-id` and re-opened with `run retry-pr --repo-id`. The first multi-repo run writes events an older binary cannot replay: rolling back to a build without E12 is not safe after it. Project settings `repo_allowlist` (absolute path prefixes) and `max_repos_per_run` (default 4) are set with the `project.update` command and validated (`invalid_repo_allowlist`, `max_repos_per_run_invalid`); `max_repos_per_run` caps the repositories of one run (primary included) and `repo_allowlist` gates the repositories a thread may attach to its own run (empty = off). `scripts/e2e/multi_repo.sh` is the live end-to-end harness for all of this (see the user guide, "Repositories").
+
+```
+foreman project repo add --id api --path /srv/api project-123
+foreman project repo list project-123
+foreman project repo remove --id api project-123
+```
+
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 
 `pause [--reason <text>]` refuses new work (`task.create`, run reservation, jobsite start, BeadsWatcher imports) with `{:project_paused, id}` while in-flight runs continue; it is reversible. `resume` restores admission and re-admits held work. `reactivate` un-archives an archived project. Each takes `--idempotency-key <key>`.
@@ -649,6 +659,13 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 
 Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`, `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`, and `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS`. When exceeded, Foreman stops the run, writes a native task failure note, and marks the run stuck for operator action.
 
+> **Correction.** None of `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`,
+> `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
+> `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
+> in the server or CLI source, so no pipeline budget is enforced. `foreman run`
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
+> Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
+
 ### `foreman run task`
 
 Operator use of `foreman run task` was removed after the Elixir cutover. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the worker store before execution so prompts receive title/type/priority/description metadata.
@@ -722,7 +739,7 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   AgentRuntime's own `:backend` opt is a separate, internal manual-strategy
   parameter with no CLI surface.
 - `--base-branch <branch>` (optional, half-consumed per
-  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
+  [TRD-2026-80ba0665](TRD/completed/TRD-2026-80ba0665-branch-parent-resolution.md))
   — parent branch for the new task's worktree and PR. **The default now
   resolves server-side from the operator's checkout**: `RunExecutor` records
   `git symbolic-ref --short HEAD` of the project checkout when the run's first
@@ -748,7 +765,7 @@ foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
 
-### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>`
+### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> [--repo-id <repo-id>]`
 
 Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`). Sends the `merge_approve` operator command. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut.
 
@@ -759,8 +776,11 @@ The identity is a claim made by whoever holds the API token, not an authenticate
 | `--id <run-id>` | Run ID (required). |
 | `--approver <name>` | Approver name, recorded on the approval (required). |
 | `--identity <github:login>` | Approver identity checked against the allowlist (required). |
+| `--repo-id <repo-id>` | Repository whose PR to approve (E12 multi-repo runs). Omit for the run's primary repository. |
 
-### `foreman run merge --id <run-id>`
+Each PR of a multi-repository run has its own merge gate (`merge_gates`, keyed by `repo_id`; the primary's is `nil`), so one `approve-merge` call approves exactly one PR. There is no approve-all. An unknown `--repo-id` fails with `{:merge_gate_not_found, :run, "<repo-id>"}`; for the primary the legacy `{:merge_gate_not_found, :run}` is unchanged.
+
+### `foreman run merge --id <run-id> [--repo-id <repo-id>]`
 
 Squash-merges the run's PR on GitHub with `gh pr merge --squash --match-head-commit <sha>`. Sends the `run.pr.merge` operator command; only the run id is sent, because the server builds the rest from the run's stored `PrReady` event and ignores any other payload field.
 
@@ -769,6 +789,16 @@ It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless t
 | Option | Description |
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
+| `--repo-id <repo-id>` | Repository whose PR to merge (E12). Omit for the run's primary repository. Only that repository's approval and `PrReady` (and so its own `--match-head-commit` pin) are used. |
+
+### `foreman run retry-pr <run-id> --repo-id <repo-id>`
+
+Re-opens the PR of one repository of a multi-repository run whose PR could not be created. Sends the `run.pr.retry` operator command; the server re-runs the PR step for that repository from its preserved worktree (association and `run.pr.ready` included) and then reclaims that worktree if the workflow's `cleanup` policy would have. Idempotent: a repository that already has its PR returns it again and opens nothing. Allowed on a finished run. Like merge, it is operator-only and has no MCP tool. `--repo-id` is always the repository's real id (the primary's included). A repository with nothing to propose fails with `nothing_to_propose`; an unknown repository with `unknown_repo`.
+
+| Option | Description |
+|--------|-------------|
+| `<run-id>` / `--id <run-id>` | Run ID (required). |
+| `--repo-id <repo-id>` | Repository to open the PR for (required). |
 
 ### `foreman thread list|get|stop|steer|resolve|reopen`
 
@@ -1473,7 +1503,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only),
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_repo_list` (repositories, primary first), `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only),
 `foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events),
 `foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,
@@ -1483,6 +1513,12 @@ optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
 Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
 `text`, optional `message_id`, `resume`).
+
+Write-gated multi-repository tools (`allow_workflow_writes: true`; system commands,
+not operator routes): `foreman_run_request_repo` (`run_id`, `repo_id` or `repo_path`;
+allowlist + cap + audit; effective next phase) and `foreman_task_fanout`
+(`project_id`, `title`, `prompt`, `workflow`, `repo_ids` or `"all"`, optional
+`fanout_id`). `foreman_task_create` also takes optional `repo_id` and `repo_ids`.
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams

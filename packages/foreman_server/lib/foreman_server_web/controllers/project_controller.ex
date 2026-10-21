@@ -7,6 +7,9 @@ defmodule ForemanServerWeb.ProjectController do
   `GET /api/projects/:id/settings` returns the typed settings and limits.
   `GET /api/projects/:id/context` returns the standing context an agent launched
   now would receive (`ForemanServer.ProjectContext.build/2`, read-only).
+  `GET /api/projects/:id/repositories` returns the project's repositories, the
+  synthesised primary (`"main"`) first (E12); project JSON carries the same list
+  under `repositories`.
   `GET /api/projects/:id/schedules` returns the project's schedules (Scheduled-tab data).
 
   Both project reads redact `config.env` / `config.environment` values
@@ -55,7 +58,11 @@ defmodule ForemanServerWeb.ProjectController do
         |> put_status(:ok)
         |> json(%{
           project:
-            projection |> ProjectSettings.public_view() |> with_attention() |> stringify_keys()
+            projection
+            |> ProjectSettings.public_view()
+            |> with_attention()
+            |> with_repositories(project_id)
+            |> stringify_keys()
         })
     end
   end
@@ -153,7 +160,11 @@ defmodule ForemanServerWeb.ProjectController do
         projects:
           Enum.map(
             visible_projects,
-            &(&1 |> ProjectSettings.public_view() |> with_attention() |> stringify_keys())
+            &(&1
+              |> ProjectSettings.public_view()
+              |> with_attention()
+              |> with_repositories(Map.get(&1, :project_id) || Map.get(&1, :id))
+              |> stringify_keys())
           ),
         meta: %{truncated: truncated?}
       })
@@ -170,6 +181,24 @@ defmodule ForemanServerWeb.ProjectController do
         |> json(%{error: "invalid_query", reason: ":invalid_query"})
     end
   end
+
+  @doc "GET /api/projects/:id/repositories: primary (`main`) first, then attached repositories."
+  def repositories(conn, %{"id" => project_id}) do
+    case ProjectionStore.project_repositories(project_id) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "not_found", reason: ":project_not_found"})
+
+      repos ->
+        json(conn, %{project_id: project_id, repositories: stringify_keys(repos)})
+    end
+  end
+
+  defp with_repositories(projection, project_id) when is_binary(project_id),
+    do: Map.put(projection, :repositories, ProjectionStore.project_repositories(project_id) || [])
+
+  defp with_repositories(projection, _project_id), do: projection
 
   # E7-S4: operator attention flag, computed per request (O(threads) per project).
   defp with_attention(projection), do: Map.merge(projection, Overview.project_fields(projection))

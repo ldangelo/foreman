@@ -23,6 +23,34 @@ service in `packages/foreman_server`. This repository contains:
 | Jido migration (TRD-2026-4212be7e) | `JIDO_FORKS.md` (fork inventory), `docs/guides/adding-a-jido-harness-provider.md` (provider extension), and per-PR notes in `docs/TRD/`. |
 | Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` (or the `config :foreman_server, :workflow_root` override) has no `*.yaml`. |
 
+## Projects workflow
+
+A project is a registered repository with standing instructions, durable memory, a read-only library, a coordinator you can chat with, and a set of threads (agent work, each with its own branch and PR). What ships on `main`:
+
+- **Standing context** — goal and instructions, memory (`.foreman/memory/`) and library (`.foreman/library/`) reach every agent launch on both doors through `ProjectContext.build/2`; environment, secrets, setup script and network policy are per-project records.
+- **Threads and steering** — list, stop, resolve and steer threads; steering is pause, commit, resume with your message.
+- **Overview and workspace** — "what needs me?" grouping at `GET /api/projects/:id/overview` and the LiveView workspace at `/dashboard/projects/:id` (bearer-token guarded).
+- **Coordinator** — one durable conversation per project that answers, asks, proposes and starts threads through a closed command set; it can never merge or approve.
+- **Approvals and questions** — agent tool-permission requests and operator questions surface as "waiting on you"; there is no MCP tool to decide them.
+- **PR watching and auto-fix** — observation by default, bounded opt-in fix threads (UNVERIFIED against live GitHub, see the user guide).
+- **Notifications, schedules, usage and limits, pause/resume, adoption and setup recommendations.**
+- **The merge gate is operator-only** (`foreman run approve-merge`, then `foreman run merge`).
+
+Quickstart (server running via `devbox run server`; `FOREMAN_API_URL` defaults to `http://127.0.0.1:4766`, set `FOREMAN_API_TOKEN` for the CLI):
+
+```bash
+foreman project create --id demo --path /srv/demo \
+  --task-provider beads --task-provider-database-path /srv/demo/.beads
+foreman project update --goal "Ship the importer" --instructions-file ./INSTRUCTIONS.md demo
+foreman project memory write --name conventions --file notes.md demo
+foreman project chat demo "triage the failing nightly build"
+foreman thread list --project demo
+foreman run approve-merge --id <run-id> --approver me --identity github:<login>
+foreman run merge --id <run-id>
+```
+
+The Overview has no CLI verb: open `/dashboard/projects/demo?token=<FOREMAN_API_TOKEN>` or read `GET /api/projects/demo/overview`. Full walk-through: the "Projects workflow" chapter of [`docs/user-guide.md`](./docs/user-guide.md); where each capability lives: [`docs/lessons/claude-projects-architecture.md`](./docs/lessons/claude-projects-architecture.md).
+
 ## Threads
 
 A thread is the operator-facing unit of work (a workflow run, `run:<id>`, or a jobsite, `jobsite:<id>`) with its own branch/PR. Surfaces:
@@ -284,6 +312,7 @@ The MCP `foreman_inbox_send` write tool appends concise run progress notes to th
 
 Project memory (`<project>/.foreman/memory/`, `MEMORY.md` index plus topic files; redacted, size-capped, audited by `ProjectMemoryWritten`/`ProjectMemoryForgotten` events) is exposed through the MCP tools `foreman_project_memory_list` / `foreman_project_memory_read` and the write-gated `foreman_project_memory_write` / `foreman_project_memory_forget`, the HTTP endpoints `/api/projects/:id/memory[/:name|/sync]`, and `foreman project memory list|read|write|forget|sync`. See the user guide section "Project memory".
 
+Project repositories (E12): the project `path` is the primary repository (`main`); extra checkouts are attached with `foreman project repo add|remove|list` (operator commands `project.repo.add|remove`, `GET /api/projects/:id/repositories`, read-only MCP `foreman_project_repo_list`). Runs still use one repository until multi-repo runs are enabled. See the user guide section "Repositories".
 The project library (`<project>/.foreman/library/`, the only gitignored path under `.foreman/`; read-only files and folders for agents, audited by `ProjectLibraryAdded`/`Replaced`/`Removed` events) is exposed through the read-only MCP tools `foreman_project_library_list` / `foreman_project_library_read`, the HTTP endpoints `/api/projects/:id/library[/:entry_id[/files/*path]]`, and `foreman project library list|add|replace|remove`. Agents see `FOREMAN_LIBRARY_PATH` (a read-only `/library` mount for docker jobsites) and the library index in their standing context. See the user guide section "Project library".
 
 Standing context: every agent launch (workflow phases and jobsite iterations) receives the project instructions, repository list and memory index as its system prompt, built by `ForemanServer.ProjectContext.build/2` with a byte budget and visible truncation markers. Inspect it with `foreman project context <project-id>` / `GET /api/projects/:id/context`. See the user guide section "Standing context".

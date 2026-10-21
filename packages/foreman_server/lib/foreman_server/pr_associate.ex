@@ -28,21 +28,34 @@ defmodule ForemanServer.PrAssociate do
   @doc """
   Associate `run_id` with `pr_url`. Dispatches a `pr.associate` command
   through `CommandRouter`; on success returns `{:ok, pr_association_id}`
-  where `pr_association_id == run_id` (one association per run).
+  where `pr_association_id == run_id` (one association per run and repository).
+
+  `repo_id` is `nil` for the run's primary repository (stream
+  `pr_association:<run_id>`, no `repo_id` on the event); any other repository
+  gets its own stream `pr_association:<run_id>:<repo_id>` and the event carries
+  `repo_id`.
   """
-  @spec store(String.t(), String.t()) :: result
-  def store(run_id, pr_url) when is_binary(run_id) and is_binary(pr_url) do
+  @spec store(String.t(), String.t(), String.t() | nil) :: result
+  def store(run_id, pr_url, repo_id \\ nil)
+
+  def store(run_id, pr_url, repo_id)
+      when is_binary(run_id) and is_binary(pr_url) and (is_nil(repo_id) or is_binary(repo_id)) do
     with :ok <- validate_run_id(run_id),
-         :ok <- validate_pr_url(pr_url) do
+         :ok <- validate_pr_url(pr_url),
+         :ok <- validate_repo_id(repo_id) do
+      payload = %{
+        run_id: run_id,
+        pr_url: pr_url,
+        pr_number: extract_pr_number(pr_url),
+        associated_at: System.system_time(:millisecond)
+      }
+
+      payload = if repo_id, do: Map.put(payload, :repo_id, repo_id), else: payload
+
       command = %{
         type: "pr.associate",
-        aggregate_id: "pr_association:#{run_id}",
-        payload: %{
-          run_id: run_id,
-          pr_url: pr_url,
-          pr_number: extract_pr_number(pr_url),
-          associated_at: System.system_time(:millisecond)
-        }
+        aggregate_id: ForemanServer.Aggregates.PrAssociation.stream_id(run_id, repo_id),
+        payload: payload
       }
 
       case CommandGateway.dispatch_system(command) do
@@ -52,7 +65,7 @@ defmodule ForemanServer.PrAssociate do
     end
   end
 
-  def store(_, _), do: {:error, :invalid_arguments}
+  def store(_, _, _), do: {:error, :invalid_arguments}
 
   @doc """
   Look up the current PR association for `run_id` from `ProjectionStore`.
@@ -71,6 +84,10 @@ defmodule ForemanServer.PrAssociate do
   # ---------------------------------------------------------------------------
   # Internal
   # ---------------------------------------------------------------------------
+
+  defp validate_repo_id(nil), do: :ok
+  defp validate_repo_id(id) when byte_size(id) > 0, do: :ok
+  defp validate_repo_id(_), do: {:error, :invalid_repo_id}
 
   defp validate_run_id(run_id) when byte_size(run_id) > 0, do: :ok
   defp validate_run_id(_), do: {:error, :invalid_run_id}

@@ -85,6 +85,7 @@ CQRS/event-sourced Elixir umbrella: `foreman_server` (Phoenix is the sole HTTP i
 | `phase-execution-and-pr-mechanics.md` | RunExecutor, Jobsite engine, `commit:`/`stack_pr:`/`timeout_minutes:`, AutoPR, base-branch resolution, `FOREMAN_*` env/artifact contract, merge gate, `/api/jobsites` |
 | `typed-boundaries-full.md` | Full §5 rules with the MCP/StepSequencer/cleanup post-mortems |
 | `architecture-and-events.md` | Stack, command flow, actors, aggregate state, domain events, idempotency, Go CLI boundaries, TaskProvider, ImplementationContext |
+| `claude-projects-architecture.md` | Project workspace capabilities (threads, Overview, coordinator, approvals, PR watching, schedules, usage, memory, library): aggregates, events, modules, HTTP/MCP/CLI surfaces |
 | `operator-reference.md` | Starting/stopping the server, projects, task lifecycle, Go CLI commands, workflow install |
 | `devbox-and-toolchain.md` | `devbox run` catalog, otel-collector, SigNoz logs, toolchain pin |
 | `beads-runtime-and-dispatch.md` | Beads quickstart, label-gate dispatch partitioning, `bv` sidecar, session protocol |
