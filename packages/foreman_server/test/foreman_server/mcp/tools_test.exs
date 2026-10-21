@@ -97,9 +97,16 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_project_memory_read",
                "foreman_project_memory_write",
                "foreman_project_memory_forget",
+               "foreman_approvals_list",
+               "foreman_questions_list",
                "foreman_project_conversation",
                "foreman_project_message",
-               "foreman_project_repo_list"
+               "foreman_project_repo_list",
+               "foreman_pr_status",
+               "foreman_pr_fix",
+               "foreman_pr_watch_stop",
+               "foreman_project_library_list",
+               "foreman_project_library_read"
              ]
 
       Enum.each(tools, fn tool ->

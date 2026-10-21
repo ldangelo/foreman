@@ -191,6 +191,66 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
     assert [%{message_id: "m1", text: "survives restart"}] = RunControl.peek_messages(run_id)
   end
 
+  # E8 resume-with-override: an approval's one-phase `approval_mode`.
+  test "an approval override applies to the launch that consumes the message and to no later one",
+       %{run_id: run_id, project_id: project_id} do
+    steer!(run_id, "approval:c1", "approved Write", %{
+      resume: false,
+      approval_mode_override: "auto_edit"
+    })
+
+    assert_event("RunPaused", run_id)
+    RunControl.clear(run_id)
+
+    assert [%{message_id: "approval:c1", approval_mode_override: "auto_edit"}] =
+             ProjectionStore.pending_steering(run_id)
+
+    first = launch(run_id, project_id)
+    assert Keyword.fetch!(first.driver_opts.(60_000), :approval_mode) == :auto_edit
+
+    assert_event("RunSteerConsumed", run_id)
+    second = launch(run_id, project_id)
+    refute Keyword.has_key?(second.driver_opts.(60_000), :approval_mode)
+  end
+
+  test "a command phase applies and consumes an approval override without injecting any text",
+       %{run_id: run_id, project_id: project_id} do
+    steer!(run_id, "approval:c2", "approved Bash", %{
+      resume: false,
+      approval_mode_override: "auto_approve"
+    })
+
+    steer!(run_id, "plain", "just text", %{resume: false})
+    assert_event("RunPaused", run_id)
+    RunControl.clear(run_id)
+
+    launch = launch(run_id, project_id, %{name: "cmd", action: :command, command: "echo hi"})
+    assert Keyword.fetch!(launch.driver_opts.(60_000), :approval_mode) == :auto_approve
+    refute launch.phase.prompt =~ "approved Bash"
+    refute launch.phase.prompt =~ @heading
+
+    assert_event("RunSteerConsumed", run_id)
+    # only the override message was consumed; the text-only one still waits for a prompt phase
+    assert [%{message_id: "plain"}] = ProjectionStore.pending_steering(run_id)
+  end
+
+  test "an unknown override name is rejected, never queued", %{run_id: run_id} do
+    assert {:error, {:invalid_approval_mode_override, "yolo"}} =
+             CommandGateway.dispatch_operator(%{
+               type: "run.steer",
+               command_id: "steer-bad-#{run_id}",
+               aggregate_id: "run:#{run_id}",
+               payload: %{
+                 run_id: run_id,
+                 message_id: "m",
+                 text: "x",
+                 approval_mode_override: "yolo"
+               }
+             })
+
+    assert ProjectionStore.pending_steering(run_id) == []
+  end
+
   # -- helpers ---------------------------------------------------------------
 
   defp steer!(run_id, message_id, text, extra \\ %{}) do
@@ -203,8 +263,13 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
       })
   end
 
-  # Builds the phase launch exactly as a (re)started executor would.
   defp launch_prompt(run_id, project_id) do
+    %{phase: %{prompt: prompt}} = launch(run_id, project_id)
+    prompt
+  end
+
+  # Builds the phase launch exactly as a (re)started executor would.
+  defp launch(run_id, project_id, phase_spec \\ %{name: "code-generation"}) do
     projection = %{
       task_id: "task-#{run_id}",
       project_id: project_id,
@@ -219,13 +284,14 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
     }
 
     {:ok, state} = RunExecutor.init({run_id, projection, []})
-    phase_spec = %{name: "code-generation"}
 
-    assert {:ok, %{phase: %{prompt: prompt}, launch_opts: opts}} =
+    assert {:ok, %{phase: %{prompt: prompt}, launch_opts: opts} = launch} =
              RunExecutor.phase_launch(state, phase_spec, 0, nil)
 
-    assert Keyword.fetch!(opts, :prompt) == prompt
-    prompt
+    if Map.get(phase_spec, :action) != :command,
+      do: assert(Keyword.fetch!(opts, :prompt) == prompt)
+
+    launch
   end
 
   defp occurrences(haystack, needle),

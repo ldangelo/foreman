@@ -23,7 +23,9 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_schedule_pause",
     "foreman_schedule_resume",
     "foreman_schedule_delete",
-    "foreman_project_message"
+    "foreman_project_message",
+    "foreman_pr_fix",
+    "foreman_pr_watch_stop"
   ]
 
   @spec authorized?(String.t()) :: boolean()

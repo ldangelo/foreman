@@ -131,8 +131,11 @@ defmodule ForemanServer.Application do
         maybe_threads_children() ++
         maybe_overview_children() ++
         maybe_review_children() ++
+        maybe_library_collector_child() ++
+        maybe_approvals_children() ++
         maybe_coordinator_children() ++
         maybe_stuck_detector_child() ++
+        maybe_pr_watcher_child() ++
         maybe_pr_monitor_child() ++
         maybe_schedule_ticker_child() ++
         maybe_trigger_poller_child() ++
@@ -235,6 +238,14 @@ defmodule ForemanServer.Application do
     end
   end
 
+  defp maybe_library_collector_child do
+    if Application.get_env(:foreman_server, :library, [])[:collector] do
+      [ForemanServer.Library.Collector]
+    else
+      []
+    end
+  end
+
   defp maybe_coordinator_children do
     if Application.get_env(:foreman_server, :coordinator, [])[:enabled] do
       [{ForemanServer.Coordinator.Supervisor, []}]
@@ -257,6 +268,21 @@ defmodule ForemanServer.Application do
       [
         {Task.Supervisor, name: ForemanServer.Review.TaskSupervisor},
         ForemanServer.Review.Analyzer
+      ]
+    else
+      []
+    end
+  end
+
+  # E8: the live-approval registry, the decision and answer deliverers (the sweeper
+  # joins in the timeouts story). Off in test config; tests start them explicitly.
+  defp maybe_approvals_children do
+    if ForemanServer.Approvals.Config.start_children?() do
+      [
+        ForemanServer.Approvals.Live,
+        ForemanServer.Approvals.Deliverer,
+        ForemanServer.Questions.Deliverer,
+        ForemanServer.Approvals.Sweeper
       ]
     else
       []
@@ -582,6 +608,15 @@ defmodule ForemanServer.Application do
   # They start after CommandRouter and ProjectionStore, which they dispatch into.
   defp maybe_pr_monitor_child do
     if ForemanServer.PrMonitor.enabled?(), do: [ForemanServer.PrMonitor], else: []
+  end
+
+  # E9: the PR watcher subscribes to ProjectionStore and dispatches through
+  # CommandRouter, so it starts after both. On by default; the test env turns it off
+  # (tests start it with start_supervised!) and FOREMAN_PR_WATCHER_ENABLED=false
+  # turns it off in a deployment. It only acts on runs that own a PR, and polling
+  # stays opt-in through PrMonitor.
+  defp maybe_pr_watcher_child do
+    if ForemanServer.PrWatcher.enabled?(), do: [ForemanServer.PrWatcher], else: []
   end
 
   # After ProjectionStore and CommandRouter (earlier in this list) so the first

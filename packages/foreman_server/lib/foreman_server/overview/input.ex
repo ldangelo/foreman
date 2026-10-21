@@ -7,7 +7,12 @@ defmodule ForemanServer.Overview.Input do
     * `resolved?` - the operator disposition flag
     * `pr_state` - `:open | :merged | :closed | :conflicted | nil`
     * `merge_gate` - `:none | :pending | :approved`
-    * `pending_approvals`, `open_questions` - counts (zero until E8 lands)
+    * `pending_approvals`, `open_questions` - counts of requests / questions waiting
+      for the operator (E8)
+    * `expired_approvals`, `expired_questions` - requests / questions that timed out
+      undecided while the thread is still paused
+    * `failed_approval_deliveries` - approved calls whose decision never reached
+      the agent
     * `failure_reason` - run failure detail, nil when none
     * `review_verdict` - `"met" | "partially_met" | "not_met" | "undetermined" | nil`
     * `paused_reason` - `"steer"` when a pause is only an operator steer, else nil
@@ -24,6 +29,9 @@ defmodule ForemanServer.Overview.Input do
           merge_gate: :none | :pending | :approved,
           pending_approvals: non_neg_integer(),
           open_questions: non_neg_integer(),
+          expired_approvals: non_neg_integer(),
+          expired_questions: non_neg_integer(),
+          failed_approval_deliveries: non_neg_integer(),
           failure_reason: String.t() | nil,
           review_verdict: String.t() | nil,
           paused_reason: String.t() | nil,
@@ -40,6 +48,9 @@ defmodule ForemanServer.Overview.Input do
     merge_gate: :none,
     pending_approvals: 0,
     open_questions: 0,
+    expired_approvals: 0,
+    expired_questions: 0,
+    failed_approval_deliveries: 0,
     idle_ms: 0
   ]
 end

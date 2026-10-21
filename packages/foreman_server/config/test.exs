@@ -64,6 +64,8 @@ config :foreman_server, :start_notifier?, false
 config :foreman_server, :threads, idle_resolver: false
 # Overview.MergeResolver resolves real threads; tests start it explicitly.
 config :foreman_server, :overview, merge_resolver: false
+# Approvals.Deliverer/Sweeper react to real projections; tests start them explicitly.
+config :foreman_server, :approvals, start_children: false
 
 config :foreman_server, :start_json_schema_cache?, false
 
@@ -73,6 +75,8 @@ config :foreman_server, :start_boot_reconciliation?, false
 config :foreman_server, :start_jobsite_boot_recovery?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
 config :foreman_server, :pr_monitor_enabled, false
+# E9: tests start the PR watcher explicitly with start_supervised!.
+config :foreman_server, :pr_watcher, enabled: false
 # Tests start the ticker explicitly with start_supervised!.
 config :foreman_server, :schedule, ticker_enabled: false
 config :foreman_server, :trigger_poll_enabled, false
@@ -153,6 +157,10 @@ config :foreman_server, :review,
   capture: false,
   analysis: false,
   evaluator: ForemanServer.Review.Evaluator.Stub
+
+# The collector subscribes to the projection store and copies files on events; tests
+# that exercise it start it themselves.
+config :foreman_server, :library, collector: false
 
 # The suite must never read or write the operator's ~/.foreman/secrets. The
 # directory does not exist unless a test creates it; tests that store secrets

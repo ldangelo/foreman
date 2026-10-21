@@ -20,11 +20,11 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>\n  foreman run merge --id <run-id>\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>\n  foreman run merge --id <run-id>\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (list, get, cancel, pause, resume, remove, reset, approve-merge, merge, submit)",
+			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, merge, fix-ci, address-comments, resolve-conflicts, create-pr, watch-stop, watch-start, submit)",
 			usage,
 		)
 	}
@@ -48,6 +48,20 @@ func runRun(c *client.Client, args []string) error {
 		return runApproveMerge(c, args[1:])
 	case "merge":
 		return runMerge(c, args[1:])
+	case "prs":
+		return runPrs(c, args[1:])
+	case "fix-ci":
+		return runPrFix(c, "fix-ci", "run.pr.fix_ci", args[1:])
+	case "address-comments":
+		return runPrFix(c, "address-comments", "run.pr.address_comments", args[1:])
+	case "resolve-conflicts":
+		return runPrFix(c, "resolve-conflicts", "run.pr.resolve_conflicts", args[1:])
+	case "create-pr":
+		return runCreatePr(c, args[1:])
+	case "watch-stop":
+		return runPrWatch(c, "watch-stop", "run.pr.watch_stop", args[1:])
+	case "watch-start":
+		return runPrWatch(c, "watch-start", "run.pr.watch_start", args[1:])
 	case "submit":
 		return runSubmit(c, args[1:])
 	default:
@@ -323,4 +337,112 @@ func runSubmit(c *client.Client, args []string) error {
 	}
 
 	return postCommand(c, commandEnvelope{Type: "task.create", Payload: payload})
+}
+
+// prRunID splits a leading positional run id (`foreman run fix-ci <id> --pr ...`)
+// from the flags, because the flag parser stops at the first positional. The
+// `--id` flag used by the other run verbs still works when no positional is given.
+func prRunID(args []string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "", args
+}
+
+// runPrs lists the watched PRs of a run: `foreman run prs <id>`.
+func runPrs(c *client.Client, args []string) error {
+	fs := newFlagSet("run prs")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman run prs: expected one argument: <run-id>")
+	}
+
+	var out map[string]any
+	if err := c.GetJSON(client.JoinPath("/api/runs", fs.Arg(0), "prs"), &out); err != nil {
+		return err
+	}
+
+	return printJSON(out)
+}
+
+// runPrFix requests a fix thread for a watched PR. The server decides everything
+// else (head SHA, attempt, caps); the CLI sends only the run, the optional PR and
+// the optional operator note.
+func runPrFix(c *client.Client, verb, commandType string, args []string) error {
+	fs := newFlagSet("run " + verb)
+	runID := fs.String("id", "", "Run ID (or pass it as the first argument)")
+	prURL := fs.String("pr", "", "PR URL (optional while the run watches exactly one PR)")
+	note := fs.String("note", "", "Extra guidance for the fix thread (max 2000 characters)")
+
+	positional, rest := prRunID(args)
+	if err := fs.parse(rest); err != nil {
+		return err
+	}
+	if positional != "" {
+		*runID = positional
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run %s: <run-id> is required", verb)
+	}
+
+	payload := map[string]any{"run_id": *runID}
+	if *prURL != "" {
+		payload["pr_url"] = *prURL
+	}
+	if *note != "" {
+		payload["note"] = *note
+	}
+
+	return postCommand(c, commandEnvelope{Type: commandType, Payload: payload})
+}
+
+// runCreatePr opens a PR for a finished run that pushed a branch but has none. The
+// server derives the head and base branches; only the run id is sent.
+func runCreatePr(c *client.Client, args []string) error {
+	fs := newFlagSet("run create-pr")
+	runID := fs.String("id", "", "Run ID (or pass it as the first argument)")
+
+	positional, rest := prRunID(args)
+	if err := fs.parse(rest); err != nil {
+		return err
+	}
+	if positional != "" {
+		*runID = positional
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run create-pr: <run-id> is required")
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.pr.create", Payload: map[string]any{"run_id": *runID}})
+}
+
+// runPrWatch stops or restarts watching one PR of a run.
+func runPrWatch(c *client.Client, verb, commandType string, args []string) error {
+	fs := newFlagSet("run " + verb)
+	runID := fs.String("id", "", "Run ID (or pass it as the first argument)")
+	prURL := fs.String("pr", "", "PR URL (required when the run watches several PRs)")
+
+	positional, rest := prRunID(args)
+	if err := fs.parse(rest); err != nil {
+		return err
+	}
+	if positional != "" {
+		*runID = positional
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run %s: <run-id> is required", verb)
+	}
+
+	payload := map[string]any{"run_id": *runID}
+	if *prURL != "" {
+		payload["pr_url"] = *prURL
+	}
+
+	return postCommand(c, commandEnvelope{Type: commandType, Payload: payload})
 }

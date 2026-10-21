@@ -278,6 +278,18 @@ config :foreman_server, :review,
   max_comment_bytes: 8_000,
   max_gap_beads: 10
 
+# PR watching (E9): ForemanServer.PrWatcher observes the PRs of runs (checks, reviews,
+# comments, conflicts) and, when a project opts in, starts fix threads. `enabled: false`
+# (env FOREMAN_PR_WATCHER_ENABLED=false) stops it. Polling is a separate opt-in
+# (FOREMAN_PR_MONITOR_ENABLED=true -> ForemanServer.PrMonitor). The fix-thread jobsite
+# runs `agent` unless the run's own provider session names one; `max_iterations`
+# bounds one fix agent invocation; `log_tail_bytes` caps the failing-CI log excerpt.
+config :foreman_server, :pr_watcher, enabled: true
+
+config :foreman_server, :pr_fix,
+  agent: %{"provider" => "claude"},
+  max_iterations: 1,
+  log_tail_bytes: 20_000
 # Per-project coordinator conversation (ForemanServer.Coordinator).
 config :foreman_server, :coordinator,
   enabled: true,
@@ -334,9 +346,25 @@ config :foreman_server, :secret_store,
 # must never log them (E4-S6).
 config :phoenix, :filter_parameters, ["password", "value"]
 
+# Project library (E5): limits mirror Claude Projects. `folder_*` apply to a folder add;
+# `produced_*` bound thread-produced files registered by `Library.Collector`;
+# `allow_server_paths` lets an operator add a directory that lives on the server host
+# (off by default: it lets the caller read arbitrary server directories).
+config :foreman_server, :library,
+  max_files_per_add: 100,
+  max_file_bytes: 480 * 1024 * 1024,
+  folder_max_files: 100,
+  folder_max_bytes: 200 * 1024 * 1024,
+  folder_skip_file_bytes: 30 * 1024 * 1024,
+  upload_max_bytes: 512 * 1024 * 1024,
+  allow_server_paths: false,
+  collector: true,
+  produced_max_bytes_per_run: 50 * 1024 * 1024,
+  produced_max_files_per_run: 100
+
 config :foreman_server, :project_context,
   max_bytes: 24_000,
   section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
-  section_providers: [ForemanServer.ProjectContext.Memory]
+  section_providers: [ForemanServer.ProjectContext.Memory, ForemanServer.ProjectContext.Library]
 
 import_config "#{config_env()}.exs"

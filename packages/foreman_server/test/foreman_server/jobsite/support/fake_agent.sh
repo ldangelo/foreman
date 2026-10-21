@@ -40,7 +40,7 @@ fi
 SESSION_ID="${FAKE_AGENT_SESSION_ID:-fake-session-stable-1}"
 TEXT="${FAKE_AGENT_TEXT:-did some work}"
 if [ -n "$FAKE_AGENT_ECHO_ENV" ]; then
-  TEXT="env:$FAKE_AGENT_ECHO_ENV=$(printenv "$FAKE_AGENT_ECHO_ENV")"
+  TEXT="env:$FAKE_AGENT_ECHO_ENV=$(printenv "$FAKE_AGENT_ECHO_ENV" || true)"
 fi
 
 printf '{"type":"session","id":"%s"}\n' "$SESSION_ID"

@@ -18,6 +18,7 @@
 //	project delete <id> POST /api/commands with type=project.archive (soft delete)
 //	project list        GET /api/projects
 //	project memory      list|read|write|forget|sync a project's memory (/api/projects/:id/memory)
+//	project library     list|add|replace|remove the project library (/api/projects/:id/library)
 //	project schedule list|create|pause|resume|delete  scheduled tasks (GET /api/projects/:id/schedules, POST /api/commands schedule.*)
 //	project chat <id>   POST/GET /api/projects/:id/coordinator/messages (long-poll), /coordinator, /coordinator/restart
 //	commands           Generate/install agent command assets
@@ -67,9 +68,12 @@ Commands:
   project resume <id> Resume a paused project
   project reactivate <id> Reactivate an archived project
   project delete <id> Soft-delete (archive) a project; history is kept, reactivate to restore
+  approvals list|approve|deny  Agent tool-permission requests (list --project|--run, approve/deny --run --call)
+  questions list|answer        Operator questions (list --project, answer --run --question --text)
   usage --project <id> Show token/cost usage (--from, --to, --by day|model|provider|role|thread, --limit, --format table|json)
   project list        List project projections
   project memory      list|read|write|forget|sync project memory topics
+  project library     list|add|replace|remove project library files
   project schedule list|create|pause|resume|delete  Manage scheduled tasks (--project-id <id>)
   project chat <id> [message...] Chat with a project's coordinator (--no-wait --since --history --format --restart)
   commands           Generate/install agent command assets
@@ -115,6 +119,10 @@ func main() {
 		err = runProject(c, args)
 	case "usage":
 		err = runUsage(c, args)
+	case "approvals":
+		err = runApprovals(c, args)
+	case "questions":
+		err = runQuestions(c, args)
 	case "commands":
 		err = runCommands(args)
 	case "run":

@@ -756,6 +756,123 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
     end
   end
 
+  # E8 (spike S2 NO-GO path): an agent denied tools is waiting on the operator, so
+  # the phase pauses the run awaiting an approval (partial work committed) instead
+  # of failing it. Real git and a real run aggregate.
+  describe "handle_phase_body_error/6 on {:permission_denied, tools}" do
+    setup %{repo: repo, base: base} do
+      :ok = ProjectionStore.subscribe(replay_existing: false)
+      project_id = "p-#{System.unique_integer([:positive])}"
+      run_id = "run-denied-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        ForemanServer.CommandRouter.dispatch(%{
+          aggregate_id: "project:#{project_id}",
+          command_id: "register:#{project_id}",
+          type: "project.register",
+          payload: %{project_id: project_id, name: project_id, path: System.tmp_dir!()}
+        })
+
+      {:ok, _} =
+        ForemanServer.CommandRouter.dispatch_run_start(project_id, %{
+          run_id: run_id,
+          task_id: "task-#{run_id}",
+          workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]},
+          phase_specs: [%{phase_id: "phase-1", kind: "command"}],
+          approval_id: "approval-#{run_id}"
+        })
+
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/#{run_id}"
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+      on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+
+      state = %{
+        run_id: run_id,
+        task: %{task_id: run_id, project_id: project_id},
+        status: :in_progress
+      }
+
+      %{
+        run_id: run_id,
+        repo: repo,
+        state: state,
+        record: %{worktree_path: wt, branch: branch, base_ref: base},
+        wt: wt,
+        branch: branch
+      }
+    end
+
+    defp await_run_event(type, run_id) do
+      receive do
+        {:projection_event, %{event_type: ^type, data: data}} ->
+          data = if is_struct(data), do: Map.from_struct(data), else: data
+
+          if (data[:run_id] || data["run_id"]) == run_id,
+            do: data,
+            else: await_run_event(type, run_id)
+
+        {:projection_event, _other} ->
+          await_run_event(type, run_id)
+      after
+        15_000 -> flunk("timed out waiting for #{type} on #{run_id}")
+      end
+    end
+
+    test "pauses awaiting approval, commits partial work and records one request per tool",
+         ctx do
+      write!(ctx.wt, "docs/PRD/partial.md")
+
+      assert {:stopped, %{status: :paused}} =
+               RunExecutor.__handle_phase_body_error_for_test__(
+                 ctx.state,
+                 %{},
+                 1,
+                 ctx.record,
+                 {:permission_denied, ["Write", "Bash"]}
+               )
+
+      paused = await_run_event("RunPaused", ctx.run_id)
+      assert (paused[:reason] || paused["reason"]) == "awaiting_approval"
+
+      assert ["Bash", "Write"] ==
+               ctx.run_id
+               |> ProjectionStore.run_approvals()
+               |> Enum.map(& &1.tool_name)
+               |> Enum.sort()
+
+      assert String.contains?(
+               git!(ctx.repo, ["ls-tree", "-r", "--name-only", ctx.branch]),
+               "docs/PRD/partial.md"
+             )
+    end
+
+    test "with the feature off the denial fails the phase as before (no request, no pause)",
+         ctx do
+      previous = Application.get_env(:foreman_server, :approvals, [])
+
+      Application.put_env(
+        :foreman_server,
+        :approvals,
+        Keyword.put(previous, :pause_on_permission_denied, false)
+      )
+
+      on_exit(fn -> Application.put_env(:foreman_server, :approvals, previous) end)
+
+      result =
+        RunExecutor.__handle_phase_body_error_for_test__(
+          ctx.state,
+          %{},
+          1,
+          ctx.record,
+          {:permission_denied, ["Write"]}
+        )
+
+      refute match?({:stopped, _}, result)
+      assert ProjectionStore.run_approvals(ctx.run_id, status: :all) == []
+    end
+  end
+
   # The gap `handle_phase_body_error/6` alone cannot close: a pause/cancel
   # requested while the executor sits BETWEEN phases (no agent running, so
   # `RunControl.cancel_agent/1` has nothing to interrupt) must still stop the

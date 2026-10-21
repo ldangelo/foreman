@@ -16,11 +16,13 @@ defmodule ForemanServer.ProjectSettings do
           coordinator_effort: String.t() | nil,
           max_concurrent_runs: pos_integer() | nil,
           daily_thread_cap: pos_integer() | nil,
+          pr_auto_fix: map() | nil,
           coordinator_propose_before_start: boolean() | nil,
           coordinator_max_active_threads: pos_integer() | nil,
           coordinator_reuse_threads: boolean() | nil,
           repo_allowlist: [String.t()] | nil,
           max_repos_per_run: pos_integer() | nil,
+          library_collect_produced: boolean() | nil,
           notification_preference: String.t() | nil
         }
 
