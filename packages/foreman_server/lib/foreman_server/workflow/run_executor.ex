@@ -57,6 +57,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.JobsiteObserver
   alias ForemanServer.Workflow.Lowering
+  alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
   alias ForemanServer.Workflow.FailureClassifier
   alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.Workflow.WorktreeSpec
@@ -1621,7 +1622,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def emit_phase_failure(state, phase_spec, phase_index, reason) do
     Logger.warning(
-      "RunExecutor phase #{phase_index} (#{phase_spec_name(phase_spec)}) failed: #{inspect(reason)}"
+      "RunExecutor phase #{phase_index} (#{phase_spec_name(phase_spec)}) failed: #{FailureCause.render(reason)}"
     )
 
     phase_id = Identity.phase_id(state.run_id, phase_index)
@@ -1630,7 +1631,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       run_id: state.run_id,
       phase_id: phase_id,
       index: phase_index,
-      reason: inspect(reason)
+      reason: FailureCause.render(reason)
     }
 
     # A failed phase is a failed run: no later phase can satisfy the
@@ -4589,7 +4590,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "task.execution_fail",
       Identity.task_fail_command_id(state.run_id),
       "task:#{task_id(state)}",
-      %{task_id: task_id(state), run_id: state.run_id, reason: inspect(reason)}
+      %{task_id: task_id(state), run_id: state.run_id, reason: FailureCause.render(reason)}
     )
     |> to_dispatch_result()
   end
@@ -4616,7 +4617,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           "run.fail",
           Identity.run_fail_command_id(state.run_id),
           "run:#{state.run_id}",
-          %{run_id: state.run_id, reason: inspect(reason)}
+          %{run_id: state.run_id, reason: FailureCause.render(reason)}
         )
         |> to_dispatch_result()
     end
@@ -4866,8 +4867,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> Map.put(:transition_comment, transition_comment)
   end
 
+  defp normalize_failure_reason(%FailureCause{} = reason),
+    do: %{reason: FailureCause.render(reason)}
+
   defp normalize_failure_reason(%{} = reason), do: reason
   defp normalize_failure_reason(reason), do: %{reason: inspect(reason)}
+
+  defp merge_failure_reason(%FailureCause{} = reason, extra),
+    do: Map.put(extra, :reason, FailureCause.render(reason))
 
   defp merge_failure_reason(%{} = reason, extra), do: Map.merge(reason, extra)
   defp merge_failure_reason(reason, extra), do: Map.put(extra, :reason, inspect(reason))
