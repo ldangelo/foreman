@@ -437,7 +437,7 @@ stale runtime or unshipped override, not this code path — see `docs/lessons/ph
 
 Run `foreman init --force` after editing bundled workflow YAML or prompts. `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime prompts/workflows are stale, so scheduler-launched agents cannot run with outdated instructions.
 
-Scheduler-launched worktrees start from the registered project `defaultBranch`/`--default-branch` when configured, then fall back to VCS default-branch detection.
+Foreman latches the run's PR base **branch** from the registered checkout's `HEAD` when the run's first phase starts; this is not where every worktree starts (implementation runs start from the frozen `source_revision`, other runs from a declared `worktree.base`). There is no project `defaultBranch`/`--default-branch` setting (removed; a payload carrying `default_branch` is rejected with `setting_removed`). A project's `config.env` reaches workflow-phase agents; a `config.env` key starting with `FOREMAN_` is reserved and fails the phase with `reserved_project_env_keys`.
 
 ```bash
 foreman run                       # Dispatch all ready tasks through the Elixir scheduler

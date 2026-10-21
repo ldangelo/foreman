@@ -1025,7 +1025,6 @@ defmodule ForemanServer.ProjectionStore do
         |> Map.get(project_id, project_projection(payload, nil))
         |> maybe_put(:path, get(payload, :path))
         |> maybe_put(:status, get(payload, :status))
-        |> maybe_put(:default_branch, get(payload, :default_branch))
         |> maybe_put(:health, get(payload, :health))
         |> maybe_put(:name, get(payload, :name))
         |> maybe_put(:task_provider, get(payload, :task_provider))
@@ -2303,7 +2302,6 @@ defmodule ForemanServer.ProjectionStore do
       path: path,
       status: get(payload, :status, "active"),
       archived?: false,
-      default_branch: get(payload, :default_branch, "main"),
       config: get(payload, :config, %{}),
       task_provider: get(payload, :task_provider),
       health: get(payload, :health, %{ok: true}),

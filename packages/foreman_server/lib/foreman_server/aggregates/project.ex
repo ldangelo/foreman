@@ -1,5 +1,14 @@
 defmodule ForemanServer.Aggregates.Project do
-  @moduledoc "Project aggregate: validates registration/config/archive commands."
+  @moduledoc """
+  Project aggregate: validates registration/config/archive commands.
+
+  There is deliberately no `default_branch` setting. A run's base branch is the
+  registered checkout's HEAD, latched per run (`run.record_base_branch`), so a
+  second configurable source would conflict with it. Commands carrying
+  `default_branch` are rejected with `{:setting_removed, :default_branch}`.
+  Historical `ProjectRegistered`/`ProjectUpdated` events that still carry the
+  key replay fine: `apply_event/2` reads only the keys it knows.
+  """
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
@@ -8,13 +17,12 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.Events.{ProjectRunReservationReleased, ProjectRunReserved}
 
   defmodule State do
-    @enforce_keys [:exists?, :project_id, :path, :status, :default_branch, :archived?]
+    @enforce_keys [:exists?, :project_id, :path, :status, :archived?]
     defstruct [
       :exists?,
       :project_id,
       :path,
       :status,
-      :default_branch,
       :archived?,
       :task_provider,
       active_run_reservations: %{},
@@ -32,7 +40,6 @@ defmodule ForemanServer.Aggregates.Project do
       project_id: nil,
       path: nil,
       status: nil,
-      default_branch: "main",
       archived?: false,
       task_provider: nil,
       active_run_reservations: %{},
@@ -54,7 +61,6 @@ defmodule ForemanServer.Aggregates.Project do
             project_id: Aggregate.get(payload, :project_id),
             path: Aggregate.get(payload, :path),
             status: Aggregate.get(payload, :status, "active"),
-            default_branch: Aggregate.get(payload, :default_branch, "main"),
             task_provider: task_provider,
             active_run_reservations: %{},
             config: project_config(payload, task_provider),
@@ -73,7 +79,6 @@ defmodule ForemanServer.Aggregates.Project do
 
         state
         |> update_status(payload)
-        |> update_default_branch(payload)
         |> update_health(payload)
         |> put_task_provider(task_provider)
         |> put_config(config)
@@ -101,6 +106,7 @@ defmodule ForemanServer.Aggregates.Project do
 
     with {:ok, project_id} <- Aggregate.required_binary(project_id, :project_id),
          {:ok, path} <- Aggregate.required_binary(Aggregate.get(payload, :path), :path),
+         :ok <- reject_removed_settings(payload),
          :ok <- require_absent(state, project_id),
          :ok <- validate_status(Aggregate.get(payload, :status, "active")),
          {:ok, payload} <-
@@ -120,6 +126,7 @@ defmodule ForemanServer.Aggregates.Project do
   def handle_command(state, %{type: "project.update", payload: payload}) do
     with {:ok, project_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- reject_removed_settings(payload),
          :ok <- require_exists(state, project_id),
          {:ok, payload} <-
            payload
@@ -282,10 +289,10 @@ defmodule ForemanServer.Aggregates.Project do
       else: state
   end
 
-  defp update_default_branch(%State{} = state, payload) do
-    if db = Aggregate.get(payload, :default_branch),
-      do: %State{state | default_branch: db},
-      else: state
+  defp reject_removed_settings(payload) do
+    if Map.has_key?(payload, :default_branch) or Map.has_key?(payload, "default_branch"),
+      do: {:error, {:setting_removed, :default_branch}},
+      else: :ok
   end
 
   defp update_health(%State{} = state, payload) do
