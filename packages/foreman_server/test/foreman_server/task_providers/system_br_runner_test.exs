@@ -4,7 +4,6 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   alias ForemanServer.TaskProviders.SystemBrRunner
 
   @source_path "lib/foreman_server/task_providers/system_br_runner.ex"
-  @temp_glob Path.join(System.tmp_dir!(), "system_br_runner_*")
   @leaked_event [:foreman_server, :task_provider, :beads, :temp_file, :leaked]
 
   setup do
@@ -18,9 +17,24 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     :ok = ensure_telemetry_started()
 
     original_path = System.get_env("PATH") || ""
+    original_tmpdir = System.get_env("TMPDIR")
+
+    # The runner creates its stdin/stderr temp files under System.tmp_dir!/0.
+    # Point that at a private directory so the leak assertions only ever see
+    # this test's files: in the shared system tmp dir they also saw other
+    # concurrently running `mix test` processes' `system_br_runner_*` entries
+    # (including their per-test temp dirs, which match the same glob).
+    private_tmp = Path.join(temp_dir, "tmp")
+    File.mkdir_p!(private_tmp)
+    System.put_env("TMPDIR", private_tmp)
 
     on_exit(fn ->
       System.put_env("PATH", original_path)
+
+      if original_tmpdir,
+        do: System.put_env("TMPDIR", original_tmpdir),
+        else: System.delete_env("TMPDIR")
+
       File.rm_rf!(temp_dir)
     end)
 
@@ -260,7 +274,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   end
 
   defp snapshot_temp_files do
-    @temp_glob
+    System.tmp_dir!()
+    |> Path.join("system_br_runner_*")
     |> Path.wildcard()
     |> MapSet.new()
   end
@@ -336,7 +351,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         ]
         |> Enum.join("\n")
 
-      db_path = "/tmp/serialized.db"
+      db_path = Path.join(temp_dir, "serialized.db")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
         # :create requires :title, :type, :description, :agent_context, and :priority
@@ -374,7 +389,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         ]
         |> Enum.join("\n")
 
-      db_path = "/tmp/serialized.db"
+      db_path = Path.join(temp_dir, "serialized.db")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
         assert {:ok, %{stdout: stdout, exit_code: 0}} =
@@ -410,7 +425,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
-        db_path = "/tmp/mixed_ops.db"
+        db_path = Path.join(temp_dir, "mixed_ops.db")
         parent = self()
 
         spawn(fn ->
@@ -486,7 +501,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
-        db_path = "/tmp/error_unlock.db"
+        db_path = Path.join(temp_dir, "error_unlock.db")
 
         # First call fails
         assert {:error, %{exit_code: 1}} =
@@ -519,15 +534,15 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         |> Enum.join("\n")
 
       with_fake_br(temp_dir, fake_br_body, fn ->
-        db_path = "/tmp/timeout_unlock.db"
+        db_path = Path.join(temp_dir, "timeout_unlock.db")
 
         assert {:error, %{exit_code: exit_code, reason: :timeout}} =
                  SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path}, timeout_ms: 200)
 
         assert exit_code in [143, 137]
 
-        # Wait for first spawned process to fully exit before attempting second call.
-        :timer.sleep(500)
+        # No wait needed: cmd/3 reaps the timed-out OS process (wait_for_exit)
+        # before returning, so the lock is already released here.
 
         assert {:ok, %{exit_code: 0, stdout: _stdout}} =
                  SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path})
