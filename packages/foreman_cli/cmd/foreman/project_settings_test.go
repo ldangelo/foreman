@@ -357,3 +357,19 @@ func TestProjectContextUnknownProjectIsAnError(t *testing.T) {
 		t.Fatal("expected an error for an unknown project")
 	}
 }
+
+func TestProjectUpdatePrAutoFixSendsObjectAndRejectsNonObjects(t *testing.T) {
+	env, err := runUpdate(t, "--pr-auto-fix", `{"kinds":["ci"],"max_attempts":2}`, "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"kinds": []any{"ci"}, "max_attempts": float64(2)}
+	if !reflect.DeepEqual(env.Payload["pr_auto_fix"], want) {
+		t.Fatalf("pr_auto_fix = %v, want %v", env.Payload["pr_auto_fix"], want)
+	}
+	for _, bad := range []string{`not json`, `null`, `["ci"]`} {
+		if _, err := runUpdate(t, "--pr-auto-fix", bad, "p1"); err == nil {
+			t.Fatalf("--pr-auto-fix %q must be rejected before any request", bad)
+		}
+	}
+}

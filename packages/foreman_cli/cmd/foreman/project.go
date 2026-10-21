@@ -17,7 +17,7 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --notification-preference --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --notification-preference --pr-auto-fix <json> --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
@@ -181,6 +181,7 @@ func projectUpdate(c *client.Client, args []string) error {
 	coordinatorProposeBeforeStart := fs.Bool("coordinator-propose-before-start", false, "Coordinator proposes before starting threads (true|false; enforced by the server)")
 	coordinatorMaxActiveThreads := fs.Int("coordinator-max-active-threads", 0, "Coordinator's maximum active threads (1..50; enforced by the server)")
 	coordinatorReuseThreads := fs.Bool("coordinator-reuse-threads", false, "Coordinator reuses existing threads (true|false; enforced by the server)")
+	prAutoFix := fs.String("pr-auto-fix", "", `PR auto-fix policy as a JSON object, e.g. '{"kinds":["ci"],"max_attempts":2,"cooldown_seconds":300}' (enforced by the server)`)
 	notificationPreference := fs.String("notification-preference", "", "Notifications for this project (every_turn|blocked_only|off; default blocked_only)")
 	var clear repeatedFlag
 	fs.Var(&clear, "clear", "Clear a setting back to its default (repeatable)")
@@ -265,6 +266,14 @@ func projectUpdate(c *client.Client, args []string) error {
 	}
 	if set["coordinator-reuse-threads"] {
 		payload["coordinator_reuse_threads"] = *coordinatorReuseThreads
+		changes++
+	}
+	if set["pr-auto-fix"] {
+		var policy map[string]any
+		if err := json.Unmarshal([]byte(*prAutoFix), &policy); err != nil || policy == nil {
+			return usageError(fs, "foreman project update: --pr-auto-fix must be a JSON object")
+		}
+		payload["pr_auto_fix"] = policy
 		changes++
 	}
 	if len(clear) > 0 {

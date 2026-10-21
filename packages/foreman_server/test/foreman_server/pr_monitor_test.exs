@@ -21,6 +21,10 @@ defmodule ForemanServer.PrMonitorTest do
     :ok
   end
 
+  # `put_env(key, nil)` would leave a nil that shadows the default for every later test.
+  defp restore_env(key, nil), do: Application.delete_env(:foreman_server, key)
+  defp restore_env(key, value), do: Application.put_env(:foreman_server, key, value)
+
   describe "interval and enabled helpers" do
     test "interval_ms/0 returns env override when set" do
       original = Application.get_env(:foreman_server, :pr_monitor_interval_ms)
@@ -28,14 +32,14 @@ defmodule ForemanServer.PrMonitorTest do
       Application.put_env(:foreman_server, :pr_monitor_interval_ms, 60_000)
       assert PrMonitor.interval_ms() == 60_000
 
-      Application.put_env(:foreman_server, :pr_monitor_interval_ms, original)
+      restore_env(:pr_monitor_interval_ms, original)
     end
 
     test "interval_ms/0 returns default 5 minutes when unset" do
       original = Application.get_env(:foreman_server, :pr_monitor_interval_ms)
       Application.delete_env(:foreman_server, :pr_monitor_interval_ms)
       assert PrMonitor.interval_ms() == 300_000
-      Application.put_env(:foreman_server, :pr_monitor_interval_ms, original)
+      restore_env(:pr_monitor_interval_ms, original)
     end
 
     test "enabled?/0 reflects env" do
@@ -44,7 +48,7 @@ defmodule ForemanServer.PrMonitorTest do
       assert PrMonitor.enabled?() == true
       Application.put_env(:foreman_server, :pr_monitor_enabled, false)
       refute PrMonitor.enabled?() == true
-      Application.put_env(:foreman_server, :pr_monitor_enabled, original)
+      restore_env(:pr_monitor_enabled, original)
     end
   end
 
@@ -177,6 +181,101 @@ defmodule ForemanServer.PrMonitorTest do
       assert pr_updated_events(ctx.run_id) == []
       assert %{last_count: 0, last_errors: errors} = PrMonitor.stats()
       assert errors >= 1
+    end
+  end
+
+  describe "next_interval/3 (spike S4 schedule)" do
+    @now 10_000_000_000
+
+    defp record(overrides) do
+      Map.merge(%{checks_state: "passing", updated_at: @now - 3_600_000}, Map.new(overrides))
+    end
+
+    test "running checks poll fastest, a recent change next, stable at the interval, idle slowest" do
+      assert PrMonitor.next_interval(record(checks_state: "pending"), @now, jitter: 0.0) == 30_000
+
+      assert PrMonitor.next_interval(record(updated_at: @now - 60_000), @now, jitter: 0.0) ==
+               60_000
+
+      assert PrMonitor.next_interval(record([]), @now, jitter: 0.0) == PrMonitor.interval_ms()
+
+      assert PrMonitor.next_interval(record(updated_at: @now - 25 * 3_600_000), @now, jitter: 0.0) ==
+               15 * 60_000
+    end
+
+    test "pending wins over idleness and a PR never observed uses the stable interval" do
+      assert PrMonitor.next_interval(record(checks_state: "pending", updated_at: 1), @now,
+               jitter: 0.0
+             ) == 30_000
+
+      assert PrMonitor.next_interval(record(updated_at: nil), @now, jitter: 0.0) ==
+               PrMonitor.interval_ms()
+    end
+
+    test "jitter stays within +/-10%" do
+      intervals = for _ <- 1..200, do: PrMonitor.next_interval(record([]), @now)
+      base = PrMonitor.interval_ms()
+      assert Enum.all?(intervals, &(&1 >= base * 0.9 - 1 and &1 <= base * 1.1 + 1))
+      assert length(Enum.uniq(intervals)) > 1
+    end
+  end
+
+  describe "scheduled ticks" do
+    setup do
+      token = Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+
+      runs =
+        for n <- 1..3,
+            do:
+              ForemanServer.TestSupport.PrWatchSupport.start_run!(
+                project_id: "p-tick-#{token}-#{n}",
+                complete: true
+              )
+
+      for run <- runs, do: {:ok, _} = PrAssociate.store(run.run_id, run.pr_url)
+      %{runs: runs}
+    end
+
+    test "a tick observes at most max_per_tick due PRs; poll_now ignores the cap", %{runs: runs} do
+      Application.put_env(:foreman_server, :pr_monitor_max_per_tick, 2)
+      on_exit(fn -> Application.delete_env(:foreman_server, :pr_monitor_max_per_tick) end)
+      test_pid = self()
+
+      PrMonitor.set_fetch_fun(fn url ->
+        send(test_pid, {:fetched, url})
+        {:ok, %PrStatus{status: :open, head_sha: "s", head_branch: "b", base_branch: "main"}}
+      end)
+
+      send(Process.whereis(PrMonitor), :poll)
+      %{last_count: count, last_errors: errors} = PrMonitor.stats()
+      assert count + errors == 2
+
+      assert PrMonitor.poll_now() >= length(runs)
+    end
+
+    test "merged and closed PRs are not polled", %{runs: [run | _]} do
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "PrMerged",
+          payload: %{
+            run_id: run.run_id,
+            pr_url: run.pr_url,
+            project_id: run.project_id,
+            task_id: run.task_id
+          }
+        }
+      ])
+
+      test_pid = self()
+
+      PrMonitor.set_fetch_fun(fn url ->
+        send(test_pid, {:fetched, url})
+        {:error, :stub}
+      end)
+
+      PrMonitor.poll_now()
+      pr_url = run.pr_url
+      refute_received {:fetched, ^pr_url}
     end
   end
 end

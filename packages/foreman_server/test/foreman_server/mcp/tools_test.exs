@@ -100,7 +100,10 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_approvals_list",
                "foreman_questions_list",
                "foreman_project_conversation",
-               "foreman_project_message"
+               "foreman_project_message",
+               "foreman_pr_status",
+               "foreman_pr_fix",
+               "foreman_pr_watch_stop"
              ]
 
       Enum.each(tools, fn tool ->

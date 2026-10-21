@@ -37,6 +37,7 @@ defmodule ForemanServer.ProjectionStore do
   alias ForemanServer.Usage.Ledger, as: UsageLedger
 
   @pr_fold_events ForemanServer.Overview.PrFold.events()
+  @pr_watch_only_events ForemanServer.PrWatchFold.events() -- @pr_fold_events
   @active_run_statuses ["awaiting_worker", "in_progress"]
 
   @spec start_link(term()) :: GenServer.on_start()
@@ -767,6 +768,28 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:run_ids_for_pr_url, pr_url})
   end
 
+  @doc """
+  The watched PRs of one run, ordered by `pr_url` (E9). Each record is the fold
+  of `ForemanServer.PrWatchFold` (status, head SHA, checks state and digest,
+  review decision and digest, fix bookkeeping, `watching`) plus `agent_review`:
+  the run's `ReviewRecorded` verdict as another PR signal (`nil` until the
+  review ran). `[]` for a run with no observed PR.
+  """
+  @spec pr_watch(String.t()) :: [map()]
+  def pr_watch(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:pr_watch, run_id})
+  end
+
+  @doc """
+  Every PR that should be polled: `watching` and neither merged nor closed.
+  One record per `{run_id, pr_url}`, oldest observation first (records never
+  observed sort first), so a per-tick cap rotates through the set.
+  """
+  @spec watched_prs() :: [map()]
+  def watched_prs do
+    GenServer.call(__MODULE__, :watched_prs)
+  end
+
   @doc "Return the projected state for a project, or nil if not found."
   @spec project_projection(String.t()) :: map() | nil
   def project_projection(project_id) when is_binary(project_id) do
@@ -1441,6 +1464,33 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:pr_watch, run_id}, _from, state) do
+    {:reply, pr_watch_view(state, run_id), state}
+  end
+
+  @impl true
+  def handle_call(:watched_prs, _from, state) do
+    pr_watch = Map.get(state, :pr_watch, %{})
+
+    observed =
+      for {run_id, _records} <- pr_watch,
+          record <- pr_watch_view(state, run_id),
+          record.watching and record.status not in ["merged", "closed"],
+          do: record
+
+    # A PR the run is associated with but nothing observed yet (no PrUpdated) is
+    # watched too, as a blank record, so the poller's first sweep finds it.
+    unobserved =
+      for {run_id, %{pr_url: pr_url}} <- state.pr_associations,
+          is_binary(pr_url),
+          not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
+          do: unobserved_record(state, run_id, pr_url)
+
+    watched = observed ++ unobserved
+    {:reply, Enum.sort_by(watched, &{&1.updated_at || 0, &1.run_id, &1.pr_url}), state}
+  end
+
+  @impl true
   def handle_call({:inbox_thread, run_id}, _from, state) do
     {:reply, Map.get(state.inbox_threads, run_id), state}
   end
@@ -1734,6 +1784,7 @@ defmodule ForemanServer.ProjectionStore do
       phases: %{},
       pr_associations: %{},
       pr_states: %{},
+      pr_watch: %{},
       run_logs: %{},
       scheduler_intents: %{},
       subscribers: %{},
@@ -3483,8 +3534,17 @@ defmodule ForemanServer.ProjectionStore do
 
   # E7-S1: PR / merge-gate read state for the Overview. Pure fold in
   # `Overview.PrFold`; it logs and skips malformed payloads, so replay survives.
+  # E9 additionally folds the same events into the `pr_watch` read model.
   defp apply_event_by_type(state, type, payload) when type in @pr_fold_events do
-    fold_pr_state(state, type, payload)
+    state
+    |> fold_pr_state(type, payload)
+    |> fold_pr_watch(type, payload)
+  end
+
+  # E9: PR observation / fix-thread / watch-lifecycle events. Pure fold in
+  # `PrWatchFold`; malformed payloads are skipped there.
+  defp apply_event_by_type(state, type, payload) when type in @pr_watch_only_events do
+    fold_pr_watch(state, type, payload)
   end
 
   # Coordinator conversation events fold into `state.coordinators` through the
@@ -3509,6 +3569,45 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state
+
+  defp fold_pr_watch(state, type, payload) do
+    Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
+  end
+
+  defp unobserved_record(state, run_id, pr_url) do
+    run = Map.get(state.runs, run_id, %{})
+
+    run_id
+    |> ForemanServer.PrWatchFold.new_record(pr_url)
+    |> Map.merge(%{project_id: Map.get(run, :project_id), task_id: Map.get(run, :task_id)})
+    |> Map.put(:agent_review, review_signal(Map.get(state, :reviews, %{}), run_id))
+  end
+
+  defp pr_watch_view(state, run_id) do
+    review = review_signal(Map.get(state, :reviews, %{}), run_id)
+
+    state
+    |> Map.get(:pr_watch, %{})
+    |> Map.get(run_id, %{})
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {_url, record} -> Map.put(record, :agent_review, review) end)
+  end
+
+  # The run's `ReviewRecorded` verdict, shown as one more PR signal. It never
+  # triggers a fix itself: gap beads already carry that path.
+  defp review_signal(reviews, run_id) do
+    case Map.get(reviews, {"run", run_id}) do
+      %{verdict: verdict} = review ->
+        %{
+          verdict: verdict,
+          gap_bead_ids: Map.get(review, :gap_bead_ids, []),
+          at: Map.get(review, :at)
+        }
+
+      _none ->
+        nil
+    end
+  end
 
   defp pr_state_view(run_id, run, entry) do
     failure_reason =

@@ -52,6 +52,11 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.RunPrMerge
 
   @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  # E9: the operator PR-watch commands (fix threads, stop/start watching, create PR) are
+  # declared once on the Run aggregate's PR rules and appended here so both allowlists
+  # (this one and `CommandController`) stay in step. Merge is deliberately not among them.
+  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types()
+  @allowed_operator_types @allowed_operator_types ++ @pr_operator_types
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E8: agent tool-call decisions. Kept out of the long lists above so concurrent
   # allowlist edits do not collide. These address `tool_call:` streams only (never
@@ -150,6 +155,16 @@ defmodule ForemanServer.CommandGateway do
 
     with {:ok, merge_payload} <- RunPrMerge.execute(run_id) do
       {:ok, %{command | payload: merge_payload}}
+    end
+  end
+
+  # `run.pr.create` opens the real PR (and records the association) before dispatch, for
+  # the same reason: the aggregate may be re-run on a version conflict.
+  defp perform_operator_side_effects(%{type: "run.pr.create", payload: payload} = command) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+
+    with {:ok, create_payload} <- ForemanServer.PrCreate.execute(run_id) do
+      {:ok, %{command | payload: Map.put(create_payload, :created_by, nil)}}
     end
   end
 
@@ -431,6 +446,10 @@ defmodule ForemanServer.CommandGateway do
         :ok
     end
   end
+
+  # The PR operator commands address `run:<id>` exactly like the run commands above.
+  defp validate_aggregate_id(%{type: type} = command) when type in @pr_operator_types,
+    do: validate_aggregate_id(%{command | type: "run.cancel"})
 
   defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
        when type in [
