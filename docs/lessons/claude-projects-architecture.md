@@ -1,0 +1,50 @@
+# Claude-Projects parity: where each capability lives
+
+Index of the project-workspace capabilities: aggregate (stream prefix), events, main modules and the HTTP / MCP / CLI surfaces. Module paths are under `packages/foreman_server/lib/foreman_server/` unless noted. Operator-facing behaviour is in `docs/user-guide.md` ("Projects workflow"); the rules are in `CLAUDE.md` §20-§26. Every row was checked against `main`; stream prefixes are the clauses of `CommandRouter.aggregate_module_for/1`.
+
+Multi-repo projects are not on `main` and are not covered here.
+
+## Capability index
+
+| Capability | Aggregate (stream) | Events | Modules | HTTP | MCP | CLI |
+| --- | --- | --- | --- | --- | --- | --- |
+| Project lifecycle, settings, limits | `Aggregates.Project` (`project:`), `ProjectSecret` (`project_secret:`) | `ProjectRegistered`, `ProjectUpdated`, `ProjectPaused`, `ProjectResumed`, `ProjectArchived`, `ProjectRunReserved`, `ProjectRunReservationReleased`, `ProjectAdmissionDeferred`, `ProjectSecretSet`, `ProjectSecretUnset` | `ProjectSettings`, `ProjectLimits`, `ProjectEnvironment`, `ProjectSecrets`, `SecretStore`, `ProjectSetup` | `GET /api/projects[/:id]`, `.../settings`, `.../environment`, `PUT .../secrets/:name`, `POST /api/commands` | `foreman_project_list\|get`, `foreman_project_settings_get\|update`, `foreman_project_pause\|resume`, `foreman_project_environment_get` | `foreman project create\|get\|update\|settings\|env\|secret\|setup-script\|network\|pause\|resume\|reactivate\|delete\|list` |
+| Setup recommendations, adoption | `Project` (`project.adopt` on the target stream) | `ProjectSubjectAdopted`, `ProjectThreadStarted` | `Projects.Recommendations`, `Projects.Adoption`, `Projects.AdoptionService`, `Projects.Continuation` | `GET /api/projects/:id/recommendations`, `POST /api/project-adoptions` | `foreman_project_recommendations` | `foreman project recommend\|adopt`, `foreman doctor --project` |
+| Instructions, standing context | (project settings) | (`ProjectUpdated`) | `ProjectContext.build/2` (+ `ProjectContext.*` section providers) | `GET /api/projects/:id/context` | - | `foreman project context` |
+| Memory | `Aggregates.ProjectMemory` (`project_memory:`) | `ProjectMemoryWritten`, `ProjectMemoryForgotten` | `ProjectMemory` (bytes on disk, `.foreman/memory/`) | `GET\|PUT\|DELETE /api/projects/:id/memory[/:name]`, `POST .../memory/sync` | `foreman_project_memory_list\|read\|write\|forget` | `foreman project memory` |
+| Library | `Aggregates.ProjectLibrary` (`project_library:`) | `ProjectLibraryAdded`, `ProjectLibraryReplaced`, `ProjectLibraryRemoved` | `Library` (+ `Library.Store\|Ingest\|Collector\|Produced`) | `GET\|POST /api/projects/:id/library`, `PUT\|DELETE .../library/:entry_id` | `foreman_project_library_list\|read` | `foreman project library` |
+| Threads, steering | `Aggregates.Thread` (`thread:`), `Run` (`run.steer`) | `ThreadResolved`, `ThreadReopened`, `RunSteerQueued`, `RunSteerConsumed` | `Threads` (+ `Threads.Finder\|Actions\|Steerer\|Transcript\|IdleResolver`) | `GET /api/projects/:id/threads[/find]`, `GET /api/threads/:id[/transcript\|/stream]`, `POST /api/threads/:id/stop\|steer` | `foreman_thread_list\|get\|transcript\|find\|stop\|steer` | `foreman thread list\|get\|stop\|steer\|resolve\|reopen` |
+| Overview | (read model) | (folds PR and review events) | `Overview` (+ `Overview.Group\|PrFold\|Signals\|Tabs\|MergeResolver`) | `GET /api/projects/:id/overview` | `foreman_overview` | - |
+| LiveView workspace | (read model) | - | `ForemanServerWeb.ProjectWorkspaceLive`, `ProjectSettingsLive`, `ForemanServerWeb.Workspace.*` | `/dashboard/projects/:id[/settings]` | - | - |
+| Coordinator | `Aggregates.Coordinator` (`coordinator:`) | `CoordinatorMessageAppended`, `CoordinatorTurnStarted`, `CoordinatorTurnCompleted`, `CoordinatorTurnFailed`, `CoordinatorActionRecorded`, `CoordinatorRestarted` | `Coordinator.*` (`Runner`, `ProjectWorker`, `TurnRunner`, `Executor`, `Dispatch`, `Authority`, `Policy`, `Tuning`), `CoordinatorAPI` | `GET\|POST /api/projects/:id/coordinator/messages`, `GET .../coordinator`, `POST .../coordinator/restart` | `foreman_project_conversation`, `foreman_project_message` | `foreman project chat` |
+| Approvals and questions | `Aggregates.ToolCall` (`tool_call:`), `OperatorQuestion` (`question:`) | `ToolCallRequested`, `ToolCallApproved`, `ToolCallDenied`, `ToolCallExpired`, `ToolCallFinished`, `QuestionOpened`, `QuestionAnswered`, `QuestionExpired` | `Approvals.*` (`Requester`, `Deliverer`, `Sweeper`, `PhasePause`), `Questions.*` | `GET /api/projects/:id/approvals\|questions`, `GET /api/runs/:run_id/approvals`, `tool.approve\|deny`, `question.answer` via `POST /api/commands` | `foreman_approvals_list`, `foreman_questions_list` (read-only) | `foreman approvals`, `foreman questions` |
+| Merge gate | `Aggregates.Run` | `MergeGatePending`, `MergeGateApproved` | `CommandGateway`, `RunPrMerge` | `merge_approve`, `run.pr.merge` via `POST /api/commands` | none (pinned by `no_merge_tool_test.exs`) | `foreman run approve-merge\|merge` |
+| PR watching, auto-fix | `Run` (`run.pr.*`, rules in `Aggregates.Run.PrWatch`) | `PrChecksChanged`, `PrReviewChanged`, `PrFixRequested`, `PrFixStarted`, `PrFixFinished`, `PrFixExhausted`, `PrCreated`, `PrWatchStarted`, `PrWatchStopped` | `PrWatcher`, `PrMonitor`, `PrFix`, `PrWatcher.AutoFix`, `PrWatcher.Observer` | `GET /api/runs/:id/prs`, `POST /webhooks/github` | `foreman_pr_status` | `foreman run prs\|fix-ci\|address-comments\|resolve-conflicts\|create-pr\|watch-start\|watch-stop` |
+| Notifications | `Aggregates.Notification` (`notification:`) | `NotificationEnqueued`, `NotificationDeliveryAttempted\|Succeeded\|Failed`, `NotificationSuppressed` | `Notifier` (+ `Notifier.Mapping`), `Messaging.*` | - | - | `foreman project update --notification-preference` |
+| Schedules | `Aggregates.Schedule` (`schedule:`), `SchedulerIntent` | `ScheduleCreated\|Updated\|Paused\|Resumed\|Deleted`, `ScheduleFired`, `ScheduleFireSkipped` | `Schedule.Spec\|Planner\|Ticker\|DTO` | `GET /api/projects/:id/schedules` | `foreman_schedule_list\|create\|pause\|resume\|delete` | `foreman project schedule` |
+| Usage | (ledger over events) | `UsageRecorded` | `Usage` (+ `Usage.Ledger\|Rollup\|ThreadUsage\|CacheHint`) | `GET /api/projects/:id/usage` | `foreman_usage_get` | `foreman usage` |
+| Session archive and review | `Aggregates.Review` (`review:`) | `ReviewRecorded` | `Review.Archive\|Capture\|Analyzer\|BeadSink` | - | - | (archive on disk: `.foreman/sessions/`) |
+
+## Where a change has to land
+
+- A new aggregate: a module under `aggregates/`, a prefix clause in `command_router.ex` `aggregate_module_for/1`, and a catch-all `apply_event/2` clause. Typed event structs live in `events/` and are discovered by `EventCodec` by scanning that directory.
+- A new operator command: BOTH `CommandGateway.@allowed_operator_types` and `CommandController.@allowed_types` (kept in step by `test/foreman_server/command_allowlist_parity_test.exs`), then the CLI, then `docs/cli-reference.md` and `docs/user-guide.md`.
+- A new MCP tool: `mcp/tools.ex`, and `MCP.Policy.write_tools/0` when it writes; `test/foreman_server/mcp/tool_inventory_test.exs` pins the list, the write set and that each tool is documented in the user guide or CLI reference.
+- A new setting: `Aggregates.Project.Settings` (the key whitelist `ProjectSettings.keys/0` reads), the CLI flag in `packages/foreman_cli/cmd/foreman/project.go`, the settings table in `docs/user-guide.md`.
+
+## Spikes and design records
+
+`docs/spikes/`: `S1.md` coordinator action mechanism, `S2.md` steering and approvals through `Jido.Harness.Session`, `S3.md` multi-repo design (not merged), `S4.md` PR signal source, `S5.md` remote worker (design only; not built), `E4-SP1.md` / `E4-SP2.md` secrets and network policy, `E6-SP1.md`, `E9-SP1.md` / `E9-SP2.md`; `docs/decisions/project-delete.md`.
+
+## UNVERIFIED against the live service
+
+Tested with fakes only: E9 GitHub webhook deliveries, force-pushes to a PR branch, check re-run, merge-conflict resolution and unresolved review-thread reads (S4); resuming a Claude provider session; the phase-wide effect of a Claude tool approval (S2). `pi` with `minimax/MiniMax-M2.7-highspeed` is the only live-verified provider path.
+
+## Runbook
+
+- Stop new work on a project: `foreman project pause <id> --reason ...`; in-flight runs continue, `resume` re-admits held tasks.
+- Wedged coordinator (three consecutive failed turns mark it `unhealthy`): `foreman project chat <id> --restart`.
+- Stop automatic PR watching: `FOREMAN_PR_WATCHER_ENABLED=false`; polling is already opt-in (`FOREMAN_PR_MONITOR_ENABLED=true`).
+- Stop the schedule ticker: `FOREMAN_SCHEDULE_TICKER_ENABLED=false`.
+- Stop outbound notifications: `config :foreman_server, :start_notifier?, false`, or per project `--notification-preference off`.
+- Projections are rebuilt from the event log on boot.
