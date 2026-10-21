@@ -20,6 +20,8 @@ defmodule ForemanServer.ProjectSettings do
           coordinator_propose_before_start: boolean() | nil,
           coordinator_max_active_threads: pos_integer() | nil,
           coordinator_reuse_threads: boolean() | nil,
+          repo_allowlist: [String.t()] | nil,
+          max_repos_per_run: pos_integer() | nil,
           library_collect_produced: boolean() | nil,
           notification_preference: String.t() | nil
         }

@@ -130,3 +130,43 @@ func TestRunRunDispatchesMergeVerbs(t *testing.T) {
 		}
 	}
 }
+
+// A repository's PR is addressed by --repo-id; without it nothing but the run id
+// is sent (the primary's PR), so the single-repo wire shape is unchanged.
+func TestRunApproveMergeAndMergeCarryRepoID(t *testing.T) {
+	approve := captureCommand(t, func(c *client.Client) error {
+		return runApproveMerge(c, []string{
+			"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo", "-repo-id", "b",
+		})
+	})
+	if approve == nil || approve.Type != "merge_approve" || approve.Payload["repo_id"] != "b" {
+		t.Fatalf("approve envelope = %+v, want merge_approve with repo_id b", approve)
+	}
+
+	merge := captureCommand(t, func(c *client.Client) error {
+		return runMerge(c, []string{"-id", "run-7", "-repo-id", "b"})
+	})
+	if merge == nil || merge.Type != "run.pr.merge" || merge.Payload["repo_id"] != "b" || len(merge.Payload) != 2 {
+		t.Fatalf("merge envelope = %+v, want run.pr.merge with exactly run_id and repo_id", merge)
+	}
+}
+
+func TestRunRetryPrPostsRunPrRetry(t *testing.T) {
+	env := captureCommand(t, func(c *client.Client) error {
+		return runRetryPr(c, []string{"run-7", "-repo-id", "b"})
+	})
+	if env == nil || env.Type != "run.pr.retry" {
+		t.Fatalf("envelope = %+v, want run.pr.retry", env)
+	}
+	if env.Payload["run_id"] != "run-7" || env.Payload["repo_id"] != "b" || len(env.Payload) != 2 {
+		t.Fatalf("payload = %v, want exactly run_id and repo_id", env.Payload)
+	}
+}
+
+func TestRunRetryPrRequiresRepoID(t *testing.T) {
+	if env := captureCommand(t, func(c *client.Client) error {
+		return runRetryPr(c, []string{"run-7"})
+	}); env != nil {
+		t.Fatalf("server was hit without --repo-id: %+v", env)
+	}
+}

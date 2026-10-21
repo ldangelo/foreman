@@ -2,9 +2,9 @@ defmodule ForemanServer.Agents.VfsIsolation do
   @moduledoc """
   VFS isolation per worktree: each agent gets a sandboxed filesystem view.
 
-  Maintains a per-agent binding from `agent_id` to a worktree root
-  directory, and answers `allowed?/2` queries by checking whether a
-  requested path falls under the agent's bound worktree root.
+  Maintains a per-agent binding from `agent_id` to one or more worktree root
+  directories (one per repository of a run), and answers `allowed?/2` queries
+  by checking whether a requested path falls under any bound root.
   When access is denied (`false`) a security event is emitted via
   `:telemetry.execute([:foreman_server, :security, :vfs_denied], ...)`
   with `agent_id`, `path`, and `reason` (`:outside_worktree | :no_binding`).
@@ -25,17 +25,23 @@ defmodule ForemanServer.Agents.VfsIsolation do
   end
 
   @doc """
-  Bind an `agent_id` to a `worktree_path`. Re-binding the same
-  `agent_id` replaces the previous binding.
+  Bind an `agent_id` to one or more worktree `roots`. A single path is
+  accepted as `[path]`. Every root is canonicalised (`canonical_path/1`) at
+  bind time, so a symlinked root is bound as the directory it points at.
+  Re-binding the same `agent_id` REPLACES the previous binding - a
+  multi-repository run must therefore bind all of its roots in one call.
   """
-  def bind(agent_id, worktree_path) do
-    GenServer.call(__MODULE__, {:bind, agent_id, worktree_path})
+  @spec bind(String.t(), String.t() | [String.t()]) :: :ok
+  def bind(agent_id, roots) do
+    roots = roots |> List.wrap() |> Enum.map(&canonical_path/1)
+    GenServer.call(__MODULE__, {:bind, agent_id, roots})
   end
 
   @doc """
-  Look up the bound worktree path for `agent_id`. Returns
-  `{:ok, path}` or `:not_found`.
+  Look up the bound (canonical) roots for `agent_id`. Returns
+  `{:ok, [root]}` or `:not_found`.
   """
+  @spec lookup(String.t()) :: {:ok, [String.t()]} | :not_found
   def lookup(agent_id), do: GenServer.call(__MODULE__, {:lookup, agent_id})
 
   @doc """
@@ -45,10 +51,52 @@ defmodule ForemanServer.Agents.VfsIsolation do
   def unbind(agent_id), do: GenServer.call(__MODULE__, {:unbind, agent_id})
 
   @doc """
-  Returns `true` if `path` is under the bound worktree for `agent_id`,
-  `false` otherwise (including when the agent has no binding).
+  Returns `true` if `path` is a bound root or lies under one, `false`
+  otherwise (including when the agent has no binding). Containment is
+  decided on canonical paths (`canonical_path/1`): `..` traversal and
+  symlinks that point outside every root are denied, and the match respects
+  a `/` boundary, so `/wt/a-evil` is not under `/wt/a`.
   """
-  def allowed?(agent_id, path), do: GenServer.call(__MODULE__, {:allowed?, agent_id, path})
+  @spec allowed?(String.t(), String.t()) :: boolean()
+  def allowed?(agent_id, path) do
+    GenServer.call(__MODULE__, {:allowed?, agent_id, path, canonical_path(path)})
+  end
+
+  @doc """
+  Canonical form of `path`: absolute, `.`/`..` resolved, and every existing
+  component's symlink followed (realpath). Components that do not exist yet
+  (a file about to be created) are appended lexically normalised.
+  """
+  @spec canonical_path(String.t()) :: String.t()
+  def canonical_path(path) when is_binary(path) do
+    path |> Path.expand() |> Path.split() |> resolve_parts([], 0) |> join_parts()
+  end
+
+  @max_symlink_depth 40
+
+  # `acc` holds the resolved prefix in reverse. A symlink restarts resolution
+  # with its target (relative targets are relative to the link's directory).
+  defp resolve_parts([], acc, _depth), do: Enum.reverse(acc)
+  defp resolve_parts(["/" | rest], _acc, depth), do: resolve_parts(rest, ["/"], depth)
+  defp resolve_parts(["." | rest], acc, depth), do: resolve_parts(rest, acc, depth)
+  defp resolve_parts([".." | rest], ["/"] = acc, depth), do: resolve_parts(rest, acc, depth)
+  defp resolve_parts([".." | rest], [_ | acc], depth), do: resolve_parts(rest, acc, depth)
+
+  defp resolve_parts([part | rest], acc, depth) do
+    candidate = join_parts(Enum.reverse([part | acc]))
+
+    case File.read_link(candidate) do
+      {:ok, target} when depth < @max_symlink_depth ->
+        base = join_parts(Enum.reverse(acc))
+        resolve_parts(Path.split(Path.expand(target, base)) ++ rest, [], depth + 1)
+
+      _ ->
+        resolve_parts(rest, [part | acc], depth)
+    end
+  end
+
+  defp join_parts(["/"]), do: "/"
+  defp join_parts(parts), do: Path.join(parts)
 
   @doc """
   Returns `:ok` if `worktree_path` is under one of the configured
@@ -65,7 +113,7 @@ defmodule ForemanServer.Agents.VfsIsolation do
       allowed_roots =
         Application.get_env(:foreman_server, :jido_vfs, []) |> Keyword.get(:allowed_roots, [])
 
-      if Enum.any?(allowed_roots, &String.starts_with?(worktree_path, &1)) do
+      if Enum.any?(allowed_roots, &under_root?(canonical_path(worktree_path), canonical_path(&1))) do
         :ok
       else
         {:error, :worktree_not_in_allowed_list}
@@ -79,24 +127,31 @@ defmodule ForemanServer.Agents.VfsIsolation do
   Convenience wrapper: checks the allowlist and then binds if permitted.
   Returns `:ok` on success or `{:error, :worktree_not_in_allowed_list}`.
   """
-  @spec bind_with_check(String.t(), String.t()) :: :ok | {:error, :worktree_not_in_allowed_list}
-  def bind_with_check(agent_id, worktree_path) do
-    case allowlist_check(worktree_path) do
-      :ok -> bind(agent_id, worktree_path)
+  @spec bind_with_check(String.t(), String.t() | [String.t()]) ::
+          :ok | {:error, :worktree_not_in_allowed_list}
+  def bind_with_check(agent_id, roots) do
+    roots = List.wrap(roots)
+
+    case Enum.find_value(roots, :ok, fn root ->
+           with :ok <- allowlist_check(root), do: nil
+         end) do
+      :ok -> bind(agent_id, roots)
       error -> error
     end
   end
 
+  defp under_root?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
   @impl true
-  def handle_call({:bind, agent_id, worktree_path}, _from, state) do
-    :ets.insert(@table, {agent_id, worktree_path})
-    Logger.info("VFS bound: agent=#{agent_id} worktree=#{worktree_path}")
+  def handle_call({:bind, agent_id, roots}, _from, state) do
+    :ets.insert(@table, {agent_id, roots})
+    Logger.info("VFS bound: agent=#{agent_id} roots=#{Enum.join(roots, ",")}")
     {:reply, :ok, state}
   end
 
   def handle_call({:lookup, agent_id}, _from, state) do
     case :ets.lookup(@table, agent_id) do
-      [{^agent_id, path}] -> {:reply, {:ok, path}, state}
+      [{^agent_id, roots}] -> {:reply, {:ok, roots}, state}
       [] -> {:reply, :not_found, state}
     end
   end
@@ -107,15 +162,13 @@ defmodule ForemanServer.Agents.VfsIsolation do
     {:reply, :ok, state}
   end
 
-  def handle_call({:allowed?, agent_id, path}, _from, state) do
+  def handle_call({:allowed?, agent_id, path, canonical}, _from, state) do
     case :ets.lookup(@table, agent_id) do
-      [{^agent_id, worktree}] ->
-        allowed = String.starts_with?(path, worktree)
-
-        if allowed do
+      [{^agent_id, roots}] ->
+        if Enum.any?(roots, &under_root?(canonical, &1)) do
           {:reply, true, state}
         else
-          # Access denied — log and emit security telemetry
+          # Access denied - log and emit security telemetry
           Logger.warning(
             "VFS sandbox denied: agent=#{agent_id} path=#{path} reason=outside_worktree"
           )

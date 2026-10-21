@@ -3,6 +3,7 @@ defmodule ForemanServer.Aggregates.Task do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.{Aggregate, ProjectionStore}
+  alias ForemanServer.Workflow.RunRepoSet
 
   defmodule Annotation do
     @moduledoc "An annotation on a task with enforced schema from TaskAnnotated."
@@ -177,34 +178,39 @@ defmodule ForemanServer.Aggregates.Task do
     with {:ok, task_id} <- Aggregate.required_binary(task_id, :task_id),
          :ok <- require_absent(state, task_id),
          :ok <- validate_status(Aggregate.get(payload, :status, "open")),
-         :ok <- validate_project_allows_tasks(Aggregate.get(payload, :project_id)) do
+         :ok <- validate_project_allows_tasks(Aggregate.get(payload, :project_id)),
+         {:ok, repo_fields} <- validate_repo_targets(Aggregate.get(payload, :project_id), payload) do
       {:ok,
        %{
          stream_id: "task:#{task_id}",
          event_type: "TaskCreated",
-         payload: %{
-           task_id: task_id,
-           project_id: Aggregate.get(payload, :project_id),
-           title: Aggregate.get(payload, :title, task_id),
-           description: Aggregate.get(payload, :description),
-           priority: Aggregate.get(payload, :priority),
-           status: Aggregate.get(payload, :status, "open"),
-           dependencies: Aggregate.get(payload, :dependencies, []),
-           task_type: Aggregate.get(payload, :task_type) || Aggregate.get(payload, :type),
-           workflow_type: Aggregate.get(payload, :workflow_type),
-           trd_path: Aggregate.get(payload, :trd_path),
-           source: Aggregate.get(payload, :source),
-           external_id: Aggregate.get(payload, :external_id),
-           external_link: Aggregate.get(payload, :external_link),
-           dedupe_key: Aggregate.get(payload, :dedupe_key),
-           integration_event_type: Aggregate.get(payload, :integration_event_type),
-           planning_run_id: Aggregate.get(payload, :planning_run_id),
-           planning_kind: Aggregate.get(payload, :planning_kind),
-           planning_phase_id: Aggregate.get(payload, :planning_phase_id),
-           trace_event_id: Aggregate.get(payload, :trace_event_id),
-           prompt: Aggregate.get(payload, :prompt),
-           provider_tracked: Aggregate.get(payload, :provider_tracked, true)
-         }
+         payload:
+           Map.merge(
+             %{
+               task_id: task_id,
+               project_id: Aggregate.get(payload, :project_id),
+               title: Aggregate.get(payload, :title, task_id),
+               description: Aggregate.get(payload, :description),
+               priority: Aggregate.get(payload, :priority),
+               status: Aggregate.get(payload, :status, "open"),
+               dependencies: Aggregate.get(payload, :dependencies, []),
+               task_type: Aggregate.get(payload, :task_type) || Aggregate.get(payload, :type),
+               workflow_type: Aggregate.get(payload, :workflow_type),
+               trd_path: Aggregate.get(payload, :trd_path),
+               source: Aggregate.get(payload, :source),
+               external_id: Aggregate.get(payload, :external_id),
+               external_link: Aggregate.get(payload, :external_link),
+               dedupe_key: Aggregate.get(payload, :dedupe_key),
+               integration_event_type: Aggregate.get(payload, :integration_event_type),
+               planning_run_id: Aggregate.get(payload, :planning_run_id),
+               planning_kind: Aggregate.get(payload, :planning_kind),
+               planning_phase_id: Aggregate.get(payload, :planning_phase_id),
+               trace_event_id: Aggregate.get(payload, :trace_event_id),
+               prompt: Aggregate.get(payload, :prompt),
+               provider_tracked: Aggregate.get(payload, :provider_tracked, true)
+             },
+             repo_fields
+           )
        }}
     end
   end
@@ -510,6 +516,37 @@ defmodule ForemanServer.Aggregates.Task do
       _ -> :ok
     end
   end
+
+  # Optional repository targeting (E12 S9). A request naming neither `repo_id`
+  # nor `repo_ids` adds no key to the event (single-repo events are unchanged).
+  # Otherwise the request is validated against the project's registered
+  # repositories (`{:unknown_repo, id}`, duplicates, an extra equal to the
+  # primary, then the `max_repos_per_run` cap counting primary + extras). A
+  # `repo_id` equal to the project primary is dropped (absent == project
+  # primary); only a non-primary run primary and non-empty extras are written.
+  defp validate_repo_targets(project_id, payload) do
+    request = %{
+      repo_id: Aggregate.get(payload, :repo_id),
+      repo_ids: Aggregate.get(payload, :repo_ids)
+    }
+
+    case RunRepoSet.resolve(project_id, request, RunRepoSet.cap(project_id)) do
+      {:ok, :single} ->
+        {:ok, %{}}
+
+      {:ok, %{primary: primary, extras: extras, project_primary_id: project_primary_id}} ->
+        {:ok,
+         %{}
+         |> put_unless(:repo_id, primary.id, primary.id == project_primary_id)
+         |> put_unless(:repo_ids, Enum.map(extras, & &1.id), extras == [])}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp put_unless(map, _key, _value, true), do: map
+  defp put_unless(map, key, value, false), do: Map.put(map, key, value)
 
   defp require_nonempty_string(value, _key) when is_binary(value) and value != "",
     do: {:ok, value}

@@ -76,13 +76,15 @@ defmodule ForemanServer.PrObservation do
 
   @doc """
   Commands to dispatch for `status` observed on `run_id`'s PR `pr_url`.
-  `previous` is the stored watch record (or `nil`).
+  `previous` is the stored watch record (or `nil`). `repo_id` is the effective id of
+  the repository that opened the PR (E12; `nil` == the run's primary); every command
+  of a non-primary PR carries it, a primary's carry `repo_id: nil` as before.
   """
-  @spec commands(String.t(), String.t(), PrStatus.t(), previous()) ::
+  @spec commands(String.t(), String.t(), PrStatus.t(), previous(), String.t() | nil) ::
           {:ok, [map()]} | {:error, error()}
-  def commands(run_id, pr_url, %PrStatus{} = status, previous)
+  def commands(run_id, pr_url, %PrStatus{} = status, previous, repo_id \\ nil)
       when is_binary(run_id) and is_binary(pr_url) do
-    with {:ok, update} <- update_command(run_id, pr_url, status, previous) do
+    with {:ok, update} <- update_command(run_id, pr_url, status, repo_id) do
       base = base_payload(update.payload, status)
 
       {:ok,
@@ -92,8 +94,8 @@ defmodule ForemanServer.PrObservation do
     end
   end
 
-  defp update_command(run_id, pr_url, status, _previous),
-    do: PrUpdate.command(run_id, pr_url, status)
+  defp update_command(run_id, pr_url, status, repo_id),
+    do: PrUpdate.command(run_id, pr_url, status, repo_id)
 
   defp update_commands(update, _status, nil), do: [update]
 
@@ -110,6 +112,7 @@ defmodule ForemanServer.PrObservation do
       project_id: update_payload.project_id,
       task_id: update_payload.task_id,
       branch_name: update_payload.branch_name,
+      repo_id: Map.get(update_payload, :repo_id),
       base_branch: status.base_branch,
       head_sha: status.head_sha,
       pr_status: Atom.to_string(status.status),
@@ -135,7 +138,6 @@ defmodule ForemanServer.PrObservation do
             Map.merge(base, %{
               run_id: run_id,
               pr_url: pr_url,
-              repo_id: nil,
               checks_state: Atom.to_string(status.checks_state),
               failing: failing(status),
               digest: digest,
@@ -166,7 +168,6 @@ defmodule ForemanServer.PrObservation do
             |> Map.merge(%{
               run_id: run_id,
               pr_url: pr_url,
-              repo_id: nil,
               review_decision: decision(status.review_decision),
               comment_ids: comment_ids(status),
               thread_ids: thread_ids(status),

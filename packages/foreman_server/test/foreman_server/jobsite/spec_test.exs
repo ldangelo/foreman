@@ -248,6 +248,19 @@ defmodule ForemanServer.Jobsite.SpecTest do
       )
     end
 
+    test "repositories is a typed forbidden key: multi-repo jobsites are unsupported" do
+      for value <- [["a", "b"], ["zzz"], []] do
+        error =
+          assert_error(
+            Spec.from_json(Map.put(base(), "repositories", value)),
+            :spec_forbidden_key
+          )
+
+        assert error.details.key == "repositories"
+        assert error.message =~ "multi-repo jobsites unsupported"
+      end
+    end
+
     test "function-like values are rejected" do
       assert_error(Spec.from_json(Map.put(base(), "name", fn -> :ok end)), :spec_non_json_value)
       assert_error(Spec.from_json(Map.put(base(), "name", self())), :spec_non_json_value)

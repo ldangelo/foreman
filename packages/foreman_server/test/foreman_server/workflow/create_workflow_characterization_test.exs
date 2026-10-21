@@ -220,7 +220,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
       assert event_spec.event_type == "PrReady"
 
       state_after_ready = Run.apply_event(state, event_spec)
-      assert state_after_ready.merge_gate == :pending
+      assert Run.merge_gate(state_after_ready) == :pending
 
       # run.pr.merge is blocked while gate is :pending
       merge_result =
@@ -263,7 +263,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
         })
 
       state = Run.apply_event(state, ready_spec)
-      assert state.merge_gate == :pending
+      assert Run.merge_gate(state) == :pending
 
       # 2. Authorized merge_approve → transitions to :approved
       # Both :approver and :approver_identity required per Run.handle_command
@@ -280,7 +280,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
       assert approve_spec.event_type == "MergeGateApproved"
 
       state_after_approve = Run.apply_event(state, approve_spec)
-      assert state_after_approve.merge_gate == :approved
+      assert Run.merge_gate(state_after_approve) == :approved
 
       # 3. run.pr.merge now succeeds
       {:ok, merge_spec} =
@@ -322,7 +322,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
         })
 
       state = Run.apply_event(state, ready_spec)
-      assert state.merge_gate == :pending
+      assert Run.merge_gate(state) == :pending
 
       # 2. Unauthorized approver — :approver and :approver_identity required
       # ApproverAuthorizer.authorize/1 returns {:error, :unauthorized_approver}
@@ -337,7 +337,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
                })
 
       # 3. Gate stays :pending
-      assert state.merge_gate == :pending,
+      assert Run.merge_gate(state) == :pending,
              "Gate must remain :pending after unauthorized merge_approve"
     end
 
@@ -347,7 +347,7 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
       project_id = "project-prd-no-gate-#{System.unique_integer([:positive])}"
 
       state = run_state(run_id, task_id, project_id)
-      assert state.merge_gate == nil
+      assert Run.merge_gate(state) == nil
 
       result =
         Run.handle_command(state, %{

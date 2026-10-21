@@ -22,9 +22,10 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @allowed_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E9: operator PR-watch commands, declared once on the Run aggregate's PR rules.
-  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types()
+  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types() ++
+                       ForemanServer.Aggregates.Run.repo_pr_operator_types()
   @allowed_types @allowed_types ++ @pr_operator_types
   @schedule_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E8 agent tool-call decisions (own attribute so allowlist edits do not collide).
@@ -258,6 +259,8 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("project.pause"), do: "project"
   defp aggregate_prefix("project.resume"), do: "project"
   defp aggregate_prefix("project.adopt"), do: "project"
+  defp aggregate_prefix("project.repo.add"), do: "project"
+  defp aggregate_prefix("project.repo.remove"), do: "project"
   defp aggregate_prefix("task.create"), do: "task"
   defp aggregate_prefix("task.approve"), do: "task"
   defp aggregate_prefix("coordinator.message"), do: "coordinator"
@@ -285,6 +288,8 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("project.pause"), do: :project_id
   defp id_field_for("project.resume"), do: :project_id
   defp id_field_for("project.adopt"), do: :project_id
+  defp id_field_for("project.repo.add"), do: :project_id
+  defp id_field_for("project.repo.remove"), do: :project_id
   defp id_field_for("task.create"), do: :task_id
   defp id_field_for("task.approve"), do: :task_id
   defp id_field_for("task.retry"), do: :task_id

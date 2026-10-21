@@ -1923,6 +1923,16 @@ defmodule ForemanServer.CommandGatewayTest do
       end
     end
 
+    # `project.update` with a changed `path` is validated against a real git
+    # checkout (E12), so these tests move the project to a genuine work tree.
+    defp git_repo!(name) do
+      path = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(path)
+      {_, 0} = System.cmd("git", ["init", "-q", path])
+      ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(path) end)
+      path
+    end
+
     test "dispatch_operator emits project.update telemetry" do
       project_id = unique_id("project")
 
@@ -1941,7 +1951,7 @@ defmodule ForemanServer.CommandGatewayTest do
                    command_id: unique_id("command"),
                    aggregate_id: "project:#{project_id}",
                    type: "project.update",
-                   payload: %{project_id: project_id, path: "/tmp/#{project_id}/updated"}
+                   payload: %{project_id: project_id, path: git_repo!("gw-updated")}
                  })
 
         assert_receive {

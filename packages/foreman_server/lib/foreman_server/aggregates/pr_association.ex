@@ -10,7 +10,11 @@ defmodule ForemanServer.Aggregates.PrAssociation do
 
   ## Stream id
 
-      pr_association:<run_id>
+      pr_association:<run_id>              # the run's primary repository
+      pr_association:<run_id>:<repo_id>    # any other repository (E12)
+
+  `repo_id` ABSENT means the run's primary repository, so single-repo runs keep
+  the original stream and event shape.
 
   ## Commands
 
@@ -49,21 +53,24 @@ defmodule ForemanServer.Aggregates.PrAssociation do
   def handle_command(_state, %{type: "pr.associate", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, pr_url} <- Aggregate.required_binary(Aggregate.get(payload, :pr_url), :pr_url),
-         :ok <- validate_url(pr_url) do
+         :ok <- validate_url(pr_url),
+         {:ok, repo_id} <- optional_repo_id(Aggregate.get(payload, :repo_id)) do
       pr_number = Aggregate.get(payload, :pr_number) || extract_pr_number(pr_url)
 
       event_payload =
         payload
+        |> Map.drop([:repo_id, "repo_id"])
         |> Map.merge(%{
           run_id: run_id,
           pr_url: pr_url,
           pr_number: pr_number,
           associated_at: Aggregate.get(payload, :associated_at, System.system_time(:millisecond))
         })
+        |> put_repo_id(repo_id)
 
       {:ok,
        %{
-         stream_id: stream_id(run_id),
+         stream_id: stream_id(run_id, repo_id),
          event_type: "PrAssociated",
          payload: event_payload
        }}
@@ -92,9 +99,24 @@ defmodule ForemanServer.Aggregates.PrAssociation do
     end
   end
 
-  @doc "Build the stream id for a given run_id."
-  @spec stream_id(String.t()) :: String.t()
-  def stream_id(run_id) when is_binary(run_id), do: "pr_association:#{run_id}"
+  @doc """
+  Build the stream id for a run's PR association. `repo_id` `nil` is the run's
+  primary repository (`pr_association:<run_id>`, unchanged); any other
+  repository is `pr_association:<run_id>:<repo_id>`.
+  """
+  @spec stream_id(String.t(), String.t() | nil) :: String.t()
+  def stream_id(run_id, repo_id \\ nil)
+  def stream_id(run_id, nil) when is_binary(run_id), do: "pr_association:#{run_id}"
+
+  def stream_id(run_id, repo_id) when is_binary(run_id) and is_binary(repo_id),
+    do: "pr_association:#{run_id}:#{repo_id}"
+
+  defp optional_repo_id(nil), do: {:ok, nil}
+  defp optional_repo_id(id) when is_binary(id) and id != "", do: {:ok, id}
+  defp optional_repo_id(_), do: {:error, {:missing_or_invalid, :repo_id}}
+
+  defp put_repo_id(payload, nil), do: payload
+  defp put_repo_id(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
 
   defp validate_url(url) when is_binary(url) do
     cond do

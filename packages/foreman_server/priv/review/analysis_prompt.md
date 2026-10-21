@@ -15,7 +15,7 @@ All paths are absolute. Read them yourself:
 - `{{diff_path}}` — unified diff of the delivered work against its base
 - `{{changed_files_path}}` — `git diff --name-status` of the delivered work
 - `{{transcript_path}}` — JSON lines, one per agent event (`type`, `timestamp`, `text`); shows what the agent did and which commands/tests it ran
-- `{{manifest_path}}` — session metadata (below)
+- `{{manifest_path}}` — session metadata (below){{repositories_clause}}
 
 If a file is missing or empty, that is itself evidence (check `diff_status` and `capture_errors` in the manifest); say so in your summary rather than guessing. If the run failed or delivered nothing, the verdict is normally `not_met`.
 

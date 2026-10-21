@@ -1,5 +1,8 @@
 defmodule ForemanServer.Events.TaskCreated do
   @moduledoc "Typed event emitted when a task is created."
+  # `repo_id` / `repo_ids` (E12): the run's primary repo when it is not the
+  # project primary, and initial extra repos. Optional and NOT enforced so old
+  # streams replay; neither is written for single-repo tasks.
   @enforce_keys [:task_id, :project_id, :title, :status, :task_type]
   @type t :: %__MODULE__{
           task_id: String.t(),
@@ -23,7 +26,9 @@ defmodule ForemanServer.Events.TaskCreated do
           planning_phase_id: String.t() | nil,
           trace_event_id: String.t() | nil,
           prompt: String.t() | nil,
-          provider_tracked: boolean()
+          provider_tracked: boolean(),
+          repo_id: String.t() | nil,
+          repo_ids: [String.t()] | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -48,6 +53,8 @@ defmodule ForemanServer.Events.TaskCreated do
     :planning_phase_id,
     :trace_event_id,
     :prompt,
+    :repo_id,
+    :repo_ids,
     provider_tracked: true
   ]
 end

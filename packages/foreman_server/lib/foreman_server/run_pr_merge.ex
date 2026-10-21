@@ -51,40 +51,48 @@ defmodule ForemanServer.RunPrMerge do
   def clear_command_runner, do: :persistent_term.erase(@runner_key)
 
   @doc """
-  Merge the PR of `run_id` on GitHub and return the `run.pr.merge` payload to
-  record. Concurrent calls for one run are serialized, so the second observes the
-  first's merge instead of racing it.
+  Merge the PR of `run_id` (of its repository `repo_id`; `nil` = the run's
+  primary) on GitHub and return the `run.pr.merge` payload to record.
+  Concurrent calls for one PR are serialized, so the second observes the
+  first's merge instead of racing it; different repositories of one run merge
+  independently, each pinned to its own approved head.
   """
-  @spec execute(String.t()) :: {:ok, map()} | {:error, term()}
-  def execute(run_id) when is_binary(run_id) and run_id != "" do
-    :global.trans({{__MODULE__, run_id}, self()}, fn -> merge(run_id) end)
+  @spec execute(String.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+  def execute(run_id, repo_id \\ nil)
+      when is_binary(run_id) and run_id != "" and (is_nil(repo_id) or is_binary(repo_id)) do
+    repo_key = if repo_id == "", do: nil, else: repo_id
+    :global.trans({{__MODULE__, run_id, repo_key}, self()}, fn -> merge(run_id, repo_key) end)
   end
 
-  defp merge(run_id) do
-    with :ok <- require_gate_approved(run_id),
-         {:ok, ready} <- approved_ready_payload(run_id),
+  defp merge(run_id, repo_key) do
+    with :ok <- require_gate_approved(run_id, repo_key),
+         {:ok, ready} <- approved_ready_payload(run_id, repo_key),
          {:ok, current} <- PrStatus.fetch(ready.pr_url, runner_opts()),
          :ok <- merge_unless_done(current, ready) do
-      {:ok, Map.put(ready, :run_id, run_id)}
+      {:ok, ready |> put_repo_id(repo_key) |> Map.put(:run_id, run_id)}
     end
   end
 
-  defp require_gate_approved(run_id) do
+  defp put_repo_id(payload, nil), do: payload
+  defp put_repo_id(payload, repo_key), do: Map.put(payload, :repo_id, repo_key)
+
+  defp require_gate_approved(run_id, repo_key) do
     {state, _version} = Aggregate.load(Run, "run:#{run_id}")
 
     cond do
       not state.exists? -> {:error, {:run_not_found, run_id}}
-      state.merge_gate == :approved -> :ok
+      Run.merge_gate(state, repo_key) == :approved -> :ok
       true -> {:error, :pr_not_acceptable}
     end
   end
 
-  # The most recent `PrReady` is the one the gate was opened (and approved) for.
-  defp approved_ready_payload(run_id) do
+  # The most recent `PrReady` OF THIS REPOSITORY is the one its gate was opened
+  # (and approved) for; another repository's PrReady is never considered.
+  defp approved_ready_payload(run_id, repo_key) do
     case EventStore.read_stream_forward("run:#{run_id}", 0, 99_999_999) do
       {:ok, events} ->
         events
-        |> Enum.filter(&(&1.event_type == "PrReady"))
+        |> Enum.filter(&(&1.event_type == "PrReady" and ready_repo_key(&1.data) == repo_key))
         |> List.last()
         |> ready_payload(run_id)
 
@@ -93,6 +101,13 @@ defmodule ForemanServer.RunPrMerge do
 
       {:error, reason} ->
         {:error, {:pr_ready_read_failed, reason}}
+    end
+  end
+
+  defp ready_repo_key(data) do
+    case Aggregate.get(data, :repo_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> nil
     end
   end
 

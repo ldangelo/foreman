@@ -38,8 +38,8 @@ defmodule ForemanServer.Aggregates.Run do
       :status,
       :terminal?,
       :last_sequence,
-      :merge_gate,
       :base_branch,
+      merge_gates: %{},
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
@@ -61,7 +61,7 @@ defmodule ForemanServer.Aggregates.Run do
       status: nil,
       terminal?: false,
       last_sequence: 0,
-      merge_gate: nil,
+      merge_gates: %{},
       base_branch: nil,
       phase_status: %{},
       worker_status: %{},
@@ -72,6 +72,14 @@ defmodule ForemanServer.Aggregates.Run do
       pr_watch: %{},
       pr_fixes: %{}
     }
+
+  @doc """
+  The merge gate of one repository's PR: `:pending`, `:approved`, or `nil`
+  (no PR has been readied for it). `repo_id` `nil` is the run's primary
+  repository, which is also where every legacy event (no `repo_id`) folds.
+  """
+  @spec merge_gate(%State{}, String.t() | nil) :: :pending | :approved | nil
+  def merge_gate(%State{merge_gates: gates}, repo_id \\ nil), do: Map.get(gates, repo_id)
 
   @impl true
   def apply_event(%State{} = state, event) do
@@ -111,7 +119,7 @@ defmodule ForemanServer.Aggregates.Run do
             state
             | exists?: true,
               run_id: Aggregate.get(payload, :run_id),
-              merge_gate: :pending
+              merge_gates: put_gate(state, payload, :pending)
           },
           "PrReady",
           payload
@@ -120,7 +128,7 @@ defmodule ForemanServer.Aggregates.Run do
       "MergeGateApproved" ->
         %State{
           state
-          | merge_gate: :approved,
+          | merge_gates: put_gate(state, payload, :approved),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 
@@ -255,7 +263,7 @@ defmodule ForemanServer.Aggregates.Run do
       "MergeGatePending" ->
         %State{
           state
-          | merge_gate: :pending,
+          | merge_gates: put_gate(state, payload, :pending),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 
@@ -285,16 +293,28 @@ defmodule ForemanServer.Aggregates.Run do
               Enum.reject(state.pending_steer, &MapSet.member?(consumed, &1.message_id))
         }
 
+      # A secondary repository's base branch (`repo_id` present) is a read-model
+      # fact only: `State.base_branch` stays the run primary's.
       "RunBaseBranchRecorded" ->
+        base_branch =
+          if Aggregate.get(payload, :repo_id),
+            do: state.base_branch,
+            else: Aggregate.get(payload, :base_branch)
+
         %State{
           state
-          | base_branch: Aggregate.get(payload, :base_branch),
+          | base_branch: base_branch,
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 
       # E9 PR-watch events fold into `pr_watch` / `pr_fixes`.
       type when type in @pr_watch_events ->
         PrWatch.apply_event(state, type, payload)
+
+      # E12-S6: a repository's PR could not be created. Records nothing on the run
+      # itself (it keeps its status); the per-repository read model folds it.
+      "RunRepoPrFailed" ->
+        %State{state | run_id: Aggregate.get(payload, :run_id) || state.run_id}
 
       # An event type this fold does not know replays as a no-op: a new event type
       # on a run stream must never make `Aggregate.load/2` crash.
@@ -675,7 +695,7 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_exists(state, run_id),
          :ok <- allow_pr_lifecycle_on_terminal_runs(state, type),
          :ok <- require_pr_payload(type, payload),
-         :ok <- ensure_pr_gate_ok(state, type, run_id) do
+         :ok <- ensure_pr_gate_ok(state, type, run_id, payload) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
@@ -694,7 +714,9 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_pr_payload("run.pr.ready", payload) do
       pr_url = Aggregate.get(payload, :pr_url)
       # PrGate.record_pending calls MergeGate.request_approval internally.
-      :ok = PrGate.record_pending(run_id, pr_url)
+      # A non-primary repository's PR (E12) is held under its own key and never
+      # touches the primary's gate.
+      :ok = PrGate.record_pending(run_id, pr_url, Aggregate.get(payload, :repo_id))
 
       {:ok,
        %{
@@ -710,7 +732,8 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(state, %{type: "merge_approve", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
-         :ok <- ensure_merge_gate_pending(state),
+         {:ok, repo_key} <- repo_key(payload),
+         :ok <- ensure_merge_gate_pending(state, repo_key),
          {:ok, approver} <-
            Aggregate.required_binary(Aggregate.get(payload, :approver), :approver),
          {:ok, approver_identity} <-
@@ -719,19 +742,52 @@ defmodule ForemanServer.Aggregates.Run do
              :approver_identity
            ),
          :ok <- ApproverAuthorizer.authorize(approver_identity) do
-      :ok = PrGate.record_approved(run_id, approver, approver_identity)
+      :ok = PrGate.record_approved(run_id, approver, approver_identity, repo_key)
 
       {:ok,
        %{
          stream_id: "run:#{run_id}",
          event_type: "MergeGateApproved",
-         payload: %{
-           run_id: run_id,
-           approver: approver,
-           approver_identity: approver_identity,
-           approved_at: System.system_time(:millisecond)
-         }
+         payload:
+           put_repo_id(
+             %{
+               run_id: run_id,
+               approver: approver,
+               approver_identity: approver_identity,
+               approved_at: System.system_time(:millisecond)
+             },
+             repo_key
+           )
        }}
+    end
+  end
+
+  # run.repo_pr_failed (system, never operator-dispatched) - finalisation reports
+  # that one repository's PR could not be created. The run completes regardless.
+  def handle_command(state, %{type: "run.repo_pr_failed", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         {:ok, repo_id} <- Aggregate.required_binary(Aggregate.get(payload, :repo_id), :repo_id),
+         {:ok, reason} <- Aggregate.required_binary(Aggregate.get(payload, :reason), :reason),
+         {:ok, at} <- required_integer(payload, :at) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunRepoPrFailed",
+         payload: %{run_id: run_id, repo_id: repo_id, reason: reason, at: at}
+       }}
+    end
+  end
+
+  # run.pr.retry (operator-only) - the PR itself is opened by the gateway side
+  # effect (`RepoPr.retry/2`), which appends the association and `run.pr.ready`
+  # events; the aggregate only validates the addressed run and repository, and
+  # accepts it on a terminal run (a PR outlives the run).
+  def handle_command(state, %{type: "run.pr.retry", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         {:ok, _repo_id} <- Aggregate.required_binary(Aggregate.get(payload, :repo_id), :repo_id) do
+      {:ok, nil}
     end
   end
 
@@ -827,6 +883,34 @@ defmodule ForemanServer.Aggregates.Run do
     ])
   end
 
+  # The gate map is keyed by `repo_id`; `nil` is the run's primary repository
+  # (and every legacy event, which carries no `repo_id`). A PrReady for one
+  # repository re-holds only that repository's gate.
+  defp put_gate(%State{merge_gates: gates}, payload, gate) do
+    Map.put(gates, gate_key(payload), gate)
+  end
+
+  defp gate_key(payload) do
+    case Aggregate.get(payload, :repo_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> nil
+    end
+  end
+
+  # `repo_id` absent/empty selects the primary repository; anything else but a
+  # binary is a malformed command, not the primary.
+  defp repo_key(payload) do
+    case Aggregate.get(payload, :repo_id) do
+      nil -> {:ok, nil}
+      "" -> {:ok, nil}
+      id when is_binary(id) -> {:ok, id}
+      _other -> {:error, {:missing_or_invalid, :repo_id}}
+    end
+  end
+
+  defp put_repo_id(payload, nil), do: payload
+  defp put_repo_id(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
+
   defp require_pr_payload(type, payload) do
     required =
       [:project_id, :task_id, :pr_url, :branch_name]
@@ -861,29 +945,51 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp validate_pr_reset_action(_type, _action), do: :ok
 
-  # Enforces the merge gate: only allow run.pr.merge when state.merge_gate is
-  # :approved (set by MergeGateApproved event, emitted after merge_approve).
-  # The aggregate state is the authoritative source — it survives actor restarts
-  # and crash recovery, unlike the ETS-backed MergeGate GenServer.
-  defp ensure_pr_gate_ok(state, "run.pr.merge", _run_id) do
-    case state.merge_gate do
-      :approved -> :ok
-      :pending -> {:error, :pr_not_acceptable}
-      nil -> {:error, :pr_not_acceptable}
+  # Enforces the merge gate: only allow run.pr.merge when the addressed
+  # repository's gate is :approved (set by MergeGateApproved event, emitted
+  # after merge_approve). The aggregate state is the authoritative source — it
+  # survives actor restarts and crash recovery, unlike the ETS-backed MergeGate
+  # GenServer.
+  defp ensure_pr_gate_ok(state, "run.pr.merge", _run_id, payload) do
+    with {:ok, repo_key} <- repo_key(payload) do
+      case merge_gate(state, repo_key) do
+        :approved -> :ok
+        _pending_or_nil -> {:error, :pr_not_acceptable}
+      end
     end
   end
 
-  defp ensure_pr_gate_ok(_state, _type, _run_id), do: :ok
+  defp ensure_pr_gate_ok(_state, _type, _run_id, _payload), do: :ok
 
-  # Verifies the run is at the merge gate (merge has been requested but not yet
-  # approved). Allows merge_approve only when the gate is still pending.
-  defp ensure_merge_gate_pending(state) do
-    case state.merge_gate do
+  # Verifies the repository is at the merge gate (merge has been requested but
+  # not yet approved). Allows merge_approve only when its gate is still pending.
+  # The legacy tuples are unchanged for the primary (`nil`); a named repository
+  # gets its id appended.
+  defp ensure_merge_gate_pending(state, repo_key) do
+    case merge_gate(state, repo_key) do
       :pending -> :ok
       :approved -> {:error, :merge_gate_already_approved}
-      nil -> {:error, {:merge_gate_not_found, :run}}
+      nil when is_nil(repo_key) -> {:error, {:merge_gate_not_found, :run}}
+      nil -> {:error, {:merge_gate_not_found, :run, repo_key}}
     end
   end
+
+  defp required_integer(payload, key) do
+    case Aggregate.get(payload, key) do
+      value when is_integer(value) -> {:ok, value}
+      other -> {:error, {:missing_or_invalid, key, other}}
+    end
+  end
+
+  @repo_pr_operator_types ~w(run.pr.retry)
+
+  @doc """
+  Operator-only PR commands added by E12-S6 (`run.pr.retry`), declared here so
+  `CommandGateway` and `CommandController` allowlists stay in step. Merge
+  (`merge_approve`, `run.pr.merge`) and these are never MCP tools.
+  """
+  @spec repo_pr_operator_types() :: [String.t()]
+  def repo_pr_operator_types, do: @repo_pr_operator_types
 
   # Every PR command (the original lifecycle ones and the E9 watch/fix ones) is
   # accepted on a terminal run: a PR outlives the run that opened it. A command

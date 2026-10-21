@@ -6,7 +6,9 @@ defmodule ForemanServer.CommandGateway do
 
     * `dispatch_operator/2` — public operator commands. Currently allows
       `project.register`, `project.update`, `project.archive`,
-      `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
+      `project.reactivate`, `project.pause`, `project.resume`,
+      `project.repo.add`, `project.repo.remove` (E12; `add` and a `project.update`
+      that moves `path` are validated by `Projects.RepoValidation`), `task.create`, `task.approve`, `task.retry`,
       `task.update`, `run.cancel`, `run.pause`, `run.resume`, `run.remove`,
       `run.reset`, `run.steer`, `merge_approve`, `run.pr.merge`, `inbox.send`,
       `thread.resolve`, and `thread.reopen`. The
@@ -46,16 +48,18 @@ defmodule ForemanServer.CommandGateway do
   """
 
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E9: the operator PR-watch commands (fix threads, stop/start watching, create PR) are
   # declared once on the Run aggregate's PR rules and appended here so both allowlists
   # (this one and `CommandController`) stay in step. Merge is deliberately not among them.
-  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types()
+  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types() ++
+                       ForemanServer.Aggregates.Run.repo_pr_operator_types()
   @allowed_operator_types @allowed_operator_types ++ @pr_operator_types
   @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E8: agent tool-call decisions. Kept out of the long lists above so concurrent
@@ -109,7 +113,23 @@ defmodule ForemanServer.CommandGateway do
   applied to an as-yet-unapproved payload.
   """
   @spec dispatch_system(map(), integer()) :: dispatch_result()
-  def dispatch_system(command, timeout \\ 5_000) when is_map(command) do
+  def dispatch_system(command, timeout \\ 5_000)
+
+  # `run.repo.request` (E12 S10) is system-authored: a thread asks to add a
+  # repository to its own run. The decision procedure, its side effects and
+  # its audit event live in `Workflow.RunRepoRequest`; there is no aggregate
+  # command of this name and it is NOT in `@allowed_operator_types`.
+  def dispatch_system(%{type: "run.repo.request"} = command, _timeout) do
+    ForemanServer.Workflow.RunRepoRequest.execute(command)
+  end
+
+  # `task.fanout` (E12 S11): one single-repo task per repository, looped over
+  # `task.create` by `Workflow.TaskFanout`. System-only, like the above.
+  def dispatch_system(%{type: "task.fanout"} = command, _timeout) do
+    ForemanServer.Workflow.TaskFanout.execute(command)
+  end
+
+  def dispatch_system(command, timeout) when is_map(command) do
     dispatch_and_emit_project_telemetry(command, timeout)
   end
 
@@ -152,9 +172,58 @@ defmodule ForemanServer.CommandGateway do
   # type passes through untouched.
   defp perform_operator_side_effects(%{type: "run.pr.merge", payload: payload} = command) do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
 
-    with {:ok, merge_payload} <- RunPrMerge.execute(run_id) do
+    with :ok <- valid_merge_ids(run_id, repo_id),
+         {:ok, merge_payload} <- RunPrMerge.execute(run_id, repo_id) do
       {:ok, %{command | payload: merge_payload}}
+    end
+  end
+
+  # `run.pr.retry` re-opens one repository's PR from its preserved worktree before
+  # dispatch (impure, so never inside the aggregate). Idempotent: a repository
+  # that already has its PR returns it again. Nothing to propose is an error, not
+  # a silent success: the operator asked for a PR.
+  defp perform_operator_side_effects(%{type: "run.pr.retry", payload: payload} = command) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
+
+    with :ok <- valid_repo_id(repo_id, false),
+         {:ok, url} <- retry_repo_pr(run_id, repo_id) do
+      {:ok, %{command | payload: Map.put(payload, :pr_url, url)}}
+    end
+  end
+
+  # `project.repo.add` and a `project.update` that moves the primary `path` run
+  # the impure repository checks (realpath, git work tree, remote identity)
+  # here, never inside the aggregate. The canonical path replaces the caller's,
+  # so the aggregate's pure uniqueness check compares realpaths. Nothing is
+  # cloned. An unknown project falls through so the aggregate reports it.
+  defp perform_operator_side_effects(%{type: "project.repo.add", payload: payload} = command) do
+    project_id = get_value(payload, :project_id)
+
+    with {:ok, repos} <- known_repositories(project_id),
+         {:ok, info} <- RepoValidation.check_candidate(get_value(payload, :path), repos) do
+      {:ok, %{command | payload: Map.put(payload, :path, info.path)}}
+    else
+      :unknown_project -> {:ok, command}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp perform_operator_side_effects(%{type: "project.update", payload: payload} = command) do
+    project_id = get_value(payload, :project_id)
+    path = get_value(payload, :path)
+
+    with true <- is_binary(path),
+         {:ok, [%{path: current} | _] = repos} <- known_repositories(project_id),
+         true <- current != path do
+      case RepoValidation.check_candidate(path, repos, replacing: RepoValidation.primary_id()) do
+        {:ok, info} -> {:ok, %{command | payload: Map.put(payload, :path, info.path)}}
+        {:error, _} = error -> error
+      end
+    else
+      _ -> {:ok, command}
     end
   end
 
@@ -177,6 +246,31 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp perform_operator_side_effects(command), do: {:ok, command}
+
+  defp known_repositories(project_id) when is_binary(project_id) do
+    case ProjectionStore.project_repositories(project_id) do
+      nil -> :unknown_project
+      repos -> {:ok, repos}
+    end
+  end
+
+  defp known_repositories(_project_id), do: :unknown_project
+
+  # A merge addresses the run's primary repository without a `repo_id`; a retry
+  # always names one. Anything but a non-empty binary is malformed, never primary.
+  defp valid_merge_ids(_run_id, repo_id), do: valid_repo_id(repo_id, true)
+
+  defp valid_repo_id(nil, true), do: :ok
+  defp valid_repo_id(repo_id, _optional) when is_binary(repo_id) and repo_id != "", do: :ok
+  defp valid_repo_id(_repo_id, _optional), do: {:error, {:missing_or_invalid, :repo_id}}
+
+  defp retry_repo_pr(run_id, repo_id) do
+    case ForemanServer.Workflow.RepoPr.retry(run_id, repo_id) do
+      {:ok, url} -> {:ok, url}
+      :noop -> {:error, {:nothing_to_propose, repo_id}}
+      {:error, _} = error -> error
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Operator envelope
@@ -323,7 +417,9 @@ defmodule ForemanServer.CommandGateway do
               "project.pause",
               "project.resume",
               "project.adopt",
-              "project.environment.set"
+              "project.environment.set",
+              "project.repo.add",
+              "project.repo.remove"
             ] do
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
 

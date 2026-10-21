@@ -5,6 +5,7 @@ defmodule ForemanServer.Review.Archive do
       <archive_root>/<kind>/<subject_id>/
         manifest.json  request.md  transcript.jsonl  diff.patch
         changed-files.txt  analysis.json  analysis.md
+        diffs/<repo_id>.patch  diffs/<repo_id>.files.txt   (non-primary repos of a multi-repo run)
 
   `archive_root` defaults to `<repo_path>/.foreman/sessions`; a configured
   `config :foreman_server, :review, archive_root:` is used verbatim.
@@ -135,6 +136,36 @@ defmodule ForemanServer.Review.Archive do
       else
         {:error,
          Error.new(:archive_write_failed, "archive file name must be a bare name", %{name: name})}
+      end
+
+    case result do
+      :ok -> :ok
+      {:error, %Error{} = error} -> fail(dir, "write_file:" <> name, error)
+    end
+  end
+
+  @doc """
+  Atomically write `dir/diffs/<repo_id>.<ext>` (`ext` is `"patch"` or
+  `"files.txt"`), the per-repository diff files of a multi-repo archive.
+  `repo_id` must be a valid repository id, so it can never traverse out of
+  `diffs/`.
+  """
+  @spec write_repo_file(String.t(), String.t(), String.t(), iodata()) ::
+          :ok | {:error, Error.t()}
+  def write_repo_file(dir, repo_id, ext, contents)
+      when is_binary(dir) and is_binary(repo_id) and ext in ["patch", "files.txt"] do
+    name = "diffs/" <> repo_id <> "." <> ext
+
+    result =
+      case ForemanServer.Projects.RepoValidation.validate_id(repo_id) do
+        :ok ->
+          atomic_write(Path.join(dir, name), contents)
+
+        {:error, _} ->
+          {:error,
+           Error.new(:archive_write_failed, "archive repo id is not a valid id", %{
+             repo_id: repo_id
+           })}
       end
 
     case result do

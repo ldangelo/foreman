@@ -62,6 +62,11 @@ defmodule ForemanServerWeb.RunController do
     end
   end
 
+  # Only plain maps have their keys stringified. A struct inside the projection (the run's
+  # `usage` is a `%ForemanServer.Usage{}`) is not enumerable: it is left for Jason, which
+  # encodes it through the struct's own `Jason.Encoder`.
+  defp stringify_keys(%_{} = struct), do: struct
+
   defp stringify_keys(value) when is_map(value) do
     Map.new(value, fn {k, v} -> {to_string(k), stringify_keys(v)} end)
   end

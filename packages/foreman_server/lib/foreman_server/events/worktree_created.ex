@@ -16,6 +16,9 @@ defmodule ForemanServer.Events.WorktreeCreated do
   WorktreeCreateOrphanRecorded handler can locate the on-disk path.
   """
 
+  # `repo_id` is absent for a run's primary repository and present only for
+  # secondary repositories (E12). Declared so the strictly decoded event
+  # replays; legacy streams never carry it and mean "primary".
   @enforce_keys [:operation_id, :project_id, :run_id, :phase_id]
   @type t :: %__MODULE__{
           operation_id: String.t(),
@@ -26,7 +29,8 @@ defmodule ForemanServer.Events.WorktreeCreated do
           worktree_path: String.t() | nil,
           branch: String.t() | nil,
           base_ref: String.t() | nil,
-          cleanup: String.t() | nil
+          cleanup: String.t() | nil,
+          repo_id: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -38,6 +42,7 @@ defmodule ForemanServer.Events.WorktreeCreated do
     :worktree_path,
     :branch,
     :base_ref,
-    :cleanup
+    :cleanup,
+    :repo_id
   ]
 end
