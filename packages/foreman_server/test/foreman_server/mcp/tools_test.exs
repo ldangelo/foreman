@@ -101,11 +101,11 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_questions_list",
                "foreman_project_conversation",
                "foreman_project_message",
-               "foreman_project_library_list",
-               "foreman_project_library_read",
                "foreman_pr_status",
                "foreman_pr_fix",
-               "foreman_pr_watch_stop"
+               "foreman_pr_watch_stop",
+               "foreman_project_library_list",
+               "foreman_project_library_read"
              ]
 
       Enum.each(tools, fn tool ->
