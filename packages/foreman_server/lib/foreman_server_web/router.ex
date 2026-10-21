@@ -55,6 +55,7 @@ defmodule ForemanServerWeb.Router do
     get("/projects", ProjectController, :index)
     get("/projects/:id", ProjectController, :show)
     get("/projects/:id/settings", ProjectController, :settings)
+    get("/projects/:id/schedules", ProjectController, :schedules)
     get("/tasks", TaskController, :index)
     get("/tasks/:id", TaskController, :show)
     get("/runs", RunController, :index)

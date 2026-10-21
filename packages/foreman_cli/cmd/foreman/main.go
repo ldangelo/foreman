@@ -15,6 +15,7 @@
 //	project reactivate <id> POST /api/commands with type=project.reactivate
 //	project delete <id> POST /api/commands with type=project.archive (soft delete)
 //	project list        GET /api/projects
+//	project schedule list|create|pause|resume|delete  scheduled tasks (GET /api/projects/:id/schedules, POST /api/commands schedule.*)
 //	commands           Generate/install agent command assets
 //	run list            List run projections
 //	run get <id>        Fetch a run projection
@@ -60,6 +61,7 @@ Commands:
   project reactivate <id> Reactivate an archived project
   project delete <id> Soft-delete (archive) a project; history is kept, reactivate to restore
   project list        List project projections
+  project schedule list|create|pause|resume|delete  Manage scheduled tasks (--project-id <id>)
   commands           Generate/install agent command assets
   run list            List run projections
   run get <id>        Fetch a run projection

@@ -5,6 +5,7 @@ defmodule ForemanServerWeb.ProjectController do
   `GET /api/projects/:id` returns the projected state for a single project.
   `GET /api/projects` returns the projected state for matching projects.
   `GET /api/projects/:id/settings` returns the typed settings and limits.
+  `GET /api/projects/:id/schedules` returns the project's schedules (Scheduled-tab data).
 
   Both project reads redact `config.env` / `config.environment` values
   (`ForemanServer.ProjectSettings.public_view/1`).
@@ -12,7 +13,15 @@ defmodule ForemanServerWeb.ProjectController do
 
   use ForemanServerWeb, :controller
 
-  alias ForemanServer.{ProjectSettings, ProjectSettingsDTO, ProjectStore, Telemetry}
+  alias ForemanServer.{
+    ProjectionStore,
+    ProjectSettings,
+    ProjectSettingsDTO,
+    ProjectStore,
+    Telemetry
+  }
+
+  alias ForemanServer.Schedule.DTO, as: ScheduleDTO
 
   @default_projects_list_max 1000
 
@@ -70,6 +79,27 @@ defmodule ForemanServerWeb.ProjectController do
         })
 
         conn |> put_status(:ok) |> json(dto)
+    end
+  end
+
+  @doc """
+  GET /api/projects/:id/schedules: the project's non-deleted schedules as
+  `Schedule.DTO`s with computed `next_fire_at`, plus whether the ticker is running.
+  """
+  def schedules(conn, %{"id" => project_id}) do
+    case ProjectionStore.project_projection(project_id) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "not_found", reason: ":project_not_found"})
+
+      _project ->
+        conn
+        |> put_status(:ok)
+        |> json(%{
+          ticker: ScheduleDTO.ticker_status(),
+          schedules: ScheduleDTO.list(project_id)
+        })
     end
   end
 

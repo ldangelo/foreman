@@ -17,13 +17,13 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project schedule list|create|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project: missing subcommand (create|get|update|settings|pause|resume|reactivate|delete|list)",
+			"foreman project: missing subcommand (create|get|update|settings|pause|resume|reactivate|delete|list|schedule)",
 			projectUsageText,
 		)
 	}
@@ -47,6 +47,8 @@ func runProject(c *client.Client, args []string) error {
 		return projectDelete(c, args[1:])
 	case "list":
 		return projectList(c, args[1:])
+	case "schedule":
+		return projectSchedule(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman project: unknown subcommand %q", args[0]),
