@@ -8,7 +8,8 @@ defmodule ForemanServer.PrWatchFold do
   `project_id`, `task_id`, `status` (`"open" | "conflicted" | "merged" |
   "closed"`), `head_sha`, `base_branch`, `branch_name`, `checks_state`,
   `failing` (names), `checks_digest`, `checks_seq`, `review_decision`,
-  `review_digest`, `review_seq`, `comment_ids`, `thread_ids`, `watching`,
+  `review_digest`, `review_seq`, `comment_ids`, `thread_ids`, `watching` (+
+  `stop_reason` once stopped: `operator | merged | closed`),
   `fix` (attempts, in-flight, last outcome, exhausted kinds), `updated_at`.
 
   Never raises: an event whose payload lacks a usable `run_id` / `pr_url` is
@@ -53,6 +54,7 @@ defmodule ForemanServer.PrWatchFold do
       comment_ids: [],
       thread_ids: [],
       watching: true,
+      stop_reason: nil,
       fix: new_fix(),
       updated_at: nil
     }
@@ -189,8 +191,11 @@ defmodule ForemanServer.PrWatchFold do
     end)
   end
 
-  defp apply_event(record, "PrWatchStopped", _payload), do: %{record | watching: false}
-  defp apply_event(record, "PrWatchStarted", _payload), do: %{record | watching: true}
+  defp apply_event(record, "PrWatchStopped", payload),
+    do: %{record | watching: false, stop_reason: get(payload, :reason)}
+
+  defp apply_event(record, "PrWatchStarted", _payload),
+    do: %{record | watching: true, stop_reason: nil}
 
   defp update_fix(record, fun), do: %{record | fix: fun.(record.fix)}
 

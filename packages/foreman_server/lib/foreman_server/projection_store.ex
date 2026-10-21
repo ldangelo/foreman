@@ -1112,12 +1112,23 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_call(:watched_prs, _from, state) do
-    watched =
-      for {run_id, _records} <- Map.get(state, :pr_watch, %{}),
+    pr_watch = Map.get(state, :pr_watch, %{})
+
+    observed =
+      for {run_id, _records} <- pr_watch,
           record <- pr_watch_view(state, run_id),
           record.watching and record.status not in ["merged", "closed"],
           do: record
 
+    # A PR the run is associated with but nothing observed yet (no PrUpdated) is
+    # watched too, as a blank record, so the poller's first sweep finds it.
+    unobserved =
+      for {run_id, %{pr_url: pr_url}} <- state.pr_associations,
+          is_binary(pr_url),
+          not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
+          do: unobserved_record(state, run_id, pr_url)
+
+    watched = observed ++ unobserved
     {:reply, Enum.sort_by(watched, &{&1.updated_at || 0, &1.run_id, &1.pr_url}), state}
   end
 
@@ -3061,6 +3072,15 @@ defmodule ForemanServer.ProjectionStore do
 
   defp fold_pr_watch(state, type, payload) do
     Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
+  end
+
+  defp unobserved_record(state, run_id, pr_url) do
+    run = Map.get(state.runs, run_id, %{})
+
+    run_id
+    |> ForemanServer.PrWatchFold.new_record(pr_url)
+    |> Map.merge(%{project_id: Map.get(run, :project_id), task_id: Map.get(run, :task_id)})
+    |> Map.put(:agent_review, review_signal(Map.get(state, :reviews, %{}), run_id))
   end
 
   defp pr_watch_view(state, run_id) do

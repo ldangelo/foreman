@@ -273,6 +273,19 @@ config :foreman_server, :review,
   max_comment_bytes: 8_000,
   max_gap_beads: 10
 
+# PR watching (E9): ForemanServer.PrWatcher observes the PRs of runs (checks, reviews,
+# comments, conflicts) and, when a project opts in, starts fix threads. `enabled: false`
+# (env FOREMAN_PR_WATCHER_ENABLED=false) stops it. Polling is a separate opt-in
+# (FOREMAN_PR_MONITOR_ENABLED=true -> ForemanServer.PrMonitor). The fix-thread jobsite
+# runs `agent` unless the run's own provider session names one; `max_iterations`
+# bounds one fix agent invocation; `log_tail_bytes` caps the failing-CI log excerpt.
+config :foreman_server, :pr_watcher, enabled: true
+
+config :foreman_server, :pr_fix,
+  agent: %{"provider" => "claude"},
+  max_iterations: 1,
+  log_tail_bytes: 20_000
+
 # Per-project memory (ForemanServer.ProjectMemory): caps and durable-content guard.
 config :foreman_server, :project_memory,
   max_topic_bytes: 65_536,

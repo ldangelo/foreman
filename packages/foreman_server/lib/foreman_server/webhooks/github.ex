@@ -26,11 +26,26 @@ defmodule ForemanServer.Webhooks.Github do
   The command is built by `ForemanServer.PrUpdate`, shared with `PrMonitor`. Its id
   is derived from the observed status and head SHA, so a redelivery (GitHub retries)
   and a poll reporting the same state are deduplicated by the router.
+
+  ## Optional accelerator (spike S4)
+
+  Polling (`ForemanServer.PrMonitor`) is the primary signal source; webhooks only
+  make it faster. `check_run` / `check_suite` (`completed`), `pull_request_review`,
+  `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment`
+  and `pull_request` `synchronize` / `ready_for_review` / `converted_to_draft`
+  deliveries are partial payloads, so they carry no state: each one asks
+  `ForemanServer.PrWatcher` to re-read the PR it names, if a run owns it. The
+  observation path then dedupes by content digest, so a webhook and a poll
+  converge on one event. These events are matched by their own top-level key
+  *before* the `pull_request` clause (review payloads also contain `action` and
+  `pull_request`). A lost delivery is healed by the next poll; GitHub does not retry.
+  The delivery is verified (`X-Hub-Signature-256`) before it reaches this module.
   """
 
   alias ForemanServer.CommandGateway
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.PrUpdate
+  alias ForemanServer.PrWatcher
   alias ForemanServer.ProjectionStore
 
   @type result :: :ok | :ignored | {:error, term()}
@@ -44,14 +59,117 @@ defmodule ForemanServer.Webhooks.Github do
   """
   @spec process(term()) :: result()
   def process(payload) when is_map(payload) do
-    case build_commands(payload) do
-      {:ok, commands} -> dispatch_all(commands)
-      :ignored -> :ignored
-      {:error, _reason} = error -> error
+    case build_refresh_targets(payload) do
+      {:ok, pr_urls} ->
+        refresh(pr_urls)
+
+      :none ->
+        case build_commands(payload) do
+          {:ok, commands} -> dispatch_all(commands)
+          :ignored -> :ignored
+          {:error, _reason} = error -> error
+        end
     end
   end
 
   def process(_other), do: :ignored
+
+  # Webhook payloads are partial (a fork's `check_run.pull_requests` is empty), so
+  # they only signal "PR X changed": the watcher re-reads the PR and the observation
+  # path decides what is new, exactly as for a poll.
+  defp refresh(pr_urls) do
+    owned = Enum.filter(pr_urls, &(ProjectionStore.run_ids_for_pr_url(&1) != []))
+
+    if owned != [] and PrWatcher.running?() do
+      Enum.each(owned, &PrWatcher.refresh/1)
+      :ok
+    else
+      :ignored
+    end
+  end
+
+  @check_actions ~w(completed rerequested)
+  @review_actions ~w(submitted edited dismissed)
+  @comment_actions ~w(created edited deleted)
+  @thread_actions ~w(resolved unresolved)
+  @pull_request_refresh_actions ~w(synchronize ready_for_review converted_to_draft)
+
+  @doc """
+  The PR URLs a non-`pull_request-state` delivery asks to be refreshed
+  (spike S4 allowlist): `check_run` / `check_suite` (completed), `pull_request_review`,
+  `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment`, and
+  `pull_request` `synchronize` / `ready_for_review` / `converted_to_draft`.
+
+  These keys are discriminated by their own top-level key (`check_run`,
+  `review`, `comment`, `thread`, `issue`), BEFORE the `pull_request` clause: review and
+  review-comment payloads also carry `action` and `pull_request`, and must not be read
+  as a PR state change. `:none` means "not a refresh signal": the caller falls through
+  to the state-change path.
+  """
+  @spec build_refresh_targets(term()) :: {:ok, [String.t()]} | :none
+  def build_refresh_targets(%{"check_run" => %{"pull_requests" => prs}, "action" => action} = p)
+      when action in @check_actions,
+      do: {:ok, repo_pr_urls(prs, p)}
+
+  def build_refresh_targets(%{"check_suite" => %{"pull_requests" => prs}, "action" => action} = p)
+      when action in @check_actions,
+      do: {:ok, repo_pr_urls(prs, p)}
+
+  def build_refresh_targets(%{"review" => _, "pull_request" => pr, "action" => action})
+      when action in @review_actions,
+      do: html_urls(pr)
+
+  def build_refresh_targets(%{"comment" => _, "pull_request" => pr, "action" => action})
+      when action in @comment_actions,
+      do: html_urls(pr)
+
+  def build_refresh_targets(%{"thread" => _, "pull_request" => pr, "action" => action})
+      when action in @thread_actions,
+      do: html_urls(pr)
+
+  def build_refresh_targets(%{
+        "issue" => %{"pull_request" => _} = issue,
+        "comment" => _,
+        "action" => action
+      })
+      when action in @comment_actions,
+      do: html_urls(issue)
+
+  def build_refresh_targets(%{"pull_request" => pr, "action" => action})
+      when action in @pull_request_refresh_actions,
+      do: html_urls(pr)
+
+  # A review/comment/thread delivery whose action is not handled is still not a PR
+  # state change: swallow it here rather than let the `pull_request` clause read it.
+  def build_refresh_targets(%{"pull_request" => _} = payload) do
+    if Enum.any?(
+         ["check_run", "check_suite", "review", "comment", "thread"],
+         &Map.has_key?(payload, &1)
+       ),
+       do: {:ok, []},
+       else: :none
+  end
+
+  def build_refresh_targets(%{"check_run" => _}), do: {:ok, []}
+  def build_refresh_targets(%{"check_suite" => _}), do: {:ok, []}
+  def build_refresh_targets(_other), do: :none
+
+  # Check payloads name PRs by API URL; the PR page URL is the repository's
+  # `html_url` plus `/pull/<number>`, which is what runs store.
+  defp repo_pr_urls(prs, payload) when is_list(prs) do
+    case get_in(payload, ["repository", "html_url"]) do
+      repo when is_binary(repo) and repo != "" ->
+        for %{"number" => number} <- prs, is_integer(number), do: repo <> "/pull/#{number}"
+
+      _ ->
+        []
+    end
+  end
+
+  defp repo_pr_urls(_prs, _payload), do: []
+
+  defp html_urls(%{"html_url" => url}) when is_binary(url) and url != "", do: {:ok, [url]}
+  defp html_urls(_other), do: {:ok, []}
 
   @doc """
   Pure-translation variant that returns the commands without dispatching.

@@ -6,7 +6,7 @@ defmodule ForemanServer.PrObservation do
 
   A reading yields zero to three commands:
 
-    * `run.pr.update` - when the PR status or head SHA differs from the
+    * `run.pr.update` - when the PR status, head SHA or base branch differs from the
       previous record (the same builder the webhook uses, so a webhook and a
       poll converge on one deterministic `command_id`);
     * `run.pr.checks` - when the *checks digest* differs;
@@ -99,7 +99,8 @@ defmodule ForemanServer.PrObservation do
 
   defp update_commands(update, status, previous) do
     if previous_value(previous, :status) == Atom.to_string(status.status) and
-         previous_value(previous, :head_sha) == status.head_sha,
+         previous_value(previous, :head_sha) == status.head_sha and
+         previous_value(previous, :base_branch) == status.base_branch,
        do: [],
        else: [update]
   end
