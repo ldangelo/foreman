@@ -129,14 +129,30 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
     end
   end
 
-  # Destinations round-trip through JSON, so both key forms are checked.
+  # Destinations round-trip through JSON, so both key forms are checked. A
+  # destination holding both forms with DIFFERENT values is corrupt: preferring the
+  # atom would silently send the notification to a URL (or sign it with a secret)
+  # the operator did not configure, so it raises, as `ConfigResolver` and
+  # `Dispatcher` do. The message names the key only: the values may be secrets.
   defp fetch_field(map, key) do
     string_key = Atom.to_string(key)
 
-    cond do
-      Map.has_key?(map, key) -> {:present, Map.get(map, key)}
-      Map.has_key?(map, string_key) -> {:present, Map.get(map, string_key)}
-      true -> :absent
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, value}, :error} ->
+        {:present, value}
+
+      {:error, {:ok, value}} ->
+        {:present, value}
+
+      {:error, :error} ->
+        :absent
+
+      {{:ok, value}, {:ok, value}} ->
+        {:present, value}
+
+      {{:ok, _atom_value}, {:ok, _string_value}} ->
+        raise ArgumentError,
+              "conflicting atom/string keys for #{inspect(key)} in the webhook destination"
     end
   end
 
