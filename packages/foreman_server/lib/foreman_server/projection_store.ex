@@ -632,6 +632,17 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
+  Every PR association of a run, one per repository that opened a PR: the
+  primary's first (its `repo_id` is the run's effective primary id), then the
+  others by `repo_id`. This is the only enumeration API; `pr_association/1`
+  stays the primary's. `[]` for a run with none.
+  """
+  @spec pr_associations_for_run(String.t()) :: [map()]
+  def pr_associations_for_run(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:pr_associations_for_run, run_id})
+  end
+
+  @doc """
   Return the ids of every run whose recorded PR association is `pr_url`, sorted.
 
   More than one run can be associated with one PR (a retried run that reuses it),
@@ -791,9 +802,10 @@ defmodule ForemanServer.ProjectionStore do
   a string (the run's selected primary, else the project primary id `"main"`).
   A worktree entry with no `repo_id` belongs to the run's primary.
 
-  PR association, merge gate and PR state are run-level today, so only the
-  primary entry carries them (`nil` for the rest, and for a primary with no PR
-  event). `[]` for an unknown run with no worktrees or PR events.
+  Merge gate and PR state are run-level today, so only the primary entry carries
+  them (`nil` for the rest, and for a primary with no PR event). `pr_association`
+  is per repository: a repository that opened a PR carries its association,
+  `nil` otherwise. `[]` for an unknown run with no worktrees or PR events.
   """
   @spec run_repositories(String.t()) :: [run_repository()]
   def run_repositories(run_id) when is_binary(run_id) and run_id != "" do
@@ -1241,6 +1253,24 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:pr_associations_for_run, run_id}, _from, state) do
+    primary =
+      case Map.get(state.pr_associations, run_id) do
+        nil -> []
+        assoc -> [Map.put(assoc, :repo_id, run_primary_repo_id(state, run_id))]
+      end
+
+    others =
+      state
+      |> Map.get(:repo_pr_associations, %{})
+      |> Map.get(run_id, %{})
+      |> Enum.sort_by(fn {repo_id, _assoc} -> repo_id end)
+      |> Enum.map(fn {_repo_id, assoc} -> assoc end)
+
+    {:reply, primary ++ others, state}
+  end
+
+  @impl true
   def handle_call({:run_ids_for_pr_url, pr_url}, _from, state) do
     run_ids =
       for {run_id, %{pr_url: ^pr_url}} <- state.pr_associations, do: run_id
@@ -1546,6 +1576,7 @@ defmodule ForemanServer.ProjectionStore do
       tasks: %{},
       phases: %{},
       pr_associations: %{},
+      repo_pr_associations: %{},
       pr_states: %{},
       run_logs: %{},
       scheduler_intents: %{},
@@ -2451,6 +2482,41 @@ defmodule ForemanServer.ProjectionStore do
   # like a run that opened nothing.
   defp apply_event_by_type(state, "PrAssociated", payload) do
     case decode_for_projection("PrAssociated", payload) do
+      %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url, repo_id: repo_id} =
+          event
+      when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" and
+             is_binary(repo_id) and repo_id != "" ->
+        # A non-primary repository's PR (E12): stored per {run, repo}. It never
+        # touches the run's `pr_url`, the primary association or the PR state
+        # fold, which stay the primary's (S6 gives each PR its own gate).
+        association = %{
+          run_id: run_id,
+          repo_id: repo_id,
+          pr_url: pr_url,
+          pr_number: event.pr_number,
+          associated_at: event.associated_at
+        }
+
+        primary_urls =
+          case Map.get(state.pr_associations, run_id) do
+            %{pr_url: primary_url} -> %{run_primary_repo_id(state, run_id) => primary_url}
+            nil -> %{}
+          end
+
+        state
+        |> update_run_projection(run_id, payload_event_at_ms(payload), fn run ->
+          urls = Map.get(run, :pr_urls) || primary_urls
+          Map.put(run, :pr_urls, Map.put(urls, repo_id, pr_url))
+        end)
+        |> Map.update(:repo_pr_associations, %{run_id => %{repo_id => association}}, fn by_run ->
+          Map.update(
+            by_run,
+            run_id,
+            %{repo_id => association},
+            &Map.put(&1, repo_id, association)
+          )
+        end)
+
       %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url} = event
       when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" ->
         association = %{
@@ -2460,9 +2526,16 @@ defmodule ForemanServer.ProjectionStore do
           associated_at: event.associated_at
         }
 
+        primary_id = run_primary_repo_id(state, run_id)
+
         state
         |> update_run_projection(run_id, payload_event_at_ms(payload), fn run ->
-          Map.put(run, :pr_url, pr_url)
+          run = Map.put(run, :pr_url, pr_url)
+
+          case run do
+            %{pr_urls: %{} = urls} -> %{run | pr_urls: Map.put(urls, primary_id, pr_url)}
+            _ -> run
+          end
         end)
         |> Map.update!(:pr_associations, &Map.put(&1, run_id, association))
         |> fold_pr_state("PrAssociated", payload)
@@ -3276,6 +3349,15 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, _type, _payload), do: state
 
+  # The run's effective primary repository id: its selected primary, else the
+  # project primary id.
+  defp run_primary_repo_id(state, run_id) do
+    case Map.get(state.runs, run_id) do
+      %{repo_id: id} when is_binary(id) -> id
+      _ -> ForemanServer.Projects.RepoValidation.primary_id()
+    end
+  end
+
   defp build_run_repositories(state, run_id) do
     run = Map.get(state.runs, run_id)
 
@@ -3336,17 +3418,22 @@ defmodule ForemanServer.ProjectionStore do
             %{primary_entry | gate: view.merge_gate, pr_state: view.pr_state}
         end
 
-      [primary_entry | Enum.map(others, &secondary_run_repository(&1, by_repo, base_branches))]
+      repo_prs = state |> Map.get(:repo_pr_associations, %{}) |> Map.get(run_id, %{})
+
+      [
+        primary_entry
+        | Enum.map(others, &secondary_run_repository(&1, by_repo, base_branches, repo_prs))
+      ]
     end
   end
 
-  defp secondary_run_repository(repo_id, by_repo, base_branches) do
+  defp secondary_run_repository(repo_id, by_repo, base_branches, repo_prs) do
     %{
       repo_id: repo_id,
       primary?: false,
       worktree: Map.get(by_repo, repo_id),
       base_branch: Map.get(base_branches, repo_id),
-      pr_association: nil,
+      pr_association: Map.get(repo_prs, repo_id),
       gate: nil,
       pr_state: nil
     }

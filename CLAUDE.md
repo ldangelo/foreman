@@ -434,6 +434,31 @@ absolute paths in `FOREMAN_REPOS` / the `repositories` prompt assign (JSON list
 of `{"id","path","branch","primary"}`, with `repositories_count`; both are
 strings like every other assign).
 
+**One PR per touched repository (E12-S5, S3 §7).** `RunExecutor.finalize_repo_prs/1`
+runs after `maybe_complete_task` and before worktree cleanup: the primary through
+the unchanged executor-state path (single-repo runs: same events, command ids, one
+association), then every other run worktree through `Workflow.RepoPr.finalize/2`,
+which builds its context from projections (`Workflow.RepoPrContext.build/2`: repo
+project root = AutoPR cwd, worktree branch, `repo_base_branches`, task
+title/description). Untouched (no commits ahead of that repo's base) = `:noop`, no
+PR, no association. Results `[{repo_id, :noop | {:ok, url} | {:error, reason}}]`
+never short-circuit; a failed repo is logged at error (the `RunRepoPrFailed` event
+is S6). Per-repo identity, `repo_id` ABSENT == primary: `PrAssociation.stream_id/2`
+(`pr_association:<run>` / `pr_association:<run>:<repo_id>`), `PrAssociate.store/3`,
+`PrAssociated.repo_id` and the `run.pr.ready` payload carry `repo_id` only for
+non-primary, `Identity.run_pr_ready_command_id/2`
+(`workflow:<run>:<repo_id>:pr_ready`), merge hold key `run:<run>:<repo_id>`.
+Projection: `pr_association/1` and the run `pr_url` stay the primary's; non-primary
+associations live in `repo_pr_associations`, listed (primary first) by
+`ProjectionStore.pr_associations_for_run/1`, mirrored in `run_repositories/1` and
+the run's `pr_urls` map (only present once a non-primary PR exists). `PrFold` and
+the Run aggregate's `merge_gate` ignore a `repo_id` event (per-PR gates are S6).
+With 2+ PRs, `RepoPr.cross_link/2` appends "Part of multi-repo run <id>" plus the
+sibling `owner/repo#n` links via `gh pr edit --body` (best effort, idempotent,
+skipped for single-repo). `stack_pr: true` with more than one repo is refused at
+run start: `{:error, :stack_pr_unsupported_multi_repo}` (surfaces as
+`{:run_repo_set_rejected, ...}`).
+
 `RunExecutor.init/1` parses the persisted `workflow_snapshot` via
 `extract_phase_specs/1`, which uses the dual-key pattern
 `Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the

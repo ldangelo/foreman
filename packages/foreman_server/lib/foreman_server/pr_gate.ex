@@ -54,9 +54,14 @@ defmodule ForemanServer.PrGate do
   Record that a run has entered the merge gate pending state.
   Called by the Run aggregate after `run.pr.ready` is dispatched.
   """
-  @spec record_pending(String.t(), String.t()) :: :ok
-  def record_pending(run_id, pr_url) when is_binary(run_id) and is_binary(pr_url) do
-    key = "run:#{run_id}"
+  @spec record_pending(String.t(), String.t(), String.t() | nil) :: :ok
+  def record_pending(run_id, pr_url, repo_id \\ nil)
+      when is_binary(run_id) and is_binary(pr_url) do
+    key =
+      if is_binary(repo_id) and repo_id != "",
+        do: "run:#{run_id}:#{repo_id}",
+        else: "run:#{run_id}"
+
     ForemanServer.Workflow.MergeGate.request_approval(pr_url, key)
     :ok
   end

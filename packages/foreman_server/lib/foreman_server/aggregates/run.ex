@@ -98,7 +98,7 @@ defmodule ForemanServer.Aggregates.Run do
           state
           | exists?: true,
             run_id: Aggregate.get(payload, :run_id),
-            merge_gate: :pending
+            merge_gate: pr_ready_gate(state, payload)
         }
 
       "MergeGateApproved" ->
@@ -672,7 +672,9 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_pr_payload("run.pr.ready", payload) do
       pr_url = Aggregate.get(payload, :pr_url)
       # PrGate.record_pending calls MergeGate.request_approval internally.
-      :ok = PrGate.record_pending(run_id, pr_url)
+      # A non-primary repository's PR (E12) is held under its own key and never
+      # touches the primary's gate.
+      :ok = PrGate.record_pending(run_id, pr_url, Aggregate.get(payload, :repo_id))
 
       {:ok,
        %{
@@ -803,6 +805,14 @@ defmodule ForemanServer.Aggregates.Run do
       :blocked_at,
       "blocked_at"
     ])
+  end
+
+  # A non-primary repository's PrReady (E12) must not re-hold the primary's gate.
+  defp pr_ready_gate(state, payload) do
+    case Aggregate.get(payload, :repo_id) do
+      id when is_binary(id) and id != "" -> state.merge_gate
+      _ -> :pending
+    end
   end
 
   defp require_pr_payload(type, payload) do

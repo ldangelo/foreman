@@ -317,7 +317,11 @@ work-tree root, and refuses a duplicate path or a second checkout of the same
 way. Policy settings `repo_allowlist` (absolute path prefixes; `..`, relative
 entries and `/` are rejected) and `max_repos_per_run` (default 4) are stored via
 `project.update`. Runs still use a single repository until multi-repo runs are
-enabled.
+enabled. When they are, each repository the run changed gets its own branch and
+PR (untouched repositories get none); sibling PRs are cross-linked in their
+bodies. A repository whose push or `gh` fails does not stop the others. A run
+with `stack_pr: true` phases cannot span several repositories and is refused at
+start.
 
 ### Usage and cost
 

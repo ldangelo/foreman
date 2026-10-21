@@ -145,6 +145,20 @@ defmodule ForemanServer.Identity do
   end
 
   @doc """
+  System command ID for signalling that one repository's PR reached the merge
+  gate. `nil` is the run's primary repository and keeps the single-repo id
+  (`workflow:<run>:pr_ready`); any other repository is
+  `workflow:<run>:<repo_id>:pr_ready`.
+  """
+  @spec run_pr_ready_command_id(String.t(), String.t() | nil) :: String.t()
+  def run_pr_ready_command_id(run_id, nil), do: run_pr_ready_command_id(run_id)
+
+  def run_pr_ready_command_id(run_id, repo_id)
+      when is_binary(run_id) and run_id != "" and is_binary(repo_id) and repo_id != "" do
+    "workflow:" <> run_id <> ":" <> repo_id <> ":pr_ready"
+  end
+
+  @doc """
   System command ID for failing a run.
   """
   @spec run_fail_command_id(String.t()) :: String.t()

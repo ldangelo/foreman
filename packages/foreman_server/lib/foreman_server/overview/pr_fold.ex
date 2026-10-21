@@ -73,6 +73,15 @@ defmodule ForemanServer.Overview.PrFold do
   @spec fold(t(), String.t(), map()) :: t()
   def fold(pr_states, event_type, payload)
       when is_map(pr_states) and event_type in @events and is_map(payload) do
+    if non_primary?(payload), do: pr_states, else: fold_primary(pr_states, event_type, payload)
+  end
+
+  # E12: an event carrying `repo_id` belongs to a non-primary repository's PR.
+  # The per-run entry is the primary's, so it must not be overwritten by a
+  # sibling PR (per-PR gate state is S6).
+  defp non_primary?(payload), do: binary(payload, :repo_id) not in [nil, ""]
+
+  defp fold_primary(pr_states, event_type, payload) do
     case get(payload, :run_id) do
       run_id when is_binary(run_id) and run_id != "" ->
         entry = Map.get(pr_states, run_id, default_entry())

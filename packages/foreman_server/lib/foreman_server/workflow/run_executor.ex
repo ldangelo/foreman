@@ -64,6 +64,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
+  alias ForemanServer.Workflow.RepoPr
   alias ForemanServer.Workflow.RunRepoSet
   alias ForemanServer.Workflow.RunWorktreeLayout
   require Logger
@@ -1636,25 +1637,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       :ok ->
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        case maybe_auto_pr(state) do
-          :noop ->
-            Logger.info(
-              "RunExecutor #{state.run_id} finalize_run: no auto-pr (branch has no new commits)"
-            )
-
-          {:ok, pr_url} ->
-            Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
-            record_pr_association(state.run_id, pr_url)
-            signal_pr_ready(state, pr_url)
-
-          {:error, reason} ->
-            # The run produced commits but no PR. Logging at warning previously
-            # let this pass as a clean completion; surface it at error level so
-            # the failure is attributable to the run.
-            Logger.error(
-              "RunExecutor #{state.run_id} finalize_run: auto-pr FAILED: #{inspect(reason)}"
-            )
-        end
+        _ = finalize_repo_prs(state)
 
         # After AutoPR, never before: the worktree is the checkout AutoPR pushes
         # from. Reclaiming it earlier is what the old per-phase `after` clause
@@ -1683,6 +1666,69 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         err
     end
+  end
+
+  # One PR per touched repository, the primary first. A repository's failure
+  # never stops the others: results are collected as
+  # `[{repo_id, :noop | {:ok, url} | {:error, reason}}]`. The primary keeps the
+  # executor-state path (completion artifact, task metadata) exactly as a
+  # single-repository run always had it; every other repository goes through
+  # `RepoPr`, which builds its context from projections.
+  defp finalize_repo_prs(state) do
+    primary_id = primary_repo_id(state)
+
+    others =
+      state
+      |> with_run_worktrees(Map.get(state, :run_worktree))
+      |> secondary_run_worktrees()
+
+    # A multi-repo run may be finalised again (a crash between repositories):
+    # a PR already on record is reused, never opened twice. A single-repo run
+    # keeps its original behaviour untouched.
+    primary_result =
+      case {others, ProjectionStore.pr_association(state.run_id)} do
+        {[_ | _], {:ok, %{pr_url: url}}} when is_binary(url) ->
+          signal_pr_ready(state, url)
+          {:ok, url}
+
+        _ ->
+          finalize_primary_pr(state)
+      end
+
+    secondaries =
+      Enum.map(others, fn %{repo_id: repo_id} ->
+        {repo_id, RepoPr.finalize(state.run_id, repo_id)}
+      end)
+
+    results = [{primary_id, primary_result} | secondaries]
+    if secondaries != [], do: RepoPr.cross_link(state.run_id, results)
+    results
+  end
+
+  defp finalize_primary_pr(state) do
+    result = maybe_auto_pr(state)
+
+    case result do
+      :noop ->
+        Logger.info(
+          "RunExecutor #{state.run_id} finalize_run: no auto-pr (branch has no new commits)"
+        )
+
+      {:ok, pr_url} ->
+        Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
+        record_pr_association(state.run_id, pr_url)
+        signal_pr_ready(state, pr_url)
+
+      {:error, reason} ->
+        # The run produced commits but no PR. Logging at warning previously
+        # let this pass as a clean completion; surface it at error level so
+        # the failure is attributable to the run.
+        Logger.error(
+          "RunExecutor #{state.run_id} finalize_run: auto-pr FAILED: #{inspect(reason)}"
+        )
+    end
+
+    result
   end
 
   # AutoPR's `{:ok, pr_url}` used to be logged and dropped here, so a PR could
@@ -2458,7 +2504,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          request = run_repo_request(state),
          {:ok, resolved} <-
            RunRepoSet.resolve(id, request, max_repos_per_run(state)),
-         :ok <- RunRepoSet.gate(resolved) do
+         :ok <- RunRepoSet.gate(resolved),
+         :ok <- reject_stacked_prs_across_repos(state, resolved) do
       case resolved do
         :single -> {:ok, state}
         %{} -> {:ok, Map.put(state, :run_repos, resolved)}
@@ -2468,6 +2515,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
       _no_project -> {:ok, state}
     end
   end
+
+  # Stacked per-phase PRs (`stack_pr: true`) are primary-only (`PhasePR`); a run
+  # over several repositories cannot honour them, and workflow validation cannot
+  # know the repository count, so the run is refused here, at its start.
+  defp reject_stacked_prs_across_repos(state, %{extras: [_ | _]}) do
+    if Enum.any?(Map.get(state, :phase_specs) || [], &(Map.get(&1, :stack_pr) == true)),
+      do: {:error, :stack_pr_unsupported_multi_repo},
+      else: :ok
+  end
+
+  defp reject_stacked_prs_across_repos(_state, _resolved), do: :ok
 
   defp run_repo_request(state) do
     from_task = repo_request(state.task)
@@ -4164,6 +4222,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)
+
+  @doc false
+  def __finalize_repo_prs_for_test__(state), do: finalize_repo_prs(state)
 
   @doc false
   def __signal_pr_ready_for_test__(state, pr_url), do: signal_pr_ready(state, pr_url)
