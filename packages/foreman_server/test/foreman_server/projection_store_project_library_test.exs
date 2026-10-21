@@ -57,6 +57,8 @@ defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
       end)
 
     assert log =~ "malformed ProjectLibraryAdded"
+    assert log =~ "[error]"
+    assert log =~ "payload keys"
 
     assert [%{entry_id: "a-1", manifest_sha256: @sha2, bytes: 20, kind: "folder"}] =
              ProjectionStore.project_library(p)

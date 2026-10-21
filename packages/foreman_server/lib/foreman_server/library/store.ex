@@ -195,6 +195,7 @@ defmodule ForemanServer.Library.Store do
     with :ok <- check_id_or_not_found(entry_id),
          {:ok, rel} <- Ingest.validate_relative_path(rel),
          path = Path.join(files_dir(root, entry_id), rel),
+         :ok <- no_symlink_components(files_dir(root, entry_id), rel),
          {:ok, %File.Stat{type: :regular, size: size}} <- lstat_or_not_found(path, rel),
          :ok <- ensure_readable_size(size, max_bytes, rel) do
       case File.read(path) do
@@ -207,6 +208,28 @@ defmodule ForemanServer.Library.Store do
     else
       {:ok, %File.Stat{}} -> {:error, not_found(rel)}
       {:error, %Error{}} = error -> error
+    end
+  end
+
+  # Every component below `files/` must be a real directory/file: a symlinked
+  # parent would let `a/link/secret` read outside the entry even though the final
+  # component is a regular file.
+  defp no_symlink_components(base, rel) do
+    rel
+    |> Path.split()
+    |> Enum.reduce_while(base, fn segment, current ->
+      next = Path.join(current, segment)
+
+      case File.lstat(next) do
+        {:ok, %File.Stat{type: :symlink}} -> {:halt, :symlink}
+        {:ok, _} -> {:cont, next}
+        {:error, _} -> {:halt, :missing}
+      end
+    end)
+    |> case do
+      :symlink -> {:error, not_found(rel)}
+      :missing -> {:error, not_found(rel)}
+      _ok -> :ok
     end
   end
 

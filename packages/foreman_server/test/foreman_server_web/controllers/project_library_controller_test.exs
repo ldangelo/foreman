@@ -203,6 +203,27 @@ defmodule ForemanServerWeb.ProjectLibraryControllerTest do
       assert bytes == byte_size(@nine_mb)
     end
 
+    test "an unauthenticated big upload is refused with 401 before its body is parsed", %{
+      project_id: p
+    } do
+      conn = upload(build_conn(), :post, base(p), [{"big.bin", @nine_mb}], %{"name" => "big"})
+      assert json_response(conn, 401)
+      assert %Plug.Conn.Unfetched{} = conn.body_params
+    end
+
+    test "an overrun of upload_max_bytes is a JSON 413", %{project_id: p} do
+      library = Application.get_env(:foreman_server, :library, [])
+
+      Application.put_env(
+        :foreman_server,
+        :library,
+        Keyword.put(library, :upload_max_bytes, 1_000_000)
+      )
+
+      conn = upload(authed(), :post, base(p), [{"big.bin", @nine_mb}], %{"name" => "big"})
+      assert %{"error" => "upload_too_large"} = json_response(conn, 413)
+    end
+
     test "other routes keep the default limit", %{project_id: p} do
       assert_raise Plug.Parsers.RequestTooLargeError, fn ->
         upload(authed(), :post, "/api/projects/#{p}/memory/sync", [{"big.bin", @nine_mb}])
