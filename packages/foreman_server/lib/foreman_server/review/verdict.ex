@@ -8,9 +8,21 @@ defmodule ForemanServer.Review.Verdict do
           scores: %{dimension() => 1..5},
           summary: String.t(),
           gaps: [ForemanServer.Review.Gap.t()],
-          error_code: atom() | nil
+          error_code: atom() | nil,
+          usage: ForemanServer.Usage.t() | nil,
+          model: String.t() | nil,
+          usage_provider: String.t() | nil
         }
-  defstruct [:verdict, :summary, scores: %{}, gaps: [], error_code: nil]
+  defstruct [
+    :verdict,
+    :summary,
+    :usage,
+    :model,
+    :usage_provider,
+    scores: %{},
+    gaps: [],
+    error_code: nil
+  ]
 
   @dimensions [:correctness, :tests, :documentation, :robustness]
 

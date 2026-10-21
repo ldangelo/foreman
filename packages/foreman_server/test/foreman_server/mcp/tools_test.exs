@@ -70,6 +70,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_schedule_pause",
                "foreman_schedule_resume",
                "foreman_schedule_delete",
+               "foreman_usage_get",
                "foreman_workflow_list",
                "foreman_workflow_get",
                "foreman_workflow_validate",

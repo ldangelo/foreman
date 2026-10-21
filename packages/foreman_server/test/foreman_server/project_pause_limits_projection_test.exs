@@ -132,7 +132,12 @@ defmodule ForemanServer.ProjectPauseLimitsProjectionTest do
     assert %{daily_thread_cap: nil, remaining_today: nil, cap_reached?: false} =
              ProjectLimits.build(
                project,
-               %{active_runs: 0, threads_started_today: 99, deferred_tasks: 0},
+               %{
+                 active_runs: 0,
+                 threads_started_today: 99,
+                 deferred_tasks: 0,
+                 deferred_by_reason: %{}
+               },
                @now
              )
   end

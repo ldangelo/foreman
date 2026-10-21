@@ -12,6 +12,7 @@ defmodule ForemanServer.Review.Evaluator.Agent do
 
   alias ForemanServer.AgentRuntime.JidoHarness.DetachedRun
   alias ForemanServer.Review.{Archive, Error, Gap, Prompt, Subject, Verdict}
+  alias ForemanServer.Usage
   alias Jido.Harness.{RunRequest, RunResult}
 
   @dimension_atoms %{
@@ -37,7 +38,7 @@ defmodule ForemanServer.Review.Evaluator.Agent do
          {:ok, request} <- build_request(prompt, subject, cfg),
          {:ok, result} <- run(cfg.provider, request, cfg.timeout) do
       archive_transcript(subject.archive_dir, result)
-      finish(result)
+      finish(result, cfg)
     end
   end
 
@@ -118,6 +119,22 @@ defmodule ForemanServer.Review.Evaluator.Agent do
            run_id: run_id,
            reason: inspect(reason)
          })}
+    end
+  end
+
+  # The reviewer spent tokens whether or not its reply parsed, so usage rides
+  # on the verdict AND on the error details (read by the analyzer).
+  defp finish(%RunResult{} = result, cfg) do
+    usage = Usage.normalize(cfg.provider, result.usage, nil)
+    provider = to_string(cfg.provider)
+
+    case finish(result) do
+      {:ok, %Verdict{} = verdict} ->
+        {:ok, %Verdict{verdict | usage: usage, model: cfg.model, usage_provider: provider}}
+
+      {:error, %Error{} = error} ->
+        spent = %{usage: usage, model: cfg.model, provider: provider}
+        {:error, %Error{error | details: Map.put(error.details || %{}, :usage, spent)}}
     end
   end
 

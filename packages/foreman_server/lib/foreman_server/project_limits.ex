@@ -28,13 +28,16 @@ defmodule ForemanServer.ProjectLimits do
           remaining_today: non_neg_integer() | nil,
           cap_reached?: boolean(),
           resets_at: String.t(),
-          deferred_tasks: non_neg_integer()
+          deferred_tasks: non_neg_integer(),
+          deferred_today: non_neg_integer(),
+          deferred_by_reason: %{String.t() => pos_integer()}
         }
 
   @type usage :: %{
           active_runs: non_neg_integer(),
           threads_started_today: non_neg_integer(),
-          deferred_tasks: non_neg_integer()
+          deferred_tasks: non_neg_integer(),
+          deferred_by_reason: %{String.t() => pos_integer()}
         }
 
   @spec build(map(), usage(), DateTime.t()) :: t()
@@ -56,7 +59,9 @@ defmodule ForemanServer.ProjectLimits do
       remaining_today: cap && max(cap - started, 0),
       cap_reached?: is_integer(cap) and started >= cap,
       resets_at: next_utc_midnight(now),
-      deferred_tasks: usage.deferred_tasks
+      deferred_tasks: usage.deferred_tasks,
+      deferred_today: usage.deferred_by_reason |> Map.values() |> Enum.sum(),
+      deferred_by_reason: usage.deferred_by_reason
     }
   end
 

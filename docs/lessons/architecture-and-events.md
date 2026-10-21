@@ -486,8 +486,29 @@ carries `provider`, `model`, `project_id`, `task_id`, `role` (`"thread"`), the t
   semantics.
 - `ProjectionStore` keeps `workers[worker_id].usage` per worker and `run.usage` as the sum
   over workers (`nil` for historical runs). Both `foreman_run_get` and `foreman_run_status`
-  expose it. Rollups by project/day/model and the usage endpoint arrive with E14; nothing
-  here aggregates across runs.
+  expose it.
+- **Cross-run read model (E14).** `ProjectionStore.usage/2` folds `UsageRecorded`, jobsite
+  `JobsiteIterationCompleted.usage` (normalised through `Usage.normalize/3` with the jobsite
+  `agent` provider/model, so history backfills on replay) and `ReviewRecorded.usage`
+  (role `review`, thread = the reviewed subject) into a per-project `Usage.Ledger` of records
+  keyed `{thread_kind, thread_id, {:worker, id} | {:iteration, n}}`; a re-applied event
+  replaces its record and worker records of a jobsite supersede its iteration records
+  (Overwatch-runner jobsites report through `UsageRecorded`, never twice). `Usage.Rollup` is
+  the pure fold (totals, by day/thread/model/provider/role, `cost_unknown_events`, 366-day
+  retention: older days leave `by_day` and slicing but stay in the unfiltered total).
+  `ForemanServer.UsageDTO` is the one wire shape for `GET /api/projects/:id/usage`, the MCP
+  `foreman_usage_get` tool and `foreman usage`.
+- **Deferral counter.** The Dispatcher records genuine admission refusals
+  (`daily_thread_cap_exceeded`, `run_limit_exceeded`, `project_paused`) with the system-only
+  `project.note_deferral` command -> `ProjectAdmissionDeferred`, idempotent per
+  task/reason/UTC day through its `command_id` (the projection counts distinct tasks), best effort (never raises in the
+  subscriber loop). The projection exposes it as `limits.deferred_today` /
+  `deferred_by_reason`.
+- **Langfuse/Otel cost.** `AgentRuntime` passes the provider-reported cost (`usage.total_cost`)
+  or `nil` to `LangfuseTracer.emit_trace/6`, which only builds a trace map and returns
+  `{:ok, trace}` (it does not transmit anything itself), and to `OtelSpanEmitter`, whose span
+  omits `llm.cost_usd` for an unknown cost. No `0.0` is fabricated (fixed in E0-S4, pinned in
+  `otel_span_cost_test.exs` and `agent_runtime_jido_ai_test.exs`).
 
 ## Re-homing a session (`project.adopt`)
 

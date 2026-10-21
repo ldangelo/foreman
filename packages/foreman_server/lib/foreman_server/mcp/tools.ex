@@ -5,6 +5,7 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.ProjectMemory
   alias ForemanServer.ProjectSettings
   alias ForemanServer.ProjectSettingsDTO
+  alias ForemanServer.UsageDTO
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Thread
   alias ForemanServer.Telemetry
@@ -360,6 +361,33 @@ defmodule ForemanServer.MCP.Tools do
       type: "object",
       properties: %{
         project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
+    }
+  }
+
+  @schema_foreman_usage_get %{
+    name: "foreman_usage_get",
+    description:
+      "Get a project's token and cost usage (totals plus breakdowns by day, thread, model, provider " <>
+        "and role), its daily thread cap/deferral counters and per-thread prompt-cache hints. " <>
+        "`cost_usd: null` means the provider reported no cost (unknown, not free); " <>
+        "`cost_unknown_events` counts the unpriced events inside a partial sum. Read-only.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        from: %{type: "string", description: "First UTC day, YYYY-MM-DD (inclusive)"},
+        to: %{
+          type: "string",
+          description: "Last UTC day, YYYY-MM-DD (inclusive); span at most 366 days"
+        },
+        group_by: %{
+          type: "string",
+          enum: ["day", "model", "provider", "role", "thread"],
+          description: "Return only this breakdown"
+        },
+        limit: %{type: "integer", description: "Max threads returned (1..500, default 50)"}
       },
       required: ["project_id"]
     }
@@ -972,6 +1000,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_schedule_pause,
     @schema_foreman_schedule_resume,
     @schema_foreman_schedule_delete,
+    @schema_foreman_usage_get,
     @schema_foreman_workflow_list,
     @schema_foreman_workflow_get,
     @schema_foreman_workflow_validate,
@@ -1685,6 +1714,31 @@ defmodule ForemanServer.MCP.Tools do
       :not_found ->
         Telemetry.mcp_tool_call(duration_us, "foreman_project_settings_get", :not_found)
         {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+    end
+  end
+
+  defp tool_foreman_usage_get(%{project_id: project_id} = args) do
+    start_us = System.monotonic_time(:microsecond)
+
+    result =
+      with {:ok, params} <- UsageDTO.parse_params(Map.delete(args, :project_id)) do
+        UsageDTO.build(project_id, params, DateTime.utc_now())
+      end
+
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      {:ok, dto} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_usage_get", :ok)
+        {:ok, dto}
+
+      :not_found ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_usage_get", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+
+      {:error, {code, message}} ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_usage_get", :invalid_params)
+        {:error, %ToolError{code: Atom.to_string(code), message: message}}
     end
   end
 
