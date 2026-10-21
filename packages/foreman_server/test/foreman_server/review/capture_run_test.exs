@@ -119,6 +119,47 @@ defmodule ForemanServer.Review.CaptureRunTest do
     assert m["capture_errors"] == []
   end
 
+  test "manifest lists every provider session id seen across phases, de-duplicated in order",
+       %{repo: repo, base: base} do
+    seed("run-sess", repo)
+
+    bound = fn worker_id, session_id ->
+      %{
+        event_type: "WorkerSessionBound",
+        payload: %{
+          run_id: "run-sess",
+          worker_id: worker_id,
+          provider: "claude",
+          provider_session_id: session_id
+        }
+      }
+    end
+
+    assert :ok =
+             ProjectionStore.apply_events([
+               bound.("w1", "sess-1"),
+               bound.("w2", "sess-2"),
+               bound.("w3", "sess-1")
+             ])
+
+    assert :ok = Capture.close_run(state("run-sess", repo, base), :success)
+
+    assert {:ok, m} = Archive.read_manifest(Archive.dir(:run, "run-sess", repo))
+    assert m["provider_session_ids"] == ["sess-1", "sess-2"]
+  end
+
+  test "a run whose providers reported no session keeps an empty list", %{
+    repo: repo,
+    base: base
+  } do
+    seed("run-nosess", repo)
+    assert :ok = Capture.close_run(state("run-nosess", repo, base), :success)
+
+    assert {:ok, m} = Archive.read_manifest(Archive.dir(:run, "run-nosess", repo))
+    assert m["provider_session_ids"] == []
+    assert m["capture_errors"] == []
+  end
+
   test "a non-bead external_id is not treated as a bead id", %{repo: repo, base: base} do
     seed("run-2", repo, task_id: "github:acme/x#9", external_id: "9")
     assert :ok = Capture.close_run(state("run-2", repo, base), :failure)

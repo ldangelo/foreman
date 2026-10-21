@@ -30,7 +30,10 @@ defmodule ForemanServer.MCP.Tools do
             started_at_ms: integer() | nil,
             last_event_at_ms: integer() | nil,
             failure_reason: String.t() | nil,
-            latest_stall: map() | nil
+            latest_stall: map() | nil,
+            provider_session_id: String.t() | nil,
+            provider_sessions: [map()],
+            usage: ForemanServer.Usage.t() | nil
           }
     @derive Jason.Encoder
     defstruct [
@@ -44,7 +47,10 @@ defmodule ForemanServer.MCP.Tools do
       :started_at_ms,
       :last_event_at_ms,
       :failure_reason,
-      :latest_stall
+      :latest_stall,
+      :provider_session_id,
+      :usage,
+      provider_sessions: []
     ]
   end
 
@@ -1535,7 +1541,10 @@ defmodule ForemanServer.MCP.Tools do
       started_at_ms: Map.get(run, :started_at_ms),
       last_event_at_ms: Map.get(run, :last_event_at_ms),
       failure_reason: Map.get(run, :failure_reason),
-      latest_stall: Map.get(run, :latest_stall)
+      latest_stall: Map.get(run, :latest_stall),
+      provider_session_id: Map.get(run, :provider_session_id),
+      provider_sessions: Map.get(run, :provider_sessions) || [],
+      usage: Map.get(run, :usage)
     }
   end
 

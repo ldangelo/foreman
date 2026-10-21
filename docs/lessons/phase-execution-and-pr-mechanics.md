@@ -618,3 +618,16 @@ webhook fails closed on `X-Hub-Signature-256` (`503` with no `FOREMAN_GITHUB_WEB
 payload field. `/webhooks/external_trigger` and `/webhooks/operator/ingest` still have no
 authentication.
 
+**The workflow door persists the provider session id (2026-10).** `WorkerStarted.session_id`
+is a Foreman-generated handle (`"session-" <> uuid`, `jobsite/runners/overwatch.ex` `generate_session_id/0`),
+NOT the provider's. The real id is `Jido.Harness.RunResult.provider_session_id`, and it used
+to die inside `JidoHarnessWorker.normalize_result/1`, which keeps only the text. The worker
+now builds a `ForemanServer.Overwatch.RunMeta` from the `RunResult` BEFORE normalising (so a
+failed run still yields its id — it is the one a fix thread resumes) and sends it as the 4th
+element of `{:agent_done, result, log_events, meta}`. It then emits `WorkerSessionBound`
+(typed event, decoded by `Aggregates.Worker`) strictly BEFORE `WorkerExited`, and only when
+the id is a non-empty binary. `ProjectionStore` folds it onto the run as `provider_session_id`
+(latest) and `provider_sessions` (ordered, idempotent per `{worker, provider, model, id}`),
+and `Review.Capture.close_run/2` copies the de-duplicated ids into the archive manifest.
+Historical runs project `nil` / `[]`. The worker result message shape
+`{:worker_result, {:ok, text} | {:error, code}}` is unchanged.

@@ -278,8 +278,26 @@ defmodule ForemanServer.Review.Capture do
     }
 
     with :ok <- Archive.init(dir, manifest),
+         :ok <- put_run_session_ids(dir, run),
          :ok <- write_request(dir, request_text) do
       capture_run_diff(dir, worktree, outcome)
+    end
+  end
+
+  # The workflow door's provider session ids come from the run projection
+  # (`WorkerSessionBound`), de-duplicated in first-seen order, so a review or
+  # resume can pick up a phase's agent thread from the manifest alone. A run
+  # whose providers reported none keeps the initial `[]`.
+  defp put_run_session_ids(dir, run) do
+    ids =
+      run
+      |> Map.get(:provider_sessions, [])
+      |> Enum.map(& &1.provider_session_id)
+      |> Enum.uniq()
+
+    case ids do
+      [] -> :ok
+      ids -> Archive.merge_manifest(dir, %{"provider_session_ids" => ids})
     end
   end
 
