@@ -308,6 +308,62 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:thread_flags, thread_id})
   end
 
+  @typedoc """
+  Projected schedule. `status` is `"active" | "paused" | "deleted"`;
+  `active_since` is unix seconds (creation, last resume or last spec change);
+  `last_outcome` is the latest fire or skip. `next_fire_at` is NOT stored: it
+  is computed on read from the spec.
+  """
+  @type schedule :: %{
+          schedule_id: String.t(),
+          project_id: String.t(),
+          name: String.t(),
+          spec: %{String.t() => String.t()},
+          prompt: String.t(),
+          workflow: String.t(),
+          auto_approve: boolean() | nil,
+          overlap: String.t() | nil,
+          misfire_grace_seconds: non_neg_integer() | nil,
+          status: String.t(),
+          created_at: String.t(),
+          active_since: integer() | nil,
+          last_slot: integer() | nil,
+          last_task_id: String.t() | nil,
+          last_outcome:
+            %{
+              kind: String.t(),
+              slot: integer(),
+              reason: String.t() | nil,
+              missed_count: non_neg_integer() | nil,
+              at: String.t()
+            }
+            | nil
+        }
+
+  @doc """
+  A project's schedules ordered by name then id. Deleted schedules are excluded
+  unless `include_deleted: true`.
+  """
+  @spec schedules(String.t(), keyword()) :: [schedule()]
+  def schedules(project_id, opts \\ []) when is_binary(project_id) and is_list(opts) do
+    GenServer.call(
+      __MODULE__,
+      {:schedules, project_id, Keyword.get(opts, :include_deleted, false)}
+    )
+  end
+
+  @doc "One schedule (deleted ones included, with `status: \"deleted\"`), or nil."
+  @spec schedule(String.t(), String.t()) :: schedule() | nil
+  def schedule(project_id, schedule_id) when is_binary(project_id) and is_binary(schedule_id) do
+    GenServer.call(__MODULE__, {:schedule, project_id, schedule_id})
+  end
+
+  @doc "Every active (not paused, not deleted) schedule across projects, for the ticker."
+  @spec all_active_schedules() :: [schedule()]
+  def all_active_schedules do
+    GenServer.call(__MODULE__, :all_active_schedules)
+  end
+
   @doc """
   Return all events for a run as serializable maps.
 
@@ -595,6 +651,32 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:review, subject_kind, subject_id}, _from, state) do
     {:reply, Map.get(state.reviews, {subject_kind, subject_id}), state}
+  end
+
+  @impl true
+  def handle_call({:schedules, project_id, include_deleted?}, _from, state) do
+    list =
+      for {{^project_id, _id}, schedule} <- state.schedules,
+          include_deleted? or schedule.status != "deleted",
+          do: schedule
+
+    {:reply, Enum.sort_by(list, &{&1.name, &1.schedule_id}), state}
+  end
+
+  @impl true
+  def handle_call({:schedule, project_id, schedule_id}, _from, state) do
+    {:reply, Map.get(state.schedules, {project_id, schedule_id}), state}
+  end
+
+  @impl true
+  def handle_call(:all_active_schedules, _from, state) do
+    active =
+      state.schedules
+      |> Map.values()
+      |> Enum.filter(&(&1.status == "active"))
+      |> Enum.sort_by(&{&1.project_id, &1.schedule_id})
+
+    {:reply, active, state}
   end
 
   @impl true
@@ -1127,7 +1209,8 @@ defmodule ForemanServer.ProjectionStore do
       inbox_threads: %{},
       jobsites: %{},
       reviews: %{},
-      thread_flags: %{}
+      thread_flags: %{},
+      schedules: %{}
     }
   end
 
@@ -1968,6 +2051,9 @@ defmodule ForemanServer.ProjectionStore do
       intent = %{
         intent_id: intent_id,
         status: "recorded",
+        schedule_id: get(payload, :schedule_id),
+        project_id: get(payload, :project_id),
+        slot: get(payload, :slot),
         recorded_at: payload_event_at_ms(payload),
         run_id: get(payload, :run_id),
         task_id: get(payload, :task_id),
@@ -2301,6 +2387,107 @@ defmodule ForemanServer.ProjectionStore do
         Logger.warning("ProjectionStore skipped malformed ThreadReopened")
         state
     end
+  end
+
+  # Schedule folds. Malformed payloads are logged and skipped (never raised) so
+  # `init/1`'s event-log rebuild survives them; events for a schedule that was
+  # never created are ignored.
+  defp apply_event_by_type(state, "ScheduleCreated", payload) do
+    case decode_or_skip("ScheduleCreated", payload) do
+      {:ok, %ForemanServer.Events.ScheduleCreated{project_id: pid, schedule_id: sid} = e}
+      when is_binary(pid) and pid != "" and is_binary(sid) and sid != "" ->
+        schedule = %{
+          schedule_id: sid,
+          project_id: pid,
+          name: e.name,
+          spec: e.spec,
+          prompt: e.prompt,
+          workflow: e.workflow,
+          auto_approve: e.auto_approve,
+          overlap: e.overlap,
+          misfire_grace_seconds: e.misfire_grace_seconds,
+          status: "active",
+          created_at: e.created_at,
+          active_since: iso_to_unix(e.created_at),
+          last_slot: nil,
+          last_task_id: nil,
+          last_outcome: nil
+        }
+
+        %{state | schedules: Map.put(state.schedules, {pid, sid}, schedule)}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed ScheduleCreated")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "ScheduleUpdated", payload) do
+    update_schedule(state, "ScheduleUpdated", payload, fn schedule, e ->
+      changes = e.changes
+
+      schedule =
+        Enum.reduce(
+          ~w(name spec prompt workflow auto_approve overlap misfire_grace_seconds)a,
+          schedule,
+          fn field, acc ->
+            case Map.fetch(changes, Atom.to_string(field)) do
+              {:ok, value} -> Map.put(acc, field, value)
+              :error -> acc
+            end
+          end
+        )
+
+      if Map.has_key?(changes, "spec"),
+        do: %{schedule | active_since: iso_to_unix(e.updated_at)},
+        else: schedule
+    end)
+  end
+
+  defp apply_event_by_type(state, "SchedulePaused", payload),
+    do: update_schedule(state, "SchedulePaused", payload, fn s, _e -> %{s | status: "paused"} end)
+
+  defp apply_event_by_type(state, "ScheduleResumed", payload) do
+    update_schedule(state, "ScheduleResumed", payload, fn s, e ->
+      %{s | status: "active", active_since: iso_to_unix(e.at)}
+    end)
+  end
+
+  defp apply_event_by_type(state, "ScheduleDeleted", payload),
+    do:
+      update_schedule(state, "ScheduleDeleted", payload, fn s, _e -> %{s | status: "deleted"} end)
+
+  defp apply_event_by_type(state, "ScheduleFired", payload) do
+    update_schedule(state, "ScheduleFired", payload, fn s, e ->
+      %{
+        s
+        | last_slot: e.slot,
+          last_task_id: e.task_id,
+          last_outcome: %{
+            kind: "fired",
+            slot: e.slot,
+            reason: nil,
+            missed_count: e.collapsed_count,
+            at: e.fired_at
+          }
+      }
+    end)
+  end
+
+  defp apply_event_by_type(state, "ScheduleFireSkipped", payload) do
+    update_schedule(state, "ScheduleFireSkipped", payload, fn s, e ->
+      %{
+        s
+        | last_slot: e.slot,
+          last_outcome: %{
+            kind: "skipped",
+            slot: e.slot,
+            reason: e.reason,
+            missed_count: e.missed_count,
+            at: e.skipped_at
+          }
+      }
+    end)
   end
 
   defp apply_event_by_type(state, "JobsiteStarted", payload) do
@@ -3421,6 +3608,33 @@ defmodule ForemanServer.ProjectionStore do
         end
     end
   end
+
+  defp update_schedule(state, event_type, payload, fun) do
+    case decode_or_skip(event_type, payload) do
+      {:ok, %{project_id: pid, schedule_id: sid} = event}
+      when is_binary(pid) and is_binary(sid) ->
+        case Map.fetch(state.schedules, {pid, sid}) do
+          {:ok, schedule} ->
+            %{state | schedules: Map.put(state.schedules, {pid, sid}, fun.(schedule, event))}
+
+          :error ->
+            state
+        end
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed #{event_type}")
+        state
+    end
+  end
+
+  defp iso_to_unix(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> DateTime.to_unix(dt)
+      _ -> nil
+    end
+  end
+
+  defp iso_to_unix(_), do: nil
 
   defp valid_id?(value) when is_binary(value), do: value != ""
   defp valid_id?(_value), do: false

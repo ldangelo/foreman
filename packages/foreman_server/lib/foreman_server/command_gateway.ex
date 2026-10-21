@@ -51,7 +51,8 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
 
-  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen)
+  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -181,6 +182,17 @@ defmodule ForemanServer.CommandGateway do
       type == "task.create" and is_map(payload) and
         (aggregate_id == nil or aggregate_id == "") and
           (is_nil(payload_task_id) or payload_task_id == "") ->
+        {:ok,
+         %{
+           command_id: command_id,
+           aggregate_id: nil,
+           type: type,
+           payload: normalize_payload_keys(payload)
+         }}
+
+      # `schedule.create` without an aggregate id: `prepare_operator_command/1`
+      # generates the schedule id (like `task.create`'s no-id mode).
+      type == "schedule.create" and (aggregate_id == nil or aggregate_id == "") ->
         {:ok,
          %{
            command_id: command_id,
@@ -435,6 +447,26 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in @schedule_operator_types do
+    project_id = get_value(payload, :project_id)
+    schedule_id = get_value(payload, :schedule_id)
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      not is_binary(schedule_id) or schedule_id == "" ->
+        {:error, {:invalid_envelope, :missing_schedule_id}}
+
+      aggregate_id != ForemanServer.Aggregates.Schedule.stream_id(project_id, schedule_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
   defp validate_aggregate_id(%{type: "inbox.send", aggregate_id: aggregate_id, payload: payload}) do
     # normalize_operator_envelope/1 normalizes envelope-level keys but leaves
     # payload keys unconverted; after it runs the caller must pass atom keys.
@@ -670,6 +702,14 @@ defmodule ForemanServer.CommandGateway do
       true ->
         enrich_task_retry_with_bound_run(command, task_id)
     end
+  end
+
+  # Schedule timestamps are stamped here, never taken from the client: the
+  # aggregate is pure and reads `at` from the payload, so a client-supplied
+  # `at` would let an operator back-date a schedule's anchor.
+  defp enrich_operator_command(%{type: type} = command) when type in @schedule_operator_types do
+    at = DateTime.utc_now() |> DateTime.to_iso8601()
+    {:ok, %{command | payload: Map.put(command.payload, :at, at)}}
   end
 
   defp enrich_operator_command(command), do: {:ok, command}
@@ -1038,7 +1078,34 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp prepare_operator_command(%{type: "schedule.create", aggregate_id: nil} = command) do
+    payload = command.payload
+    project_id = get_value(payload, :project_id)
+    supplied = get_value(payload, :schedule_id)
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      not (is_nil(supplied) or (is_binary(supplied) and supplied != "")) ->
+        {:error, {:invalid_envelope, :missing_schedule_id}}
+
+      true ->
+        schedule_id = supplied || generate_schedule_id()
+
+        {:ok,
+         %{
+           command
+           | aggregate_id: ForemanServer.Aggregates.Schedule.stream_id(project_id, schedule_id),
+             payload: Map.put(payload, :schedule_id, schedule_id)
+         }}
+    end
+  end
+
   defp prepare_operator_command(command), do: {:ok, command}
+
+  defp generate_schedule_id,
+    do: "sch-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
 
   defp dispatch_and_emit_project_telemetry(command, timeout) do
     started_at = System.monotonic_time()
