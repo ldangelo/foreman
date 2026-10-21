@@ -1,6 +1,6 @@
 {
   "type": "project.update",
-  "command_id": "ea2cfbddb73ae7898c72ba286ea92bb7c37cfede5d70e5abe6a2d23fa421df48",
+  "command_id": "77e168081953de2ac53089e050e3395a5f96a69a27d1bfbc75987ff0eb210ada",
   "payload": {
     "project_id": "project-123",
     "task_provider": {

@@ -210,7 +210,7 @@ defmodule ForemanServer.Aggregates.ProjectTest do
                  payload: %{
                    project_id: "project-1",
                    path: "/tmp/project-1",
-                   config: %{env: %{"ALPHA" => "1"}, retries: 3},
+                   config: %{env: %{"ALPHA" => "1"}, name: "Alpha"},
                    task_provider: task_provider
                  }
                })
@@ -222,18 +222,18 @@ defmodule ForemanServer.Aggregates.ProjectTest do
                  type: "project.update",
                  payload: %{
                    project_id: "project-1",
-                   status: "paused"
+                   name: "Renamed"
                  }
                })
 
       updated = Project.apply_event(registered, update_event)
 
-      assert updated.status == "paused"
+      assert updated.config.name == "Renamed"
       assert updated.task_provider == task_provider
 
       assert updated.config == %{
                env: %{"ALPHA" => "1"},
-               retries: 3,
+               name: "Renamed",
                task_provider: task_provider
              }
     end

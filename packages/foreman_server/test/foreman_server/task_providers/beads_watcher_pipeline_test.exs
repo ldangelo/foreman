@@ -516,6 +516,21 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert outcome == :rejected
     end
 
+    test "{:error, {:project_paused, _}} is HELD (transient), not rejected: the bead imports after resume" do
+      FakeCommandGateway.stub_response({:error, {:project_paused, "proj-pp"}})
+
+      state = %BeadsWatcher{project_id: "proj-pp"}
+
+      line =
+        ~s({"id":"bead-pp","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
+
+      assert BeadsWatcher.process_line(state, line) == :transient
+
+      # After resume the same line imports: nothing was recorded as rejected.
+      FakeCommandGateway.stub_response_sequence([{:ok, nil}, {:ok, nil}])
+      assert BeadsWatcher.process_line(state, line) == :imported
+    end
+
     test "{:error, :project_id_required} is rejected, not imported, and advances read_offset" do
       FakeCommandGateway.stub_response({:error, :project_id_required})
 

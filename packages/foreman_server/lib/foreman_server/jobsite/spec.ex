@@ -38,6 +38,7 @@ defmodule ForemanServer.Jobsite.Spec do
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.Jobsite.{Agent, Error, Hooks, Options, Sandboxes}
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.ProjectSettings
 
   @allowed_keys ~w(project_id prompt agent strategy sandbox name max_iterations completion_signal
                    idle_timeout_seconds completion_timeout_seconds hooks exclude_paths
@@ -61,13 +62,13 @@ defmodule ForemanServer.Jobsite.Spec do
   def from_json(spec, opts) when is_map(spec) and not is_struct(spec) do
     with :ok <- check_keys(spec),
          :ok <- check_json_values(spec),
-         {:ok, repo_path} <- resolve_project(spec),
+         {:ok, project} <- resolve_project(spec),
          {:ok, prompt} <- fetch_prompt(spec),
-         {:ok, agent} <- build_agent(spec, opts),
+         {:ok, agent} <- build_agent(spec, opts, project.settings),
          {:ok, sandbox} <- build_sandbox(spec, opts),
          {:ok, optional} <- build_optional(spec),
          built =
-           [repo_path: repo_path, project_id: Map.fetch!(spec, "project_id")] ++
+           [repo_path: project.path, project_id: Map.fetch!(spec, "project_id")] ++
              optional.strategy ++
              [sandbox: sandbox, agent: agent, prompt: prompt] ++ optional.rest,
          :ok <- check_push_strategy(built),
@@ -201,8 +202,14 @@ defmodule ForemanServer.Jobsite.Spec do
            project_id: id
          })}
 
-      %{path: path} when is_binary(path) and path != "" ->
-        {:ok, path}
+      %{status: "paused"} ->
+        {:error,
+         Error.new(:spec_project_unavailable, "project #{inspect(id)} is paused", %{
+           project_id: id
+         })}
+
+      %{path: path} = project when is_binary(path) and path != "" ->
+        {:ok, %{path: path, settings: ProjectSettings.from_config(Map.get(project, :config))}}
 
       _no_path ->
         {:error,
@@ -233,7 +240,7 @@ defmodule ForemanServer.Jobsite.Spec do
 
   # -- agent ------------------------------------------------------------
 
-  defp build_agent(spec, opts) do
+  defp build_agent(spec, opts, project_settings) do
     case Map.fetch(spec, "agent") do
       :error ->
         {:error, Error.new(:spec_agent_missing, "agent is required", %{})}
@@ -241,8 +248,8 @@ defmodule ForemanServer.Jobsite.Spec do
       {:ok, agent} when is_map(agent) ->
         with :ok <- check_agent_keys(agent),
              {:ok, provider} <- agent_provider(agent),
-             {:ok, model} <- agent_model(agent),
-             {:ok, effort} <- agent_effort(agent),
+             {:ok, model} <- agent_model(agent, project_settings),
+             {:ok, effort} <- agent_effort(agent, project_settings),
              {:ok, approval_mode} <- agent_approval_mode(agent),
              {:ok, env} <- agent_env(agent, opts) do
           {:ok,
@@ -300,9 +307,14 @@ defmodule ForemanServer.Jobsite.Spec do
     end
   end
 
-  defp agent_model(agent) do
-    case Map.fetch(agent, "model") do
-      {:ok, model} when is_binary(model) and model != "" ->
+  # Precedence: explicit `agent.model` > the project's `thread_model`. The
+  # resolved value is what `JobsiteStarted.agent` records.
+  defp agent_model(agent, project_settings) do
+    case {Map.get(agent, "model"), project_settings} do
+      {model, _} when is_binary(model) and model != "" ->
+        {:ok, model}
+
+      {nil, %ProjectSettings{thread_model: model}} when is_binary(model) ->
         {:ok, model}
 
       _other ->
@@ -315,13 +327,13 @@ defmodule ForemanServer.Jobsite.Spec do
     end
   end
 
-  defp agent_effort(agent) do
+  defp agent_effort(agent, project_settings) do
     case Map.fetch(agent, "effort") do
       :error ->
-        {:ok, nil}
+        {:ok, project_effort(project_settings)}
 
       {:ok, nil} ->
-        {:ok, nil}
+        {:ok, project_effort(project_settings)}
 
       {:ok, "minimal"} ->
         {:ok, :minimal}
@@ -347,6 +359,13 @@ defmodule ForemanServer.Jobsite.Spec do
          )}
     end
   end
+
+  # Validated by `Project.Settings`, so the atom exists (it is also an
+  # `agent.effort` value above).
+  defp project_effort(%ProjectSettings{thread_effort: effort}) when is_binary(effort),
+    do: String.to_existing_atom(effort)
+
+  defp project_effort(_settings), do: nil
 
   defp agent_approval_mode(agent) do
     case Map.fetch(agent, "approval_mode") do

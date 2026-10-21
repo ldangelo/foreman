@@ -410,6 +410,41 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:project_projection, project_id})
   end
 
+  @doc """
+  Typed settings of a project (`nil` only when the project is unknown). Reads
+  accept both key conventions found in persisted config (atom live, string
+  after replay).
+  """
+  @spec project_settings(String.t()) :: ForemanServer.ProjectSettings.t() | nil
+  def project_settings(project_id) when is_binary(project_id) do
+    case project_projection(project_id) do
+      nil -> nil
+      project -> ForemanServer.ProjectSettings.from_config(Map.get(project, :config))
+    end
+  end
+
+  @doc """
+  Ids of the project's tasks that were dispatched (`TaskDispatched` -> status
+  `"in_progress"`, run id assigned) but whose run never started: run admission
+  refused them (project paused, daily cap, run limit) or they wait for a slot.
+  `Workflow.Dispatcher` re-admits these when the project resumes or its limits
+  change.
+  """
+  @spec deferred_task_ids(String.t()) :: [String.t()]
+  def deferred_task_ids(project_id) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:deferred_task_ids, project_id})
+  end
+
+  @doc """
+  Typed limits and usage of a project (`ForemanServer.ProjectLimits`), or `nil`
+  for an unknown project. Rejections of admissions (cap, pause) are retried, so
+  `deferred_tasks` shows the waiting backlog.
+  """
+  @spec project_limits(String.t(), DateTime.t()) :: ForemanServer.ProjectLimits.t() | nil
+  def project_limits(project_id, now \\ DateTime.utc_now()) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:project_limits, project_id, now})
+  end
+
   @doc "Return every projected project."
   @spec list_projects() :: [map()]
   def list_projects do
@@ -703,10 +738,18 @@ defmodule ForemanServer.ProjectionStore do
             project_id
           )
 
+        project_thread_days =
+          replace_project_entry(
+            Map.get(state, :project_thread_days, %{}),
+            Map.get(rebuilt_project_state, :project_thread_days, %{}),
+            project_id
+          )
+
         new_state =
           state
           |> Map.put(:projects, projects)
           |> Map.put(:project_active_runs, project_active_runs)
+          |> Map.put(:project_thread_days, project_thread_days)
           |> broadcast_events(recovered_events)
 
         {:reply, :ok, new_state}
@@ -809,6 +852,57 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call(:list_inbox_threads, _from, state) do
     {:reply, Map.values(state.inbox_threads), state}
+  end
+
+  @impl true
+  def handle_call({:deferred_task_ids, project_id}, _from, state) do
+    {:reply, deferred_task_ids(state, project_id), state}
+  end
+
+  @impl true
+  def handle_call({:project_limits, project_id, now}, _from, state) do
+    reply =
+      case Map.get(state.projects, project_id) do
+        nil ->
+          nil
+
+        project ->
+          day = ForemanServer.ProjectLimits.day(now)
+
+          threads_today =
+            state
+            |> Map.get(:project_thread_days, %{})
+            |> Map.get(project_id, %{})
+            |> Map.get(day, MapSet.new())
+            |> MapSet.size()
+
+          deferred = state |> deferred_task_ids(project_id) |> length()
+
+          ForemanServer.ProjectLimits.build(
+            project,
+            %{
+              active_runs:
+                state |> Map.get(:project_active_runs, %{}) |> Map.get(project_id, []) |> length(),
+              threads_started_today: threads_today,
+              deferred_tasks: deferred
+            },
+            now
+          )
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:threads_started_on, project_id, day}, _from, state) do
+    count =
+      state
+      |> Map.get(:project_thread_days, %{})
+      |> Map.get(project_id, %{})
+      |> Map.get(day, MapSet.new())
+      |> MapSet.size()
+
+    {:reply, count, state}
   end
 
   @impl true
@@ -1026,6 +1120,7 @@ defmodule ForemanServer.ProjectionStore do
       scheduler_intents: %{},
       subscribers: %{},
       project_active_runs: %{},
+      project_thread_days: %{},
       worktrees: %{},
       worktree_create_orphans: %{},
       run_slots: %{capacity: 0, holders: %{}, waiters: []},
@@ -1107,6 +1202,7 @@ defmodule ForemanServer.ProjectionStore do
         |> maybe_put(:name, get(payload, :name))
         |> maybe_put(:task_provider, get(payload, :task_provider))
         |> put_project_config(get(payload, :config, %{}))
+        |> put_project_settings(payload)
         |> put_project_projection_metadata(payload)
 
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
@@ -1149,6 +1245,12 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp apply_event_by_type(state, "ProjectPaused", payload),
+    do: set_project_status(state, payload, "paused")
+
+  defp apply_event_by_type(state, "ProjectResumed", payload),
+    do: set_project_status(state, payload, "active")
+
   defp apply_event_by_type(state, "ProjectRunReserved", payload) do
     project_id = get(payload, :project_id)
     run_id = get(payload, :run_id)
@@ -1159,7 +1261,21 @@ defmodule ForemanServer.ProjectionStore do
         |> Map.get(:project_active_runs, %{})
         |> Map.update(project_id, [run_id], &add_project_run_id(&1, run_id))
 
-      Map.put(state, :project_active_runs, active_runs)
+      state
+      |> Map.put(:project_active_runs, active_runs)
+      |> count_project_thread(project_id, "run", run_id, get(payload, :reserved_on))
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectThreadStarted", payload) do
+    project_id = get(payload, :project_id)
+    thread_id = get(payload, :thread_id)
+    kind = get(payload, :thread_kind)
+
+    if valid_id?(project_id) and valid_id?(thread_id) and is_binary(kind) do
+      count_project_thread(state, project_id, kind, thread_id, get(payload, :day))
     else
       state
     end
@@ -2451,6 +2567,65 @@ defmodule ForemanServer.ProjectionStore do
   # Helpers
   # -------------------------------------------------------------------------
 
+  # Pause/resume flip `status` only; an unknown project is left alone (the
+  # aggregate guarantees the project exists, so this is a replay-gap guard).
+  defp set_project_status(state, payload, status) do
+    project_id = get(payload, :project_id)
+
+    case valid_id?(project_id) && Map.get(state.projects, project_id) do
+      project when is_map(project) ->
+        project =
+          project
+          |> Map.put(:status, status)
+          |> put_project_projection_metadata(payload)
+
+        put_state(state, Map.put(state.projects, project_id, project), state.runs)
+
+      _ ->
+        state
+    end
+  end
+
+  # Threads started per project per UTC day (deduped by kind+id), keeping only
+  # the latest `@thread_day_retention` days. Events without a day count nothing.
+  @thread_day_retention 8
+  defp count_project_thread(state, _project_id, _kind, _id, day) when not is_binary(day),
+    do: state
+
+  defp count_project_thread(state, project_id, kind, id, day) do
+    days = Map.get(state, :project_thread_days, %{})
+    per_day = Map.get(days, project_id, %{})
+    keys = per_day |> Map.get(day, MapSet.new()) |> MapSet.put("#{kind}:#{id}")
+
+    per_day =
+      per_day
+      |> Map.put(day, keys)
+      |> Enum.sort_by(fn {d, _} -> d end, :desc)
+      |> Enum.take(@thread_day_retention)
+      |> Map.new()
+
+    Map.put(state, :project_thread_days, Map.put(days, project_id, per_day))
+  end
+
+  @doc """
+  Number of threads (workflow runs + jobsites) the project started on the given
+  UTC day (`Date.to_iso8601/1`). Only the last #{@thread_day_retention} days are kept.
+  """
+  @spec threads_started_on(String.t(), String.t()) :: non_neg_integer()
+  def threads_started_on(project_id, day) when is_binary(project_id) and is_binary(day) do
+    GenServer.call(__MODULE__, {:threads_started_on, project_id, day})
+  end
+
+  defp deferred_task_ids(state, project_id) do
+    for {task_id, task} <- state.tasks,
+        get(task, :project_id) == project_id,
+        get(task, :status) == "in_progress",
+        run_id = get(task, :run_id),
+        is_binary(run_id) and run_id != "",
+        not Map.has_key?(state.runs, run_id),
+        do: task_id
+  end
+
   defp project_projection(payload, path) do
     %{
       project_id: get(payload, :project_id),
@@ -2462,8 +2637,39 @@ defmodule ForemanServer.ProjectionStore do
       health: get(payload, :health, %{ok: true}),
       name: get(payload, :name)
     }
+    |> put_project_settings(payload)
     |> put_project_projection_metadata(payload)
   end
+
+  # Folds the typed settings fields of ProjectRegistered/ProjectUpdated into the
+  # projected config under atom keys. Persisted payloads carry string keys after
+  # replay, so any string-key variant already in config is removed first.
+  # Never raises: a malformed value (not a map payload) is skipped.
+  defp put_project_settings(project, payload) when is_map(project) and is_map(payload) do
+    cleared =
+      case get(payload, :cleared_settings, []) do
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    config = get(project, :config, %{})
+    config = if is_map(config), do: config, else: %{}
+
+    config =
+      Enum.reduce(ForemanServer.ProjectSettings.keys(), config, fn key, acc ->
+        string_key = Atom.to_string(key)
+        acc = if key in cleared or string_key in cleared, do: drop_setting(acc, key), else: acc
+
+        case get(payload, key) do
+          nil -> acc
+          value -> acc |> drop_setting(key) |> Map.put(key, value)
+        end
+      end)
+
+    Map.put(project, :config, config)
+  end
+
+  defp drop_setting(config, key), do: Map.drop(config, [key, Atom.to_string(key)])
 
   defp put_project_projection_metadata(project, payload)
        when is_map(project) and is_map(payload) do

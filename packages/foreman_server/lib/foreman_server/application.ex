@@ -459,7 +459,10 @@ defmodule ForemanServer.Application do
         "foreman_work_cancel",
         "foreman_workflow_put",
         "foreman_workflow_delete",
-        "foreman_prompt_put"
+        "foreman_prompt_put",
+        "foreman_project_settings_update",
+        "foreman_project_pause",
+        "foreman_project_resume"
       ]
 
       safe_tools =
