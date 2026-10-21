@@ -129,8 +129,24 @@ defmodule ForemanServerWeb.ProjectSchedulesTest do
     create(id, "s4", "aaa-paused")
     command(id, "schedule.pause", "s4", %{})
 
-    names = get_json("/api/projects/#{id}/schedules", 200)["schedules"] |> Enum.map(& &1["name"])
-    assert names == ["early", "alpha", "zeta", "aaa-paused"]
+    rows = get_json("/api/projects/#{id}/schedules", 200)["schedules"]
+    names = Enum.map(rows, & &1["name"])
+    next = Map.new(rows, &{&1["name"], &1["next_fire_at"]})
+
+    # `next_fire_at` is computed from the wall clock on read. The 5m schedule's
+    # next slot is never later than the hourly ones', but in the last five
+    # minutes of every hour it lands exactly on the hour: a tie, which the
+    # contract breaks by name ("alpha" < "early"). Assert the order the clock
+    # actually produced instead of one that only holds for 55 minutes an hour.
+    assert next["early"] <= next["alpha"]
+    assert next["alpha"] == next["zeta"]
+
+    expected =
+      if next["early"] < next["alpha"],
+        do: ["early", "alpha", "zeta"],
+        else: ["alpha", "early", "zeta"]
+
+    assert names == expected ++ ["aaa-paused"]
   end
 
   test "empty project lists no schedules", %{id: id} do
