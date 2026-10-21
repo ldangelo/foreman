@@ -64,6 +64,17 @@ defmodule ForemanServer.ProjectSettings do
     end)
   end
 
-  defp redact_values(%{} = env), do: Map.new(env, fn {key, _value} -> {key, @redacted} end)
+  # The environment RECORD keeps `setup_script` and `network` (not secrets) and
+  # redacts only its `vars` values; legacy flat env redacts every value.
+  defp redact_values(%{} = env) do
+    if ForemanServer.Aggregates.Project.Environment.record?(env) do
+      Map.new(env, fn {key, value} ->
+        if to_string(key) == "vars", do: {key, redact_values(value)}, else: {key, value}
+      end)
+    else
+      Map.new(env, fn {key, _value} -> {key, @redacted} end)
+    end
+  end
+
   defp redact_values(other), do: other
 end

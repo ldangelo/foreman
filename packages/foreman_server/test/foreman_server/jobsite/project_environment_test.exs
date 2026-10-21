@@ -152,4 +152,23 @@ defmodule ForemanServer.Jobsite.ProjectEnvironmentTest do
     assert details.output =~ "boom [REDACTED]"
     refute inspect(details) =~ @secret
   end
+
+  test "a project network policy on the host sandbox fails the jobsite as unsupported", ctx do
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.environment.set",
+        payload: %{project_id: ctx.project_id, network: %{mode: "none"}},
+        aggregate_id: "project:#{ctx.project_id}"
+      })
+
+    assert {:error, %ForemanServer.Jobsite.Error{code: :network_policy_unsupported}} =
+             Jobsite.run(
+               repo_path: ctx.repo,
+               strategy: :merge_to_head,
+               sandbox: Sandboxes.host(),
+               agent: Agents.pi("x", binary: @fake_agent),
+               prompt: "go",
+               project_id: ctx.project_id
+             )
+  end
 end

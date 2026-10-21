@@ -51,6 +51,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_project_list",
                "foreman_project_get",
                "foreman_project_settings_get",
+               "foreman_project_environment_get",
                "foreman_project_settings_update",
                "foreman_project_pause",
                "foreman_project_resume",

@@ -22,6 +22,10 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project get       --format
 > foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear
 > foreman project settings  --format
+> foreman project env       list --format | set --replace | unset
+> foreman project secret    list --format | set --from-env | unset
+> foreman project setup-script show | set --file | clear
+> foreman project network   show | set --mode --allow
 > foreman project pause     --reason --idempotency-key
 > foreman project resume    --idempotency-key
 > foreman project reactivate --idempotency-key
@@ -316,6 +320,27 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 ### `foreman project settings <id>`
 
 Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`. `--format json` prints the raw response. `config.env` values are never shown.
+
+### `foreman project env list|set|unset <id>`
+Manage the project's plain environment variables (`PUT /api/projects/<id>/environment`,
+operator command `project.environment.set`). `set <id> NAME=value ...` merges into the
+current variables; `--replace` starts from an empty set (required once to migrate a legacy
+`config.env` project whose values are hidden). `list --format json` prints the raw
+`GET /api/projects/<id>/environment` response. Secret-looking names are rejected: use `secret`.
+
+### `foreman project secret list|set|unset <id> [NAME]`
+Secrets live only in the server's secret store; events, logs and responses carry names and
+versions. `set <id> NAME` reads the value from **stdin** (trailing newline trimmed) or from
+`--from-env VAR`; the value is never a flag or argument and is never printed.
+`list` prints `NAME`, version and update time. `unset` deletes.
+
+### `foreman project setup-script show|set|clear <id>`
+`set --file <path>` installs the script the server runs once after each fresh run/jobsite
+worktree is created (fatal on non-zero exit or timeout); `clear` removes it; `show` prints it.
+
+### `foreman project network show|set <id>`
+`set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only;
+workflow runs and the host sandbox do not enforce it (host sandbox + policy is a typed error).
 
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 
@@ -1267,7 +1292,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`.
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_environment_get` (variable/secret names only).
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
 and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams

@@ -157,8 +157,24 @@ defmodule ForemanServer.Jobsite.Executor do
 
   @spec run(String.t(), keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
   def run(jobsite_id, opts) do
-    with {:ok, spec} <- build_spec(jobsite_id, opts),
-         {:ok, _} <-
+    case build_spec(jobsite_id, opts) do
+      {:ok, spec} ->
+        # The allowlist's network + proxy sidecar exist from `build_spec/2`
+        # on, so they are removed however the jobsite ends.
+        try do
+          run_spec(jobsite_id, spec)
+        after
+          spec.network_cleanup.()
+        end
+
+      {:error, %Error{} = error} ->
+        dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+        {:error, error}
+    end
+  end
+
+  defp run_spec(jobsite_id, spec) do
+    with {:ok, _} <-
            dispatch(jobsite_id, "jobsite.start", "start", start_payload(jobsite_id, spec)) do
       execute(jobsite_id, spec)
     else
@@ -168,19 +184,27 @@ defmodule ForemanServer.Jobsite.Executor do
     end
   end
 
-  defp build_spec(_jobsite_id, opts) do
+  defp build_spec(jobsite_id, opts) do
     with :ok <- Options.validate(opts),
          {:ok, agent} <- fetch(opts, :agent, :prompt_source_missing, "agent"),
          agent = apply_project_environment(agent, Keyword.get(opts, :project_id)),
          {:ok, {sandbox_provider, sandbox_config}} <-
            fetch(opts, :sandbox, :sandbox_create_failed, "sandbox"),
-         :ok <- Hooks.validate(Keyword.get(opts, :hooks)) do
+         :ok <- Hooks.validate(Keyword.get(opts, :hooks)),
+         {:ok, sandbox_config, network_cleanup} <-
+           apply_network_policy(
+             Keyword.get(opts, :project_id),
+             sandbox_provider,
+             sandbox_config,
+             jobsite_id
+           ) do
       {:ok,
        %{
          opts: opts,
          agent: agent,
          sandbox_provider: sandbox_provider,
          sandbox_config: sandbox_config,
+         network_cleanup: network_cleanup,
          repo_path: Keyword.get(opts, :repo_path, File.cwd!()),
          strategy: Keyword.get(opts, :strategy, :head),
          max_iterations: Keyword.get(opts, :max_iterations, 1),
@@ -213,6 +237,18 @@ defmodule ForemanServer.Jobsite.Executor do
   end
 
   defp apply_project_environment(agent, _project_id), do: agent
+
+  # The project's `environment.network` is a CEILING on the jobsite's sandbox
+  # (E4-S5). Last in `build_spec/2`'s checks: it is the only one with a side
+  # effect (the allowlist network), so nothing after it can fail the spec.
+  defp apply_network_policy(project_id, provider, config, jobsite_id)
+       when is_binary(project_id) and project_id != "" do
+    policy = project_id |> ForemanServer.ProjectEnvironment.environment() |> Map.fetch!("network")
+    ForemanServer.Jobsite.NetworkPolicy.apply(policy, provider, config, jobsite_id)
+  end
+
+  defp apply_network_policy(_project_id, _provider, config, _jobsite_id),
+    do: {:ok, config, fn -> :ok end}
 
   defp fetch(opts, key, code, label) do
     case Keyword.fetch(opts, key) do
@@ -669,13 +705,47 @@ defmodule ForemanServer.Jobsite.Executor do
   def resume(jobsite_id, opts) do
     with {:ok, agg_state} <- check_resumable(jobsite_id) do
       if File.dir?(agg_state.worktree_path) do
-        resume_from_state(jobsite_id, agg_state, opts)
+        resume_with_network(jobsite_id, agg_state, opts)
       else
         {:error,
          Error.new(:worktree_vanished, "worktree #{agg_state.worktree_path} no longer exists", %{
            path: agg_state.worktree_path
          })}
       end
+    end
+  end
+
+  # A resumed jobsite gets its network policy re-applied: the allowlist's
+  # network and sidecar were removed when the original run ended or paused. A
+  # persisted provider that cannot be resolved is left for `resume_from_state/3`
+  # to fail with its own typed error.
+  defp resume_with_network(jobsite_id, agg_state, opts) do
+    with {:ok, provider} <- Sandboxes.resolve(agg_state.sandbox_provider),
+         project_id when is_binary(project_id) and project_id != "" <- agg_state.project_id,
+         {:ok, config, cleanup} <-
+           apply_network_policy(
+             project_id,
+             provider,
+             agg_state.sandbox_config || %{},
+             jobsite_id
+           ) do
+      try do
+        resume_from_state(jobsite_id, %{agg_state | sandbox_config: config}, opts)
+      after
+        cleanup.()
+      end
+    else
+      {:error, %Error{code: code} = error}
+      when code in [
+             :network_policy_violation,
+             :network_policy_unsupported,
+             :network_policy_failed
+           ] ->
+        dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+        {:error, error}
+
+      _ ->
+        resume_from_state(jobsite_id, agg_state, opts)
     end
   end
 

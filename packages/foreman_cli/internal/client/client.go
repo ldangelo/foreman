@@ -125,6 +125,16 @@ func (c *Client) PostJSON(path string, body any, out any) error {
 	return c.do("POST", path, body, out)
 }
 
+// PutJSON sends a JSON body with PUT; semantics as PostJSON.
+func (c *Client) PutJSON(path string, body any, out any) error {
+	return c.do("PUT", path, body, out)
+}
+
+// Delete issues DELETE; the response body is decoded into `out` when non-nil.
+func (c *Client) Delete(path string, out any) error {
+	return c.do("DELETE", path, nil, out)
+}
+
 // GetJSON fetches a resource and decodes the JSON body into `out`.
 func (c *Client) GetJSON(path string, out any) error {
 	return c.do("GET", path, nil, out)

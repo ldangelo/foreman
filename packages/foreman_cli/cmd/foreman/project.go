@@ -17,13 +17,13 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  foreman project pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project: missing subcommand (create|get|update|settings|pause|resume|reactivate|delete|list)",
+			"foreman project: missing subcommand (create|get|update|settings|env|secret|setup-script|network|pause|resume|reactivate|delete|list)",
 			projectUsageText,
 		)
 	}
@@ -37,6 +37,14 @@ func runProject(c *client.Client, args []string) error {
 		return projectUpdate(c, args[1:])
 	case "settings":
 		return projectSettings(c, args[1:])
+	case "env":
+		return projectEnv(c, args[1:])
+	case "secret":
+		return projectSecret(c, args[1:])
+	case "setup-script":
+		return projectSetupScript(c, args[1:])
+	case "network":
+		return projectNetwork(c, args[1:])
 	case "pause":
 		return projectPause(c, args[1:])
 	case "resume":
