@@ -279,4 +279,9 @@ config :foreman_server, :project_memory,
   max_redaction_ratio: 0.5,
   min_guard_bytes: 200
 
+config :foreman_server, :project_context,
+  max_bytes: 24_000,
+  section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
+  section_providers: [ForemanServer.ProjectContext.Memory]
+
 import_config "#{config_env()}.exs"
