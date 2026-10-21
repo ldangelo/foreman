@@ -6,7 +6,7 @@ defmodule ForemanServerWeb.CommandController do
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on the operator allowlist
   (`project.register`, `project.update`, `project.archive`,
-  `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
+  `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
   `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
   `merge_approve`, and `run.pr.merge`),
   enriches the payload, and dispatches to
@@ -22,7 +22,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset merge_approve run.pr.merge)
+  @allowed_types ~w(project.register project.update project.archive project.reactivate project.pause project.resume task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset merge_approve run.pr.merge)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -167,6 +167,8 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("project.update"), do: "project"
   defp aggregate_prefix("project.reactivate"), do: "project"
   defp aggregate_prefix("project.archive"), do: "project"
+  defp aggregate_prefix("project.pause"), do: "project"
+  defp aggregate_prefix("project.resume"), do: "project"
   defp aggregate_prefix("task.create"), do: "task"
   defp aggregate_prefix("task.approve"), do: "task"
   defp aggregate_prefix("task.retry"), do: "task"
@@ -184,6 +186,8 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("project.update"), do: :project_id
   defp id_field_for("project.reactivate"), do: :project_id
   defp id_field_for("project.archive"), do: :project_id
+  defp id_field_for("project.pause"), do: :project_id
+  defp id_field_for("project.resume"), do: :project_id
   defp id_field_for("task.create"), do: :task_id
   defp id_field_for("task.approve"), do: :task_id
   defp id_field_for("task.retry"), do: :task_id

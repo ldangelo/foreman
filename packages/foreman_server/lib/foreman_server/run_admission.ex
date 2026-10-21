@@ -357,6 +357,12 @@ defmodule ForemanServer.RunAdmission do
   defp compensable_admission_error?({:missing_or_invalid, _field}), do: true
   defp compensable_admission_error?({:implementation_already_active, _key, _run_id}), do: true
   defp compensable_admission_error?({:command_rejected, _reason}), do: true
+  # Non-terminal project refusals: the run never started, so the slot (and
+  # lease) it acquired must be handed back or a paused / capped project would
+  # hold global capacity hostage. The task stays approved and is retried.
+  defp compensable_admission_error?({:project_paused, _project_id}), do: true
+  defp compensable_admission_error?({:daily_thread_cap_exceeded, _cap, _day}), do: true
+  defp compensable_admission_error?(:run_limit_exceeded), do: true
   defp compensable_admission_error?(_other), do: false
 
   defp release_after_failed_start(payload, _timeout) do

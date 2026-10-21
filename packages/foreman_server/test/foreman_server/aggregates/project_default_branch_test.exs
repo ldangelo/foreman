@@ -41,7 +41,7 @@ defmodule ForemanServer.Aggregates.ProjectDefaultBranchTest do
     assert {:ok, %{event_type: "ProjectUpdated"}} =
              Project.handle_command(registered_state(), %{
                type: "project.update",
-               payload: %{project_id: "p-1", status: "paused"}
+               payload: %{project_id: "p-1", name: "renamed"}
              })
   end
 
@@ -73,7 +73,7 @@ defmodule ForemanServer.Aggregates.ProjectDefaultBranchTest do
     assert {:ok, %{event_type: "ProjectUpdated"}} =
              Project.handle_command(state, %{
                type: "project.update",
-               payload: %{project_id: "p-1", status: "paused"}
+               payload: %{project_id: "p-1", name: "renamed"}
              })
   end
 end

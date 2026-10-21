@@ -506,6 +506,7 @@ defmodule ForemanServer.Aggregates.Task do
   defp validate_project_allows_tasks(project_id) do
     case ProjectionStore.project(project_id) do
       %{status: "archived"} -> {:error, {:project_archived, project_id}}
+      %{status: "paused"} -> {:error, {:project_paused, project_id}}
       _ -> :ok
     end
   end

@@ -15,7 +15,14 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.RunSlots.Config
 
   alias ForemanServer.Aggregates.Project.Settings
-  alias ForemanServer.Events.{ProjectRunReservationReleased, ProjectRunReserved}
+
+  alias ForemanServer.Events.{
+    ProjectPaused,
+    ProjectResumed,
+    ProjectRunReservationReleased,
+    ProjectRunReserved,
+    ProjectThreadStarted
+  }
 
   defmodule State do
     @enforce_keys [:exists?, :project_id, :path, :status, :archived?]
@@ -28,7 +35,9 @@ defmodule ForemanServer.Aggregates.Project do
       :task_provider,
       active_run_reservations: %{},
       config: %{},
-      health: %{ok: true}
+      health: %{ok: true},
+      thread_day: nil,
+      thread_ids: MapSet.new()
     ]
   end
 
@@ -91,8 +100,28 @@ defmodule ForemanServer.Aggregates.Project do
       "ProjectReactivated" ->
         %State{state | status: "active", archived?: false}
 
+      "ProjectPaused" ->
+        %State{state | status: "paused"}
+
+      "ProjectResumed" ->
+        %State{state | status: "active"}
+
       "ProjectRunReserved" ->
-        put_run_reservation(state, payload)
+        state
+        |> put_run_reservation(payload)
+        |> count_thread(
+          "run",
+          Aggregate.get(payload, :run_id),
+          Aggregate.get(payload, :reserved_on)
+        )
+
+      "ProjectThreadStarted" ->
+        count_thread(
+          state,
+          Aggregate.get(payload, :thread_kind),
+          Aggregate.get(payload, :thread_id),
+          Aggregate.get(payload, :day)
+        )
 
       "ProjectRunReservationReleased" ->
         release_run_reservation(state, payload)
@@ -130,6 +159,7 @@ defmodule ForemanServer.Aggregates.Project do
     with {:ok, project_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
          :ok <- reject_removed_settings(payload),
+         :ok <- reject_status_edit(payload),
          :ok <- require_exists(state, project_id),
          {:ok, payload} <-
            payload
@@ -173,6 +203,71 @@ defmodule ForemanServer.Aggregates.Project do
     end
   end
 
+  def handle_command(state, %{type: "project.pause", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- reject_archived(state, project_id),
+         :ok <- validate_pause(state) do
+      {:ok,
+       %{
+         stream_id: "project:#{project_id}",
+         event_type: "ProjectPaused",
+         payload: %ProjectPaused{
+           project_id: project_id,
+           reason: Aggregate.get(payload, :reason)
+         }
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "project.resume", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- validate_resume(state) do
+      {:ok,
+       %{
+         stream_id: "project:#{project_id}",
+         event_type: "ProjectResumed",
+         payload: %ProjectResumed{project_id: project_id}
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "project.reserve_thread", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, thread_kind} <- validate_thread_kind(Aggregate.get(payload, :thread_kind)),
+         {:ok, thread_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :thread_id), :thread_id),
+         {:ok, _command_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :command_id), :command_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- reject_archived(state, project_id) do
+      day = today()
+
+      if thread_counted?(state, thread_kind, thread_id, day) do
+        {:ok, nil}
+      else
+        with :ok <- reject_paused(state, project_id),
+             :ok <- reject_at_daily_cap(state, day) do
+          {:ok,
+           %{
+             stream_id: "project:#{project_id}",
+             event_type: "ProjectThreadStarted",
+             payload: %ProjectThreadStarted{
+               project_id: project_id,
+               thread_kind: thread_kind,
+               thread_id: thread_id,
+               day: day
+             }
+           }}
+        end
+      end
+    end
+  end
+
   def handle_command(state, %{type: "project.reserve_run", payload: payload}) do
     with {:ok, project_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
@@ -187,14 +282,26 @@ defmodule ForemanServer.Aggregates.Project do
          :ok <- require_exists(state, project_id),
          :ok <- reject_archived(state, project_id),
          :ok <- reject_same_implementation_key(state, project_id, run_id, implementation_key) do
+      # Precedence: payload override (test seam) > the project's
+      # `max_concurrent_runs` setting > the global per-project default. The
+      # setting is read from state, so the check is atomic with the
+      # reservation count.
       max_concurrent_runs_per_project =
         Aggregate.get(payload, :max_concurrent_runs_per_project) ||
+          Aggregate.get(state.config, :max_concurrent_runs) ||
           Config.max_concurrent_runs_per_project()
+
+      day = today()
 
       if reserved_run(state, run_id) do
         {:ok, nil}
       else
-        case reject_at_run_limit(state, max_concurrent_runs_per_project) do
+        with :ok <- reject_paused(state, project_id),
+             :ok <- reject_at_daily_cap(state, day, "run", run_id),
+             :ok <- reject_at_run_limit(state, max_concurrent_runs_per_project) do
+          :ok
+        end
+        |> case do
           :ok ->
             {:ok,
              %{
@@ -206,7 +313,8 @@ defmodule ForemanServer.Aggregates.Project do
                  command_id: command_id,
                  sequence: sequence,
                  run_start_payload: run_start_payload,
-                 implementation_key: implementation_key
+                 implementation_key: implementation_key,
+                 reserved_on: day
                }
              }}
 
@@ -272,6 +380,63 @@ defmodule ForemanServer.Aggregates.Project do
 
   defp validate_reactivate(%State{archived?: false}), do: {:error, {:not_archived, :project}}
   defp validate_reactivate(%State{}), do: :ok
+
+  defp validate_pause(%State{status: "paused"}), do: {:error, {:already_paused, :project}}
+  defp validate_pause(%State{}), do: :ok
+
+  defp validate_resume(%State{status: "paused"}), do: :ok
+  defp validate_resume(%State{}), do: {:error, {:not_paused, :project}}
+
+  defp reject_paused(%State{status: "paused"}, project_id),
+    do: {:error, {:project_paused, project_id}}
+
+  defp reject_paused(%State{}, _project_id), do: :ok
+
+  defp reject_status_edit(payload) do
+    if Map.has_key?(payload, :status) or Map.has_key?(payload, "status"),
+      do: {:error, {:setting_not_editable, :status}},
+      else: :ok
+  end
+
+  defp validate_thread_kind("jobsite"), do: {:ok, "jobsite"}
+  defp validate_thread_kind(kind), do: {:error, {:missing_or_invalid, :thread_kind, kind}}
+
+  # UTC date the aggregate stamps on a thread start, evaluated at command time
+  # (the day then rides on the event, so replay never consults a clock).
+  defp today, do: Date.utc_today() |> Date.to_iso8601()
+
+  defp thread_counted?(%State{thread_day: day, thread_ids: ids}, kind, id, day),
+    do: MapSet.member?(ids, thread_key(kind, id))
+
+  defp thread_counted?(%State{}, _kind, _id, _day), do: false
+
+  defp thread_key(kind, id), do: "#{kind}:#{id}"
+
+  defp reject_at_daily_cap(state, day, kind \\ nil, id \\ nil) do
+    case Aggregate.get(state.config, :daily_thread_cap) do
+      cap when is_integer(cap) ->
+        counted = if state.thread_day == day, do: MapSet.size(state.thread_ids), else: 0
+
+        if counted >= cap and not already_counted?(state, kind, id, day),
+          do: {:error, {:daily_thread_cap_exceeded, cap, day}},
+          else: :ok
+
+      _no_cap ->
+        :ok
+    end
+  end
+
+  defp already_counted?(_state, nil, _id, _day), do: false
+  defp already_counted?(state, kind, id, day), do: thread_counted?(state, kind, id, day)
+
+  # Counts a thread against `day`. The set resets when the day rolls over. An
+  # event without a day (recorded before the cap existed) counts nothing.
+  defp count_thread(%State{} = state, _kind, _id, nil), do: state
+
+  defp count_thread(%State{} = state, kind, id, day) when is_binary(day) do
+    ids = if state.thread_day == day, do: state.thread_ids, else: MapSet.new()
+    %State{state | thread_day: day, thread_ids: MapSet.put(ids, thread_key(kind, id))}
+  end
 
   defp reject_archived(%State{archived?: true}, project_id),
     do: {:error, {:project_archived, project_id}}

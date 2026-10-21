@@ -1371,6 +1371,16 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
         :rejected
 
+      paused_hold?(result) ->
+        # A paused project refuses NEW admissions but is reversible: the bead
+        # line is HELD (cursor not advanced), not skipped, so it imports after
+        # `project.resume`. Contrast archived, which is terminal.
+        Logger.info(
+          "BeadsWatcher project=#{state.project_id} bead=#{bead_id} held: project is paused"
+        )
+
+        :transient
+
       true ->
         Logger.error(
           "BeadsWatcher project=#{state.project_id} bead=#{bead_id} task.create unexpected result=#{inspect(result)}, holding as transient"
@@ -1397,6 +1407,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   defp task_created_or_existing?({:ok, _result}), do: true
   defp task_created_or_existing?({:error, {:already_exists, :task, _id}}), do: true
   defp task_created_or_existing?(_other), do: false
+
+  defp paused_hold?({:error, {:project_paused, _project_id}}), do: true
+  defp paused_hold?(_other), do: false
 
   # Terminal (non-retryable) but no task was created. Distinct from
   # `task_created_or_existing?/1` so `classify_dispatch_result/3` never

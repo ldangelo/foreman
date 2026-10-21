@@ -202,6 +202,12 @@ defmodule ForemanServer.Jobsite.Spec do
            project_id: id
          })}
 
+      %{status: "paused"} ->
+        {:error,
+         Error.new(:spec_project_unavailable, "project #{inspect(id)} is paused", %{
+           project_id: id
+         })}
+
       %{path: path} = project when is_binary(path) and path != "" ->
         {:ok, %{path: path, settings: ProjectSettings.from_config(Map.get(project, :config))}}
 
