@@ -56,7 +56,7 @@ defmodule ForemanServer.Jobsite.ResumePromptTest do
 
   # Starts a jobsite whose first agent invocation sleeps, pauses it, and returns
   # once its executor is gone (so it is resumable).
-  defp start_paused!(repo, {_log, agent_bin}) do
+  defp start_paused!(repo, {log, agent_bin}) do
     agent =
       Agents.pi("x",
         binary: agent_bin,
@@ -78,11 +78,31 @@ defmodule ForemanServer.Jobsite.ResumePromptTest do
       )
 
     await_event("JobsiteIterationStarted", id)
+    # `JobsiteIterationStarted` is emitted before the agent process is spawned.
+    # Pausing earlier would cancel an agent that never ran (or one whose spawn
+    # is being retried), leaving no invocation for the test to compare against.
+    await_first_invocation!(log)
     pid = Executor.pid_for(id)
     ref = Process.monitor(pid)
     :ok = Jobsite.pause(id, "test pause")
     assert_receive {:DOWN, ^ref, :process, ^pid, _}, 20_000
     id
+  end
+
+  defp await_first_invocation!(log, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 30_000
+
+    cond do
+      File.exists?(log) and File.read!(log) != "" ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("the agent never recorded its first invocation")
+
+      true ->
+        Process.sleep(25)
+        await_first_invocation!(log, deadline)
+    end
   end
 
   defp await_event(type, id) do
