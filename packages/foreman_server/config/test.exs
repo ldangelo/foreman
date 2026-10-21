@@ -148,3 +148,10 @@ config :foreman_server, :review,
   capture: false,
   analysis: false,
   evaluator: ForemanServer.Review.Evaluator.Stub
+
+# The coordinator runtime is not started by the application under test; tests
+# start their own with a scripted agent. No retry delay: tests await events.
+config :foreman_server, :coordinator,
+  enabled: false,
+  agent: ForemanServer.Coordinator.Agent.Stub,
+  retry_backoff_ms: 0

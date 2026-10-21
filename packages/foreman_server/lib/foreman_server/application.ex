@@ -129,6 +129,7 @@ defmodule ForemanServer.Application do
         maybe_messaging_dispatcher_child() ++
         maybe_threads_children() ++
         maybe_review_children() ++
+        maybe_coordinator_children() ++
         maybe_stuck_detector_child() ++
         maybe_pr_monitor_child() ++
         maybe_trigger_poller_child() ++
@@ -218,6 +219,14 @@ defmodule ForemanServer.Application do
   defp maybe_threads_children do
     if Application.get_env(:foreman_server, :threads, [])[:idle_resolver] != false do
       [ForemanServer.Threads.IdleResolver]
+    else
+      []
+    end
+  end
+
+  defp maybe_coordinator_children do
+    if Application.get_env(:foreman_server, :coordinator, [])[:enabled] do
+      [{ForemanServer.Coordinator.Supervisor, []}]
     else
       []
     end
