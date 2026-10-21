@@ -5,7 +5,7 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
   import Phoenix.LiveViewTest
 
   alias ForemanServer.TelemetryTest.Handler
-  alias ForemanServer.{ProjectMemory, ProjectSettings, ProjectStore}
+  alias ForemanServer.{CommandGateway, ProjectMemory, ProjectSettings, ProjectStore}
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @endpoint ForemanServerWeb.Endpoint
@@ -108,6 +108,53 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
 
     assert html =~ ~s(id="max_concurrent_runs-error")
     assert settings(id).instructions == nil
+  end
+
+  test "save sends only the fields the operator changed: a concurrent change survives", %{id: id} do
+    {view, _} = mount_view(id)
+
+    # someone else (CLI, coordinator) sets the goal after this page loaded
+    assert {:ok, _} =
+             CommandGateway.dispatch_operator(%{
+               command_id: "elsewhere-#{id}",
+               type: "project.update",
+               aggregate_id: "project:#{id}",
+               payload: %{project_id: id, goal: "Changed elsewhere", daily_thread_cap: 7}
+             })
+
+    # the operator only touches max_concurrent_runs; goal/daily cap fields still
+    # hold their stale mount-time (empty) values in the form
+    view |> form("#settings-form", settings: %{max_concurrent_runs: "3"}) |> render_submit()
+
+    assert %{goal: "Changed elsewhere", daily_thread_cap: 7, max_concurrent_runs: 3} =
+             settings(id)
+  end
+
+  test "saving with nothing changed dispatches nothing", %{id: id} do
+    {view, _} = mount_view(id)
+    assert view |> form("#settings-form") |> render_submit() =~ "No changes to save."
+  end
+
+  test "a failed usage/limits read shows an error, not an empty pane", %{id: id} do
+    {view, html} = mount_view(id)
+    assert html =~ ~s(id="usage-pane")
+    refute html =~ ~s(id="usage-error")
+
+    # the project vanishes from the projection while the page is open
+    ProjectionStoreReset.reset!()
+
+    {handler, ref} =
+      Handler.attach_event_handlers(self(), [[:foreman_server, :workspace, :refresh]])
+
+    send(view.pid, {:projection_event, %{event_type: "RunStarted", data: %{project_id: id}}})
+    assert_receive {[:foreman_server, :workspace, :refresh], ^ref, _, _}, 5_000
+    :telemetry.detach(handler)
+
+    html = render(view)
+    assert html =~ ~s(id="usage-error")
+    assert html =~ "Usage unavailable"
+    assert html =~ ~s(id="limits-error")
+    assert html =~ "This project no longer exists."
   end
 
   test "clearing a field clears the stored setting", %{id: id} do

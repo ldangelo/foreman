@@ -15,9 +15,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
   use ForemanServerWeb, :live_view
 
+  require Logger
+
   alias ForemanServer.{CoordinatorAPI, Overview, ProjectionStore, ProjectStore}
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
-  alias ForemanServerWeb.Workspace.{Actions, Components, ProjectNotFound, Refresh}
+  alias ForemanServerWeb.Workspace.{Actions, Components, ProjectNotFound, ProjectView, Refresh}
 
   @tail 50
   @page 200
@@ -39,7 +41,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           |> assign(
             page_title: "Project #{project_id}",
             project_id: project_id,
-            project: project,
+            project_view: ProjectView.build(project, project_id),
             tab: :library,
             notice: nil,
             notice_kind: :ok,
@@ -70,7 +72,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     {:noreply, socket |> Refresh.begin_refresh() |> refresh_conversation() |> load_state()}
   end
 
-  def handle_info(_other, socket), do: {:noreply, socket}
+  def handle_info(other, socket) do
+    Logger.warning("workspace received an unexpected message: #{inspect(other, limit: 5)}")
+    {:noreply, socket}
+  end
 
   @impl true
   def handle_event("tab", %{"tab" => tab}, socket) when is_map_key(@tabs, tab) do
@@ -87,19 +92,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     {:noreply,
      socket
      |> assign(:confirm_stop, nil)
-     |> notify(Actions.stop_thread(socket.assigns.project_id, id))}
+     |> notify(Actions.stop_thread(socket.assigns.project_id, id, Refresh.intent(socket)))}
   end
 
   def handle_event("thread_action", %{"action" => action, "thread-id" => id}, socket)
       when action in @thread_actions do
     project_id = socket.assigns.project_id
+    intent = Refresh.intent(socket)
 
     result =
       case action do
-        "pause" -> Actions.run_control(project_id, id, :pause)
-        "resume" -> Actions.run_control(project_id, id, :resume)
-        "resolve" -> Actions.set_resolved(project_id, id, :resolve)
-        "reopen" -> Actions.set_resolved(project_id, id, :reopen)
+        "pause" -> Actions.run_control(project_id, id, :pause, intent)
+        "resume" -> Actions.run_control(project_id, id, :resume, intent)
+        "resolve" -> Actions.set_resolved(project_id, id, :resolve, intent)
+        "reopen" -> Actions.set_resolved(project_id, id, :reopen, intent)
       end
 
     {:noreply, notify(socket, result)}
@@ -138,7 +144,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   end
 
   def handle_event("start_proposed", %{"task-id" => task_id}, socket) do
-    {:noreply, notify(socket, Actions.start_proposed(socket.assigns.project_id, task_id))}
+    {:noreply,
+     notify(
+       socket,
+       Actions.start_proposed(socket.assigns.project_id, task_id, Refresh.intent(socket))
+     )}
   end
 
   def handle_event("schedule", %{"op" => op, "id" => id}, socket)
@@ -146,11 +156,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     {:noreply,
      notify(
        socket,
-       Actions.schedule_control(socket.assigns.project_id, id, Map.fetch!(@schedule_ops, op))
+       Actions.schedule_control(
+         socket.assigns.project_id,
+         id,
+         Map.fetch!(@schedule_ops, op),
+         Refresh.intent(socket)
+       )
      )}
   end
-
-  def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # -- state -----------------------------------------------------------------
 
@@ -165,12 +178,19 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
     socket
     |> assign(
-      project: ProjectStore.get(project_id) || socket.assigns.project,
+      project_view: project_view(project_id, socket),
       overview: overview,
       status: status,
       proposals: proposals(project_id)
     )
     |> assign(:schedules, schedules(socket))
+  end
+
+  defp project_view(project_id, socket) do
+    case ProjectStore.get(project_id) do
+      %{} = project -> ProjectView.build(project, project_id)
+      nil -> socket.assigns.project_view
+    end
   end
 
   defp status(project_id) do
@@ -272,11 +292,6 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   defp cursor(%{"messages" => messages, "next_cursor" => next}, _fallback),
     do: next || List.last(messages)["seq"]
 
-  defp project_name(project, project_id) do
-    config = Map.get(project, :config) || %{}
-    Map.get(config, :name) || Map.get(config, "name") || project_id
-  end
-
   defp nonce, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
   defp draft_id, do: "dash-" <> nonce()
 
@@ -287,11 +302,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     ~H"""
     <main id="main" class="ws-main">
       <header>
-        <h1>{project_name(@project, @project_id)}</h1>
+        <h1>{@project_view.name}</h1>
         <nav aria-label="Project">
           <.link navigate={"/dashboard/projects/#{@project_id}/settings"}>Settings</.link>
         </nav>
-        <p :if={Map.get(@project, :status) == "paused"} class="ws-error" role="status">This project is paused.</p>
+        <p :if={@project_view.status == "paused"} class="ws-error" role="status">This project is paused.</p>
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
       <div class="ws-layout">

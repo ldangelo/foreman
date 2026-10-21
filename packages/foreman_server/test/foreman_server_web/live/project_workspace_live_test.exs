@@ -6,6 +6,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   import Phoenix.LiveViewTest
 
   alias ForemanServer.{CommandGateway, ProjectionStore, ProjectStore, Threads}
+  alias ForemanServerWeb.Workspace.Actions
   alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
@@ -39,6 +40,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
         run("r-ready", "t-ready", id),
         %{event_type: "RunCompleted", payload: %{run_id: "r-ready", project_id: id}},
         %{event_type: "PrReady", payload: %{run_id: "r-ready", pr_url: "javascript:alert(1)"}},
+        task("t-pr2", id, "Second PR"),
+        run("r-pr2", "t-pr2", id),
+        %{event_type: "RunCompleted", payload: %{run_id: "r-pr2", project_id: id}},
+        %{
+          event_type: "PrReady",
+          payload: %{run_id: "r-pr2", pr_url: "https://github.com/a/b/pull/9"}
+        },
         task("t-failed", id, "Broken thing"),
         run("r-failed", "t-failed", id),
         %{
@@ -78,28 +86,43 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
   defp path(id), do: "/dashboard/projects/#{id}?token=#{@token}"
 
+  # Attaches the refresh telemetry handler BEFORE the view mounts, so no
+  # refresh can happen unobserved between a trigger and a later attach.
   defp mount_view(id) do
-    {:ok, view, html} = live(build_conn(), path(id))
-    {view, html}
-  end
-
-  # Waits (message receive, no sleep) for the next coalesced refresh of `view`.
-  defp await_refresh(view) do
     {handler, ref} =
       Handler.attach_event_handlers(self(), [[:foreman_server, :workspace, :refresh]])
 
-    pid = view.pid
+    Process.put(:refresh_ref, ref)
+    on_exit(fn -> :telemetry.detach(handler) end)
+    {:ok, view, html} = live(build_conn(), path(id))
+    Process.put(:view_pid, view.pid)
+    {view, html}
+  end
 
-    try do
+  # Re-checks `fun.(html)` after every refresh of the view (and once up front)
+  # until it holds; flunks after 5s. No sleeps.
+  defp await_until(view, fun) do
+    ref = Process.get(:refresh_ref)
+    pid = view.pid
+    html = render(view)
+
+    if fun.(html) do
+      html
+    else
       receive do
-        {[:foreman_server, :workspace, :refresh], ^ref, _m, %{pid: ^pid}} -> render(view)
+        {[:foreman_server, :workspace, :refresh], ^ref, _m, %{pid: ^pid}} ->
+          await_until(view, fun)
       after
-        5_000 -> flunk("no workspace refresh")
+        5_000 ->
+          flunk(
+            "condition not reached after a refresh; last html:\n" <> String.slice(html, 0, 600)
+          )
       end
-    after
-      :telemetry.detach(handler)
     end
   end
+
+  defp await_element(view, selector),
+    do: await_until(view, fn _ -> has_element?(view, selector) end)
 
   describe "auth" do
     test "unauthenticated and wrong-token requests get 401, never the page", %{id: id} do
@@ -149,16 +172,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       {view, _} = mount_view(id)
 
       view |> element("#thread-run\\:r-failed button", "Resolve") |> render_click()
-      await_refresh(view)
+      await_element(view, "#group-resolved #thread-run\\:r-failed")
 
-      assert has_element?(view, "#group-resolved #thread-run\\:r-failed")
       assert {:ok, %{resolved: true}} = Threads.get("run:r-failed")
 
       view |> element("#thread-run\\:r-failed button", "Reopen") |> render_click()
-      await_refresh(view)
-
+      await_element(view, "#group-waiting_on_you #thread-run\\:r-failed")
       refute has_element?(view, "#group-resolved #thread-run\\:r-failed")
-      assert has_element?(view, "#group-waiting_on_you #thread-run\\:r-failed")
     end
 
     test "a thread of another project is refused and nothing is dispatched", %{id: id} do
@@ -167,7 +187,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       html =
         render_click(view, "thread_action", %{"action" => "resolve", "thread-id" => "run:r-other"})
 
-      assert html =~ "Unknown thread."
+      assert html =~ "That thread belongs to another project."
       assert {:ok, %{resolved: false}} = Threads.get("run:r-other")
     end
 
@@ -194,12 +214,68 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   end
 
   describe "tabs" do
-    test "library is honestly 'not available yet'; pull requests and scheduled render", %{id: id} do
+    test "library is honestly 'not available yet'", %{id: id} do
       {view, _} = mount_view(id)
 
-      assert view |> element("#tab-library") |> render_click() =~ "Not available yet."
-      assert view |> element("#tab-pull_requests") |> render_click() =~ "Pull requests"
-      assert view |> element("#tab-scheduled") |> render_click() =~ "No schedules."
+      html = view |> element("#tab-library") |> render_click()
+      assert html =~ "Not available yet."
+      refute has_element?(view, "#panel-library li")
+    end
+
+    test "pull requests list the project's PRs; unsafe urls are not links", %{id: id} do
+      {view, _} = mount_view(id)
+
+      view |> element("#tab-pull_requests") |> render_click()
+
+      assert has_element?(view, "#panel-pull_requests li", "Second PR")
+      assert has_element?(view, ~s(#panel-pull_requests a[href="https://github.com/a/b/pull/9"]))
+      assert has_element?(view, "#panel-pull_requests li", "gate pending")
+      # the other PR (a javascript: url) is listed but never linked
+      assert has_element?(view, "#panel-pull_requests li", "alert(")
+      refute render(view) =~ ~s(href="javascript:)
+      refute has_element?(view, "#panel-library")
+    end
+
+    test "scheduled lists schedules and pause goes through schedule.pause", %{
+      id: id,
+      other: other
+    } do
+      for {project, sid, name} <- [{id, "s-1", "nightly"}, {other, "s-2", "foreign"}] do
+        assert {:ok, _} =
+                 CommandGateway.dispatch_operator(%{
+                   command_id: "sched-#{sid}-#{id}",
+                   type: "schedule.create",
+                   aggregate_id: "schedule:#{project}:#{sid}",
+                   payload: %{
+                     project_id: project,
+                     schedule_id: sid,
+                     name: name,
+                     spec: %{"every" => "1h", "anchor" => "2026-01-01T00:00:00Z"},
+                     prompt: "p",
+                     workflow: "implement"
+                   }
+                 })
+      end
+
+      {view, _} = mount_view(id)
+      view |> element("#tab-scheduled") |> render_click()
+
+      assert has_element?(view, "#panel-scheduled td", "nightly")
+      refute has_element?(view, "#panel-scheduled td", "foreign")
+
+      view |> element("#panel-scheduled button", "Pause nightly") |> render_click()
+
+      await_until(view, fn _ ->
+        has_element?(view, "#panel-scheduled button", "Resume nightly")
+      end)
+
+      assert [%{status: "paused"}] = ProjectionStore.schedules(id)
+
+      # a schedule of another project is refused, not paused
+      assert render_click(view, "schedule", %{"op" => "pause", "id" => "s-2"}) =~
+               "Schedule not found in this project."
+
+      assert [%{status: "active"}] = ProjectionStore.schedules(other)
     end
   end
 
@@ -220,7 +296,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                  source: "http"
                })
 
-      assert await_refresh(view) =~ "from the API"
+      assert await_until(view, &(&1 =~ "from the API")) =~ "from the API"
     end
 
     test "a blank message is refused client-side of the dispatch", %{id: id} do
@@ -264,9 +340,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert html =~ "Proposed work"
       assert has_element?(view, "#proposal-t-prop button", "Start")
 
-      # a task id that is not an open proposal of this project is refused
+      # another project's task was named in the proposal: no Start button, and a
+      # forged click is refused with its own message, dispatching nothing
+      refute has_element?(view, "#proposal-t-prop-other button")
+
+      assert render_click(view, "start_proposed", %{"task-id" => "t-prop-other"}) =~
+               "That task belongs to another project."
+
+      assert %{status: "open"} = ProjectionStore.task_projection("t-prop-other")
+
+      # a task the coordinator never proposed, and an unknown one, differ
       assert render_click(view, "start_proposed", %{"task-id" => "t-ready"}) =~
-               "not an open proposal of this project"
+               "The coordinator did not propose that task."
+
+      assert render_click(view, "start_proposed", %{"task-id" => "ghost"}) =~ "Task not found."
     end
   end
 
@@ -291,20 +378,36 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       send(view.pid, {:projection_event, %{event_type: "WorkerStdout", data: %{}}})
 
-      await_refresh(view)
+      await_until(view, fn _ -> :sys.get_state(view.pid).socket.assigns.refresh_count > before end)
+
       count = :sys.get_state(view.pid).socket.assigns.refresh_count - before
       assert count <= 2
     end
 
     test "an idle workspace does no work: no refresh without events", %{id: id} do
       {view, _} = mount_view(id)
-
-      {handler, ref} =
-        Handler.attach_event_handlers(self(), [[:foreman_server, :workspace, :refresh]])
-
+      ref = Process.get(:refresh_ref)
       render(view)
       refute_receive {[:foreman_server, :workspace, :refresh], ^ref, _, _}, 100
-      :telemetry.detach(handler)
+    end
+  end
+
+  describe "idempotent actions" do
+    test "the same intent dedupes a repeated action; a new intent is a new action", %{id: id} do
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :resolve, "i-1")
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :reopen, "i-2")
+      # a double click: same intent, same command id, deduplicated by the router
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :reopen, "i-2")
+      # a genuinely new reopen of a thread that is not resolved is rejected
+      assert {:error, message} = Actions.set_resolved(id, "run:r-failed", :reopen, "i-3")
+      assert message =~ "thread_not_resolved"
+    end
+
+    test "errors are distinct for a missing and a foreign thread", %{id: id} do
+      assert {:error, "Thread not found."} = Actions.set_resolved(id, "run:ghost", :resolve, "i")
+
+      assert {:error, "That thread belongs to another project."} =
+               Actions.set_resolved(id, "run:r-other", :resolve, "i")
     end
   end
 
