@@ -271,7 +271,7 @@ defmodule ForemanServer.Workflow.RunRepoRequestTest do
 
     test "while the multi-repo gate is closed a new attachment is denied, nothing registered",
          ctx do
-      Application.put_env(:foreman_server, :multi_repo, runs: false)
+      MultiRepoRuns.disable!()
       c = git_repo(ctx.allowed, "c")
       allow!(ctx, [ctx.root])
 

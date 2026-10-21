@@ -110,8 +110,12 @@ defmodule ForemanServer.RepoIdReplayTest do
     test "an unknown event type leaves the state unchanged" do
       state = Run.initial_state()
 
-      assert Run.apply_event(state, %{event_type: "RunRepoPrFailed", payload: %{run_id: "r"}}) ==
-               state
+      # An event type a future build may add: replay on this build must skip it. (Not
+      # `RunRepoPrFailed`: since E12-S6 the Run aggregate folds that one.)
+      assert Run.apply_event(state, %{
+               event_type: "RunEventFromAFutureBuild",
+               payload: %{run_id: "r"}
+             }) == state
     end
   end
 end

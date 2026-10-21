@@ -400,10 +400,11 @@ task/run request (`repo_id` = the run's PRIMARY, default the project primary;
 no duplicates, none equal to the effective primary, every id registered
 (`{:unknown_repo, id}`), primary + extras <= `max_repos_per_run` (default 4).
 A request naming no repo is the single-repo run and reads nothing. The run-start
-gate `config :foreman_server, :multi_repo, runs: false` rejects (typed
+gate `config :foreman_server, :multi_repo, runs: true` (the default since E12-S12)
+admits multi-repo runs; `runs: false` is the operator kill switch and rejects (typed
 `{:run_repo_set_rejected, :multi_repo_runs_disabled}`, like other start failures)
-any resolved set > 1 OR a run primary that is not the project primary; tests
-open it per test with `ForemanServer.MultiRepoRuns.enable!/0`. Layout/branch/op-id
+any resolved set > 1 OR a run primary that is not the project primary; tests state
+the gate they need with `ForemanServer.MultiRepoRuns.enable!/0` / `disable!/0`. Layout/branch/op-id
 arithmetic is `Workflow.RunWorktreeLayout` (primary `<run>/workspace`, secondary
 `<run>/repos/<repo_id>`, one branch name in every repo); secondaries are created
 eagerly after the primary with `repo_id` on their events and rolled back (worktree
@@ -422,8 +423,8 @@ written (`{:unknown_repo, id}`, duplicates, extra equal to the primary, then the
 `max_repos_per_run` cap counting primary + extras) and writes the keys only when
 present (a `repo_id` equal to the project primary is dropped: absent == project
 primary). The executor reads them from the task projection. Provider resolution is
-unchanged (one provider per project; BeadSink attributes only). The run-start gate
-still refuses secondary-primary runs until multi-repo runs are released.
+unchanged (one provider per project; BeadSink attributes only). A secondary-primary
+run is a multi-repo run like any other and is admitted while the gate is open.
 `run.repo.request {run_id, repo_id | repo_path}` is a SYSTEM command
 (`CommandGateway.dispatch_system/2` -> `Workflow.RunRepoRequest`, NOT in the
 operator allowlist): realpath first, then `repo_allowlist` (`/`-bounded prefixes,
@@ -815,6 +816,7 @@ secrets, home-directory paths).
 - **The merge gate stays operator-only** (`merge_approve` -> `run.pr.merge`). No overview/MCP surface may merge or approve; `test/foreman_server/mcp/no_merge_tool_test.exs` pins this for every advertised MCP tool and cards carry only a text hint.
 - **Merge gate per PR (E12-S6)**: `Aggregates.Run.State.merge_gates :: %{repo_key => :pending | :approved}` (`repo_key` `nil` = the run's primary; legacy events without `repo_id` fold into `nil`; read it with `Run.merge_gate/2`). `merge_approve` and `run.pr.merge` take an optional `repo_id` (absent = primary; present only for a non-primary repository on `PrReady`/`MergeGatePending`/`MergeGateApproved`/`PrMerged`). There is NO approve-all; each PR is approved and merged on its own head pin (`RunPrMerge.execute(run_id, repo_id)` reads only that repository's `PrReady`). ETS `MergeGate` requester keys are `run:<id>` / `run:<id>:<repo_id>` (`PrGate.gate_key/2`); `approve_by_key` approves only the newest PENDING entry of the key. `merge_approve`, `run.pr.merge` and `run.pr.retry` stay operator-only: never MCP tools, never on the coordinator/approvals/PR-watch dispatch lists (`operator_only_pr_commands_test.exs`).
 - **Partial completion (E12-S6)**: a multi-repo run whose repo PR cannot be created still completes; finalisation appends `RunRepoPrFailed{run_id, repo_id, reason, at}` (system command `run.repo_pr_failed`, `RepoPr.record_failure/4`), keeps that repo's worktree (`cleanup_run_worktree/3` skips it), and `ProjectionStore.run_repositories/1` reads it as `pr_state: :create_failed` (+ `pr_failure`) until the repo has an association. `completed_with_errors` is DERIVED (`OperatorDashboard.RunDTO`), never a run status. The operator retries with `run.pr.retry {run_id, repo_id}` (`RepoPr.retry/2`: idempotent, allowed on terminal runs, reclaims the worktree on success). Single-repo runs emit no `RunRepoPrFailed`.
+- **Live multi-repo e2e and rollback caveat (E12-S12)**: `scripts/e2e/multi_repo.sh` (POSIX sh; run it as `devbox run -- sh scripts/e2e/multi_repo.sh`; assets in `scripts/e2e/multi_repo/`) drives ONE real task over two scratch git repos (local bare origins, recording fake `gh`, private port and database, real `pi` + MiniMax agent) and asserts worktrees, sibling-path edit, commits, pushed branches, two PRs, archive `diffs/b.patch` + manifest `repositories[]`, the per-repo merge gate, a read-only-origin failure with `run retry-pr` recovery, and an unchanged single-repo run. The recorded transcript is `docs/lessons/multi-repo-e2e-2026-10-21.md`. **Rollback caveat (release note)**: single-repo runs write no new event keys, so rolling back after this release but before any multi-repo run is safe; an older binary raises when it replays an event that carries `repo_id`/`repo_ids`, and those exist only after the first multi-repo run. After that first run rolling back to a build without E12 is NOT safe; `runs: false` stops new multi-repo runs but cannot remove events already written.
 ## 20.3 Scheduled tasks (E11)
 
 - `Aggregates.Schedule` (`schedule:<project_id>:<schedule_id>`): operator commands `schedule.create|update|pause|resume|delete` (allowlisted in `CommandGateway` and `CommandController`; the controller/gateway derive the composite id, `schedule.create` without an id generates `sch-<hex>`), system commands `schedule.mark_fired` / `schedule.skip_fire` (never operator-allowlisted). Events `ScheduleCreated|Updated|Paused|Resumed|Deleted|Fired|FireSkipped`. The aggregate is pure: `at` is stamped by the gateway (client values overwritten) or the ticker; slot dedupe is `slot <= last_slot` -> `{:slot_already_processed, slot}`.

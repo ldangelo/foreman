@@ -121,6 +121,7 @@ devbox run db:console
 devbox run test               # all tests
 devbox run test:unit          # everything except :langfuse-tagged
 devbox run test:langfuse       # only the OTel+Langfuse e2e path
+devbox run -- sh scripts/e2e/multi_repo.sh   # live multi-repo e2e: real agent, scratch repos (see "Repositories")
 
 devbox run info                # command + status summary
 devbox run env:list             # current env vars + endpoints
@@ -318,12 +319,35 @@ work-tree root, and refuses a duplicate path or a second checkout of the same
 `origin`. Changing the primary with `project update --path` is validated the same
 way. Policy settings `repo_allowlist` (absolute path prefixes; `..`, relative
 entries and `/` are rejected) and `max_repos_per_run` (default 4) are stored via
-`project.update`. Runs still use a single repository until multi-repo runs are
-enabled. When they are, each repository the run changed gets its own branch and
+`project.update`. A run may span several repositories (the multi-repo run gate is
+open by default). Each repository the run changed gets its own branch and
 PR (untouched repositories get none); sibling PRs are cross-linked in their
-bodies. A repository whose push or `gh` fails does not stop the others. A run
-with `stack_pr: true` phases cannot span several repositories and is refused at
-start.
+bodies. A repository whose push or `gh` fails does not stop the others: the run
+completes (read as `completed_with_errors` on the dashboard) and
+`foreman run retry-pr --id <run> --repo-id <repo>` opens the missing PR once the
+cause is fixed. Each PR has its own merge gate (`approve-merge`/`merge` take
+`--repo-id`). A run with `stack_pr: true` phases cannot span several repositories
+and is refused at start. An operator can close the gate again with
+`config :foreman_server, :multi_repo, runs: false` (new multi-repo runs are then
+refused at start with `multi_repo_runs_disabled`; single-repo runs are unaffected).
+
+**Rollback caveat (release note).** Single-repository runs write no new event keys, so
+rolling back to a build without multi-repo support is safe as long as no multi-repo run
+has happened. The first multi-repo run writes events carrying `repo_id`/`repo_ids`,
+which an older binary cannot replay: after that run rolling back is NOT safe.
+`runs: false` stops new multi-repo runs but cannot remove events already written.
+
+**Live proof.** `devbox run -- sh scripts/e2e/multi_repo.sh` (POSIX sh; `E2E_PROVIDER`
+defaults to `pi` with `minimax/MiniMax-M2.7-highspeed`; `E2E_STAGES`, `E2E_KEEP=1`,
+`E2E_TRANSCRIPT=<file>` and the other knobs are listed in the script header) runs
+one real task over two scratch git repositories with local bare origins, a recording
+fake `gh`, a private port and a private database, and asserts the whole flow:
+two worktrees, an edit made through the sibling path, commits and pushed branches in
+both repositories, two PRs, the archive (`diffs/b.patch`, manifest `repositories[]`),
+the per-repository merge gate, a read-only-origin failure recovered by `run retry-pr`,
+and an unchanged single-repository run on the same server. It exits non-zero naming
+the failing assertion. It never creates GitHub repositories (`E2E_GITHUB=1` is refused).
+The recorded run is `docs/lessons/multi-repo-e2e-2026-10-21.md`.
 
 #### Targeting repositories, letting a thread add one, fan-out
 
@@ -331,8 +355,8 @@ The `task.create` command (HTTP `/api/commands`) and the MCP `foreman_task_creat
 repository the run is rooted in; default the project primary) and `repo_ids`
 (additional repositories). Unknown ids, duplicates, an extra equal to the primary
 and a total above `max_repos_per_run` (primary included) are refused at creation.
-Runs rooted in or spanning other repositories stay refused at start until
-multi-repo runs are enabled.
+Runs rooted in or spanning other repositories are admitted while the multi-repo gate
+is open (the default).
 
 A thread can ask for another repository with the write tool
 `foreman_run_request_repo` (`run_id`, and `repo_id` or an absolute `repo_path`).

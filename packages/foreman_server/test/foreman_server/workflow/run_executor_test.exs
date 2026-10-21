@@ -8,6 +8,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     CommandGateway,
     EventStore,
     Identity,
+    MultiRepoRuns,
     ProjectionStore,
     RunAdmission
   }
@@ -2925,6 +2926,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   # run whose resolved repository set is larger than one repository fails typed,
   # before the claim and before any phase, exactly like the other start failures.
   test "a multi-repo run fails typed at start while the multi-repo gate is closed" do
+    MultiRepoRuns.disable!()
     start_schema_cache!()
     project_id = unique_id("multirepo-project")
     task_id = unique_id("multirepo-task")

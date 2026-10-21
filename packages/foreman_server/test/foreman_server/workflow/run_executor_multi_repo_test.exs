@@ -70,6 +70,8 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
     end
 
     test "multi-repo runs are refused while the gate is closed", ctx do
+      MultiRepoRuns.disable!()
+
       assert {:error, :multi_repo_runs_disabled} =
                ctx
                |> state(%{repo_ids: ["b"]})
@@ -77,6 +79,8 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
     end
 
     test "a run primary that is not the project primary is multi-repo too (follow-up 6)", ctx do
+      MultiRepoRuns.disable!()
+
       assert {:error, :multi_repo_runs_disabled} =
                ctx
                |> state(%{repo_id: "b"})
