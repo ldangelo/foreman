@@ -97,11 +97,14 @@ was posted; zero new gap beads (`foreman-gap` count stayed 4).
    `foreman-gap` by hand (or from before the event log) gets full gap creation: `gap-9kp` spawned
    `gap-qgy`/`gap-n4m`. Naturally created chains are capped correctly. Filed as bead
    `foreman-s9pvf` (no code change here).
-   **Resolved afterwards** (bead `foreman-s9pvf`): `BeadSink` now also reads the source bead's
-   `foreman-gap` label through the provider (the event-log check stays first and needs no provider
-   call), and an unreadable label fails closed with a note. The live run above predates that change
-   and was NOT repeated after it; the fix is covered by `bead_sink_test.exs` (hand-labelled bead,
-   unreadable label), mutation-checked.
+   **Resolved afterwards** (bead `foreman-s9pvf`), in two steps. #610 made `BeadSink` also read the
+   source bead's `foreman-gap` label through the provider (the event-log check stays first and needs
+   no provider call) and fail closed when the label is unreadable. **#610 was inert against a real
+   `br` until #611:** `BeadsAdapter.get/2` rejected real `br 0.6.0` `show --json` output
+   (`BR_CONTRACT_MISMATCH`), so every review failed closed and no gap beads were created at all; its
+   stubbed unit tests used a payload shape `br` does not emit. #611 fixed `get/2`, and
+   `review-gap-guard-retest.md` is the live run that verified the guard against real `br`. The run
+   recorded in THIS document predates both changes and was not repeated.
 2. The "minimal effort" instruction in the scratch workflow prompt was ignored by the agent; it
    wrote tests and docs anyway. Irrelevant to the flow, noted for reproducibility.
 
