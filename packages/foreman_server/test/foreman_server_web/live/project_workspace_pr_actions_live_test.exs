@@ -206,6 +206,16 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
     assert p.run_id == run.run_id
   end
 
+  test "Create PR on a run with no pushed branch fails with a readable reason", %{id: id} do
+    run = completed_run!(id, "Nothing pushed")
+    view = mount_view(id)
+
+    view |> element(btn(run, :create_pr)) |> render_click()
+
+    assert has_element?(view, "#notice", "no pushed branch")
+    refute "PrCreated" in run_event_types(run)
+  end
+
   test "there is no merge or approve control anywhere in the PR actions", %{id: id} do
     run = id |> completed_run!("Mergeable") |> with_pr!(checks: "failing", comments: ["c1"])
     view = mount_view(id)

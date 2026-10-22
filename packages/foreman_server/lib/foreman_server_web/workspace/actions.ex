@@ -335,6 +335,11 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe({:invalid_text, :blank}), do: "the message is empty"
   def describe({:invalid_text, :too_long}), do: "the message is too long"
   def describe(:rate_limited), do: "rate limited"
+  def describe(:no_head_branch), do: "the run has no pushed branch to open a pull request from"
+  def describe(:no_base_branch), do: "the run has no base branch"
+  def describe(:no_commits_to_propose), do: "the branch has no commits to propose"
+  def describe({:pr_already_associated, url}), do: "a pull request already exists (#{url})"
+  def describe({:project_unresolved, id}), do: "project #{id} is not registered"
   def describe({:fix_in_flight, _url}), do: "a fix is already running for that pull request"
   def describe({:pr_not_open, status}), do: "the pull request is #{status}"
 
