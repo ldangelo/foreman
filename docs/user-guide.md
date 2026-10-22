@@ -907,7 +907,7 @@ The body has `project_id`, `groups`, `counts`, `attention`, `tabs` and
 (newest first): `ready_for_review` (PR open and merge gate pending, or a
 completed thread with a `met`/`partially_met` review and an open PR),
 `waiting_on_you` (pending approval or question, blocked/stuck, failed, PR
-conflict, plain pause, review `not_met` on an open PR), `working`, `landing`
+conflict, plain pause, review `not_met` on an open PR, or failing CI on an open PR: reason `ci_failing`, from the E9 PR watch's `checks_state`, even while the merge gate is pending), `working`, `landing`
 (merge approved, PR still open), `idle` and `resolved` (flag, PR merged or
 closed, cancelled). `attention` is `{needed, count, reasons}`: needed when
 `waiting_on_you` or `ready_for_review` is non-empty. An unknown project is

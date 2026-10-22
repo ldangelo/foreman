@@ -87,6 +87,7 @@ defmodule ForemanServerWeb.Workspace.Components do
         <span :if={@card.last_report.summary}> - {@card.last_report.summary}</span>
       </p>
       <p :if={@card.failure_reason} class="ws-error">Failure: {@card.failure_reason}</p>
+      <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
       <p :if={@card.hint} class="ws-muted">{@card.hint}</p>
       <div class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
         <%= for action <- @card.actions do %>

@@ -144,6 +144,44 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   end
 
   describe "overview pane" do
+    test "a failing-CI PR raises its thread out of Ready for review (foreman-c1i34)", %{id: id} do
+      pr = "https://github.com/a/b/pull/9"
+
+      {view, _html} = mount_view(id)
+      assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "PrAssociated", payload: %{run_id: "r-pr2", pr_url: pr, pr_number: 9}},
+          %{
+            event_type: "PrChecksChanged",
+            payload: %{
+              run_id: "r-pr2",
+              project_id: id,
+              task_id: "t-pr2",
+              pr_url: pr,
+              head_sha: "h1",
+              pr_status: "open",
+              checks_state: "failing",
+              failing: [%{name: "unit"}],
+              digest: "d1",
+              observation_seq: 1
+            }
+          }
+        ])
+
+      html =
+        await_until(view, fn _ ->
+          has_element?(view, "#group-waiting_on_you #thread-run\\:r-pr2")
+        end)
+
+      assert html =~ "CI failing"
+      refute has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
+
+      {:ok, overview} = ForemanServer.Overview.build(id)
+      assert :ci_failing in overview.attention.reasons
+    end
+
     test "groups threads by state with counts, from the seeded projection", %{id: id} do
       {view, _html} = mount_view(id)
 

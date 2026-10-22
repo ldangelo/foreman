@@ -7,6 +7,8 @@ defmodule ForemanServer.Overview.Input do
     * `resolved?` - the operator disposition flag
     * `pr_state` - `:open | :merged | :closed | :conflicted | nil`
     * `merge_gate` - `:none | :pending | :approved`
+    * `checks_state` - `:none | :pending | :failing | :passing`, the PR watcher's
+      folded CI rollup of the open PR (`:none` when unwatched)
     * `pending_approvals`, `open_questions` - counts of requests / questions waiting
       for the operator (E8)
     * `expired_approvals`, `expired_questions` - requests / questions that timed out
@@ -27,6 +29,7 @@ defmodule ForemanServer.Overview.Input do
           resolved?: boolean(),
           pr_state: :open | :merged | :closed | :conflicted | nil,
           merge_gate: :none | :pending | :approved,
+          checks_state: :none | :pending | :failing | :passing,
           pending_approvals: non_neg_integer(),
           open_questions: non_neg_integer(),
           expired_approvals: non_neg_integer(),
@@ -46,6 +49,7 @@ defmodule ForemanServer.Overview.Input do
     :pr_state,
     resolved?: false,
     merge_gate: :none,
+    checks_state: :none,
     pending_approvals: 0,
     open_questions: 0,
     expired_approvals: 0,
