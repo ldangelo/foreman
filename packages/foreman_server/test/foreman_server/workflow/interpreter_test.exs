@@ -26,14 +26,13 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end)
   end
 
-  test "load!/1: every bundled phase declaring models.default also declares provider: pi" do
-    # This PR added explicit `provider: pi` beside `models.default` on 7
-    # phases across assess/fix/prd/review, specifically so the provider is
-    # never left to be inferred from the model string. Pin it so a future
-    # edit that drops `provider:` from one of those phases (leaving the YAML
-    # syntactically valid and every other test green) fails loudly here
-    # instead of silently reintroducing the inference this PR removed.
-    phases_with_models =
+  test "load!/1: the 7 bundled pi review/assess phases declare provider: pi and pin no model" do
+    # The provider is stated explicitly so it is never inferred from a model
+    # string, and no model is pinned (foreman-pv11k): the project's
+    # `thread_model` or pi's own default applies. 7 is the exact count
+    # (assess: 1, fix: 2, prd: 2, review: 2); the count guards against a
+    # vacuous pass if every pi phase were dropped.
+    pi_phases =
       Enum.flat_map(@template_names, fn template_name ->
         path =
           Application.app_dir(:foreman_server, "priv/defaults/workflows/#{template_name}.yaml")
@@ -41,21 +40,15 @@ defmodule ForemanServer.Workflow.InterpreterTest do
         assert {:ok, workflow} = Workflow.Interpreter.load!(path)
 
         workflow["phases"]
-        |> Enum.filter(&Map.has_key?(&1, "models"))
+        |> Enum.filter(&(&1["provider"] == "pi"))
         |> Enum.map(&{template_name, &1})
       end)
 
-    # Guards against the vacuous pass a bare `Enum.each` would allow: if a
-    # future edit stripped every `models:` declaration from the bundled
-    # workflows, the loop below would execute zero assertions and this test
-    # would still report green. 7 is the exact current count (assess: 1,
-    # fix: 2, prd: 2, review: 2).
-    assert length(phases_with_models) == 7
+    assert length(pi_phases) == 7
 
-    Enum.each(phases_with_models, fn {template_name, phase} ->
-      assert phase["provider"] == "pi",
-             "#{template_name}.yaml phase #{inspect(phase["name"])} declares " <>
-               "models.default but no (or a non-pi) provider: #{inspect(phase["provider"])}"
+    Enum.each(pi_phases, fn {template_name, phase} ->
+      refute Map.has_key?(phase, "models"),
+             "#{template_name}.yaml phase #{inspect(phase["name"])} pins a model"
     end)
   end
 
