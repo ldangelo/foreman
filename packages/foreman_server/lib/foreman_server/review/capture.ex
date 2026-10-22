@@ -576,14 +576,21 @@ defmodule ForemanServer.Review.Capture do
   # ---------------------------------------------------------------------
 
   defp do_put_diff(dir, worktree_path, base, head) do
-    with :ok <-
-           Archive.merge_manifest(dir, %{"base_ref" => base, "worktree_path" => worktree_path}) do
-      mark_new_files(dir, worktree_path, head, "intent_to_add")
+    case Archive.merge_manifest(dir, %{"base_ref" => base, "worktree_path" => worktree_path}) do
+      :ok ->
+        mark_new_files(dir, worktree_path, head, "intent_to_add")
 
-      case Git.diff(worktree_path, base, head) do
-        {:ok, diff} -> store_diff(dir, worktree_path, base, head, diff)
-        {:error, git_error} -> diff_unavailable(dir, "diff", git_error)
-      end
+        case Git.diff(worktree_path, base, head) do
+          {:ok, diff} -> store_diff(dir, worktree_path, base, head, diff)
+          {:error, git_error} -> diff_unavailable(dir, "diff", git_error)
+        end
+
+      {:error, %Error{} = error} ->
+        # No readable manifest: record why (creating a minimal one) and mark the
+        # diff unavailable rather than skipping silently.
+        _ = Archive.record_capture_error(dir, "diff", error)
+        _ = Archive.merge_manifest(dir, %{"diff_status" => "unavailable"})
+        {:error, error}
     end
   end
 

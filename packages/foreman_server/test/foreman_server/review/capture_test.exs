@@ -250,6 +250,25 @@ defmodule ForemanServer.Review.CaptureTest do
       refute File.exists?(Path.join(dir, "diff.patch"))
     end
 
+    test "a failed capture with no archive yet still leaves a manifest explaining it", %{
+      root: root,
+      repo: repo
+    } do
+      dir = Path.join([root, "jobsite", "never-opened"])
+      refute File.exists?(dir)
+
+      assert {:error, %Error{}} = Capture.put_diff(dir, repo, "nonexistent-ref", "HEAD")
+
+      {:ok, m} = Archive.read_manifest(dir)
+      assert m["schema"] == "foreman.review.manifest.v1"
+      assert m["kind"] == "jobsite"
+      assert m["subject_id"] == "never-opened"
+      assert m["diff_status"] == "unavailable"
+
+      assert [%{"stage" => "diff", "code" => code, "message" => message}] = m["capture_errors"]
+      assert code != "" and message != ""
+    end
+
     test ":worktree head captures new files and records no error when they can be marked", %{
       dir: dir,
       repo: repo,
