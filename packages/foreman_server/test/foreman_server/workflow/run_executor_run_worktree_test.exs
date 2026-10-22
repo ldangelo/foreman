@@ -847,6 +847,37 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
              )
     end
 
+    # The shape the workflow door's real worker returns (`JidoHarnessWorker` wraps the
+    # normalized code in a `%FailureCause{}` so the provider's text survives). Live run
+    # 2026-10-22: a claude phase denied `Write` failed with no approval request because
+    # only the bare tuple above was matched.
+    test "pauses awaiting approval when the denial arrives as a FailureCause (real worker shape)",
+         ctx do
+      write!(ctx.wt, "docs/PRD/partial.md")
+
+      reason = %ForemanServer.AgentRuntime.JidoHarness.FailureCause{
+        code: {:permission_denied, ["Write"]},
+        detail: "run ended with status completed"
+      }
+
+      assert {:stopped, %{status: :paused}} =
+               RunExecutor.__handle_phase_body_error_for_test__(
+                 ctx.state,
+                 %{},
+                 1,
+                 ctx.record,
+                 reason
+               )
+
+      paused = await_run_event("RunPaused", ctx.run_id)
+      assert (paused[:reason] || paused["reason"]) == "awaiting_approval"
+
+      assert ["Write"] ==
+               ctx.run_id
+               |> ProjectionStore.run_approvals()
+               |> Enum.map(& &1.tool_name)
+    end
+
     test "with the feature off the denial fails the phase as before (no request, no pause)",
          ctx do
       previous = Application.get_env(:foreman_server, :approvals, [])
