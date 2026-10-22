@@ -1307,14 +1307,15 @@ configuration — it is NOT a Foreman `provider:` value; Foreman still runs the
 `:pi` provider. See the pi coding agent docs for the full models.json schema.
 
 The bundled `assess`, `fix`, `prd` and `review` workflows run their pi review
-phases on `litellm-stack/smart_router`: pi provider `litellm-stack`, model
-`smart_router`, which the LiteLLM proxy resolves to a concrete model by
-request complexity. Add that provider to `models.json` pointing at the proxy
-that defines `smart_router` (the `litellm-langfuse-stack` proxy, `baseUrl`
-`http://127.0.0.1:4000/v1`, with its master key as `apiKey`). Without it the
-pi catalog preflight fails with `model_not_found`. A proxy that does not
-define `smart_router` returns `400 Invalid model name` instead. After editing
-bundled workflows run `foreman init --force` to refresh the installed copies.
+phases with `provider: pi` and **no `models:` pin**, so the model is the
+project's `thread_model` setting, else pi's own default. A bundled workflow must
+not pin an operator-specific model such as `litellm-stack/smart_router`: a host
+whose pi catalog lacks it fails the pre-phase-1 preflight with `model_not_found`
+(or `400 Invalid model name` at the proxy). To use a proxy router model, set the
+project's `thread_model` (e.g. `litellm-stack/smart_router`, with that provider
+in `models.json` as above) or pin `models.default` in your own installed copy.
+After editing bundled workflows run `foreman init --force` to refresh the
+installed copies.
 
 ### 7.4 Bundled skills
 

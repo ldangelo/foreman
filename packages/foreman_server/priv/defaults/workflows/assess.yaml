@@ -4,8 +4,6 @@ phases:
   - name: impact-analysis
     prompt: assess.md
     provider: pi
-    models:
-      default: litellm-stack/smart_router
     artifact: "{task.projectReportsDir}/ASSESS_REPORT.md"
     mail:
       onStart: true

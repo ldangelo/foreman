@@ -63,8 +63,6 @@ phases:
   - name: coderabbit-review
     prompt: review-coderabbit.md
     provider: pi
-    models:
-      default: litellm-stack/smart_router
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
     commit: true
   # `stack_pr: true` is what makes PR creation an explicit workflow step:
@@ -75,8 +73,6 @@ phases:
   - name: repo-rules-review
     prompt: review-repo-rules.md
     provider: pi
-    models:
-      default: litellm-stack/smart_router
     artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
     commit: true
     stack_pr: true
