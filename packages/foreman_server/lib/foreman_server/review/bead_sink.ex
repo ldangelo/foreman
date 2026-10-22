@@ -4,9 +4,11 @@ defmodule ForemanServer.Review.BeadSink do
 
   For a subject with a `bead_id` it posts the verdict as a bead comment and
   files one `foreman-exec` bead per identified gap. Gap beads are also labelled
-  `foreman-gap`. A source bead that an earlier review filed as a gap bead
-  (recorded in the event log, so no `br show` is needed) is not expanded
-  further (depth cap of 1). The suppression is reported in the returned `note`.
+  `foreman-gap`. A source bead that is itself a gap bead is not expanded further
+  (depth cap of 1), whether an earlier review filed it (recorded in the event log)
+  or it carries the `foreman-gap` label (checked through the provider, so a bead
+  labelled by hand is covered too). An unreadable label fails closed. The
+  suppression is reported in the returned `note`.
 
   Subjects without a `bead_id` are a no-op and never touch the task provider.
   """
@@ -47,8 +49,39 @@ defmodule ForemanServer.Review.BeadSink do
       when is_binary(bead_id) do
     with {:ok, provider, cfg} <- resolve_provider(subject),
          :ok <- post_comment(provider, cfg, subject, verdict) do
-      suppressed? = files_gaps?(verdict) and ProjectionStore.gap_bead?(bead_id)
-      file_gaps(provider, subject, verdict, suppressed?)
+      file_gaps(provider, subject, verdict, suppression(provider, cfg, bead_id, verdict))
+    end
+  end
+
+  # Why gap creation must not run for this source bead, or `nil`. Two independent
+  # guards cap the chain at depth 1:
+  #
+  #   * the event log (`:gap_bead`): a bead an earlier review filed. Cheap, needs no
+  #     provider call, and survives a lost label;
+  #   * the bead's own `foreman-gap` label (`:gap_label`): covers a bead labelled by
+  #     hand or filed before the event log recorded it.
+  #
+  # When the label cannot be read the guard fails CLOSED (`{:unreadable, why}`):
+  # the alternative is an unbounded loop of gap beads, each auto-dispatched and
+  # reviewed in turn.
+  defp suppression(provider, cfg, bead_id, verdict) do
+    cond do
+      not files_gaps?(verdict) -> nil
+      ProjectionStore.gap_bead?(bead_id) -> :gap_bead
+      true -> label_suppression(provider, cfg, bead_id)
+    end
+  end
+
+  defp label_suppression(provider, cfg, bead_id) do
+    case provider.get(bead_id, cfg) do
+      {:ok, %{labels: labels}} when is_list(labels) ->
+        if @gap_label in labels, do: :gap_label, else: nil
+
+      {:ok, other} ->
+        {:unreadable, "source bead has no readable labels: #{inspect(other, limit: 3)}"}
+
+      {:error, reason} ->
+        {:unreadable, describe(reason)}
     end
   end
 
@@ -122,7 +155,7 @@ defmodule ForemanServer.Review.BeadSink do
 
   # -- gap beads -------------------------------------------------------------
 
-  defp file_gaps(provider, subject, verdict, suppressed?) do
+  defp file_gaps(provider, subject, verdict, suppression) do
     cond do
       not files_gaps?(verdict) ->
         {:ok, %Result{gap_bead_ids: [], note: nil}}
@@ -135,17 +168,24 @@ defmodule ForemanServer.Review.BeadSink do
              "gap creation suppressed: #{subject.kind} was cancelled, so unfinished work is not filed as gaps"
          }}
 
-      suppressed? ->
-        {:ok,
-         %Result{
-           gap_bead_ids: [],
-           note: "gap creation suppressed: source bead is itself a foreman-gap bead"
-         }}
+      suppression != nil ->
+        {:ok, %Result{gap_bead_ids: [], note: suppression_note(suppression)}}
 
       true ->
         create_gaps(provider, subject, verdict)
     end
   end
+
+  defp suppression_note(:gap_bead),
+    do: "gap creation suppressed: source bead is itself a foreman-gap bead"
+
+  defp suppression_note(:gap_label),
+    do: "gap creation suppressed: source bead carries the foreman-gap label"
+
+  defp suppression_note({:unreadable, why}),
+    do:
+      "gap creation suppressed: could not read the source bead's labels (#{why}); " <>
+        "failing closed so a gap loop cannot start"
 
   defp create_gaps(provider, subject, %Verdict{gaps: gaps}) do
     cap = config!(:max_gap_beads)
