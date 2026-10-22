@@ -209,7 +209,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     } do
       {view, _} = mount_view(id)
 
-      view |> element("#thread-run\\:r-failed button", "Resolve") |> render_click()
+      view |> element("#thread-run\\:r-failed button[phx-value-action=resolve]") |> render_click()
       await_element(view, "#group-resolved #thread-run\\:r-failed")
 
       assert {:ok, %{resolved: true}} = Threads.get("run:r-failed")

@@ -22,7 +22,7 @@ Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = s
 | C5 | Coordinator routing and tuning | E15 | **LIVE** (pi); tuning/"remember" PARTIAL-evidence | ACC steps 2, 6, failure injection |
 | C6 | Overview groups, tabs, attention | E7, E16 | **LIVE** (groups, PR, Library tabs); Scheduled tab TESTED; CI-failing-in-Waiting fixed (foreman-c1i34) | ACC 2, 4c, 7f |
 | C7 | Thread control: transcript, steer, approvals, stop, resolve | E6, E8 | steer/stop/resolve **LIVE**; approvals **TESTED** and PARTIAL by design | ACC 3, 5; approvals not run (pi has none) |
-| C8 | PR lifecycle: watch, fix CI, comments, conflicts, merge | E9 | **LIVE with FAKED gh**; PARTIAL (no UI buttons; real GitHub unverified) | ACC 4a-4c, 5 |
+| C8 | PR lifecycle: watch, fix CI, comments, conflicts, merge | E9 | **LIVE with FAKED gh**; PARTIAL (UI buttons added, foreman-i6kws; real GitHub unverified) | ACC 4a-4c, 5 |
 | C9 | Scheduled tasks | E11 | **TESTED** | not in ACC |
 | C10 | Adopt existing session; setup recommendations | E13 | **TESTED** | not in ACC |
 | C11 | Pause/archive/delete; usage; thread cap | E1, E14 | pause, caps, rollup **LIVE**; archive/delete TESTED; per-thread usage PARTIAL | ACC 7a, 7e, "Exceed limits" |
@@ -75,7 +75,7 @@ Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = s
 - **Behaviour**: PrWatcher (enabled by default, `config.exs:289`) observes checks/reviews/conflicts; PrMonitor polling is opt-in (`FOREMAN_PR_MONITOR_ENABLED=true`, `runtime.exs:63`); GitHub webhook `POST /webhooks/github` (`router.ex:110`); auto-fix is opt-in per project via `pr_auto_fix` (default off; example `max_attempts: 2`; `pr_watcher/auto_fix.ex:4-6`); merge is operator-only (`merge_approve` then `run.pr.merge` pinned to the head SHA).
 - **Entry points**: HTTP `GET /api/runs/:id/prs` (`router.ex:90`); MCP `foreman_pr_status` (`tools.ex:1151`), `foreman_pr_fix`, `foreman_pr_watch_stop` (`policy.ex:27-28`; no merge tool by design); CLI `foreman run prs|fix-ci|address-comments|resolve-conflicts|create-pr|retry-pr|watch-start|watch-stop|approve-merge|merge` (`run.go:47-65`).
 - **Live (FAKED gh)**: PR created per thread, injected CI failure detected, fix thread pushed a fix, checks passing; operator merge to Resolved (ACC 4a-4b, 5). Before #604 (F9) no `stack_pr` run ever reached the merge gate.
-- **Unverified**: real GitHub, webhooks, review comments, conflicts, force-push, re-run. The workspace UI has no Fix CI / Address comments / Resolve conflicts / Create PR / Merge buttons (bead foreman-i6kws).
+- **Unverified**: real GitHub, webhooks, review comments, conflicts, force-push, re-run. The workspace UI now has Fix CI / Address comments / Resolve conflicts / Create PR buttons (foreman-i6kws); there is intentionally no Merge button.
 
 ### C9 Scheduled tasks
 - **Entry points**: HTTP `GET /api/projects/:id/schedules` (`router.ex:78`); MCP `foreman_schedule_list` (`tools.ex:550`), `foreman_schedule_create` (`tools.ex:562`), pause/resume/delete (write set `policy.ex:22-25`); CLI `foreman project schedule` (`project.go:68`, subverbs `project_schedule.go`); LiveView pause/resume/delete (`project_workspace_live.ex:154`).

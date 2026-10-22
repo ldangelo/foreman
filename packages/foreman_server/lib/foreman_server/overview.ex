@@ -62,8 +62,8 @@ defmodule ForemanServer.Overview do
         cards =
           by_group
           |> Map.get(group, [])
-          |> Enum.map(fn {{thread, pr}, classification} ->
-            ThreadCard.build(thread, pr, classification)
+          |> Enum.map(fn {{thread, pr, watch}, classification} ->
+            ThreadCard.build(thread, pr, classification, watch)
           end)
 
         {group, bound(group, cards, include_resolved, resolved_limit)}
@@ -159,11 +159,12 @@ defmodule ForemanServer.Overview do
     |> Threads.list(limit: Threads.max_limit())
     |> Enum.map(fn %Thread{} = thread ->
       pr = Map.get(pr_states, head_run_id(thread))
-      {{thread, pr}, Group.classify(input(thread, pr, now))}
+      watch = watch_records(thread, pr)
+      {{thread, pr, watch}, Group.classify(input(thread, pr, watch, now))}
     end)
   end
 
-  defp input(%Thread{} = thread, pr, now) do
+  defp input(%Thread{} = thread, pr, watch, now) do
     signals = Signals.for_thread(thread)
 
     %Input{
@@ -172,7 +173,7 @@ defmodule ForemanServer.Overview do
       resolved?: thread.resolved,
       pr_state: pr && pr.pr_state,
       merge_gate: (pr && pr.merge_gate) || :none,
-      checks_state: checks_state(thread, pr),
+      checks_state: checks_state(watch),
       pending_approvals: signals.pending_approvals,
       open_questions: signals.open_questions,
       expired_approvals: signals.expired_approvals,
@@ -185,15 +186,24 @@ defmodule ForemanServer.Overview do
     }
   end
 
-  # CI state comes from the E9 PR watch fold (`PrChecksChanged`), only for an
-  # open PR: a failing rollup on any watched, still-live PR of the head run counts.
-  defp checks_state(%Thread{door: :workflow, run_ids: [run_id | _]}, %{pr_state: :open}) do
-    live = Enum.reject(ProjectionStore.pr_watch(run_id), &(&1.status in ["merged", "closed"]))
+  # The E9 PR watch fold (`PrChecksChanged` et al.) of the head run, read only
+  # while its PR is still live (open or conflicted): that is all CI state and the
+  # PR action buttons need, and it keeps merged/closed/no-PR threads free of the call.
+  defp watch_records(%Thread{door: :workflow, run_ids: [run_id | _]}, %{pr_state: state})
+       when state in [:open, :conflicted],
+       do: ProjectionStore.pr_watch(run_id)
 
-    if Enum.any?(live, &(&1.checks_state == "failing")), do: :failing, else: :none
+  defp watch_records(_thread, _pr), do: []
+
+  # A failing rollup on any still-live watched PR of the head run counts.
+  defp checks_state(watch) do
+    if Enum.any?(
+         watch,
+         &(&1.status not in ["merged", "closed"] and &1.checks_state == "failing")
+       ),
+       do: :failing,
+       else: :none
   end
-
-  defp checks_state(_thread, _pr), do: :none
 
   # The newest run of a workflow thread owns its PR state; jobsites have none.
   defp head_run_id(%Thread{door: :workflow, run_ids: [run_id | _]}), do: run_id
