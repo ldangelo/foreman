@@ -122,6 +122,8 @@ devbox run test               # all tests
 devbox run test:unit          # everything except :langfuse-tagged
 devbox run test:langfuse       # only the OTel+Langfuse e2e path
 devbox run -- sh scripts/e2e/multi_repo.sh   # live multi-repo e2e: real agent, scratch repos (see "Repositories")
+devbox run -- bash scripts/e2e/claude_projects_flow.sh   # live Claude Projects acceptance (see "Running the live acceptance")
+devbox run -- bash scripts/e2e/failure_injection.sh      # live failure injection: provider down, crashes, paused project
 
 devbox run info                # command + status summary
 devbox run env:list             # current env vars + endpoints
@@ -135,6 +137,39 @@ override that endpoint:
 ```bash
 foreman project list
 ```
+
+### Running the live acceptance
+
+Two scripts prove the Claude Projects flow against a **real, throwaway** server, the real Go CLI and a real
+`pi` agent on `minimax/MiniMax-M2.7-highspeed` (no GitHub, no real notification endpoints). Each prints one
+`PASS` / `FAIL` / `UNVERIFIED` line per assertion and exits non-zero on any `FAIL`
+(`0` all passed, `1` environment problem, `2` setup failed, `3` assertion failed).
+
+```bash
+devbox run -- bash scripts/e2e/claude_projects_flow.sh        # ~2 min: project, memory, library, bead -> thread,
+                                                              # steer/stop/resolve, Overview, chat, webhook, review archive
+devbox run -- bash scripts/e2e/failure_injection.sh           # ~4 min: provider-down agent-crash coordinator-crash
+devbox run -- bash scripts/e2e/failure_injection.sh server-crash   # server-crash project-paused: run one scenario
+```
+
+Prerequisites: `pi` (authenticated for the model), `br`, `git`, `jq`, `curl`, `python3`, `psql` on `PATH` (use
+`devbox run --`), the dev Postgres reachable (`E2E_PG_HOST/PORT/USER/PASSWORD`, default `localhost:55432`
+`postgres/postgres`). Each script owns a private database (`foreman_e2e_claude_projects_<cp|fail>`), port
+(`E2E_PORT`, first free from 4810 / 4830), scratch repo (git + local bare origin + its own `br` database) and work
+dir under `<checkout>/tmp/e2e-claude-projects-<cp|fail>` (never `/tmp`; the server runs with a redirected `HOME`
+and `FOREMAN_VFS_ALLOWED_ROOT`). It removes only that work dir, database and the PIDs it started; `E2E_KEEP=1`
+leaves everything for a post-mortem (you then stop the printed server PID and drop the database yourself).
+Other knobs: `E2E_MODEL`, `E2E_RUN_TIMEOUT`, `E2E_REVIEW=0` (skip the review-archive step), `E2E_TRANSCRIPT=<file>`.
+`E2E_GITHUB=1` is refused. The scripts use their own workflows pinned to pi/minimax, not the bundled defaults.
+
+Known limitations: pi has no tool-permission or ask mechanism, so approve/deny and question/answer are reported
+`UNVERIFIED` (only the empty list surfaces are checked); no PR/CI/merge or real-GitHub behaviour is exercised
+(see `scripts/e2e/multi_repo.sh` for the fake-`gh` PR flow); the Claude provider paths are not exercised; the
+coordinator and reviewer are real LLM turns, so a wording-dependent assertion can in principle flake, and the
+coordinator-crash scenario's duplicate-action check is probabilistic (see the evidence doc,
+`docs/acceptance/claude-projects-acceptance-2026-10-22.md`). Layout: `scripts/e2e/claude_projects/` (`lib.sh`, `boot.exs`,
+`webhook_listener.py`, `workflows/`).
+
 
 ### Authentication
 

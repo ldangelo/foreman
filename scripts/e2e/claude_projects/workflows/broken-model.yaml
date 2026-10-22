@@ -1,0 +1,15 @@
+name: broken-model
+description: Acceptance harness workflow whose model does not exist at the provider (provider-failure injection).
+task_types: [docs]
+worktree:
+  enabled: true
+  branch: foreman/{task_id}/{run_id}
+  path: workspace
+  cleanup: on_success
+phases:
+  - name: edit
+    prompt: edit.md
+    provider: pi
+    models:
+      default: minimax/no-such-model-e2e
+    commit: true

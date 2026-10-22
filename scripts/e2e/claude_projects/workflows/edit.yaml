@@ -1,0 +1,15 @@
+name: edit
+description: Acceptance harness workflow. One pi/minimax phase that carries out the task and commits.
+task_types: [task, bug, chore, feature]
+worktree:
+  enabled: true
+  branch: foreman/{task_id}/{run_id}
+  path: workspace
+  cleanup: on_success
+phases:
+  - name: edit
+    prompt: edit.md
+    provider: pi
+    models:
+      default: __E2E_MODEL__
+    commit: true

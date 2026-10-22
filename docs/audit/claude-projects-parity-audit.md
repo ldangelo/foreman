@@ -1,6 +1,6 @@
 # Claude Projects parity audit (C1-C13)
 
-Audit of `main` @ `33d7cb24` (after #607) against the capability list in the parity plan (`docs/plans/claude-projects-parity-plan.md`, untracked) for bead E16-S9. Method: entry points were checked by grep at the cited file:line; behaviour claims come from code reading, the committed tests' existence, `docs/acceptance/claude-projects-live-run.md` (the live run, "ACC") and `docs/lessons/multi-repo-e2e-2026-10-21.md` ("MR"). **No new live probes were run for this audit** (no server was started); "LIVE" below always means "observed in ACC or MR", nothing else. Test suites were not re-run here.
+Audit of `main` @ `92ca57a0` (re-run for bead E16-S9 after the scripted acceptance; first written at `33d7cb24`) against the capability list in the parity plan (`docs/plans/claude-projects-parity-plan.md`, untracked). Method: entry points were checked by grep at the cited file:line; behaviour claims come from code reading, the committed tests' existence, `docs/acceptance/claude-projects-live-run.md` (the first live run, "ACC"), `docs/acceptance/claude-projects-acceptance-2026-10-22.md` (the scripted acceptance, "ACC2"), `docs/acceptance/review-*.md` and `docs/lessons/multi-repo-e2e-2026-10-21.md` ("MR"). "LIVE" below always means "observed in ACC, ACC2, MR or a review acceptance run", nothing else. File:line citations were not re-verified against `92ca57a0` except where a row says so. Test suites were not re-run here.
 
 Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = shipped, covered by tests only; **PARTIAL** = something named is missing; **NOT SHIPPED**.
 
@@ -8,26 +8,27 @@ Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = s
 
 - The only provider exercised live is `pi` with `minimax/MiniMax-M2.7-highspeed` (ACC Environment; MR "Only `pi` + MiniMax was run"). Claude OAuth was expired. Every Claude-specific path is unverified.
 - `gh` was **faked** (ACC, MR). Every PR / CI / merge observation is against a local bare repo and a scripted fake; real GitHub behaviour is unverified.
-- ACC states: "Open P1 defects after this run: F1, F3. Acceptance is therefore **not declared fully passed**." Both have since been closed (see Bugs), the fixes are test-verified; F1 (crash recovery) and F2/F4/F5/F7 are explicitly "not live" per their close comments; F3 was live-verified.
-- Only targeted tests were run in ACC, not the full suite.
+- ACC states: "Open P1 defects after this run: F1, F3. Acceptance is therefore **not declared fully passed**." Both have since been closed (see Bugs), the fixes are test-verified; F1 (crash recovery) is now also live-verified (ACC2); F2/F4/F5/F7 are explicitly "not live" per their close comments; F3 was live-verified.
+- Scripted acceptance (**ACC2**, `docs/acceptance/claude-projects-acceptance-2026-10-22.md`): `claude_projects_flow.sh` and `failure_injection.sh` against a real throwaway server, the real CLI, a real `pi` + MiniMax agent, local bare origin and local webhook sink. Only targeted unit tests plus these scripts were run, not the full suite.
 
 ## Whole-plan table
 
 | Cap | Claude Projects behaviour | Epics | Status | Evidence |
 |---|---|---|---|---|
-| C1 | Project goal, instructions, model/effort | E1, E3 | **LIVE** (settings, injection); model/effort setting TESTED | ACC step 1 (settings via CLI), 7d (instruction/memory text reached agent output); limits 422 (ACC "Exceed limits") |
-| C2 | Project memory | E2 | **LIVE** for operator-written memory reaching agents; agent-written TESTED | ACC 7d (`PINEAPPLE-42`) |
-| C3 | Repos, Library, thread-produced files | E5, E12 | Library **LIVE**; multi-repo **LIVE** (fake gh, pi only); thread-produced files and thread self-add repo TESTED | ACC 7c (`7319-ZEBRA`); MR 110 assertions |
+| C1 | Project goal, instructions, model/effort | E1, E3 | **LIVE** (settings, injection); model/effort setting TESTED | ACC step 1 (settings via CLI), 7d; ACC2 steps 1, 3 (instruction token reached `notes.txt`); limits 422 (ACC "Exceed limits") |
+| C2 | Project memory | E2 | **LIVE** for operator-written memory reaching agents (re-verified by script); agent-written TESTED | ACC 7d (`PINEAPPLE-42`); ACC2 step 3 |
+| C3 | Repos, Library, thread-produced files | E5, E12 | Library **LIVE** (re-verified by script); multi-repo **LIVE** (fake gh, pi only); thread-produced files and thread self-add repo TESTED | ACC 7c (`7319-ZEBRA`); ACC2 step 3 (library token reached `notes.txt`); MR 110 assertions |
 | C4 | Environment: env vars, secrets, setup script, network | E0-S3, E4 | **TESTED** | not in ACC or MR |
-| C5 | Coordinator routing and tuning | E15 | **LIVE** (pi); tuning/"remember" PARTIAL-evidence | ACC steps 2, 6, failure injection |
-| C6 | Overview groups, tabs, attention | E7, E16 | **LIVE** (groups, PR, Library tabs); Scheduled tab TESTED; CI-failing-in-Waiting fixed (foreman-c1i34) | ACC 2, 4c, 7f |
-| C7 | Thread control: transcript, steer, approvals, stop, resolve | E6, E8 | steer/stop/resolve **LIVE**; approvals **TESTED** and PARTIAL by design | ACC 3, 5; approvals not run (pi has none) |
+| C5 | Coordinator routing and tuning | E15 | **LIVE** (pi); tuning/"remember" PARTIAL-evidence; crash recovery live (server crash) with one open duplicate-action risk | ACC steps 2, 6, failure injection; ACC2 chat, provider-down, `coordinator-crash`, `server-crash` |
+| C6 | Overview groups, tabs, attention | E7, E16 | **LIVE** (groups, PR, Library tabs); Scheduled tab TESTED; CI-failing-in-Waiting fixed (foreman-c1i34) | ACC 2, 4c, 7f; ACC2 asserts Working / Waiting on you / Resolved group membership through the API |
+| C7 | Thread control: transcript, steer, approvals, stop, resolve | E6, E8 | steer/stop/resolve/reopen **LIVE** (scripted, re-run); approvals **TESTED**, PARTIAL by design, UNVERIFIED live | ACC 3, 5; ACC2 step 4 (steer obeyed, transcript shows `operator/steer`, stop -> cancelled, resolve -> Resolved group); approvals never raised (pi has none) |
 | C8 | PR lifecycle: watch, fix CI, comments, conflicts, merge | E9 | **LIVE with FAKED gh**; PARTIAL (UI buttons added, foreman-i6kws; real GitHub unverified) | ACC 4a-4c, 5 |
 | C9 | Scheduled tasks | E11 | **TESTED** | not in ACC |
 | C10 | Adopt existing session; setup recommendations | E13 | **TESTED** | not in ACC |
-| C11 | Pause/archive/delete; usage; thread cap | E1, E14 | pause, caps, rollup **LIVE**; archive/delete TESTED; per-thread usage PARTIAL | ACC 7a, 7e, "Exceed limits" |
-| C12 | Notifications | E10 | webhook **LIVE**; Telegram/Slack TESTED | ACC 7b |
+| C11 | Pause/archive/delete; usage; thread cap | E1, E14 | pause, caps, rollup **LIVE** (pause/resume re-asserted by script: held bead starts after resume); archive/delete TESTED; per-thread usage PARTIAL | ACC 7a, 7e, "Exceed limits"; ACC2 `project-paused`, step 6 |
+| C12 | Notifications | E10 | webhook **LIVE** (run_update, action_needed, failure classes observed); Telegram/Slack TESTED | ACC 7b; ACC2 step 6 + `agent-crash` failure delivery |
 | C13 | Run a thread on the user's own machine | E0-SP/S5 (design only) | **NOT SHIPPED** | `docs/spikes/S5.md` §13 "DEFER"; no remote-worker code in `lib/` (grep) |
+| R | (not in C1-C13) Archive every finished run and auto-review it (verdict, comment on the bead, gap beads) | review plan | **LIVE** (pi reviewer; Claude reviewer run recorded in `docs/acceptance/review-claude-reviewer-live-run.md`) | `docs/acceptance/review-*.md`; ACC2 step 7: all seven archive files, verdict `met` with four scores, comment posted on the source bead |
 
 ## Per capability
 
@@ -56,7 +57,7 @@ Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = s
 ### C5 Coordinator
 - **Behaviour**: per-project conversation, JSON actions validated by `Coordinator.Policy` (machine turns may only answer/ask/propose/route_followup/remember; start/approve/tuning/add-repo/schedule need operator authority and quote verification). Propose-before-start, max active threads, reuse threads, restart on unhealthy.
 - **Entry points**: HTTP `GET|POST /api/projects/:id/coordinator/messages`, `GET .../coordinator`, `POST .../coordinator/restart` (`router.ex:64-67`); MCP `foreman_project_conversation` (`tools.ex:1113`), `foreman_project_message` (write, `policy.ex:26`); CLI `foreman project chat [--restart]` (`project.go:70`); LiveView conversation pane.
-- **Live (pi)**: started 3 threads in parallel from one message, propose then "go ahead", provider-down (3 failures then `unhealthy`, restart ok), restart mid-turn re-ran the turn without duplicate actions.
+- **Live (pi)**: started 3 threads in parallel from one message, propose then "go ahead", provider-down (3 failures then `unhealthy`, restart ok), restart mid-turn re-ran the turn without duplicate actions (ACC). ACC2 re-ran provider-down on a genuinely unavailable provider (`claude` with no credentials: exit 3, unhealthy notice, no thread; after `--restart` the coordinator answers and the queued request is served once) and a coordinator-worker kill (3 runs: 2 clean, 1 with duplicate threads, `foreman-42t7a`).
 - **Known weaknesses**: status quality was poor (F7, fixed #606, not live-verified); quality measured only with MiniMax; bundled workflows need a litellm model that was unreachable, `foreman-pv11k` OPEN (P2).
 
 ### C6 Overview
@@ -103,9 +104,11 @@ Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = s
 
 ## Bugs and open items (from `br`)
 
-Filed by the live run (ACC): F1 `foreman-qxmye` CLOSED (#607, test-verified, "live-verified: resumed run completion unverified"); F2 `foreman-s19h6` CLOSED (#606, not reproduced live); F3 `foreman-qp5d3` CLOSED (#605, live pi verified git log unchanged); F4 `foreman-3r79u` CLOSED (#605, unit-tested); F5 `foreman-z4czv` CLOSED (#607, test-verified); F6 `foreman-pv11k` **OPEN P2** (bundled fix/prd/review workflows pin a litellm model); F7 `foreman-rkfxs` CLOSED (#606, keyword-triggered, live UNVERIFIED).
+Filed by the first live run (ACC): F1 `foreman-qxmye` CLOSED (#607; live-verified by ACC2 `server-crash` for the exec-port+server kill case); F2 `foreman-s19h6` CLOSED (#606, not reproduced live); F3 `foreman-qp5d3` CLOSED (#605, live pi verified git log unchanged); F4 `foreman-3r79u` CLOSED (#605; ACC2 `agent-crash` shows `{:other, :execution}: execution: pi: exit_status 137` - the class is still `:other` but the exit status is now in the reason); F5 `foreman-z4czv` CLOSED (#607, test-verified); F6 `foreman-pv11k` **OPEN P2** (bundled fix/prd/review workflows pin a litellm model; ACC2 uses its own pi workflows); F7 `foreman-rkfxs` CLOSED (#606, keyword-triggered, live UNVERIFIED).
 
-Other open: `foreman-3xrtg` P2 CodeRabbit findings on admin-merged #573/#577/#579 (E2/E7/E11: minor doc/duplication/`rescue` coverage in `Overview.Tabs`, validation fallbacks, test weakness); `foreman-i97tz` P3 spike review items; `foreman-8ta8x` P2 test-hygiene audit; `foreman-b1ypr` (E13 epic) still open although shipped (#578); the E16 stories S6/S7/S8/S9 task beads are still open.
+Other open: `foreman-3xrtg` P2 CodeRabbit findings on admin-merged #573/#577/#579 (E2/E7/E11: minor doc/duplication/`rescue` coverage in `Overview.Tabs`, validation fallbacks, test weakness); `foreman-i97tz` P3 spike review items; `foreman-8ta8x` P2 test-hygiene audit; `foreman-b1ypr` (E13 epic) still open although shipped (#578); the E16 stories S6/S7 task beads are still open.
+
+Found by the scripted acceptance (ACC2, 2026-10-22; all OPEN, none carry `foreman-exec`): `foreman-42t7a` P2 (a killed coordinator `ProjectWorker` leaves its turn task running and a second turn can duplicate actions; seen live once, 2 of 3 runs clean), `foreman-zmhzw` P3 (agent orphaned by a dying exec-port under a live server is never reaped), `foreman-uxfwb` P3 (one `undetermined` review verdict, cause not captured). F1 is now live-verified (see C5 and item 11).
 
 ## Gap beads filed by this audit (label `parity-gap`)
 
@@ -123,6 +126,9 @@ Other open: `foreman-3xrtg` P2 CodeRabbit findings on admin-merged #573/#577/#57
 | foreman-he4yf | P3 | multi-repo jobsite/self-add/fanout/env not live |
 | foreman-pz1ie | P3 | produced files, agent-written memory, per-thread usage, BeadSink-br-down not live |
 | foreman-4qtk4 | P3 | stale architecture doc line (fixed here), E13 epic bead open |
+| foreman-42t7a | P2 | coordinator worker crash leaves its turn task running; a second turn can duplicate actions (found by ACC2) |
+| foreman-zmhzw | P3 | agent orphaned when its exec-port dies while the server lives is never reaped (found by ACC2) |
+| foreman-uxfwb | P3 | review verdict `undetermined`/`evaluator_failed` seen once for a healthy pi run, cause not captured (found by ACC2) |
 
 ## What a Claude Projects user would notice is different or missing
 
@@ -136,7 +142,7 @@ Other open: `foreman-3xrtg` P2 CodeRabbit findings on admin-merged #573/#577/#57
 8. **Uploading and managing files is CLI/API only**, no drag-and-drop library UI; memory is edited via CLI/HTTP/MCP.
 9. **Several features have never been seen running:** environment/secrets/setup script/network policy, scheduled tasks, adopt/recommend, Telegram/Slack, thread-produced library files, per-thread usage, agent-written memory.
 10. **Coordinator quality is unproven beyond MiniMax**, and status accuracy was weak in the live run (fix is keyword-triggered and not live-verified). Bundled workflows still pin a litellm model that fails without that host (`foreman-pv11k`).
-11. **Recovery** after `kill -9` of the server was a failed acceptance scenario in the live run; the fix (#607) is test-verified only.
+11. **Recovery** after `kill -9` of the server is now live-verified for the #607 case (ACC2 `server-crash`: exec-port and server killed together, the orphaned `pi` was reparented to pid 1, the restarted server's `OrphanReaper` killed it and the run resumed in a fresh agent). Two caveats are open: an agent orphaned while the server stays alive is never reaped (`foreman-zmhzw`), and a coordinator worker crash can leave its turn task running (`foreman-42t7a`).
 12. **Delete is archive.** There is no hard delete; this is a deliberate decision.
 13. **Multi-repo is real but narrow in evidence**: two scratch repos, pi, fake gh; rolling back to an older binary after the first multi-repo run is not safe.
-14. **Acceptance was never declared fully passed**, and the full test suite was not run as part of it.
+14. **Acceptance is now scripted and green for pi, but still narrow**: `scripts/e2e/claude_projects_flow.sh` (48 PASS, 0 FAIL, 1 UNVERIFIED) and `scripts/e2e/failure_injection.sh` (26 PASS, 0 FAIL) ran against a real throwaway server on 2026-10-22 (`docs/acceptance/claude-projects-acceptance-2026-10-22.md`). They cover the pi path only: no GitHub, no Claude provider, no tool approvals. Three new defect beads came out of them (`foreman-42t7a`, `foreman-zmhzw`, `foreman-uxfwb`, all open, none P0/P1). The full unit suite is not part of those scripts.
