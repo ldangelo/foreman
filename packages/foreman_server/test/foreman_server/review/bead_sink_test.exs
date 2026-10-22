@@ -16,6 +16,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
   alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.SystemBrRunner
+  alias ForemanServer.TestSupport.BrFixtures
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @moduletag :tmp_dir
@@ -23,6 +24,9 @@ defmodule ForemanServer.Review.BeadSinkTest do
   @db "/abs/review/beads.db"
   @project "proj-review"
   @archive "/archive/run/run-1"
+  # `br create --json` stdout is verbatim from real br: every gap bead the stub files
+  # comes back with this fixture's id.
+  @created_id BrFixtures.issue!("create_labels.json")["id"]
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:mox)
@@ -89,8 +93,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
       gaps = [gap(:major, "Missing route"), gap(:minor, "Docs stale")]
       v = verdict(gaps: gaps)
 
-      assert {:ok,
-              %Result{gap_bead_ids: ["bead-for-Missing route", "bead-for-Docs stale"], note: nil}} =
+      assert {:ok, %Result{gap_bead_ids: [@created_id, @created_id], note: nil}} =
                BeadSink.publish(subject(), v)
 
       expected_body = Verdict.to_markdown(v) <> "\n\nFull analysis: #{@archive}/analysis.md"
@@ -152,7 +155,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
     test "a source bead labelled foreman-gap by hand (no prior review) yields zero gap beads but one comment" do
       register_project!()
-      install_stub(source_labels: ["foreman-exec", "foreman-gap"])
+      install_stub(source_gap_labelled: true)
 
       assert {:ok, %Result{gap_bead_ids: [], note: note}} =
                BeadSink.publish(subject(), verdict(gaps: [gap(:major, "A"), gap(:minor, "B")]))
@@ -178,7 +181,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
     test "the label is not read when there is nothing to file" do
       register_project!()
-      install_stub(source_labels: ["foreman-gap"])
+      install_stub(source_gap_labelled: true)
 
       assert {:ok, %Result{gap_bead_ids: [], note: nil}} =
                BeadSink.publish(subject(), verdict(gaps: []))
@@ -192,7 +195,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
       install_stub([])
       record_review_filing_gap_bead!("some-other-bead")
 
-      assert {:ok, %Result{gap_bead_ids: ["bead-for-A"], note: nil}} =
+      assert {:ok, %Result{gap_bead_ids: [@created_id], note: nil}} =
                BeadSink.publish(subject(), verdict(gaps: [gap(:major, "A")]))
 
       assert_received {:br, :comment, %{id: "bead-src"}}
@@ -243,7 +246,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
       gaps = for n <- 1..3, do: gap(:major, "G#{n}")
 
-      assert {:ok, %Result{gap_bead_ids: ["bead-for-G1", "bead-for-G2"], note: note}} =
+      assert {:ok, %Result{gap_bead_ids: [@created_id, @created_id], note: note}} =
                BeadSink.publish(subject(), verdict(gaps: gaps))
 
       assert note =~ "1 gap(s) beyond max_gap_beads=2 not filed"
@@ -256,7 +259,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
       gaps = for n <- 1..3, do: gap(:major, "G#{n}")
 
-      assert {:ok, %Result{gap_bead_ids: ["bead-for-G1", "bead-for-G3"], note: note}} =
+      assert {:ok, %Result{gap_bead_ids: [@created_id, @created_id], note: note}} =
                BeadSink.publish(subject(), verdict(gaps: gaps))
 
       assert note =~ "gap bead creation failed"
@@ -410,11 +413,14 @@ defmodule ForemanServer.Review.BeadSinkTest do
     test = self()
     fail_titles = Keyword.get(opts, :fail_titles, [])
 
-    source_labels = Keyword.get(opts, :source_labels, [])
+    source_fixture =
+      if Keyword.get(opts, :source_gap_labelled, false),
+        do: "show_labels_with_dependency.json",
+        else: "show_plain.json"
 
     stub(BrRunnerMock, :cmd, fn
       {:schema, %{schema: name}}, _cfg, _opts ->
-        {:ok, %{stdout: Jason.encode!(schema_document(name))}}
+        {:ok, %{stdout: BrFixtures.read!("schema_" <> String.replace(name, "-", "_") <> ".json")}}
 
       {:show, %{id: id}}, _cfg, _opts ->
         send(test, {:br, :show, id})
@@ -424,8 +430,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
             {:error, %{stdout: "", stderr: "db locked", exit_code: 1}}
 
           nil ->
-            body = issue_payload(%{"id" => id, "labels" => source_labels})
-            {:ok, %{stdout: Jason.encode!(body), stderr: "", exit_code: 0}}
+            {:ok, %{stdout: BrFixtures.read!(source_fixture), stderr: "", exit_code: 0}}
         end
 
       {:comments_add, payload}, _cfg, _opts ->
@@ -433,7 +438,7 @@ defmodule ForemanServer.Review.BeadSinkTest do
 
         case Keyword.get(opts, :comment) do
           :error -> {:error, %{stdout: "", stderr: "db locked", exit_code: 1}}
-          nil -> {:ok, %{stdout: "", stderr: "", exit_code: 0}}
+          nil -> {:ok, %{stdout: BrFixtures.read!("comments_add.json"), stderr: "", exit_code: 0}}
         end
 
       {:create, payload}, _cfg, _opts ->
@@ -442,39 +447,11 @@ defmodule ForemanServer.Review.BeadSinkTest do
         if payload.title in fail_titles do
           {:error, %{stdout: "", stderr: "create refused", exit_code: 1}}
         else
-          body =
-            issue_payload(%{
-              "id" => "bead-for-" <> payload.title,
-              "title" => payload.title,
-              "priority" => payload.priority,
-              "labels" => payload.labels
-            })
-
-          {:ok, %{stdout: Jason.encode!(body), stderr: "", exit_code: 0}}
+          {:ok, %{stdout: BrFixtures.read!("create_labels.json"), stderr: "", exit_code: 0}}
         end
     end)
 
     start_supervised!(JsonSchemaCache)
-  end
-
-  defp issue_payload(overrides) do
-    Map.merge(
-      %{
-        "id" => "bead-default",
-        "title" => "Default issue",
-        "status" => "open",
-        "priority" => 2,
-        "dependencies" => [],
-        "dependents" => [],
-        "assignee" => nil,
-        "description" => nil,
-        "notes" => nil,
-        "design" => nil,
-        "labels" => [],
-        "metadata" => %{}
-      },
-      overrides
-    )
   end
 
   defp argv_for(tmp_dir, request) do
@@ -518,71 +495,5 @@ defmodule ForemanServer.Review.BeadSinkTest do
       nil -> :ok
       pid -> GenServer.stop(pid)
     end
-  end
-
-  defp schema_document("ready-issue") do
-    %{
-      "type" => "object",
-      "required" =>
-        ~w(id title status priority dependencies assignee description notes design labels metadata),
-      "properties" => %{
-        "id" => %{"type" => "string"},
-        "title" => %{"type" => "string"},
-        "status" => %{"type" => "string"},
-        "priority" => %{"type" => "integer"},
-        "dependencies" => %{"type" => "array"},
-        "assignee" => %{"type" => ["string", "null"]},
-        "description" => %{"type" => ["string", "null"]},
-        "notes" => %{"type" => ["string", "null"]},
-        "design" => %{"type" => ["string", "null"]},
-        "labels" => %{"type" => "array"},
-        "metadata" => %{"type" => "object"}
-      }
-    }
-  end
-
-  defp schema_document("issue-details") do
-    required =
-      ~w(id title status priority dependencies dependents assignee description notes design labels metadata)
-
-    properties = %{
-      "id" => %{"type" => "string"},
-      "title" => %{"type" => "string"},
-      "status" => %{"type" => "string"},
-      "priority" => %{"type" => "integer"},
-      "dependencies" => %{"type" => "array", "items" => %{"$ref" => "#/$defs/issue"}},
-      "dependents" => %{"type" => "array", "items" => %{"$ref" => "#/$defs/issue"}},
-      "assignee" => %{"type" => ["string", "null"]},
-      "description" => %{"type" => ["string", "null"]},
-      "notes" => %{"type" => ["string", "null"]},
-      "design" => %{"type" => ["string", "null"]},
-      "labels" => %{"type" => "array"},
-      "metadata" => %{"type" => "object"}
-    }
-
-    %{
-      "$defs" => %{
-        "issue" => %{"type" => "object", "required" => required, "properties" => properties}
-      },
-      "type" => "object",
-      "required" => required,
-      "properties" => properties
-    }
-  end
-
-  defp schema_document("error") do
-    %{
-      "type" => "object",
-      "required" => ["code", "message"],
-      "properties" => %{"code" => %{"type" => "string"}, "message" => %{"type" => "string"}}
-    }
-  end
-
-  defp schema_document("commands") do
-    %{
-      "type" => "object",
-      "metadata" => %{"contractVersion" => "br.capabilities.v1"},
-      "properties" => %{"commands" => %{"type" => "array"}}
-    }
   end
 end
