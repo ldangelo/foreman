@@ -198,21 +198,37 @@ defmodule ForemanServer.Review.Archive do
   @spec capture_enabled?() :: boolean()
   def capture_enabled?, do: config(:capture, false) == true
 
-  @doc "Append a `{stage, code, message}` entry to the manifest's `capture_errors` (best effort)."
-  @spec record_capture_error(String.t(), String.t(), Error.t()) :: :ok
+  @doc """
+  Append a `{stage, code, message}` entry to the manifest's `capture_errors`.
+
+  A failed capture must never look like a clean archive, so when the manifest is
+  absent or unreadable (capture opened late, or the open itself failed) a minimal
+  manifest is created: schema defaults, `kind`/`subject_id` inferred from the
+  `<kind>/<subject_id>` directory layout, and this entry. Returns `:ok` only when
+  the entry is durable on disk; otherwise a typed error (the reason is also logged).
+  """
+  @spec record_capture_error(String.t(), String.t(), Error.t()) :: :ok | {:error, Error.t()}
   def record_capture_error(dir, stage, %Error{} = error) do
-    with {:ok, manifest} <- read_manifest(dir) do
-      entry = %{
-        "stage" => stage,
-        "code" => Atom.to_string(error.code),
-        "message" => error.message
-      }
+    entry = %{
+      "stage" => stage,
+      "code" => Atom.to_string(error.code),
+      "message" => error.message
+    }
 
-      updated = Map.update(manifest, "capture_errors", [entry], &(List.wrap(&1) ++ [entry]))
-      _ = atomic_write_json(Path.join(dir, @manifest_file), updated)
+    case read_manifest(dir) do
+      {:ok, manifest} ->
+        put_manifest(
+          dir,
+          Map.update(manifest, "capture_errors", [entry], &(List.wrap(&1) ++ [entry]))
+        )
+
+      {:error, _unreadable} ->
+        init(dir, %{
+          "kind" => Path.basename(Path.dirname(dir)),
+          "subject_id" => Path.basename(dir),
+          "capture_errors" => [entry]
+        })
     end
-
-    :ok
   end
 
   # ---------------------------------------------------------------------
