@@ -1475,6 +1475,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
           {:ok, %{} = payload} ->
             parse_get_issue_payload(payload, argv)
 
+          # br 0.6.0 `show --json` wraps the single requested issue in a one-element array.
+          {:ok, [%{} = payload]} ->
+            parse_get_issue_payload(payload, argv)
+
           {:ok, _other} ->
             {:error,
              build_get_contract_error(
@@ -1502,10 +1506,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          {:ok, title} <- fetch_required_string(payload, :title),
          {:ok, status} <- fetch_required_string(payload, :status),
          {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
+         # br 0.6.0 `show --json` omits `dependencies`/`dependents` for an issue with none.
          {:ok, dependencies} <-
-           parse_get_dependencies(fetch_payload_value(payload, :dependencies), argv),
+           parse_get_dependencies(fetch_payload_value(payload, :dependencies) || [], argv),
          {:ok, dependents} <-
-           parse_get_issue_array(fetch_payload_value(payload, :dependents), :dependents, argv),
+           parse_get_issue_array(
+             fetch_payload_value(payload, :dependents) || [],
+             :dependents,
+             argv
+           ),
          {:ok, assignee} <-
            parse_optional_string(fetch_payload_value(payload, :assignee), :assignee),
          {:ok, description} <-

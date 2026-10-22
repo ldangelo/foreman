@@ -124,6 +124,63 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
              )
   end
 
+  test "reads br 0.6.0 show output: one-element array, no dependencies/dependents keys, labels kept",
+       %{} do
+    # `br 0.6.0 schema issue-details` requires only these eight fields.
+    expect(BrRunnerMock, :cmd, 4, fn {:schema, %{schema: name}}, %{}, [] ->
+      doc =
+        if name == "issue-details" do
+          %{
+            "type" => "object",
+            "required" => ~w(id title status priority issue_type created_at updated_at),
+            "properties" => %{
+              "id" => %{"type" => "string"},
+              "title" => %{"type" => "string"},
+              "status" => %{"type" => "string"},
+              "priority" => %{"type" => "integer"}
+            }
+          }
+        else
+          schema_document(name)
+        end
+
+      {:ok, %{stdout: Jason.encode!(doc)}}
+    end)
+
+    start_supervised!(JsonSchemaCache)
+
+    cached_database_path = "/abs/get/br06.db"
+    project_config = register_project!("proj-get-br06", cached_database_path)
+
+    # Shape captured from `br 0.6.0 show <id> --json` against a real beads db.
+    stdout =
+      Jason.encode!([
+        %{
+          "id" => "gap-z3e",
+          "title" => "Add rate limiting",
+          "description" => "d",
+          "status" => "open",
+          "priority" => 2,
+          "issue_type" => "task",
+          "assignee" => "ldangelo",
+          "labels" => ["foreman-exec", "foreman-gap"],
+          "created_at" => "2026-10-22T02:43:49Z",
+          "updated_at" => "2026-10-22T02:43:49Z",
+          "comments" => []
+        }
+      ])
+
+    expect(BrRunnerMock, :cmd, 1, fn _request, _config, _opts ->
+      {:ok, %{stdout: stdout, stderr: "", exit_code: 0}}
+    end)
+
+    assert {:ok, %Issue{id: "gap-z3e", labels: ["foreman-exec", "foreman-gap"]} = issue} =
+             BeadsAdapter.get("gap-z3e", project_config)
+
+    assert issue.dependencies == []
+    assert issue.dependents == []
+  end
+
   test "dependencies are nested Issue objects in get path", %{temp_dir: temp_dir} do
     start_schema_cache!()
 
