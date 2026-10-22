@@ -210,6 +210,19 @@ Every fix or feature must consider documentation before finalization. Update `CL
 
 ---
 
+## 9. UI Accessibility Checklist
+
+Applies to every LiveView page under `/dashboard/projects/*` (see `docs/spikes/E16-SP1.md`):
+
+- One `main` landmark, a skip link, a `nav` with an accessible name.
+- Every control labelled; errors in `role="alert"`, save/status text in an `aria-live` region.
+- Visible `:focus-visible` ring; tab order follows reading order; honour `prefers-reduced-motion`.
+- No periodic refresh: updates come from the coalesced `ProjectionStore` subscription; an idle page sends zero LiveView frames.
+- Secrets are never rendered.
+- Verify with `scripts/e2e/ui-a11y/ui_a11y.mjs` (zero serious/critical axe violations). Never disable an axe rule to get green; defer a violation only by filing a bead and naming it in the script.
+
+---
+
 ## Changelog
 
 | Date       | Change                          | Author      |

@@ -559,6 +559,15 @@ It adds no mutation path: actions go through `ForemanServerWeb.Workspace.Actions
 come from one coalesced `ProjectionStore` subscription (`Workspace.Refresh`),
 never a polling timer. It has no merge/approve-PR control.
 
+Workspace and settings accessibility baseline (E16): `<main id="main">` plus a
+skip link, labelled controls, visible `:focus-visible` rings, `aria-live`
+status regions (`#notice`, the instructions counter) and `role="alert"` field
+errors. Secrets are never rendered, only reference names. The baseline is
+enforced by `scripts/e2e/ui-a11y/ui_a11y.mjs` (axe-core: zero serious/critical;
+keyboard focus order; zero idle LiveView frames), a LOCAL acceptance command, not
+a CI job; see `docs/spikes/E16-SP1.md`. A new workspace/settings control must
+keep that script green.
+
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
 Atomic `task.create` and bidirectional Beads sync are governed by

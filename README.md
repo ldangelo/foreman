@@ -51,6 +51,8 @@ foreman run merge --id <run-id>
 
 The Overview has no CLI verb: open `/dashboard/projects/demo?token=<FOREMAN_API_TOKEN>` or read `GET /api/projects/demo/overview`. Full walk-through: the "Projects workflow" chapter of [`docs/user-guide.md`](./docs/user-guide.md); where each capability lives: [`docs/lessons/claude-projects-architecture.md`](./docs/lessons/claude-projects-architecture.md).
 
+Accessibility of the workspace and settings pages is checked by a local browser script (axe-core, keyboard order, idle WebSocket frames): `scripts/e2e/ui-a11y/`, see [`docs/spikes/E16-SP1.md`](./docs/spikes/E16-SP1.md).
+
 ## Threads
 
 A thread is the operator-facing unit of work (a workflow run, `run:<id>`, or a jobsite, `jobsite:<id>`) with its own branch/PR. Surfaces:

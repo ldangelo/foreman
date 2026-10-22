@@ -1881,6 +1881,8 @@ Every project has one durable **coordinator conversation**: paste a bug, a stack
 
 **Updates, not polling.** A connected page subscribes once to `ProjectionStore` and coalesces bursts: the first relevant event arms one timer (`config :foreman_server, :workspace, coalesce_ms:`, default 250) and everything that arrives inside the window is folded into a single refresh; an idle project does no work and worker-output events never refresh the page. All thread titles, reports, conversation text and memory content are escaped; only `http(s)` PR URLs become links.
 
+**Accessibility baseline.** Both pages have a `main` landmark with a skip link, labelled form controls, a visible keyboard focus ring, `aria-live` regions for save results and the instructions counter, and `role="alert"` field errors; secrets are shown as reference names only. A browser check (axe-core, tab order, idle WebSocket traffic) lives in `scripts/e2e/ui-a11y/`: seed a project with at least one thread, then `cd scripts/e2e/ui-a11y && npm install && npx playwright install chromium && node ui_a11y.mjs --base http://localhost:<port> --token <FOREMAN_API_TOKEN> --project <id> --report ../../../docs/lessons/ui-a11y-report-<date>.md`. Use `localhost`, not `127.0.0.1`: the dev endpoint's origin check rejects the LiveView WebSocket for the latter. The check exits non-zero on any serious/critical axe violation, wrong focus order, or more than `--max-idle-frames` (default 2) non-heartbeat frames in `--idle-seconds` (default 10). Details and the latest result: `docs/spikes/E16-SP1.md`, `docs/lessons/ui-a11y-report-2026-10-22.md`.
+
 ## Day-to-day workflow
 
 ### 1. Start or check the server
