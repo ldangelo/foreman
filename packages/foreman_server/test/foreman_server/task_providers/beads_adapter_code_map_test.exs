@@ -10,9 +10,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                  __DIR__
                )
 
-  test "26-row mapping is deterministic per Foreman.code" do
+  test "28-row mapping is deterministic per Foreman.code" do
     rows = mapping_rows()
-    assert length(rows) == 26
+    assert length(rows) == 28
 
     Enum.each(rows, fn %{br_code: br_code, foreman_code: foreman_code, retryable?: retryable?} ->
       input =

@@ -2575,7 +2575,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                Keyword.put_new(opts, :timeout_ms, 30_000)
              ) do
           {:ok, %{stdout: stdout}} ->
-            parse_updated_issue_response(stdout, dependency_id)
+            parse_dependency_ack(stdout, dependent_id, dependency_id)
 
           {:error, %{stdout: stdout, stderr: stderr} = result} ->
             {:error, build_add_dependency_error(stdout, stderr, result)}
@@ -2583,148 +2583,44 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp parse_updated_issue_response(stdout, dependency_id) when is_binary(stdout) do
-    case String.trim(stdout) do
-      "" ->
+  # Real `br dep add --json` (test/fixtures/br/dep_add.json, dep_add_exists.json)
+  # prints a bare ack, not an issue document:
+  #   {"status":"ok","issue_id":…,"depends_on_id":…,"type":"blocks","action":"added"}
+  # and, for a repeated edge, exit 0 with
+  #   {"status":"exists",…,"action":"already_exists"}.
+  # Both mean "the edge is present", so both return :ok (the callback contract).
+  # Any other status/action pair or an ack naming different ids is a contract
+  # mismatch, never a silent success.
+  defp parse_dependency_ack(stdout, dependent_id, dependency_id) when is_binary(stdout) do
+    case Jason.decode(String.trim(stdout)) do
+      {:ok, %{} = ack} ->
+        validate_dependency_ack(ack, dependent_id, dependency_id)
+
+      {:ok, _other} ->
+        {:error,
+         build_add_dependency_contract_error("Beads dependency ack must decode to a JSON object.")}
+
+      {:error, _reason} ->
         {:error, build_add_dependency_parse_error()}
-
-      json ->
-        case Jason.decode(json) do
-          {:ok, %{} = payload} ->
-            parse_updated_issue_payload(payload, dependency_id)
-
-          {:ok, [%{} = payload]} ->
-            parse_updated_issue_payload(payload, dependency_id)
-
-          {:ok, _other} ->
-            {:error,
-             build_add_dependency_contract_error(
-               "Beads updated issue payload must decode to a JSON object."
-             )}
-
-          {:error, _reason} ->
-            {:error, build_add_dependency_parse_error()}
-        end
     end
   end
 
-  defp parse_updated_issue_response(_stdout, _dependency_id) do
-    {:error, build_add_dependency_parse_error()}
-  end
+  defp parse_dependency_ack(_stdout, _dependent_id, _dependency_id),
+    do: {:error, build_add_dependency_parse_error()}
 
-  defp parse_updated_issue_payload(payload, dependency_id) when is_map(payload) do
-    with :ok <- JsonSchemaCache.validate(:updated_issue, payload),
-         {:ok, id} <- fetch_add_dependency_required_string(payload, :id),
-         {:ok, title} <- fetch_add_dependency_required_string(payload, :title),
-         {:ok, status} <- fetch_add_dependency_required_string(payload, :status),
-         {:ok, priority} <-
-           parse_add_dependency_priority(fetch_payload_value(payload, :priority)),
-         {:ok, dependencies} <-
-           parse_add_dependency_string_list(
-             fetch_payload_value(payload, :dependencies),
-             :dependencies
-           ),
-         {:ok, assignee} <-
-           fetch_add_dependency_optional_string(payload, :assignee, nil),
-         {:ok, description} <-
-           fetch_add_dependency_optional_string(payload, :description, nil),
-         {:ok, notes} <- fetch_add_dependency_optional_string(payload, :notes, nil),
-         {:ok, design} <- fetch_add_dependency_optional_string(payload, :design, nil),
-         {:ok, labels} <-
-           parse_add_dependency_string_list(fetch_payload_value(payload, :labels), :labels),
-         {:ok, metadata} <-
-           parse_add_dependency_metadata(fetch_payload_value(payload, :metadata)) do
-      {:ok,
-       %Issue{
-         id: id,
-         title: title,
-         status: status,
-         priority: priority,
-         dependencies: [dependency_id | Enum.reject(dependencies, &(&1 == dependency_id))],
-         dependents: [],
-         assignee: assignee,
-         description: description,
-         notes: notes,
-         design: design,
-         labels: labels,
-         metadata: metadata
-       }}
-    else
-      {:error, errors} when is_list(errors) ->
-        {:error, build_add_dependency_validation_error(errors)}
-
-      {:error, provider_error} ->
-        {:error, provider_error}
-    end
-  end
-
-  defp fetch_add_dependency_required_string(payload, key) do
-    case fetch_payload_value(payload, key) do
-      value when is_binary(value) ->
-        {:ok, value}
+  defp validate_dependency_ack(ack, dependent_id, dependency_id) do
+    case {ack["status"], ack["action"], ack["issue_id"], ack["depends_on_id"], ack["type"]} do
+      {status, action, ^dependent_id, ^dependency_id, type}
+      when {status, action} in [{"ok", "added"}, {"exists", "already_exists"}] and
+             is_binary(type) ->
+        :ok
 
       _other ->
         {:error,
          build_add_dependency_contract_error(
-           "Beads updated issue field #{inspect(key)} must be a string."
+           "Beads dependency ack must report status/action ok/added or exists/already_exists for the requested issue_id and depends_on_id, with a string type."
          )}
     end
-  end
-
-  defp fetch_add_dependency_optional_string(payload, key, default) do
-    case fetch_payload_value(payload, key) do
-      nil ->
-        {:ok, default}
-
-      value when is_binary(value) ->
-        {:ok, value}
-
-      _other ->
-        {:error,
-         build_add_dependency_contract_error(
-           "Beads updated issue field #{inspect(key)} must be a string or null."
-         )}
-    end
-  end
-
-  defp parse_add_dependency_priority(nil), do: {:ok, 0}
-
-  defp parse_add_dependency_priority(value) when is_integer(value) and value >= 0,
-    do: {:ok, value}
-
-  defp parse_add_dependency_priority(_value) do
-    {:error,
-     build_add_dependency_contract_error(
-       "Beads updated issue field :priority must be a non-negative integer."
-     )}
-  end
-
-  defp parse_add_dependency_string_list(nil, _field), do: {:ok, []}
-
-  defp parse_add_dependency_string_list(values, field) when is_list(values) do
-    if Enum.all?(values, &is_binary/1) do
-      {:ok, values}
-    else
-      {:error,
-       build_add_dependency_contract_error(
-         "Beads updated issue field #{inspect(field)} must be a list of strings."
-       )}
-    end
-  end
-
-  defp parse_add_dependency_string_list(_values, field) do
-    {:error,
-     build_add_dependency_contract_error(
-       "Beads updated issue field #{inspect(field)} must be a list of strings."
-     )}
-  end
-
-  defp parse_add_dependency_metadata(nil), do: {:ok, %{}}
-  defp parse_add_dependency_metadata(%{} = metadata), do: {:ok, metadata}
-
-  defp parse_add_dependency_metadata(_metadata) do
-    {:error,
-     build_add_dependency_contract_error("Beads updated issue field :metadata must be an object.")}
   end
 
   defp build_add_dependency_error(stdout, stderr, result) do
@@ -2750,20 +2646,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         )
     end
     |> maybe_put_exit_code(result)
-  end
-
-  defp build_add_dependency_validation_error(errors) do
-    CodeMap.build_provider_error(
-      ProviderErrorInput.from_local(
-        "VALIDATION_FAILED",
-        "Beads updated issue payload failed schema validation.",
-        "Refresh the cached schema or re-fetch the Beads payload.",
-        false,
-        missing_fields_from(errors)
-      ),
-      "br dep add",
-      0
-    )
   end
 
   defp build_add_dependency_contract_error(message) do

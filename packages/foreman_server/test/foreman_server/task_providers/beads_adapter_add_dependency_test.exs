@@ -3,13 +3,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
 
   import Mox
 
-  alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.TaskProviders.BeadsAdapter
   alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.TaskProviders.SystemBrRunner
+  alias ForemanServer.TestSupport.BrFixtures
 
   @cache_name :foreman_server_json_schema_cache
 
@@ -58,103 +58,23 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
     {:ok, temp_dir: temp_dir}
   end
 
-  test "happy path returns updated Issue with prepended dependency", %{temp_dir: temp_dir} do
-    start_schema_cache!()
-
-    cached_database_path = "/abs/add-dep/happy.db"
-    project_config = register_project!("proj-add-dep-happy", cached_database_path)
-
-    payload = %{
-      "id" => "bead-701",
-      "title" => "Wire dependency edge",
-      "status" => "blocked",
-      "priority" => 2,
-      "dependencies" => ["opaque:dep-1", "opaque:dep-2"],
-      "assignee" => "operator",
-      "description" => "Preserve all issue fields",
-      "notes" => "dependency mutation should be additive",
-      "design" => "adapter returns updated issue",
-      "labels" => ["backend", "deps"],
-      "metadata" => %{"provider_id" => "beads", "source" => "br dep add"}
-    }
-
-    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
-      assert request ==
-               {:add_dependency, %{dependent_id: "bead-701", dependency_id: "opaque:dep-9"}}
-
-      assert runner_project_config == %{database_path: cached_database_path}
-      assert opts == [timeout_ms: 30_000]
-
-      assert_translated_argv(
-        temp_dir,
-        request,
-        runner_project_config,
-        ["dep", "add", "bead-701", "opaque:dep-9", "--json", "--db", cached_database_path]
-      )
-
-      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
-    end)
-
-    assert {:ok, %Issue{} = issue} =
-             BeadsAdapter.add_dependency("bead-701", "opaque:dep-9", project_config)
-
-    assert issue == %Issue{
-             id: "bead-701",
-             title: "Wire dependency edge",
-             status: "blocked",
-             priority: 2,
-             dependencies: ["opaque:dep-9", "opaque:dep-1", "opaque:dep-2"],
-             dependents: [],
-             assignee: "operator",
-             description: "Preserve all issue fields",
-             notes: "dependency mutation should be additive",
-             design: "adapter returns updated issue",
-             labels: ["backend", "deps"],
-             metadata: %{"provider_id" => "beads", "source" => "br dep add"}
-           }
-  end
-
-  test "exact br dep add argv shape is preserved and success prepends the new dependency", %{
+  test "verbatim real `br dep add --json` ack returns :ok with the exact argv", %{
     temp_dir: temp_dir
   } do
     start_schema_cache!()
 
-    cached_database_path = "/abs/add-dep/argv.db"
-    project_config = register_project!("proj-add-dep-argv", cached_database_path)
+    cached_database_path = "/abs/add-dep/happy.db"
+    project_config = register_project!("proj-add-dep-happy", cached_database_path)
+    ack = BrFixtures.decode!("dep_add.json")
 
-    payload = %{
-      "id" => "bead-707",
-      "title" => "Preserve argv order",
-      "status" => "blocked",
-      "priority" => 3,
-      "dependencies" => ["opaque:dep-4", "opaque:dep-2"],
-      "assignee" => nil,
-      "description" => nil,
-      "notes" => nil,
-      "design" => nil,
-      "labels" => [],
-      "metadata" => %{}
-    }
+    assert %{"status" => "ok", "action" => "added"} = ack
+    refute Map.has_key?(ack, "id")
+    refute Map.has_key?(ack, "title")
 
-    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
-      assert request ==
-               {:add_dependency, %{dependent_id: "bead-707", dependency_id: "opaque:dep-4"}}
+    expect_dep_add(temp_dir, ack, cached_database_path, BrFixtures.read!("dep_add.json"))
 
-      assert runner_project_config == %{database_path: cached_database_path}
-      assert opts == [timeout_ms: 30_000]
-
-      assert_translated_argv(
-        temp_dir,
-        request,
-        runner_project_config,
-        ["dep", "add", "bead-707", "opaque:dep-4", "--json", "--db", cached_database_path]
-      )
-
-      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
-    end)
-
-    assert {:ok, %Issue{dependencies: ["opaque:dep-4", "opaque:dep-2"], dependents: []}} =
-             BeadsAdapter.add_dependency("bead-707", "opaque:dep-4", project_config)
+    assert :ok =
+             BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], project_config)
   end
 
   test "br error envelope returns mapped ProviderError", %{temp_dir: temp_dir} do
@@ -198,53 +118,65 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
     assert provider_error.context.stderr_byte_count == byte_size(stderr)
   end
 
-  test "validation failure returns VALIDATION_FAILED", %{temp_dir: temp_dir} do
+  test "an ack for different ids than requested is a BR_CONTRACT_MISMATCH" do
     start_schema_cache!()
 
-    cached_database_path = "/abs/add-dep/validation.db"
-    project_config = register_project!("proj-add-dep-validation", cached_database_path)
+    database_path = "/abs/add-dep/mismatch.db"
+    project_config = register_project!("proj-add-dep-mismatch", database_path)
+    ack = BrFixtures.decode!("dep_add.json")
+    # Ask for the dep_add.json ids but have br answer with the exists fixture,
+    # whose ids come from a different capture: a well-formed ack for other ids.
+    stub_ack = BrFixtures.read!("dep_add_exists.json")
+    refute BrFixtures.decode!("dep_add_exists.json")["issue_id"] == ack["issue_id"]
 
-    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
-      assert request ==
-               {:add_dependency, %{dependent_id: "bead-703", dependency_id: "opaque:dep-3"}}
-
-      assert runner_project_config == %{database_path: cached_database_path}
-      assert opts == [timeout_ms: 30_000]
-
-      assert_translated_argv(
-        temp_dir,
-        request,
-        runner_project_config,
-        ["dep", "add", "bead-703", "opaque:dep-3", "--json", "--db", cached_database_path]
-      )
-
-      {:ok,
-       %{
-         stdout:
-           Jason.encode!(%{
-             "id" => "bead-703",
-             "status" => "blocked",
-             "priority" => 1,
-             "dependencies" => ["opaque:dep-3"],
-             "assignee" => nil,
-             "description" => nil,
-             "notes" => nil,
-             "design" => nil,
-             "labels" => [],
-             "metadata" => %{}
-           }),
-         stderr: "",
-         exit_code: 0
-       }}
+    expect(BrRunnerMock, :cmd, 1, fn _request, _config, _opts ->
+      {:ok, %{stdout: stub_ack, stderr: "", exit_code: 0}}
     end)
 
-    assert {:error, %ProviderError{} = provider_error} =
-             BeadsAdapter.add_dependency("bead-703", "opaque:dep-3", project_config)
+    assert {:error, %ProviderError{code: "BR_CONTRACT_MISMATCH"}} =
+             BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], project_config)
+  end
 
-    assert provider_error.code == "VALIDATION_FAILED"
-    assert provider_error.retryable? == false
-    assert provider_error.context.command == "br dep add"
-    assert provider_error.context.missing_fields == ["title"]
+  test "a repeated edge (exit 0, status exists/already_exists) is idempotent :ok", %{
+    temp_dir: temp_dir
+  } do
+    start_schema_cache!()
+
+    database_path = "/abs/add-dep/exists.db"
+    project_config = register_project!("proj-add-dep-exists", database_path)
+    ack = BrFixtures.decode!("dep_add_exists.json")
+    assert %{"status" => "exists", "action" => "already_exists"} = ack
+    expect_dep_add(temp_dir, ack, database_path, BrFixtures.read!("dep_add_exists.json"))
+
+    assert :ok =
+             BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], project_config)
+  end
+
+  test "an issue-shaped or unrecognised ack is rejected, not treated as success", %{
+    temp_dir: temp_dir
+  } do
+    start_schema_cache!()
+
+    database_path = "/abs/add-dep/unknown.db"
+    project_config = register_project!("proj-add-dep-unknown", database_path)
+    ack = BrFixtures.decode!("dep_add.json")
+
+    for stdout <- [
+          Jason.encode!(%{ack | "action" => "removed"}),
+          Jason.encode!(%{ack | "status" => "exists"}),
+          Jason.encode!(%{"id" => ack["issue_id"], "title" => "t", "status" => "open"}),
+          "[]"
+        ] do
+      expect_dep_add(temp_dir, ack, database_path, stdout)
+
+      assert {:error, %ProviderError{code: "BR_CONTRACT_MISMATCH"}} =
+               BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], project_config)
+    end
+
+    expect_dep_add(temp_dir, ack, database_path, "not json")
+
+    assert {:error, %ProviderError{code: "BR_PARSE_ERROR"}} =
+             BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], project_config)
   end
 
   test "self dependency returns DEPENDENCY_CYCLE without invoking br" do
@@ -308,46 +240,31 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
 
     cached_database_path = "/abs/cached/../add-dep/path.db"
     project_config = register_project!("proj-add-dep-cached-path", cached_database_path)
+    ack = BrFixtures.decode!("dep_add.json")
+    expect_dep_add(temp_dir, ack, cached_database_path, BrFixtures.read!("dep_add.json"))
 
-    payload = %{
-      "id" => "bead-706",
-      "title" => "Keep cached path",
-      "status" => "blocked",
-      "priority" => 0,
-      "dependencies" => [],
-      "assignee" => nil,
-      "description" => nil,
-      "notes" => nil,
-      "design" => nil,
-      "labels" => [],
-      "metadata" => %{}
-    }
+    assert :ok =
+             BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], project_config)
+  end
+
+  defp expect_dep_add(temp_dir, ack, database_path, stdout) do
+    dependent = ack["issue_id"]
+    dependency = ack["depends_on_id"]
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
-      assert request ==
-               {:add_dependency, %{dependent_id: "bead-706", dependency_id: "opaque:dep-8"}}
-
-      assert runner_project_config == %{database_path: cached_database_path}
+      assert request == {:add_dependency, %{dependent_id: dependent, dependency_id: dependency}}
+      assert runner_project_config == %{database_path: database_path}
       assert opts == [timeout_ms: 30_000]
 
       assert_translated_argv(
         temp_dir,
         request,
         runner_project_config,
-        ["dep", "add", "bead-706", "opaque:dep-8", "--json", "--db", cached_database_path]
+        ["dep", "add", dependent, dependency, "--json", "--db", database_path]
       )
 
-      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+      {:ok, %{stdout: stdout, stderr: "", exit_code: 0}}
     end)
-
-    assert {:ok,
-            %Issue{
-              id: "bead-706",
-              dependencies: ["opaque:dep-8"],
-              status: "blocked",
-              dependents: []
-            }} =
-             BeadsAdapter.add_dependency("bead-706", "opaque:dep-8", project_config)
   end
 
   defp register_project!(project_id, database_path) do

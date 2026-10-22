@@ -26,6 +26,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     "ALREADY_CLOSED" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "ALREADY_OPEN" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "DEPENDENCY_CYCLE" => %{foreman_code: "DEPENDENCY_CYCLE", retryable?: false},
+    # Real `br dep add` codes (test/fixtures/br/dep_add_cycle_error.json); br itself
+    # never emits DEPENDENCY_CYCLE, and reports a repeated edge as exit 0 (see add_dependency/3).
+    "CYCLE_DETECTED" => %{foreman_code: "DEPENDENCY_CYCLE", retryable?: false},
+    "SELF_DEPENDENCY" => %{foreman_code: "DEPENDENCY_CYCLE", retryable?: false},
     "DEPENDENCY_EXISTS" => %{foreman_code: "DEPENDENCY_EXISTS", retryable?: false},
     "VALIDATION_FAILED" => %{foreman_code: "VALIDATION_FAILED", retryable?: false},
     "SCHEMA_VALIDATION_FAILED" => %{foreman_code: "SCHEMA_VALIDATION_FAILED", retryable?: false},
