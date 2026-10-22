@@ -1042,7 +1042,23 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # pauses the run; `:not_applicable` (feature off, not a denial, or the request
   # could not be recorded) leaves the ordinary phase-failure path, so a denial is
   # never silently dropped.
-  defp awaiting_approval(state, phase_index, {:permission_denied, [_ | _] = tools}) do
+  defp awaiting_approval(state, phase_index, reason) do
+    case denied_tools(reason) do
+      [_ | _] = tools -> request_approval_and_pause(state, phase_index, tools)
+      nil -> :not_applicable
+    end
+  end
+
+  # The workflow door's worker returns `{:error, %FailureCause{code: code}}` (so the
+  # persisted reason keeps the provider's text) and the denial lives in `code`; the bare
+  # `{:permission_denied, tools}` is what `RunResult.normalize/1` itself returns. Matching
+  # only the bare tuple made this path unreachable from a real worker (live run
+  # 2026-10-22: a claude phase denied `Write` failed instead of pausing).
+  defp denied_tools(%FailureCause{code: code}), do: denied_tools(code)
+  defp denied_tools({:permission_denied, [_ | _] = tools}), do: tools
+  defp denied_tools(_reason), do: nil
+
+  defp request_approval_and_pause(state, phase_index, tools) do
     context = %{run_id: state.run_id, project_id: project_id(state)}
 
     with true <- ForemanServer.Approvals.PhasePause.enabled?(),
@@ -1064,8 +1080,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         :not_applicable
     end
   end
-
-  defp awaiting_approval(_state, _phase_index, _reason), do: :not_applicable
 
   # Commit the phase's partial work and stop the run paused (operator pause, or an
   # approval request waiting on the operator).
