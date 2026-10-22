@@ -194,6 +194,85 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterBrFixturesTest do
     end
   end
 
+  describe "claim/3 and fail/3 against real `br update --json`" do
+    test "update --claim output decodes to a claimed issue" do
+      install_stub(update: "update_claim.json")
+      fixture = BrFixtures.issue!("update_claim.json")
+
+      assert {:ok, %Issue{id: id, status: "in_progress", assignee: "agent-7"}} =
+               BeadsAdapter.claim(fixture["id"], "agent-7", Map.put(config(), :run_id, "run-fx"))
+
+      assert id == fixture["id"]
+    end
+
+    test "update --status blocked output decodes to a failed (blocked) issue" do
+      install_stub(update: "update_blocked.json")
+      fixture = BrFixtures.issue!("update_blocked.json")
+
+      assert {:ok, %Issue{id: id, status: "blocked"}} =
+               BeadsAdapter.fail(
+                 fixture["id"],
+                 "blocked for fixture",
+                 Map.put(config(), :run_id, "run-fx")
+               )
+
+      assert id == fixture["id"]
+    end
+  end
+
+  describe "set_priority/3 against real `br update --priority --json`" do
+    test "the real update acknowledgement is accepted and the priority is what was requested" do
+      install_stub(set_priority: "update_priority.json")
+      fixture = BrFixtures.issue!("update_priority.json")
+      assert fixture["priority"] == 1
+
+      assert :ok = BeadsAdapter.set_priority(fixture["id"], 1, config())
+    end
+  end
+
+  describe "coordination_status/2 against real `br coordination status --json`" do
+    test "no claims decodes to an empty list" do
+      install_stub(coordination_status: "coordination_status_empty.json")
+      assert %{"claims" => []} = BrFixtures.decode!("coordination_status_empty.json")
+
+      assert {:ok, []} = BeadsAdapter.coordination_status(config())
+    end
+
+    test "a claimed issue decodes to an Issue carrying the dependency counts" do
+      install_stub(coordination_status: "coordination_status_claimed.json")
+      [claim] = BrFixtures.decode!("coordination_status_claimed.json")["claims"]
+
+      assert {:ok, [%Issue{id: id, status: "in_progress"} = issue]} =
+               BeadsAdapter.coordination_status(config())
+
+      assert id == claim["issue"]["id"]
+      assert issue.metadata["dependent_count"] == claim["issue"]["dependent_count"]
+    end
+  end
+
+  describe "add_dependency/3 against real `br dep add --json`" do
+    test "the real success ack (no id/title) is accepted" do
+      install_stub(add_dependency: "dep_add.json")
+      ack = BrFixtures.decode!("dep_add.json")
+
+      assert :ok = BeadsAdapter.add_dependency(ack["issue_id"], ack["depends_on_id"], config())
+    end
+
+    test "a real error envelope (printed on stdout, nested under \"error\") maps to DEPENDENCY_CYCLE" do
+      stdout = BrFixtures.read!("dep_add_cycle_error.json")
+
+      stub(BrRunnerMock, :cmd, fn {:add_dependency, _}, _cfg, _opts ->
+        {:error, %{stdout: stdout, stderr: "", exit_code: 5}}
+      end)
+
+      assert {:error,
+              %ForemanServer.TaskProviders.ProviderError{
+                code: "DEPENDENCY_CYCLE",
+                context: %{id: "CYCLE_DETECTED", exit_code: 5}
+              }} = BeadsAdapter.add_dependency("fx-aaa", "fx-bbb", config())
+    end
+  end
+
   defp config, do: %{database_path: @db}
 
   defp install_stub(responses) do

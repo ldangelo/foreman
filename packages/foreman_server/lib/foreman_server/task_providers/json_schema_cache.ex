@@ -129,7 +129,6 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
           | :closed_issue
           | :failed_issue
           | :reopened_issue
-          | :updated_issue
           | :issue_reference,
           term()
         ) ::
@@ -143,13 +142,12 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
              :closed_issue,
              :failed_issue,
              :reopened_issue,
-             :updated_issue,
              :issue_reference
            ] do
     normalized_schema =
       case schema_atom do
         :commands -> :commands
-        schema when schema in [:claimed_issue, :updated_issue] -> :update_ack
+        :claimed_issue -> :update_ack
         schema when schema in [:failed_issue, :reopened_issue] -> :transition_ack
         other -> other
       end

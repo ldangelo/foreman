@@ -1,0 +1,26 @@
+{
+  "dirty_count": 0,
+  "last_export_time": "2026-10-22T21:11:20.004877+00:00",
+  "last_import_time": "2026-10-22T21:11:17.951114+00:00",
+  "jsonl_content_hash": "94eefb492ee25fb1d64d3e69c0665260994da6de4bbe2bf39d58e2ad678f5885",
+  "jsonl_exists": true,
+  "jsonl_newer": false,
+  "db_newer": false,
+  "workspace_health": "healthy",
+  "reliability_audit": {
+    "source": "sync.status",
+    "health": "healthy",
+    "anomaly_count": 0,
+    "anomalies": []
+  },
+  "coverage": {
+    "db_exportable_issues": 5,
+    "jsonl_unique_ids": 5
+  },
+  "coverage_drift": false,
+  "git_export": {
+    "available": false,
+    "reason": "not_probed",
+    "diagnostic_command": "br vcs-status --json"
+  }
+}

@@ -18,6 +18,11 @@ Argv mirrors what `TaskProviders.SystemBrRunner` builds (`--db <path>` omitted b
 | `show_with_comments.json` | `br show <id> --json` (two comments) |
 | `comments_add.json` | `br comments add <id> --message … --json` |
 | `dep_add.json` | `br dep add <dependent> <dependency> --json` |
+| `dep_add_exists.json` | the same `br dep add` repeated: exit 0, `status: "exists"`, `action: "already_exists"` |
+| `update_priority.json` | `br update <id> --priority 1 --json` (`set_priority/3`) |
+| `coordination_status_empty.json`, `coordination_status_claimed.json` | `br coordination status --json` with no claims / one claimed issue (`coordination_status/2`) |
+| `sync_status.json` | `br sync --status --json` (`BeadsWatcher` coverage-drift gate) |
+| `where.json` | `br where --json` (`BeadsWatcher` resolves `jsonl_path`) |
 | `list_labels.json` | `br list --label foreman-exec --json` (`br list` has `--label`, not `--labels`) |
 | `ready.json` | `br ready --json` (what `BeadsAdapter.list_ready/2` parses) |
 | `update_claim.json` | `br update <id> --claim --json` |
@@ -43,5 +48,6 @@ adapter no longer matches what `br` emits. Update the `br` version in this READM
 
 ## Not captured
 
-`br sync`, `br where`, `br coordination status` and `br --version`/`capabilities` outputs are not
-fixtures; tests for those still use hand-written stubs.
+`br --version`/`capabilities` outputs and `br` error envelopes (stderr) are not fixtures; tests
+for those still use hand-written stubs. `br dep add`'s success ack is not an issue document
+(`{status, issue_id, depends_on_id, type, action}`), which is why `add_dependency/3` returns `:ok`.

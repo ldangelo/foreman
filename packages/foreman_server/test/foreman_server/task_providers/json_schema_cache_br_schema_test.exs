@@ -75,7 +75,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCacheBrSchemaTest do
   test "real br update acknowledgements satisfy the pinned ack contract, malformed ones do not" do
     ack = hd(BrFixtures.decode!("update_claim.json"))
 
-    for atom <- [:claimed_issue, :updated_issue, :reopened_issue, :failed_issue] do
+    for atom <- [:claimed_issue, :reopened_issue, :failed_issue] do
       assert :ok = JsonSchemaCache.validate(atom, ack)
       assert {:error, errors} = JsonSchemaCache.validate(atom, Map.delete(ack, "id"))
       assert %{path: ["id"], message: "is required"} in errors

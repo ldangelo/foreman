@@ -120,6 +120,41 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherBootTest do
       assert Process.alive?(pid)
       GenServer.stop(pid)
     end
+
+    test "boots against the verbatim real `br sync --status --json` and `br where --json` shapes",
+         %{tmp_dir: tmp_dir} do
+      sync_status = ForemanServer.TestSupport.BrFixtures.read!("sync_status.json")
+      where = ForemanServer.TestSupport.BrFixtures.decode!("where.json")
+
+      assert %{"coverage_drift" => false} = Jason.decode!(sync_status)
+      assert is_binary(where["jsonl_path"]) and where["jsonl_path"] != ""
+
+      # Only the on-disk location is substituted (the captured path does not exist here);
+      # every other key is exactly what real `br where` printed.
+      jsonl_path = Path.join(tmp_dir, "issues.jsonl")
+      File.write!(jsonl_path, "")
+      where_stdout = Jason.encode!(%{where | "jsonl_path" => jsonl_path})
+
+      expect(BrRunnerMock, :cmd, fn {:sync_status, %{flags: ["--status"]}}, _config, _opts ->
+        {:ok, %{stdout: sync_status, stderr: "", exit_code: 0}}
+      end)
+
+      expect(BrRunnerMock, :cmd, fn {:where, %{database_path: ^tmp_dir}}, _config, _opts ->
+        {:ok, %{stdout: where_stdout, stderr: "", exit_code: 0}}
+      end)
+
+      Process.flag(:trap_exit, true)
+
+      assert {:ok, pid} =
+               BeadsWatcher.start_link(
+                 project_id: "proj-real-br-#{System.unique_integer([:positive, :monotonic])}",
+                 database_path: tmp_dir,
+                 poll_ms: 60_000
+               )
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
   end
 
   describe "boot resilience when CommandRouter is not registered (TRD-2026-d99cd90d regression)" do

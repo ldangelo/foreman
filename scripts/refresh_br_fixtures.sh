@@ -27,6 +27,8 @@ LIFE=$(id_of < "$SCRATCH/life.json")
 # dep add: PLAIN depends on DEP  => show PLAIN has a dependency, show DEP has a dependent.
 b dep add "$LAB" "$DEP" --json > "$OUT/dep_add.json"
 # comments add --json (SystemBrRunner :comments_add)
+b dep add "$LAB" "$DEP" --json > "$OUT/dep_add_exists.json"   # repeat: exit 0, status "exists"
+b dep add "$DEP" "$LAB" --json > "$OUT/dep_add_cycle_error.json" || true   # exit 5, error envelope on STDOUT
 b comments add "$COM" --message "first comment" --json > "$OUT/comments_add.json"
 b comments add "$COM" --message "second comment" --json > /dev/null
 
@@ -38,10 +40,15 @@ b show "$COM" --json > "$OUT/show_with_comments.json"
 b list --label foreman-exec --json > "$OUT/list_labels.json"
 b ready --json > "$OUT/ready.json"
 
+b coordination status --json > "$OUT/coordination_status_empty.json"
 b update "$LIFE" --claim --json > "$OUT/update_claim.json"
+b coordination status --json > "$OUT/coordination_status_claimed.json"
+b update "$LIFE" --priority 1 --json > "$OUT/update_priority.json"
 b update "$LIFE" --status blocked --transition-comment "blocked for fixture" --json > "$OUT/update_blocked.json"
 b update "$LIFE" --status open --transition-comment "reopened for fixture" --json > "$OUT/update_reopen.json"
 b close "$LIFE" --reason "done for fixture" --json > "$OUT/close.json" || true
+b sync --status --json > "$OUT/sync_status.json"
+b where --json > "$OUT/where.json"
 for s in ready-issue issue-details error commands; do b schema "$s" --json > "$OUT/schema_${s//-/_}.json" || true; done
 # `br schema` embeds a timestamp and a version; they are kept verbatim.
 echo "fixtures written to $OUT (br $(br --version))"
