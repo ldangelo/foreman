@@ -2430,10 +2430,8 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:latest_stall, stall)
       |> maybe_put_status_effect(status_effect, stall.reason)
     end)
-    |> Map.update!(:phases, fn phases ->
-      Map.update(phases, phase_id, %{latest_stall: stall}, fn phase ->
-        Map.put(phase, :latest_stall, stall)
-      end)
+    |> update_existing(:phases, phase_id, "RunStallReported", fn phase ->
+      Map.put(phase, :latest_stall, stall)
     end)
     |> update_task_latest_stall(task_id, stall)
   end
@@ -2547,9 +2545,10 @@ defmodule ForemanServer.ProjectionStore do
     case decode_for_projection("PhaseCompleted", payload) do
       %ForemanServer.Events.PhaseCompleted{phase_id: phase_id} = event
       when not is_nil(phase_id) and phase_id != "" ->
-        phase =
-          state.phases
-          |> Map.get(phase_id, %{})
+        state
+        |> touch_run_for_payload(payload)
+        |> update_existing(:phases, phase_id, "PhaseCompleted", fn phase ->
+          phase
           |> Map.put(:status, "completed")
           |> Map.put(:artifact, %{
             path: event.artifact_path,
@@ -2559,10 +2558,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:last_sequence, event.sequence)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
           |> Map.put(:output_activity_at_ms, payload_event_at_ms(payload))
-
-        state
-        |> touch_run_for_payload(payload)
-        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
+        end)
 
       _ ->
         touch_run_for_payload(state, payload)
@@ -2573,18 +2569,16 @@ defmodule ForemanServer.ProjectionStore do
     case decode_for_projection("PhaseFailed", payload) do
       %ForemanServer.Events.PhaseFailed{phase_id: phase_id} = event
       when not is_nil(phase_id) and phase_id != "" ->
-        phase =
-          state.phases
-          |> Map.get(phase_id, %{})
+        state
+        |> touch_run_for_payload(payload)
+        |> update_existing(:phases, phase_id, "PhaseFailed", fn phase ->
+          phase
           |> Map.put(:status, "failed")
           |> Map.put(:failure_reason, event.reason)
           |> Map.put(:last_sequence, event.sequence)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
           |> Map.put(:output_activity_at_ms, payload_event_at_ms(payload))
-
-        state
-        |> touch_run_for_payload(payload)
-        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
+        end)
 
       _ ->
         touch_run_for_payload(state, payload)
@@ -2653,25 +2647,22 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_event_by_type(state, "TaskUpdated", payload) do
     case decode_for_projection("TaskUpdated", payload) do
       %ForemanServer.Events.TaskUpdated{task_id: task_id} = event ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskUpdated", fn task ->
+          task
           |> maybe_put(:status, event.status)
           |> maybe_put(:priority, event.priority)
           |> maybe_put(:title, event.title)
           |> maybe_put(:description, event.description)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
   defp apply_event_by_type(state, "TaskApproved", payload) do
     case decode_for_projection("TaskApproved", payload) do
       %ForemanServer.Events.TaskApproved{task_id: task_id} = event ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskApproved", fn task ->
+          task
           |> Map.put(:status, "ready")
           |> Map.put(:approval_id, event.approval_id)
           |> Map.put(:approved_by, event.approved_by)
@@ -2679,73 +2670,63 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:run_id, event.run_id)
           |> Map.put(:workflow_snapshot, event.workflow_snapshot)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
   defp apply_event_by_type(state, "TaskDispatched", payload) do
     case decode_for_projection("TaskDispatched", payload) do
       %ForemanServer.Events.TaskDispatched{task_id: task_id} ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskDispatched", fn task ->
+          task
           |> Map.put(:status, "in_progress")
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
   defp apply_event_by_type(state, "TaskExecutionCompleted", payload) do
     case decode_for_projection("TaskExecutionCompleted", payload) do
       %ForemanServer.Events.TaskExecutionCompleted{task_id: task_id} ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskExecutionCompleted", fn task ->
+          task
           |> Map.put(:status, "closed")
           |> Map.put(:failure_reason, nil)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
   defp apply_event_by_type(state, "TaskExecutionFailed", payload) do
     case decode_for_projection("TaskExecutionFailed", payload) do
       %ForemanServer.Events.TaskExecutionFailed{task_id: task_id} = event ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskExecutionFailed", fn task ->
+          task
           |> Map.put(:status, "failed")
           |> Map.put(:failure_reason, event.reason)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
   defp apply_event_by_type(state, "TaskRunTerminated", payload) do
     case decode_for_projection("TaskRunTerminated", payload) do
       %ForemanServer.Events.TaskRunTerminated{task_id: task_id, run_id: run_id} = event ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskRunTerminated", fn task ->
+          task
           |> Map.put(:acknowledged_run_id, run_id)
           |> Map.put(:run_terminal_reason, event.reason)
           |> Map.put(:run_terminal_at, event.acknowledged_at)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
   defp apply_event_by_type(state, "TaskRetried", payload) do
     case decode_for_projection("TaskRetried", payload) do
       %ForemanServer.Events.TaskRetried{task_id: task_id} ->
-        task =
-          state.tasks
-          |> Map.get(task_id, %{})
+        update_existing(state, :tasks, task_id, "TaskRetried", fn task ->
+          task
           |> Map.put(:status, "open")
           |> Map.put(:approval_id, nil)
           |> Map.put(:approved_by, nil)
@@ -2757,8 +2738,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:run_terminal_reason, nil)
           |> Map.put(:run_terminal_at, nil)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
-
-        %{state | tasks: Map.put(state.tasks, task_id, task)}
+        end)
     end
   end
 
@@ -3009,10 +2989,8 @@ defmodule ForemanServer.ProjectionStore do
 
           Map.put(run, :phase_prs, phase_prs)
         end)
-        |> Map.update!(:phases, fn phases ->
-          Map.update(phases, event.phase_id, %{phase_prs: [record]}, fn phase ->
-            Map.put(phase, :phase_prs, upsert_phase_pr(Map.get(phase, :phase_prs, []), record))
-          end)
+        |> update_existing(:phases, event.phase_id, "PhasePrRecorded", fn phase ->
+          Map.put(phase, :phase_prs, upsert_phase_pr(Map.get(phase, :phase_prs, []), record))
         end)
     end
   end
@@ -4634,20 +4612,39 @@ defmodule ForemanServer.ProjectionStore do
 
   defp update_task_latest_stall(state, task_id, stall) do
     if valid_id?(task_id) do
-      Map.update!(state, :tasks, fn tasks ->
-        Map.update(
-          tasks,
-          task_id,
-          %{task_id: task_id, latest_stall: stall, attention_reason: stall.reason},
-          fn task ->
-            task
-            |> Map.put(:latest_stall, stall)
-            |> Map.put(:attention_reason, stall.reason)
-          end
-        )
+      update_existing(state, :tasks, task_id, "RunStallReported", fn task ->
+        task
+        |> Map.put(:latest_stall, stall)
+        |> Map.put(:attention_reason, stall.reason)
       end)
     else
       state
+    end
+  end
+
+  # Applies `updater` to an entity that already exists in `state[collection]`.
+  #
+  # An event for an id the store has never seen is dropped with a warning
+  # rather than upserted: `Map.get(coll, id, %{}) |> Map.put(...)` used to mint
+  # a partial entry with no identity key (a `TaskRunTerminated` for an unknown
+  # task produced a task with no `:task_id`), which every list/dump reader then
+  # had to defend against. Absent is not malformed (AGENTS.md 5.3): the entity's
+  # creation event is the only thing allowed to create it. Never raises, so
+  # `init/1` replay stays total.
+  defp update_existing(state, collection, id, event_type, updater)
+       when collection in [:tasks, :phases] and is_function(updater, 1) do
+    entries = Map.fetch!(state, collection)
+
+    case Map.fetch(entries, id) do
+      {:ok, entry} ->
+        Map.put(state, collection, Map.put(entries, id, updater.(entry)))
+
+      :error ->
+        Logger.warning(
+          "ProjectionStore dropped #{event_type} for unknown #{collection} id #{inspect(id)}"
+        )
+
+        state
     end
   end
 
