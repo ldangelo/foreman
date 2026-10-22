@@ -67,7 +67,7 @@ defmodule ForemanServer.Review.Capture do
         }
 
         with :ok <- Archive.init(dir, manifest) do
-          Archive.write_file(dir, "request.md", prompt)
+          Archive.write_file(dir, "request.md", Archive.redact(prompt))
         end
       end)
     else
@@ -420,7 +420,7 @@ defmodule ForemanServer.Review.Capture do
     Archive.write_file(dir, "request.md", "")
   end
 
-  defp write_request(dir, text), do: Archive.write_file(dir, "request.md", text)
+  defp write_request(dir, text), do: Archive.write_file(dir, "request.md", Archive.redact(text))
 
   defp capture_run_diff(dir, %{worktree_path: path, base_ref: base}, outcome)
        when is_binary(path) and is_binary(base) do
@@ -517,7 +517,7 @@ defmodule ForemanServer.Review.Capture do
     case Git.diff(path, base, head) do
       {:ok, diff} ->
         max = max_diff_bytes()
-        {body, truncated?} = bound(diff, max)
+        {body, truncated?} = bound(Archive.redact(diff), max)
 
         if truncated? do
           Archive.record_capture_error(
@@ -542,7 +542,7 @@ defmodule ForemanServer.Review.Capture do
     with :ok <- Archive.write_repo_file(dir, repo_id, "patch", body) do
       case Git.changed_files(path, base, head) do
         {:ok, files} ->
-          Archive.write_repo_file(dir, repo_id, "files.txt", files)
+          Archive.write_repo_file(dir, repo_id, "files.txt", Archive.redact(files))
 
         {:error, git_error} ->
           error = Error.new(:diff_failed, "git changed-files failed", %{git: git_error.details})
@@ -620,7 +620,9 @@ defmodule ForemanServer.Review.Capture do
 
   defp store_diff(dir, worktree_path, base, head, diff) do
     max = max_diff_bytes()
-    {body, truncated?} = bound(diff, max)
+    # Redact the whole diff first: truncating first could cut a secret in half and
+    # leave its prefix on disk.
+    {body, truncated?} = bound(Archive.redact(diff), max)
 
     if truncated? do
       Archive.record_capture_error(
@@ -636,7 +638,7 @@ defmodule ForemanServer.Review.Capture do
              "diff_status" => if(diff == "", do: "empty", else: "captured")
            }) do
       case Git.changed_files(worktree_path, base, head) do
-        {:ok, files} -> Archive.write_file(dir, "changed-files.txt", files)
+        {:ok, files} -> Archive.write_file(dir, "changed-files.txt", Archive.redact(files))
         {:error, git_error} -> changed_files_failed(dir, git_error)
       end
     end

@@ -615,7 +615,7 @@ foreman project network set --mode allowlist --allow pypi.org project-123
 | Piece | Rule |
 |---|---|
 | Variables | names `^[A-Za-z][A-Za-z0-9_]*$`, values <= 8 KiB, <= 100 vars. `FOREMAN_*` is reserved: `project.environment.set` rejects it (`reserved_env_name`), and a project whose stored legacy `config.env`/`config.environment` already holds one fails every workflow phase and jobsite launch LOUDLY (`reserved_project_env_keys`, naming the keys) until the operator removes it. Secret-looking names (`*_TOKEN`, `*_PASSWORD`, `*_API_KEY`, ...) are rejected with `secret_in_vars`: use a secret. |
-| Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and archives. A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
+| Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and session archives (transcript, `diff.patch`, `changed-files.txt`, `request.md`, analysis files): only values present in the server environment are recognised, so a value an agent reads from a committed `.env` file or fetches at runtime is not caught (see [Session archive](#session-archive-and-automated-review)). A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
 | Delivery | Both doors: workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace); jobsites get the same as a base that the spec's own allowlisted `agent.env` overrides. |
 | Setup script | Runs once, right after a fresh run worktree (or jobsite worktree) is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase / jobsite (`setup_script_failed`, `setup_script_timeout`; jobsites: `hook_failed`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. Remote jobsite specs still cannot supply `hooks.host.*`; the script only comes from this record. |
 | Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and workflow runs (agents on the server host) do not enforce it. Networks and sidecars are removed when the jobsite ends and swept at boot. |
@@ -2176,7 +2176,17 @@ stopped on purpose is not filed as work items (the recorded summary says so).
 Transcript lines are `{type, timestamp, text, stream}`; `stream` is non-null
 only for process-stream provider events such as stderr. Text is secret-redacted
 before it is written (values of sensitive environment variables and bearer
-tokens become `[REDACTED]`).
+tokens become `[REDACTED]`). The same redaction is applied to `diff.patch`,
+`changed-files.txt` (and the per-repository `diffs/*`), `request.md`,
+`analysis.json`/`analysis.md` and the manifest's `request` title and prompt, and
+it runs on the whole diff before the size bound, so a truncated diff never
+keeps a prefix of a secret. **Limit: only secrets present in the Foreman
+server's environment are recognised** (values of environment variables whose
+names contain `secret`, `token`, `password`, `credential`, `api_key` and the like,
+at least 4 bytes). A value an agent reads from a committed `.env` file, a value
+that exists only in the project secret store (injected into the agent's
+environment but not in the server's), or one fetched at runtime, is not caught
+and stays in `diff.patch` verbatim; treat the archive like the repository itself.
 
 Known limits: a review is write-once per subject — a recorded `undetermined`
 is never retried, and re-reviewing needs a new mechanism. The Analyzer does not

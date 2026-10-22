@@ -73,7 +73,7 @@ defmodule ForemanServer.Review.Archive do
   def put_manifest(dir, manifest) when is_binary(dir) and is_map(manifest) do
     path = Path.join(dir, @manifest_file)
 
-    case atomic_write_json(path, manifest) do
+    case atomic_write_json(path, redact_request_block(manifest)) do
       :ok ->
         :ok
 
@@ -302,6 +302,36 @@ defmodule ForemanServer.Review.Archive do
       "stream" => stream
     }) <> "\n"
   end
+
+  @doc """
+  Redact a text artifact (diff, file list, request, analysis) before it is
+  written to the archive: the same `Jido.Harness.Redaction.redact/2` the
+  transcript uses, with secrets taken from the live server environment
+  (values of sensitive-named variables, at least 4 bytes) plus bearer tokens.
+
+  The limit is deliberate and documented: only secrets present in the server's
+  environment are caught. A value read from a committed `.env` file, or fetched
+  at runtime and absent from the server environment, is not recognised.
+  """
+  @spec redact(iodata()) :: binary()
+  def redact(contents) do
+    Jido.Harness.Redaction.redact(IO.iodata_to_binary(contents), env_secrets())
+  end
+
+  # The manifest carries the request's title and prompt verbatim; redact those string
+  # values (never the whole encoded JSON, whose booleans and nulls a short secret
+  # value could otherwise corrupt).
+  defp redact_request_block(%{"request" => %{} = request} = manifest) do
+    redacted =
+      Map.new(request, fn
+        {key, value} when is_binary(value) -> {key, redact(value)}
+        other -> other
+      end)
+
+    %{manifest | "request" => redacted}
+  end
+
+  defp redact_request_block(manifest), do: manifest
 
   # Computed from the live environment (not Redaction's per-process cache) so a
   # secret set after the process first redacted is still caught.
