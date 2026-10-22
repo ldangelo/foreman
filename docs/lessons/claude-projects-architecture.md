@@ -2,7 +2,7 @@
 
 Index of the project-workspace capabilities: aggregate (stream prefix), events, main modules and the HTTP / MCP / CLI surfaces. Module paths are under `packages/foreman_server/lib/foreman_server/` unless noted. Operator-facing behaviour is in `docs/user-guide.md` ("Projects workflow"); the rules are in `CLAUDE.md` §20-§26. Every row was checked against `main`; stream prefixes are the clauses of `CommandRouter.aggregate_module_for/1`.
 
-Multi-repo projects (E12, #603) are on `main` but are not indexed in the table below: see `docs/lessons/multi-repo-e2e-2026-10-21.md` and `docs/user-guide.md` "Repositories" (`GET /api/projects/:id/repositories`, `foreman project repo`, `foreman_project_repo_list`, `foreman_run_request_repo`, `foreman_task_fanout`).
+Multi-repo projects (E12, #603) are on `main` and enabled by default (`config :foreman_server, :multi_repo, runs: true`; `runs: false` is the kill switch). They have their own row in the table below; see also `docs/lessons/multi-repo-e2e-2026-10-21.md` and `docs/user-guide.md` "Repositories" (`GET /api/projects/:id/repositories`, `foreman project repo`, `foreman_project_repo_list`, `foreman_run_request_repo`, `foreman_task_fanout`).
 
 ## Capability index
 
@@ -10,6 +10,7 @@ Multi-repo projects (E12, #603) are on `main` but are not indexed in the table b
 | --- | --- | --- | --- | --- | --- | --- |
 | Project lifecycle, settings, limits | `Aggregates.Project` (`project:`), `ProjectSecret` (`project_secret:`) | `ProjectRegistered`, `ProjectUpdated`, `ProjectPaused`, `ProjectResumed`, `ProjectArchived`, `ProjectRunReserved`, `ProjectRunReservationReleased`, `ProjectAdmissionDeferred`, `ProjectSecretSet`, `ProjectSecretUnset` | `ProjectSettings`, `ProjectLimits`, `ProjectEnvironment`, `ProjectSecrets`, `SecretStore`, `ProjectSetup` | `GET /api/projects[/:id]`, `.../settings`, `.../environment`, `PUT .../secrets/:name`, `POST /api/commands` | `foreman_project_list\|get`, `foreman_project_settings_get\|update`, `foreman_project_pause\|resume`, `foreman_project_environment_get` | `foreman project create\|get\|update\|settings\|env\|secret\|setup-script\|network\|pause\|resume\|reactivate\|delete\|list` |
 | Setup recommendations, adoption | `Project` (`project.adopt` on the target stream) | `ProjectSubjectAdopted`, `ProjectThreadStarted` | `Projects.Recommendations`, `Projects.Adoption`, `Projects.AdoptionService`, `Projects.Continuation` | `GET /api/projects/:id/recommendations`, `POST /api/project-adoptions` | `foreman_project_recommendations` | `foreman project recommend\|adopt`, `foreman doctor --project` |
+| Multi-repo projects, per-repo PRs | `Project` (`project.repo.add\|remove` on `project:`), `RunRepoAudit` (`run_repo_audit:`, `run.repo.request`) | `ProjectRepositoryAdded`, `ProjectRepositoryRemoved`, `RunRepoRequested`, `RunRepoPrFailed` | `Projects.RepoValidation`, `Aggregates.RunRepoAudit` | `GET /api/projects/:id/repositories` | `foreman_project_repo_list`, `foreman_run_request_repo`, `foreman_task_fanout` | `foreman project repo`, `foreman run retry-pr` |
 | Instructions, standing context | (project settings) | (`ProjectUpdated`) | `ProjectContext.build/2` (+ `ProjectContext.*` section providers) | `GET /api/projects/:id/context` | - | `foreman project context` |
 | Memory | `Aggregates.ProjectMemory` (`project_memory:`) | `ProjectMemoryWritten`, `ProjectMemoryForgotten` | `ProjectMemory` (bytes on disk, `.foreman/memory/`) | `GET\|PUT\|DELETE /api/projects/:id/memory[/:name]`, `POST .../memory/sync` | `foreman_project_memory_list\|read\|write\|forget` | `foreman project memory` |
 | Library | `Aggregates.ProjectLibrary` (`project_library:`) | `ProjectLibraryAdded`, `ProjectLibraryReplaced`, `ProjectLibraryRemoved` | `Library` (+ `Library.Store\|Ingest\|Collector\|Produced`) | `GET\|POST /api/projects/:id/library`, `PUT\|DELETE .../library/:entry_id` | `foreman_project_library_list\|read` | `foreman project library` |
@@ -34,7 +35,7 @@ Multi-repo projects (E12, #603) are on `main` but are not indexed in the table b
 
 ## Spikes and design records
 
-`docs/spikes/`: `S1.md` coordinator action mechanism, `S2.md` steering and approvals through `Jido.Harness.Session`, `S3.md` multi-repo design (not merged), `S4.md` PR signal source, `S5.md` remote worker (design only; not built), `E4-SP1.md` / `E4-SP2.md` secrets and network policy, `E6-SP1.md`, `E9-SP1.md` / `E9-SP2.md`; `docs/decisions/project-delete.md`.
+`docs/spikes/`: `S1.md` coordinator action mechanism, `S2.md` steering and approvals through `Jido.Harness.Session`, `S3.md` multi-repo design (implemented as E12, #603), `S4.md` PR signal source, `S5.md` remote worker (design only; not built), `E4-SP1.md` / `E4-SP2.md` secrets and network policy, `E6-SP1.md`, `E9-SP1.md` / `E9-SP2.md`; `docs/decisions/project-delete.md`.
 
 ## UNVERIFIED against the live service
 
