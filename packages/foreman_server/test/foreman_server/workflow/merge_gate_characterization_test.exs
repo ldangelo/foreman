@@ -70,7 +70,7 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
       })
 
     # Gate is held pending
-    assert state2.merge_gate == :pending
+    assert Run.merge_gate(state2) == :pending
 
     # Merge is blocked — state.merge_gate is the authoritative gate check
     assert {:error, :pr_not_acceptable} =
@@ -113,7 +113,7 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
         payload: ready_spec.payload
       })
 
-    assert state2.merge_gate == :pending
+    assert Run.merge_gate(state2) == :pending
 
     # 2. Authorized approval transitions to :approved
     {:ok, approve_spec} =
@@ -132,7 +132,7 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
         payload: approve_spec.payload
       })
 
-    assert state3.merge_gate == :approved
+    assert Run.merge_gate(state3) == :approved
 
     # 3. Merge now succeeds
     assert {:ok, merge_spec} =
@@ -189,7 +189,7 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
              })
 
     # Gate is still pending
-    assert state2.merge_gate == :pending
+    assert Run.merge_gate(state2) == :pending
 
     # Merge still blocked
     assert {:error, :pr_not_acceptable} =
@@ -217,7 +217,7 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
     state = run_state(run_id)
 
     # state.merge_gate is nil — no gate was ever requested
-    assert state.merge_gate == nil
+    assert Run.merge_gate(state) == nil
 
     # Merge is blocked — fail-closed, not fail-open
     assert {:error, :pr_not_acceptable} =

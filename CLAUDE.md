@@ -375,6 +375,117 @@ script (`ProjectSetup`, run via `Jobsite.HostCommand` in its own process group)
 runs once after worktree creation on both doors; network policy
 (`Jobsite.NetworkPolicy`) is enforced on docker jobsites only.
 
+**Project repositories (E12, design `docs/spikes/S3.md`).** A project's `path` is
+its PRIMARY repository; further repositories are the `ProjectRepositoryAdded` /
+`ProjectRepositoryRemoved` events on `project:<id>` (`project.repo.add|remove` in
+`Aggregates.Project`: pure checks only — id `^[a-z0-9][a-z0-9-]{0,31}$`, `"main"`
+reserved, absolute unique paths, `task_provider` reserved nil). There is no event
+for the primary: `ProjectionStore.project_repositories/1` synthesises
+`%{id: "main", path: path, default_branch: nil, primary: true, ...}` at READ time,
+so legacy projects need no backfill and a `project.update` path change moves it
+(`default_branch` is nil = "branch checked out at run start", never `"main"`).
+Impure checks (realpath, git work tree, same-`origin` duplicate) live in
+`Projects.RepoValidation.check_candidate/3` and belong in the CommandGateway
+side-effect step before dispatch — for `project.repo.add` AND `project.update`
+with a new `path` (`replacing: "main"`). Replay rule: `repo_id` on worktree/PR
+events is absent for a run's primary repo (`Workflow.Worktree.operation_id/2`
+keeps `wt-<run_id>`), and any key written to a strictly decoded event must be a
+declared struct field in the same commit as its writer.
+
+**One worktree per repository per run (E12-S3).** A run's repo set comes from the
+task/run request (`repo_id` = the run's PRIMARY, default the project primary;
+`repo_ids` = extra repos) and is resolved at kickoff by `Workflow.RunRepoSet`:
+no duplicates, none equal to the effective primary, every id registered
+(`{:unknown_repo, id}`), primary + extras <= `max_repos_per_run` (default 4).
+A request naming no repo is the single-repo run and reads nothing. The run-start
+gate `config :foreman_server, :multi_repo, runs: true` (the default since E12-S12)
+admits multi-repo runs; `runs: false` is the operator kill switch and rejects (typed
+`{:run_repo_set_rejected, :multi_repo_runs_disabled}`, like other start failures)
+any resolved set > 1 OR a run primary that is not the project primary; tests state
+the gate they need with `ForemanServer.MultiRepoRuns.enable!/0` / `disable!/0`. Layout/branch/op-id
+arithmetic is `Workflow.RunWorktreeLayout` (primary `<run>/workspace`, secondary
+`<run>/repos/<repo_id>`, one branch name in every repo); secondaries are created
+eagerly after the primary with `repo_id` on their events and rolled back (worktree
+and branch, primary included) on failure as `{:multi_repo_worktree_failed, id,
+reason}`. `state.run_worktrees` (repo id => record, rebuilt from the run's
+worktree projection each phase and on resume) holds every repo; `run_worktree`
+stays the primary alias. Every run worktree is committed at phase end
+(`phase_finish/5`) and on pause, and cleaned at terminal (continue-on-error).
+`RunExecutor.repo_root/2` refuses ids not registered on the run's project.
+
+**Repo targeting, thread repo requests and fan-out (E12-S9..S11).** `task.create`
+(and the MCP `foreman_task_create`, the retired `work.submit` ergonomics) accepts
+optional `repo_id` (the run's PRIMARY) and `repo_ids` (extras); the Task aggregate
+validates them through `Workflow.RunRepoSet.resolve/3` BEFORE `TaskCreated` is
+written (`{:unknown_repo, id}`, duplicates, extra equal to the primary, then the
+`max_repos_per_run` cap counting primary + extras) and writes the keys only when
+present (a `repo_id` equal to the project primary is dropped: absent == project
+primary). The executor reads them from the task projection. Provider resolution is
+unchanged (one provider per project; BeadSink attributes only). A secondary-primary
+run is a multi-repo run like any other and is admitted while the gate is open.
+`run.repo.request {run_id, repo_id | repo_path}` is a SYSTEM command
+(`CommandGateway.dispatch_system/2` -> `Workflow.RunRepoRequest`, NOT in the
+operator allowlist): realpath first, then `repo_allowlist` (`/`-bounded prefixes,
+empty = off, applies to registered repos too), already-attached returns success
+BEFORE the cap, then `max_repos_per_run` (primary + extras), then for an
+unregistered path git-work-tree + remote-duplicate checks and a system
+`project.repo.add` (`added_by: "run:<id>"`, command id
+`run-repo-add:<run>:<sha256(path)[0,12]>`), then `Workflow.RepoAttach` creates the
+worktree (`wt-<run>-<repo>`); the executor sees it from the NEXT phase because it
+rebuilds `run_worktrees` from the worktree projection each phase. Every outcome
+appends `RunRepoRequested` to `run_repo_audit:<run_id>` (`Aggregates.RunRepoAudit`,
+command `run.repo.audit.record`, command id `run-repo-audit:<request command id>`).
+`task.fanout {project_id, title, prompt, workflow_name, repo_ids | "all",
+fanout_id?}` (`Workflow.TaskFanout`, system-only) loops `task.create` with task ids
+`<fanout_id>-<repo_id>`; rejections are reported per repo and keep earlier tasks. The
+MCP write tools `foreman_run_request_repo` and `foreman_task_fanout`
+(`MCP.RepoTools`, in `MCP.Policy` `@write_tools`) are the only entry points.
+
+**Env, isolation and prompt contract of a multi-repo run (E12-S4).** Whenever a
+phase has a worktree (single-repo runs too) `RunExecutor.foreman_env/4` adds
+`FOREMAN_PRIMARY_REPO` (primary repo id, `main` for legacy projects),
+`FOREMAN_REPOS` (compact JSON, keys sorted at both levels:
+`{"<id>":{"base_branch","base_ref","branch","path","primary"}}`) and
+`FOREMAN_REPO_<ID>_WORKTREE` per repo (id upper-cased, `-` -> `_`), recomputed
+each phase from the worktree projections. The older `FOREMAN_*` vars keep
+describing the primary only. Project `config.env` can never carry any
+`FOREMAN_*` name (`ProjectEnvironment` refuses it; the executor merges its own
+env last). `VfsIsolation.bind/2` takes a list of roots (a single path is
+`[p]`), the executor binds ALL of a run's worktrees in one call per phase (a
+re-bind replaces), and roots are `realpath`-canonicalised at bind and the
+candidate at check with a `/` boundary, so `..` and symlink escapes are denied.
+`add_dirs` (the other worktrees) is passed to the harness only when the
+provider's adapter declares `add_dirs` (claude yes; `pi` NO - the resolver
+rejects the whole request), so a pi agent works on the other repos through the
+absolute paths in `FOREMAN_REPOS` / the `repositories` prompt assign (JSON list
+of `{"id","path","branch","primary"}`, with `repositories_count`; both are
+strings like every other assign).
+
+**One PR per touched repository (E12-S5, S3 §7).** `RunExecutor.finalize_repo_prs/1`
+runs after `maybe_complete_task` and before worktree cleanup: the primary through
+the unchanged executor-state path (single-repo runs: same events, command ids, one
+association), then every other run worktree through `Workflow.RepoPr.finalize/2`,
+which builds its context from projections (`Workflow.RepoPrContext.build/2`: repo
+project root = AutoPR cwd, worktree branch, `repo_base_branches`, task
+title/description). Untouched (no commits ahead of that repo's base) = `:noop`, no
+PR, no association. Results `[{repo_id, :noop | {:ok, url} | {:error, reason}}]`
+never short-circuit; a failed repo is logged at error (the `RunRepoPrFailed` event
+is S6). Per-repo identity, `repo_id` ABSENT == primary: `PrAssociation.stream_id/2`
+(`pr_association:<run>` / `pr_association:<run>:<repo_id>`), `PrAssociate.store/3`,
+`PrAssociated.repo_id` and the `run.pr.ready` payload carry `repo_id` only for
+non-primary, `Identity.run_pr_ready_command_id/2`
+(`workflow:<run>:<repo_id>:pr_ready`), merge hold key `run:<run>:<repo_id>`.
+Projection: `pr_association/1` and the run `pr_url` stay the primary's; non-primary
+associations live in `repo_pr_associations`, listed (primary first) by
+`ProjectionStore.pr_associations_for_run/1`, mirrored in `run_repositories/1` and
+the run's `pr_urls` map (only present once a non-primary PR exists). `PrFold` and
+the Run aggregate's `merge_gate` ignore a `repo_id` event (per-PR gates are S6).
+With 2+ PRs, `RepoPr.cross_link/2` appends "Part of multi-repo run <id>" plus the
+sibling `owner/repo#n` links via `gh pr edit --body` (best effort, idempotent,
+skipped for single-repo). `stack_pr: true` with more than one repo is refused at
+run start: `{:error, :stack_pr_unsupported_multi_repo}` (surfaces as
+`{:run_repo_set_rejected, ...}`).
+
 `RunExecutor.init/1` parses the persisted `workflow_snapshot` via
 `extract_phase_specs/1`, which uses the dual-key pattern
 `Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the
@@ -701,6 +812,9 @@ secrets, home-directory paths).
 - `Overview.Signals` reads pending approvals, open questions and (for a paused thread) expired requests and undelivered approvals from `ProjectionStore`; `Overview.Group.classify/1` turns them into `waiting_on_you` reasons.
 - `Overview.MergeResolver` (a `ProjectionStore` subscriber with a bounded catch-up sweep) dispatches `thread.resolve` (reason `pr_merged`, `command_id` `thread-merged:<thread>:<sha>`) when a PR merges; it respects `ThreadReopened` and never merges or approves.
 - **The merge gate stays operator-only** (`merge_approve` -> `run.pr.merge`). No overview/MCP surface may merge or approve; `test/foreman_server/mcp/no_merge_tool_test.exs` pins this for every advertised MCP tool and cards carry only a text hint.
+- **Merge gate per PR (E12-S6)**: `Aggregates.Run.State.merge_gates :: %{repo_key => :pending | :approved}` (`repo_key` `nil` = the run's primary; legacy events without `repo_id` fold into `nil`; read it with `Run.merge_gate/2`). `merge_approve` and `run.pr.merge` take an optional `repo_id` (absent = primary; present only for a non-primary repository on `PrReady`/`MergeGatePending`/`MergeGateApproved`/`PrMerged`). There is NO approve-all; each PR is approved and merged on its own head pin (`RunPrMerge.execute(run_id, repo_id)` reads only that repository's `PrReady`). ETS `MergeGate` requester keys are `run:<id>` / `run:<id>:<repo_id>` (`PrGate.gate_key/2`); `approve_by_key` approves only the newest PENDING entry of the key. `merge_approve`, `run.pr.merge` and `run.pr.retry` stay operator-only: never MCP tools, never on the coordinator/approvals/PR-watch dispatch lists (`operator_only_pr_commands_test.exs`).
+- **Partial completion (E12-S6)**: a multi-repo run whose repo PR cannot be created still completes; finalisation appends `RunRepoPrFailed{run_id, repo_id, reason, at}` (system command `run.repo_pr_failed`, `RepoPr.record_failure/4`), keeps that repo's worktree (`cleanup_run_worktree/3` skips it), and `ProjectionStore.run_repositories/1` reads it as `pr_state: :create_failed` (+ `pr_failure`) until the repo has an association. `completed_with_errors` is DERIVED (`OperatorDashboard.RunDTO`), never a run status. The operator retries with `run.pr.retry {run_id, repo_id}` (`RepoPr.retry/2`: idempotent, allowed on terminal runs, reclaims the worktree on success). Single-repo runs emit no `RunRepoPrFailed`.
+- **Live multi-repo e2e and rollback caveat (E12-S12)**: `scripts/e2e/multi_repo.sh` (POSIX sh; run it as `devbox run -- sh scripts/e2e/multi_repo.sh`; assets in `scripts/e2e/multi_repo/`) drives ONE real task over two scratch git repos (local bare origins, recording fake `gh`, private port and database, real `pi` + MiniMax agent) and asserts worktrees, sibling-path edit, commits, pushed branches, two PRs, archive `diffs/b.patch` + manifest `repositories[]`, the per-repo merge gate, a read-only-origin failure with `run retry-pr` recovery, and an unchanged single-repo run. The recorded transcript is `docs/lessons/multi-repo-e2e-2026-10-21.md`. **Rollback caveat (release note)**: single-repo runs write no new event keys, so rolling back after this release but before any multi-repo run is safe; an older binary raises when it replays an event that carries `repo_id`/`repo_ids`, and those exist only after the first multi-repo run. After that first run rolling back to a build without E12 is NOT safe; `runs: false` stops new multi-repo runs but cannot remove events already written.
 ## 20.3 Scheduled tasks (E11)
 
 - `Aggregates.Schedule` (`schedule:<project_id>:<schedule_id>`): operator commands `schedule.create|update|pause|resume|delete` (allowlisted in `CommandGateway` and `CommandController`; the controller/gateway derive the composite id, `schedule.create` without an id generates `sch-<hex>`), system commands `schedule.mark_fired` / `schedule.skip_fire` (never operator-allowlisted). Events `ScheduleCreated|Updated|Paused|Resumed|Deleted|Fired|FireSkipped`. The aggregate is pure: `at` is stamped by the gateway (client values overwritten) or the ticker; slot dedupe is `slot <= last_slot` -> `{:slot_already_processed, slot}`.
@@ -734,7 +848,7 @@ A project keeps agent- and operator-written memory under `<project path>/.forema
 
 ## 24. PR watching and bounded auto-fix (E9)
 
-`ForemanServer.PrWatcher` (config `:pr_watcher`, `enabled: false` or `FOREMAN_PR_WATCHER_ENABLED=false` stops it) folds observed PR state into the run's `pr_watch` projection through typed events `PrChecksChanged`, `PrReviewChanged`, `PrFixRequested`, `PrFixStarted`, `PrFixFinished`, `PrFixExhausted`, `PrCreated`, `PrWatchStarted`, `PrWatchStopped` (commands `run.pr.checks|review|fix_ci|address_comments|resolve_conflicts|fix_started|fix_finished|fix_exhausted|create|watch_stop|watch_start`). Polling is the separate opt-in `ForemanServer.PrMonitor` (`FOREMAN_PR_MONITOR_ENABLED=true`; pending checks 30 s, recent change 60 s, stable `:pr_monitor_interval_ms` 5 min, idle >24 h 15 min, +/-10% jitter); GitHub webhooks (`check_run`, `check_suite`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment`, `pull_request`) only refresh a PR early. A fix thread (`ForemanServer.PrFix.plan/4`) is a jobsite with `push: true` on the PR head branch via fast-forward-only `Worktree` `sync_remote` (never force). PR text and CI logs are untrusted and fenced in the prompt. The loop guard lives in the Run aggregate (`Aggregates.Run.PrWatch`): one fix in flight per PR, hard cap 5 attempts per kind, a fix that changed nothing on the same head is `no_progress`, optional cooldown; automatic fixes (`pr_auto_fix` project setting, `PrWatcher.AutoFix`) are off until a project opts in. **Merge stays operator-only**: `merge_approve`/`run.pr.merge` are not in `PrWatch.operator_types/0` and no MCP tool, reactor or auto-fix path can merge or approve. Surfaces: `GET /api/runs/:id/prs`, MCP `foreman_pr_status` (read) and `foreman_pr_fix`/`foreman_pr_watch_stop` (writes), CLI `foreman run prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-stop|watch-start`. Live webhook delivery, force-push handling, check re-run, conflict resolution and unresolved-thread reads are UNVERIFIED against real GitHub (spike S4).
+`ForemanServer.PrWatcher` (config `:pr_watcher`, `enabled: false` or `FOREMAN_PR_WATCHER_ENABLED=false` stops it) folds observed PR state into the run's `pr_watch` projection through typed events `PrChecksChanged`, `PrReviewChanged`, `PrFixRequested`, `PrFixStarted`, `PrFixFinished`, `PrFixExhausted`, `PrCreated`, `PrWatchStarted`, `PrWatchStopped` (commands `run.pr.checks|review|fix_ci|address_comments|resolve_conflicts|fix_started|fix_finished|fix_exhausted|create|watch_stop|watch_start`). Polling is the separate opt-in `ForemanServer.PrMonitor` (`FOREMAN_PR_MONITOR_ENABLED=true`; pending checks 30 s, recent change 60 s, stable `:pr_monitor_interval_ms` 5 min, idle >24 h 15 min, +/-10% jitter); GitHub webhooks (`check_run`, `check_suite`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment`, `pull_request`) only refresh a PR early. A fix thread (`ForemanServer.PrFix.plan/4`) is a jobsite with `push: true` on the PR head branch via fast-forward-only `Worktree` `sync_remote` (never force). PR text and CI logs are untrusted and fenced in the prompt. The loop guard lives in the Run aggregate (`Aggregates.Run.PrWatch`): one fix in flight per PR, hard cap 5 attempts per kind, a fix that changed nothing on the same head is `no_progress`, optional cooldown; automatic fixes (`pr_auto_fix` project setting, `PrWatcher.AutoFix`) are off until a project opts in. **Merge stays operator-only**: `merge_approve`/`run.pr.merge` are not in `PrWatch.operator_types/0` and no MCP tool, reactor or auto-fix path can merge or approve. Surfaces: `GET /api/runs/:id/prs`, MCP `foreman_pr_status` (read) and `foreman_pr_fix`/`foreman_pr_watch_stop` (writes), CLI `foreman run prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-stop|watch-start`. Live webhook delivery, force-push handling, check re-run, conflict resolution and unresolved-thread reads are UNVERIFIED against real GitHub (spike S4). **Multi-repo (E12-S7)**: a PR is addressed as `{run_id, repo_id}`: `ProjectionStore.run_ids_for_pr_url/1` returns `[{run_id, repo_id}]` (primary included), `PrUpdate.command/4` / `PrObservation.commands/5` and the watch lifecycle commands carry `repo_id` only for a non-primary repository (absent == the run's primary), the watch fold never erases a recorded `repo_id`, and `PrFix.plan/4` attaches the PR's own repository path and worktree only. A merged/closed PR of repo b never touches repo a's record or gate.
 
 ## 25. Project library
 

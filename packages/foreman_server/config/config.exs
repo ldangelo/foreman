@@ -56,6 +56,13 @@ config :foreman_server, :start_beads_watcher?, false
 # max_concurrent_runs_per_project: per-project cap (default: 100)
 config :foreman_server, :max_concurrent_runs, 3
 config :foreman_server, :max_concurrent_runs_per_project, 100
+# Multi-repository runs (E12). Open since E12-S12 (`scripts/e2e/multi_repo.sh`, 110
+# assertions against a real agent, see docs/lessons/multi-repo-e2e-2026-10-21.md).
+# `runs: false` is the operator's kill switch: it refuses, at run start, any run whose
+# resolved repository set is larger than one repository or whose primary repository is
+# not the project's primary (`{:error, :multi_repo_runs_disabled}`). Tests state the
+# gate they need with `ForemanServer.MultiRepoRuns.enable!/0` and `disable!/0`.
+config :foreman_server, :multi_repo, runs: true
 # Anubis MCP server (TRD-036)
 config :foreman_server, :mcp,
   enabled: false,
@@ -318,6 +325,7 @@ config :foreman_server, :project_memory,
   max_repeat_ratio: 0.5,
   max_redaction_ratio: 0.5,
   min_guard_bytes: 200
+
 # Scheduled tasks (E11). `ticker_enabled` starts `Schedule.Ticker` (env override:
 # FOREMAN_SCHEDULE_TICKER_ENABLED=true|false in runtime.exs; off under test).
 # `min_interval_seconds` is the smallest `every` accepted; `max_per_project` caps
@@ -329,6 +337,7 @@ config :foreman_server, :schedule,
   min_interval_seconds: 300,
   max_per_project: 50,
   default_misfire_grace_seconds: 600
+
 # Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
 # Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
 config :foreman_server, :secret_store,

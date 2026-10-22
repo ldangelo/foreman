@@ -25,7 +25,9 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_schedule_delete",
     "foreman_project_message",
     "foreman_pr_fix",
-    "foreman_pr_watch_stop"
+    "foreman_pr_watch_stop",
+    "foreman_run_request_repo",
+    "foreman_task_fanout"
   ]
 
   @doc """

@@ -171,5 +171,30 @@ defmodule ForemanServer.Messaging.ProvidersTest do
       assert {:error, missing} = Webhook.send(notification, %{})
       assert missing.reason =~ "missing_field"
     end
+
+    test "a destination holding the atom and string form of a key with different values raises, without echoing either",
+         %{notification: notification} do
+      error =
+        assert_raise ArgumentError, ~r/conflicting atom\/string keys for :url/, fn ->
+          Webhook.send(notification, %{
+            :url => "https://a.example/secret-a",
+            "url" => "https://b.example/secret-b"
+          })
+        end
+
+      refute error.message =~ "secret-a"
+      refute error.message =~ "secret-b"
+      refute_received {:provider_request, _, _, _, _}
+    end
+
+    test "the same value under both key forms is accepted", %{notification: notification} do
+      assert {:ok, %{status: :succeeded}} =
+               Webhook.send(notification, %{
+                 :url => "https://example.test/hook",
+                 "url" => "https://example.test/hook"
+               })
+
+      assert_received {:provider_request, "https://example.test/hook", _, _, _}
+    end
   end
 end

@@ -51,6 +51,57 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:project, project_id})
   end
 
+  @doc """
+  Every repository of a project: the synthesised primary followed by the
+  attached extras (`ProjectRepositoryAdded` minus `ProjectRepositoryRemoved`),
+  or nil for an unknown project.
+
+  The primary is computed at READ time from the projected `path` -- no event
+  exists for a legacy project, and a `project.update` path change moves it
+  automatically: `%{id: "main", path: path, default_branch: nil, primary: true,
+  vcs: %{adapter: "git"}, task_provider: nil, added_by: nil, added_at:
+  registered_at}`. `default_branch` is nil (the branch checked out at run
+  start), never `"main"`.
+  """
+  @spec project_repositories(String.t()) :: [map()] | nil
+  def project_repositories(project_id) do
+    case project(project_id) do
+      nil ->
+        nil
+
+      project ->
+        [synthesized_primary_repository(project) | Map.get(project, :repositories_extra, [])]
+    end
+  end
+
+  @doc "One repository of a project by id (`\"main\"` is the synthesised primary), or nil."
+  @spec project_repository(String.t(), String.t()) :: map() | nil
+  def project_repository(project_id, repo_id) do
+    project_id |> project_repositories() |> List.wrap() |> Enum.find(&(&1.id == repo_id))
+  end
+
+  @doc "Id of the project's primary repository (`\"main\"` for every known project), or nil."
+  @spec project_primary_repo_id(String.t()) :: String.t() | nil
+  def project_primary_repo_id(project_id) do
+    case project_repositories(project_id) do
+      [%{id: id, primary: true} | _] -> id
+      _ -> nil
+    end
+  end
+
+  defp synthesized_primary_repository(project) do
+    %{
+      id: ForemanServer.Projects.RepoValidation.primary_id(),
+      path: Map.get(project, :path),
+      default_branch: nil,
+      primary: true,
+      vcs: %{adapter: "git"},
+      task_provider: nil,
+      added_by: nil,
+      added_at: Map.get(project, :registered_at)
+    }
+  end
+
   @doc "Return the active run ids."
   @spec active_runs() :: [String.t()]
   def active_runs do
@@ -240,6 +291,20 @@ defmodule ForemanServer.ProjectionStore do
   @spec run(String.t()) :: map() | nil
   def run(run_id) when is_binary(run_id) and run_id != "" do
     GenServer.call(__MODULE__, {:run, run_id})
+  end
+
+  @doc """
+  The honest state of a run id that was handed out (`task.approve` mints it) but
+  has no run projection yet: its task is dispatched (`in_progress`) and
+  admission has not produced a run. `status` is `"deferred"` with the refusal
+  `reason` (`daily_thread_cap_exceeded`, `run_limit_exceeded`, `project_paused`)
+  once a deferral was recorded for the task, `"queued"` with `reason: nil`
+  before that (admission pending or waiting for a slot/lease). `nil` for a run
+  that exists, a task that is not dispatched, or an unknown id.
+  """
+  @spec pending_run(String.t()) :: map() | nil
+  def pending_run(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:pending_run, run_id})
   end
 
   @doc """
@@ -781,12 +846,25 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
-  Return the ids of every run whose recorded PR association is `pr_url`, sorted.
-
-  More than one run can be associated with one PR (a retried run that reuses it),
-  so this answers with a list; `[]` means no run owns that PR.
+  Every PR association of a run, one per repository that opened a PR: the
+  primary's first (its `repo_id` is the run's effective primary id), then the
+  others by `repo_id`. This is the only enumeration API; `pr_association/1`
+  stays the primary's. `[]` for a run with none.
   """
-  @spec run_ids_for_pr_url(String.t()) :: [String.t()]
+  @spec pr_associations_for_run(String.t()) :: [map()]
+  def pr_associations_for_run(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:pr_associations_for_run, run_id})
+  end
+
+  @doc """
+  Return `{run_id, repo_id}` for every PR association whose url is `pr_url`, sorted.
+
+  `repo_id` is the effective string id of the repository that opened the PR (the
+  run's primary included), so a webhook or poll addresses exactly one PR of a
+  multi-repo run. More than one run can be associated with one PR (a retried run
+  that reuses it), so this answers with a list; `[]` means no run owns that PR.
+  """
+  @spec run_ids_for_pr_url(String.t()) :: [{String.t(), String.t()}]
   def run_ids_for_pr_url(pr_url) when is_binary(pr_url) and pr_url != "" do
     GenServer.call(__MODULE__, {:run_ids_for_pr_url, pr_url})
   end
@@ -944,6 +1022,36 @@ defmodule ForemanServer.ProjectionStore do
   @spec worktrees_for_run(String.t()) :: [map()]
   def worktrees_for_run(run_id) when is_binary(run_id) do
     GenServer.call(__MODULE__, {:worktrees_for_run, run_id})
+  end
+
+  @type run_repository :: %{
+          repo_id: String.t(),
+          primary?: boolean(),
+          worktree: map() | nil,
+          base_branch: String.t() | nil,
+          pr_association: map() | nil,
+          gate: :none | :pending | :approved | nil,
+          pr_state: :open | :merged | :closed | :conflicted | :create_failed | nil,
+          pr_failure: %{reason: term(), at: term()} | nil
+        }
+
+  @doc """
+  The per-repository join of one run: one entry per repository the run touches,
+  primary first then non-primary by `repo_id`. The effective `repo_id` is always
+  a string (the run's selected primary, else the project primary id `"main"`).
+  A worktree entry with no `repo_id` belongs to the run's primary.
+
+  Merge gate and PR state are per repository (E12-S6: the primary's come from the
+  run's PR state, a non-primary's from its own `repo_id` events), `nil` for a
+  repository with no PR event. A repository whose PR could not be created
+  (`RunRepoPrFailed`) and has no association yet reads
+  `pr_state: :create_failed` with `pr_failure`. `pr_association`
+  is per repository: a repository that opened a PR carries its association,
+  `nil` otherwise. `[]` for an unknown run with no worktrees or PR events.
+  """
+  @spec run_repositories(String.t()) :: [run_repository()]
+  def run_repositories(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:run_repositories, run_id})
   end
 
   @doc """
@@ -1503,11 +1611,35 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call({:run_ids_for_pr_url, pr_url}, _from, state) do
-    run_ids =
-      for {run_id, %{pr_url: ^pr_url}} <- state.pr_associations, do: run_id
+  def handle_call({:pr_associations_for_run, run_id}, _from, state) do
+    primary =
+      case Map.get(state.pr_associations, run_id) do
+        nil -> []
+        assoc -> [Map.put(assoc, :repo_id, run_primary_repo_id(state, run_id))]
+      end
 
-    {:reply, Enum.sort(run_ids), state}
+    others =
+      state
+      |> Map.get(:repo_pr_associations, %{})
+      |> Map.get(run_id, %{})
+      |> Enum.sort_by(fn {repo_id, _assoc} -> repo_id end)
+      |> Enum.map(fn {_repo_id, assoc} -> assoc end)
+
+    {:reply, primary ++ others, state}
+  end
+
+  @impl true
+  def handle_call({:run_ids_for_pr_url, pr_url}, _from, state) do
+    primaries =
+      for {run_id, %{pr_url: ^pr_url}} <- state.pr_associations,
+          do: {run_id, run_primary_repo_id(state, run_id)}
+
+    others =
+      for {run_id, by_repo} <- Map.get(state, :repo_pr_associations, %{}),
+          {repo_id, %{pr_url: ^pr_url}} <- by_repo,
+          do: {run_id, repo_id}
+
+    {:reply, Enum.sort(Enum.uniq(primaries ++ others)), state}
   end
 
   @impl true
@@ -1527,13 +1659,22 @@ defmodule ForemanServer.ProjectionStore do
 
     # A PR the run is associated with but nothing observed yet (no PrUpdated) is
     # watched too, as a blank record, so the poller's first sweep finds it.
+    # E12: a non-primary repository's PR is watched like the primary's; its blank
+    # record carries `repo_id` (absent == the run's primary).
     unobserved =
       for {run_id, %{pr_url: pr_url}} <- state.pr_associations,
           is_binary(pr_url),
           not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
-          do: unobserved_record(state, run_id, pr_url)
+          do: unobserved_record(state, run_id, pr_url, nil)
 
-    watched = observed ++ unobserved
+    unobserved_other =
+      for {run_id, by_repo} <- Map.get(state, :repo_pr_associations, %{}),
+          {repo_id, %{pr_url: pr_url}} <- by_repo,
+          is_binary(pr_url),
+          not Map.has_key?(Map.get(pr_watch, run_id, %{}), pr_url),
+          do: unobserved_record(state, run_id, pr_url, repo_id)
+
+    watched = observed ++ unobserved ++ unobserved_other
     {:reply, Enum.sort_by(watched, &{&1.updated_at || 0, &1.run_id, &1.pr_url}), state}
   end
 
@@ -1677,6 +1818,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:pending_run, run_id}, _from, state) do
+    {:reply, pending_run(state, run_id), state}
+  end
+
+  @impl true
   def handle_call({:tasks_by_run_id, run_id}, _from, state) do
     tasks =
       state.tasks
@@ -1730,6 +1876,11 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
 
     {:reply, worktrees, state}
+  end
+
+  @impl true
+  def handle_call({:run_repositories, run_id}, _from, state) do
+    {:reply, build_run_repositories(state, run_id), state}
   end
 
   @impl true
@@ -1830,6 +1981,7 @@ defmodule ForemanServer.ProjectionStore do
       tasks: %{},
       phases: %{},
       pr_associations: %{},
+      repo_pr_associations: %{},
       pr_states: %{},
       pr_watch: %{},
       run_logs: %{},
@@ -1934,6 +2086,59 @@ defmodule ForemanServer.ProjectionStore do
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
     else
       state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectRepositoryAdded", payload) do
+    project_id = get(payload, :project_id)
+    repo_id = get(payload, :repo_id)
+
+    with true <- valid_id?(project_id) and is_binary(repo_id),
+         %{} = project <- Map.get(state.projects, project_id) do
+      repo = %{
+        id: repo_id,
+        path: get(payload, :path),
+        default_branch: get(payload, :default_branch),
+        primary: false,
+        vcs: get(payload, :vcs) || %{adapter: "git"},
+        task_provider: nil,
+        added_by: get(payload, :added_by),
+        added_at: get(payload, :at)
+      }
+
+      extras =
+        project
+        |> Map.get(:repositories_extra, [])
+        |> Enum.reject(&(&1.id == repo_id))
+        |> Kernel.++([repo])
+
+      project =
+        project
+        |> Map.put(:repositories_extra, extras)
+        |> put_project_projection_metadata(payload)
+
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      _ -> state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectRepositoryRemoved", payload) do
+    project_id = get(payload, :project_id)
+    repo_id = get(payload, :repo_id)
+
+    with true <- valid_id?(project_id) and is_binary(repo_id),
+         %{} = project <- Map.get(state.projects, project_id) do
+      project =
+        project
+        |> Map.update(:repositories_extra, [], fn extras ->
+          Enum.reject(extras, &(&1.id == repo_id))
+        end)
+        |> put_project_projection_metadata(payload)
+
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      _ -> state
     end
   end
 
@@ -2134,27 +2339,30 @@ defmodule ForemanServer.ProjectionStore do
         if valid_id?(run_id) do
           event_at_ms = payload_event_at_ms(payload)
 
-          run = %{
-            run_id: run_id,
-            task_id: event.task_id,
-            project_id: event.project_id,
-            workflow_name: event.workflow_name,
-            workflow_digest: event.workflow_digest,
-            workflow_snapshot: event.workflow_snapshot,
-            phase_ids: [],
-            last_sequence: event.sequence,
-            status: "awaiting_worker",
-            terminal?: false,
-            started_at_ms: event_at_ms,
-            last_event_at_ms: event_at_ms,
-            failure_reason: nil,
-            pr_url: nil,
-            phase_prs: [],
-            notifications: [],
-            provider_session_id: nil,
-            provider_sessions: [],
-            usage: nil
-          }
+          run =
+            %{
+              run_id: run_id,
+              task_id: event.task_id,
+              project_id: event.project_id,
+              workflow_name: event.workflow_name,
+              workflow_digest: event.workflow_digest,
+              workflow_snapshot: event.workflow_snapshot,
+              phase_ids: [],
+              last_sequence: event.sequence,
+              status: "awaiting_worker",
+              terminal?: false,
+              started_at_ms: event_at_ms,
+              last_event_at_ms: event_at_ms,
+              failure_reason: nil,
+              pr_url: nil,
+              phase_prs: [],
+              notifications: [],
+              provider_session_id: nil,
+              provider_sessions: [],
+              usage: nil
+            }
+            |> maybe_put(:repo_id, event.repo_id)
+            |> maybe_put(:repo_ids, event.repo_ids)
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
         else
@@ -2285,7 +2493,18 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, "RunBaseBranchRecorded", payload) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
-      maybe_put(run, :base_branch, get(payload, :base_branch))
+      case get(payload, :repo_id) do
+        repo_id when is_binary(repo_id) ->
+          Map.update(
+            run,
+            :repo_base_branches,
+            %{repo_id => get(payload, :base_branch)},
+            &Map.put(&1, repo_id, get(payload, :base_branch))
+          )
+
+        _ ->
+          maybe_put(run, :base_branch, get(payload, :base_branch))
+      end
     end)
   end
 
@@ -2383,46 +2602,49 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_event_by_type(state, "TaskCreated", payload) do
     case decode_for_projection("TaskCreated", payload) do
       %ForemanServer.Events.TaskCreated{task_id: task_id} = event ->
-        task = %{
-          task_id: task_id,
-          external_id: event.external_id,
-          project_id: event.project_id,
-          title: event.title,
-          description: event.description,
-          priority: event.priority,
-          status: event.status,
-          task_type: event.task_type,
-          workflow_type: event.workflow_type,
-          trd_path: event.trd_path,
-          prompt: event.prompt,
-          # Carried because `CommandGateway` gates `task.approve` on it. Until
-          # this line existed the field was accepted by `task.create`, stored on
-          # the aggregate, and written onto `TaskCreated` — then dropped here, so
-          # no cross-task reader could see it and dependencies had no effect on
-          # anything.
-          #
-          # `event.dependencies || []` was wrong and is exactly the shape
-          # AGENTS.md §5.4b names: `false || []` returns `[]` just as `nil || []`
-          # does, so a malformed value arrived here as "no dependencies" and the
-          # approval guard waved it through. Verified before fixing — a
-          # `task.create` carrying `dependencies: false` returned `{:ok, ...}`,
-          # the event stored `false`, and this projection reported `[]`.
-          # `task.create` now refuses a non-list, but historical events keep
-          # theirs, so the malformed value is PRESERVED here rather than
-          # flattened; the guard refuses that approval by its own clause. A read
-          # model must not raise on replay (`ProjectionStore.init/1` rebuilds
-          # from the event log), and must not launder bad data either.
-          dependencies: normalize_dependencies(event.dependencies),
-          provider_tracked: event.provider_tracked,
-          approval_id: nil,
-          approved_by: nil,
-          approved_at: nil,
-          run_id: nil,
-          workflow_snapshot: nil,
-          failure_reason: nil,
-          created_at_ms: payload_event_at_ms(payload),
-          last_event_at_ms: payload_event_at_ms(payload)
-        }
+        task =
+          %{
+            task_id: task_id,
+            external_id: event.external_id,
+            project_id: event.project_id,
+            title: event.title,
+            description: event.description,
+            priority: event.priority,
+            status: event.status,
+            task_type: event.task_type,
+            workflow_type: event.workflow_type,
+            trd_path: event.trd_path,
+            prompt: event.prompt,
+            # Carried because `CommandGateway` gates `task.approve` on it. Until
+            # this line existed the field was accepted by `task.create`, stored on
+            # the aggregate, and written onto `TaskCreated` — then dropped here, so
+            # no cross-task reader could see it and dependencies had no effect on
+            # anything.
+            #
+            # `event.dependencies || []` was wrong and is exactly the shape
+            # AGENTS.md §5.4b names: `false || []` returns `[]` just as `nil || []`
+            # does, so a malformed value arrived here as "no dependencies" and the
+            # approval guard waved it through. Verified before fixing — a
+            # `task.create` carrying `dependencies: false` returned `{:ok, ...}`,
+            # the event stored `false`, and this projection reported `[]`.
+            # `task.create` now refuses a non-list, but historical events keep
+            # theirs, so the malformed value is PRESERVED here rather than
+            # flattened; the guard refuses that approval by its own clause. A read
+            # model must not raise on replay (`ProjectionStore.init/1` rebuilds
+            # from the event log), and must not launder bad data either.
+            dependencies: normalize_dependencies(event.dependencies),
+            provider_tracked: event.provider_tracked,
+            approval_id: nil,
+            approved_by: nil,
+            approved_at: nil,
+            run_id: nil,
+            workflow_snapshot: nil,
+            failure_reason: nil,
+            created_at_ms: payload_event_at_ms(payload),
+            last_event_at_ms: payload_event_at_ms(payload)
+          }
+          |> maybe_put(:repo_id, event.repo_id)
+          |> maybe_put(:repo_ids, event.repo_ids)
 
         %{state | tasks: Map.put(state.tasks, task_id, task)}
     end
@@ -2663,6 +2885,24 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # E12-S6: a repository whose PR could not be created. Kept per {run, repo};
+  # a repository that later opens its PR (`run.pr.retry`) reads as resolved
+  # because its association then exists (see `build_run_repositories/2`).
+  defp apply_event_by_type(state, "RunRepoPrFailed", payload) do
+    run_id = get(payload, :run_id)
+    repo_id = get(payload, :repo_id)
+
+    if is_binary(run_id) and run_id != "" and is_binary(repo_id) and repo_id != "" do
+      failure = %{reason: get(payload, :reason), at: get(payload, :at)}
+
+      Map.update(state, :repo_pr_failures, %{run_id => %{repo_id => failure}}, fn by_run ->
+        Map.update(by_run, run_id, %{repo_id => failure}, &Map.put(&1, repo_id, failure))
+      end)
+    else
+      state
+    end
+  end
+
   # `PrAssociated` lands on BOTH the association map and the run projection.
   # It previously wrote only the association map, so `run/1` — and therefore
   # `GET /api/runs/:id` and `GET /api/runs` — carried no PR field at all: the
@@ -2670,6 +2910,42 @@ defmodule ForemanServer.ProjectionStore do
   # like a run that opened nothing.
   defp apply_event_by_type(state, "PrAssociated", payload) do
     case decode_for_projection("PrAssociated", payload) do
+      %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url, repo_id: repo_id} =
+          event
+      when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" and
+             is_binary(repo_id) and repo_id != "" ->
+        # A non-primary repository's PR (E12): stored per {run, repo}. It never
+        # touches the run's `pr_url`, the primary association or the primary's PR
+        # state fold; its own gate/state fold per repo (`repo_pr_states`).
+        association = %{
+          run_id: run_id,
+          repo_id: repo_id,
+          pr_url: pr_url,
+          pr_number: event.pr_number,
+          associated_at: event.associated_at
+        }
+
+        primary_urls =
+          case Map.get(state.pr_associations, run_id) do
+            %{pr_url: primary_url} -> %{run_primary_repo_id(state, run_id) => primary_url}
+            nil -> %{}
+          end
+
+        state
+        |> update_run_projection(run_id, payload_event_at_ms(payload), fn run ->
+          urls = Map.get(run, :pr_urls) || primary_urls
+          Map.put(run, :pr_urls, Map.put(urls, repo_id, pr_url))
+        end)
+        |> Map.update(:repo_pr_associations, %{run_id => %{repo_id => association}}, fn by_run ->
+          Map.update(
+            by_run,
+            run_id,
+            %{repo_id => association},
+            &Map.put(&1, repo_id, association)
+          )
+        end)
+        |> fold_pr_state("PrAssociated", payload)
+
       %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url} = event
       when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" ->
         association = %{
@@ -2679,9 +2955,16 @@ defmodule ForemanServer.ProjectionStore do
           associated_at: event.associated_at
         }
 
+        primary_id = run_primary_repo_id(state, run_id)
+
         state
         |> update_run_projection(run_id, payload_event_at_ms(payload), fn run ->
-          Map.put(run, :pr_url, pr_url)
+          run = Map.put(run, :pr_url, pr_url)
+
+          case run do
+            %{pr_urls: %{} = urls} -> %{run | pr_urls: Map.put(urls, primary_id, pr_url)}
+            _ -> run
+          end
         end)
         |> Map.update!(:pr_associations, &Map.put(&1, run_id, association))
         |> fold_pr_state("PrAssociated", payload)
@@ -2915,6 +3198,8 @@ defmodule ForemanServer.ProjectionStore do
           branch: event.branch,
           base_ref: event.base_ref,
           cleanup: event.cleanup,
+          repo_id: event.repo_id,
+          primary?: is_nil(event.repo_id),
           last_event_at_ms: payload_event_at_ms(payload)
         }
 
@@ -2967,6 +3252,7 @@ defmodule ForemanServer.ProjectionStore do
           worktree_path: event.worktree_path,
           repo_path: event.repo_path,
           reason: event.reason,
+          repo_id: event.repo_id,
           last_event_at_ms: payload_event_at_ms(payload)
         }
 
@@ -3637,16 +3923,133 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, _type, _payload), do: state
 
+  # The run's effective primary repository id: its selected primary, else the
+  # project primary id.
+  defp run_primary_repo_id(state, run_id) do
+    case Map.get(state.runs, run_id) do
+      %{repo_id: id} when is_binary(id) -> id
+      _ -> ForemanServer.Projects.RepoValidation.primary_id()
+    end
+  end
+
+  defp build_run_repositories(state, run_id) do
+    run = Map.get(state.runs, run_id)
+
+    worktrees =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> get(wt, :run_id) == run_id end)
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    if is_nil(run) and worktrees == [] and not Map.has_key?(state.pr_associations, run_id) and
+         not Map.has_key?(state.pr_states, run_id) do
+      []
+    else
+      primary_id =
+        case run && get(run, :repo_id) do
+          id when is_binary(id) -> id
+          _ -> ForemanServer.Projects.RepoValidation.primary_id()
+        end
+
+      # A repo can have several phase worktrees: prefer the first still-created
+      # one (the live checkout), else the last recorded.
+      by_repo =
+        worktrees
+        |> Enum.group_by(fn wt ->
+          if is_binary(get(wt, :repo_id)), do: get(wt, :repo_id), else: primary_id
+        end)
+        |> Map.new(fn {repo_id, wts} ->
+          {repo_id, Enum.find(wts, &(get(&1, :status) == "created")) || List.last(wts)}
+        end)
+
+      base_branches = (run && get(run, :repo_base_branches)) || %{}
+
+      others =
+        [(run && get(run, :repo_ids)) || [], Map.keys(by_repo), Map.keys(base_branches)]
+        |> Enum.concat()
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.reject(&(&1 == primary_id))
+        |> Enum.sort()
+
+      repo_states = state |> Map.get(:repo_pr_states, %{}) |> Map.get(run_id, %{})
+      repo_failures = state |> Map.get(:repo_pr_failures, %{}) |> Map.get(run_id, %{})
+      repo_prs = state |> Map.get(:repo_pr_associations, %{}) |> Map.get(run_id, %{})
+
+      primary_entry = %{
+        repo_id: primary_id,
+        primary?: true,
+        worktree: Map.get(by_repo, primary_id),
+        base_branch: run && get(run, :base_branch),
+        pr_association: Map.get(state.pr_associations, run_id),
+        gate: nil,
+        pr_state: nil,
+        pr_failure: nil
+      }
+
+      primary_entry =
+        case Map.get(state.pr_states, run_id) do
+          nil when is_nil(run) ->
+            primary_entry
+
+          entry ->
+            view = pr_state_view(run_id, run, entry)
+            %{primary_entry | gate: view.merge_gate, pr_state: view.pr_state}
+        end
+
+      primary_entry = apply_pr_failure(primary_entry, Map.get(repo_failures, primary_id))
+
+      [
+        primary_entry
+        | Enum.map(others, fn repo_id ->
+            secondary_run_repository(
+              repo_id,
+              by_repo,
+              base_branches,
+              repo_prs,
+              Map.get(repo_states, repo_id),
+              Map.get(repo_failures, repo_id)
+            )
+          end)
+      ]
+    end
+  end
+
+  defp secondary_run_repository(repo_id, by_repo, base_branches, repo_prs, entry, failure) do
+    %{
+      repo_id: repo_id,
+      primary?: false,
+      worktree: Map.get(by_repo, repo_id),
+      base_branch: Map.get(base_branches, repo_id),
+      pr_association: Map.get(repo_prs, repo_id),
+      gate: entry && entry.merge_gate,
+      pr_state: entry && entry.pr_state,
+      pr_failure: nil
+    }
+    |> apply_pr_failure(failure)
+  end
+
+  # A recorded PR-creation failure shows as `pr_state: :create_failed` only while
+  # the repository has no PR: a retry that opened one resolves it.
+  defp apply_pr_failure(%{pr_association: nil} = repo, %{} = failure),
+    do: %{repo | pr_state: :create_failed, pr_failure: failure}
+
+  defp apply_pr_failure(repo, _failure), do: repo
+
   defp fold_pr_watch(state, type, payload) do
     Map.update(state, :pr_watch, %{}, &ForemanServer.PrWatchFold.fold(&1, type, payload))
   end
 
-  defp unobserved_record(state, run_id, pr_url) do
+  defp unobserved_record(state, run_id, pr_url, repo_id) do
     run = Map.get(state.runs, run_id, %{})
 
     run_id
     |> ForemanServer.PrWatchFold.new_record(pr_url)
-    |> Map.merge(%{project_id: Map.get(run, :project_id), task_id: Map.get(run, :task_id)})
+    |> Map.merge(%{
+      project_id: Map.get(run, :project_id),
+      task_id: Map.get(run, :task_id),
+      repo_id: repo_id
+    })
     |> Map.put(:agent_review, review_signal(Map.get(state, :reviews, %{}), run_id))
   end
 
@@ -3689,7 +4092,13 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp fold_pr_state(state, type, payload) do
-    Map.update(state, :pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
+    state
+    |> Map.update(:pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
+    |> Map.update(
+      :repo_pr_states,
+      %{},
+      &ForemanServer.Overview.PrFold.fold_repo(&1, type, payload)
+    )
   end
 
   defp coordinator_project_id(payload) when is_map(payload) do
@@ -3873,6 +4282,42 @@ defmodule ForemanServer.ProjectionStore do
   @spec threads_started_on(String.t(), String.t()) :: non_neg_integer()
   def threads_started_on(project_id, day) when is_binary(project_id) and is_binary(day) do
     GenServer.call(__MODULE__, {:threads_started_on, project_id, day})
+  end
+
+  defp pending_run(state, run_id) do
+    task =
+      state.tasks
+      |> Map.values()
+      |> Enum.find(fn task ->
+        get(task, :run_id) == run_id and get(task, :status) == "in_progress"
+      end)
+
+    if task != nil and not Map.has_key?(state.runs, run_id) do
+      project_id = get(task, :project_id)
+      task_id = get(task, :task_id)
+      reason = deferral_reason(state, project_id, task_id)
+
+      %{
+        run_id: run_id,
+        task_id: task_id,
+        project_id: project_id,
+        status: if(reason, do: "deferred", else: "queued"),
+        reason: reason
+      }
+    end
+  end
+
+  # The refusal recorded most recently (latest UTC day) for the task.
+  defp deferral_reason(state, project_id, task_id) do
+    state
+    |> Map.get(:project_deferrals, %{})
+    |> Map.get(project_id, %{})
+    |> Enum.sort_by(fn {day, _by_reason} -> day end, :desc)
+    |> Enum.find_value(fn {_day, by_reason} ->
+      Enum.find_value(by_reason, fn {reason, task_ids} ->
+        if MapSet.member?(task_ids, task_id), do: reason
+      end)
+    end)
   end
 
   defp deferred_task_ids(state, project_id) do

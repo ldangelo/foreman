@@ -88,14 +88,16 @@ defmodule ForemanServer.PrWatcher.AutoFix do
       type: Map.fetch!(@command_types, kind),
       command_id: "pr_fix:#{run_id}:#{PrObservation.url_hash(pr_url)}:#{kind}:#{attempt}",
       aggregate_id: "run:#{run_id}",
-      payload: %{
-        run_id: run_id,
-        pr_url: pr_url,
-        trigger: "auto",
-        max_attempts: Map.get(settings, "max_attempts", 2),
-        cooldown_seconds: Map.get(settings, "cooldown_seconds", 0),
-        requested_at: now
-      }
+      payload:
+        %{
+          run_id: run_id,
+          pr_url: pr_url,
+          trigger: "auto",
+          max_attempts: Map.get(settings, "max_attempts", 2),
+          cooldown_seconds: Map.get(settings, "cooldown_seconds", 0),
+          requested_at: now
+        }
+        |> put_repo(Map.get(record, :repo_id))
     }
   end
 
@@ -111,10 +113,10 @@ defmodule ForemanServer.PrWatcher.AutoFix do
 
     case reason do
       {:fix_attempts_exhausted, ^kind, _cap} ->
-        {:ok, exhausted(run_id, pr_url, kind, "max_attempts", head_sha)}
+        {:ok, exhausted(run_id, pr_url, kind, "max_attempts", head_sha, request)}
 
       {:fix_no_progress, ^kind} ->
-        {:ok, exhausted(run_id, pr_url, kind, "no_progress", head_sha)}
+        {:ok, exhausted(run_id, pr_url, kind, "no_progress", head_sha, request)}
 
       _other ->
         :none
@@ -123,13 +125,19 @@ defmodule ForemanServer.PrWatcher.AutoFix do
 
   defp kind_of(type), do: Enum.find_value(@command_types, fn {kind, t} -> t == type && kind end)
 
-  defp exhausted(run_id, pr_url, kind, reason, head_sha) do
+  defp exhausted(run_id, pr_url, kind, reason, head_sha, request) do
     %{
       type: "run.pr.fix_exhausted",
       command_id:
         "pr_fix_exhausted:#{run_id}:#{PrObservation.url_hash(pr_url)}:#{kind}:#{head_sha}",
       aggregate_id: "run:#{run_id}",
-      payload: %{run_id: run_id, pr_url: pr_url, kind: kind, reason: reason, head_sha: head_sha}
+      payload:
+        %{run_id: run_id, pr_url: pr_url, kind: kind, reason: reason, head_sha: head_sha}
+        |> put_repo(request.payload[:repo_id])
     }
   end
+
+  # Absent == the run's primary repository (E12): only a non-primary PR names its repo.
+  defp put_repo(payload, nil), do: payload
+  defp put_repo(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
 end

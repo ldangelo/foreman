@@ -45,7 +45,7 @@ defmodule ForemanServer.Jobsite.Spec do
                    copy_to_worktree resume_session push bead_id)
 
   # Keys a remote caller must never supply, each with a reason in its error.
-  @forbidden_keys ~w(on_event reply_to logging resume? resume repo_path path base)
+  @forbidden_keys ~w(on_event reply_to logging resume? resume repo_path path base repositories)
 
   @agent_keys ~w(provider model effort approval_mode env)
 
@@ -107,11 +107,7 @@ defmodule ForemanServer.Jobsite.Spec do
     Enum.reduce_while(Map.keys(spec), :ok, fn key, :ok ->
       cond do
         is_binary(key) and key in @forbidden_keys ->
-          {:halt,
-           {:error,
-            Error.new(:spec_forbidden_key, "#{key} cannot be supplied in a remote spec", %{
-              key: key
-            })}}
+          {:halt, {:error, forbidden_key_error(key)}}
 
         key == "prompt_file" ->
           {:halt,
@@ -135,6 +131,18 @@ defmodule ForemanServer.Jobsite.Spec do
             Error.new(:spec_unknown_key, "unknown spec key #{inspect(shown)}", %{key: shown})}}
       end
     end)
+  end
+
+  defp forbidden_key_error("repositories") do
+    Error.new(
+      :spec_forbidden_key,
+      "repositories cannot be supplied in a remote spec: multi-repo jobsites unsupported",
+      %{key: "repositories", reason: "multi-repo jobsites unsupported"}
+    )
+  end
+
+  defp forbidden_key_error(key) do
+    Error.new(:spec_forbidden_key, "#{key} cannot be supplied in a remote spec", %{key: key})
   end
 
   # Decoded JSON only ever holds maps, lists, binaries, numbers, booleans and

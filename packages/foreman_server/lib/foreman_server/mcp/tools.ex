@@ -360,6 +360,20 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_project_repo_list %{
+    name: "foreman_project_repo_list",
+    description:
+      "List a project's repositories (E12): the primary (id \"main\", the project path) first, " <>
+        "then attached repositories, each with id, path, default_branch and primary. Read-only.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
+    }
+  }
+
   @schema_foreman_project_settings_get %{
     name: "foreman_project_settings_get",
     description:
@@ -683,6 +697,17 @@ defmodule ForemanServer.MCP.Tools do
           type: "string",
           description:
             "Task description, shown to command-phase agents as FOREMAN_TASK_DESCRIPTION"
+        },
+        repo_id: %{
+          type: "string",
+          description:
+            "Registered repository id (see foreman_project_repo_list) that is the run's PRIMARY repository. Defaults to the project primary."
+        },
+        repo_ids: %{
+          type: "array",
+          items: %{type: "string"},
+          description:
+            "Additional registered repository ids the run also works in. No duplicates, none equal to the primary; primary + extras must not exceed the project's max_repos_per_run."
         }
       },
       required: ["project_id", "description", "workflow"]
@@ -1221,6 +1246,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_questions_list,
     @schema_foreman_project_conversation,
     @schema_foreman_project_message,
+    @schema_foreman_project_repo_list,
     @schema_foreman_pr_status,
     @schema_foreman_pr_fix,
     @schema_foreman_pr_watch_stop
@@ -1228,6 +1254,9 @@ defmodule ForemanServer.MCP.Tools do
 
   # Read-only library tools (E5); implemented in `ForemanServer.MCP.LibraryTools`.
   @tools @tools ++ ForemanServer.MCP.LibraryTools.schemas()
+
+  # Multi-repo write tools (E12 S10/S11); implemented in `ForemanServer.MCP.RepoTools`.
+  @tools @tools ++ ForemanServer.MCP.RepoTools.schemas()
 
   def list_tools, do: @tools
 
@@ -1970,6 +1999,9 @@ defmodule ForemanServer.MCP.Tools do
   defp tool_foreman_project_library_list(args), do: ForemanServer.MCP.LibraryTools.list(args)
   defp tool_foreman_project_library_read(args), do: ForemanServer.MCP.LibraryTools.read(args)
 
+  defp tool_foreman_run_request_repo(args), do: ForemanServer.MCP.RepoTools.run_request_repo(args)
+  defp tool_foreman_task_fanout(args), do: ForemanServer.MCP.RepoTools.task_fanout(args)
+
   defp tool_foreman_inbox_send(%{} = args) do
     start_us = System.monotonic_time(:microsecond)
 
@@ -2161,6 +2193,24 @@ defmodule ForemanServer.MCP.Tools do
         {:error, %ToolError{code: "TIMEOUT", message: "Recommendations timed out"}}
     end
   end
+
+  defp tool_foreman_project_repo_list(%{project_id: project_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ProjectionStore.project_repositories(project_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    case result do
+      nil ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_repo_list", :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+
+      repos ->
+        Telemetry.mcp_tool_call(duration_us, "foreman_project_repo_list", :ok)
+        {:ok, %{"project_id" => project_id, "repositories" => Enum.map(repos, &repo_view/1)}}
+    end
+  end
+
+  defp repo_view(repo), do: Map.new(repo, fn {key, value} -> {to_string(key), value} end)
 
   defp tool_foreman_project_settings_get(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)
@@ -3058,6 +3108,8 @@ defmodule ForemanServer.MCP.Tools do
         provider_tracked: Map.get(args, :provider_tracked, false),
         auto_approve: Map.get(args, :auto_approve, true)
       }
+
+      payload = Map.merge(payload, Map.take(args, [:repo_id, :repo_ids]))
 
       envelope = %{
         type: "task.create",

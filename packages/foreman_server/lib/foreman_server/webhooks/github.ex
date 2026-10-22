@@ -13,6 +13,10 @@ defmodule ForemanServer.Webhooks.Github do
   (HTTP 202), not an error. Nothing in the payload names a run, and nothing the
   sender controls selects one.
 
+  A PR is addressed as `{run_id, repo_id}` (E12): the update goes to the one repository's
+  PR association whose url matches, carries `repo_id` only when that repository is not
+  the run's primary, and never touches another repository's PR of the same run.
+
   Handled `pull_request` actions:
 
     * `closed` with `merged: true`  — `:merged`.
@@ -191,9 +195,11 @@ defmodule ForemanServer.Webhooks.Github do
         [] ->
           :ignored
 
-        run_ids ->
-          run_ids
-          |> Enum.map(&PrUpdate.command(&1, pr_url, observed))
+        targets ->
+          targets
+          |> Enum.map(fn {run_id, repo_id} ->
+            PrUpdate.command(run_id, pr_url, observed, repo_id)
+          end)
           |> collect()
       end
     end

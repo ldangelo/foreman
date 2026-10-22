@@ -29,7 +29,9 @@ defmodule ForemanServer.MCP.ToolInventoryTest do
                  "foreman_schedule_delete",
                  "foreman_project_message",
                  "foreman_pr_fix",
-                 "foreman_pr_watch_stop"
+                 "foreman_pr_watch_stop",
+                 "foreman_run_request_repo",
+                 "foreman_task_fanout"
                ])
 
   @read_tools Enum.sort([
@@ -66,7 +68,8 @@ defmodule ForemanServer.MCP.ToolInventoryTest do
                 "foreman_project_conversation",
                 "foreman_pr_status",
                 "foreman_project_library_list",
-                "foreman_project_library_read"
+                "foreman_project_library_read",
+                "foreman_project_repo_list"
               ])
 
   defp names, do: Enum.map(Tools.list_tools(), & &1.name)
@@ -75,7 +78,7 @@ defmodule ForemanServer.MCP.ToolInventoryTest do
   def unclassified(advertised, read, write), do: advertised -- (read ++ write)
 
   test "every advertised tool is classified read or write, and the inventory is complete" do
-    assert length(names()) == 58
+    assert length(names()) == 61
     assert Enum.sort(names()) == Enum.sort(@read_tools ++ @write_tools)
     assert unclassified(names(), @read_tools, @write_tools) == []
     assert @read_tools -- @write_tools == @read_tools

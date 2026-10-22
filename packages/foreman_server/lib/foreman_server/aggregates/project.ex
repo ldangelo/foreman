@@ -15,11 +15,14 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.RunSlots.Config
 
   alias ForemanServer.Aggregates.Project.{Environment, Settings}
+  alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.ProjectEnvironment
 
   alias ForemanServer.Events.{
     ProjectAdmissionDeferred,
     ProjectPaused,
+    ProjectRepositoryAdded,
+    ProjectRepositoryRemoved,
     ProjectResumed,
     ProjectRunReservationReleased,
     ProjectRunReserved,
@@ -41,7 +44,8 @@ defmodule ForemanServer.Aggregates.Project do
       health: %{ok: true},
       thread_day: nil,
       thread_ids: MapSet.new(),
-      adopted_keys: []
+      adopted_keys: [],
+      repositories: []
     ]
   end
 
@@ -93,6 +97,7 @@ defmodule ForemanServer.Aggregates.Project do
           |> fold_settings(payload)
 
         state
+        |> update_path(payload)
         |> update_status(payload)
         |> update_health(payload)
         |> put_task_provider(task_provider)
@@ -133,6 +138,12 @@ defmodule ForemanServer.Aggregates.Project do
       "ProjectSubjectAdopted" ->
         record_adoption(state, payload)
 
+      "ProjectRepositoryAdded" ->
+        add_repository(state, payload)
+
+      "ProjectRepositoryRemoved" ->
+        remove_repository(state, Aggregate.get(payload, :repo_id))
+
       _ ->
         state
     end
@@ -170,6 +181,7 @@ defmodule ForemanServer.Aggregates.Project do
          :ok <- reject_environment_write(payload),
          :ok <- reject_status_edit(payload),
          :ok <- require_exists(state, project_id),
+         :ok <- validate_update_path(state, payload),
          {:ok, payload} <-
            payload
            |> Map.put(:project_id, project_id)
@@ -180,6 +192,67 @@ defmodule ForemanServer.Aggregates.Project do
          stream_id: "project:#{project_id}",
          event_type: "ProjectUpdated",
          payload: payload
+       }}
+    end
+  end
+
+  # Attaches a NON-primary repository. Pure checks only: the impure ones
+  # (realpath, git work tree, remote-identity duplicate) run in the command
+  # gateway via `Projects.RepoValidation.check_candidate/3` BEFORE dispatch,
+  # which also substitutes the canonical path into this payload.
+  def handle_command(%State{} = state, %{type: "project.repo.add", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- reject_archived(state, project_id),
+         :ok <- reject_unknown_repo_keys(payload),
+         repo_id = Aggregate.get(payload, :repo_id),
+         :ok <- RepoValidation.validate_id(repo_id),
+         :ok <- reject_taken_repo_id(state, repo_id),
+         path = Aggregate.get(payload, :path),
+         :ok <- RepoValidation.validate_path(path),
+         :ok <- RepoValidation.reject_duplicate_path(path, repository_paths(state)),
+         {:ok, default_branch} <- validate_repo_default_branch(payload),
+         :ok <- validate_repo_vcs(Aggregate.get(payload, :vcs)),
+         :ok <- validate_repo_task_provider(repo_id, Aggregate.get(payload, :task_provider)),
+         {:ok, added_by} <-
+           Aggregate.required_binary(Aggregate.get(payload, :added_by), :added_by) do
+      {:ok,
+       %{
+         stream_id: "project:#{project_id}",
+         event_type: "ProjectRepositoryAdded",
+         payload: %ProjectRepositoryAdded{
+           project_id: project_id,
+           repo_id: repo_id,
+           path: path,
+           default_branch: default_branch,
+           task_provider: nil,
+           added_by: added_by,
+           at: now_iso()
+         }
+       }}
+    end
+  end
+
+  def handle_command(%State{} = state, %{type: "project.repo.remove", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         repo_id = Aggregate.get(payload, :repo_id),
+         :ok <- validate_removable_repo(state, repo_id),
+         :ok <- validate_no_active_runs(state),
+         {:ok, removed_by} <-
+           Aggregate.required_binary(Aggregate.get(payload, :removed_by), :removed_by) do
+      {:ok,
+       %{
+         stream_id: "project:#{project_id}",
+         event_type: "ProjectRepositoryRemoved",
+         payload: %ProjectRepositoryRemoved{
+           project_id: project_id,
+           repo_id: repo_id,
+           removed_by: removed_by,
+           at: now_iso()
+         }
        }}
     end
   end
@@ -346,8 +419,7 @@ defmodule ForemanServer.Aggregates.Project do
       # reservation count.
       max_concurrent_runs_per_project =
         Aggregate.get(payload, :max_concurrent_runs_per_project) ||
-          Aggregate.get(state.config, :max_concurrent_runs) ||
-          Config.max_concurrent_runs_per_project()
+          effective_run_limit(state)
 
       day = today()
 
@@ -553,6 +625,34 @@ defmodule ForemanServer.Aggregates.Project do
     end
   end
 
+  @doc """
+  The project's per-project run ceiling: its `max_concurrent_runs` setting, else
+  the global per-project default.
+  """
+  @spec effective_run_limit(%State{}) :: non_neg_integer()
+  def effective_run_limit(%State{} = state) do
+    Aggregate.get(state.config, :max_concurrent_runs) || Config.max_concurrent_runs_per_project()
+  end
+
+  @doc """
+  `{:error, :run_limit_exceeded}` when starting `run_id` would exceed the
+  project's run ceiling; `:ok` for a run that already holds a reservation.
+
+  Pure over aggregate state. `RunAdmission` consults it BEFORE acquiring the
+  global run slot: the slot-acquire command id is per run id, so a refused run
+  can neither keep its slot without starving other projects nor hand it back
+  and re-acquire it on the retry. `project.reserve_run` still enforces the
+  limit authoritatively.
+  """
+  @spec run_limit_refusal(%State{}, String.t() | nil) :: :ok | {:error, :run_limit_exceeded}
+  def run_limit_refusal(%State{} = state, run_id) do
+    if is_binary(run_id) and reserved_run(state, run_id) do
+      :ok
+    else
+      reject_at_run_limit(state, effective_run_limit(state))
+    end
+  end
+
   defp require_absent(%State{exists?: true}, project_id),
     do: {:error, {:already_exists, :project, project_id}}
 
@@ -663,6 +763,109 @@ defmodule ForemanServer.Aggregates.Project do
       do: %State{state | status: status},
       else: state
   end
+
+  # A `ProjectUpdated` that carries a `path` re-points the PRIMARY repository
+  # (the synthesised "main"), so the aggregate state must follow it: later
+  # `project.repo.add` uniqueness checks compare against the new primary.
+  defp update_path(%State{} = state, payload) do
+    case Aggregate.get(payload, :path) do
+      path when is_binary(path) and path != "" -> %State{state | path: path}
+      _ -> state
+    end
+  end
+
+  # `project.update` with a `path` re-points the primary, so it passes the pure
+  # half of the `project.repo.add` validation: absolute, and not the checkout
+  # of an attached extra repository. The impure half (realpath, work tree,
+  # remote identity) is `RepoValidation.check_candidate/3` in the gateway.
+  defp validate_update_path(%State{} = state, payload) do
+    case Aggregate.get(payload, :path) do
+      nil ->
+        :ok
+
+      path ->
+        with :ok <- RepoValidation.validate_path(path) do
+          RepoValidation.reject_duplicate_path(path, Enum.map(state.repositories, & &1.path))
+        end
+    end
+  end
+
+  @repo_add_keys ~w(project_id repo_id path default_branch vcs task_provider added_by at command_id)
+
+  defp reject_unknown_repo_keys(payload) do
+    case payload |> Map.keys() |> Enum.map(&to_string/1) |> Kernel.--(@repo_add_keys) do
+      [] -> :ok
+      keys -> {:error, {:unknown_repo_keys, Enum.sort(keys)}}
+    end
+  end
+
+  defp reject_taken_repo_id(%State{repositories: repos}, repo_id) do
+    if repo_id == RepoValidation.primary_id() or Enum.any?(repos, &(&1.id == repo_id)),
+      do: {:error, {:repo_id_taken, repo_id}},
+      else: :ok
+  end
+
+  # `state.path` is the primary, so it is compared like any extra path.
+  defp repository_paths(%State{path: path, repositories: repos}),
+    do: Enum.reject([path | Enum.map(repos, & &1.path)], &is_nil/1)
+
+  defp validate_repo_default_branch(payload) do
+    case Aggregate.get(payload, :default_branch) do
+      nil -> {:ok, nil}
+      branch when is_binary(branch) and branch != "" -> {:ok, branch}
+      other -> {:error, {:invalid_default_branch, other}}
+    end
+  end
+
+  defp validate_repo_vcs(nil), do: :ok
+
+  defp validate_repo_vcs(vcs) when is_map(vcs) do
+    if Aggregate.get(vcs, :adapter) == "git" and map_size(vcs) == 1,
+      do: :ok,
+      else: {:error, {:unsupported_repo_vcs, vcs}}
+  end
+
+  defp validate_repo_vcs(vcs), do: {:error, {:unsupported_repo_vcs, vcs}}
+
+  defp validate_repo_task_provider(_repo_id, nil), do: :ok
+
+  defp validate_repo_task_provider(repo_id, _provider),
+    do: {:error, {:repo_task_provider_unsupported, repo_id}}
+
+  defp validate_removable_repo(%State{repositories: repos}, repo_id) do
+    cond do
+      repo_id == RepoValidation.primary_id() -> {:error, :primary_repo_not_removable}
+      Enum.any?(repos, &(&1.id == repo_id)) -> :ok
+      true -> {:error, {:repo_not_found, repo_id}}
+    end
+  end
+
+  defp validate_no_active_runs(%State{active_run_reservations: reservations})
+       when map_size(reservations) > 0,
+       do: {:error, :project_has_active_runs}
+
+  defp validate_no_active_runs(%State{}), do: :ok
+
+  defp add_repository(%State{repositories: repos} = state, payload) do
+    repo = %{
+      id: Aggregate.get(payload, :repo_id),
+      path: Aggregate.get(payload, :path),
+      default_branch: Aggregate.get(payload, :default_branch),
+      primary: false,
+      vcs: Aggregate.get(payload, :vcs) || %{adapter: "git"},
+      task_provider: nil,
+      added_by: Aggregate.get(payload, :added_by),
+      added_at: Aggregate.get(payload, :at)
+    }
+
+    %State{state | repositories: Enum.reject(repos, &(&1.id == repo.id)) ++ [repo]}
+  end
+
+  defp remove_repository(%State{repositories: repos} = state, repo_id),
+    do: %State{state | repositories: Enum.reject(repos, &(&1.id == repo_id))}
+
+  defp now_iso,
+    do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
   defp reject_removed_settings(payload) do
     if Map.has_key?(payload, :default_branch) or Map.has_key?(payload, "default_branch"),

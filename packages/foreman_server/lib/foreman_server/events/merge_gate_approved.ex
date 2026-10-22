@@ -9,8 +9,10 @@ defmodule ForemanServer.Events.MergeGateApproved do
           run_id: String.t(),
           approver: String.t(),
           approver_identity: String.t(),
-          approved_at: non_neg_integer() | nil
+          approved_at: non_neg_integer() | nil,
+          repo_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :approver, :approver_identity, approved_at: nil]
+  # `repo_id` is present only for a non-primary repository's PR (E12).
+  defstruct [:run_id, :approver, :approver_identity, approved_at: nil, repo_id: nil]
 end

@@ -26,14 +26,28 @@ defmodule ForemanServerWeb.RunController do
   def show(conn, %{"id" => run_id}) do
     case ProjectionStore.run(run_id) do
       nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "run_not_found", run_id: run_id})
+        show_pending(conn, run_id)
 
       projection when is_map(projection) ->
         conn
         |> put_status(:ok)
         |> json(%{run: stringify_keys(projection)})
+    end
+  end
+
+  # `task.approve` returns a run id before admission has produced a run. A run
+  # waiting on a refused admission (run limit, cap, pause) or a slot is queued
+  # or deferred, not missing: 200 with that status instead of a 404 that never
+  # resolves. Anything else is a genuine 404.
+  defp show_pending(conn, run_id) do
+    case ProjectionStore.pending_run(run_id) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "run_not_found", run_id: run_id})
+
+      pending ->
+        conn |> put_status(:ok) |> json(%{run: stringify_keys(pending)})
     end
   end
 
@@ -61,6 +75,11 @@ defmodule ForemanServerWeb.RunController do
       _ -> opts
     end
   end
+
+  # Only plain maps have their keys stringified. A struct inside the projection (the run's
+  # `usage` is a `%ForemanServer.Usage{}`) is not enumerable: it is left for Jason, which
+  # encodes it through the struct's own `Jason.Encoder`.
+  defp stringify_keys(%_{} = struct), do: struct
 
   defp stringify_keys(value) when is_map(value) do
     Map.new(value, fn {k, v} -> {to_string(k), stringify_keys(v)} end)

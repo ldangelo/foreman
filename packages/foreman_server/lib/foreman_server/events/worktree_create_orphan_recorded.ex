@@ -12,6 +12,7 @@ defmodule ForemanServer.Events.WorktreeCreateOrphanRecorded do
   `phase_id`. `worktree_path` is the on-disk path the operator must
   clean.
   """
+  # `repo_id`: absent = the run's primary repo (E12); declared for strict decode.
   @enforce_keys [:operation_id, :project_id, :run_id, :phase_id, :worktree_path]
   @type t :: %__MODULE__{
           operation_id: String.t(),
@@ -21,7 +22,8 @@ defmodule ForemanServer.Events.WorktreeCreateOrphanRecorded do
           worktree_path: String.t(),
           repo_path: String.t() | nil,
           reason: String.t() | nil,
-          branch: String.t() | nil
+          branch: String.t() | nil,
+          repo_id: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -32,6 +34,7 @@ defmodule ForemanServer.Events.WorktreeCreateOrphanRecorded do
     :worktree_path,
     :repo_path,
     :reason,
-    :branch
+    :branch,
+    :repo_id
   ]
 end

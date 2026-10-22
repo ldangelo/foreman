@@ -53,6 +53,44 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
            "run.pr.ready must have put the PR into the merge gate"
   end
 
+  # Found by the live acceptance run: with `stack_pr: true` the phase PR
+  # suppressed the final auto-PR, and nothing then associated it with the run or
+  # signalled `run.pr.ready`, so the thread never reached the merge gate.
+  test "a run whose phase PR suppresses the final auto-PR still yields that PR for the merge gate",
+       %{run_id: run_id} do
+    phase_pr = fn index, status, url ->
+      %{
+        run_id: run_id,
+        phase_id: "#{run_id}-p00#{index}",
+        phase_index: index,
+        phase_name: "phase-#{index}",
+        status: status,
+        pr_url: url,
+        pr_number: index,
+        base_branch: "main",
+        head_branch: "foreman/run-branch",
+        provider: "github",
+        recorded_at: "2026-01-01T00:00:0#{index}Z"
+      }
+    end
+
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "PhasePrRecorded",
+          payload: phase_pr.(1, "created", "https://github.com/acme/repo/pull/7")
+        },
+        %{
+          event_type: "PhasePrRecorded",
+          payload: phase_pr.(2, "existing", "https://github.com/acme/repo/pull/8")
+        },
+        %{event_type: "PhasePrRecorded", payload: phase_pr.(3, "noop", nil)}
+      ])
+
+    assert {:ok, "https://github.com/acme/repo/pull/8"} =
+             RunExecutor.__maybe_auto_pr_for_test__(%{run_id: run_id})
+  end
+
   test "signalling twice appends exactly one PrReady event", %{repo: repo, run_id: run_id} do
     st = state(repo, run_id)
 

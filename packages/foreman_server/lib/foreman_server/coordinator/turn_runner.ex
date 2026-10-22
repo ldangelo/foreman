@@ -20,6 +20,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   require Logger
 
   alias ForemanServer.Coordinator.{
+    StatusBlock,
     Action,
     Authority,
     Commands,
@@ -109,7 +110,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   defp execute(project_id, rt, conv, [first | _] = pending, turn_id, attempt) do
     with {:ok, context} <- build_context(project_id, rt, pending),
          {:ok, %Turn{} = turn} <- call_agent(project_id, rt, context) do
-      complete(project_id, rt, conv, pending, first, turn_id, turn)
+      complete(project_id, rt, conv, pending, first, turn_id, turn, context)
     else
       {:error, %Error{} = error} ->
         fail_turn(project_id, rt, turn_id, attempt, error.code, error.message)
@@ -158,7 +159,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   defp provider(name, default),
     do: Enum.find(JidoHarness.providers(), default, &(Atom.to_string(&1) == name))
 
-  defp complete(project_id, rt, conv, pending, first, turn_id, %Turn{} = turn) do
+  defp complete(project_id, rt, conv, pending, first, turn_id, %Turn{} = turn, context) do
     trigger_key = first.message_id
     authority = Authority.of(pending)
 
@@ -167,7 +168,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     Commands.append(rt.gateway, project_id, "reply:" <> trigger_key, %{
       role: "coordinator",
       kind: "reply",
-      text: turn.reply,
+      text: StatusBlock.annotate(turn.reply, context.status_counts),
       turn_id: turn_id
     })
 

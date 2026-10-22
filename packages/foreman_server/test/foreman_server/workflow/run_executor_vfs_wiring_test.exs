@@ -39,7 +39,7 @@ defmodule ForemanServer.Workflow.RunExecutorVfsWiringTest do
       worktree = "/tmp/wt-wiring-#{System.unique_integer([:positive])}"
 
       assert :ok = invoke_bind(run_id, worktree)
-      assert {:ok, ^worktree} = VfsIsolation.lookup(run_id)
+      assert {:ok, [VfsIsolation.canonical_path(worktree)]} == VfsIsolation.lookup(run_id)
     end
 
     test "unbind removes the registration" do
@@ -47,7 +47,7 @@ defmodule ForemanServer.Workflow.RunExecutorVfsWiringTest do
       worktree = "/tmp/wt-wiring-#{System.unique_integer([:positive])}"
 
       assert :ok = invoke_bind(run_id, worktree)
-      assert {:ok, ^worktree} = VfsIsolation.lookup(run_id)
+      assert {:ok, [VfsIsolation.canonical_path(worktree)]} == VfsIsolation.lookup(run_id)
 
       assert :ok = invoke_unbind(run_id)
       assert :not_found = VfsIsolation.lookup(run_id)

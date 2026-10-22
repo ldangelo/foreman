@@ -121,6 +121,7 @@ devbox run db:console
 devbox run test               # all tests
 devbox run test:unit          # everything except :langfuse-tagged
 devbox run test:langfuse       # only the OTel+Langfuse e2e path
+devbox run -- sh scripts/e2e/multi_repo.sh   # live multi-repo e2e: real agent, scratch repos (see "Repositories")
 
 devbox run info                # command + status summary
 devbox run env:list             # current env vars + endpoints
@@ -248,7 +249,11 @@ It acts through a closed command set and can never merge, approve, archive or
 retry. Tuning (`coordinator_propose_before_start`,
 `coordinator_max_active_threads`, `coordinator_reuse_threads`) is enforced by the
 server, not by the prompt. Its `schedule` and `add_repo` actions are rejected as
-unsupported in this revision.
+unsupported in this revision. Thread counts in its replies are not the model's
+arithmetic: the context carries the Overview's counts per group (a `STATUS`
+section) and a reply that talks about thread status gets a
+`Status (computed by Foreman from the Overview): ready for review 2 · ...` line
+appended.
 
 ### Approvals and questions
 
@@ -486,6 +491,74 @@ retried when the project resumes or its settings change. `project settings` (and
 `GET /api/projects/<id>/settings`) shows the effective limits, usage today,
 `resets_at` and the count of deferred tasks.
 
+### Repositories
+
+A project's `path` is its primary repository (id `main`). Extra checkouts that
+already exist on the server host can be attached with
+`foreman project repo add --id <repo-id> --path <abs-path> <project-id>` and
+detached with `repo remove`; `repo list` (or `GET /api/projects/<id>/repositories`,
+also `repositories` in the project JSON) shows them, primary first. Adding is
+operator-only (there is no MCP write tool; `foreman_project_repo_list` is
+read-only). The server canonicalises the path (symlinks resolved), requires a git
+work-tree root, and refuses a duplicate path or a second checkout of the same
+`origin`. Changing the primary with `project update --path` is validated the same
+way. Policy settings `repo_allowlist` (absolute path prefixes; `..`, relative
+entries and `/` are rejected) and `max_repos_per_run` (default 4) are stored via
+`project.update`. A run may span several repositories (the multi-repo run gate is
+open by default). Each repository the run changed gets its own branch and
+PR (untouched repositories get none); sibling PRs are cross-linked in their
+bodies. A repository whose push or `gh` fails does not stop the others: the run
+completes (read as `completed_with_errors` on the dashboard) and
+`foreman run retry-pr --id <run> --repo-id <repo>` opens the missing PR once the
+cause is fixed. Each PR has its own merge gate (`approve-merge`/`merge` take
+`--repo-id`). A run with `stack_pr: true` phases cannot span several repositories
+and is refused at start. An operator can close the gate again with
+`config :foreman_server, :multi_repo, runs: false` (new multi-repo runs are then
+refused at start with `multi_repo_runs_disabled`; single-repo runs are unaffected).
+
+**Rollback caveat (release note).** Single-repository runs write no new event keys, so
+rolling back to a build without multi-repo support is safe as long as no multi-repo run
+has happened. The first multi-repo run writes events carrying `repo_id`/`repo_ids`,
+which an older binary cannot replay: after that run rolling back is NOT safe.
+`runs: false` stops new multi-repo runs but cannot remove events already written.
+
+**Live proof.** `devbox run -- sh scripts/e2e/multi_repo.sh` (POSIX sh; `E2E_PROVIDER`
+defaults to `pi` with `minimax/MiniMax-M2.7-highspeed`; `E2E_STAGES`, `E2E_KEEP=1`,
+`E2E_TRANSCRIPT=<file>` and the other knobs are listed in the script header) runs
+one real task over two scratch git repositories with local bare origins, a recording
+fake `gh`, a private port and a private database, and asserts the whole flow:
+two worktrees, an edit made through the sibling path, commits and pushed branches in
+both repositories, two PRs, the archive (`diffs/b.patch`, manifest `repositories[]`),
+the per-repository merge gate, a read-only-origin failure recovered by `run retry-pr`,
+and an unchanged single-repository run on the same server. It exits non-zero naming
+the failing assertion. It never creates GitHub repositories (`E2E_GITHUB=1` is refused).
+The recorded run is `docs/lessons/multi-repo-e2e-2026-10-21.md`.
+
+#### Targeting repositories, letting a thread add one, fan-out
+
+The `task.create` command (HTTP `/api/commands`) and the MCP `foreman_task_create` accept `repo_id` (the
+repository the run is rooted in; default the project primary) and `repo_ids`
+(additional repositories). Unknown ids, duplicates, an extra equal to the primary
+and a total above `max_repos_per_run` (primary included) are refused at creation.
+Runs rooted in or spanning other repositories are admitted while the multi-repo gate
+is open (the default).
+
+A thread can ask for another repository with the write tool
+`foreman_run_request_repo` (`run_id`, and `repo_id` or an absolute `repo_path`).
+It is **off** until an operator sets `repo_allowlist` (`project update`): every
+request, for registered and unregistered repositories alike, must resolve (symlinks
+followed) inside an allowlisted prefix, and the run may hold at most
+`max_repos_per_run` repositories. An unregistered git checkout inside the
+allowlist is registered first. The repository's worktree is created at once but
+is effective in the **next phase**. Every request, allowed or denied, is recorded
+(`RunRepoRequested` on `run_repo_audit:<run_id>`). A thread cannot merge or approve.
+
+`foreman_task_fanout` (write tool; `project_id`, `title`, `prompt`, `workflow`,
+`repo_ids` or `"all"`, optional `fanout_id`) creates one independent task per
+repository (`<fanout_id>-<repo_id>`, each its own run and PR). Retry with the same
+`fanout_id` to stay idempotent; rejections (paused/archived project, unknown repo)
+are reported per repository and keep the tasks already created.
+
 ### Usage and cost
 
 `foreman usage` shows what a project's threads (workflow runs and jobsites) consumed, grouped by model
@@ -573,6 +646,15 @@ holds their line and imports it after `resume`, and tasks refused at admission a
 re-admitted on resume. `reactivate` is for archived projects (and clears any
 earlier pause); `resume` is for paused ones.
 
+A run id returned by `foreman run submit` exists before admission has produced a
+run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
+keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
+with `run.status` `deferred` and `run.reason` (or `queued` while admission is
+pending), never a 404. It is re-admitted when the project is resumed, when a
+`project update` changes its settings (a raised limit), and when a finished run
+frees its reservation; the global run slot is only taken once the project's own
+limits admit the run, so a deferred run never starves other projects.
+
 ### Tasks
 
 A task is the unit of dispatchable work. It carries a title, optional
@@ -649,6 +731,16 @@ foreman run merge --id <run-id>
   (`head_moved_since_approval`), so nothing pushed after approval is merged
   unreviewed. A PR that is already merged at the approved head is recorded without
   calling `gh` again, so a retry is safe. The server host needs an authenticated `gh`.
+- **Multi-repository runs (E12)**: every repository opens its own PR with its own
+  merge gate. `run approve-merge` / `run merge` take `--repo-id <repo>` (omit it for
+  the primary repository); one call approves or merges exactly one PR, each merge
+  pinned to that PR's own approved head. There is no approve-all, and merge stays
+  operator-only (no MCP tool). If one repository's PR cannot be created the run
+  still completes; that repository shows `pr_state: create_failed` (and the
+  dashboard reads the run as `completed_with_errors`, a derived flag, not a run
+  status), its worktree is kept, and `run retry-pr <id> --repo-id <repo>`
+  (`run.pr.retry`, idempotent, allowed on a finished run) opens the missing PR and
+  then reclaims the worktree. Single-repository runs are unchanged.
 
 Phases have no default execution timeout: a workflow's `timeout_minutes:`
 (alias `timeoutMinutes:`) is optional, and `0` or an absent key both mean
@@ -703,11 +795,11 @@ is exactly:
 
 - Projects: `project.register`, `project.update`, `project.environment.set`,
   `project.archive`, `project.reactivate`, `project.pause`, `project.resume`,
-  `project.adopt`
+  `project.adopt`, `project.repo.add`, `project.repo.remove`
 - Tasks: `task.create`, `task.approve`, `task.retry`, `task.update`
 - Runs: `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
   `run.steer`, `inbox.send`
-- Merge gate (operator-only): `merge_approve`, `run.pr.merge`
+- Merge gate (operator-only): `merge_approve`, `run.pr.merge`, `run.pr.retry`
 - PR watching: `run.pr.fix_ci`, `run.pr.address_comments`,
   `run.pr.resolve_conflicts`, `run.pr.watch_stop`, `run.pr.watch_start`,
   `run.pr.create` (merge is deliberately not among them)
@@ -1322,7 +1414,7 @@ and behavior cannot diverge.
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`, `foreman_inbox_get`,
-`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_usage_get`, `foreman_project_environment_get`,
+`foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_repo_list`, `foreman_usage_get`, `foreman_project_environment_get`,
 `foreman_project_recommendations`, `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`,
 `foreman_thread_find`, `foreman_overview`.
 The write-gated thread tools are `foreman_thread_stop` and
@@ -1615,6 +1707,10 @@ and releases, not to `mix test`):
 | `FOREMAN_JOBSITES_ALLOW_REMOTE_START` | `allow_remote_start` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST` | `agent_env_allowlist` (comma-separated names, e.g. `ANTHROPIC_BASE_URL,ANTHROPIC_API_KEY`; blank entries are dropped) |
+| `FOREMAN_HTTP_PORT` | `ForemanServerWeb.Endpoint` http port (a valid port number; `127.0.0.1` only; lets a second server run beside the dev one) |
+| `FOREMAN_NOTIFY_WEBHOOK_URL` | `:messaging` (provider `webhook`, delivery enabled for every event class, no run-update rate limit, `webhook.url` from the variable) |
+| `FOREMAN_REVIEW_PROVIDER` / `FOREMAN_REVIEW_MODEL` | `:review, agent:` (the fixed reviewer; `claude` or `pi`, optional model; unset keeps `claude`) |
+| `FOREMAN_PR_FIX_SANDBOX` | `:pr_fix, sandbox:` (`docker` or `host`; unset keeps the jobsite default, docker, which needs a built `foreman-jobsite:<project>` image; `host` also needs `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true`) |
 | `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
 
 A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).
@@ -2019,6 +2115,21 @@ recorded in the manifest (`capture_errors`, `transcript_truncated`,
 from its redacted, bounded run logs (`transcript_source: "run_logs"`); a
 jobsite's comes from the harness events.
 
+A multi-repository run (more than one repository attached) keeps the primary
+repository's `diff.patch` and `changed-files.txt` exactly as above and adds one
+pair per additional repository: `diffs/<repo_id>.patch` and
+`diffs/<repo_id>.files.txt` (same size bound and truncation record in
+`capture_errors`, stages `diff:<repo_id>` / `changed_files:<repo_id>`; the repo
+id is validated, so it cannot escape `diffs/`). The manifest (still
+`foreman.review.manifest.v1`) gains `repositories`:
+`[{id, primary, branch, base_ref, worktree_path, diff_status, pr_url}]`, primary
+first, with `pr_url` taken from the repository's PR association (`null` when it
+opened none). Single-repository archives have no `repositories` key and no
+`diffs/` directory. The automated reviewer is told to read every
+`diffs/*.patch` only when the manifest lists more than one repository. Jobsites
+stay single-repository: a `repositories` key in a jobsite spec is rejected with
+`spec_forbidden_key` (multi-repo jobsites unsupported).
+
 A cancelled run or jobsite is archived and reviewed like any other, with
 manifest `status: "cancelled"`. Cancelled work is never committed, so its
 `diff.patch` is the working-tree diff against the base: uncommitted changes to
@@ -2134,6 +2245,14 @@ threads, merge conflicts) and folds changes into the run's PR projection as
   `pull_request_review_comment`, `pull_request_review_thread` and `issue_comment`.
   A delivery only refreshes the PR sooner; the signature is still mandatory and
   unknown PRs are ignored.
+
+**Multi-repository runs.** A run that touched several repositories has one PR per
+repository, and every PR is watched, polled and fixed on its own, addressed as
+`{run_id, repo_id}` (`repo_id` is carried on the PR's events only for a
+non-primary repository). A webhook or poll for repository b's PR updates b's PR
+record only: it never changes a's PR state, watch record or merge gate. A fix
+thread for a PR attaches that repository's checkout and that repository's
+worktree, never another repository's.
 
 **Reading.** `foreman run prs <run-id>` (HTTP `GET /api/runs/:id/prs`, MCP
 `foreman_pr_status`) returns one record per PR: URL, status, checks state, failing

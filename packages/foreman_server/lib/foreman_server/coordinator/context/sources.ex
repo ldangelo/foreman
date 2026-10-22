@@ -22,6 +22,9 @@ defmodule ForemanServer.Coordinator.Context.Sources do
   @callback threads(String.t()) :: [Thread.t()]
   @callback workflows() :: [%{name: String.t(), description: String.t() | nil}]
   @callback tuning(String.t()) :: Tuning.t()
+  @callback status_counts(String.t()) :: %{
+              ForemanServer.Overview.Group.group() => non_neg_integer()
+            }
   @callback limits(String.t()) :: %{
               optional(:max_concurrent_runs) => pos_integer(),
               optional(:active_runs) => non_neg_integer(),
