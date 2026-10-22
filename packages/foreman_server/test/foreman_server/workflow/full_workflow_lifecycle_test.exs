@@ -78,12 +78,11 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
   end
 
   # Diagnostic snapshot of the projection. It runs inside `poll_until`
-  # callbacks and `setup`, so it must be total: the projection can hold
-  # entries that carry no id key. `TaskRunTerminated` for a task the store
-  # does not know (a leftover run from an earlier test finishing after the
-  # store was reset) is applied onto `%{}` and projects a task with no
-  # `:task_id`. An entry without its id is kept under `{:unkeyed, index}`
-  # instead of raising, which would mask the failure being diagnosed.
+  # callbacks and `setup`, so it must be total: a KeyError here would abort the
+  # test and mask the failure being diagnosed. The projection no longer mints
+  # id-less task entries for events about unknown tasks (foreman-03acm), but an
+  # entry without its id is still kept under `{:unkeyed, index}` rather than
+  # raising.
   defp dump,
     do: %{
       projects: keyed(ProjectionStore.list_projects(), :project_id),
@@ -204,13 +203,14 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
   end
 
   describe "projection snapshot" do
-    test "tolerates a task entry projected without :task_id (leftover run terminating after a store reset)" do
+    test "a leftover run terminating after a store reset projects no task entry" do
       stray_task_id = unique_id("stray-task")
       stray_run_id = unique_id("stray-run")
 
       # Exactly what a leftover run from an earlier test produces when it
       # terminates after the store was reset: the task is unknown, so the
-      # projection applies the event onto an empty map.
+      # projection drops the event (it used to mint a task with no :task_id,
+      # foreman-03acm).
       :ok =
         ProjectionStore.apply_events([
           %{
@@ -224,11 +224,12 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
           }
         ])
 
-      assert Enum.any?(ProjectionStore.list_tasks(), &(not Map.has_key?(&1, :task_id)))
+      assert Enum.all?(ProjectionStore.list_tasks(), &Map.has_key?(&1, :task_id))
+      assert ProjectionStore.task_projection(stray_task_id) == nil
 
       %{tasks: tasks} = dump()
 
-      assert Enum.any?(tasks, fn {_key, task} ->
+      refute Enum.any?(tasks, fn {_key, task} ->
                Map.get(task, :acknowledged_run_id) == stray_run_id
              end)
     end

@@ -124,6 +124,19 @@ defmodule ForemanServer.StallDetectorTest do
   defp seed_run(run_id, task_id) do
     ProjectionStore.apply_events([
       %{
+        event_type: "TaskCreated",
+        payload: %{
+          task_id: task_id,
+          project_id: "project-1",
+          title: "seeded task",
+          status: "open",
+          task_type: "task"
+        }
+      }
+    ])
+
+    ProjectionStore.apply_events([
+      %{
         event_type: "RunStarted",
         payload: %{
           run_id: run_id,
