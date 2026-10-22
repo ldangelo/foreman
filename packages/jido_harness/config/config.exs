@@ -6,7 +6,12 @@ config :logger, :console,
 
 if config_env() == :dev do
   config :git_hooks,
-    auto_install: true,
+    # `GitHooks` reads this with `Application.compile_env/3` and runs
+    # `mix git_hooks.install` as a side effect of COMPILING the dep, so
+    # `true` re-installed this package's commit-msg hook into the monorepo's
+    # shared `.git/hooks` on every dev (re)compile and then broke commits.
+    # Install explicitly with `mix install_hooks` if wanted.
+    auto_install: false,
     verbose: true,
     # `git_hooks` defaults an installed hook's working directory to
     # `$(git rev-parse --show-toplevel)`, which is this monorepo's root, not
