@@ -30,6 +30,10 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   # for the rest of the run. Pass `keep_subscribers: false` to clear them.
   @spec reset!(keyword()) :: :ok
   def reset!(opts \\ []) when is_list(opts) do
+    # Executors and Dispatcher work left by the previous test must finish
+    # before the store is wiped (see `ForemanServer.TestSupport.RunDrain`).
+    ForemanServer.TestSupport.RunDrain.drain!()
+
     :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
       empty_initial_state(opts, state)
     end)

@@ -9,6 +9,13 @@ defmodule ForemanServer.ProjectDeferralTest do
   alias ForemanServer.Workflow.Dispatcher
 
   setup do
+    # The app's real Dispatcher stays subscribed to ProjectionStore and handles
+    # terminal/resume events emitted by earlier tests. Unfrozen, it would run
+    # against the modules mocked below (calling the mocked RunSupervisor.start_run
+    # and RunAdmission.start) and put messages in this test's mailbox. See
+    # ForemanServer.DispatcherQuiesce.
+    :ok = ForemanServer.DispatcherQuiesce.suspend!()
+
     ProjectionStoreReset.reset!()
     :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
     :meck.new(ForemanServer.RunAdmission, [:no_link])

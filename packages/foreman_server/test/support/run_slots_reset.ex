@@ -24,6 +24,11 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
   def reset! do
     stream = "run_slots:global"
 
+    # Leftover executors and Dispatcher slot releases must be done before the
+    # stream is deleted and its actor killed, or they land mid-reset
+    # (`run_slots.release ... exited {:killed, ...}`).
+    ForemanServer.TestSupport.RunDrain.drain!()
+
     hard_delete_with_retry(stream, 3)
 
     case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
