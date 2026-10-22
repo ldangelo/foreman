@@ -4,11 +4,20 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
   alias EventStore.EventData
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{ProjectionStoreReset, RunSlotsReset}
+  alias ForemanServer.Workflow.Dispatcher
 
   @run_slots_stream "run_slots:global"
 
   setup do
+    # `run_slots:global` is a process-wide stream that the application's real
+    # Dispatcher also writes (`run_slots.release`) whenever it handles a terminal
+    # run event that an earlier test emitted. That handler can still be running,
+    # or queued, when this test starts, and its append would land between the
+    # stream cleanup below and this test's own expected-version-0 append. Freeze
+    # the Dispatcher first: `:sys.suspend/1` returns only once it has finished
+    # the message it was handling.
+    :ok = ForemanServer.DispatcherQuiesce.suspend!()
     cleanup_run_slots_stream()
     reset_projection_store()
 
@@ -18,6 +27,51 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
     end)
 
     :ok
+  end
+
+  describe "stream isolation" do
+    test "a terminal run event emitted by this test does not reach run_slots:global while the Dispatcher is frozen" do
+      RunSlotsReset.reset!()
+      holder = unique_id("terminal-holder")
+
+      assert {:ok, _} =
+               ForemanServer.CommandGateway.dispatch_system(%{
+                 type: "run_slots.acquire",
+                 aggregate_id: @run_slots_stream,
+                 command_id: "queue-status-isolation:#{holder}",
+                 payload: %{
+                   run_id: holder,
+                   capacity: 1,
+                   acquired_at_ms: System.system_time(:millisecond)
+                 }
+               })
+
+      # The Dispatcher reads a recorded event's `data`; the projection reads its
+      # `payload`. Carry both so this event looks like one the router recorded.
+      terminal = %{
+        run_id: holder,
+        task_id: unique_id("task"),
+        project_id: unique_id("project"),
+        sequence: 1
+      }
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "RunCompleted", payload: terminal, data: terminal}
+        ])
+
+      # Barrier: answered after every message already in the Dispatcher's
+      # mailbox. Were it not frozen, its slot release would be on the stream now.
+      _ = :sys.get_state(Dispatcher)
+
+      assert {:ok, recorded} = Store.read_stream_forward(@run_slots_stream)
+      assert Enum.map(recorded, & &1.event_type) == ["RunSlotAcquired"]
+
+      # Drain the queued terminal event before this test's cleanup so its
+      # release cannot outlive the test and land in a later one.
+      :ok = :sys.resume(Dispatcher)
+      _ = :sys.get_state(Dispatcher)
+    end
   end
 
   describe "queue_status/0" do
@@ -73,8 +127,11 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
   end
 
   defp cleanup_run_slots_stream do
-    _ = Store.delete_stream(@run_slots_stream, :any_version, :hard)
-    :ok
+    case Store.delete_stream(@run_slots_stream, :any_version, :hard) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, :stream_not_found} -> :ok
+    end
   end
 
   defp reset_projection_store do
