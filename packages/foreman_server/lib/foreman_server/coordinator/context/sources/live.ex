@@ -55,6 +55,11 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
   @impl true
   def tuning(project_id), do: Tuning.read(project_id)
 
+  # The Overview's own group counts, so the coordinator is told exactly what the
+  # operator's Overview shows (the card states below are an approximation).
+  @impl true
+  def status_counts(project_id), do: ForemanServer.Overview.summary(project_id).counts
+
   @impl true
   def limits(project_id) do
     case ProjectionStore.project_limits(project_id) do

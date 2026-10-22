@@ -294,6 +294,20 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
+  The honest state of a run id that was handed out (`task.approve` mints it) but
+  has no run projection yet: its task is dispatched (`in_progress`) and
+  admission has not produced a run. `status` is `"deferred"` with the refusal
+  `reason` (`daily_thread_cap_exceeded`, `run_limit_exceeded`, `project_paused`)
+  once a deferral was recorded for the task, `"queued"` with `reason: nil`
+  before that (admission pending or waiting for a slot/lease). `nil` for a run
+  that exists, a task that is not dispatched, or an unknown id.
+  """
+  @spec pending_run(String.t()) :: map() | nil
+  def pending_run(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:pending_run, run_id})
+  end
+
+  @doc """
   Return the run's pending steering messages (`RunSteerQueued` minus
   `RunSteerConsumed`) in queue order as `[%{message_id, text, resume,
   approval_mode_override}]` (the override is nil unless an approval set it).
@@ -1801,6 +1815,11 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:task_projection, task_id}, _from, state) do
     {:reply, Map.get(state.tasks, task_id), state}
+  end
+
+  @impl true
+  def handle_call({:pending_run, run_id}, _from, state) do
+    {:reply, pending_run(state, run_id), state}
   end
 
   @impl true
@@ -4263,6 +4282,42 @@ defmodule ForemanServer.ProjectionStore do
   @spec threads_started_on(String.t(), String.t()) :: non_neg_integer()
   def threads_started_on(project_id, day) when is_binary(project_id) and is_binary(day) do
     GenServer.call(__MODULE__, {:threads_started_on, project_id, day})
+  end
+
+  defp pending_run(state, run_id) do
+    task =
+      state.tasks
+      |> Map.values()
+      |> Enum.find(fn task ->
+        get(task, :run_id) == run_id and get(task, :status) == "in_progress"
+      end)
+
+    if task != nil and not Map.has_key?(state.runs, run_id) do
+      project_id = get(task, :project_id)
+      task_id = get(task, :task_id)
+      reason = deferral_reason(state, project_id, task_id)
+
+      %{
+        run_id: run_id,
+        task_id: task_id,
+        project_id: project_id,
+        status: if(reason, do: "deferred", else: "queued"),
+        reason: reason
+      }
+    end
+  end
+
+  # The refusal recorded most recently (latest UTC day) for the task.
+  defp deferral_reason(state, project_id, task_id) do
+    state
+    |> Map.get(:project_deferrals, %{})
+    |> Map.get(project_id, %{})
+    |> Enum.sort_by(fn {day, _by_reason} -> day end, :desc)
+    |> Enum.find_value(fn {_day, by_reason} ->
+      Enum.find_value(by_reason, fn {reason, task_ids} ->
+        if MapSet.member?(task_ids, task_id), do: reason
+      end)
+    end)
   end
 
   defp deferred_task_ids(state, project_id) do

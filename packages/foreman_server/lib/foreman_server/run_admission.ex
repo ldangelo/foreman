@@ -73,7 +73,8 @@ defmodule ForemanServer.RunAdmission do
     )
 
     # ── Project gate (before any slot is touched) ───────────────────────────
-    # A paused project or an exhausted daily thread cap refuses the admission
+    # A paused project, an exhausted daily thread cap or a full per-project run
+    # ceiling refuses the admission
     # BEFORE the global slot is acquired. Acquiring first would leave the
     # refused run holding a slot (and it cannot be handed back and re-acquired:
     # the slot-acquire command id is per run id on purpose, so a replayed
@@ -89,7 +90,11 @@ defmodule ForemanServer.RunAdmission do
 
   defp project_admission_gate(project_id, payload) do
     {state, _version} = Aggregate.load(ForemanServer.Aggregates.Project, "project:#{project_id}")
-    ForemanServer.Aggregates.Project.admission_refusal(state, Map.get(payload, :run_id))
+    run_id = Map.get(payload, :run_id)
+
+    with :ok <- ForemanServer.Aggregates.Project.admission_refusal(state, run_id) do
+      ForemanServer.Aggregates.Project.run_limit_refusal(state, run_id)
+    end
   end
 
   defp admit_through_slot(project_id, payload, timeout) do

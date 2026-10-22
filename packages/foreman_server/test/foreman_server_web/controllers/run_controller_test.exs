@@ -85,4 +85,74 @@ defmodule ForemanServerWeb.RunControllerTest do
     assert %{"runs" => [%{"run_id" => @run_id, "usage" => %{"total_tokens" => 15}}]} =
              get_json("/api/runs?project_id=proj")
   end
+
+  describe "a run id that admission has not turned into a run yet (foreman-s19h6)" do
+    setup do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "TaskCreated",
+            payload: %{
+              task_id: "task-wait",
+              project_id: "proj",
+              title: "waiting",
+              status: "open",
+              task_type: "implement"
+            }
+          },
+          %{
+            event_type: "TaskApproved",
+            payload: %{
+              task_id: "task-wait",
+              approval_id: "a-wait",
+              approved_by: "t",
+              approved_at: "2026-03-04T10:00:00Z",
+              run_id: "run-wait",
+              workflow_snapshot: %{}
+            }
+          },
+          %{
+            event_type: "TaskDispatched",
+            payload: %{task_id: "task-wait", run_id: "run-wait", approval_id: "a-wait"}
+          }
+        ])
+
+      :ok
+    end
+
+    test "is queued before any refusal is recorded, deferred with its reason after" do
+      assert %{"run" => %{"run_id" => "run-wait", "status" => "queued", "reason" => nil}} =
+               get_json("/api/runs/run-wait")
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectAdmissionDeferred",
+            payload: %{
+              project_id: "proj",
+              task_id: "task-wait",
+              reason: "run_limit_exceeded",
+              day: "2026-03-04"
+            }
+          }
+        ])
+
+      assert %{
+               "run" => %{
+                 "run_id" => "run-wait",
+                 "task_id" => "task-wait",
+                 "status" => "deferred",
+                 "reason" => "run_limit_exceeded"
+               }
+             } = get_json("/api/runs/run-wait")
+    end
+
+    test "an unknown run id is still a 404" do
+      assert %{"error" => "run_not_found"} =
+               build_conn()
+               |> put_req_header("authorization", "Bearer #{@token}")
+               |> get("/api/runs/run-nobody")
+               |> json_response(404)
+    end
+  end
 end

@@ -249,7 +249,11 @@ It acts through a closed command set and can never merge, approve, archive or
 retry. Tuning (`coordinator_propose_before_start`,
 `coordinator_max_active_threads`, `coordinator_reuse_threads`) is enforced by the
 server, not by the prompt. Its `schedule` and `add_repo` actions are rejected as
-unsupported in this revision.
+unsupported in this revision. Thread counts in its replies are not the model's
+arithmetic: the context carries the Overview's counts per group (a `STATUS`
+section) and a reply that talks about thread status gets a
+`Status (computed by Foreman from the Overview): ready for review 2 · ...` line
+appended.
 
 ### Approvals and questions
 
@@ -641,6 +645,15 @@ running (cancel them with `run.cancel`). Held beads are not skipped: the watcher
 holds their line and imports it after `resume`, and tasks refused at admission are
 re-admitted on resume. `reactivate` is for archived projects (and clears any
 earlier pause); `resume` is for paused ones.
+
+A run id returned by `foreman run submit` exists before admission has produced a
+run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
+keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
+with `run.status` `deferred` and `run.reason` (or `queued` while admission is
+pending), never a 404. It is re-admitted when the project is resumed, when a
+`project update` changes its settings (a raised limit), and when a finished run
+frees its reservation; the global run slot is only taken once the project's own
+limits admit the run, so a deferred run never starves other projects.
 
 ### Tasks
 
