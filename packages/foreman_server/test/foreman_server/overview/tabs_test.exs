@@ -58,14 +58,42 @@ defmodule ForemanServer.Overview.TabsTest do
            } = row
   end
 
-  test "library and scheduled are unavailable until a provider is registered" do
-    tabs = Tabs.build("p")
-    assert tabs.library == %{available: false, rows: []}
-    assert tabs.scheduled == %{available: false, rows: []}
+  test "scheduled is unavailable until a provider is registered" do
+    assert Tabs.build("p").scheduled == %{available: false, rows: []}
 
     Application.put_env(:foreman_server, :overview, tab_providers: [WorkingScheduled])
     assert %{available: true, rows: [%{"name" => "nightly"}]} = Tabs.build("p").scheduled
-    assert Tabs.build("p").library == %{available: false, rows: []}
+  end
+
+  # Found by the live acceptance run: a project with library files showed
+  # "Not available yet." because no provider for the tab was ever registered.
+  test "library lists the project's library entries" do
+    root =
+      Path.join(System.tmp_dir!(), "overview-library-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf(root) end)
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "lib-p", path: root}}
+      ])
+
+    source = Path.join(root, "facts.txt")
+    File.write!(source, "the number is 7319")
+
+    assert {:ok, _result} =
+             ForemanServer.Library.add(
+               "lib-p",
+               {:files, [%{relative_path: "facts.txt", source_path: source}]},
+               %{name: "facts"},
+               %{kind: :system}
+             )
+
+    assert %{available: true, rows: [%{"name" => "facts", "kind" => "file", "file_count" => 1}]} =
+             Tabs.build("lib-p").library
+
+    assert %{available: true, rows: []} = Tabs.build("p").library
   end
 
   test "a crashing provider is isolated: its tab is unavailable, pull_requests still renders" do
@@ -83,7 +111,7 @@ defmodule ForemanServer.Overview.TabsTest do
     {:ok, overview} = Overview.build("p")
     dto = Overview.to_dto(overview)
 
-    assert dto["tabs"]["library"] == %{"available" => false, "rows" => []}
+    assert dto["tabs"]["library"] == %{"available" => true, "rows" => []}
     assert %{"available" => true, "rows" => [_]} = dto["tabs"]["pull_requests"]
   end
 end

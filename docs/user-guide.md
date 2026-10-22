@@ -249,7 +249,11 @@ It acts through a closed command set and can never merge, approve, archive or
 retry. Tuning (`coordinator_propose_before_start`,
 `coordinator_max_active_threads`, `coordinator_reuse_threads`) is enforced by the
 server, not by the prompt. Its `schedule` and `add_repo` actions are rejected as
-unsupported in this revision.
+unsupported in this revision. Thread counts in its replies are not the model's
+arithmetic: the context carries the Overview's counts per group (a `STATUS`
+section) and a reply that talks about thread status gets a
+`Status (computed by Foreman from the Overview): ready for review 2 · ...` line
+appended.
 
 ### Approvals and questions
 
@@ -641,6 +645,15 @@ running (cancel them with `run.cancel`). Held beads are not skipped: the watcher
 holds their line and imports it after `resume`, and tasks refused at admission are
 re-admitted on resume. `reactivate` is for archived projects (and clears any
 earlier pause); `resume` is for paused ones.
+
+A run id returned by `foreman run submit` exists before admission has produced a
+run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
+keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
+with `run.status` `deferred` and `run.reason` (or `queued` while admission is
+pending), never a 404. It is re-admitted when the project is resumed, when a
+`project update` changes its settings (a raised limit), and when a finished run
+frees its reservation; the global run slot is only taken once the project's own
+limits admit the run, so a deferred run never starves other projects.
 
 ### Tasks
 
@@ -1694,6 +1707,10 @@ and releases, not to `mix test`):
 | `FOREMAN_JOBSITES_ALLOW_REMOTE_START` | `allow_remote_start` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST` | `agent_env_allowlist` (comma-separated names, e.g. `ANTHROPIC_BASE_URL,ANTHROPIC_API_KEY`; blank entries are dropped) |
+| `FOREMAN_HTTP_PORT` | `ForemanServerWeb.Endpoint` http port (a valid port number; `127.0.0.1` only; lets a second server run beside the dev one) |
+| `FOREMAN_NOTIFY_WEBHOOK_URL` | `:messaging` (provider `webhook`, delivery enabled for every event class, no run-update rate limit, `webhook.url` from the variable) |
+| `FOREMAN_REVIEW_PROVIDER` / `FOREMAN_REVIEW_MODEL` | `:review, agent:` (the fixed reviewer; `claude` or `pi`, optional model; unset keeps `claude`) |
+| `FOREMAN_PR_FIX_SANDBOX` | `:pr_fix, sandbox:` (`docker` or `host`; unset keeps the jobsite default, docker, which needs a built `foreman-jobsite:<project>` image; `host` also needs `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true`) |
 | `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
 
 A variable that is unset changes nothing, so the API stays off by default (and `FOREMAN_START_BEADS_WATCHER` leaves the `config` value in force).

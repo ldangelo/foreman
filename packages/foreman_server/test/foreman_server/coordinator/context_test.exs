@@ -17,6 +17,7 @@ defmodule ForemanServer.Coordinator.ContextTest do
 
     def tuning(_), do: %Tuning{propose_before_start: true, max_active_threads: 2}
     def limits(_), do: %{max_concurrent_runs: 2, active_runs: 1}
+    def status_counts(_), do: Process.get(:status_counts, %{})
   end
 
   defp message(conv, id, attrs) do
@@ -98,6 +99,7 @@ defmodule ForemanServer.Coordinator.ContextTest do
       "# WORKFLOWS",
       "# PROJECT",
       "# MEMORY INDEX",
+      "# STATUS",
       "# THREADS",
       "# LIMITS",
       "# RECENT MESSAGES",
@@ -110,6 +112,16 @@ defmodule ForemanServer.Coordinator.ContextTest do
     assert [%{message_id: "new1"}] = ctx.trigger_messages
     assert ctx.text =~ "fix: Fix a bug"
     assert ctx.text =~ "propose_before_start: true"
+  end
+
+  test "the Overview counts are rendered and survive any budget cut" do
+    setup_fixture(history: 3, threads: [thread(1, "in_progress")])
+    Process.put(:status_counts, %{ready_for_review: 2, working: 1})
+
+    assert {:ok, ctx} = build(max_total_tokens: 1)
+
+    assert ctx.text =~ "ready for review 2 · waiting on you 0 · working 1"
+    assert ctx.status_counts == %{ready_for_review: 2, working: 1}
   end
 
   test "equal inputs render byte-identical text" do

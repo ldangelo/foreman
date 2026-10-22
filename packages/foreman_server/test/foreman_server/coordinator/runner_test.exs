@@ -116,6 +116,27 @@ defmodule ForemanServer.Coordinator.RunnerTest do
       assert ctx.trigger_key == "m1"
     end
 
+    test "a status reply is annotated with the Overview's counts, not the model's arithmetic", %{
+      project_id: p,
+      script: script
+    } do
+      Stub.push(script, [reply_turn("Five threads are ready for review.")])
+      _rt = start_runtime(script)
+
+      say(p, "m1", "status?")
+      assert %{cursor_message_id: "m1"} = completed(p)
+
+      [stored] = texts(p, "coordinator")
+      assert stored =~ "Five threads are ready for review."
+
+      assert stored =~
+               "Status (computed by Foreman from the Overview): ready for review 0 · " <>
+                 "waiting on you 0 · working 0 · landing 0 · idle 0 · resolved 0"
+
+      [ctx] = Stub.calls(script)
+      assert ctx.text =~ "# STATUS"
+    end
+
     test "provider, model and effort come from the project's settings, else the defaults", %{
       project_id: p,
       script: script

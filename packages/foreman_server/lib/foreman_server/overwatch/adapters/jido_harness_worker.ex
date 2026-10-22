@@ -35,7 +35,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   use GenServer
 
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
-  alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
+  alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, FailureCause, RunResult}
   alias ForemanServer.Overwatch.{RunMeta, WorkerLogPolicy, WorkerProtocol}
   alias ForemanServer.RunControl
   alias ForemanServer.Usage
@@ -126,7 +126,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     task =
       Task.async(fn ->
         {result, log_events, meta} =
-          run_agent(state.run_id, state.provider, state.prompt, state.driver_opts)
+          run_agent(state.run_id, state.provider, state.prompt, state.driver_opts, state.secrets)
 
         send(parent_pid, {:agent_done, result, log_events, meta})
       end)
@@ -196,9 +196,10 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   # already had. `JidoHarnessAdapter.normalize_raw_error/1` is the single
   # site that reads it, shared with the non-Overwatch adapter so the two
   # cannot drift.
-  @spec run_agent(String.t(), atom(), String.t(), keyword()) ::
-          {{:ok, String.t()} | ErrorCodes.code(), [map()], RunMeta.t() | nil}
-  defp run_agent(run_id, provider, prompt, driver_opts) do
+  @spec run_agent(String.t(), atom(), String.t(), keyword(), [String.t()]) ::
+          {{:ok, String.t()} | ErrorCodes.code() | {:error, FailureCause.t()}, [map()],
+           RunMeta.t() | nil}
+  defp run_agent(run_id, provider, prompt, driver_opts, secrets) do
     driver_opts =
       Keyword.put(driver_opts, :on_start, fn harness_run_id ->
         RunControl.register_agent(run_id, harness_run_id)
@@ -206,7 +207,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     case Driver.run(provider, prompt, driver_opts) do
       {:ok, %Jido.Harness.RunResult{} = run_result} ->
-        {normalize_result(run_result), log_events(run_result), build_meta(provider, run_result)}
+        {normalize_result(run_result, secrets), log_events(run_result),
+         build_meta(provider, run_result)}
 
       {:ok, detached} when is_map(detached) ->
         harness_run_id = detached[:run_id] || detached["run_id"]
@@ -214,7 +216,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
         case Driver.await(harness_run_id, timeout) do
           {:ok, %Jido.Harness.RunResult{} = run_result} ->
-            {normalize_result(run_result), log_events(run_result),
+            {normalize_result(run_result, secrets), log_events(run_result),
              build_meta(provider, run_result)}
 
           {:error, reason} ->
@@ -321,10 +323,17 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   # Unwrap RunResult.normalize's 3-tuple to the 2-tuple RunExecutor expects.
   # Metadata is dropped here — Invocation drops it for the same reason.
-  defp normalize_result(%Jido.Harness.RunResult{} = run_result) do
+  #
+  # A failure keeps the normalized code but also its real cause (message, exit
+  # status, timeout kind), redacted: the code alone is `{:other, :execution}`
+  # for every killed or failed agent.
+  @doc false
+  @spec normalize_result(Jido.Harness.RunResult.t(), [String.t()]) ::
+          {:ok, String.t()} | {:error, FailureCause.t()}
+  def normalize_result(%Jido.Harness.RunResult{} = run_result, secrets) do
     case RunResult.normalize(run_result) do
       {:ok, text, _metadata} -> {:ok, text}
-      {:error, _} = err -> err
+      {:error, code} -> {:error, FailureCause.from_run_result(run_result, code, secrets)}
     end
   end
 

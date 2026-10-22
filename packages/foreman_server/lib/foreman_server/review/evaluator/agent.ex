@@ -68,11 +68,51 @@ defmodule ForemanServer.Review.Evaluator.Agent do
        })}
   end
 
-  defp build_request(prompt, subject, cfg) do
+  # The reviewer runs in a scratch directory, NEVER the project checkout (nor
+  # the archive, which lives under the checkout's `.foreman/`): `sandbox_mode:
+  # :read_only` is not honoured by every provider, and `pi`'s auto-commit hook
+  # committed the archive files into the project's main branch (foreman-qp5d3).
+  # Outside any git work tree there is nothing for such a hook to commit to; the
+  # prompt hands the reviewer absolute paths to everything it needs to read.
+  @doc false
+  @spec scratch_dir(Subject.t()) :: {:ok, String.t()} | {:error, Error.t()}
+  def scratch_dir(%Subject{kind: kind, subject_id: subject_id}) do
+    safe = fn value ->
+      value
+      |> to_string()
+      |> String.replace(~r/[^A-Za-z0-9_.-]/, "_")
+      |> String.replace(~r/\A\.+/, "_")
+    end
+
+    dir = Path.join([System.tmp_dir!(), "foreman-review", safe.(kind), safe.(subject_id)])
+
+    case File.mkdir_p(dir) do
+      :ok ->
+        {:ok, dir}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:evaluator_failed, "could not create reviewer scratch directory", %{
+           path: dir,
+           reason: inspect(reason)
+         })}
+    end
+  end
+
+  @doc false
+  @spec build_request(String.t(), Subject.t(), map()) ::
+          {:ok, RunRequest.t()} | {:error, Error.t()}
+  def build_request(prompt, subject, cfg) do
+    with {:ok, cwd} <- scratch_dir(subject) do
+      new_request(prompt, cwd, cfg)
+    end
+  end
+
+  defp new_request(prompt, cwd, cfg) do
     attrs = %{
       prompt: prompt,
       provider: cfg.provider,
-      cwd: subject.repo_path,
+      cwd: cwd,
       model: cfg.model,
       reasoning_effort: cfg.effort,
       approval_mode: :default,

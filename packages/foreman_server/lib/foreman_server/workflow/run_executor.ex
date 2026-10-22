@@ -57,6 +57,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.JobsiteObserver
   alias ForemanServer.Workflow.Lowering
+  alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
   alias ForemanServer.Workflow.FailureClassifier
   alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.Workflow.WorktreeSpec
@@ -1643,7 +1644,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def emit_phase_failure(state, phase_spec, phase_index, reason) do
     Logger.warning(
-      "RunExecutor phase #{phase_index} (#{phase_spec_name(phase_spec)}) failed: #{inspect(reason)}"
+      "RunExecutor phase #{phase_index} (#{phase_spec_name(phase_spec)}) failed: #{FailureCause.render(reason)}"
     )
 
     phase_id = Identity.phase_id(state.run_id, phase_index)
@@ -1652,7 +1653,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       run_id: state.run_id,
       phase_id: phase_id,
       index: phase_index,
-      reason: inspect(reason)
+      reason: FailureCause.render(reason)
     }
 
     # A failed phase is a failed run: no later phase can satisfy the
@@ -1895,11 +1896,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp maybe_auto_pr(state) do
     if phase_pr_created_or_reused?(state.run_id) do
-      Logger.info(
-        "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr because phase PR records exist"
-      )
+      # The phase PR IS the run's one PR. Returning it (instead of `:noop`) lets
+      # `finalize_run/1` associate it with the run and signal `run.pr.ready`;
+      # before, a `stack_pr` run never reached the merge gate or the PR watcher
+      # and its thread sat in Idle/no_pr beside an open PR.
+      case phase_pr_url(state.run_id) do
+        url when is_binary(url) ->
+          Logger.info(
+            "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr; phase PR #{url} is the run's PR"
+          )
 
-      :noop
+          {:ok, url}
+
+        nil ->
+          Logger.info(
+            "RunExecutor #{state.run_id} finalize_run: skipping final auto-pr because phase PR records exist"
+          )
+
+          :noop
+      end
     else
       auto_pr(state)
     end
@@ -1975,6 +1990,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
     run_id
     |> phase_pr_records()
     |> Enum.any?(&(Map.get(&1, :status) in ["created", "existing", :created, :existing]))
+  end
+
+  # The URL of the latest created-or-reused phase PR (highest phase index).
+  defp phase_pr_url(run_id) do
+    run_id
+    |> phase_pr_records()
+    |> Enum.filter(fn record ->
+      Map.get(record, :status) in ["created", "existing", :created, :existing] and
+        is_binary(Map.get(record, :pr_url)) and Map.get(record, :pr_url) != ""
+    end)
+    |> Enum.max_by(&(Map.get(&1, :phase_index) || 0), fn -> nil end)
+    |> case do
+      nil -> nil
+      record -> record.pr_url
+    end
   end
 
   defp phase_pr_recorded_for_phase?(run_id, phase_id) do
@@ -4342,6 +4372,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __signal_pr_ready_for_test__(state, pr_url), do: signal_pr_ready(state, pr_url)
 
   @doc false
+  def __maybe_auto_pr_for_test__(state), do: maybe_auto_pr(state)
+
+  @doc false
   def __handle_phase_body_error_for_test__(
         state,
         phase_spec,
@@ -4579,7 +4612,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "task.execution_fail",
       Identity.task_fail_command_id(state.run_id),
       "task:#{task_id(state)}",
-      %{task_id: task_id(state), run_id: state.run_id, reason: inspect(reason)}
+      %{task_id: task_id(state), run_id: state.run_id, reason: FailureCause.render(reason)}
     )
     |> to_dispatch_result()
   end
@@ -4606,7 +4639,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           "run.fail",
           Identity.run_fail_command_id(state.run_id),
           "run:#{state.run_id}",
-          %{run_id: state.run_id, reason: inspect(reason)}
+          %{run_id: state.run_id, reason: FailureCause.render(reason)}
         )
         |> to_dispatch_result()
     end
@@ -4856,8 +4889,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> Map.put(:transition_comment, transition_comment)
   end
 
+  defp normalize_failure_reason(%FailureCause{} = reason),
+    do: %{reason: FailureCause.render(reason)}
+
   defp normalize_failure_reason(%{} = reason), do: reason
   defp normalize_failure_reason(reason), do: %{reason: inspect(reason)}
+
+  defp merge_failure_reason(%FailureCause{} = reason, extra),
+    do: Map.put(extra, :reason, FailureCause.render(reason))
 
   defp merge_failure_reason(%{} = reason, extra), do: Map.merge(reason, extra)
   defp merge_failure_reason(reason, extra), do: Map.put(extra, :reason, inspect(reason))
