@@ -77,12 +77,25 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     end
   end
 
+  # Diagnostic snapshot of the projection. It runs inside `poll_until`
+  # callbacks and `setup`, so it must be total: the projection can hold
+  # entries that carry no id key. `TaskRunTerminated` for a task the store
+  # does not know (a leftover run from an earlier test finishing after the
+  # store was reset) is applied onto `%{}` and projects a task with no
+  # `:task_id`. An entry without its id is kept under `{:unkeyed, index}`
+  # instead of raising, which would mask the failure being diagnosed.
   defp dump,
     do: %{
-      projects: ProjectionStore.list_projects() |> Enum.map(&{&1.project_id, &1}) |> Map.new(),
-      tasks: ProjectionStore.list_tasks() |> Enum.map(&{&1.task_id, &1}) |> Map.new(),
-      runs: Map.new(ProjectionStore.list_runs(), &{&1.run_id, &1})
+      projects: keyed(ProjectionStore.list_projects(), :project_id),
+      tasks: keyed(ProjectionStore.list_tasks(), :task_id),
+      runs: keyed(ProjectionStore.list_runs(), :run_id)
     }
+
+  defp keyed(entries, id_key) do
+    entries
+    |> Enum.with_index()
+    |> Map.new(fn {entry, index} -> {Map.get(entry, id_key, {:unkeyed, index}), entry} end)
+  end
 
   # The test's project path (System.tmp_dir!()) is not a real git
   # working tree, so the REAL RunExecutor spawned by RunSupervisor via
@@ -187,6 +200,37 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
         flunk(
           "ForemanServer.Workflow.Dispatcher is not running; cannot ensure ProjectionStore subscription"
         )
+    end
+  end
+
+  describe "projection snapshot" do
+    test "tolerates a task entry projected without :task_id (leftover run terminating after a store reset)" do
+      stray_task_id = unique_id("stray-task")
+      stray_run_id = unique_id("stray-run")
+
+      # Exactly what a leftover run from an earlier test produces when it
+      # terminates after the store was reset: the task is unknown, so the
+      # projection applies the event onto an empty map.
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "TaskRunTerminated",
+            payload: %{
+              task_id: stray_task_id,
+              run_id: stray_run_id,
+              reason: "failed",
+              acknowledged_at: "2026-01-01T00:00:00Z"
+            }
+          }
+        ])
+
+      assert Enum.any?(ProjectionStore.list_tasks(), &(not Map.has_key?(&1, :task_id)))
+
+      %{tasks: tasks} = dump()
+
+      assert Enum.any?(tasks, fn {_key, task} ->
+               Map.get(task, :acknowledged_run_id) == stray_run_id
+             end)
     end
   end
 
