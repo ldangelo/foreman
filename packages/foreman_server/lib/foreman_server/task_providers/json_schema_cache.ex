@@ -40,11 +40,62 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
     }
   }
 
+  # Real `br update --json` (claim, reopen, status change) prints only
+  # `{assignee, id, owner, priority, status, title, updated_at}` - verbatim in
+  # test/fixtures/br/update_*.json - so br's published `ReadyIssue`/`IssueDetails`
+  # schemas (which require created_at, issue_type, ...) can never be satisfied by
+  # it. Pin the acknowledgement contracts the adapter actually relies on: the
+  # `claim` and `add_dependency` parsers require `id`, `title` and `status`.
+  @update_ack_schema %{
+    "title" => "BeadsUpdateAck",
+    "required" => ["id", "title", "status"],
+    "properties" => %{
+      "id" => %{"type" => "string"},
+      "title" => %{"type" => "string"},
+      "status" => %{"type" => "string"},
+      "priority" => %{"type" => "integer"},
+      "assignee" => %{"type" => ["string", "null"]}
+    }
+  }
+
+  # The `fail` and `reopen` parsers require only `id` (title falls back to the
+  # request when absent).
+  @transition_ack_schema %{
+    "title" => "BeadsTransitionAck",
+    "required" => ["id"],
+    "properties" => %{
+      "id" => %{"type" => "string"},
+      "title" => %{"type" => "string"},
+      "status" => %{"type" => "string"},
+      "priority" => %{"type" => "integer"}
+    }
+  }
+
+  # `dependencies`/`dependents` items in `br show --json` are
+  # `{dependency_type, id, priority, status, title}` (test/fixtures/br/show_*.json),
+  # not the full `IssueDetails` the schema's `IssueWithDependencyMetadata` claims.
+  @issue_reference_schema %{
+    "title" => "BeadsIssueReference",
+    "required" => ["id", "title", "status"],
+    "properties" => %{
+      "id" => %{"type" => "string"},
+      "title" => %{"type" => "string"},
+      "status" => %{"type" => "string"},
+      "priority" => %{"type" => "integer"}
+    }
+  }
+
   @schema_requests %{
     ready_issue: "ready-issue",
     issue_details: "issue-details",
     error: "error",
     commands: "commands"
+  }
+
+  @schema_titles %{
+    ready_issue: "ReadyIssue",
+    issue_details: "IssueDetails",
+    error: "ErrorEnvelope"
   }
 
   defmodule State do
@@ -78,7 +129,8 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
           | :closed_issue
           | :failed_issue
           | :reopened_issue
-          | :updated_issue,
+          | :updated_issue
+          | :issue_reference,
           term()
         ) ::
           :ok | {:error, [map()]}
@@ -91,13 +143,14 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
              :closed_issue,
              :failed_issue,
              :reopened_issue,
-             :updated_issue
+             :updated_issue,
+             :issue_reference
            ] do
     normalized_schema =
       case schema_atom do
         :commands -> :commands
-        schema when schema in [:claimed_issue, :updated_issue] -> :ready_issue
-        schema when schema in [:failed_issue, :reopened_issue] -> :issue_details
+        schema when schema in [:claimed_issue, :updated_issue] -> :update_ack
+        schema when schema in [:failed_issue, :reopened_issue] -> :transition_ack
         other -> other
       end
 
@@ -211,7 +264,8 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
   end
 
   defp validate_internal(schema_atom, payload, %State{} = state) do
-    with {:ok, schema} <- fetch_schema(state, schema_atom),
+    with {:ok, document} <- fetch_schema(state, schema_atom),
+         {:ok, schema} <- enforcement_schema(schema_atom, document),
          :ok <- ensure_object_payload(payload) do
       errors = required_errors(schema, payload) ++ type_errors(schema, payload)
 
@@ -224,6 +278,9 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
   end
 
   defp fetch_schema(_state, :closed_issue), do: {:ok, @closed_issue_schema}
+  defp fetch_schema(_state, :update_ack), do: {:ok, @update_ack_schema}
+  defp fetch_schema(_state, :transition_ack), do: {:ok, @transition_ack_schema}
+  defp fetch_schema(_state, :issue_reference), do: {:ok, @issue_reference_schema}
 
   defp fetch_schema(%State{schemas: schemas}, schema_atom) do
     case Map.fetch(schemas, schema_atom) do
@@ -231,6 +288,36 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
       :error -> {:error, [%{path: [], message: "schema not loaded"}]}
     end
   end
+
+  # `br schema <name> --json` does not return a bare JSON Schema. br 0.6.0 wraps
+  # it: `{"tool", "generated_at", "schemas" => %{"ReadyIssue" => <schema>}}`
+  # (verbatim in test/fixtures/br/schema_*.json), and `br schema commands` is a
+  # command inventory with no schema at all. `required_errors/2` and
+  # `type_errors/2` read top-level `required`/`properties`, which the wrapper
+  # does not have, so validation against the unwrapped document accepted every
+  # payload (foreman-mlklw). Select the definition the wrapper carries; a
+  # wrapper without it is an error, never a silent pass.
+  defp enforcement_schema(:commands, %{"commands" => commands}) when is_map(commands) do
+    {:ok,
+     %{
+       "required" => ["commands"],
+       "properties" => %{"commands" => %{"type" => "object"}}
+     }}
+  end
+
+  defp enforcement_schema(schema_atom, %{"schemas" => schemas}) when is_map(schemas) do
+    title = Map.get(@schema_titles, schema_atom)
+
+    case Map.fetch(schemas, title) do
+      {:ok, schema} when is_map(schema) ->
+        {:ok, schema}
+
+      _ ->
+        {:error, [%{path: [], message: "schema document has no #{inspect(title)} definition"}]}
+    end
+  end
+
+  defp enforcement_schema(_schema_atom, document), do: {:ok, document}
 
   defp ensure_object_payload(payload) when is_map(payload), do: :ok
   defp ensure_object_payload(_payload), do: {:error, [%{path: [], message: "must be an object"}]}
@@ -253,7 +340,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
     |> Enum.flat_map(fn {key, property_schema} ->
       case fetch_payload_value(payload, key) do
         {:ok, value} ->
-          case Map.get(property_schema, "type") do
+          case Map.get(resolve_ref(property_schema, schema), "type") do
             nil ->
               []
 
@@ -270,6 +357,17 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
       end
     end)
   end
+
+  # br's real schemas express most scalar fields as `{"$ref": "#/$defs/Priority"}`;
+  # without resolving it the field's `type` is invisible and never checked.
+  defp resolve_ref(%{"$ref" => "#/$defs/" <> name}, root) do
+    case get_in(root, ["$defs", name]) do
+      %{} = definition -> definition
+      _ -> %{}
+    end
+  end
+
+  defp resolve_ref(property_schema, _root), do: property_schema
 
   defp matches_schema_type?(value, types) when is_list(types) do
     Enum.any?(types, &matches_schema_type?(value, &1))

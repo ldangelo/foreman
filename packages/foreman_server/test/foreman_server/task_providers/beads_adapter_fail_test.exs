@@ -362,7 +362,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
         ]
       )
 
-      {:ok, %{stdout: Jason.encode!(%{"id" => "bead-904"}), stderr: "", exit_code: 0}}
+      {:ok, %{stdout: Jason.encode!(%{"title" => "no id"}), stderr: "", exit_code: 0}}
     end)
 
     assert {:error, %ProviderError{} = provider_error} =
@@ -375,7 +375,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
     assert provider_error.code == "VALIDATION_FAILED"
     assert provider_error.retryable? == false
     assert provider_error.context.command =~ redacted_database_path(cached_database_path)
-    assert provider_error.context.missing_fields == ["description"]
+    assert provider_error.context.missing_fields == ["id"]
   end
 
   test "empty task_id returns INVALID_TASK_ID without invoking br" do
