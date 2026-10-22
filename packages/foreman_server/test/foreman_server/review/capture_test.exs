@@ -204,6 +204,57 @@ defmodule ForemanServer.Review.CaptureTest do
       assert m["capture_errors"] == []
     end
 
+    test "a committed env-derived secret is absent from diff.patch and changed-files.txt", %{
+      dir: dir,
+      repo: repo,
+      base: base
+    } do
+      secret = "s3cr3t-Value-" <> Integer.to_string(System.unique_integer([:positive]))
+      System.put_env("FOREMAN_REDACT_TEST_TOKEN", secret)
+      on_exit(fn -> System.delete_env("FOREMAN_REDACT_TEST_TOKEN") end)
+
+      File.write!(Path.join(repo, "a.txt"), "one\nTOKEN=#{secret}\n")
+      File.write!(Path.join(repo, "leak-#{secret}.txt"), "x\n")
+      git!(repo, ["add", "."])
+      git!(repo, ["commit", "-qm", "agent commits the secret"])
+
+      assert :ok = Capture.put_diff(dir, repo, base, "HEAD")
+
+      patch = File.read!(Path.join(dir, "diff.patch"))
+      files = File.read!(Path.join(dir, "changed-files.txt"))
+      assert patch =~ "+TOKEN=[REDACTED]"
+      refute patch =~ secret
+      assert files =~ "leak-[REDACTED].txt"
+      refute files =~ secret
+    end
+
+    test "truncation never leaves a prefix of a secret: redaction runs before the cut", %{
+      dir: dir,
+      repo: repo,
+      base: base,
+      original: original,
+      root: root
+    } do
+      secret = "pfx-secret-Value-" <> Integer.to_string(System.unique_integer([:positive]))
+      System.put_env("FOREMAN_REDACT_TEST_TOKEN", secret)
+      on_exit(fn -> System.delete_env("FOREMAN_REDACT_TEST_TOKEN") end)
+
+      File.write!(Path.join(repo, "a.txt"), "one\nTOKEN=#{secret}\n")
+      git!(repo, ["commit", "-qam", "secret"])
+
+      {full, 0} = System.cmd("git", ["-C", repo, "diff", "#{base}..HEAD"])
+      cut = :binary.match(full, secret) |> elem(0) |> Kernel.+(12)
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.merge(original, capture: true, archive_root: root, max_diff_bytes: cut)
+      )
+
+      assert :ok = Capture.put_diff(dir, repo, base, "HEAD")
+      refute File.read!(Path.join(dir, "diff.patch")) =~ "pfx-secret"
+    end
+
     test "an empty diff is recorded as empty, with files written", %{
       dir: dir,
       repo: repo,
@@ -348,6 +399,26 @@ defmodule ForemanServer.Review.CaptureTest do
 
       assert :ok = Capture.put_diff(dir, repo, base, "HEAD")
       refute File.exists?(Path.join(dir, "diff.patch"))
+    end
+  end
+
+  describe "request redaction" do
+    test "an env-derived secret in the prompt is absent from request.md and the manifest", %{
+      repo: repo,
+      root: root
+    } do
+      secret = "req-secret-" <> Integer.to_string(System.unique_integer([:positive]))
+      System.put_env("FOREMAN_REDACT_TEST_TOKEN", secret)
+      on_exit(fn -> System.delete_env("FOREMAN_REDACT_TEST_TOKEN") end)
+
+      assert :ok = Capture.open_jobsite("j-redact", spec(repo), "deploy with #{secret} now")
+      dir = Path.join([root, "jobsite", "j-redact"])
+
+      assert File.read!(Path.join(dir, "request.md")) == "deploy with [REDACTED] now"
+      refute File.read!(Path.join(dir, "manifest.json")) =~ secret
+
+      assert {:ok, %{"request" => %{"prompt" => "deploy with [REDACTED] now"}}} =
+               Archive.read_manifest(dir)
     end
   end
 end

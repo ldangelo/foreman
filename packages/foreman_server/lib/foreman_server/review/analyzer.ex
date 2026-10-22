@@ -355,9 +355,13 @@ defmodule ForemanServer.Review.Analyzer do
   defp write_analysis(subject, verdict) do
     json = Jason.encode!(Verdict.to_map(verdict), pretty: true)
 
-    with :ok <- Archive.write_file(subject.archive_dir, "analysis.json", json),
+    with :ok <- Archive.write_file(subject.archive_dir, "analysis.json", Archive.redact(json)),
          :ok <-
-           Archive.write_file(subject.archive_dir, "analysis.md", Verdict.to_markdown(verdict)) do
+           Archive.write_file(
+             subject.archive_dir,
+             "analysis.md",
+             Archive.redact(Verdict.to_markdown(verdict))
+           ) do
       nil
     else
       {:error, %Error{code: code}} ->
