@@ -146,6 +146,45 @@ defmodule ForemanServer.Review.BeadSinkTest do
       assert note == "gap creation suppressed: source bead is itself a foreman-gap bead"
       assert_received {:br, :comment, %{id: "bead-src"}}
       refute_received {:br, :create, _}
+      # The event-log guard decides alone: no provider round trip.
+      refute_received {:br, :show, _}
+    end
+
+    test "a source bead labelled foreman-gap by hand (no prior review) yields zero gap beads but one comment" do
+      register_project!()
+      install_stub(source_labels: ["foreman-exec", "foreman-gap"])
+
+      assert {:ok, %Result{gap_bead_ids: [], note: note}} =
+               BeadSink.publish(subject(), verdict(gaps: [gap(:major, "A"), gap(:minor, "B")]))
+
+      assert note == "gap creation suppressed: source bead carries the foreman-gap label"
+      assert_received {:br, :comment, %{id: "bead-src"}}
+      assert_received {:br, :show, "bead-src"}
+      refute_received {:br, :create, _}
+    end
+
+    test "an unreadable source bead fails closed: no gap beads, the note says why" do
+      register_project!()
+      install_stub(show: :error)
+
+      assert {:ok, %Result{gap_bead_ids: [], note: note}} =
+               BeadSink.publish(subject(), verdict(gaps: [gap(:major, "A")]))
+
+      assert note =~ "could not read the source bead's labels"
+      assert note =~ "failing closed"
+      assert_received {:br, :comment, %{id: "bead-src"}}
+      refute_received {:br, :create, _}
+    end
+
+    test "the label is not read when there is nothing to file" do
+      register_project!()
+      install_stub(source_labels: ["foreman-gap"])
+
+      assert {:ok, %Result{gap_bead_ids: [], note: nil}} =
+               BeadSink.publish(subject(), verdict(gaps: []))
+
+      assert_received {:br, :comment, %{id: "bead-src"}}
+      refute_received {:br, :show, _}
     end
 
     test "a source bead no review listed as a gap bead still gets gap beads" do
@@ -371,9 +410,23 @@ defmodule ForemanServer.Review.BeadSinkTest do
     test = self()
     fail_titles = Keyword.get(opts, :fail_titles, [])
 
+    source_labels = Keyword.get(opts, :source_labels, [])
+
     stub(BrRunnerMock, :cmd, fn
       {:schema, %{schema: name}}, _cfg, _opts ->
         {:ok, %{stdout: Jason.encode!(schema_document(name))}}
+
+      {:show, %{id: id}}, _cfg, _opts ->
+        send(test, {:br, :show, id})
+
+        case Keyword.get(opts, :show) do
+          :error ->
+            {:error, %{stdout: "", stderr: "db locked", exit_code: 1}}
+
+          nil ->
+            body = issue_payload(%{"id" => id, "labels" => source_labels})
+            {:ok, %{stdout: Jason.encode!(body), stderr: "", exit_code: 0}}
+        end
 
       {:comments_add, payload}, _cfg, _opts ->
         send(test, {:br, :comment, payload})
