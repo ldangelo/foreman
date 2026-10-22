@@ -29,7 +29,10 @@ defmodule ForemanServer.Workflow.DispatcherRunLimitReadmissionTest do
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
     test = self()
 
-    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task ->
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task, opts ->
+      # A deferred run was never started, so re-admission must start it FRESH
+      # (no `resume_from`); a resume here would skip phases it never ran.
+      [] = opts
       send(test, {:run_supervisor_start, run_id})
       {:ok, :child}
     end)
