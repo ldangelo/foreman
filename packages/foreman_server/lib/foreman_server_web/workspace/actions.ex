@@ -29,6 +29,7 @@ defmodule ForemanServerWeb.Workspace.Actions do
   require Logger
 
   alias ForemanServer.{CommandGateway, CoordinatorAPI, ProjectionStore, Threads}
+  alias ForemanServer.Overview.PrActions
   alias ForemanServer.Threads.{Actions, Thread}
 
   @type result :: {:ok, String.t()} | {:error, String.t()}
@@ -96,6 +97,60 @@ defmodule ForemanServerWeb.Workspace.Actions do
         error
     end
   end
+
+  @pr_kinds Map.new(PrActions.kinds(), &{Atom.to_string(&1), &1})
+
+  @doc """
+  Starts a PR action on the thread's newest run: `fix_ci`, `address_comments`,
+  `resolve_conflicts` (E9 fix threads) or `create_pr`. It dispatches the same
+  operator command the CLI, `/api/commands` and MCP `foreman_pr_fix` use
+  (`PrActions.command_type/1`); `CommandGateway` performs the real PR creation
+  for `run.pr.create`, and the Run aggregate refuses what the watch state cannot
+  support (not watched, fix in flight, exhausted). `pr_url` (optional) must be
+  one of the run's watched PRs. There is no merge or approve action.
+  """
+  @spec pr_action(String.t(), String.t(), String.t(), String.t() | nil, intent()) :: result()
+  def pr_action(project_id, thread_id, kind, pr_url, intent) do
+    with {:ok, kind} <- pr_kind(kind),
+         {:ok, %Thread{door: :workflow, run_ids: [run_id | _]}} <-
+           own_thread_with_run(project_id, thread_id),
+         :ok <- watched_pr(run_id, pr_url) do
+      type = PrActions.command_type(kind)
+
+      payload =
+        %{run_id: run_id, trigger: "operator", requested_by: @actor}
+        |> put_pr_url(pr_url)
+
+      dispatch(type, "run:" <> run_id, payload, intent, "#{type} #{run_id}")
+    end
+  end
+
+  defp pr_kind(kind) do
+    case Map.fetch(@pr_kinds, kind) do
+      {:ok, kind} -> {:ok, kind}
+      :error -> {:error, "Unknown PR action."}
+    end
+  end
+
+  defp own_thread_with_run(project_id, thread_id) do
+    case own_thread(project_id, thread_id) do
+      {:ok, %Thread{door: :workflow, run_ids: [_ | _]} = thread} -> {:ok, thread}
+      {:ok, %Thread{}} -> {:error, "This thread has no run to open a pull request from."}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp watched_pr(_run_id, nil), do: :ok
+  defp watched_pr(_run_id, ""), do: :ok
+
+  defp watched_pr(run_id, pr_url) do
+    if Enum.any?(ProjectionStore.pr_watch(run_id), &(&1.pr_url == pr_url)),
+      do: :ok,
+      else: {:error, "That pull request is not watched for this thread."}
+  end
+
+  defp put_pr_url(payload, url) when url in [nil, ""], do: payload
+  defp put_pr_url(payload, url), do: Map.put(payload, :pr_url, url)
 
   @doc "Posts an operator message to the project coordinator (the HTTP POST's entry)."
   @spec post_coordinator_message(String.t(), String.t(), String.t()) :: result()
@@ -280,5 +335,21 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe({:invalid_text, :blank}), do: "the message is empty"
   def describe({:invalid_text, :too_long}), do: "the message is too long"
   def describe(:rate_limited), do: "rate limited"
+  def describe(:no_head_branch), do: "the run has no pushed branch to open a pull request from"
+  def describe(:no_base_branch), do: "the run has no base branch"
+  def describe(:no_commits_to_propose), do: "the branch has no commits to propose"
+  def describe({:pr_already_associated, url}), do: "a pull request already exists (#{url})"
+  def describe({:project_unresolved, id}), do: "project #{id} is not registered"
+  def describe({:fix_in_flight, _url}), do: "a fix is already running for that pull request"
+  def describe({:pr_not_open, status}), do: "the pull request is #{status}"
+
+  def describe({:fix_attempts_exhausted, kind, cap}),
+    do: "#{kind} fix attempts reached the cap of #{cap}"
+
+  def describe({:fix_no_progress, kind}), do: "the last #{kind} fix changed nothing on this head"
+  def describe({:fix_cooling_down, _until}), do: "a fix finished too recently"
+  def describe({:fix_exhausted, kind}), do: "#{kind} fixes are exhausted for this head"
+  def describe({:pr_url_required, _run}), do: "name the pull request (the run watches several)"
+  def describe({:pr_not_watched, _}), do: "no pull request is being watched"
   def describe(reason), do: inspect(reason, limit: 8, printable_limit: 200)
 end

@@ -7,9 +7,12 @@ defmodule ForemanServer.Overview.ThreadCard do
   `run.resume`, `thread.steer`, `thread.resolve`, `thread.reopen`). Merging is
   deliberately absent: `hint` carries the text `"operator: foreman run
   approve-merge/merge"` on PR-bearing groups and is not a command link.
+
+  `pr_actions` (see `ForemanServer.Overview.PrActions`) is the workspace's PR
+  fix/create buttons with their disabled reasons; it is not part of the HTTP/MCP DTO.
   """
 
-  alias ForemanServer.Overview.Group
+  alias ForemanServer.Overview.{Group, PrActions}
   alias ForemanServer.Threads.Thread
 
   @enforce_keys [:thread_id, :group, :reason]
@@ -28,6 +31,7 @@ defmodule ForemanServer.Overview.ThreadCard do
           reason: Group.reason(),
           steering: String.t(),
           actions: [String.t()],
+          pr_actions: [PrActions.t()],
           hint: String.t() | nil,
           updated_at: integer() | nil
         }
@@ -47,14 +51,15 @@ defmodule ForemanServer.Overview.ThreadCard do
     :hint,
     :updated_at,
     merge_gate: :none,
-    actions: []
+    actions: [],
+    pr_actions: []
   ]
 
   @merge_hint "operator: foreman run approve-merge/merge"
 
-  @doc "Build a card from a thread, its PR/failure view (or nil) and its classification."
-  @spec build(Thread.t(), map() | nil, {Group.group(), Group.reason()}) :: t()
-  def build(%Thread{} = thread, pr, {group, reason}) do
+  @doc "Build a card from a thread, its PR/failure view (or nil), its classification and the head run's PR-watch records."
+  @spec build(Thread.t(), map() | nil, {Group.group(), Group.reason()}, [map()]) :: t()
+  def build(%Thread{} = thread, pr, {group, reason}, watch) do
     %__MODULE__{
       thread_id: thread.id,
       door: thread.door,
@@ -70,6 +75,7 @@ defmodule ForemanServer.Overview.ThreadCard do
       reason: reason,
       steering: thread.steering,
       actions: actions(thread, group, reason),
+      pr_actions: if(group == :resolved, do: [], else: PrActions.build(thread, pr, watch)),
       hint: if(group in [:ready_for_review, :landing], do: @merge_hint),
       updated_at: thread.updated_at
     }

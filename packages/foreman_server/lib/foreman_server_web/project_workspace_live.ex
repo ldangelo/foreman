@@ -111,6 +111,19 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     {:noreply, notify(socket, result)}
   end
 
+  def handle_event("pr_action", %{"kind" => kind, "thread-id" => id} = params, socket) do
+    result =
+      Actions.pr_action(
+        socket.assigns.project_id,
+        id,
+        kind,
+        params["pr-url"],
+        Refresh.intent(socket)
+      )
+
+    {:noreply, notify(socket, result)}
+  end
+
   def handle_event(
         "steer",
         %{"thread_id" => id, "text" => text, "message_id" => message_id},

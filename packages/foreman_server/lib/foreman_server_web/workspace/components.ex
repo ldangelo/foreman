@@ -94,6 +94,34 @@ defmodule ForemanServerWeb.Workspace.Components do
           <.action_control action={action} card={@card} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
         <% end %>
       </div>
+      <div
+        :if={@card.pr_actions != []}
+        class="thread-pr-actions"
+        role="group"
+        aria-label={"Pull request actions for " <> @card.title}
+      >
+        <span :for={a <- @card.pr_actions} class="ws-pr-action">
+          <button
+            type="button"
+            id={"pr-action-#{@card.thread_id}-#{a.kind}"}
+            phx-click="pr_action"
+            phx-value-kind={a.kind}
+            phx-value-thread-id={@card.thread_id}
+            phx-value-pr-url={a.pr_url}
+            disabled={not a.enabled}
+            aria-describedby={if(a.reason, do: "pr-action-#{@card.thread_id}-#{a.kind}-reason")}
+          >
+            {a.label}
+          </button>
+          <span
+            :if={a.reason}
+            id={"pr-action-#{@card.thread_id}-#{a.kind}-reason"}
+            class="ws-muted"
+          >
+            {a.reason}
+          </span>
+        </span>
+      </div>
     </article>
     """
   end
