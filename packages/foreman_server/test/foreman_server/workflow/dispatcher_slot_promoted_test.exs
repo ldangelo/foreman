@@ -29,6 +29,13 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
   end
 
   setup do
+    # The app's real Dispatcher stays subscribed to ProjectionStore and handles
+    # terminal/resume events emitted by earlier tests. Unfrozen, it would run
+    # against the modules mocked below (calling the mocked RunSupervisor.start_run
+    # and RunAdmission.start) and put messages in this test's mailbox. See
+    # ForemanServer.DispatcherQuiesce.
+    :ok = ForemanServer.DispatcherQuiesce.suspend!()
+
     :meck.new(ForemanServer.ProjectionStore, [:no_link])
     :meck.new(ForemanServer.RunAdmission, [:no_link])
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
