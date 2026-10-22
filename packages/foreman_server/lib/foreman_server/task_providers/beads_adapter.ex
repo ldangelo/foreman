@@ -1500,8 +1500,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     populate_issue_from_payload(payload, argv)
   end
 
-  defp populate_issue_from_payload(payload, argv) do
-    with :ok <- JsonSchemaCache.validate(:issue_details, payload),
+  defp populate_issue_from_payload(payload, argv, schema \\ :issue_details) do
+    with :ok <- JsonSchemaCache.validate(schema, payload),
          {:ok, id} <- fetch_required_string(payload, :id),
          {:ok, title} <- fetch_required_string(payload, :title),
          {:ok, status} <- fetch_required_string(payload, :status),
@@ -1592,7 +1592,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   defp parse_get_issue_reference(%{} = payload, _field, argv) do
-    populate_issue_from_payload(payload, argv)
+    populate_issue_from_payload(payload, argv, :issue_reference)
   end
 
   defp build_get_error(stdout, stderr, result, argv) do

@@ -226,7 +226,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
         ]
       )
 
-      {:ok, %{stdout: Jason.encode!(%{"id" => "bead-1003"}), stderr: "", exit_code: 0}}
+      {:ok, %{stdout: Jason.encode!(%{"title" => "no id"}), stderr: "", exit_code: 0}}
     end)
 
     assert {:error, provider_error} =
@@ -239,7 +239,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
     assert provider_error.context.command ==
              "br update --db #{redacted_database_path(cached_database_path)} bead-1003 --status open --transition-comment schema-check --json"
 
-    assert provider_error.context.missing_fields == ["description"]
+    assert provider_error.context.missing_fields == ["id"]
   end
 
   test "ALREADY_OPEN returns {:ok, :already_terminal}", %{temp_dir: temp_dir} do
