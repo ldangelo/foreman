@@ -1,0 +1,8 @@
+{
+  "name": "foreman-ui-a11y",
+  "private": true,
+  "type": "module",
+  "description": "Browser a11y/keyboard/idle-traffic e2e for the Foreman LiveView workspace and settings pages",
+  "scripts": { "scan": "node ui_a11y.mjs" },
+  "dependencies": { "axe-core": "^4.10.0", "playwright": "^1.50.0" }
+}
