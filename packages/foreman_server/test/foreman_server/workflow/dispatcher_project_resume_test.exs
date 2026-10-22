@@ -61,8 +61,8 @@ defmodule ForemanServer.Workflow.DispatcherProjectResumeTest do
       {:ok, %{event_type: "RunStarted"}}
     end)
 
-    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task ->
-      send(test_pid, {:started, run_id})
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task, opts ->
+      send(test_pid, {:started, run_id, opts})
       {:ok, :child}
     end)
 
@@ -71,8 +71,8 @@ defmodule ForemanServer.Workflow.DispatcherProjectResumeTest do
 
     assert_received {:admitted, "run-1"}
     assert_received {:admitted, "run-2"}
-    assert_received {:started, "run-1"}
-    assert_received {:started, "run-2"}
+    assert_received {:started, "run-1", []}
+    assert_received {:started, "run-2", []}
   end
 
   test "a settings change (raised limit) retries the deferred tasks too" do
