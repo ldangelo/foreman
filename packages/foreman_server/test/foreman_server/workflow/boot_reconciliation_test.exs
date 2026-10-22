@@ -552,7 +552,9 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
                    end
                  end,
                  "deferred scan to acknowledge terminal run",
-                 2_000
+                 # The scan retries on a timer after the router returns; the deadline only
+                 # bounds a broken run, and a slow machine must not look like one.
+                 15_000
                )
     end
   end
