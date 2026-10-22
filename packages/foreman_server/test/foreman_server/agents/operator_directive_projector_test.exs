@@ -15,16 +15,6 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjectorTest do
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
 
-    case Process.whereis(DedupeTable) do
-      nil -> {:ok, _} = DedupeTable.start_link([])
-      _ -> :ok
-    end
-
-    case Process.whereis(Poller) do
-      nil -> {:ok, _} = Poller.start_link([])
-      _ -> :ok
-    end
-
     :ok
   end
 
@@ -152,8 +142,9 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjectorTest do
       # this test scope, but that's a logged warning, not a crash.)
       send(projector_pid, {:inbox_item_started, :operator_directive_projector, event})
 
-      # Give the GenServer a moment to process the message.
-      Process.sleep(50)
+      # Barrier: a call is answered only after the message above was handled
+      # (and exits the test if handling crashed the projector).
+      _ = :sys.get_state(projector_pid)
 
       # The GenServer must still be alive after the message.
       assert Process.alive?(projector_pid)

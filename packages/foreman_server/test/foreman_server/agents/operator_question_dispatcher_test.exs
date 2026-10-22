@@ -5,17 +5,16 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   `ForemanServer.Inbox.SharedInbox.ingest/2` (TRD-2026-4212be7e,
   JSI-T006 + JSI-T007).
 
-  These tests start the Poller + DedupeTable explicitly (mirroring
-  the `poller_test.exs` pattern) so the dispatcher is exercised
-  end-to-end through to the inbox without booting the full Foreman
-  application.
+  These tests use the Poller + DedupeTable that the application tree already
+  runs (they are not started here), so the dispatcher is exercised end-to-end
+  through to the inbox.
   """
 
   use ExUnit.Case, async: false
 
   alias ForemanServer.Agents.OperatorQuestionDispatcher
   alias ForemanServer.Agents.OperatorQuestionSource
-  alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted, Poller}
+  alias ForemanServer.Inbox.InboxItemStarted
 
   # Meck helper — calls :meck.new/2 before :meck.expect so passthrough stubs
   # are established for all three modules before the test runs.
@@ -30,42 +29,8 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
     {:ok, _} = Application.ensure_all_started(:meck)
-    # Start the Poller + DedupeTable + OperatorTimeout explicitly. Mirrors
-    # `test/foreman_server/inbox/poller_test.exs` — those tests do
-    # NOT boot the full Foreman application (which fails in this
-    # environment because :erlexec can't start) but still need the
-    # inbox pipeline and timeout scheduling live.
-    case Process.whereis(DedupeTable) do
-      nil ->
-        {:ok, _} = DedupeTable.start_link(name: DedupeTable)
-        :ok
-
-      _pid ->
-        :ok
-    end
-
-    case Process.whereis(Poller) do
-      nil ->
-        {:ok, _} = Poller.start_link(name: Poller)
-        :ok
-
-      _pid ->
-        :ok
-    end
-
-    case Process.whereis(ForemanServer.Agents.OperatorTimeout) do
-      nil ->
-        {:ok, _} =
-          ForemanServer.Agents.OperatorTimeout.start_link(
-            name: ForemanServer.Agents.OperatorTimeout
-          )
-
-        :ok
-
-      _pid ->
-        :ok
-    end
-
+    # DedupeTable, Poller and OperatorTimeout are in the application tree
+    # (config/test.exs enables :operator_timeout); nothing to start here.
     :ok
   end
 

@@ -23,6 +23,15 @@ defmodule ForemanServer.OverwatchTest do
 
   use ExUnit.Case, async: false
 
+  setup do
+    start_supervised!(%{
+      id: :fake_adapter_capture,
+      start: {Agent, :start_link, [fn -> %{} end, [name: :fake_adapter_capture]]}
+    })
+
+    :ok
+  end
+
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch
   alias ForemanServer.Overwatch.LaunchWorker
@@ -62,7 +71,6 @@ defmodule ForemanServer.OverwatchTest do
     def handle_info(_, state), do: {:noreply, state}
 
     defp capture_args(worker_id, run_id, args) do
-      Agent.start_link(fn -> %{} end, name: :fake_adapter_capture)
       Agent.update(:fake_adapter_capture, &Map.put(&1, {run_id, worker_id}, args))
     end
   end

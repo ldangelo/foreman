@@ -90,7 +90,10 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
 
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
-      Process.sleep(100)
+      # The scan is a cast handled synchronously inside BootReconciliation, so
+      # a call to the same process is a mailbox barrier: it returns only after
+      # the scan (and every command it dispatched) has completed.
+      _ = :sys.get_state(BootReconciliation)
 
       assert {:ok, events} = Store.read_stream_forward(@run_slots_stream, 0, 20)
       released_events = Enum.filter(events, &(&1.event_type == "RunSlotReleased"))
@@ -147,7 +150,10 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
 
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
-      Process.sleep(100)
+      # The scan is a cast handled synchronously inside BootReconciliation, so
+      # a call to the same process is a mailbox barrier: it returns only after
+      # the scan (and every command it dispatched) has completed.
+      _ = :sys.get_state(BootReconciliation)
 
       assert {:ok, events} = Store.read_stream_forward(@run_slots_stream, 0, 30)
       removed_events = Enum.filter(events, &(&1.event_type == "RunSlotWaiterRemoved"))
@@ -177,9 +183,8 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
           # nil for the rest of the test file.
           assert :ok = BootReconciliation.scan_run_slot_orphans()
 
-          # Give the dispatcher a chance to surface an exit if the rescue
-          # is missing.
-          Process.sleep(50)
+          # Barrier: surfaces an exit if the rescue is missing.
+          _ = :sys.get_state(BootReconciliation)
         end)
 
       assert Process.alive?(boot_pid)
@@ -196,6 +201,12 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   end
 
   defp cleanup_run_slots_stream do
+    # A previous example may have left a scan cast in flight that is still
+    # appending to the stream; hard-deleting under it violates the stream_events
+    # foreign key. The scan runs inside BootReconciliation, so a call there is a
+    # barrier for it.
+    _ = :sys.get_state(BootReconciliation)
+
     case Store.delete_stream(@run_slots_stream, :any_version, :hard) do
       :ok -> :ok
       {:ok, _} -> :ok

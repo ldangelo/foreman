@@ -4,15 +4,6 @@ defmodule ForemanServer.TriggerPollerTest do
   alias ForemanServer.TriggerPoller
 
   setup do
-    case Process.whereis(ForemanServer.Inbox.Poller) do
-      nil ->
-        {:ok, _pid} = ForemanServer.Inbox.Poller.start_link([])
-
-      pid ->
-        if not Process.alive?(pid),
-          do: {:ok, _pid} = ForemanServer.Inbox.Poller.start_link([])
-    end
-
     # Reset fetch_fun to default (no-op) on every test setup.
     :persistent_term.erase({TriggerPoller, :fetch_fun})
 
@@ -50,7 +41,7 @@ defmodule ForemanServer.TriggerPollerTest do
 
   describe "start_link/1 + poll_now/0" do
     test "starts a GenServer and returns 0 when no fetch_fun is configured" do
-      {:ok, _} = TriggerPoller.start_link([])
+      start_supervised!(TriggerPoller)
       assert TriggerPoller.poll_now() == 0
     end
 
@@ -61,13 +52,13 @@ defmodule ForemanServer.TriggerPollerTest do
         [%{"trigger_id" => id, "kind" => "deploy"}]
       end)
 
-      {:ok, _} = TriggerPoller.start_link([])
+      start_supervised!(TriggerPoller)
       assert TriggerPoller.poll_now() == 1
     end
 
     test "isolates failures via rescue and returns 0" do
       TriggerPoller.set_fetch_fun(fn -> raise "boom" end)
-      {:ok, _} = TriggerPoller.start_link([])
+      start_supervised!(TriggerPoller)
       assert TriggerPoller.poll_now() == 0
     end
   end

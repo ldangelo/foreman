@@ -24,10 +24,10 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   # `:run_slots`) breaks the next test's setup.
   #
   # `reset!/1` performs a full reset that always seeds every key the
-  # production `initial_state/0` defines. Pass `:keep_subscribers` to
-  # avoid clobbering active subscribers (the default clobbers them,
-  # which matches the existing test-suite behavior in
-  # `queue_controller_test.exs`).
+  # production `initial_state/0` defines. Subscribers are kept by default:
+  # the live singletons (Dispatcher, RunLifecycleReconciler, ...) subscribe
+  # once at boot, and dropping that subscription would silently disable them
+  # for the rest of the run. Pass `keep_subscribers: false` to clear them.
   @spec reset!(keyword()) :: :ok
   def reset!(opts \\ []) when is_list(opts) do
     :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
@@ -55,7 +55,7 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   # with no special-casing of non-map shapes (e.g. `run_slots`) required.
   defp empty_initial_state(opts, current_state) do
     subscribers =
-      if Keyword.get(opts, :keep_subscribers, false) do
+      if Keyword.get(opts, :keep_subscribers, true) do
         Map.get(current_state, :subscribers, %{})
       else
         %{}

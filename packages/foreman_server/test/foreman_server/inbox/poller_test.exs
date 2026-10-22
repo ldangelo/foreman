@@ -25,14 +25,6 @@ defmodule ForemanServer.Inbox.PollerTest do
       end
     end)
 
-    case Process.whereis(Poller) do
-      nil ->
-        {:ok, _pid} = Poller.start_link([])
-
-      pid ->
-        if not Process.alive?(pid), do: {:ok, _pid} = Poller.start_link([])
-    end
-
     # Clear stats from any previous test.
     try do
       :ets.delete_all_objects(:foreman_inbox_poller_stats)

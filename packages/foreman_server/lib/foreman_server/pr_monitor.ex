@@ -107,10 +107,7 @@ defmodule ForemanServer.PrMonitor do
   @doc "Start the monitor, registered under its module name (a second start returns the first)."
   @spec start_link(keyword()) :: {:ok, pid()}
   def start_link(opts \\ []) do
-    case GenServer.start_link(__MODULE__, opts, name: __MODULE__) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, pid}} -> {:ok, pid}
-    end
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """

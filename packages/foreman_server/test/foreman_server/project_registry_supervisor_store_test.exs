@@ -15,12 +15,9 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
     do: "#{prefix}-#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
   setup_all do
-    # ProjectRegistry is not in the application supervision tree; manual start.
-    case ProjectRegistry.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
+    # ProjectRegistry is not in the application supervision tree. Module-scoped:
+    # its Registry/Aggregator-side state outlives a single example.
+    start_supervised!(ProjectRegistry)
     :ok
   end
 

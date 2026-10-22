@@ -17,7 +17,6 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
     Application.put_env(:foreman_server, :workflow_catalog, server_name)
 
     {:ok, _} = start_supervised({Catalog, name: server_name}, id: server_name)
-    :timer.sleep(100)
 
     # Use string keys to avoid needing pre-existing atoms
     fixture = Jason.decode!(File.read!(@fixture_path), keys: :strings)

@@ -234,7 +234,11 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     # What `ProjectionStore.init/1` installs when its boot replay of the event
     # log fails: `initial_state()`, i.e. no jobsites at all.
     :sys.replace_state(ForemanServer.ProjectionStore, fn state -> %{state | jobsites: %{}} end)
-    on_exit(fn -> ForemanServer.ProjectionStore.rebuild([]) end)
+
+    on_exit(fn ->
+      ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
+    end)
+
     assert ForemanServer.ProjectionStore.list_jobsites() == []
 
     assert {:paused, ^id} = outcome_for(scan_outcomes!(), id)

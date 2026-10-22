@@ -36,10 +36,11 @@ defmodule ForemanServer.Idempotency.HeartbeatLeaseTest do
     # Acquire with a short TTL (10 ms) so expiry fires quickly in the test
     {:ok, _lease} = ForemanServer.Idempotency.HeartbeatLease.acquire("k-expiry", 10)
 
-    # Wait for the timer to fire and the `:expire` message to be processed
-    Process.sleep(30)
-
-    # Expiry removes the lease from HeartbeatLease
-    assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status("k-expiry")
+    # Wait for the timer to fire and the `:expire` message to be processed;
+    # expiry removes the lease from HeartbeatLease
+    ForemanServer.TestSupport.Eventually.await(
+      fn -> ForemanServer.Idempotency.HeartbeatLease.status("k-expiry") == :not_found end,
+      message: "lease k-expiry was never removed"
+    )
   end
 end

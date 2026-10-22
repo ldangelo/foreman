@@ -136,7 +136,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
       run_id = unique_run_id()
       send_envelope(%{event_type: "TaskApproved", data: %{task_id: "task-x", run_id: run_id}})
       refute_receive {:"$gen_cast", {:run_terminated, ^run_id, _}}, 100
-      assert_no_run_slot_release()
+      assert_no_run_slot_release(run_id)
     end
 
     test "duplicate terminal event is idempotent (one release)" do
@@ -167,8 +167,10 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
     assert command.payload.run_id == run_id
   end
 
-  defp assert_no_run_slot_release do
-    refute_receive {:dispatch_system, %{type: "run_slots.release"}, _}, 100
+  defp assert_no_run_slot_release(run_id) do
+    refute_receive {:dispatch_system, %{type: "run_slots.release", payload: %{run_id: ^run_id}},
+                    _},
+                   100
   end
 
   defp collect_slot_release_dispatches(run_id, timeout_ms, count) do

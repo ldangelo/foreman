@@ -120,8 +120,9 @@ defmodule ForemanServer.Agents.SignalToCommandWiringTest do
       id: :wiring_adapter
     )
 
-    # Give the auto-subscribe (sent via send/2 in init/1) time to land.
-    Process.sleep(100)
+    # The auto-subscribe is a message init/1 sends to itself, so it is ahead of
+    # this call in the adapter's mailbox: once get_state returns, it has run.
+    _ = :sys.get_state(adapter_name)
 
     signal =
       Jido.Signal.new!(%{
@@ -135,18 +136,17 @@ defmodule ForemanServer.Agents.SignalToCommandWiringTest do
     Jido.Signal.Bus.publish(bus_name, [signal])
 
     envelope =
-      Enum.reduce_while(1..20, nil, fn _i, _acc ->
-        case Agent.get(stub, & &1) do
-          [] ->
-            Process.sleep(50)
-            {:cont, nil}
+      ForemanServer.TestSupport.Eventually.await(
+        fn ->
+          case Agent.get(stub, & &1) do
+            [] -> nil
+            [e | _] -> e
+          end
+        end,
+        timeout: 5_000,
+        message: "stub dispatcher never received the envelope"
+      )
 
-          [e | _] ->
-            {:halt, e}
-        end
-      end)
-
-    assert envelope != nil, "stub dispatcher never received the envelope"
     assert envelope.payload.trigger_id == "trigger-wiring-1"
     assert envelope.payload.cloud_event_id == "evt-wiring-1"
   end

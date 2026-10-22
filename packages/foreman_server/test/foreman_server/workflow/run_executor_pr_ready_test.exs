@@ -11,11 +11,6 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
   alias ForemanServer.Workflow.RunExecutor
 
   setup do
-    case GenServer.whereis(MergeGate) do
-      nil -> {:ok, _pid} = MergeGate.start_link()
-      _pid -> :ok
-    end
-
     MergeGate.clear()
 
     repo = Path.join(System.tmp_dir!(), "pr-ready-#{System.unique_integer([:positive])}")

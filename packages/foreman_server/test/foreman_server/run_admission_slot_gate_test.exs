@@ -13,12 +13,12 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
     {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
     {:ok, _} = Application.ensure_all_started(:eventstore)
 
-    ensure_started({Phoenix.PubSub, name: ForemanServer.PubSub}, ForemanServer.PubSub)
-    ensure_started(ForemanServerWeb.Presence, ForemanServerWeb.Presence)
-    ensure_started(ForemanServer.EventStore, ForemanServer.EventStore)
-    ensure_started(ForemanServer.ProjectionStore, ForemanServer.ProjectionStore)
-    ensure_started(ForemanServer.Aggregator, ForemanServer.Aggregator)
-    ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
+    assert_running!(ForemanServer.PubSub)
+    assert_running!(ForemanServerWeb.Presence)
+    assert_running!(ForemanServer.EventStore)
+    assert_running!(ForemanServer.ProjectionStore)
+    assert_running!(ForemanServer.Aggregator)
+    assert_running!(ForemanServer.CommandRouter)
     :ok
   end
 
@@ -225,11 +225,10 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
     "#{prefix}-#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
   end
 
-  defp ensure_started(child_spec, name) do
-    case Process.whereis(name) do
-      nil -> Supervisor.start_child(ForemanServer.Supervisor, child_spec)
-      pid -> {:ok, pid}
-    end
+  # These are all children of the application tree; a missing one is a boot
+  # failure, not something a test should paper over by starting its own copy.
+  defp assert_running!(name) do
+    assert is_pid(Process.whereis(name)), "#{inspect(name)} is not running in the app tree"
   end
 
   defp register_project!(project_id) do

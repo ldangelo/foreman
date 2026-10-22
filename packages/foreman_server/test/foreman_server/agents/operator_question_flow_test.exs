@@ -27,16 +27,6 @@ defmodule ForemanServer.Agents.OperatorQuestionFlowTest do
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
 
-    case Process.whereis(DedupeTable) do
-      nil -> {:ok, _} = DedupeTable.start_link([])
-      _ -> :ok
-    end
-
-    case Process.whereis(Poller) do
-      nil -> {:ok, _} = Poller.start_link([])
-      _ -> :ok
-    end
-
     :ok
   end
 
