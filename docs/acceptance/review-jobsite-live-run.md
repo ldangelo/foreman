@@ -3,8 +3,9 @@
 Companion to `review-gap-beads-live-run.md` / `review-gap-guard-retest.md` (workflow door). Everything
 below was observed unless marked UNVERIFIED.
 
-**Provider note: `claude` (the configured default reviewer/worker) was NOT exercised** because the
-Claude OAuth is expired. Everything here ran on `pi` with `minimax/MiniMax-M2.7-highspeed`
+**Provider note: `claude` (the configured default reviewer/worker) was NOT exercised** because it was
+assumed unusable on this host (the Claude CLI did not answer from the shell when probed afterwards, and its auth
+state was not confirmed either way). Everything here ran on `pi` with `minimax/MiniMax-M2.7-highspeed`
 (`FOREMAN_REVIEW_PROVIDER=pi FOREMAN_REVIEW_MODEL=minimax/MiniMax-M2.7-highspeed`; worker the same).
 
 ## Environment
@@ -124,6 +125,6 @@ its `jobsite/<name>` branch and Foreman's own untracked `.foreman/` (worktrees, 
 
 ## Not done / UNVERIFIED
 
-- Provider `claude`, the configured default (OAuth expired). Docker sandbox, resumed/paused jobsites, push.
+- Provider `claude`, the configured default (not exercised; auth state unconfirmed). Docker sandbox, resumed/paused jobsites, push.
 - The natural "source bead already `foreman-gap`" chain on the jobsite door (covered on the workflow door).
 - Process-level tracing of reviewer writes.
