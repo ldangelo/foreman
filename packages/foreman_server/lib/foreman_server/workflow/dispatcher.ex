@@ -299,7 +299,11 @@ defmodule ForemanServer.Workflow.Dispatcher do
     payload = unwrap_data(envelope)
     run_id = payload["run_id"] || payload[:run_id]
 
-    if is_binary(run_id) and run_id != "" do
+    # Boot replays every historical event: a RunPaused whose run has since
+    # resumed, finished or failed is history, not a command. Acting on it
+    # would stamp a pause intent on, and release the slot/lease of, a run that
+    # is no longer paused.
+    if is_binary(run_id) and run_id != "" and run_paused?(run_id) do
       RunControl.request(run_id, :pause)
 
       case RunControl.cancel_agent(run_id) do
@@ -317,11 +321,15 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
 
     state =
-      if is_binary(run_id) and steer_pause?(payload),
+      if is_binary(run_id) and steer_pause?(payload) and run_paused?(run_id),
         do: schedule_steer_resume(run_id, state),
         else: state
 
     {:noreply, state}
+  end
+
+  defp run_paused?(run_id) do
+    match?(%{status: "paused"}, ProjectionStore.run(run_id))
   end
 
   # ---------------------------------------------------------------------
@@ -645,6 +653,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
   end
 
   defp dispatch_run_payload(run_payload, task_proj, task_id, state) do
+    # A run that already exists and is not terminal was started by a previous
+    # server (boot replays its TaskDispatched). Starting it as a fresh run would
+    # try to provision a worktree that is already there; it must resume.
+    case crash_resume_opts(run_payload.run_id, run_payload.phase_specs) do
+      # An operator pause survives restarts: replay must not restart the run.
+      :paused -> {:noreply, state}
+      resume_opts -> admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts)
+    end
+  end
+
+  defp admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts) do
     # RunAdmission.start dispatches through several aggregate actors
     # (run_slots:global, the Beads lease, the run aggregate). Any of
     # them can legitimately be mid-restart (crash, or a test's
@@ -677,7 +696,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
         {:noreply, state}
 
       {:ok, _} ->
-        ForemanServer.Workflow.RunSupervisor.start_run(run_payload.run_id, task_proj)
+        ForemanServer.Workflow.RunSupervisor.start_run(
+          run_payload.run_id,
+          task_proj,
+          resume_opts
+        )
+
         {:noreply, state}
 
       {:error, reason} ->
@@ -903,6 +927,16 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
             {:noreply, state}
         end
+    end
+  end
+
+  @doc false
+  @spec crash_resume_opts(String.t(), [map()]) :: keyword() | :paused
+  def crash_resume_opts(run_id, phase_specs) do
+    case ProjectionStore.run(run_id) do
+      %{status: "paused"} -> :paused
+      %{terminal?: false} -> [resume_from: resume_from_index(run_id, phase_specs)]
+      _absent_or_terminal -> []
     end
   end
 
