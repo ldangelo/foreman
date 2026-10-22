@@ -5,17 +5,16 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   `ForemanServer.Inbox.SharedInbox.ingest/2` (TRD-2026-4212be7e,
   JSI-T006 + JSI-T007).
 
-  These tests start the Poller + DedupeTable explicitly (mirroring
-  the `poller_test.exs` pattern) so the dispatcher is exercised
-  end-to-end through to the inbox without booting the full Foreman
-  application.
+  These tests use the Poller + DedupeTable that the application tree already
+  runs (they are not started here), so the dispatcher is exercised end-to-end
+  through to the inbox.
   """
 
   use ExUnit.Case, async: false
 
   alias ForemanServer.Agents.OperatorQuestionDispatcher
   alias ForemanServer.Agents.OperatorQuestionSource
-  alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted, Poller}
+  alias ForemanServer.Inbox.InboxItemStarted
 
   # Meck helper — calls :meck.new/2 before :meck.expect so passthrough stubs
   # are established for all three modules before the test runs.
