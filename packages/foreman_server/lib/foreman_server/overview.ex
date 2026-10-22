@@ -172,6 +172,7 @@ defmodule ForemanServer.Overview do
       resolved?: thread.resolved,
       pr_state: pr && pr.pr_state,
       merge_gate: (pr && pr.merge_gate) || :none,
+      checks_state: checks_state(thread, pr),
       pending_approvals: signals.pending_approvals,
       open_questions: signals.open_questions,
       expired_approvals: signals.expired_approvals,
@@ -183,6 +184,16 @@ defmodule ForemanServer.Overview do
       idle_ms: max(now - (thread.updated_at || now), 0)
     }
   end
+
+  # CI state comes from the E9 PR watch fold (`PrChecksChanged`), only for an
+  # open PR: a failing rollup on any watched, still-live PR of the head run counts.
+  defp checks_state(%Thread{door: :workflow, run_ids: [run_id | _]}, %{pr_state: :open}) do
+    live = Enum.reject(ProjectionStore.pr_watch(run_id), &(&1.status in ["merged", "closed"]))
+
+    if Enum.any?(live, &(&1.checks_state == "failing")), do: :failing, else: :none
+  end
+
+  defp checks_state(_thread, _pr), do: :none
 
   # The newest run of a workflow thread owns its PR state; jobsites have none.
   defp head_run_id(%Thread{door: :workflow, run_ids: [run_id | _]}), do: run_id

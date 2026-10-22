@@ -55,6 +55,7 @@ defmodule ForemanServer.Overview.Group do
     :conflict,
     :paused,
     :review_not_met,
+    :ci_failing,
     :merge_in_flight,
     :pr_ready,
     :review_ready,
@@ -81,6 +82,7 @@ defmodule ForemanServer.Overview.Group do
           | :conflict
           | :paused
           | :review_not_met
+          | :ci_failing
           | :merge_in_flight
           | :pr_ready
           | :review_ready
@@ -120,6 +122,7 @@ defmodule ForemanServer.Overview.Group do
       i.pr_state == :conflicted -> {:waiting_on_you, :conflict}
       i.status == "paused" and i.paused_reason != "steer" -> {:waiting_on_you, :paused}
       i.review_verdict == "not_met" and i.pr_state == :open -> {:waiting_on_you, :review_not_met}
+      i.pr_state == :open and i.checks_state == :failing -> {:waiting_on_you, :ci_failing}
       i.pr_state == :open and i.merge_gate == :approved -> {:landing, :merge_in_flight}
       i.pr_state == :open and i.merge_gate == :pending -> {:ready_for_review, :pr_ready}
       reviewed_open_pr?(i) -> {:ready_for_review, :review_ready}
