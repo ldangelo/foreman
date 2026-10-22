@@ -2137,7 +2137,7 @@ tracked files and new untracked files are included (gitignored files are not;
 the checkout's index is marked intent-to-add). If that marking fails, for example
 on a held `index.lock`, the diff still holds every tracked change but omits the
 new files, and the manifest's `capture_errors` says so (stage `intent_to_add`).
-A jobsite cancel captures that diff just before its worktree is discarded. For a
+A jobsite cancel or failure (for example an agent that dies) captures that diff just before its worktree is discarded. For a
 workflow run, `run.cancel`
 is recorded before the run's executor has actually stopped, so the review step
 waits up to 30 seconds for the executor to exit before it archives the run from

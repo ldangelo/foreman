@@ -166,6 +166,40 @@ defmodule ForemanServer.Jobsite.SessionArchiveTest do
     assert manifest["request"]["prompt"] == "Original request"
   end
 
+  test "a failed run archives the working-tree diff before the worktree is discarded", %{
+    repo: repo,
+    archive_root: root
+  } do
+    # The fake agent writes `agent-log.txt` into its worktree, then dies. Nothing
+    # was committed (merge_to_head discards the worktree and its branch on
+    # failure), so only a working-tree diff taken before the discard has it.
+    agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{"FAKE_AGENT_FAIL_WITH" => "Credit balance is too low"}
+      )
+
+    {:ok, id} =
+      Jobsite.run_async(
+        repo_path: repo,
+        strategy: :merge_to_head,
+        sandbox: Sandboxes.host(),
+        agent: agent,
+        prompt: "Original request"
+      )
+
+    wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "failed" end, 25_000)
+
+    dir = Path.join([root, "jobsite", id])
+    patch = File.read!(Path.join(dir, "diff.patch"))
+    assert patch =~ "+fake agent ran (invocation 1)"
+    assert File.read!(Path.join(dir, "changed-files.txt")) =~ "agent-log.txt"
+
+    manifest = dir |> Path.join("manifest.json") |> File.read!() |> Jason.decode!()
+    assert manifest["diff_status"] == "captured"
+    assert manifest["capture_errors"] == []
+  end
+
   # The linked worktree (not the main checkout) holding the fake agent's log, if any.
   defp worktree_with_agent_log(repo) do
     {out, 0} = System.cmd("git", ["-C", repo, "worktree", "list", "--porcelain"])

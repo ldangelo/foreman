@@ -491,6 +491,11 @@ defmodule ForemanServer.Jobsite.Executor do
   end
 
   defp fail(jobsite_id, worktree, sandbox, %Error{} = error) do
+    # Cleanup discards the worktree (and, for `:merge_to_head`, its branch), so
+    # the archive takes the working-tree diff first, exactly as cancel does. A
+    # failure after the commit step re-captures the same content: the working
+    # tree diff is taken against the same base.
+    capture_diff(jobsite_id, worktree, :worktree)
     cleanup(jobsite_id, sandbox, worktree)
     dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
     {:error, error}
