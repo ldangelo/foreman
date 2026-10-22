@@ -2,7 +2,7 @@
 
 Index of the project-workspace capabilities: aggregate (stream prefix), events, main modules and the HTTP / MCP / CLI surfaces. Module paths are under `packages/foreman_server/lib/foreman_server/` unless noted. Operator-facing behaviour is in `docs/user-guide.md` ("Projects workflow"); the rules are in `CLAUDE.md` §20-§26. Every row was checked against `main`; stream prefixes are the clauses of `CommandRouter.aggregate_module_for/1`.
 
-Multi-repo projects are not on `main` and are not covered here.
+Multi-repo projects (E12, #603) are on `main` but are not indexed in the table below: see `docs/lessons/multi-repo-e2e-2026-10-21.md` and `docs/user-guide.md` "Repositories" (`GET /api/projects/:id/repositories`, `foreman project repo`, `foreman_project_repo_list`, `foreman_run_request_repo`, `foreman_task_fanout`).
 
 ## Capability index
 
