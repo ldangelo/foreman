@@ -39,7 +39,7 @@ Multi-repo projects (E12, #603) are on `main` and enabled by default (`config :f
 
 ## UNVERIFIED against the live service
 
-Tested with fakes only: E9 GitHub webhook deliveries, force-pushes to a PR branch, check re-run, merge-conflict resolution and unresolved review-thread reads (S4); resuming a Claude provider session; the phase-wide effect of a Claude tool approval (S2). `pi` with `minimax/MiniMax-M2.7-highspeed` is the only live-verified provider path.
+Verified live since this note was written (see `docs/acceptance/parity-audit.md`): GitHub webhook deliveries, force-pushes to a PR branch, check re-run and merge-conflict resolution on a real private repo (`docs/acceptance/github-live-run.md`), and Claude coordinator, thread, reviewer, in-flight approval and steering paths for short haiku sessions. Still tested with fakes only: branch protection, the workspace PR buttons and the automatic `pr_auto_fix` policy against real GitHub, unresolved review-thread reads, resuming a Claude provider session for a fix thread, the phase-wide effect of a Claude tool approval (S2), and Telegram/Slack delivery. `pi` with `minimax/MiniMax-M2.7-highspeed` remains the main live-verified provider path.
 
 ## Runbook
 
