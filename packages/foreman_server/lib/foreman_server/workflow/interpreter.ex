@@ -891,7 +891,10 @@ defmodule ForemanServer.Workflow.Interpreter do
     Enum.reduce_while(entries, {:ok, %{}}, fn entry, {:ok, acc} ->
       case split_mapping(String.trim(entry)) do
         {key, val} when key != "" ->
-          {:cont, {:ok, Map.put(acc, flow_key(key), parse_scalar(String.trim(val)))}}
+          case flow_key(key) do
+            {:ok, name} -> {:cont, {:ok, Map.put(acc, name, parse_scalar(String.trim(val)))}}
+            :error -> {:halt, :error}
+          end
 
         _other ->
           {:halt, :error}
@@ -911,10 +914,15 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
+  # A quoted key may contain anything; a plain one may not hold flow delimiters,
+  # so `{a}: b` inside braces is "not a mapping" rather than a key named `a}`.
   defp flow_key(key) do
     case classify_scalar(key) do
-      {:quoted, inner} -> inner
-      {:plain, plain} -> plain
+      {:quoted, inner} ->
+        {:ok, inner}
+
+      {:plain, plain} ->
+        if String.contains?(plain, ["{", "}", "[", "]", ","]), do: :error, else: {:ok, plain}
     end
   end
 

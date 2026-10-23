@@ -157,6 +157,36 @@ defmodule ForemanServer.Workflow.InterpreterFlowStyleTest do
     end
   end
 
+  describe "what is not a flow mapping" do
+    test "an unquoted key holding flow delimiters keeps the value a plain (refused) string",
+         %{tmp_dir: tmp} do
+      message =
+        refusal_message(
+          load(
+            tmp,
+            "badkey",
+            "name: wt\nworktree: {a}: b}\nphases:\n  - name: a\n    command: /skill:x\n"
+          )
+        )
+
+      assert message =~ "\"worktree\" must be a mapping"
+    end
+
+    test "a quoted key may hold flow delimiters", %{tmp_dir: tmp} do
+      assert {:error, {:manifest_load_failed, _path, message}} =
+               load(tmp, "quotedkey", """
+               name: wt
+               worktree: {"a,b": 1}
+               phases:
+                 - name: a
+                   command: /skill:x
+               """)
+
+      # Parsed as a mapping, so the failure is the unknown-key refusal, not "must be a mapping".
+      assert message =~ ~s(unrecognized key "a,b")
+    end
+  end
+
   describe "phase-level flow mappings" do
     test "models: flow mapping equals the block mapping", %{tmp_dir: tmp} do
       block = """
