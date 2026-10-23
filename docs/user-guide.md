@@ -1765,17 +1765,19 @@ Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
 `copy_to_worktree`, `resume_session`, `push`, `bead_id`. Unknown keys are rejected.
 `bead_id` names the bead the jobsite's review is reported on (comment and gap
 beads, see Session archive and review). It must exist in the `project_id`'s
-registered task provider: an unknown bead is refused with `404
-spec_bead_not_found`, and a provider that cannot be read to check it with `503
-spec_bead_unavailable`; both are audited as rejected and start nothing. A spec
-without `bead_id` never consults the provider.
+registered task provider and must not itself be a gap bead (filed by an earlier
+review, or carrying the `foreman-gap` label). An unknown bead is refused with
+`404 spec_bead_not_found`, a gap bead with `422 spec_bead_ineligible`, and a
+provider that cannot be read to check it with `503 spec_bead_unavailable`; all
+are audited as rejected and start nothing. A spec without `bead_id` never
+consults the provider.
 `push: true` publishes the branch to `origin` after the commit and needs a
 branch strategy; if the push fails the jobsite fails with `push_failed` and the
 commits stay on the server's local branch.
 
 Status codes: `400` missing/malformed input, `401` bad or missing token, `403`
 forbidden by policy, `404` unknown id, project or `bead_id`, `409` wrong state,
-`422` invalid spec, `429` too many running jobsites, `502` the executor could not
+`422` invalid spec or an ineligible (gap) `bead_id`, `429` too many running jobsites, `502` the executor could not
 start, `503` the task provider could not verify `bead_id`.
 
 **Operator configuration** (`config :foreman_server, :jobsites, ...`):
@@ -2255,8 +2257,10 @@ task id is `beads:<project>:<bead>`, or a jobsite started with `bead_id`) the
 verdict is posted as a bead comment and each gap becomes a new bead labelled
 `foreman-exec` + `foreman-gap`, which Foreman then dispatches. A bead that
 an earlier recorded review filed as a gap bead gets the comment but spawns no
-further gap beads (depth cap of 1); the guard is the review event log, so it
-needs no `br show`. The bead step needs both `bead_id` and `project_id`: a
+further gap beads (depth cap of 1); the guards are the review event log and the
+bead's own `foreman-gap` label. The same rule applies at the remote jobsite
+door: `POST /api/jobsites` refuses a `bead_id` that is a gap bead
+(`422 spec_bead_ineligible`) or absent from the project. The bead step needs both `bead_id` and `project_id`: a
 jobsite without a `project_id` is still reviewed and the review is recorded,
 only the bead step (comment and gap beads) is skipped. A cancelled run or
 jobsite gets the verdict comment but no gap beads: unfinished work the operator
