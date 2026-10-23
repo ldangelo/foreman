@@ -1722,7 +1722,7 @@ the script: the body is validated data, the repo is a **registered
 
 | Route | Purpose |
 |---|---|
-| `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}` |
+| `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}`. Refusals the executor finds after the `202` (a project network policy the sandbox cannot enforce - `network_policy_unsupported`, an invalid project environment, a failed setup plan) are recorded: `GET /api/jobsites/:id` answers `status: "failed"` with the typed `last_error.code`, never `404` |
 | `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`, and `paused_reason` while paused) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
 | `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start). Optional JSON `prompt` (non-blank, at most 8000 chars; `422 spec_option_invalid` otherwise) replaces the default `Continue.` prompt of the resumed iteration - this is jobsite steering v1 (pause, then resume with the message; `Jobsite.steer/3` does both); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 already_running` if its executor is alive, `502` if the executor could not start |
