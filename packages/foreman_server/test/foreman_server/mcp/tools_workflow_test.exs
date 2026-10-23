@@ -57,6 +57,8 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
         {:ok, manifest}
       end)
 
+      :meck.expect(ForemanServer.Workflow.Catalog, :invalid, 0, [])
+
       try do
         assert Tools.call_tool("foreman_workflow_get", %{name: "workflow-a"}) ==
                  {:ok,
@@ -76,6 +78,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
     test "returns NOT_FOUND when workflow not found" do
       :meck.new(ForemanServer.Workflow.Catalog, [:non_strict])
       :meck.expect(ForemanServer.Workflow.Catalog, :load, fn _ -> {:error, :not_found} end)
+      :meck.expect(ForemanServer.Workflow.Catalog, :invalid, 0, [])
 
       try do
         assert Tools.call_tool("foreman_workflow_get", %{name: "nonexistent-workflow"}) ==

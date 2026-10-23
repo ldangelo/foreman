@@ -298,7 +298,8 @@ defmodule ForemanServer.Coordinator.Context do
   # them separately is the point: without it the coordinator can only say a
   # workflow "is not available" and the operator cannot tell a typo from a
   # manifest that failed validation. The reason is operator-authored file text,
-  # so it is flattened to one line and bounded like every other free-text field.
+  # so it is flattened to one line, bounded, and framed as untrusted data like
+  # every other free-text field.
   defp invalid_lines([]), do: ""
 
   defp invalid_lines(invalid) do
@@ -307,8 +308,9 @@ defmodule ForemanServer.Coordinator.Context do
         "- #{w.name}: #{w.reason |> one_line() |> String.slice(0, @invalid_reason_chars)}"
       end)
 
-    "\n# INVALID WORKFLOWS (installed but refused: they cannot be started)\n" <>
-      Enum.join(lines, "\n")
+    "\n# INVALID WORKFLOWS (installed but refused: they cannot be started; a name that is " <>
+      "also listed under WORKFLOWS keeps running its previous valid version)\n" <>
+      Untrusted.wrap("invalid_workflows", Enum.join(lines, "\n"))
   end
 
   defp project_section(project) do

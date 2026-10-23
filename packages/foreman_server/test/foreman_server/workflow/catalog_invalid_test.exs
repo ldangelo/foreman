@@ -203,6 +203,24 @@ defmodule ForemanServer.Workflow.CatalogInvalidTest do
                Tools.call_tool("foreman_workflow_get", %{name: "never-existed"})
     end
 
+    test "foreman_workflow_get reports a pending refusal even while the previous version is served",
+         %{tmp_dir: tmp, server_name: name} do
+      start_catalog(tmp, name)
+      assert {:ok, %{}} = Tools.call_tool("foreman_workflow_get", %{name: "good"})
+
+      File.write!(Path.join(tmp, "good.yaml"), "name: good\nphases:\n  - bogus line\n")
+      capture_log(fn -> :ok = Catalog.reload() end)
+
+      # The catalog still serves the last good snapshot for execution...
+      assert {:ok, %{name: "good"}} = Catalog.load("good.yaml")
+
+      # ...but the read tool does not present it as healthy.
+      assert {:error, %ForemanServer.MCP.ToolError{code: "INVALID_MANIFEST", message: message}} =
+               Tools.call_tool("foreman_workflow_get", %{name: "good"})
+
+      assert message =~ "previous valid version is still being served"
+    end
+
     test "the coordinator source lists the refused manifest under its file name",
          %{tmp_dir: tmp, server_name: name} do
       write_invalid!(tmp)

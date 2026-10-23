@@ -2537,8 +2537,14 @@ defmodule ForemanServer.MCP.Tools do
   defp tool_foreman_workflow_get(%{name: name}) do
     start_us = System.monotonic_time(:microsecond)
 
-    case Catalog.load(name <> ".yaml") do
-      {:ok, manifest} ->
+    filename = name <> ".yaml"
+
+    # `Catalog.load/1` keeps serving the last good snapshot when an edit fails
+    # validation, so a loaded manifest can ALSO have a pending refusal. The read
+    # tool reports the refusal either way: hiding it behind the stale snapshot is
+    # exactly the invisibility this error exists to remove.
+    case {Catalog.load(filename), Enum.find(Catalog.invalid(), &(&1.filename == filename))} do
+      {{:ok, manifest}, nil} ->
         result = %{
           name: name,
           description: Map.get(manifest, "description", ""),
@@ -2552,7 +2558,7 @@ defmodule ForemanServer.MCP.Tools do
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :ok)
         {:ok, result}
 
-      {:error, {:workflow_invalid, %LoadError{} = error}} ->
+      {_load, %LoadError{} = error} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :error)
 
@@ -2562,7 +2568,7 @@ defmodule ForemanServer.MCP.Tools do
            message: "Workflow #{name} is invalid and was not loaded: #{LoadError.describe(error)}"
          }}
 
-      {:error, _reason} ->
+      {{:error, _reason}, nil} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :not_found)
         {:error, %ToolError{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
