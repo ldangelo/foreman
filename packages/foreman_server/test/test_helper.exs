@@ -16,11 +16,14 @@ GenServer.stop(conn)
 # whose cwd vanished exits 1 ("agent_failed ... exit_status 256"), a prompt log disappears
 # mid-test, a `git push` finds no repository. `System.tmp_dir!/0` and every child process read
 # TMPDIR, so pointing it at a per-VM directory removes the collision for all ~200 sites at once.
-vm_tmp = Path.join(System.tmp_dir!(), "fm-test-#{System.pid()}")
-File.rm_rf!(vm_tmp)
-File.mkdir_p!(vm_tmp)
+#
+# The directory is created fresh and never cleared: an OS pid is reused within minutes, so a bare
+# `fm-test-<pid>` can already exist as the leftover of an earlier VM, and `File.rm_rf!/1` on a
+# leftover that holds a read-only tree (a Library entry) raised "file already exists" here, before
+# any test ran. See `ForemanServer.TestSupport.Tmp`.
+vm_tmp = ForemanServer.TestSupport.Tmp.claim_vm_dir!(System.tmp_dir!())
 System.put_env("TMPDIR", vm_tmp)
-ExUnit.after_suite(fn _ -> File.rm_rf(vm_tmp) end)
+ExUnit.after_suite(fn _ -> ForemanServer.TestSupport.Tmp.release_vm_dir(vm_tmp) end)
 
 # `:eventstore` logs every append, notification and subscription push at :debug.
 # It is ~20k lines of a CI log, and because the Beads lease stream id embeds the
