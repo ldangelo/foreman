@@ -1,0 +1,16 @@
+name: claudeedit
+description: Live acceptance workflow. One claude phase (approval_mode auto_approve) that carries out the task and commits.
+task_types: [task, bug, chore, feature]
+worktree:
+  enabled: true
+  branch: foreman/{task_id}/{run_id}
+  path: workspace
+  cleanup: on_success
+phases:
+  - name: edit
+    prompt: edit.md
+    provider: claude
+    approval_mode: auto_approve
+    models:
+      default: haiku
+    commit: true

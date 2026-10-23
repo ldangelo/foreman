@@ -124,6 +124,14 @@ defmodule ForemanServer.Overview.ThreadCard do
     do: ["thread.steer", "run.pause", "run.cancel"]
 
   defp actions(%Thread{door: :jobsite}, :working, _), do: ["thread.steer"]
+
+  # A pending approval of a RUNNING workflow thread is an in-flight prompt: the agent is blocked
+  # on it, so the operator must be able to stop the run, not only decide the call (live run,
+  # docs/acceptance/live-claude-and-approvals.md: the card offered only `Resolve`).
+  defp actions(%Thread{door: :workflow, status: status}, :waiting_on_you, :approval)
+       when status in ["awaiting_worker", "in_progress"],
+       do: ["run.cancel", "thread.resolve"]
+
   defp actions(_thread, :waiting_on_you, :paused), do: ["run.resume", "thread.resolve"]
   defp actions(_thread, :waiting_on_you, _), do: ["thread.resolve"]
   defp actions(_thread, :idle, _), do: ["thread.resolve"]

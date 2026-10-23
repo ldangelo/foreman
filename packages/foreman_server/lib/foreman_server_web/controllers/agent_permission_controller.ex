@@ -24,6 +24,7 @@ defmodule ForemanServerWeb.AgentPermissionController do
   alias ForemanServer.Approvals.{Config, Inflight, PermissionPrompt}
 
   @protocol_fallback "2025-11-25"
+  @idle_grace_ms 60_000
 
   def stream_unsupported(conn, _params), do: send_resp(conn, 405, "")
 
@@ -84,11 +85,27 @@ defmodule ForemanServerWeb.AgentPermissionController do
     task = Task.async(fn -> PermissionPrompt.decide(run_id, args, []) end)
 
     conn
+    |> hold_open()
     |> put_resp_content_type("text/event-stream")
     |> put_resp_header("cache-control", "no-cache")
     |> send_chunked(200)
     |> stream_until_decided(task, run_id, args, id, token, 1)
   end
+
+  # Cowboy closes a connection that has RECEIVED no data for `idle_timeout` (default 60 s;
+  # `reset_idle_timeout_on_send` is off, so the progress events above do not count) and kills
+  # this request process, and the blocked decision with it. Live (claude 2.1.308): a prompt left
+  # for a minute was lost, claude gave the call up 150 s in and the model re-asked, and an
+  # approval after that reached nobody (`delivery_failed: :no_live_request`). The stream
+  # therefore carries its own idle timeout: the longest a decision can take plus a grace.
+  defp hold_open(%Plug.Conn{adapter: {Plug.Cowboy.Conn, req}} = conn) do
+    idle_ms = Config.approval_timeout_ms() + @idle_grace_ms
+    :ok = :cowboy_req.cast({:set_options, %{idle_timeout: idle_ms}}, req)
+    conn
+  end
+
+  # Not behind Cowboy (`Phoenix.ConnTest`): there is no connection timer to lift.
+  defp hold_open(conn), do: conn
 
   defp stream_until_decided(conn, task, run_id, args, id, token, n) do
     case Task.yield(task, Config.inflight_progress_ms()) do
