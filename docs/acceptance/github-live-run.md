@@ -265,12 +265,12 @@ exit=0
 
 ## Not covered / UNVERIFIED
 
-Branch protection (HTTP 403); the PR action buttons and the automatic `pr_auto_fix` policy against real GitHub; MCP absence of a merge
-tool was not re-probed; the cause of the one stalled paused-project run; claude provider paths (unchanged, out of scope); pi still has no
-approval/ask mechanism (stage 5 UNVERIFIED, unchanged).
+As of this run (2026-10-22): branch protection (HTTP 403); the PR action buttons and the automatic `pr_auto_fix` policy against real GitHub
+(both verified since, see the update below); MCP absence of a merge tool was not re-probed; the cause of the one stalled paused-project run;
+claude provider paths (unchanged, out of scope); pi still has no approval/ask mechanism (stage 5 UNVERIFIED, unchanged).
 
 > **Update 2026-10-23:** the PR action buttons, the automatic `pr_auto_fix` policy and a push after merge approval were exercised against real
-> GitHub afterwards and are no longer unverified; see `live-github-protection-ui-autofix.md`. Branch protection remains unverified (the reason,
+> GitHub afterward and are no longer unverified; see `live-github-protection-ui-autofix.md`. Branch protection remains unverified (the reason,
 > a failed pre-flip content scan for the temporary public window, is documented there). The table rows above are the historical state of 2026-10-22.
 
 ## Bead status

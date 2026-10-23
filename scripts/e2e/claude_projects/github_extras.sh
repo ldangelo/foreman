@@ -601,7 +601,9 @@ gh_set_visibility() { # <public|private>
 gh_visibility() { gh repo view "$GH_REPO" --json visibility -q .visibility 2>/dev/null; }
 
 gh_unflip() {
-  [ "$GH_FLIPPED" = 1 ] || return 0
+  # GH_FLIPPED can be stale (a stage that died keeps its state only up to the last save): ask GitHub what is true
+  gu_now=$(gh_visibility)
+  [ "$GH_FLIPPED" = 1 ] || [ "$gu_now" = PUBLIC ] || return 0
   gh_set_visibility private
   GH_UNFLIP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gu_vis=$(gh_visibility)
@@ -615,7 +617,7 @@ gh_protect() {
 {"required_status_checks":{"strict":false,"contexts":$2},"enforce_admins":$1,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"required_linear_history":true}
 EOF
   gp_rc=$?
-  [ "$gp_rc" = 0 ] && GH_PROTECTED=1
+  [ "$gp_rc" = 0 ] && { GH_PROTECTED=1; state_save 2>/dev/null; }
   return $gp_rc
 }
 gh_protection_line() {
@@ -632,6 +634,7 @@ gh_bot_approve() {
     [ "${gba_id:-0}" != "${gba_before:-0}" ] && break
     sleep 3; gba_n=$((gba_n + 3))
   done
+  [ "${gba_id:-0}" != "${gba_before:-0}" ] || return 1
   gba_n=0
   while [ "$gba_n" -lt 180 ]; do
     [ "$(gh run view "$gba_id" -R "$GH_REPO" --json status -q .status 2>/dev/null)" = completed ] && break
@@ -777,9 +780,8 @@ gh_x_protection() {
 
 # gh_unwind_protection: protection off, merge methods restored, repository private again
 gh_unwind_protection() {
-  if [ "$GH_PROTECTED" = 1 ]; then
-    gh api -X DELETE "repos/$GH_REPO/branches/main/protection" >/dev/null 2>&1 && GH_PROTECTED=0 && note "branch protection removed from main"
-  fi
+  # unconditional: the recorded flag can be stale, and deleting protection that does not exist is a harmless 404
+  gh api -X DELETE "repos/$GH_REPO/branches/main/protection" >/dev/null 2>&1 && GH_PROTECTED=0 && note "branch protection removed from main"
   gh api -X PATCH "repos/$GH_REPO" -F allow_squash_merge=true -F allow_merge_commit=true -F allow_rebase_merge=true >/dev/null 2>&1
   gh_unflip
   if [ -n "$GH_FLIP_AT" ]; then

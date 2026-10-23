@@ -47,7 +47,7 @@ export E2E_REVIEW_ANALYSIS=0
 E2E_EVIDENCE_DIR=${E2E_EVIDENCE_DIR:-$ROOT/tmp/gx-evidence}
 E2E_TRANSCRIPT=${E2E_TRANSCRIPT:-$E2E_EVIDENCE_DIR/transcript-$MODE.txt}
 
-STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts autofix createpr postapproval prot_prepare protection"
+STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts autofix createpr postapproval merge_refusal prot_prepare protection"
 STATE_FILE="$WORK/state.env"
 STATE_VARS="WORK ROOT SUFFIX NODE COOKIE API E2E_PORT E2E_HOOK_PORT E2E_DB_NAME DATABASE_URL E2E_API_TOKEN E2E_MODEL
   SERVER_PID HOOK_PID SERVER_LOG HOOK_CAPTURE FOREMAN PROJECT REPO DB_CREATED GH_REPO GH_CLONE GH_OP GH_PROJECT
@@ -64,6 +64,14 @@ state_save() {
   mv "$ss_tmp" "$STATE_FILE"
 }
 
+# reload_state: stage processes are separate shells; the flip and protection flags they persist (and nothing this
+# process holds in memory) are what teardown has to act on, so a stage that died mid-way cannot leave the repository public
+reload_state() {
+  # shellcheck disable=SC1090
+  [ -f "$STATE_FILE" ] && . "$STATE_FILE"
+  return 0
+}
+
 # finish: keep the server log with the evidence, then the shared cleanup (server, hook, tunnel, database, work dir)
 finish() {
   fi_rc=$?
@@ -71,6 +79,7 @@ finish() {
   mkdir -p "$E2E_EVIDENCE_DIR"
   [ -f "${SERVER_LOG:-}" ] && cp "$SERVER_LOG" "$E2E_EVIDENCE_DIR/server.log" 2>/dev/null
   [ -f "${HOOK_CAPTURE:-}" ] && cp "$HOOK_CAPTURE" "$E2E_EVIDENCE_DIR/notifications.jsonl" 2>/dev/null
+  reload_state
   cleanup
   exit "$fi_rc"
 }
@@ -122,6 +131,7 @@ case "$MODE" in
       kill -0 "$SERVER_PID" 2>/dev/null || { out "the server died: stopping"; break; }
       sleep 3
     done
+    reload_state
     gh_unwind_protection
     summary
     exit $?
