@@ -1762,15 +1762,21 @@ Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
 `approval_mode`), `strategy` (`"head"` or `{"branch": name}`), `sandbox`,
 `name`, `max_iterations`, `completion_signal`, `idle_timeout_seconds`,
 `completion_timeout_seconds`, `hooks.sandbox`, `exclude_paths`,
-`copy_to_worktree`, `resume_session`, `push`. Unknown keys are rejected.
+`copy_to_worktree`, `resume_session`, `push`, `bead_id`. Unknown keys are rejected.
+`bead_id` names the bead the jobsite's review is reported on (comment and gap
+beads, see Session archive and review). It must exist in the `project_id`'s
+registered task provider: an unknown bead is refused with `404
+spec_bead_not_found`, and a provider that cannot be read to check it with `503
+spec_bead_unavailable`; both are audited as rejected and start nothing. A spec
+without `bead_id` never consults the provider.
 `push: true` publishes the branch to `origin` after the commit and needs a
 branch strategy; if the push fails the jobsite fails with `push_failed` and the
 commits stay on the server's local branch.
 
 Status codes: `400` missing/malformed input, `401` bad or missing token, `403`
-forbidden by policy, `404` unknown id or project, `409` wrong state, `422`
-invalid spec, `429` too many running jobsites, `502` the executor could not
-start.
+forbidden by policy, `404` unknown id, project or `bead_id`, `409` wrong state,
+`422` invalid spec, `429` too many running jobsites, `502` the executor could not
+start, `503` the task provider could not verify `bead_id`.
 
 **Operator configuration** (`config :foreman_server, :jobsites, ...`):
 
