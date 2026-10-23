@@ -137,8 +137,11 @@ defmodule ForemanServer.Review.Analyzer do
   def handle_call({:rerun, kind, subject_id}, _from, state) do
     key = {kind, subject_id}
 
-    with :ok <- reject_busy(state, key),
-         {:ok, review} <- rerunnable(kind, subject_id),
+    # A recorded real verdict is final whether or not the analysis task that wrote it has
+    # been seen to exit yet, so it is checked before busy-ness: the answer must not
+    # depend on that race.
+    with {:ok, review} <- rerunnable(kind, subject_id),
+         :ok <- reject_busy(state, key),
          {:ok, %Subject{} = subject} <- subject_from_archive(kind, subject_id, review) do
       {:reply, :ok, start_analysis({:rerun, subject}, key, state)}
     else
