@@ -9,13 +9,21 @@
 #   -> resolve one -> Overview groups -> coordinator chat -> approvals/questions surfaces
 #   -> notifications reach a webhook sink -> the review archive and verdict are written.
 #
+# Optional stage 8 (real GitHub): with FOREMAN_E2E_GITHUB_REPO=<owner>/foreman-scratch-<suffix>
+# (an existing private scratch repo seeded from claude_projects/github-fixture/) the flow also
+# drives a real PR end to end - PR from a run, check watching, a real webhook through a
+# cloudflared tunnel (signature verified), failing CI -> Waiting on you -> Fix CI, a review
+# comment -> Address comments, a merge conflict -> Resolve conflicts, force-push, check re-run,
+# Ready for review and the operator merge. Unset, the stage prints an explicit SKIP and counts
+# as UNVERIFIED. See claude_projects/github.sh. E2E_GH_ONLY=1 runs only setup + that stage.
+#
 # Every step asserts PASS / FAIL (or UNVERIFIED where this host cannot exercise it, e.g. pi has
 # no tool-permission mechanism so no approval can be raised). Exit status: 0 all passed,
 # 1 environment problem, 2 setup failed, 3 one or more assertions failed.
 #
 # Real: Foreman server (own port, own Postgres database), Go CLI, git, br, a real `pi` agent on
-# minimax/MiniMax-M2.7-highspeed. Not real: GitHub (nothing is pushed anywhere but a local bare
-# origin; no PRs), notification endpoints (a local HTTP sink). Idempotent: it owns a private
+# minimax/MiniMax-M2.7-highspeed. Not real in steps 1-7: GitHub (nothing is pushed anywhere but a
+# local bare origin; no PRs; stage 8 is the real-GitHub part), notification endpoints (a local HTTP sink). Idempotent: it owns a private
 # database, port, scratch repo and work dir and removes only those (and only its own PIDs).
 #
 # Run from a devbox shell:
@@ -26,15 +34,19 @@
 # never /tmp), E2E_DB_NAME, E2E_PG_HOST/PORT/USER/PASSWORD, E2E_PORT, E2E_HOOK_PORT,
 # E2E_API_TOKEN, E2E_RUN_TIMEOUT (s, default 600), E2E_POLL_SECS, E2E_REVIEW=0 to skip the
 # review-archive step, E2E_TRANSCRIPT=<file>, E2E_KEEP=1 to keep everything for a post-mortem.
-# E2E_GITHUB=1 is refused: the harness never creates a GitHub repository.
+# E2E_GITHUB=1 is refused: the harness never creates a GitHub repository (use
+# FOREMAN_E2E_GITHUB_REPO with an existing scratch repo instead).
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 E2E_NAME=cp
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
+# shellcheck source=claude_projects/github.sh
+. "$HERE/claude_projects/github.sh"
 
 check_environment
+github_prepare
 install_traps
 
 TOKEN_INSTR="INSTR-$SUFFIX-$(date +%s)"
@@ -252,6 +264,11 @@ step_review() {
 # ---------------------------------------------------------------- main
 
 setup_stack
+if [ "${E2E_GH_ONLY:-0}" = 1 ]; then
+  step_github
+  summary
+  exit $?
+fi
 step_project
 step_memory_library
 if step_bead_thread; then
@@ -262,5 +279,6 @@ if step_bead_thread; then
 else
   note "skipping the dependent steps: the first thread failed"
 fi
+step_github
 summary
 exit $?

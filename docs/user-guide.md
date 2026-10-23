@@ -141,7 +141,7 @@ foreman project list
 ### Running the live acceptance
 
 Two scripts prove the Claude Projects flow against a **real, throwaway** server, the real Go CLI and a real
-`pi` agent on `minimax/MiniMax-M2.7-highspeed` (no GitHub, no real notification endpoints). Each prints one
+`pi` agent on `minimax/MiniMax-M2.7-highspeed` (no real notification endpoints; GitHub only for the opt-in stage below). Each prints one
 `PASS` / `FAIL` / `UNVERIFIED` line per assertion and exits non-zero on any `FAIL`
 (`0` all passed, `1` environment problem, `2` setup failed, `3` assertion failed).
 
@@ -160,10 +160,24 @@ dir under `<checkout>/tmp/e2e-claude-projects-<cp|fail>` (never `/tmp`; the serv
 and `FOREMAN_VFS_ALLOWED_ROOT`). It removes only that work dir, database and the PIDs it started; `E2E_KEEP=1`
 leaves everything for a post-mortem (you then stop the printed server PID and drop the database yourself).
 Other knobs: `E2E_MODEL`, `E2E_RUN_TIMEOUT`, `E2E_REVIEW=0` (skip the review-archive step), `E2E_TRANSCRIPT=<file>`.
-`E2E_GITHUB=1` is refused. The scripts use their own workflows pinned to pi/minimax, not the bundled defaults.
+`E2E_GITHUB=1` is refused (the harness never creates a repository). The scripts use their own workflows pinned to
+pi/minimax, not the bundled defaults.
+
+**Real GitHub stage (opt-in).** `claude_projects_flow.sh` ends with stage 8, which drives a real PR when
+`FOREMAN_E2E_GITHUB_REPO=<owner>/foreman-scratch-<suffix>` names an existing **private, non-archived** scratch
+repository (the name pattern is enforced; seed it from `scripts/e2e/claude_projects/github-fixture/`, which has a tiny
+app, unit tests and a `.github/workflows/ci.yml`). It needs `gh` authenticated with `repo` + `workflow` scope and
+`cloudflared` (for the real webhook; `E2E_GH_TUNNEL=0` skips only that part). The stage opens a PR from a run, watches
+real checks, registers a real webhook through a cloudflared quick tunnel (a bad signature must be 401), injects a
+failing check (Waiting on you, then Fix CI), posts a review comment (Address comments), pushes a conflicting commit
+to `main` (Resolve conflicts), force-pushes the branch, re-runs the check, and merges only through the operator
+`approve-merge` + `merge` commands; it then restores the repo's `main`. Unset, it prints an explicit `SKIP` and counts
+as `UNVERIFIED`. `E2E_GH_ONLY=1` runs only setup plus this stage (about 6 minutes). Evidence:
+`docs/acceptance/github-live-run.md`.
 
 Known limitations: pi has no tool-permission or ask mechanism, so approve/deny and question/answer are reported
-`UNVERIFIED` (only the empty list surfaces are checked); no PR/CI/merge or real-GitHub behaviour is exercised
+`UNVERIFIED` (only the empty list surfaces are checked); PR/CI/merge behaviour is exercised against real GitHub only when
+`FOREMAN_E2E_GITHUB_REPO` is set (stage 8; branch protection is not, see the evidence doc), and otherwise not at all
 (see `scripts/e2e/multi_repo.sh` for the fake-`gh` PR flow); the Claude provider paths are not exercised; the
 coordinator and reviewer are real LLM turns, so a wording-dependent assertion can in principle flake, and the
 coordinator-crash scenario's duplicate-action check is probabilistic (see the evidence doc,
@@ -764,7 +778,10 @@ foreman run merge --id <run-id>
   --match-head-commit`). It refuses before approval (`pr_not_acceptable`)
   and if the PR head is no longer the approved commit
   (`head_moved_since_approval`), so nothing pushed after approval is merged
-  unreviewed. A PR that is already merged at the approved head is recorded without
+  unreviewed. The approved commit is the head Foreman's PR watch had recorded when
+  you approved (so a PR that got a Fix CI or conflict-resolution push before
+  approval merges at that head); a push after approval needs a new approval
+  decision, which today means the gate cannot be re-opened (foreman-axmni follow-up). A PR that is already merged at the approved head is recorded without
   calling `gh` again, so a retry is safe. The server host needs an authenticated `gh`.
 - **Multi-repository runs (E12)**: every repository opens its own PR with its own
   merge gate. `run approve-merge` / `run merge` take `--repo-id <repo>` (omit it for
