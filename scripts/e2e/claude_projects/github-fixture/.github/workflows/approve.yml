@@ -1,0 +1,23 @@
+name: approve
+# Manual only. Lets the e2e harness obtain an approving review from a second identity
+# (github-actions[bot]) so a branch-protection "required review" can be satisfied by a PR whose
+# author is the repository owner (GitHub never lets an author approve their own PR). Needs the
+# repository setting "Allow GitHub Actions to create and approve pull requests".
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Number of the pull request to approve
+        required: true
+permissions:
+  pull-requests: write
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: approve the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          REPO: ${{ github.repository }}
+        run: gh pr review "$PR" --approve --repo "$REPO" --body "approved by the e2e harness (github-actions[bot])"

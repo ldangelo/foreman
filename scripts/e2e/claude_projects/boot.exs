@@ -20,5 +20,14 @@ Application.put_env(
 # host cannot reach (foreman-pv11k).
 Application.put_env(:foreman_server, :workflow_root, System.fetch_env!("E2E_WORKFLOW_ROOT"))
 
+# E2E_REVIEW_ANALYSIS=0 switches the automated review analysis off on this node (archives keep being
+# written). The GitHub extras harness (scripts/e2e/github_live_extras.sh) sets it: no reviewer agent
+# runs per terminal run and no gap bead (labelled `foreman-exec`, so dispatchable) appears in the
+# scratch project's beads, which would start runs and open PRs the stages do not expect.
+if System.get_env("E2E_REVIEW_ANALYSIS") == "0" do
+  review = Application.get_env(:foreman_server, :review, [])
+  Application.put_env(:foreman_server, :review, Keyword.put(review, :analysis, false))
+end
+
 {:ok, _} = Application.ensure_all_started(:foreman_server)
 IO.puts("E2E-SERVER-READY port=#{port} node=#{node()}")
