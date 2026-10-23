@@ -387,6 +387,14 @@ defmodule ForemanServer.PrCreateTest do
       t = thread!()
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
 
+      # `merge_approve` must name the head the operator reviewed (foreman-ehxy6): the head the
+      # PR's own PrReady recorded, which the server then reads back from GitHub before approving.
+      assert [ready] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrReady"))
+
+      approved_head = ready.data.head_sha
+      assert approved_head == @head_sha
+
       test_pid = self()
       branch = t.branch
 
@@ -398,7 +406,7 @@ defmodule ForemanServer.PrCreateTest do
             view = %{
               "state" => "OPEN",
               "mergeable" => "MERGEABLE",
-              "headRefOid" => @head_sha,
+              "headRefOid" => approved_head,
               "headRefName" => branch,
               "baseRefName" => @base
             }
@@ -418,9 +426,13 @@ defmodule ForemanServer.PrCreateTest do
                  payload: %{
                    run_id: t.run_id,
                    approver: "leo",
-                   approver_identity: "github:ldangelo"
+                   approver_identity: "github:ldangelo",
+                   head_sha: approved_head
                  }
                })
+
+      # the approval was checked against the live PR head, not trusted
+      assert_received {:merge_gh, ["pr", "view" | _]}
 
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{
@@ -431,7 +443,7 @@ defmodule ForemanServer.PrCreateTest do
                })
 
       assert_received {:merge_gh,
-                       ["pr", "merge", ^pr_url, "--squash", "--match-head-commit", @head_sha]}
+                       ["pr", "merge", ^pr_url, "--squash", "--match-head-commit", ^approved_head]}
 
       assert "PrMerged" in Support.run_event_types(t.run_id)
     end
