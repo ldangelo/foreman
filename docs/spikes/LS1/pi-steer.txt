@@ -1,0 +1,85 @@
+[  0.00] SENT {"type": "prompt", "message": "Run the bash command `sleep 12` and then create the file a.txt containing ALPHA
+[  1.87] extension_ui_request
+[  1.87] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[  1.96] extension_ui_request
+[pi-yaml-hooks] Loaded 1 hook (global: 1, project: 0).
+[  2.02] extension_ui_request
+[  2.02] extension_ui_request
+[  2.02] extension_ui_request
+[  2.02] extension_ui_request
+[  2.02] extension_ui_request
+[  2.54] extension_ui_request
+[AgentLoader] Loaded agent: broadcaster (type: BroadcasterAgent)
+[AgentLoader] Loaded agent: heavy-lifter (type: HeavyLifterAgent)
+[AgentLoader] Loaded agent: main (type: ManagerAgent)
+[AgentLoader] Loaded agent: manager (type: ManagerAgent)
+[AgentLoader] Loaded agent: miner (type: MinerAgent)
+[AgentLoader] Loaded agent: personalization (type: PersonalizationAgent)
+[pi-vault-mind] Agent engine started (6 agent(s) loaded)
+[  2.59] extension_ui_request
+[  2.63] response cmd=prompt success=True
+[  2.64] extension_ui_request
+[  2.79] agent_start
+[  2.80] extension_ui_request
+[  2.80] extension_ui_request
+[  2.80] turn_start
+[  2.80] message_start role=system
+[  2.81] message_end
+[  2.81] message_start role=user
+[  2.81] message_end
+[  4.81] message_start role=assistant
+[  4.87] extension_ui_request
+[  4.98] message_end
+[  4.98] tool_execution_start bash
+[  4.98] SENT {"type": "steer", "message": "Change of plan: write BETA (not ALPHA) into a.txt and ALSO create b.txt containi
+[  5.09] queue_update
+[  5.09] response cmd=steer success=True
+[  5.11] tool_execution_update
+[ 17.31] tool_execution_update
+[ 17.32] tool_execution_end
+[ 17.32] message_start role=toolResult
+[ 17.32] message_end
+[ 17.32] extension_ui_request
+[pi-vault-mind] 'context_events' collection not defined in config. Cannot index pi-context events.
+[ 17.32] turn_end
+[ 17.33] extension_ui_request
+[ 17.33] extension_ui_request
+[ 17.33] turn_start
+[ 17.33] queue_update
+[ 17.33] message_start role=user
+[ 17.33] message_end
+[ 18.13] message_start role=assistant
+[ 18.34] message_end
+[ 18.34] tool_execution_start write
+[ 18.34] tool_execution_start write
+[ 18.34] tool_execution_end
+[ 18.34] tool_execution_end
+[ 18.34] message_start role=toolResult
+[ 18.34] message_end
+[ 18.34] message_start role=toolResult
+[ 18.34] message_end
+[ 18.34] extension_ui_request
+[pi-vault-mind] 'context_events' collection not defined in config. Cannot index pi-context events.
+[ 18.34] turn_end
+[ 18.35] extension_ui_request
+[ 18.35] extension_ui_request
+[ 18.35] turn_start
+[ 19.29] message_start role=assistant
+[ 19.33] extension_ui_request
+[ 19.34] extension_ui_request
+[ 19.36] message_end
+[ 19.36] extension_ui_request
+[pi-vault-mind] 'context_events' collection not defined in config. Cannot index pi-context events.
+[ 19.36] turn_end
+[ 19.77] agent_settled
+[ 63.11] extension_ui_request
