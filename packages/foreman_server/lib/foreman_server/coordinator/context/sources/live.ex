@@ -55,10 +55,17 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
 
   # Manifests the catalog refused. Named by file (`lvclaude.yaml` -> `lvclaude`),
   # the only name a refused file has: its own `name:` was never trusted.
+  # `serving_previous` separates "cannot start at all" from "the latest edit was
+  # refused but the previous valid version still starts": the coordinator must
+  # not be told a startable workflow is unstartable.
   @impl true
   def invalid_workflows do
-    Enum.map(Catalog.invalid(), fn error ->
-      %{name: Path.rootname(error.filename), reason: LoadError.describe(error)}
+    Enum.map(Catalog.invalid(), fn %LoadError{} = error ->
+      %{
+        name: Path.rootname(error.filename),
+        reason: error.message,
+        serving_previous: error.serving_previous
+      }
     end)
   end
 

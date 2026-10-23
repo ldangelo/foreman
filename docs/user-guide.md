@@ -113,16 +113,25 @@ can start it — but it no longer disappears:
   per catalog poll;
 - `foreman doctor` adds a `warn` row `workflow.<file>.yaml` carrying the reason
   (the summary `workflows` row only says whether anything loaded);
-- the coordinator's workflow list shows it under `INVALID WORKFLOWS` with the
-  reason, and a thread it tries to start on that workflow is rejected with the
-  reason instead of "unknown workflow";
+- the coordinator's workflow list shows a never-loaded manifest under
+  `INVALID WORKFLOWS` ("they cannot be started") with the reason, and a thread
+  it tries to start on that workflow is rejected with the reason instead of
+  "unknown workflow";
 - `foreman_workflow_list` returns `{workflows: [...], invalid: [{filename, path,
-  stage, reason, serving_previous}]}` and `foreman_workflow_get` answers
+  stage, reason, serving_previous}]}`, and `foreman_workflow_get` answers
   `INVALID_MANIFEST` with the reason.
 
-If you edit a manifest that was loading and the edit is invalid, the catalog
-keeps serving the last good version and reports `serving_previous: true` — the
-edit did not take effect until it validates.
+**A refused edit is not the same as a refused workflow.** If you edit a manifest
+that was already loading and the edit is invalid, the catalog keeps serving the
+last good version, so the workflow **still starts** — from its previous valid
+manifest — and the edit has not taken effect until it validates. Every surface
+says so instead of calling the workflow unstartable: the invalid entry carries
+`serving_previous: true`; `foreman doctor` titles the row "the latest edit is
+invalid; its previous valid version is still served"; the coordinator lists the
+workflow normally, marked "runs its previous valid version", with the reason
+under `REFUSED EDITS` (not under `INVALID WORKFLOWS`); and `foreman_workflow_get`
+returns the served snapshot plus a typed `refused_edit` object rather than an
+error.
 
 ## Local Development Environment
 

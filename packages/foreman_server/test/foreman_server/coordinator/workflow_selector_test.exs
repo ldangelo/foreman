@@ -3,7 +3,7 @@ defmodule ForemanServer.Coordinator.WorkflowSelectorTest do
 
   alias ForemanServer.Coordinator.WorkflowSelector
 
-  @invalid [%{name: "lvclaude", reason: "models.default must be bare"}]
+  @invalid [%{name: "lvclaude", reason: "models.default must be bare", serving_previous: false}]
 
   test "an installed workflow is selected" do
     assert {:ok, "fix"} = WorkflowSelector.select(%{"workflow" => "fix"}, ["fix"], @invalid)
@@ -21,7 +21,11 @@ defmodule ForemanServer.Coordinator.WorkflowSelectorTest do
 
   test "a workflow still served from its previous version stays selectable" do
     assert {:ok, "lvclaude"} =
-             WorkflowSelector.select(%{"workflow" => "lvclaude"}, ["lvclaude"], @invalid)
+             WorkflowSelector.select(
+               %{"workflow" => "lvclaude"},
+               ["lvclaude"],
+               [%{name: "lvclaude", reason: "stale edit", serving_previous: true}]
+             )
   end
 
   test "no workflow and no task_type is :no_workflow" do

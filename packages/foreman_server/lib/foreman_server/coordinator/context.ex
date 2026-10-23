@@ -286,31 +286,55 @@ defmodule ForemanServer.Coordinator.Context do
     File.read!(path) <> "\n\n" <> Untrusted.preamble()
   end
 
-  defp workflows_section([], invalid),
-    do: "# WORKFLOWS\n(none installed)" <> invalid_lines(invalid)
-
   defp workflows_section(workflows, invalid) do
-    lines = Enum.map(workflows, fn w -> "- #{w.name}: #{one_line(w.description)}" end)
-    "# WORKFLOWS\n" <> Enum.join(lines, "\n") <> invalid_lines(invalid)
+    {stale, blocked} = Enum.split_with(invalid, & &1.serving_previous)
+    stale_names = MapSet.new(stale, & &1.name)
+
+    listed =
+      case workflows do
+        [] ->
+          "(none installed)"
+
+        workflows ->
+          Enum.map_join(workflows, "\n", fn w ->
+            "- #{w.name}: #{one_line(w.description)}#{previous_version_note(w.name, stale_names)}"
+          end)
+      end
+
+    "# WORKFLOWS\n" <> listed <> refused_edits(stale) <> invalid_lines(blocked)
+  end
+
+  defp previous_version_note(name, stale_names) do
+    if MapSet.member?(stale_names, name),
+      do: " [runs its previous valid version: the latest edit was refused, see REFUSED EDITS]",
+      else: ""
   end
 
   # Manifests that are installed but refused (see `Workflow.LoadError`). Listing
-  # them separately is the point: without it the coordinator can only say a
-  # workflow "is not available" and the operator cannot tell a typo from a
-  # manifest that failed validation. The reason is operator-authored file text,
-  # so it is flattened to one line, bounded, and framed as untrusted data like
-  # every other free-text field.
+  # them is the point: without it the coordinator can only say a workflow "is not
+  # available" and the operator cannot tell a typo from a manifest that failed
+  # validation. Two truths are kept apart: a never-loaded manifest CANNOT start;
+  # an edit that failed over a loaded one leaves the previous version startable.
+  # The reason is operator-authored file text, so it is flattened to one line,
+  # bounded, and framed as untrusted data like every other free-text field.
   defp invalid_lines([]), do: ""
 
   defp invalid_lines(invalid) do
-    lines =
-      Enum.map(invalid, fn w ->
-        "- #{w.name}: #{w.reason |> one_line() |> String.slice(0, @invalid_reason_chars)}"
-      end)
+    "\n# INVALID WORKFLOWS (installed but refused: they cannot be started)\n" <>
+      Untrusted.wrap("invalid_workflows", reason_lines(invalid))
+  end
 
-    "\n# INVALID WORKFLOWS (installed but refused: they cannot be started; a name that is " <>
-      "also listed under WORKFLOWS keeps running its previous valid version)\n" <>
-      Untrusted.wrap("invalid_workflows", Enum.join(lines, "\n"))
+  defp refused_edits([]), do: ""
+
+  defp refused_edits(stale) do
+    "\n# REFUSED EDITS (the workflow above still starts, from its previous valid version)\n" <>
+      Untrusted.wrap("refused_edits", reason_lines(stale))
+  end
+
+  defp reason_lines(entries) do
+    Enum.map_join(entries, "\n", fn w ->
+      "- #{w.name}: #{w.reason |> one_line() |> String.slice(0, @invalid_reason_chars)}"
+    end)
   end
 
   defp project_section(project) do

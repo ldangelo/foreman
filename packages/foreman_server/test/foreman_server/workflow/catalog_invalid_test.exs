@@ -203,22 +203,37 @@ defmodule ForemanServer.Workflow.CatalogInvalidTest do
                Tools.call_tool("foreman_workflow_get", %{name: "never-existed"})
     end
 
-    test "foreman_workflow_get reports a pending refusal even while the previous version is served",
+    test "foreman_workflow_get returns the served snapshot WITH the pending refusal",
          %{tmp_dir: tmp, server_name: name} do
       start_catalog(tmp, name)
-      assert {:ok, %{}} = Tools.call_tool("foreman_workflow_get", %{name: "good"})
+      assert {:ok, result} = Tools.call_tool("foreman_workflow_get", %{name: "good"})
+      refute Map.has_key?(result, :refused_edit)
 
       File.write!(Path.join(tmp, "good.yaml"), "name: good\nphases:\n  - bogus line\n")
       capture_log(fn -> :ok = Catalog.reload() end)
 
-      # The catalog still serves the last good snapshot for execution...
+      # The workflow still starts from its last good snapshot, so it is not an error...
       assert {:ok, %{name: "good"}} = Catalog.load("good.yaml")
+      assert {:ok, result} = Tools.call_tool("foreman_workflow_get", %{name: "good"})
+      assert result.name == "good"
 
-      # ...but the read tool does not present it as healthy.
-      assert {:error, %ForemanServer.MCP.ToolError{code: "INVALID_MANIFEST", message: message}} =
-               Tools.call_tool("foreman_workflow_get", %{name: "good"})
+      # ...but the refused edit is reported next to it, typed.
+      assert %{"serving_previous" => true, "stage" => "validation", "reason" => reason} =
+               result.refused_edit
 
-      assert message =~ "previous valid version is still being served"
+      assert reason =~ "unsupported phase entry"
+    end
+
+    test "the coordinator source flags a refused edit as serving its previous version",
+         %{tmp_dir: tmp, server_name: name} do
+      start_catalog(tmp, name)
+      File.write!(Path.join(tmp, "good.yaml"), "name: good\nphases:\n  - bogus line\n")
+      capture_log(fn -> :ok = Catalog.reload() end)
+
+      assert [%{name: "good", serving_previous: true, reason: reason}] = Live.invalid_workflows()
+      assert reason =~ "unsupported phase entry"
+      # Still a startable workflow, so it stays in the normal list too.
+      assert Enum.map(Live.workflows(), & &1.name) == ["good"]
     end
 
     test "the coordinator source lists the refused manifest under its file name",
@@ -226,7 +241,9 @@ defmodule ForemanServer.Workflow.CatalogInvalidTest do
       write_invalid!(tmp)
       capture_log(fn -> start_catalog(tmp, name) end)
 
-      assert [%{name: "lvclaude", reason: reason}] = Live.invalid_workflows()
+      assert [%{name: "lvclaude", reason: reason, serving_previous: false}] =
+               Live.invalid_workflows()
+
       assert reason =~ "must be a bare model alias or id"
       assert Enum.map(Live.workflows(), & &1.name) == ["good"]
     end

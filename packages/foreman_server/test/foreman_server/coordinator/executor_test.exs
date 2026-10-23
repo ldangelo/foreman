@@ -146,7 +146,13 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
 
     test "a workflow whose manifest was refused is rejected with the validation error, not as unknown",
          %{project_id: p} do
-      invalid = [%{name: "lvclaude", reason: "models.default must be a bare model alias"}]
+      invalid = [
+        %{
+          name: "lvclaude",
+          reason: "models.default must be a bare model alias",
+          serving_previous: false
+        }
+      ]
 
       assert [%{status: "rejected", reason: reason}] =
                run(p, [start("t", %{"workflow" => "lvclaude"})], %{invalid_workflows: invalid})

@@ -93,7 +93,7 @@ defmodule ForemanServerWeb.DoctorController do
           check(
             "workflow.#{error.filename}",
             :warn,
-            "Workflow #{error.filename} is invalid and was not loaded",
+            invalid_title(error),
             LoadError.describe(error)
           )
         end
@@ -109,6 +109,15 @@ defmodule ForemanServerWeb.DoctorController do
         ]
     end
   end
+
+  # Two different truths: a manifest that never loaded cannot start; an edit that
+  # failed over a loaded one leaves the previous version running.
+  defp invalid_title(%LoadError{serving_previous: true, filename: filename}),
+    do:
+      "Workflow #{filename}: the latest edit is invalid; its previous valid version is still served"
+
+  defp invalid_title(%LoadError{serving_previous: false, filename: filename}),
+    do: "Workflow #{filename} is invalid and was not loaded"
 
   defp project_check(id) do
     case RecommendationsController.recommend(id) do

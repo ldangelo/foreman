@@ -21,7 +21,9 @@ defmodule ForemanServer.Coordinator.Context.Sources do
   @callback project(String.t()) :: {:ok, project()} | {:error, :project_not_found}
   @callback threads(String.t()) :: [Thread.t()]
   @callback workflows() :: [%{name: String.t(), description: String.t() | nil}]
-  @callback invalid_workflows() :: [%{name: String.t(), reason: String.t()}]
+  @callback invalid_workflows() :: [
+              %{name: String.t(), reason: String.t(), serving_previous: boolean()}
+            ]
   @callback tuning(String.t()) :: Tuning.t()
   @callback status_counts(String.t()) :: %{
               ForemanServer.Overview.Group.group() => non_neg_integer()

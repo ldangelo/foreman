@@ -103,5 +103,29 @@ defmodule ForemanServerWeb.DoctorControllerTest do
       assert detail =~ "must be a bare model alias or id"
       refute Enum.any?(checks, &(&1["id"] == "workflow.good.yaml"))
     end
+
+    test "a refused edit over a loaded manifest is titled as still-served, distinct from never-loaded" do
+      File.write!(
+        Path.join(ForemanServer.Workflow.Catalog.root(), "good.yaml"),
+        "name: good\nphases:\n  - bogus line\n"
+      )
+
+      ExUnit.CaptureLog.capture_log(fn -> :ok = ForemanServer.Workflow.Catalog.reload() end)
+
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"status" => "warn", "title" => stale_title, "detail" => stale_detail} =
+               Enum.find(checks, &(&1["id"] == "workflow.good.yaml"))
+
+      assert stale_title =~ "latest edit is invalid"
+      assert stale_title =~ "previous valid version is still served"
+      refute stale_title =~ "was not loaded"
+      assert stale_detail =~ "unsupported phase entry"
+
+      assert %{"title" => never_title} =
+               Enum.find(checks, &(&1["id"] == "workflow.lvclaude.yaml"))
+
+      assert never_title =~ "is invalid and was not loaded"
+    end
   end
 end
