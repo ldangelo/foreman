@@ -14,6 +14,7 @@ that CI cannot give.
 | `claude-projects-acceptance-2026-10-22.md` | The scripted flow (`claude_projects_flow.sh`, 7 stages) plus the failure injection table (`failure_injection.sh`), transcript and defects filed as beads. |
 | `three-task-overlap-live-run.md` | Step 5b of the flow: three tasks pasted in one coordinator message, three threads, the printed `RunStarted`/terminal intervals and the overlap assertion (PASS at cap 3; FAIL when the project is forced to one run at a time). |
 | `github-live-run.md` | Stage 8 on a real private GitHub repo: PR created by a run, checks, a real webhook through a `cloudflared` tunnel, Fix CI, Address comments, Resolve conflicts, force-push, check re-run, operator merge (36 PASS). Branch protection UNVERIFIED (HTTP 403 on that plan). |
+| `combined-flow-live-run.md` | The whole flow in one stack with the GitHub stage on (`E2E_GH_THREE_PRS=1`): three tasks in one coordinator message, three overlapping runs, each opening its own real PR, a failing check on one, Waiting on you, Fix CI, Ready for review, operator `approve-merge` + `merge` to Resolved, usage per thread, then the failure-injection pass. One FAIL: no `PR ready for review` notification on the auto-PR path (`foreman-ehz7l`). |
 | `live-github-protection-ui-autofix.md` + `live-github-ui-*.png` | The workspace Fix CI, Address comments, Resolve conflicts and Create PR buttons clicked on real PRs, `pr_auto_fix` off, on and bounded, a push after merge approval (observed on the build before #650), GitHub's refusal text for an operator merge, and the Create PR merge-gate defect found and fixed there (`foreman-ksy0q`). Merge under branch protection UNVERIFIED. |
 | `parity-gaps-live-run.md` | Live proof of the parity-gap beads with real `claude` (haiku) and pi: claude coordinator and thread, project env and secrets on both doors, setup script, docker network shim, schedules, adopt (move, mint, continue), recommend, per-thread usage, multi-repo self-add and fanout. |
 | `live-steering-live-run.md` | Live in-session steering for claude and pi, the pause/resume fallback, `RunSteerUndelivered` on cancel. |
@@ -62,6 +63,9 @@ FOREMAN_E2E_GITHUB_REPO=<owner>/foreman-scratch-<suffix> E2E_GH_ONLY=1 devbox ru
 
 Unset, the stage prints an explicit SKIP and counts as UNVERIFIED. `E2E_GH_ONLY=1` runs only setup plus stage 8. `E2E_GH_TUNNEL=0`
 and `E2E_GH_STAGE_TIMEOUT` tune the tunnel and the stage timeout; `scripts/e2e/claude_projects/github.sh` is the stage's source.
+`E2E_GH_THREE_PRS=1` runs the combined flow instead of the single-PR stage: one coordinator message starts three threads that each
+open a real PR, one PR gets the injected CI failure and the Fix CI / approve-merge / merge path, and the notification sink and usage per thread are
+asserted (address comments, conflicts and force-push are then recorded UNVERIFIED; run without the flag for those).
 
 Step 5b is the parallelism proof: one coordinator message pastes a to-do list of three distinct small tasks, the step asserts the
 coordinator started exactly three threads (distinct titles), each delivered its file on its branch, and then reads `RunStarted` and the
@@ -123,6 +127,10 @@ database.
 
 Details and bead ids are in [`parity-audit.md`](parity-audit.md).
 
+- The combined flow (three tasks, three PRs, CI failure and fix, merge, usage, failure injection) was run once in one stack: see
+  [`combined-flow-live-run.md`](combined-flow-live-run.md). It found that no `PR ready for review` notification reaches the sink when a run opens
+  its PR itself (`foreman-ehz7l`); the `port-closed` and `server-crash` orphan assertions are unchanged (`foreman-e01a1`) and `br-down`
+  failed once and passed on re-run (`foreman-3ll3t`).
 - pi on MiniMax carries almost all of the evidence; `claude` is proven only for short haiku sessions (coordinator, thread, reviewer,
   in-flight approvals, steering). Claude paths beyond that (for example fix-thread resume) are tracked in `foreman-nufr9`.
 - GitHub is proven on a real private repo except merge under branch protection (HTTP 403 on a private repo of that plan; the temporary public

@@ -185,6 +185,103 @@ gh_stage_pr_create() {
   return 0
 }
 
+# gh_stage_three_prs (E2E_GH_THREE_PRS=1, replaces gh_stage_pr_create): the combined flow. ONE coordinator
+# message with three tasks starts three threads; each thread's run opens its OWN real PR. The run
+# intervals must overlap within the project cap, and all three PRs must go green and Ready for review.
+# Thread A (the `subtract` task) is the PR the later stages break, fix, approve and merge: it is left in
+# GH_THREAD/GH_RUN/GH_PR/GH_PR_URL/GH_BRANCH like gh_stage_pr_create would.
+gh_stage_three_prs() {
+  say "8b. GitHub: three tasks in one coordinator message -> three threads -> three real PRs"
+  fm project update --max-concurrent-runs 3 --notification-preference every_turn "$PROJECT" >/dev/null 2>&1 \
+    || { fail "could not set max_concurrent_runs=3 and notification_preference=every_turn on $PROJECT"; return 1; }
+  GH_HOOK_LINES_BEFORE=$(wc -l < "$HOOK_CAPTURE" 2>/dev/null | tr -d ' ')
+  gtag="e2e-$SUFFIX prs"
+  gpaste="Here is my to-do list for today, please start one thread for each of the three items, all in this one reply (exactly three threads). Title the threads exactly '$gtag A', '$gtag B' and '$gtag C'.
+A. In app.py add a function subtract(a, b) that returns a - b, and add a test named test_subtract to test_app.py that checks subtract(5, 3) == 2. Keep the existing tests passing.
+B. Create a file bravo-$SUFFIX.txt containing exactly the single word BRAVO-$SUFFIX.
+C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-$SUFFIX."
+  paste_three_tasks "$gtag" "$gpaste"
+  [ "$(printf '%s' "$titles" | grep -c .)" -eq 3 ] || { fail "not exactly three threads, cannot continue the stage"; return 1; }
+  note "Overview counts while they run: $(overview_counts)"
+  : > "$WORK/gh-three-intervals.txt"
+  GH3_URLS=""
+  for tid in $(printf '%s\n' "$titles" | cut -f1); do
+    gtitle=$(printf '%s\n' "$titles" | awk -F'\t' -v t="$tid" '$1 == t { print $2 }')
+    if wait_thread "$tid" "completed|ready_for_review|failed" "$E2E_RUN_TIMEOUT"; then
+      assert_eq "thread '$gtitle' run finished" "$THREAD_STATUS" "completed"
+    else
+      fail "thread '$gtitle' ($tid) never finished (status $THREAD_STATUS)"
+    fi
+    grun=$(api_get "/api/threads/$tid" | jq -r '.thread.run_ids[0] // empty')
+    [ -n "$grun" ] && run_interval "$grun" >> "$WORK/gh-three-intervals.txt"
+    gh_wait_card "$tid" '.pr_url != null' 240 || true
+    gurl=$(printf '%s' "$GH_CARD" | jq -r '.pr_url // empty')
+    gbranch=$(printf '%s' "$GH_CARD" | jq -r '.branch // empty')
+    case "$gurl" in
+      "https://github.com/$GH_REPO/pull/"*) pass "thread '$gtitle' opened its own PR: $gurl" ;;
+      *) fail "thread '$gtitle' has no PR url on its card: '$gurl' ($(gh_card_line "$GH_CARD"))"; continue ;;
+    esac
+    gpr=${gurl##*/}
+    GH3_URLS="$GH3_URLS $gurl"
+    assert_eq "PR $gpr of '$gtitle' is open on GitHub" "$(gh pr view "$gpr" -R "$GH_REPO" --json state -q .state 2>/dev/null)" "OPEN"
+    assert_eq "PR $gpr head is the thread's branch" "$(gh pr view "$gpr" -R "$GH_REPO" --json headRefName -q .headRefName 2>/dev/null)" "$gbranch"
+    case "$gtitle" in
+      "$gtag A")
+        GH_THREAD=$tid; GH_RUN=$grun; GH_PR_URL=$gurl; GH_BRANCH=$gbranch; GH_PR=$gpr
+        assert_has "PR $gpr diff contains subtract" "$(gh pr diff "$gpr" -R "$GH_REPO" 2>/dev/null)" "subtract" ;;
+      "$gtag B") assert_has "PR $gpr diff contains bravo-$SUFFIX.txt" "$(gh pr diff "$gpr" -R "$GH_REPO" 2>/dev/null)" "bravo-$SUFFIX.txt"; GH3_B=$tid ;;
+      "$gtag C") assert_has "PR $gpr diff contains charlie-$SUFFIX.txt" "$(gh pr diff "$gpr" -R "$GH_REPO" 2>/dev/null)" "charlie-$SUFFIX.txt"; GH3_C=$tid ;;
+      *) fail "thread $tid has an unexpected title '$gtitle'" ;;
+    esac
+  done
+  [ -n "${GH_THREAD:-}" ] && [ -n "${GH_PR:-}" ] || { fail "thread A has no PR: the later stages cannot run"; return 1; }
+  assert_eq "three distinct PRs were opened" "$(printf '%s\n' $GH3_URLS | sort -u | grep -c .)" "3"
+  assert_eq "still exactly three threads after the runs finished" "$(thread_count "$gtag")" "3"
+  say "8b. run intervals (event store: RunStarted .. first terminal event)"
+  while IFS= read -r l; do [ -n "$l" ] && note "$l"; done < "$WORK/gh-three-intervals.txt"
+  assert_eq "start and finish times were read for all three runs" "$(grep -c -E '^[^ ]+ [0-9]+ [0-9]+ ' "$WORK/gh-three-intervals.txt")" "3"
+  intervals_render < "$WORK/gh-three-intervals.txt" | while IFS= read -r l; do note "$l"; done
+  gpairs=$(intervals_overlap_pairs < "$WORK/gh-three-intervals.txt")
+  gpeak=$(intervals_peak < "$WORK/gh-three-intervals.txt")
+  note "overlapping pairs: $(printf '%s' "$gpairs" | tr '\n' ';' | sed 's/;$//') ; peak simultaneous runs: $gpeak ; project cap: 3"
+  if [ -n "$gpairs" ]; then pass "at least two of the three runs overlapped: $(printf '%s' "$gpairs" | grep -c .) pair(s)"; else fail "the three runs never overlapped"; fi
+  [ "${gpeak:-9}" -le 3 ] && pass "the project cap was respected (peak $gpeak <= 3)" || fail "peak $gpeak simultaneous runs exceeded the project cap 3"
+  note "card A: $(gh_card_line "$(gh_card "$GH_THREAD")")"
+  return 0
+}
+
+# gh_stage_notifications (combined flow): the three PRs reached Ready for review, B and C stayed green, and the
+# notification sink (a local webhook, every_turn preference) received the deliveries.
+gh_stage_notifications() {
+  [ "${E2E_GH_THREE_PRS:-0}" = 1 ] || return 0
+  say "8k. GitHub: Ready for review for the other two PRs, notification sink, usage per thread"
+  for gt in "${GH3_B:-}" "${GH3_C:-}"; do
+    [ -n "$gt" ] || continue
+    if gh_wait_card "$gt" '.group == "ready_for_review"' 600; then
+      pass "Overview: thread $gt is Ready for review (green checks): $(gh_card_line "$GH_CARD")"
+    else
+      fail "thread $gt never reached Ready for review: $(gh_card_line "$GH_CARD")"
+    fi
+  done
+  gn=$(wc -l < "$HOOK_CAPTURE" 2>/dev/null | tr -d ' ')
+  note "notification sink: ${gn:-0} total deliveries (${GH_HOOK_LINES_BEFORE:-0} before the three-PR paste)"
+  tail -n +$(( ${GH_HOOK_LINES_BEFORE:-0} + 1 )) "$HOOK_CAPTURE" 2>/dev/null | jq -c '.body' 2>/dev/null | cut -c1-260 | while IFS= read -r l; do note "delivery: $l"; done
+  [ "${gn:-0}" -gt "${GH_HOOK_LINES_BEFORE:-0}" ] && pass "the notification sink received deliveries during the GitHub stage" || fail "no notification reached the sink during the GitHub stage"
+  gdel=$(tail -n +$(( ${GH_HOOK_LINES_BEFORE:-0} + 1 )) "$HOOK_CAPTURE" 2>/dev/null | jq -r '.body | tostring' 2>/dev/null | grep -ci -E 'ready for review|pr_ready' || true)
+  note "deliveries naming a PR ready for review: $gdel"
+  [ "${gdel:-0}" -ge 1 ] && pass "a 'PR ready for review' notification reached the sink" || fail "no 'PR ready for review' notification reached the sink"
+  gu=$(fm usage --project "$PROJECT" --by thread --format json 2>&1); gurc=$?
+  assert_eq "usage report by thread exits 0" "$gurc" "0"
+  note "usage by thread: $(printf '%s' "$gu" | jq -c '[.by_thread[]? | {thread_id, role, events, total_tokens, cost_usd}]' 2>/dev/null | cut -c1-900)"
+  for gt in "$GH_THREAD" "${GH3_B:-}" "${GH3_C:-}"; do
+    [ -n "$gt" ] && assert_has "usage by thread lists thread ${gt#run:}" "$gu" "\"thread_id\": \"${gt#run:}\""
+  done
+  gwn=0
+  while [ "$gwn" -lt 120 ] && [ "$(overview_counts | jq -r '.working')" != 0 ]; do sleep 5; gwn=$((gwn + 5)); done
+  assert_eq "no thread of the project is still Working after everything finished" "$(overview_counts | jq -r '.working')" "0"
+  note "Overview at the end: $(api_get "/api/projects/$PROJECT/overview?include_resolved=true" | jq -c '[.groups | to_entries[] | .key as $g | .value[]? | {g: $g, t: .thread_id, reason, status}]' 2>/dev/null | cut -c1-900)"
+}
+
 gh_stage_ci_green() {
   say "8c. GitHub: Foreman watches the real checks (green)"
   if gh_wait 300 "ci success" gh_ci_is success; then
@@ -452,14 +549,24 @@ step_github() {
     return 0
   fi
   gh_stage_setup || return 0
-  gh_stage_pr_create || { PROJECT=$SAVE_PROJECT; REPO=$SAVE_REPO; return 0; }
+  if [ "${E2E_GH_THREE_PRS:-0}" = 1 ]; then
+    gh_stage_three_prs || { PROJECT=$SAVE_PROJECT; REPO=$SAVE_REPO; return 0; }
+  else
+    gh_stage_pr_create || { PROJECT=$SAVE_PROJECT; REPO=$SAVE_REPO; return 0; }
+  fi
   gh_stage_ci_green
   gh_stage_webhook
   gh_stage_ci_fail_fix
-  gh_stage_review
-  gh_stage_conflict
-  gh_stage_force_push_rerun
+  if [ "${E2E_GH_THREE_PRS:-0}" = 1 ]; then
+    unverified "address comments, resolve conflicts, force-push and check re-run (stages 8f-8h) inside the combined flow" \
+      "E2E_GH_THREE_PRS=1 runs the combined flow only; those stages are covered by their own run (docs/acceptance/github-live-run.md)"
+  else
+    gh_stage_review
+    gh_stage_conflict
+    gh_stage_force_push_rerun
+  fi
   gh_stage_ready_and_merge
+  gh_stage_notifications
   gh_stage_webhook_summary
   gh_restore_repo
   PROJECT=$SAVE_PROJECT; REPO=$SAVE_REPO
