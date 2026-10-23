@@ -83,8 +83,10 @@ defmodule ForemanServer.Workflow.InflightLaunchTest do
 
     assert driver_opts[:approval_mode] == :prompt
 
+    # `live_input` is the live-steering option (config `:live_steering`, on by default).
     assert driver_opts[:provider_options] == %{
-             cli_path: ForemanServer.Approvals.Inflight.wrapper_path()
+             cli_path: ForemanServer.Approvals.Inflight.wrapper_path(),
+             live_input: true
            }
 
     assert %{"foreman_permission" => %{"type" => "http", "url" => url, "headers" => headers}} =
@@ -109,7 +111,8 @@ defmodule ForemanServer.Workflow.InflightLaunchTest do
       refute Keyword.has_key?(driver_opts, :mcp_config),
              "#{provider}/#{inspect(mode)} must not get a permission endpoint"
 
-      refute Keyword.has_key?(driver_opts, :provider_options)
+      # Only the live-steering option may be present: never the permission wrapper.
+      assert Map.drop(Keyword.get(driver_opts, :provider_options, %{}), [:live_input]) == %{}
     end
   end
 

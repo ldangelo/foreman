@@ -103,7 +103,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
         File.read!(
           Path.join(
             __DIR__,
-            "../../../../deps/jido_harness/lib/jido_harness/adapters/cli_stream.ex"
+            "../../../../../jido_harness/lib/jido_harness/adapters/cli_stream.ex"
           )
         )
 
@@ -117,7 +117,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
         File.read!(
           Path.join(
             __DIR__,
-            "../../../../deps/jido_harness/lib/jido_harness/adapters/json_mapper.ex"
+            "../../../../../jido_harness/lib/jido_harness/adapters/json_mapper.ex"
           )
         )
 
