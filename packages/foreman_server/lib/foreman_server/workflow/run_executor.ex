@@ -3656,6 +3656,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
        when outcome in [:success, :failure] do
     _ = ForemanServer.Review.Capture.close_run(state, outcome)
 
+    # A failed run's agent can outlive it: when its exec-port dies while this
+    # server stays up (`:port_closed`), the agent is re-parented to pid 1 and
+    # keeps editing a worktree no run owns. Reaped here, before cleanup
+    # reclaims the checkout, by the same cwd-inside-worktree + ppid-1 match
+    # the resume path uses.
+    if outcome == :failure, do: reap_failed_run_agents(state)
+
     warn_uncommitted_work(state)
 
     case Map.get(state, :run_worktree) do
@@ -3677,6 +3684,31 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end)
 
         if failures == [], do: :ok, else: {:error, {:worktree_cleanup_failed, failures}}
+    end
+  end
+
+  defp reap_failed_run_agents(state) do
+    case Map.get(state, :run_worktree) do
+      nil ->
+        :ok
+
+      primary ->
+        for %{worktree_path: path} <- [primary | secondary_run_worktrees(state)],
+            is_binary(path) and path != "" do
+          case OrphanReaper.reap(path) do
+            {:ok, _reaped} ->
+              :ok
+
+            {:error, reason} ->
+              Logger.warning(
+                "RunExecutor #{state.run_id} could not reap agents orphaned by the failed run in #{path}: #{inspect(reason)}",
+                run_id: state.run_id,
+                operation: "run_executor.reap_failed"
+              )
+          end
+        end
+
+        :ok
     end
   end
 

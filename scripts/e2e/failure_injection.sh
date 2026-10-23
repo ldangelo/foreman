@@ -15,6 +15,9 @@
 #   server-crash       kill -9 of the server AND its exec-port (agent orphaned to pid 1), then
 #                      restart -> OrphanReaper terminates the orphan (#607), no "worktree
 #                      already exists" failure, the run is resumed or fails visibly
+#   port-closed        kill -9 of ONLY the agent's exec-port (server stays up) -> run fails
+#                      `:port_closed` and the orphaned agent is reaped by the live failure path
+#                      (foreman-zmhzw), not left running in the failed run's worktree
 #   br-down            br's WRITE verbs (comments, create) fail for the SERVER (a stub earlier on
 #                      its PATH; reads still work or BeadsWatcher could not import) -> the thread
 #                      still completes, the review verdict is still recorded, and the bead sink
@@ -39,10 +42,10 @@ E2E_HOOK_PORT=${E2E_HOOK_PORT:-4930}
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
 
-SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash project-paused br-down"}
+SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed project-paused br-down"}
 for s in $SCENARIOS; do
   quiesce
-  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|project-paused|br-down) ;; *) die "unknown scenario '$s'" 1 ;; esac
+  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|project-paused|br-down) ;; *) die "unknown scenario '$s'" 1 ;; esac
 done
 
 check_environment
@@ -275,6 +278,34 @@ scenario_server_crash() {
   fm run cancel --id "$RUN" --reason "e2e cleanup" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------- scenario: port-closed
+
+scenario_port_closed() {
+  say "scenario port-closed"
+  note "EXPECTED: kill -9 of only the exec-port (server alive) fails the run and the orphaned agent is reaped by the live failure path (OrphanReaper in the server log); without that it lives on at ppid 1 in the failed run's worktree"
+  new_bead "e2e-$SUFFIX port closed" "$LONG"
+  bead_run "$BEAD_ID" 180
+  [ -n "$RUN" ] || { fail "no run appeared for the port-closed bead"; return 0; }
+  wait_agent "$RUN" "$SERVER_PID" 180
+  if [ -z "$AGENT_PIDS" ]; then fail "no agent process found for run $RUN"; return 0; fi
+  note "agent pids: $AGENT_PIDS"
+  for ap in $AGENT_PIDS; do wait_tool "$ap" 120 && break; done
+  ports=""
+  for d in $(descendants "$SERVER_PID"); do
+    case "$(ps -o comm= -p "$d")" in *exec-port) ports="$ports $d" ;; esac
+  done
+  note "exec-port pids:$ports"
+  # shellcheck disable=SC2086
+  kill -9 $ports 2>/dev/null
+  wait_run_status "$RUN" "failed|cancelled|completed" 120
+  note "ACTUAL run status: $RUN_STATUS; reason: $(failure_reason "$RUN")"
+  assert_has "the run failed because its exec-port closed" "$(failure_reason "$RUN")" "port_closed"
+  n=0; left=""
+  while [ "$n" -lt 30 ]; do left=""; for p in $AGENT_PIDS; do alive "$p" && left="$left $p"; done; [ -z "$left" ] && break; sleep 2; n=$((n + 2)); done
+  if [ -z "$left" ]; then pass "no agent process of the failed run is left running"; else fail "agent(s) still alive after the run failed:$left"; for p in $left; do kill -9 "$p" 2>/dev/null; done; fi
+  assert_has "server log records the reap" "$(cat "$SERVER_LOG")" "OrphanReaper: terminating"
+}
+
 # ---------------------------------------------------------------- scenario: project-paused
 
 scenario_project_paused() {
@@ -354,6 +385,7 @@ for s in $SCENARIOS; do
     agent-crash) scenario_agent_crash ;;
     coordinator-crash) scenario_coordinator_crash ;;
     server-crash) scenario_server_crash ;;
+    port-closed) scenario_port_closed ;;
     project-paused) scenario_project_paused ;;
     br-down) scenario_br_down ;;
   esac
