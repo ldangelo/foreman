@@ -309,8 +309,9 @@ defmodule ForemanServer.ProjectionStore do
 
   @doc """
   Return the run's pending steering messages (`RunSteerQueued` minus
-  `RunSteerConsumed`) in queue order as `[%{message_id, text, resume,
-  approval_mode_override}]` (the override is nil unless an approval set it).
+  `RunSteerConsumed` and `RunSteerUndelivered`) in queue order as `[%{message_id, text, resume,
+  approval_mode_override, delivered}]` (the override is nil unless an approval set it;
+  `delivered` is true once the message was written into a live provider session).
 
   This is the durable source of truth for operator steering: `RunControl`'s
   ETS mailbox is cleared across every pause/resume and is only a cache.
@@ -320,13 +321,26 @@ defmodule ForemanServer.ProjectionStore do
             message_id: String.t(),
             text: String.t(),
             resume: boolean(),
-            approval_mode_override: String.t() | nil
+            approval_mode_override: String.t() | nil,
+            delivered: boolean()
           }
         ]
   def pending_steering(run_id) when is_binary(run_id) and run_id != "" do
     case run(run_id) do
       nil -> []
       run -> Map.get(run, :pending_steering, [])
+    end
+  end
+
+  @doc """
+  Steering messages the run ended without taking (`RunSteerUndelivered`), each
+  the pending entry plus the `reason`. Empty for a run that lost none.
+  """
+  @spec undelivered_steering(String.t()) :: [map()]
+  def undelivered_steering(run_id) when is_binary(run_id) and run_id != "" do
+    case run(run_id) do
+      nil -> []
+      run -> Map.get(run, :undelivered_steering, [])
     end
   end
 
@@ -2469,13 +2483,50 @@ defmodule ForemanServer.ProjectionStore do
           message_id: message_id,
           text: get(payload, :text),
           resume: get(payload, :resume) != false,
-          approval_mode_override: get(payload, :approval_mode_override)
+          approval_mode_override: get(payload, :approval_mode_override),
+          delivered: false
         }
 
         Map.put(run, :pending_steering, pending ++ [entry])
       else
         run
       end
+    end)
+  end
+
+  # Mid-phase steering: written to the live provider session, not yet taken.
+  defp apply_event_by_type(state, "RunSteerDelivered", payload) do
+    message_id = get(payload, :message_id)
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.update(run, :pending_steering, [], fn pending ->
+        Enum.map(pending, fn
+          %{message_id: ^message_id} = entry -> %{entry | delivered: true}
+          entry -> entry
+        end)
+      end)
+    end)
+  end
+
+  # The run ended without taking these: they leave the pending queue but stay
+  # visible, with the reason, in `undelivered_steering`.
+  defp apply_event_by_type(state, "RunSteerUndelivered", payload) do
+    lost = MapSet.new(List.wrap(get(payload, :message_ids)))
+    reason = get(payload, :reason)
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      {gone, kept} =
+        run
+        |> Map.get(:pending_steering, [])
+        |> Enum.split_with(&MapSet.member?(lost, &1.message_id))
+
+      run
+      |> Map.put(:pending_steering, kept)
+      |> Map.update(
+        :undelivered_steering,
+        Enum.map(gone, &Map.put(&1, :reason, reason)),
+        &(&1 ++ Enum.map(gone, fn entry -> Map.put(entry, :reason, reason) end))
+      )
     end)
   end
 

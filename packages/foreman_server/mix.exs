@@ -91,10 +91,10 @@ defmodule ForemanServer.MixProject do
        git: "https://github.com/Sunstone-Partners/jido_ai.git",
        ref: "7da2579d32e5ad8e946c06890ac50a793867b0f7",
        override: true},
-      {:jido_harness,
-       git: "https://github.com/Sunstone-Partners/jido_harness.git",
-       ref: "e41fc1651282469f2db4219a48d9f7feef1b0dbc",
-       override: true},
+      # Vendored in this monorepo (synced from the Sunstone-Partners fork, see
+      # packages/jido_harness/UPSTREAM_PIN.md) so Foreman-specific harness
+      # changes land in ldangelo/foreman.
+      {:jido_harness, path: "../jido_harness", override: true},
       {:jido_ecto,
        git: "https://github.com/Sunstone-Partners/jido_ecto.git",
        ref: "d5993d93be7885f62336251b4b7eb95aa88eef52",

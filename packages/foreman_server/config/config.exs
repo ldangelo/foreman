@@ -268,6 +268,11 @@ config :foreman_server, :jido_vfs,
 config :foreman_server, :usage, cache_ttl_seconds: %{claude: 300}
 
 # Per-run session archive + automated review (ForemanServer.Review).
+# Mid-phase steering (docs/plans/live-steering.md): claude/pi phases are launched with
+# streaming input so an operator steer is taken inside the running session. `false`
+# restores pause -> resume at the phase boundary for every provider.
+config :foreman_server, :live_steering, enabled: true
+
 config :foreman_server, :review,
   capture: true,
   analysis: true,

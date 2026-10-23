@@ -67,6 +67,8 @@ Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = s
 - **Gaps**: a PR with failing CI stayed in Ready for review because the Overview grouped by PR gate (ACC 4c); fixed by foreman-c1i34 (`ci_failing` now places it in Waiting on you); Scheduled tab not observed live.
 
 ### C7 Thread control
+
+> Update (live steering): steer to a running claude/pi phase is now taken in-session without a pause, LIVE-verified for both (docs/acceptance/live-steering-live-run.md); undelivered steers surface as `RunSteerUndelivered` (foreman-b3jtt). Approvals unchanged.
 - **Behaviour**: transcript, stop, resolve/reopen, steering, approvals.
 - **Entry points**: HTTP `GET /api/projects/:project_id/threads[/find]`, `GET /api/threads/:id[/transcript|/stream]`, `POST /api/threads/:id/stop|steer` (`router.ex:92-98`); MCP `foreman_thread_list|find|get|transcript` (`tools.ex:212-280`), `foreman_thread_stop|steer` (`tools.ex:296/311`); CLI `foreman thread stop|resolve|reopen|steer` (`thread.go:32-38`); LiveView stop/pause/resume/resolve/reopen/steer (`project_workspace_live.ex:91-123`).
 - **Steering is pause-then-resume**: `Threads.Steerer.capability/1` returns `"pause_resume"` for every provider (`threads/steerer.ex:25`; S2 NO-GO for live mid-turn). Live: `RunPaused`/`RunSteerQueued`/`RunResumed`/`RunSteerConsumed`, agent obeyed (ACC 3). The message lands at a phase boundary, not in a running turn.

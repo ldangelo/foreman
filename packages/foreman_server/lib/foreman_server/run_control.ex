@@ -85,6 +85,15 @@ defmodule ForemanServer.RunControl do
     :ok
   end
 
+  @doc "The harness run id currently registered for `run_id`'s agent, if any."
+  @spec agent_run_id(String.t()) :: {:ok, String.t()} | {:error, :no_agent}
+  def agent_run_id(run_id) when is_binary(run_id) do
+    case lookup(run_id) do
+      {_intent, nil} -> {:error, :no_agent}
+      {_intent, harness_run_id} -> {:ok, harness_run_id}
+    end
+  end
+
   @doc """
   Cancels the harness run registered for `run_id`, if any.
 

@@ -15,7 +15,8 @@ defmodule ForemanServer.Threads.Transcript do
       turn (stderr turns carry `source: "stderr"`).
     * `RunSteerQueued` on the run stream -> `:operator` / `:steer` turn.
     * `RunPaused` / `RunResumed` / `RunFailed` / `RunCompleted` / `RunCancelled` /
-      `RunBlocked` -> `:system` / `:status` turn.
+      `RunBlocked` -> `:system` / `:status` turn; so are the steering delivery
+      events `RunSteerDelivered` / `RunSteerConsumed` / `RunSteerUndelivered`.
     * Phase boundaries (`ProjectionStore.phases_for_run/1`) only split agent
       turns; they are not turns themselves.
 
@@ -215,7 +216,11 @@ defmodule ForemanServer.Threads.Transcript do
     "RunFailed" => "Run failed",
     "RunCompleted" => "Run completed",
     "RunCancelled" => "Run cancelled",
-    "RunBlocked" => "Run blocked"
+    "RunBlocked" => "Run blocked",
+    # Mid-phase steering delivery state (the suffix is the delivery mode / reason).
+    "RunSteerDelivered" => "Steer delivered to the running agent",
+    "RunSteerConsumed" => "Steer taken by the agent",
+    "RunSteerUndelivered" => "Steer NOT delivered"
   }
 
   defp system_items(events) do
@@ -512,7 +517,7 @@ defmodule ForemanServer.Threads.Transcript do
             {[%{at: at, text: redact(to_text(fetch(data, :text)))} | steer], system}
 
           _ ->
-            reason = fetch(data, :reason)
+            reason = fetch(data, :reason) || fetch(data, :mode) || fetch(data, :delivery)
 
             entry = %{
               event_type: type,

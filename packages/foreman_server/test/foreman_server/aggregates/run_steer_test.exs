@@ -128,6 +128,99 @@ defmodule ForemanServer.Aggregates.RunSteerTest do
     end
   end
 
+  describe "live delivery state" do
+    defp cmd(state, type, payload) do
+      Run.handle_command(state, %{type: type, payload: Map.put(payload, :run_id, "run-steer-1")})
+    end
+
+    defp queued(attrs \\ %{}) do
+      state = running_run()
+      {:ok, spec} = steer(state, attrs)
+      apply_spec(state, spec)
+    end
+
+    test "deliver marks the pending message delivered but keeps it pending; repeat is a no-op" do
+      state = queued()
+
+      assert {:ok, %{event_type: "RunSteerDelivered", payload: %{mode: "live"}} = spec} =
+               cmd(state, "run.steer.deliver", %{message_id: "m1"})
+
+      state = apply_spec(state, spec)
+      assert [%{message_id: "m1", delivered: true}] = state.pending_steer
+      assert {:ok, nil} = cmd(state, "run.steer.deliver", %{message_id: "m1"})
+      assert {:ok, nil} = cmd(state, "run.steer.deliver", %{message_id: "ghost"})
+    end
+
+    test "deliver is refused on a terminal run and rejects an unknown mode" do
+      state = queued()
+
+      assert {:error, {:missing_or_invalid, :delivery}} =
+               cmd(state, "run.steer.deliver", %{message_id: "m1", mode: "carrier-pigeon"})
+
+      {:ok, cancel} = cmd(state, "run.cancel", %{})
+      terminal = apply_spec(state, cancel)
+
+      assert {:error, {:run_terminal, _}} =
+               cmd(terminal, "run.steer.deliver", %{message_id: "m1"})
+    end
+
+    test "consume records how the message was taken" do
+      state = queued()
+
+      assert {:ok, %{payload: %{delivery: "prompt"}}} =
+               cmd(state, "run.steer.consume", %{message_ids: ["m1"]})
+
+      assert {:ok, %{payload: %{delivery: "live"}}} =
+               cmd(state, "run.steer.consume", %{message_ids: ["m1"], delivery: "live"})
+
+      assert {:error, {:missing_or_invalid, :delivery}} =
+               cmd(state, "run.steer.consume", %{message_ids: ["m1"], delivery: "x"})
+    end
+
+    test "undeliver retires pending messages, is accepted on a terminal run, and ignores non-pending ids" do
+      state = queued()
+      {:ok, cancel} = cmd(state, "run.cancel", %{})
+      terminal = apply_spec(state, cancel)
+
+      assert {:ok,
+              %{
+                event_type: "RunSteerUndelivered",
+                payload: %{message_ids: ["m1"], reason: "run_cancelled"}
+              } = spec} =
+               cmd(terminal, "run.steer.undeliver", %{
+                 message_ids: ["m1", "ghost"],
+                 reason: "run_cancelled"
+               })
+
+      assert [] = apply_spec(terminal, spec).pending_steer
+
+      assert {:ok, nil} =
+               cmd(terminal, "run.steer.undeliver", %{message_ids: ["ghost"], reason: "x"})
+
+      assert {:error, {:missing_or_invalid, :reason}} =
+               cmd(terminal, "run.steer.undeliver", %{message_ids: ["m1"]})
+    end
+
+    test "new events are registered, decode to structs, and the old consumed shape still decodes" do
+      assert %ForemanServer.Events.RunSteerDelivered{mode: "live"} =
+               EventCodec.decode!("RunSteerDelivered", %{
+                 run_id: "r",
+                 message_id: "m",
+                 mode: "live"
+               })
+
+      assert %ForemanServer.Events.RunSteerUndelivered{reason: "run_failed"} =
+               EventCodec.decode!("RunSteerUndelivered", %{
+                 run_id: "r",
+                 message_ids: ["m"],
+                 reason: "run_failed"
+               })
+
+      assert %ForemanServer.Events.RunSteerConsumed{delivery: nil} =
+               EventCodec.decode!("RunSteerConsumed", %{run_id: "r", message_ids: ["m"]})
+    end
+  end
+
   describe "typed events and replay" do
     test "events are registered and decode to structs" do
       assert "RunSteerQueued" in EventCodec.registered()
