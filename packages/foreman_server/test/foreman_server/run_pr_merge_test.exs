@@ -563,6 +563,30 @@ defmodule ForemanServer.RunPrMergeTest do
       assert length(events(run_id, "MergeGatePending")) == 3
     end
 
+    test "a PR that flips between two commits is voided every time, each approval once", %{
+      run_id: run_id,
+      pr_url: pr_url
+    } do
+      # The same moved head ("head-b") is seen every round, and each observation after the first is
+      # a repeat whose `PrUpdated` the router deduplicates. A re-hold id derived from the head
+      # alone would be answered with round one's event, so rounds two and three would stay
+      # approved on a head the operator never reviewed.
+      for round <- 1..3 do
+        stub_gh(view: %{"headRefOid" => "head-a"})
+        assert {:ok, _} = approve(run_id, %{head_sha: "head-a"})
+        assert {:approved, "head-a"} = gate(run_id), "round #{round}: approved"
+
+        assert {:ok, _} = record_head(run_id, pr_url, "head-b")
+        assert {:pending, nil} = gate(run_id), "round #{round}: voided by the push to head-b"
+
+        assert {:ok, _} = record_head(run_id, pr_url, "head-a")
+        assert {:pending, nil} = gate(run_id), "round #{round}: still held when head-a returns"
+      end
+
+      assert length(events(run_id, "MergeGatePending")) == 3
+      assert length(events(run_id, "MergeGateApproved")) == 3
+    end
+
     test "a pushed head observed through checks voids the approval", %{
       run_id: run_id,
       pr_url: pr_url
