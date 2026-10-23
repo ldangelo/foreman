@@ -314,7 +314,9 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
           {:ok,
            %{stdout: BrFixtures.read!("schema_" <> String.replace(name, "-", "_") <> ".json")}}
 
-        {:show, %{id: id}}, _cfg, _opts ->
+        # The lookup must go through THIS project's database, in both the request
+        # and the provider config; a lookup through any other project's db flunks.
+        {:show, %{id: id, database_path: @db}}, %{database_path: @db}, _opts ->
           send(test, {:br, :show, id})
 
           case show do
@@ -338,6 +340,9 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
             :locked ->
               {:error, %{stdout: "", stderr: "db locked", exit_code: 1}}
           end
+
+        other, cfg, _opts ->
+          flunk("br call outside the project's database: #{inspect({other, cfg})}")
       end)
 
       start_supervised!(JsonSchemaCache)
