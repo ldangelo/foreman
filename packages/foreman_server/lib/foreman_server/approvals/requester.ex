@@ -22,7 +22,8 @@ defmodule ForemanServer.Approvals.Requester do
 
   @doc """
   Request permission. `opts`: `:tool_call_id` (default: derived from `run_id`,
-  `tool_name` and `:phase_index`), `:phase_index`, `:gateway` (test seam).
+  `tool_name` and `:phase_index`), `:phase_index`, `:delivery` (a `Capability.mode/1` result; default: the
+  provider's mode, `:inflight` for a blocked in-flight permission prompt), `:gateway` (test seam).
 
   Returns `{:ok, tool_call_id}`; the call is `requested` afterwards (also when it
   already was), or `{:error, reason}` from the gateway.
@@ -46,7 +47,10 @@ defmodule ForemanServer.Approvals.Requester do
         project_id: Map.get(context, :project_id),
         provider: provider,
         requested_by: "agent",
-        delivery: provider |> Capability.mode() |> Capability.delivery_name()
+        delivery:
+          opts
+          |> Keyword.get_lazy(:delivery, fn -> Capability.mode(provider) end)
+          |> Capability.delivery_name()
       }
     }
 

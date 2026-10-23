@@ -29,7 +29,8 @@ defmodule ForemanServerWeb.Workspace.Actions do
   require Logger
 
   alias ForemanServer.{CommandGateway, CoordinatorAPI, ProjectionStore, Threads}
-  alias ForemanServer.Overview.PrActions
+  alias ForemanServer.Aggregates.ToolCall
+  alias ForemanServer.Overview.{PrActions, Signals}
   alias ForemanServer.Threads.{Actions, Thread}
 
   @type result :: {:ok, String.t()} | {:error, String.t()}
@@ -95,6 +96,49 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  @doc """
+  Decides one pending tool-call request of a project's thread (`:approve | :deny`),
+  the operator's `tool.approve` / `tool.deny` command (the same one the CLI's
+  `foreman approvals approve|deny` and `POST /api/commands` send). For an in-flight
+  request the decision wakes the agent's blocked call (`Approvals.Inflight`); for a
+  post-hoc request it resumes the paused run. The request must be pending and belong
+  to the thread; nothing here touches the merge gate.
+  """
+  @spec decide_approval(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          :approve | :deny,
+          intent()
+        ) :: result()
+  def decide_approval(project_id, thread_id, run_id, tool_call_id, decision, intent)
+      when decision in [:approve, :deny] do
+    with {:ok, thread} <- own_thread(project_id, thread_id),
+         :ok <- pending_approval_of(thread, run_id, tool_call_id) do
+      type = if decision == :approve, do: "tool.approve", else: "tool.deny"
+
+      dispatch(
+        type,
+        ToolCall.stream_id(run_id, tool_call_id),
+        %{run_id: run_id, tool_call_id: tool_call_id, decided_by: @actor},
+        intent,
+        "#{type} #{run_id}/#{tool_call_id}"
+      )
+    end
+  end
+
+  defp pending_approval_of(thread, run_id, tool_call_id) do
+    if Enum.any?(
+         Signals.pending_approvals(thread),
+         &(&1.run_id == run_id and &1.tool_call_id == tool_call_id)
+       ) do
+      :ok
+    else
+      {:error, "That request is no longer pending for this thread."}
     end
   end
 

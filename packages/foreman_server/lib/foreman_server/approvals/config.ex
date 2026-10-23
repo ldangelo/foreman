@@ -14,6 +14,11 @@ defmodule ForemanServer.Approvals.Config do
     * `:pause_on_permission_denied` - when a phase's agent reports permission
       denials, pause the run awaiting an operator decision instead of failing it
       (default `true`).
+    * `:inflight` - route a claude phase's permission prompts to Foreman while the
+      call is blocked (default `true`; off in the test config) and
+      `:inflight_base_url` - the URL claude reaches the permission endpoint at
+      (default: loopback on the endpoint's HTTP port); `:inflight_progress_ms` - keep-alive
+      period of a blocked prompt's reply (default 15 s).
     * `:start_children` - start the Deliverer, Live registry and Sweeper (default
       `true`; off in the test config).
   """
@@ -56,6 +61,48 @@ defmodule ForemanServer.Approvals.Config do
       other ->
         raise ArgumentError,
               "config :foreman_server, :approvals, pause_on_permission_denied must be a boolean, got: #{inspect(other)}"
+    end
+  end
+
+  @doc """
+  Whether a claude phase with `approval_mode: prompt` routes permission prompts to
+  Foreman while the call is blocked (default `true`). `false` keeps every provider on the phase-pause
+  path.
+  """
+  @spec inflight?() :: boolean()
+  def inflight?, do: get(:inflight, true) == true
+
+  @default_progress_ms 15_000
+
+  @doc """
+  How often a blocked in-flight permission reply emits a progress event so claude does not
+  abandon it (it times out a silent HTTP reply after ~60 s). Default 15 s.
+  """
+  @spec inflight_progress_ms() :: pos_integer()
+  def inflight_progress_ms, do: get(:inflight_progress_ms, @default_progress_ms)
+
+  @doc """
+  Base URL the claude CLI uses to reach the permission endpoint: `:inflight_base_url`
+  if set, else loopback on the endpoint's HTTP port. `nil` when neither is known (the
+  endpoint is not listening), so the caller falls back to the phase-pause path.
+  """
+  @spec inflight_base_url() :: String.t() | nil
+  def inflight_base_url do
+    case get(:inflight_base_url, nil) do
+      url when is_binary(url) and url != "" ->
+        String.trim_trailing(url, "/")
+
+      _ ->
+        case ForemanServerWeb.Endpoint.config(:http) do
+          opts when is_list(opts) ->
+            case Keyword.get(opts, :port) do
+              port when is_integer(port) and port > 0 -> "http://127.0.0.1:#{port}"
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
     end
   end
 

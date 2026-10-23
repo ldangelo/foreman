@@ -1068,6 +1068,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
       false ->
         :not_applicable
 
+      # Decided in flight (the agent was told): nothing left to ask, the ordinary
+      # failure path reports the phase.
+      {:error, :denied_in_flight} ->
+        :not_applicable
+
       {:error, reason} ->
         Logger.warning(
           "RunExecutor #{state.run_id} phase #{phase_index} could not request approval: #{inspect(reason)}",
@@ -1406,6 +1411,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> append_system_prompt(context_system_text)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec, steering)
+         |> maybe_put_inflight_permission(state.run_id, JidoHarness.request_provider(request))
          |> maybe_put_add_dirs(state, JidoHarness.request_provider(request))
        end,
        launch_opts: [
@@ -1441,6 +1447,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Keyword.put(driver_opts, :approval_mode, mode)
     end
   end
+
+  # In-flight approvals (bead foreman-exofh): a claude phase whose effective
+  # `approval_mode` is `:prompt` routes each permission prompt to Foreman's
+  # permission tool instead of having headless claude deny it, so the operator can
+  # answer while the call is blocked and the session carries on. Any other provider
+  # (pi has no per-call approvals) or mode, or an unknown endpoint URL, leaves the
+  # E8 phase-pause path untouched.
+  defp maybe_put_inflight_permission(driver_opts, run_id, :claude) do
+    with :prompt <- Keyword.get(driver_opts, :approval_mode),
+         true <- ForemanServer.Approvals.Config.inflight?(),
+         options when is_list(options) <- ForemanServer.Approvals.Inflight.claude_options(run_id) do
+      Keyword.merge(driver_opts, options)
+    else
+      _not_applicable -> driver_opts
+    end
+  end
+
+  defp maybe_put_inflight_permission(driver_opts, _run_id, _provider), do: driver_opts
 
   # The latest override wins when several approvals queued before one resume.
   defp steering_override(steering) do

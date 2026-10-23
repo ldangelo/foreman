@@ -41,6 +41,14 @@ defmodule ForemanServer.Overview.Signals do
     }
   end
 
+  @doc "The thread's undecided tool-call requests, oldest first (what the workspace offers approve/deny for)."
+  @spec pending_approvals(Thread.t()) :: [ProjectionStore.tool_call()]
+  def pending_approvals(%Thread{} = thread) do
+    thread
+    |> subject_ids()
+    |> Enum.flat_map(&ProjectionStore.run_approvals(&1, status: :pending))
+  end
+
   defp subject_ids(%Thread{door: :workflow, run_ids: run_ids}), do: run_ids
   defp subject_ids(%Thread{door: :jobsite, id: "jobsite:" <> jobsite_id}), do: [jobsite_id]
   defp subject_ids(%Thread{}), do: []

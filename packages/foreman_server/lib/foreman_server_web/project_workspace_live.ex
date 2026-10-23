@@ -111,6 +111,30 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     {:noreply, notify(socket, result)}
   end
 
+  def handle_event(
+        "decide_approval",
+        %{
+          "thread-id" => id,
+          "run-id" => run_id,
+          "tool-call-id" => tool_call_id,
+          "decision" => decision
+        },
+        socket
+      )
+      when decision in ["approve", "deny"] do
+    result =
+      Actions.decide_approval(
+        socket.assigns.project_id,
+        id,
+        run_id,
+        tool_call_id,
+        String.to_existing_atom(decision),
+        Refresh.intent(socket)
+      )
+
+    {:noreply, notify(socket, result)}
+  end
+
   def handle_event("pr_action", %{"kind" => kind, "thread-id" => id} = params, socket) do
     result =
       Actions.pr_action(

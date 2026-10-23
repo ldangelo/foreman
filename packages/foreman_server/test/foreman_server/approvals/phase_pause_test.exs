@@ -97,4 +97,39 @@ defmodule ForemanServer.Approvals.PhasePauseTest do
                ["Write"]
              )
   end
+
+  # claude reports a tool refused in flight in the result's `permission_denials` too
+  # (observed on the real CLI). The agent was already told; asking again would pause
+  # the run for a decision that has been made.
+  test "a tool already denied in flight is not requested again; other denied tools still are",
+       %{run_id: run_id, context: context} do
+    {:ok, "inflight-toolu_1"} =
+      ForemanServer.Approvals.Requester.request(context, "Write", %{"file_path" => "/a"},
+        tool_call_id: "inflight-toolu_1",
+        delivery: :inflight
+      )
+
+    {:ok, _} =
+      CommandGateway.dispatch_operator(%{
+        type: "tool.deny",
+        command_id: "op:deny:#{run_id}",
+        aggregate_id: ToolCall.stream_id(run_id, "inflight-toolu_1"),
+        payload: %{run_id: run_id, tool_call_id: "inflight-toolu_1"}
+      })
+
+    await("ToolCallDenied", run_id)
+
+    assert {:error, :denied_in_flight} = PhasePause.request_and_pause(context, 1, ["Write"])
+
+    assert [%{tool_call_id: "inflight-toolu_1"}] =
+             ProjectionStore.run_approvals(run_id, status: :all)
+
+    assert :ok = PhasePause.request_and_pause(context, 1, ["Write", "Bash"])
+
+    assert ["inflight-toolu_1", "perm-1-Bash-1"] ==
+             run_id
+             |> ProjectionStore.run_approvals(status: :all)
+             |> Enum.map(& &1.tool_call_id)
+             |> Enum.sort()
+  end
 end

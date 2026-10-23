@@ -95,6 +95,43 @@ defmodule ForemanServerWeb.Workspace.Components do
         <% end %>
       </div>
       <div
+        :if={@card.approvals != []}
+        class="thread-approvals"
+        role="group"
+        aria-label={"Tool approvals for " <> @card.title}
+      >
+        <div
+          :for={a <- @card.approvals}
+          class="ws-approval"
+          id={"approval-#{@card.thread_id}-#{a.tool_call_id}"}
+        >
+          <span>
+            <strong>{a.tool_name}</strong> <code :if={a.input_summary}>{a.input_summary}</code>
+          </span>
+          <span class="ws-muted">{approval_note(a)}</span>
+          <button
+            type="button"
+            phx-click="decide_approval"
+            phx-value-decision="approve"
+            phx-value-thread-id={@card.thread_id}
+            phx-value-run-id={a.run_id}
+            phx-value-tool-call-id={a.tool_call_id}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            phx-click="decide_approval"
+            phx-value-decision="deny"
+            phx-value-thread-id={@card.thread_id}
+            phx-value-run-id={a.run_id}
+            phx-value-tool-call-id={a.tool_call_id}
+          >
+            Deny
+          </button>
+        </div>
+      </div>
+      <div
         :if={@card.pr_actions != []}
         class="thread-pr-actions"
         role="group"
@@ -125,6 +162,9 @@ defmodule ForemanServerWeb.Workspace.Components do
     </article>
     """
   end
+
+  defp approval_note(%{approval_delivery: "inflight"}), do: "the agent is waiting on this call"
+  defp approval_note(_approval), do: "approving resumes the paused run"
 
   attr(:action, :string, required: true)
   attr(:card, ThreadCard, required: true)
