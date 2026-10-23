@@ -168,10 +168,44 @@ defmodule ForemanServer.Jobsite.Executor do
         end
 
       {:error, %Error{} = error} ->
-        dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+        record_unstarted_failure(jobsite_id, opts, error)
         {:error, error}
     end
   end
+
+  # `build_spec/2` refused the jobsite (an unsupported network policy, a bad
+  # project environment, a failed setup plan, ...) before any `jobsite.start`
+  # existed. `run_async/1` has already answered 202 with this id, so the
+  # failure must be a record the caller can read: `jobsite.fail` alone is
+  # rejected by the aggregate (`{:jobsite_absent, id}`) and the id would 404
+  # forever. Start a stub of the jobsite from the raw options, then fail it
+  # with the typed error.
+  defp record_unstarted_failure(jobsite_id, opts, %Error{} = error) do
+    stub = %{
+      jobsite_id: jobsite_id,
+      repo_path: stub_repo_path(Keyword.get(opts, :repo_path)),
+      strategy: stub_strategy(Keyword.get(opts, :strategy, :head)),
+      name: Keyword.get(opts, :name),
+      bead_id: Keyword.get(opts, :bead_id),
+      project_id: Keyword.get(opts, :project_id)
+    }
+
+    case dispatch(jobsite_id, "jobsite.start", "start", stub) do
+      {:ok, _} -> dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+      {:error, _} = rejected -> rejected
+    end
+  end
+
+  defp stub_repo_path(path) when is_binary(path) and path != "", do: path
+  defp stub_repo_path(_), do: File.cwd!()
+
+  defp stub_strategy(strategy) when strategy in [:head, :merge_to_head],
+    do: strategy_to_string(strategy)
+
+  defp stub_strategy({:branch, name} = strategy) when is_binary(name),
+    do: strategy_to_string(strategy)
+
+  defp stub_strategy(_), do: "unresolved"
 
   defp run_spec(jobsite_id, spec) do
     with {:ok, _} <-
