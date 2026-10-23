@@ -1,6 +1,7 @@
 defmodule ForemanServerWeb.JobsiteControllerTest do
   use ExUnit.Case, async: false
 
+  import Mox
   import Plug.Conn
   import Phoenix.ConnTest
 
@@ -8,6 +9,11 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
   alias ForemanServer.EventStore
   alias ForemanServer.Jobsite
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TaskProvider.Registry
+  alias ForemanServer.TaskProviders.BeadsAdapter
+  alias ForemanServer.TaskProviders.BrRunnerMock
+  alias ForemanServer.TaskProviders.JsonSchemaCache
+  alias ForemanServer.TestSupport.BrFixtures
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @endpoint ForemanServerWeb.Endpoint
@@ -250,6 +256,147 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       assert shown["last_error"]["details"]["pair"] == "{:exit, 1}"
 
       assert authed() |> get("/api/jobsites") |> json_response(200)
+    end
+  end
+
+  describe "bead_id ownership (remote door)" do
+    @db "/abs/jobsite-ctl/beads.db"
+    @bead_id BrFixtures.issue!("show_plain.json")["id"]
+
+    setup do
+      {:ok, _} = Application.ensure_all_started(:mox)
+      set_mox_global()
+      previous_provider_config = Application.get_env(:foreman_server, :task_provider, [])
+
+      Application.put_env(
+        :foreman_server,
+        :task_provider,
+        actor: nil,
+        accepted_contract_versions: ["br.capabilities.v1"],
+        providers: []
+      )
+
+      stop_schema_cache()
+      ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
+
+      # Any br call this suite does not expect (a `create`, a comment, a show when
+      # no bead_id was sent) fails the test.
+      stub(BrRunnerMock, :cmd, fn request, config, opts ->
+        flunk("unexpected BrRunnerMock.cmd/3 call: #{inspect({request, config, opts})}")
+      end)
+
+      on_exit(fn ->
+        Application.put_env(:foreman_server, :task_provider, previous_provider_config)
+        stop_schema_cache()
+      end)
+
+      :ok
+    end
+
+    defp stop_schema_cache do
+      case Process.whereis(:foreman_server_json_schema_cache) do
+        nil -> :ok
+        pid -> GenServer.stop(pid)
+      end
+    end
+
+    defp register_provider! do
+      assert :ok =
+               Registry.register_for_project(@project_id, BeadsAdapter, %{database_path: @db})
+    end
+
+    # show: :found | :not_found | :locked
+    defp stub_show(show) do
+      test = self()
+
+      stub(BrRunnerMock, :cmd, fn
+        {:schema, %{schema: name}}, _cfg, _opts ->
+          {:ok,
+           %{stdout: BrFixtures.read!("schema_" <> String.replace(name, "-", "_") <> ".json")}}
+
+        {:show, %{id: id}}, _cfg, _opts ->
+          send(test, {:br, :show, id})
+
+          case show do
+            :found ->
+              {:ok, %{stdout: BrFixtures.read!("show_plain.json"), stderr: "", exit_code: 0}}
+
+            :not_found ->
+              envelope =
+                Jason.encode!(%{
+                  "error" => %{
+                    "code" => "ISSUE_NOT_FOUND",
+                    "message" => "Issue not found: #{id}",
+                    "hint" => "Run 'br list' to see available issues.",
+                    "retryable" => false,
+                    "context" => %{"searched_id" => id}
+                  }
+                })
+
+              {:error, %{stdout: "", stderr: envelope, exit_code: 3}}
+
+            :locked ->
+              {:error, %{stdout: "", stderr: "db locked", exit_code: 1}}
+          end
+      end)
+
+      start_supervised!(JsonSchemaCache)
+    end
+
+    defp with_bead(bead_id), do: Map.put(spec(), "bead_id", bead_id)
+
+    test "a bead_id that does not exist in the project => 404, audited rejected, nothing started" do
+      register_provider!()
+      stub_show(:not_found)
+      before = length(audited("/api/jobsites", "rejected", "spec_bead_not_found"))
+      jobsites_before = length(Jobsite.list())
+
+      conn = post_json(authed(), "/api/jobsites", with_bead("other-project-bead"))
+      assert %{"error" => "spec_bead_not_found"} = json_response(conn, 404)
+
+      assert_received {:br, :show, "other-project-bead"}
+      assert length(audited("/api/jobsites", "rejected", "spec_bead_not_found")) == before + 1
+      assert length(Jobsite.list()) == jobsites_before
+    end
+
+    test "an existing bead_id is accepted and the jobsite projection carries it" do
+      register_provider!()
+      stub_show(:found)
+
+      conn = post_json(authed(), "/api/jobsites", with_bead(@bead_id))
+      assert %{"id" => id} = json_response(conn, 202)
+      assert_received {:br, :show, @bead_id}
+
+      assert %{"bead_id" => @bead_id} =
+               authed() |> get("/api/jobsites/#{id}") |> json_response(200)
+
+      await_terminal(id)
+    end
+
+    test "no bead_id => the provider is never consulted" do
+      # The suite stub flunks on any br call, and no provider is even registered.
+      conn = post_json(authed(), "/api/jobsites", spec())
+      assert %{"id" => id} = json_response(conn, 202)
+      await_terminal(id)
+    end
+
+    test "no provider resolvable for the project => 503, audited rejected, not accepted" do
+      before = length(audited("/api/jobsites", "rejected", "spec_bead_unavailable"))
+      jobsites_before = length(Jobsite.list())
+
+      conn = post_json(authed(), "/api/jobsites", with_bead(@bead_id))
+      assert %{"error" => "spec_bead_unavailable"} = json_response(conn, 503)
+
+      assert length(audited("/api/jobsites", "rejected", "spec_bead_unavailable")) == before + 1
+      assert length(Jobsite.list()) == jobsites_before
+    end
+
+    test "a provider that cannot answer => 503, not accepted and not a not-found" do
+      register_provider!()
+      stub_show(:locked)
+
+      conn = post_json(authed(), "/api/jobsites", with_bead(@bead_id))
+      assert %{"error" => "spec_bead_unavailable"} = json_response(conn, 503)
     end
   end
 

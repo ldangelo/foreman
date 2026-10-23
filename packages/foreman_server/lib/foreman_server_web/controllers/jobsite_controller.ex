@@ -21,8 +21,9 @@ defmodule ForemanServerWeb.JobsiteController do
   at `error` and does not undo a request that already took effect.
 
   Status mapping: 400 missing/malformed required input, 403 forbidden by policy,
-  404 unknown id, 409 wrong state, 422 invalid spec, 429 capacity, 502 the
-  executor could not be started.
+  404 unknown id (or a `bead_id` absent from the project), 409 wrong state, 422 invalid spec, 429 capacity, 502 the
+  executor could not be started, 503 the project's task provider could not verify a
+  `bead_id`.
   """
 
   use ForemanServerWeb, :controller
@@ -33,6 +34,7 @@ defmodule ForemanServerWeb.JobsiteController do
   alias ForemanServer.CommandGateway
   alias ForemanServer.Jobsite
   alias ForemanServer.Jobsite.{Error, Executor, Spec}
+  alias ForemanServer.TaskProvider.Registry
 
   @default_max_concurrent 3
 
@@ -41,6 +43,7 @@ defmodule ForemanServerWeb.JobsiteController do
     with :ok <- check_enabled(),
          {:ok, max} <- max_concurrent(),
          {:ok, opts} <- Spec.from_json(conn.body_params),
+         :ok <- check_bead(opts),
          {:ok, id} <- Jobsite.run_async(Keyword.put(opts, :max_concurrent, max)) do
       audit(conn, "accepted", nil, id)
 
@@ -50,6 +53,55 @@ defmodule ForemanServerWeb.JobsiteController do
     else
       {:error, %Error{} = error} -> reject(conn, error, nil)
     end
+  end
+
+  # A remote spec may name the bead its outcome is reported on (`bead_id`). The
+  # review pipeline later comments on that bead and files gap beads, so a caller
+  # must not be able to point it at a bead that is not in the jobsite's own project:
+  # the bead has to exist in that project's task provider. Absent `bead_id` skips
+  # the check entirely (no provider call); an unreadable provider fails closed.
+  defp check_bead(opts) do
+    case Keyword.get(opts, :bead_id) do
+      nil -> :ok
+      bead_id -> verify_bead(Keyword.fetch!(opts, :project_id), bead_id)
+    end
+  end
+
+  defp verify_bead(project_id, bead_id) do
+    case Registry.project_config(project_id) do
+      {:ok, %{provider_module: provider, config: config}} ->
+        case provider.get(bead_id, config) do
+          {:ok, _issue} ->
+            :ok
+
+          {:error, %{code: "ISSUE_NOT_FOUND"}} ->
+            {:error,
+             Error.new(
+               :spec_bead_not_found,
+               "bead #{inspect(bead_id)} does not exist in project #{inspect(project_id)}",
+               %{project_id: project_id, bead_id: bead_id}
+             )}
+
+          {:error, reason} ->
+            bead_unavailable(project_id, bead_id, reason)
+        end
+
+      {:error, reason} ->
+        bead_unavailable(project_id, bead_id, reason)
+    end
+  end
+
+  defp bead_unavailable(project_id, bead_id, reason) do
+    Logger.warning(
+      "jobsite bead check unavailable for project #{project_id} bead #{bead_id}: #{inspect(reason, limit: 5)}"
+    )
+
+    {:error,
+     Error.new(
+       :spec_bead_unavailable,
+       "cannot verify bead #{inspect(bead_id)} in project #{inspect(project_id)}: task provider unavailable",
+       %{project_id: project_id, bead_id: bead_id}
+     )}
   end
 
   # GET /api/jobsites
@@ -229,7 +281,11 @@ defmodule ForemanServerWeb.JobsiteController do
             ],
        do: :forbidden
 
-  defp status_for(code) when code in [:jobsite_not_found, :spec_project_not_found], do: :not_found
+  defp status_for(code)
+       when code in [:jobsite_not_found, :spec_project_not_found, :spec_bead_not_found],
+       do: :not_found
+
+  defp status_for(:spec_bead_unavailable), do: :service_unavailable
 
   defp status_for(code)
        when code in [
