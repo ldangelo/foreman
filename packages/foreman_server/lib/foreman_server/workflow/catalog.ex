@@ -21,6 +21,11 @@ defmodule ForemanServer.Workflow.Catalog do
     * **Prompt read API** — `read_prompt/1` returns the latest prompt
       body. `ForemanServer.Workflow.RunExecutor` reads prompts through
       the catalog so prompt edits are picked up by the next phase.
+    * **Refusals stay visible** — a manifest that fails validation is
+      still refused, but it is recorded as a typed
+      `ForemanServer.Workflow.LoadError` (`invalid/0`), logged once at
+      warning per distinct file content, and surfaced by `foreman doctor`,
+      the coordinator's workflow list and `foreman_workflow_list`.
 
   The poll interval is `Application.get_env(:foreman_server,
   :workflow_catalog_poll_ms, 2_000)`. Telemetry is emitted on every
@@ -46,6 +51,7 @@ defmodule ForemanServer.Workflow.Catalog do
   alias ForemanServer.Workflow.AssetCatalog
   alias ForemanServer.Workflow.Catalog.Doctor
   alias ForemanServer.Workflow.Interpreter
+  alias ForemanServer.Workflow.LoadError
   alias ForemanServer.WorkflowTemplate.Installer
 
   @type manifest_entry :: %{
@@ -65,6 +71,7 @@ defmodule ForemanServer.Workflow.Catalog do
   @type state :: %{
           catalog: AssetCatalog.t(),
           manifests: %{String.t() => manifest_entry()},
+          invalid: %{String.t() => LoadError.t()},
           prompts: %{String.t() => prompt_entry()},
           type_to_workflow: %{String.t() => String.t()}
         }
@@ -119,6 +126,14 @@ defmodule ForemanServer.Workflow.Catalog do
   @spec installed?() :: boolean()
   def installed?, do: GenServer.call(server(), :installed?)
 
+  @doc """
+  Manifests the catalog refused to load, sorted by filename. A manifest that
+  fails validation never silently disappears: it is listed here with the file,
+  the stage and the reason.
+  """
+  @spec invalid() :: [LoadError.t()]
+  def invalid, do: GenServer.call(server(), :invalid)
+
   @doc "The on-disk root the catalog is using."
   @spec root() :: Path.t()
   def root, do: GenServer.call(server(), :root)
@@ -148,7 +163,14 @@ defmodule ForemanServer.Workflow.Catalog do
         _ -> AssetCatalog.default()
       end
 
-    state = %{catalog: catalog, manifests: %{}, prompts: %{}, type_to_workflow: %{}}
+    state = %{
+      catalog: catalog,
+      manifests: %{},
+      invalid: %{},
+      prompts: %{},
+      type_to_workflow: %{}
+    }
+
     state = ensure_installed(state)
 
     # The options are `skills_`-prefixed so they cannot collide with the workflow-root options
@@ -209,7 +231,13 @@ defmodule ForemanServer.Workflow.Catalog do
         {:reply, {:ok, workflow}, state}
 
       :error ->
-        {:reply, {:error, {:workflow_not_loaded, filename}}, state}
+        case Map.fetch(state.invalid, filename) do
+          {:ok, %LoadError{} = error} ->
+            {:reply, {:error, {:workflow_invalid, error}}, state}
+
+          :error ->
+            {:reply, {:error, {:workflow_not_loaded, filename}}, state}
+        end
     end
   end
 
@@ -230,6 +258,10 @@ defmodule ForemanServer.Workflow.Catalog do
 
   def handle_call(:manifests, _from, state) do
     {:reply, state.manifests |> Map.keys() |> Enum.sort(), state}
+  end
+
+  def handle_call(:invalid, _from, state) do
+    {:reply, state.invalid |> Map.values() |> Enum.sort_by(& &1.filename), state}
   end
 
   def handle_call(:prompt_filenames, _from, state) do
@@ -334,15 +366,20 @@ defmodule ForemanServer.Workflow.Catalog do
   defp drop_vanished_manifests(state, current, on_disk) do
     vanished = MapSet.difference(current, on_disk)
 
-    Enum.reduce(vanished, state, fn filename, acc ->
-      :telemetry.execute(
-        [:foreman_server, :workflow, :manifest, :removed],
-        %{},
-        %{filename: filename}
-      )
+    state =
+      Enum.reduce(vanished, state, fn filename, acc ->
+        :telemetry.execute(
+          [:foreman_server, :workflow, :manifest, :removed],
+          %{},
+          %{filename: filename}
+        )
 
-      %{acc | manifests: Map.delete(acc.manifests, filename)}
-    end)
+        %{acc | manifests: Map.delete(acc.manifests, filename)}
+      end)
+
+    # A refused manifest that was deleted is no longer a refusal to report. It
+    # is not in `current` (it never loaded), so it needs its own sweep.
+    %{state | invalid: Map.filter(state.invalid, fn {filename, _} -> filename in on_disk end)}
   end
 
   defp reconcile_prompts(state) do
@@ -383,6 +420,8 @@ defmodule ForemanServer.Workflow.Catalog do
 
     case read_manifest_entry(path) do
       {:ok, entry} ->
+        state = %{state | invalid: Map.delete(state.invalid, filename)}
+
         cond do
           not Map.has_key?(state.manifests, filename) ->
             :telemetry.execute(
@@ -413,8 +452,33 @@ defmodule ForemanServer.Workflow.Catalog do
           %{filename: filename, reason: reason}
         )
 
-        state
+        record_invalid(state, path, reason)
     end
+  end
+
+  # The refusal itself is unchanged (the manifest is not loaded); this only makes
+  # it observable. Logged once per distinct file content: the poll re-reads every
+  # manifest every few seconds, and a refusal that logged on each pass would bury
+  # the one line that matters.
+  defp record_invalid(state, path, reason) do
+    filename = Path.basename(path)
+    serving_previous = Map.has_key?(state.manifests, filename)
+    error = LoadError.new(path, reason, AssetCatalog.digest(path), serving_previous)
+
+    unless repeat_refusal?(Map.get(state.invalid, filename), error) do
+      Logger.warning(
+        "Workflow manifest #{path} is INVALID and was not loaded: #{LoadError.describe(error)}"
+      )
+    end
+
+    %{state | invalid: Map.put(state.invalid, filename, error)}
+  end
+
+  defp repeat_refusal?(nil, _error), do: false
+
+  defp repeat_refusal?(%LoadError{} = previous, %LoadError{} = error) do
+    error.file_digest != nil and previous.file_digest == error.file_digest and
+      previous.message == error.message
   end
 
   defp put_manifest(state, filename, entry) do

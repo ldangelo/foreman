@@ -15,6 +15,7 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.PromptWriter
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Interpreter
+  alias ForemanServer.Workflow.LoadError
   alias ForemanServer.Workflow.Validator
   alias ForemanServer.Workflow.ErrorReporter
   alias ForemanServer.AgentRuntime.Router
@@ -639,7 +640,8 @@ defmodule ForemanServer.MCP.Tools do
 
   @schema_foreman_workflow_list %{
     name: "foreman_workflow_list",
-    description: "List all available workflows",
+    description:
+      "List installed workflows (`workflows`) and the manifests the catalog refused to load (`invalid`, each with its file and validation error)",
     inputSchema: %{
       type: "object",
       properties: %{}
@@ -2521,7 +2523,12 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_workflow_list(%{}) do
     start_us = System.monotonic_time(:microsecond)
-    result = Catalog.manifests()
+
+    result = %{
+      workflows: Catalog.manifests(),
+      invalid: Enum.map(Catalog.invalid(), &LoadError.to_map/1)
+    }
+
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_workflow_list", :ok)
     {:ok, result}
@@ -2529,28 +2536,52 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_workflow_get(%{name: name}) do
     start_us = System.monotonic_time(:microsecond)
+    filename = name <> ".yaml"
 
-    case Catalog.load(name <> ".yaml") do
-      {:ok, manifest} ->
-        result = %{
-          name: name,
-          description: Map.get(manifest, "description", ""),
-          digest: Map.get(manifest, "digest", ""),
-          phase_count: length(Map.get(manifest, "phases", [])),
-          manifest_path: "workflows/#{name}.yaml",
-          phases: Map.get(manifest, "phases", [])
-        }
+    # `Catalog.load/1` keeps serving the last good snapshot when an edit fails
+    # validation, so a loaded manifest can ALSO have a pending refusal. That is
+    # reported ALONGSIDE the snapshot (`refused_edit`), not instead of it: the
+    # workflow still starts. A manifest that never loaded is `INVALID_MANIFEST`.
+    case {Catalog.load(filename), Enum.find(Catalog.invalid(), &(&1.filename == filename))} do
+      {{:ok, manifest}, refusal} ->
+        result =
+          %{
+            name: name,
+            description: Map.get(manifest, "description", ""),
+            digest: Map.get(manifest, "digest", ""),
+            phase_count: length(Map.get(manifest, "phases", [])),
+            manifest_path: "workflows/#{name}.yaml",
+            phases: Map.get(manifest, "phases", [])
+          }
+          |> put_refused_edit(refusal)
 
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :ok)
         {:ok, result}
 
-      {:error, _reason} ->
+      {{:error, {:workflow_invalid, %LoadError{} = error}}, _refusal} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :error)
+
+        {:error,
+         %ToolError{
+           code: "INVALID_MANIFEST",
+           message: "Workflow #{name} is invalid and was not loaded: #{LoadError.describe(error)}"
+         }}
+
+      {{:error, _reason}, _refusal} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :not_found)
         {:error, %ToolError{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
     end
   end
+
+  # Absent key, never `nil` (AGENTS.md 5.4b): a reader that tests for the key
+  # must not have to also test for a null.
+  defp put_refused_edit(result, nil), do: result
+
+  defp put_refused_edit(result, %LoadError{} = error),
+    do: Map.put(result, :refused_edit, LoadError.to_map(error))
 
   defp tool_foreman_workflow_validate(params) do
     start_us = System.monotonic_time(:microsecond)

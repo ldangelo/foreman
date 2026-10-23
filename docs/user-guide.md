@@ -94,6 +94,45 @@ you no longer need it.
 workflow the base is the project checkout's `HEAD` when the run's first phase
 starts.
 
+Manifests are read by a small YAML-subset parser (not a full YAML library). A
+mapping may be written in **block** style (indented `key: value` lines) or in
+**flow** style (`worktree: {enabled: false, base: main}`); both load to the
+same manifest and go through the same validation, so a flow-style `worktree:`
+or `models:` block is never rejected merely for its style. Flow mappings may
+hold quoted values and flow lists (`{to: [ops, dev]}`); a value that only looks
+like one (`{{input.prompt}} --foreman`, `{run_id}`) stays a plain string. The
+vocabulary is unchanged and closed — only the syntax is accepted both ways.
+
+**An invalid manifest is refused, and the refusal is visible.** A manifest that
+fails validation (an unknown `worktree:` key, a `claude` phase pinning a
+`<provider>/<model>` model, unparsable YAML, ...) is never loaded, so nothing
+can start it — but it no longer disappears:
+
+- the server logs one warning per distinct file content
+  (`Workflow manifest <path> is INVALID and was not loaded: <reason>`), not one
+  per catalog poll;
+- `foreman doctor` adds a `warn` row `workflow.<file>.yaml` carrying the reason
+  (the summary `workflows` row only says whether anything loaded);
+- the coordinator's workflow list shows a never-loaded manifest under
+  `INVALID WORKFLOWS` ("they cannot be started") with the reason, and a thread
+  it tries to start on that workflow is rejected with the reason instead of
+  "unknown workflow";
+- `foreman_workflow_list` returns `{workflows: [...], invalid: [{filename, path,
+  stage, reason, serving_previous}]}`, and `foreman_workflow_get` answers
+  `INVALID_MANIFEST` with the reason.
+
+**A refused edit is not the same as a refused workflow.** If you edit a manifest
+that was already loading and the edit is invalid, the catalog keeps serving the
+last good version, so the workflow **still starts** — from its previous valid
+manifest — and the edit has not taken effect until it validates. Every surface
+says so instead of calling the workflow unstartable: the invalid entry carries
+`serving_previous: true`; `foreman doctor` titles the row "the latest edit is
+invalid; its previous valid version is still served"; the coordinator lists the
+workflow normally, marked "runs its previous valid version", with the reason
+under `REFUSED EDITS` (not under `INVALID WORKFLOWS`); and `foreman_workflow_get`
+returns the served snapshot plus a typed `refused_edit` object rather than an
+error.
+
 ## Local Development Environment
 
 `direnv allow` loads Devbox and sources `.env` on entering the

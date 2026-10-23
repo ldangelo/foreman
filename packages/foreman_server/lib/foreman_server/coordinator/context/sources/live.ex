@@ -8,6 +8,7 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Threads
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.LoadError
 
   @impl true
   def conversation(project_id), do: ProjectionStore.coordinator_state(project_id)
@@ -49,6 +50,22 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
         {:error, _} ->
           []
       end
+    end)
+  end
+
+  # Manifests the catalog refused. Named by file (`lvclaude.yaml` -> `lvclaude`),
+  # the only name a refused file has: its own `name:` was never trusted.
+  # `serving_previous` separates "cannot start at all" from "the latest edit was
+  # refused but the previous valid version still starts": the coordinator must
+  # not be told a startable workflow is unstartable.
+  @impl true
+  def invalid_workflows do
+    Enum.map(Catalog.invalid(), fn %LoadError{} = error ->
+      %{
+        name: Path.rootname(error.filename),
+        reason: error.message,
+        serving_previous: error.serving_previous
+      }
     end)
   end
 

@@ -263,7 +263,7 @@ MCP MUST NOT ship on top of the current inert auth.
 ### REQ-019: Must | High | Workflow read and validate tools
 MCP MUST expose read-only catalog inspection and a dry-run validator.
 
-- AC-019-1: Given `foreman_workflow_list`, when called, then it returns every loaded manifest with `name`, `description`, `digest`, `phase_count`, and `manifest_path`.
+- AC-019-1: Given `foreman_workflow_list`, when called, then it returns every loaded manifest with `name`, `description`, `digest`, `phase_count`, and `manifest_path`. _(Point-in-time spec; the shipped tool returns `{workflows, invalid}` - see `docs/cli-reference.md`.)_
 - AC-019-2: Given `foreman_workflow_get` with a name, when called, then it returns the resolved workflow including its phase list and the body of each referenced prompt file.
 - AC-019-3: Given `foreman_workflow_validate` with a candidate manifest body, when it is checked, then it is parsed by the same `Interpreter.load/1` used at load time and returns either `valid: true` or the Interpreter's verbatim error message, **without writing anything to the catalog root**.
 

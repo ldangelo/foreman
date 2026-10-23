@@ -182,6 +182,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
       operator_texts: for(m <- pending, Authority.operator_authored?(m), do: m.text),
       tuning: Tuning.read(project_id),
       workflows: Enum.map(rt.sources.workflows(), & &1.name),
+      invalid_workflows: rt.sources.invalid_workflows(),
       recorded: conv.actions,
       gateway: rt.gateway,
       threads: rt.threads,

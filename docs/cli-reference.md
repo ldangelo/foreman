@@ -1083,7 +1083,7 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 
 ### `foreman doctor`
 
-Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
+Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
 
 ```bash
 foreman doctor                       # Run the checks
@@ -1514,6 +1514,8 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,
 optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
 `external_id`, `branch`, `pr`, `limit`; at least one criterion).
+
+`foreman_workflow_list` returns `{workflows: [<manifest filename>...], invalid: [{filename, path, stage, reason, serving_previous}]}`: `invalid` lists manifests the catalog refused to load, each with the validation error; `foreman_workflow_get` on such a name answers `INVALID_MANIFEST` with the same reason (not `NOT_FOUND`). A loaded manifest whose latest edit was refused is still served: its `invalid` entry has `serving_previous: true` and `foreman_workflow_get` returns the served snapshot plus a `refused_edit` object (the doctor row is titled "the latest edit is invalid; its previous valid version is still served").
 
 Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,

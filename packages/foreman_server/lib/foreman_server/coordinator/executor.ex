@@ -51,6 +51,7 @@ defmodule ForemanServer.Coordinator.Executor do
       operator_texts: [],
       tuning: %ForemanServer.Coordinator.Tuning{},
       workflows: [],
+      invalid_workflows: [],
       recorded: %{},
       gateway: ForemanServer.CommandGateway,
       threads: ForemanServer.Threads,
@@ -302,7 +303,7 @@ defmodule ForemanServer.Coordinator.Executor do
 
   # One thread: select workflow -> caps -> task.create -> (approve | stay open).
   defp create_one(ctx, action_id, index, spec, mode, state) do
-    with {:ok, workflow} <- WorkflowSelector.select(spec, ctx.workflows),
+    with {:ok, workflow} <- WorkflowSelector.select(spec, ctx.workflows, ctx.invalid_workflows),
          :ok <- check_caps(ctx, state, mode),
          task_id = task_id(action_id, index),
          :ok <- create_task(ctx, task_id, spec, workflow) do
@@ -714,6 +715,11 @@ defmodule ForemanServer.Coordinator.Executor do
 
   defp reason_text({:unknown_workflow, name, valid}),
     do: "unknown workflow #{inspect(name)}; valid workflows: #{Enum.join(valid, ", ")}"
+
+  defp reason_text({:invalid_workflow, name, reason}),
+    do:
+      "workflow #{inspect(name)} is installed but INVALID and cannot be started: #{reason}; " <>
+        "the operator must fix the manifest (`foreman doctor` lists it)"
 
   defp reason_text(:no_workflow),
     do: "no workflow could be chosen; name one of the listed workflows or give a task_type"

@@ -153,14 +153,23 @@ defmodule ForemanServer.Workflow.Interpreter do
 
   defp parse_phase_entries(lines, acc, _path), do: {Enum.reverse(acc), lines}
 
+  # A phase may open with a flow mapping (`- {name: build, prompt: build.md}`) as
+  # well as with a block key; both yield the same phase map, and any further
+  # block properties are read by `parse_phase_properties/3` either way.
   defp parse_phase_head!(content, line_number, path) do
-    case split_mapping(content) do
-      {key, value} ->
-        Map.put(%{}, key, parse_scalar(value))
+    case parse_flow_mapping(content) do
+      {:ok, phase} ->
+        phase
 
       :error ->
-        raise ArgumentError,
-              "unsupported phase entry in #{path} at line #{line_number}: #{content}"
+        case split_mapping(content) do
+          {key, value} ->
+            Map.put(%{}, key, parse_scalar(value))
+
+          :error ->
+            raise ArgumentError,
+                  "unsupported phase entry in #{path} at line #{line_number}: #{content}"
+        end
     end
   end
 
@@ -834,16 +843,86 @@ defmodule ForemanServer.Workflow.Interpreter do
   # string, not false, and `"8080"` is not the integer. Only a PLAIN scalar is
   # typed, which is what makes `Interpreter.validate_commit_value!/3` able to
   # tell a boolean from a string that looks like one.
+  #
+  # A flow mapping (`{enabled: false, base: main}`) is the same mapping as its
+  # block form, so it has to parse to the same map. It used to fall through to
+  # the plain-scalar branch and arrive as the STRING "{enabled: false}", which
+  # every `is_map/1` validator then refused as "must be a mapping" — a manifest
+  # the operator wrote correctly, rejected for a parser gap, not for its content.
   defp parse_scalar(value) do
-    cond do
-      String.starts_with?(value, "[") and String.ends_with?(value, "]") ->
-        parse_array(value)
+    if String.starts_with?(value, "[") and String.ends_with?(value, "]") do
+      parse_array(value)
+    else
+      case parse_flow_mapping(value) do
+        {:ok, mapping} -> mapping
+        :error -> parse_plain_or_quoted(value)
+      end
+    end
+  end
 
-      true ->
-        case classify_scalar(value) do
-          {:quoted, inner} -> inner
-          {:plain, plain} -> cast_scalar(plain)
-        end
+  defp parse_plain_or_quoted(value) do
+    case classify_scalar(value) do
+      {:quoted, inner} -> inner
+      {:plain, plain} -> cast_scalar(plain)
+    end
+  end
+
+  # `{:ok, map}` only for text that really is a flow mapping: `{...}` whose every
+  # entry is `key: value`. Anything else is `:error` and stays a plain scalar,
+  # exactly as before — a value such as `{{input.prompt}} --foreman` or a whole-
+  # value placeholder like `{run_id}` is a template, not a mapping, and must not
+  # start raising at load time.
+  defp parse_flow_mapping(value) do
+    if String.starts_with?(value, "{") and String.ends_with?(value, "}") and
+         not String.starts_with?(value, "{{") do
+      inner = value |> String.slice(1, String.length(value) - 2) |> String.trim()
+
+      if inner == "" do
+        {:ok, %{}}
+      else
+        inner |> split_array_elements() |> drop_trailing_blank() |> flow_entries()
+      end
+    else
+      :error
+    end
+  end
+
+  defp flow_entries(entries) do
+    Enum.reduce_while(entries, {:ok, %{}}, fn entry, {:ok, acc} ->
+      case split_mapping(String.trim(entry)) do
+        {key, val} when key != "" ->
+          case flow_key(key) do
+            {:ok, name} -> {:cont, {:ok, Map.put(acc, name, parse_scalar(String.trim(val)))}}
+            :error -> {:halt, :error}
+          end
+
+        _other ->
+          {:halt, :error}
+      end
+    end)
+  end
+
+  # YAML permits one trailing comma (`{a: 1,}`); a blank entry anywhere else is
+  # a typo and makes the whole value not-a-mapping.
+  defp drop_trailing_blank(entries) do
+    case List.last(entries) do
+      last when is_binary(last) ->
+        if String.trim(last) == "", do: Enum.drop(entries, -1), else: entries
+
+      nil ->
+        entries
+    end
+  end
+
+  # A quoted key may contain anything; a plain one may not hold flow delimiters,
+  # so `{a}: b` inside braces is "not a mapping" rather than a key named `a}`.
+  defp flow_key(key) do
+    case classify_scalar(key) do
+      {:quoted, inner} ->
+        {:ok, inner}
+
+      {:plain, plain} ->
+        if String.contains?(plain, ["{", "}", "[", "]", ","]), do: :error, else: {:ok, plain}
     end
   end
 
@@ -867,25 +946,33 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
-  # Splits on "," only outside quotes, so a comma inside a quoted element
-  # (e.g. `"a,b"`, written by `ManifestWriter.build_top_level/3` for exactly
-  # this reason) does not fragment that element into two malformed values.
+  # Splits on "," only outside quotes and outside nested `[...]`/`{...}`, so a
+  # comma inside a quoted element (e.g. `"a,b"`, written by
+  # `ManifestWriter.build_top_level/3` for exactly this reason) or inside a
+  # nested flow collection (`{a: [x, y], b: 1}`) does not fragment that element
+  # into two malformed values.
   defp split_array_elements(trimmed) do
-    {parts, current, _quote_char} =
+    {parts, current, _quote_char, _depth} =
       trimmed
       |> String.graphemes()
-      |> Enum.reduce({[], "", nil}, fn
-        ch, {parts, current, nil} when ch in ["\"", "'"] ->
-          {parts, current <> ch, ch}
+      |> Enum.reduce({[], "", nil, 0}, fn
+        ch, {parts, current, nil, depth} when ch in ["\"", "'"] ->
+          {parts, current <> ch, ch, depth}
 
-        ch, {parts, current, quote_char} when ch == quote_char ->
-          {parts, current <> ch, nil}
+        ch, {parts, current, quote_char, depth} when ch == quote_char ->
+          {parts, current <> ch, nil, depth}
 
-        ",", {parts, current, nil} ->
-          {[current | parts], "", nil}
+        ch, {parts, current, nil, depth} when ch in ["[", "{"] ->
+          {parts, current <> ch, nil, depth + 1}
 
-        ch, {parts, current, quote_char} ->
-          {parts, current <> ch, quote_char}
+        ch, {parts, current, nil, depth} when ch in ["]", "}"] ->
+          {parts, current <> ch, nil, max(depth - 1, 0)}
+
+        ",", {parts, current, nil, 0} ->
+          {[current | parts], "", nil, 0}
+
+        ch, {parts, current, quote_char, depth} ->
+          {parts, current <> ch, quote_char, depth}
       end)
 
     Enum.reverse([current | parts])
