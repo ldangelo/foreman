@@ -42,24 +42,73 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       {pid, mode} = Application.fetch_env!(:foreman_server, :review_evaluator_test_stub)
       send(pid, {:request, request})
 
-      case mode do
-        {:reply, text} ->
-          {:ok,
-           [
-             Event.new!(provider: :pi, type: :output_text_final, payload: %{"text" => text}),
-             Event.new!(provider: :pi, type: :run_completed, payload: %{})
-           ]}
+      case resolve(mode) do
+        # Tokens the attempt spent before it ended, ahead of whatever it then did.
+        {:spent, input, inner} ->
+          with {:ok, events} <- outcome(inner), do: {:ok, [usage_event(input) | events]}
 
-        :fail ->
-          {:ok,
-           [
-             Event.new!(provider: :pi, type: :run_failed, payload: %{"text" => "boom"})
-           ]}
+        other ->
+          outcome(other)
       end
     end
 
+    # `{:sequence, counter, modes}`: the n-th run takes the n-th mode, the last one repeats.
+    defp resolve({:sequence, counter, modes}) do
+      index = :counters.get(counter, 1)
+      :counters.add(counter, 1, 1)
+      Enum.at(modes, index) || List.last(modes)
+    end
+
+    defp resolve(mode), do: mode
+
+    defp usage_event(input),
+      do: Event.new!(provider: :pi, type: :usage, payload: %{"input" => input, "output" => 1})
+
+    defp outcome({:reply, text}) do
+      {:ok,
+       [
+         Event.new!(provider: :pi, type: :output_text_final, payload: %{"text" => text}),
+         Event.new!(provider: :pi, type: :run_completed, payload: %{})
+       ]}
+    end
+
+    defp outcome(:fail) do
+      {:ok, [Event.new!(provider: :pi, type: :run_failed, payload: %{"text" => "boom"})]}
+    end
+
+    # pi reports a provider failure (429, overloaded, ...) as `run_failed` carrying the
+    # provider's message under "error" (`Jido.Harness.Adapters.Pi.map_event/1`).
+    defp outcome({:run_failed, error}) do
+      {:ok, [Event.new!(provider: :pi, type: :run_failed, payload: %{"error" => error})]}
+    end
+
+    # A CLI that wrote to stderr and exited non-zero (`CLIStream.decode/4`).
+    defp outcome({:stderr_then_failed, lines, error}) do
+      {:ok,
+       Enum.map(lines, fn line ->
+         Event.new!(
+           provider: :pi,
+           type: :provider_event,
+           payload: %{"stream" => "stderr", "data" => line}
+         )
+       end) ++ [Event.new!(provider: :pi, type: :run_failed, payload: %{"error" => error})]}
+    end
+
+    # The adapter itself gives up, as `CLIStream.run/8` does when the process cannot start.
+    defp outcome({:adapter_error, error}), do: {:error, error}
+
+    # Produces nothing, ever: only the harness run's own timers end it.
+    defp outcome(mode) when mode in [:hang, :hang_slow_cancel],
+      do: {:ok, Stream.repeatedly(fn -> Process.sleep(60_000) end)}
+
     @impl true
-    def cancel(_run_id, _context), do: :ok
+    def cancel(_run_id, _context) do
+      {_pid, mode} = Application.fetch_env!(:foreman_server, :review_evaluator_test_stub)
+      # Holds the harness run past `await_run`'s deadline (timeout + slack) so the caller
+      # gives up while the run is still finishing.
+      if mode == :hang_slow_cancel, do: Process.sleep(6_000)
+      :ok
+    end
   end
 
   @valid %{
@@ -291,7 +340,7 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
                Agent.evaluate(ctx.subject)
     end
 
-    test "an unregistered provider is :evaluator_failed", ctx do
+    test "an unregistered provider is :evaluator_failed and the error names it and why", ctx do
       Application.put_env(:foreman_server, :review_evaluator_test_stub, {self(), :fail})
       review = Application.get_env(:foreman_server, :review)
 
@@ -301,13 +350,224 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
         Keyword.put(review, :agent, %{provider: :nonesuch})
       )
 
-      assert {:error, %Error{code: :evaluator_failed}} = Agent.evaluate(ctx.subject)
+      assert {:error, %Error{code: :evaluator_failed, message: message}} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "nonesuch"
+      assert message =~ "not registered"
     end
 
     test "a missing archive is the archive's error, not a verdict", ctx do
       subject = %{ctx.subject | archive_dir: Path.join(ctx.archive, "nope")}
       assert {:error, %Error{code: code}} = Agent.evaluate(subject)
       assert code in [:archive_missing, :archive_malformed]
+    end
+
+    # foreman-uxfwb: a review recorded `undetermined` said only "reviewer run ended failed"
+    # (`Verdict.summary` is the error's message and nothing else reached the record), so the
+    # cause of the one live failure was unknowable. Every :evaluator_failed path must put the
+    # underlying reason in the message, because the message is what gets recorded.
+    @rate_limit ~s|429 {"type":"error","error":{"type":"rate_limit_error","message":"Token Plan rate limit reached: Upgrade your Token Plan (2062)"},"request_id":"abc"}|
+
+    defp put_mode(mode),
+      do: Application.put_env(:foreman_server, :review_evaluator_test_stub, {self(), mode})
+
+    defp put_timeout(ms) do
+      review = Application.get_env(:foreman_server, :review)
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.put(review, :evaluator_timeout_ms, ms)
+      )
+    end
+
+    test "a provider 429 is named in the error, is retryable, and reaches the transcript", ctx do
+      put_mode({:run_failed, @rate_limit})
+
+      assert {:error, %Error{code: :evaluator_failed, message: message, details: details} = error} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "reviewer run ended failed"
+      assert message =~ "429"
+      assert message =~ "rate_limit_error"
+      assert message =~ "Token Plan rate limit reached"
+      assert details.status == :failed
+      assert Error.retryable?(error)
+
+      transcript = File.read!(Path.join(ctx.archive, "evaluator-transcript.jsonl"))
+      assert transcript =~ "rate_limit_error"
+    end
+
+    test "a non-zero exit carries its status and the stderr the process left", ctx do
+      put_mode(
+        {:stderr_then_failed, ["loading config\n", "Error: ENOSPC: no space left on device\n"],
+         ~s(%{"exit_status" => 1, "reason" => "{:exit_status, 256}"})}
+      )
+
+      assert {:error, %Error{code: :evaluator_failed, message: message} = error} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "exit_status"
+      assert message =~ "ENOSPC: no space left on device"
+      refute Error.retryable?(error)
+    end
+
+    test "a reviewer that outlives its runtime timeout says it timed out", ctx do
+      put_mode(:hang)
+      put_timeout(150)
+
+      assert {:error, %Error{code: :evaluator_failed, message: message} = error} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "timeout exceeded"
+      refute Error.retryable?(error)
+      assert File.exists?(Path.join(ctx.archive, "evaluator-transcript.jsonl"))
+    end
+
+    test "an adapter that gives up keeps the adapter's reason", ctx do
+      put_mode(
+        {:adapter_error,
+         Jido.Harness.Error.execution("could not start pi: enoent", provider: :pi)}
+      )
+
+      assert {:error, %Error{code: :evaluator_failed, message: message}} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "could not start pi: enoent"
+    end
+
+    # `await_run` gives up at timeout + slack. The run may still be finishing: its own
+    # failure (the harness's timeout) is the reason, "did not complete" alone is not.
+    @tag timeout: 30_000
+    test "a caller that stops waiting archives what the run produced and says why", ctx do
+      put_mode(:hang_slow_cancel)
+      put_timeout(100)
+
+      assert {:error, %Error{code: :evaluator_failed, message: message}} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "did not complete"
+      assert message =~ "timeout"
+      assert File.exists?(Path.join(ctx.archive, "evaluator-transcript.jsonl"))
+    end
+
+    test "a reply with no verdict block quotes what the reviewer said", ctx do
+      put_mode({:reply, "I'll read the archived files."})
+
+      assert {:error, %Error{code: :evaluator_malformed_output, message: message}} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "reply has no fenced json block"
+      assert message =~ "I'll read the archived files."
+    end
+
+    test "a secret in a provider error never reaches the message", ctx do
+      System.put_env("REVIEW_EVAL_TEST_API_KEY", "hunter2-secret-value")
+      on_exit(fn -> System.delete_env("REVIEW_EVAL_TEST_API_KEY") end)
+      put_mode({:run_failed, "401 invalid x-api-key hunter2-secret-value"})
+
+      assert {:error, %Error{message: message}} = Agent.evaluate(ctx.subject)
+      assert message =~ "401"
+      refute message =~ "hunter2-secret-value"
+    end
+
+    # foreman-uxfwb: 32 reviewers started together all failed on a provider 429, and a lone
+    # reviewer succeeded 30 s later. A rate limit is retried once after
+    # `evaluator_retry_backoff_ms`; nothing else is, and the retry is part of the record.
+    defp put_backoff(ms) do
+      review = Application.get_env(:foreman_server, :review)
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.put(review, :evaluator_retry_backoff_ms, ms)
+      )
+    end
+
+    defp sequence(modes) do
+      counter = :counters.new(1, [])
+      put_mode({:sequence, counter, modes})
+    end
+
+    defp count_requests do
+      Stream.repeatedly(fn ->
+        receive do
+          {:request, _request} -> :seen
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 == :seen))
+      |> length()
+    end
+
+    test "a rate-limited review is retried once and the verdict records the retry", ctx do
+      put_backoff(0)
+
+      sequence([
+        {:spent, 100, {:run_failed, @rate_limit}},
+        {:spent, 40, {:reply, block(@valid)}}
+      ])
+
+      assert {:ok, %Verdict{verdict: :partially_met, notes: [note], usage: usage}} =
+               Agent.evaluate(ctx.subject)
+
+      assert note =~ "retried once"
+      assert note =~ "429"
+      assert note =~ "rate_limit_error"
+      assert count_requests() == 2
+      # Both attempts spent tokens; the failed one is not hidden.
+      assert usage.input_tokens == 140
+    end
+
+    test "a rate limit that outlasts the retry is an error that notes the retry", ctx do
+      put_backoff(0)
+
+      sequence([
+        {:spent, 100, {:run_failed, @rate_limit}},
+        {:spent, 7, {:run_failed, @rate_limit}}
+      ])
+
+      assert {:error,
+              %Error{
+                code: :evaluator_failed,
+                message: message,
+                details: %{notes: [note], usage: %{usage: usage}}
+              }} = Agent.evaluate(ctx.subject)
+
+      assert message =~ "429"
+      assert note =~ "retried once"
+      # One retry, never a third attempt.
+      assert count_requests() == 2
+      assert usage.input_tokens == 107
+    end
+
+    test "a failure that is not a rate limit is not retried", ctx do
+      put_backoff(0)
+      sequence([{:stderr_then_failed, ["boom\n"], "exit 1"}, {:reply, block(@valid)}])
+
+      assert {:error, %Error{code: :evaluator_failed} = error} = Agent.evaluate(ctx.subject)
+      refute Map.has_key?(error.details, :notes)
+      assert count_requests() == 1
+    end
+
+    test "malformed output is not retried", ctx do
+      put_backoff(0)
+      sequence([{:reply, "no verdict here"}, {:reply, block(@valid)}])
+
+      assert {:error, %Error{code: :evaluator_malformed_output}} = Agent.evaluate(ctx.subject)
+      assert count_requests() == 1
+    end
+
+    test "the retry waits out the configured backoff", ctx do
+      put_backoff(300)
+      sequence([{:run_failed, @rate_limit}, {:reply, block(@valid)}])
+
+      {micros, result} = :timer.tc(fn -> Agent.evaluate(ctx.subject) end)
+
+      assert {:ok, %Verdict{}} = result
+      assert micros >= 300_000
     end
   end
 end

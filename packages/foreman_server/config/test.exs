@@ -160,7 +160,8 @@ config :foreman_server, :workflow_root, Path.expand("../test/fixtures/workflows"
 config :foreman_server, :review,
   capture: false,
   analysis: false,
-  evaluator: ForemanServer.Review.Evaluator.Stub
+  evaluator: ForemanServer.Review.Evaluator.Stub,
+  evaluator_retry_backoff_ms: 0
 
 # The collector subscribes to the projection store and copies files on events; tests
 # that exercise it start it themselves.

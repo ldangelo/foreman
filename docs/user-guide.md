@@ -2281,13 +2281,49 @@ that exists only in the project secret store (injected into the agent's
 environment but not in the server's), or one fetched at runtime, is not caught
 and stays in `diff.patch` verbatim; treat the archive like the repository itself.
 
-Known limits: a review is write-once per subject — a recorded `undetermined`
-is never retried, and re-reviewing needs a new mechanism. The Analyzer does not
-replay history on boot, so runs that finish while it is down are not reviewed.
-A second terminal event for a subject whose review is still running is ignored.
-With `:pi` the harness surfaced zero text events in a smoke test, and with
-`:claude` the authentication must be valid; verify the reviewer provider by
-running a jobsite end to end before relying on verdicts.
+Known limits: the Analyzer does not replay history on boot, so runs that finish
+while it is down are not reviewed. A second terminal event for a subject whose
+review is running or queued is ignored. With `:pi` the harness surfaced zero text
+events in a smoke test, and with `:claude` the authentication must be valid;
+verify the reviewer provider by running a jobsite end to end before relying on
+verdicts.
+
+### When a review is `undetermined`
+
+`undetermined` means the reviewer failed, not the work. The recorded `summary` (and
+`analysis.json`, `analysis.md`, the bead comment and the coordinator report) says
+why: the provider's own text (for example
+`429 {"type":"error","error":{"type":"rate_limit_error",...}}`), the process exit
+status with the tail of its stderr, the timeout kind, or, when the reviewer ended
+without a verdict, the end of what it replied. The text is secret-redacted, one
+line and bounded. `evaluator-transcript.jsonl` keeps the reviewer's events,
+including the failure (a `run_failed` line carries its error text).
+
+A burst of reviewers can trip the provider's rate limit. In a live test with
+`pi` on MiniMax, 32 reviewers started together all failed on `429 rate_limit_error`
+(`Token Plan rate limit reached`), and a single reviewer started about 30 s later
+succeeded. Two controls follow from that:
+
+- `max_concurrent_analyses` (default 3) bounds how many reviewer agents run at once;
+  further terminal runs wait in a first-in-first-out queue. The queue is in memory
+  and is not replayed after a restart.
+- A reviewer that failed on a rate limit (HTTP 429 or `rate limit` in the failure
+  text; no other failure) is retried once after `evaluator_retry_backoff_ms`
+  (default 60000). The retry is written into the verdict's `notes` (`analysis.json`,
+  `analysis.md`, the bead comment and the recorded summary), and the token spend of
+  both attempts is recorded.
+
+A review recorded `undetermined` can be run again from its archive. The new verdict
+supersedes it: a second `ReviewRecorded` is appended (the first stays in the event
+log) and the verdict's `notes` says it is a re-run of the earlier failure. A review
+holding any other verdict is final. There is no CLI or HTTP verb for this yet: call
+`ForemanServer.Review.Analyzer.rerun/2` in the running server's VM (an attached IEx
+session, or `rpc` against a release node), for example
+`ForemanServer.Review.Analyzer.rerun(:run, "<run_id>")` (`:jobsite` for a jobsite).
+It returns `:ok` once the re-run is accepted, or `{:error, reason}` with `:not_reviewed`,
+`{:not_rerunnable, verdict}`, `:already_running`, `{:archive_unusable, error}` or
+`:analysis_disabled`. The re-run reads the archive on disk, so the run or jobsite need
+not still be projected.
 
 Add `.foreman/sessions/` to the `.gitignore` of every repo Foreman reviews:
 untracked files there can be swept into an agent's `git add -A`.
@@ -2296,8 +2332,8 @@ Configuration (`config :foreman_server, :review`): `capture`, `analysis`
 (set `analysis: false` to keep archiving but stop spending an agent run per
 terminal run), `archive_root`, `agent` (`%{provider:, model:, effort:}` — the
 reviewer is deliberately independent of the run's own provider), `evaluator`,
-`evaluator_timeout_ms`, `max_transcript_bytes`, `max_diff_bytes`,
-`max_comment_bytes`, `max_gap_beads`.
+`evaluator_timeout_ms`, `evaluator_retry_backoff_ms`, `max_concurrent_analyses`,
+`max_transcript_bytes`, `max_diff_bytes`, `max_comment_bytes`, `max_gap_beads`.
 
 ## Further Reading
 

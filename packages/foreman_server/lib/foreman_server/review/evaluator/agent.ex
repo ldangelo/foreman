@@ -7,10 +7,22 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   The reviewer may answer `met`, `partially_met` or `not_met` only;
   `undetermined` is reserved for the analyzer's own failure records and is
   rejected here as malformed.
+
+  Every failure carries the reason the provider, the process or the harness gave
+  (HTTP status text, exit status and stderr tail, timeout kind), redacted, on one
+  line and bounded: the message is what the review records, so a bare "reviewer
+  run ended failed" would leave the cause of an `undetermined` verdict unknowable.
+
+  A run that fails on a provider rate limit is retried once after
+  `config :foreman_server, :review, evaluator_retry_backoff_ms:` (default 60 s).
+  No other failure is retried. The retry is recorded in the outcome's `notes`
+  and the first attempt's token spend is added to the second's.
   """
   @behaviour ForemanServer.Review.Evaluator
 
-  alias ForemanServer.AgentRuntime.JidoHarness.DetachedRun
+  require Logger
+
+  alias ForemanServer.AgentRuntime.JidoHarness.{DetachedRun, FailureCause}
   alias ForemanServer.Review.{Archive, Error, Gap, Prompt, Subject, Verdict}
   alias ForemanServer.Usage
   alias Jido.Harness.{RunRequest, RunResult}
@@ -27,20 +39,77 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   @await_slack_ms 5_000
   @transcript_file "evaluator-transcript.jsonl"
   @json_block ~r/```json[ \t]*\r?\n(.*?)\r?\n[ \t]*```/s
+  @stderr_tail_chars 300
+  @reply_tail_chars 240
+
+  # A provider rate limit is the one failure this module has evidence clears on its own
+  # (foreman-uxfwb: HTTP 429 `rate_limit_error` under a burst of reviewers; a later
+  # attempt succeeded). The harness gives no structured HTTP status, so pi and claude
+  # report it only in the failure text. Nothing else is marked retryable.
+  @rate_limited ~r/\b429\b|rate[_ -]?limit/i
 
   @impl true
   @spec evaluate(Subject.t()) :: {:ok, Verdict.t()} | {:error, Error.t()}
   def evaluate(%Subject{} = subject) do
     cfg = config()
+    dir = subject.archive_dir
 
-    with {:ok, manifest} <- Archive.read_manifest(subject.archive_dir),
+    with {:ok, manifest} <- Archive.read_manifest(dir),
          {:ok, prompt} <- render(subject, manifest),
-         {:ok, request} <- build_request(prompt, subject, cfg),
-         {:ok, result} <- run(cfg.provider, request, cfg.timeout) do
-      archive_transcript(subject.archive_dir, result)
+         {:ok, request} <- build_request(prompt, subject, cfg) do
+      case attempt(dir, request, cfg) do
+        {:error, %Error{} = first} = failure ->
+          if Error.retryable?(first), do: retry(dir, request, cfg, first), else: failure
+
+        outcome ->
+          outcome
+      end
+    end
+  end
+
+  defp attempt(dir, request, cfg) do
+    with {:ok, result} <- run(dir, cfg.provider, request, cfg.timeout) do
+      archive_transcript(dir, result)
       finish(result, cfg)
     end
   end
+
+  # The one retry. A burst of reviewers is what trips a provider's rate limit, and the
+  # limit clears within a minute (foreman-uxfwb), so the second attempt waits first.
+  # Both attempts spent tokens whether or not they produced a verdict: the spend is
+  # summed, and the retry is written into the outcome so a reader sees it.
+  defp retry(dir, request, cfg, %Error{} = first) do
+    note = "reviewer retried once after #{cfg.retry_backoff_ms} ms: #{first.message}"
+    Logger.warning("review evaluator: #{note}")
+    Process.sleep(cfg.retry_backoff_ms)
+    spent = spent_usage(first)
+
+    case attempt(dir, request, cfg) do
+      {:ok, %Verdict{} = verdict} ->
+        {:ok,
+         %Verdict{
+           verdict
+           | notes: verdict.notes ++ [note],
+             usage: Usage.merge(spent, verdict.usage)
+         }}
+
+      {:error, %Error{details: details} = second} ->
+        later = Map.get(details, :usage, %{model: cfg.model, provider: to_string(cfg.provider)})
+        total = Map.put(later, :usage, Usage.merge(spent, Map.get(later, :usage)))
+
+        {:error,
+         %Error{
+           second
+           | details:
+               details
+               |> Map.put(:usage, total)
+               |> Map.update(:notes, [note], &(&1 ++ [note]))
+         }}
+    end
+  end
+
+  defp spent_usage(%Error{details: %{usage: %{usage: %Usage{} = usage}}}), do: usage
+  defp spent_usage(%Error{}), do: nil
 
   @doc """
   Strictly parse the reviewer's reply text. The LAST fenced `json` block is
@@ -62,10 +131,7 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     {:ok, Prompt.render(subject, manifest)}
   rescue
     exception ->
-      {:error,
-       Error.new(:evaluator_failed, "could not render reviewer prompt", %{
-         reason: Exception.message(exception)
-       })}
+      {:error, failed("could not render reviewer prompt", Exception.message(exception))}
   end
 
   # The reviewer runs in a scratch directory, NEVER the project checkout (nor
@@ -92,9 +158,8 @@ defmodule ForemanServer.Review.Evaluator.Agent do
 
       {:error, reason} ->
         {:error,
-         Error.new(:evaluator_failed, "could not create reviewer scratch directory", %{
-           path: dir,
-           reason: inspect(reason)
+         failed("could not create reviewer scratch directory", "#{dir}: #{inspect(reason)}", %{
+           path: dir
          })}
     end
   end
@@ -126,39 +191,62 @@ defmodule ForemanServer.Review.Evaluator.Agent do
         {:ok, request}
 
       {:error, reason} ->
-        {:error,
-         Error.new(:evaluator_failed, "invalid reviewer run request", %{reason: inspect(reason)})}
+        {:error, failed("invalid reviewer run request", describe(reason))}
     end
   end
 
-  defp run(provider, request, timeout) do
+  defp run(dir, provider, request, timeout) do
     case DetachedRun.start_run(provider, request, []) do
       {:ok, run_id} ->
-        await(run_id, provider, timeout)
+        await(dir, run_id, provider, timeout)
 
       {:error, reason} ->
         {:error,
-         Error.new(:evaluator_failed, "reviewer provider failed to start", %{
-           provider: provider,
-           reason: inspect(reason)
+         failed("reviewer provider #{provider} failed to start", describe(reason), %{
+           provider: provider
          })}
     end
   end
 
-  defp await(run_id, provider, timeout) do
-    case DetachedRun.await_run(run_id, timeout + @await_slack_ms) do
+  defp await(dir, run_id, provider, timeout) do
+    deadline = timeout + @await_slack_ms
+
+    case DetachedRun.await_run(run_id, deadline) do
       {:ok, %RunResult{} = result} ->
         {:ok, result}
 
       {:error, reason} ->
         _ = DetachedRun.cancel_run(run_id)
+        own = salvage(dir, run_id)
+
+        why =
+          Enum.join(
+            Enum.reject(
+              [await_reason(reason, deadline), own && "the run itself reported: " <> own],
+              &is_nil/1
+            ),
+            "; "
+          )
 
         {:error,
-         Error.new(:evaluator_failed, "reviewer run did not complete", %{
-           provider: provider,
-           run_id: run_id,
-           reason: inspect(reason)
-         })}
+         failed("reviewer run did not complete", why, %{provider: provider, run_id: run_id})}
+    end
+  end
+
+  defp await_reason(:timeout, deadline), do: "no result within #{deadline} ms"
+  defp await_reason(reason, _deadline), do: describe(reason)
+
+  # The caller has given up, but the run may have ended on its own (its own timeout)
+  # or produced events before the cancel: archive them and report a failure the run
+  # itself recorded. A run that was only cancelled by us has nothing to add.
+  defp salvage(dir, run_id) do
+    case DetachedRun.await_run(run_id, 0) do
+      {:ok, %RunResult{} = result} ->
+        archive_transcript(dir, result)
+        if result.status == :failed, do: failure_reason(result), else: nil
+
+      _unavailable ->
+        nil
     end
   end
 
@@ -178,17 +266,95 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     end
   end
 
-  defp finish(%RunResult{status: :completed, text: text}), do: parse_verdict(text)
+  defp finish(%RunResult{status: :completed, text: text}) do
+    case parse_verdict(text) do
+      {:error, %Error{code: :evaluator_malformed_output} = error} ->
+        {:error, with_reply(error, text)}
+
+      other ->
+        other
+    end
+  end
 
   defp finish(%RunResult{} = result) do
+    reason = failure_reason(result)
+
     {:error,
-     Error.new(:evaluator_failed, "reviewer run ended #{result.status}", %{
+     Error.new(:evaluator_failed, "reviewer run ended #{result.status}: #{reason}", %{
        provider: result.provider,
        run_id: result.run_id,
        status: result.status,
-       error: inspect(result.error)
+       reason: reason,
+       retryable: Regex.match?(@rate_limited, reason)
      })}
   end
+
+  # Why a run that did not complete ended: the harness's own failure cause (message,
+  # exit status, timeout kind: the same text the workflow door records for a failed
+  # phase) followed by the last of the stderr the process left, which is where a CLI
+  # that exits non-zero says what was wrong.
+  defp failure_reason(%RunResult{} = result) do
+    secrets = Archive.env_secrets()
+    {:error, code} = ForemanServer.AgentRuntime.JidoHarness.RunResult.normalize(result)
+    cause = FailureCause.from_run_result(result, code, secrets).detail
+
+    case stderr_tail(result.events, secrets) do
+      nil -> cause
+      stderr -> cause <> " | stderr: " <> stderr
+    end
+  end
+
+  defp stderr_tail(events, secrets) do
+    text =
+      events
+      |> Enum.flat_map(fn
+        %{payload: %{"stream" => "stderr", "data" => data}} when is_binary(data) -> [data]
+        _event -> []
+      end)
+      |> Enum.join()
+      |> String.trim()
+
+    if text == "" do
+      nil
+    else
+      text |> tail(@stderr_tail_chars) |> FailureCause.sanitize(secrets)
+    end
+  end
+
+  # What the reviewer actually said is the first thing to look at when its reply held
+  # no verdict (a reply that ended in its thinking, with the answer never written, is
+  # a failure mode of the provider's model, not of the parser).
+  defp with_reply(%Error{} = error, text) do
+    excerpt = text |> String.trim() |> tail(@reply_tail_chars)
+    shown = if excerpt == "", do: "empty", else: "ended #{inspect(excerpt)}"
+
+    %Error{
+      error
+      | message:
+          FailureCause.sanitize(
+            "#{error.message} (the reviewer's reply #{shown})",
+            Archive.env_secrets()
+          ),
+        details: Map.put(error.details, :reply, excerpt)
+    }
+  end
+
+  defp tail(text, chars), do: String.slice(text, -chars, chars)
+
+  defp failed(what, reason, details \\ %{}) do
+    reason = FailureCause.sanitize(reason, Archive.env_secrets())
+    Error.new(:evaluator_failed, what <> ": " <> reason, Map.put(details, :reason, reason))
+  end
+
+  defp describe(%Jido.Harness.Error{details: details} = error) when map_size(details) == 0,
+    do: "#{error.category}: #{Exception.message(error)}"
+
+  defp describe(%Jido.Harness.Error{details: details} = error),
+    do:
+      "#{error.category}: #{Exception.message(error)} " <>
+        "(details: #{inspect(details, limit: 10, printable_limit: 200)})"
+
+  defp describe(reason), do: inspect(reason, limit: 10, printable_limit: 200)
 
   # Best effort: a failed transcript write is already logged and recorded in
   # the manifest's capture_errors by Archive.write_file/3 and must not hide
@@ -206,7 +372,8 @@ defmodule ForemanServer.Review.Evaluator.Agent do
       provider: Map.get(agent, :provider) || :claude,
       model: Map.get(agent, :model),
       effort: Map.get(agent, :effort),
-      timeout: Keyword.get(review, :evaluator_timeout_ms, 900_000)
+      timeout: Keyword.get(review, :evaluator_timeout_ms, 900_000),
+      retry_backoff_ms: Keyword.get(review, :evaluator_retry_backoff_ms, 60_000)
     }
   end
 

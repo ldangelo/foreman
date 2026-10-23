@@ -262,28 +262,28 @@ defmodule ForemanServer.Review.Archive do
   `:output_text_delta`, `:output_text_final`, `:command_output_delta` and
   `:thinking_delta`. A `:provider_event` that carries a process stream line
   (`%{"stream" => "stderr", "data" => line}`) is kept too, with `stream` set,
-  so provider diagnostics are not dropped. Events with neither have
+  so provider diagnostics are not dropped. A `:run_failed` event's `"error"` and
+  a `:run_cancelled` event's `"reason"` are kept as `text`: they are why the run
+  ended, and neither carries a `"text"` key. Events with none of these have
   `text: null`.
   """
   @spec encode_event(map(), [String.t()] | nil) :: binary()
   def encode_event(event, secrets \\ nil) do
     secrets = secrets || env_secrets()
+    type = Map.get(event, :type)
+    {text, stream} = event_text(type, Map.get(event, :payload))
 
-    {text, stream} =
-      case Map.get(event, :payload) do
-        %{"text" => text} -> {text, nil}
-        %{"data" => data, "stream" => stream} when is_binary(data) -> {data, stream}
-        _ -> {nil, nil}
-      end
-
-    encode_line(
-      to_string(Map.get(event, :type)),
-      Map.get(event, :timestamp),
-      text,
-      stream,
-      secrets
-    )
+    encode_line(to_string(type), Map.get(event, :timestamp), text, stream, secrets)
   end
+
+  defp event_text(:run_failed, %{"error" => error}) when is_binary(error), do: {error, nil}
+  defp event_text(:run_cancelled, %{"reason" => reason}) when is_binary(reason), do: {reason, nil}
+  defp event_text(_type, %{"text" => text}), do: {text, nil}
+
+  defp event_text(_type, %{"data" => data, "stream" => stream}) when is_binary(data),
+    do: {data, stream}
+
+  defp event_text(_type, _payload), do: {nil, nil}
 
   @doc """
   One redacted transcript line from already-extracted fields. Text is passed
@@ -333,9 +333,16 @@ defmodule ForemanServer.Review.Archive do
 
   defp redact_request_block(manifest), do: manifest
 
-  # Computed from the live environment (not Redaction's per-process cache) so a
-  # secret set after the process first redacted is still caught.
-  defp env_secrets, do: Jido.Harness.Redaction.secrets_from_env(System.get_env())
+  @doc """
+  Values of the sensitive-named variables in the live server environment (at least
+  4 bytes each): the secret list `redact/1` and `encode_line/5` scrub with, for a
+  caller that scrubs text itself.
+
+  Computed from the live environment (not Redaction's per-process cache) so a
+  secret set after the process first redacted is still caught.
+  """
+  @spec env_secrets() :: [String.t()]
+  def env_secrets, do: Jido.Harness.Redaction.secrets_from_env(System.get_env())
 
   defp append_lines(_path, []), do: :ok
 

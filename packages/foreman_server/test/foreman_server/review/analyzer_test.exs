@@ -69,8 +69,54 @@ defmodule ForemanServer.Review.AnalyzerTest do
       Archive.init(s.archive_dir, %{
         "kind" => Atom.to_string(s.kind),
         "subject_id" => s.subject_id,
-        "project_id" => s.project_id
+        "project_id" => s.project_id,
+        "repo_path" => s.repo_path,
+        "bead_id" => s.bead_id,
+        "status" => to_string(s.status),
+        "request" => %{
+          "source" => Atom.to_string(s.kind),
+          "title" => s.request_title,
+          "prompt" => s.request_text,
+          "workflow_name" => s.workflow_name
+        }
       })
+  end
+
+  defp put_review(overrides) do
+    review = Application.get_env(:foreman_server, :review)
+    Application.put_env(:foreman_server, :review, Keyword.merge(review, overrides))
+  end
+
+  defp met(summary \\ "Now it is met."),
+    do: %Verdict{
+      verdict: :met,
+      summary: summary,
+      scores: %{correctness: 5, tests: 5, documentation: 5, robustness: 5}
+    }
+
+  defp await_verdict(kind, id, verdict) do
+    await(fn ->
+      case ProjectionStore.review(kind, id) do
+        %{verdict: ^verdict} = review -> review
+        _other -> nil
+      end
+    end)
+  end
+
+  @rate_limited "reviewer run ended failed: execution: pi: 429 rate_limit_error"
+
+  # Records an `undetermined` review for `s` and waits for it to be projected.
+  defp record_undetermined!(%Subject{} = s) do
+    Application.put_env(
+      :foreman_server,
+      :review_stub_verdict,
+      {:error, Error.new(:evaluator_failed, @rate_limited)}
+    )
+
+    init_archive(s)
+    assert :ok = Analyzer.analyze(s)
+
+    assert await_verdict(Atom.to_string(s.kind), s.subject_id, "undetermined")
   end
 
   defp stream(kind, id), do: ReviewAggregate.stream_id(Atom.to_string(kind), id)
@@ -213,6 +259,121 @@ defmodule ForemanServer.Review.AnalyzerTest do
       assert review.verdict == "undetermined"
       assert review.error_code == "evaluator_failed"
       assert review.summary =~ "noproc"
+    end
+
+    # The record of a review includes what happened around the verdict (foreman-uxfwb):
+    # a retried reviewer, a re-run of an earlier failure.
+    test "notes on an undetermined verdict reach analysis.json, analysis.md and the recorded summary",
+         %{repo: repo} do
+      note = "reviewer retried once after 60000 ms: reviewer run ended failed: 429 first try"
+
+      Application.put_env(
+        :foreman_server,
+        :review_stub_verdict,
+        {:error, Error.new(:evaluator_failed, @rate_limited, %{notes: [note]})}
+      )
+
+      s = subject(:jobsite, uid("js"), repo)
+      init_archive(s)
+      assert :ok = Analyzer.analyze(s)
+
+      json = s.archive_dir |> Path.join("analysis.json") |> File.read!() |> Jason.decode!()
+      assert json["summary"] =~ "429 rate_limit_error"
+      assert json["notes"] == [note]
+      assert File.read!(Path.join(s.archive_dir, "analysis.md")) =~ "## Notes"
+
+      review = await(fn -> ProjectionStore.review("jobsite", s.subject_id) end)
+      assert review.summary =~ "429 rate_limit_error"
+      assert review.summary =~ note
+    end
+
+    test "notes on a successful verdict reach the recorded summary", %{repo: repo} do
+      note = "reviewer retried once after 60000 ms: 429 first try"
+
+      Application.put_env(:foreman_server, :review_stub_verdict, %{
+        met("Looks right.")
+        | notes: [note]
+      })
+
+      s = subject(:jobsite, uid("js"), repo)
+      init_archive(s)
+      assert :ok = Analyzer.analyze(s)
+
+      review = await(fn -> ProjectionStore.review("jobsite", s.subject_id) end)
+      assert review.verdict == "met"
+      assert review.summary =~ "Looks right."
+      assert review.summary =~ note
+    end
+
+    # A review recorded `undetermined` (a provider rate limit, a killed reviewer) is not
+    # the end of the subject: its archive is intact, so the review can be run again.
+    test "an undetermined review can be re-run: the new verdict supersedes it and notes the lineage",
+         %{repo: repo} do
+      s = subject(:jobsite, uid("js"), repo)
+      record_undetermined!(s)
+
+      Application.put_env(:foreman_server, :review_stub_verdict, met())
+      assert :ok = Analyzer.analyze(s, rerun: true)
+
+      review = await_verdict("jobsite", s.subject_id, "met")
+      assert review.summary =~ "Now it is met."
+      assert review.summary =~ "re-run of the review recorded undetermined"
+      assert review.summary =~ "429 rate_limit_error"
+
+      # Both records stay in the event log; the first is not rewritten.
+      assert [_first, _second] = recorded_events(:jobsite, s.subject_id)
+
+      json = s.archive_dir |> Path.join("analysis.json") |> File.read!() |> Jason.decode!()
+      assert json["verdict"] == "met"
+      assert [lineage] = json["notes"]
+      assert lineage =~ "re-run of the review recorded undetermined"
+    end
+
+    test "a review that holds a real verdict is never re-run", %{repo: repo} do
+      s = subject(:jobsite, uid("js"), repo)
+      init_archive(s)
+      Application.put_env(:foreman_server, :review_stub_verdict, met("First verdict."))
+      assert :ok = Analyzer.analyze(s)
+      assert await_verdict("jobsite", s.subject_id, "met")
+
+      Application.put_env(:foreman_server, :review_stub_verdict, met("Second verdict."))
+      assert :ok = Analyzer.analyze(s, rerun: true)
+
+      assert [_only] = recorded_events(:jobsite, s.subject_id)
+      assert ProjectionStore.review("jobsite", s.subject_id).summary =~ "First verdict."
+    end
+
+    test "a re-run with nothing recorded does not review", %{repo: repo} do
+      s = subject(:jobsite, uid("js"), repo)
+      init_archive(s)
+
+      assert :ok = Analyzer.analyze(s, rerun: true)
+      assert [] = recorded_events(:jobsite, s.subject_id)
+    end
+
+    # `Capture.finalize/1` rebuilds a run's transcript from its projected run logs, which
+    # may no longer exist; the first review already finalized the archive.
+    test "a re-run reviews the archive as it is and does not rebuild a run's transcript",
+         %{repo: repo} do
+      s = subject(:run, uid("run"), repo)
+      init_archive(s)
+      transcript = Path.join(s.archive_dir, "transcript.jsonl")
+      File.write!(transcript, ~s({"type":"output_text_final","text":"original"}\n))
+
+      # No such run is projected, so finalizing fails: the first review is undetermined.
+      assert :ok = Analyzer.analyze(s)
+      first = await_verdict("run", s.subject_id, "undetermined")
+      assert first.error_code == "archive_missing"
+
+      Application.put_env(:foreman_server, :review_stub_verdict, met())
+      assert :ok = Analyzer.analyze(s, rerun: true)
+
+      assert await_verdict("run", s.subject_id, "met")
+      assert File.read!(transcript) =~ "original"
+    end
+
+    test "rerun/2 without a running analyzer says analysis is disabled" do
+      assert {:error, :analysis_disabled} = Analyzer.rerun(:run, uid("run"))
     end
 
     test "a missing archive is recorded as undetermined and the verdict is still archived",
@@ -854,6 +1015,122 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
       # Only the fields this module reads are looked up: event data never becomes an atom.
       assert_raise ArgumentError, fn -> String.to_existing_atom(probe) end
+    end
+
+    # ----- rerun/2 and the concurrency bound (foreman-uxfwb) -----------------------------
+
+    test "rerun/2 re-reviews an undetermined review from its archive and refuses the rest",
+         %{repo: repo} do
+      s = subject(:jobsite, uid("js"), repo)
+      record_undetermined!(s)
+
+      Application.put_env(:foreman_server, :review_stub_verdict, met())
+      assert :ok = Analyzer.rerun(:jobsite, s.subject_id)
+      assert await_verdict("jobsite", s.subject_id, "met")
+
+      assert {:error, {:not_rerunnable, "met"}} = Analyzer.rerun(:jobsite, s.subject_id)
+      assert {:error, :not_reviewed} = Analyzer.rerun(:jobsite, uid("js"))
+      assert [_first, _second] = recorded_events(:jobsite, s.subject_id)
+    end
+
+    test "rerun/2 refuses while an analysis of the subject is running", %{repo: repo} do
+      s = subject(:jobsite, uid("js"), repo)
+      record_undetermined!(s)
+      gate_evaluator!()
+
+      assert :ok = Analyzer.rerun(:jobsite, s.subject_id)
+      assert_receive {:evaluating, id, evaluating}, 5_000
+      assert id == s.subject_id
+
+      assert {:error, :already_running} = Analyzer.rerun(:jobsite, s.subject_id)
+      refute_receive {:evaluating, _, _}, 200
+
+      send(evaluating, :release)
+      assert await_verdict("jobsite", s.subject_id, "met")
+    end
+
+    test "rerun/2 reports an archive that can no longer be read", %{repo: repo} do
+      s = subject(:jobsite, uid("js"), repo)
+      record_undetermined!(s)
+      File.rm_rf!(s.archive_dir)
+
+      assert {:error, {:archive_unusable, %Error{code: :archive_missing}}} =
+               Analyzer.rerun(:jobsite, s.subject_id)
+
+      assert [_only] = recorded_events(:jobsite, s.subject_id)
+    end
+
+    test "the shipped configuration bounds concurrent analyses" do
+      assert is_integer(Application.get_env(:foreman_server, :review)[:max_concurrent_analyses])
+      assert Application.get_env(:foreman_server, :review)[:max_concurrent_analyses] > 0
+    end
+
+    test "no more than max_concurrent_analyses evaluate at once; the rest start as slots free",
+         %{repo: repo, analyzer: analyzer} do
+      gate_evaluator!()
+      put_review(max_concurrent_analyses: 2)
+      ids = for _ <- 1..4, do: started_jobsite(repo)
+      Enum.each(ids, &deliver_jobsite_failed/1)
+
+      assert_receive {:evaluating, a, pid_a}, 5_000
+      assert_receive {:evaluating, b, pid_b}, 5_000
+      refute_receive {:evaluating, _, _}, 300
+      assert map_size(:sys.get_state(analyzer).in_flight) == 2
+
+      send(pid_a, :release)
+      assert_receive {:evaluating, c, pid_c}, 5_000
+      refute_receive {:evaluating, _, _}, 300
+      assert map_size(:sys.get_state(analyzer).in_flight) == 2
+
+      send(pid_b, :release)
+      assert_receive {:evaluating, d, pid_d}, 5_000
+      send(pid_c, :release)
+      send(pid_d, :release)
+
+      for id <- ids, do: assert(await_verdict("jobsite", id, "met"))
+      assert Enum.sort([a, b, c, d]) == Enum.sort(ids)
+      assert :sys.get_state(analyzer).in_flight == %{}
+    end
+
+    test "a subject that is already queued is not queued again", %{repo: repo, analyzer: analyzer} do
+      gate_evaluator!()
+      put_review(max_concurrent_analyses: 1)
+      running = started_jobsite(repo)
+      waiting = started_jobsite(repo)
+
+      deliver_jobsite_failed(running)
+      assert_receive {:evaluating, ^running, running_pid}, 5_000
+      deliver_jobsite_failed(waiting)
+      deliver_jobsite_failed(waiting)
+      _ = :sys.get_state(analyzer)
+      refute_receive {:evaluating, _, _}, 200
+
+      send(running_pid, :release)
+      assert_receive {:evaluating, ^waiting, waiting_pid}, 5_000
+      refute_receive {:evaluating, ^waiting, _}, 300
+
+      send(waiting_pid, :release)
+      assert await_verdict("jobsite", waiting, "met")
+      assert [_only] = recorded_events(:jobsite, waiting)
+    end
+
+    test "an analysis that dies frees its slot for the next queued subject",
+         %{repo: repo, analyzer: analyzer} do
+      gate_evaluator!()
+      put_review(max_concurrent_analyses: 1)
+      doomed = started_jobsite(repo)
+      next = started_jobsite(repo)
+
+      deliver_jobsite_failed(doomed)
+      assert_receive {:evaluating, ^doomed, doomed_pid}, 5_000
+      deliver_jobsite_failed(next)
+      _ = :sys.get_state(analyzer)
+      refute_receive {:evaluating, ^next, _}, 200
+
+      send(doomed_pid, :crash)
+      assert_receive {:evaluating, ^next, next_pid}, 5_000
+      send(next_pid, :release)
+      assert await_verdict("jobsite", next, "met")
     end
   end
 end

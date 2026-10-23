@@ -4,7 +4,7 @@ defmodule ForemanServer.Aggregates.Review do
   jobsite.
 
   Stream id is `"review:" <> subject_kind <> ":" <> subject_id`, so each
-  subject has exactly one stream and at most one verdict. Routed by
+  subject has exactly one stream and one standing verdict. Routed by
   `CommandRouter.aggregate_module_for/1`.
 
   Command `review.record` is system-only (dispatched through
@@ -12,7 +12,10 @@ defmodule ForemanServer.Aggregates.Review do
   `ReviewRecorded`. Replaying the same `command_id` is made idempotent by
   `CommandRouter`'s deterministic event id; a *different* command for a
   subject that already has a verdict is rejected rather than silently
-  appending a second verdict.
+  appending a second verdict. The one exception is an `undetermined` verdict,
+  which records that the review itself failed, not the work: a later record
+  supersedes it (the review is re-run), under its own `command_id`. Any other
+  verdict is final.
   """
 
   @behaviour ForemanServer.Aggregate
@@ -77,7 +80,7 @@ defmodule ForemanServer.Aggregates.Review do
          :ok <- optional_binary(payload, :error_code),
          {:ok, scores} <- validate_scores(Aggregate.get(payload, :scores)),
          {:ok, gap_bead_ids} <- validate_gap_bead_ids(Aggregate.get(payload, :gap_bead_ids)),
-         :ok <- ensure_not_recorded(state, kind, subject_id) do
+         :ok <- ensure_recordable(state, kind, subject_id) do
       {:ok,
        %{
          stream_id: stream_id(kind, subject_id),
@@ -141,8 +144,9 @@ defmodule ForemanServer.Aggregates.Review do
 
   defp validate_gap_bead_ids(_), do: {:error, {:missing_or_invalid, :gap_bead_ids}}
 
-  defp ensure_not_recorded(%State{recorded: false}, _kind, _subject_id), do: :ok
+  defp ensure_recordable(%State{recorded: false}, _kind, _subject_id), do: :ok
+  defp ensure_recordable(%State{verdict: "undetermined"}, _kind, _subject_id), do: :ok
 
-  defp ensure_not_recorded(%State{recorded: true}, kind, subject_id),
+  defp ensure_recordable(%State{recorded: true}, kind, subject_id),
     do: {:error, {:already_recorded, kind, subject_id}}
 end
