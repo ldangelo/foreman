@@ -3,7 +3,7 @@
 Real Foreman server (dev, port 47671, throwaway DB, dropped afterwards), `HOME` redirected with `~/.claude`, `~/.claude.json`,
 `~/Library/Keychains`, `~/.pi` symlinked; scratch git repo + local bare origin under `foreman-wt/livesteer-scratch/live`.
 One-phase workflows `steerclaude` (claude) and `steerpi` (pi, `models.default: minimax/MiniMax-M2.7-highspeed`).
-jido_harness comes from the git dep at the pinned ref (PR Sunstone-Partners/jido_harness#1). Steer sent with `foreman thread steer`.
+jido_harness comes from the vendored path dep `packages/jido_harness`. Steer sent with `foreman thread steer`.
 Event order read from the event store (`stream_events`). Probes: `docs/spikes/LS1/`.
 
 | # | Scenario | Observed | Result |
