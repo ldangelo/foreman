@@ -539,7 +539,7 @@ stage_gates() {
   assert_eq "gate of a before any approval" "$(gate_of main)" "pending"
   assert_eq "gate of b before any approval" "$(gate_of b)" "pending"
 
-  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo >"$WORK/approve-a.out" 2>&1
+  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --head-sha "$(origin_branch_sha a "$GREEN_BRANCH")" >"$WORK/approve-a.out" 2>&1
   assert_eq "merge_approve (repo a): exit status" "$?" "0"
   assert_eq "gate of a after approving a" "$(gate_of main)" "approved"
   assert_eq "gate of b after approving a only" "$(gate_of b)" "pending"
@@ -559,7 +559,7 @@ stage_gates() {
   assert_eq "fake gh: a merged once, pinned to its approved head" "$(gh_calls "pr merge $GREEN_URL_A --squash --match-head-commit $sha_a")" "1"
   assert_eq "fake gh: b not merged by a's merge" "$(gh_calls "pr merge $GREEN_URL_B")" "0"
 
-  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --repo-id b >"$WORK/approve-b.out" 2>&1
+  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --head-sha "$(origin_branch_sha b "$GREEN_BRANCH")" --repo-id b >"$WORK/approve-b.out" 2>&1
   assert_eq "merge_approve (repo b): exit status" "$?" "0"
   fm run merge --id "$GREEN_RUN" --repo-id b >"$WORK/merge-b.out" 2>&1
   assert_eq "run merge --repo-id b (approved): exit status" "$?" "0"

@@ -48,9 +48,9 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
         run_id: @run_id,
         project_id: "project-1",
         task_id: "task-1",
-        pr_url: "https://github.com/o/#{repo_id || "main"}/pull/1",
+        pr_url: url_of(repo_id),
         branch_name: "foreman/task-1/#{@run_id}",
-        head_sha: "sha-#{repo_id || "main"}",
+        head_sha: head_of(repo_id),
         base_branch: "main"
       }
       |> put_repo(repo_id)
@@ -58,10 +58,15 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
     apply_spec(state, Run.handle_command(state, %{type: "run.pr.ready", payload: payload}))
   end
 
-  defp approve_result(state, repo_id, identity \\ @identity) do
+  defp approve_result(state, repo_id, identity \\ @identity, head_sha \\ nil) do
     payload =
       put_repo(
-        %{run_id: @run_id, approver: "leo", approver_identity: identity},
+        %{
+          run_id: @run_id,
+          approver: "leo",
+          approver_identity: identity,
+          head_sha: head_sha || head_of(repo_id)
+        },
         repo_id
       )
 
@@ -88,6 +93,21 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
 
   defp put_repo(payload, nil), do: payload
   defp put_repo(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
+
+  # The head and PR url `ready/2` opens each repository's PR with.
+  defp head_of(repo_id), do: "sha-#{repo_id || "main"}"
+  defp url_of(repo_id), do: "https://github.com/o/#{repo_id || "main"}/pull/1"
+
+  defp fold(state, type, payload),
+    do: Run.apply_event(state, %{event_type: type, payload: Map.put(payload, :run_id, @run_id)})
+
+  defp rehold_result(state, repo_id, head_sha, pr_url) do
+    payload = put_repo(%{run_id: @run_id, pr_url: pr_url, head_sha: head_sha}, repo_id)
+    Run.handle_command(state, %{type: "run.pr.rehold", payload: payload})
+  end
+
+  defp rehold(state, repo_id, head_sha),
+    do: apply_spec(state, rehold_result(state, repo_id, head_sha, url_of(repo_id)))
 
   describe "legacy streams" do
     test "events without repo_id fold into the nil (primary) key exactly as before", %{
@@ -188,6 +208,169 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
     test "approving twice is refused per repo", %{state: state} do
       state = state |> ready("b") |> approve("b")
       assert {:error, :merge_gate_already_approved} = approve_result(state, "b")
+    end
+  end
+
+  describe "an approval pins the head the operator named (foreman-ehxy6)" do
+    test "the approval event carries the head, and the gate pins it until it is held again", %{
+      state: state
+    } do
+      held = ready(state, nil)
+
+      assert %Run.MergePin{pr_url: "https://github.com/o/main/pull/1", head_sha: nil} =
+               Run.merge_pin(held)
+
+      assert {:ok, %{event_type: "MergeGateApproved", payload: %{head_sha: "sha-main"}}} =
+               approve_result(held, nil)
+
+      approved = approve(held, nil)
+      assert %Run.MergePin{head_sha: "sha-main", approved_at: at} = Run.merge_pin(approved)
+      assert is_integer(at)
+
+      assert %Run.MergePin{head_sha: nil, approved_at: nil} =
+               approved |> ready(nil) |> Run.merge_pin()
+    end
+
+    test "an approval that names no head is refused, with the field named", %{state: state} do
+      state = ready(state, nil)
+      base = %{run_id: @run_id, approver: "leo", approver_identity: @identity}
+
+      for payload <- [base | Enum.map([nil, "", 5], &Map.put(base, :head_sha, &1))] do
+        assert {:error, {:missing_or_invalid, :head_sha}} =
+                 Run.handle_command(state, %{type: "merge_approve", payload: payload})
+      end
+
+      assert %{nil => :pending} = state.merge_gates
+    end
+
+    test "an approval recorded before heads were pinned pins the head the PR watch had recorded",
+         %{state: state} do
+      url = url_of(nil)
+
+      fixed =
+        fold(ready(state, nil), "PrUpdated", %{
+          pr_url: url,
+          pr_status: "open",
+          head_sha: "sha-fixed",
+          base_branch: "main"
+        })
+
+      legacy =
+        fold(fixed, "MergeGateApproved", %{
+          approver: "leo",
+          approver_identity: @identity,
+          approved_at: 1
+        })
+
+      assert %Run.MergePin{head_sha: "sha-fixed", approved_at: 1} = Run.merge_pin(legacy)
+
+      pushed =
+        fold(legacy, "PrUpdated", %{
+          pr_url: url,
+          pr_status: "open",
+          head_sha: "sha-pushed",
+          base_branch: "main"
+        })
+
+      assert Run.merge_pin(pushed).head_sha == "sha-fixed",
+             "a push after approval is never the pin"
+
+      assert {:stale, %Run.MergePin{head_sha: "sha-fixed"}} =
+               Run.stale_approval(pushed, nil, "sha-pushed")
+    end
+  end
+
+  describe "a head that moved after approval voids it (foreman-ehxy6)" do
+    test "the approval and its pin are dropped, not re-pinned to the moved head", %{state: state} do
+      approved = state |> ready(nil) |> approve(nil)
+
+      assert {:ok, spec} = rehold_result(approved, nil, "sha-pushed", url_of(nil))
+      assert spec.event_type == "MergeGatePending"
+
+      assert %{
+               reason: "head_moved_since_approval",
+               approved_head_sha: "sha-main",
+               head_sha: "sha-pushed",
+               pr_url: "https://github.com/o/main/pull/1"
+             } = spec.payload
+
+      refute Map.has_key?(spec.payload, :repo_id)
+
+      held = apply_spec(approved, {:ok, spec})
+      assert Run.merge_gate(held) == :pending
+      assert %Run.MergePin{head_sha: nil, approved_at: nil} = Run.merge_pin(held)
+      assert {:error, :pr_not_acceptable} = merge_result(held, nil)
+    end
+
+    test "only a fresh approval reopens the gate, and it pins the new head", %{state: state} do
+      held = state |> ready(nil) |> approve(nil) |> rehold(nil, "sha-pushed")
+
+      assert {:ok, %{payload: %{head_sha: "sha-pushed"}}} =
+               approve_result(held, nil, @identity, "sha-pushed")
+
+      reapproved = apply_spec(held, approve_result(held, nil, @identity, "sha-pushed"))
+      assert Run.merge_gate(reapproved) == :approved
+      assert Run.merge_pin(reapproved).head_sha == "sha-pushed"
+      assert {:ok, _} = merge_result(reapproved, nil)
+
+      assert {:error, :merge_gate_already_approved} = approve_result(reapproved, nil)
+    end
+
+    test "the same head, a held gate, another PR and a run with no PR are left alone", %{
+      state: state
+    } do
+      approved = state |> ready(nil) |> approve(nil)
+
+      assert {:ok, nil} = rehold_result(approved, nil, "sha-main", url_of(nil))
+
+      assert {:ok, nil} =
+               rehold_result(approved, nil, "sha-pushed", "https://github.com/o/other/pull/9")
+
+      assert {:ok, nil} = rehold_result(ready(state, nil), nil, "sha-pushed", url_of(nil))
+      assert {:ok, nil} = rehold_result(state, nil, "sha-pushed", url_of(nil))
+      assert :current = Run.stale_approval(approved, nil, "sha-main")
+      assert :current = Run.stale_approval(state, nil, "sha-pushed")
+    end
+
+    test "a re-hold needs the PR and the head it saw", %{state: state} do
+      approved = state |> ready(nil) |> approve(nil)
+
+      assert {:error, {:missing_or_invalid, :pr_url}} =
+               rehold_result(approved, nil, "sha-pushed", nil)
+
+      assert {:error, {:missing_or_invalid, :head_sha}} =
+               rehold_result(approved, nil, nil, url_of(nil))
+
+      assert {:error, {:missing_or_invalid, :repo_id}} =
+               rehold_result(approved, 5, "sha-pushed", url_of(nil))
+    end
+
+    test "re-holding one repo's PR leaves the other repo's approval standing", %{state: state} do
+      both = state |> ready(nil) |> ready("b") |> approve(nil) |> approve("b")
+
+      assert {:ok, %{payload: %{repo_id: "b", approved_head_sha: "sha-b"}}} =
+               rehold_result(both, "b", "sha-pushed", url_of("b"))
+
+      after_b = rehold(both, "b", "sha-pushed")
+      assert Run.merge_gate(after_b, "b") == :pending
+      assert Run.merge_gate(after_b, nil) == :approved
+      assert Run.merge_pin(after_b, nil).head_sha == "sha-main"
+
+      # b's gate does not answer for a's PR, nor a's gate for b's
+      assert {:ok, nil} = rehold_result(both, "b", "sha-pushed", url_of(nil))
+      assert {:ok, nil} = rehold_result(both, nil, "sha-pushed", url_of("b"))
+    end
+
+    test "a PR outlives its run: a finished run's approval is voided too", %{state: state} do
+      approved = state |> ready(nil) |> approve(nil)
+
+      terminal =
+        Run.apply_event(approved, %{event_type: "RunCompleted", payload: %{run_id: @run_id}})
+
+      assert terminal.terminal?
+
+      assert {:ok, %{event_type: "MergeGatePending"}} =
+               rehold_result(terminal, nil, "sha-pushed", url_of(nil))
     end
   end
 

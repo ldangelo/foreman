@@ -20,7 +20,7 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
@@ -192,11 +192,18 @@ func runResume(c *client.Client, args []string) error {
 // repository named by --repo-id). The server accepts it only from an allowlisted
 // approver identity; the identity is a claim made by whoever holds the API token,
 // not an authenticated login. There is no approve-all: one call, one PR.
+//
+// --head-sha is the PR head commit the operator reviewed. The server reads the PR head
+// back from GitHub and refuses the approval unless it is exactly that commit, then pins
+// the merge to it; a push after approval voids the approval (the gate is held again) and
+// the new head needs a new approval. There is no default: approving "whatever the head is"
+// is what the flag exists to prevent.
 func runApproveMerge(c *client.Client, args []string) error {
 	fs := newFlagSet("run approve-merge")
 	runID := fs.String("id", "", "Run ID (required)")
 	approver := fs.String("approver", "", "Approver name (required)")
 	identity := fs.String("identity", "", "Approver identity, e.g. github:<login> (required)")
+	headSHA := fs.String("head-sha", "", "Full head commit SHA of the PR as you reviewed it, e.g. from 'foreman run prs <id>' or GitHub (required)")
 	repoID := fs.String("repo-id", "", "Repository whose PR to approve (default: the run's primary repository)")
 	if err := fs.parse(args); err != nil {
 		return err
@@ -211,11 +218,15 @@ func runApproveMerge(c *client.Client, args []string) error {
 	if *identity == "" {
 		return usageError(fs, "foreman run approve-merge: --identity is required")
 	}
+	if *headSHA == "" {
+		return usageError(fs, "foreman run approve-merge: --head-sha is required")
+	}
 
 	payload := map[string]any{
 		"run_id":            *runID,
 		"approver":          *approver,
 		"approver_identity": *identity,
+		"head_sha":          *headSHA,
 	}
 	if *repoID != "" {
 		payload["repo_id"] = *repoID

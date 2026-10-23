@@ -268,7 +268,8 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
           payload: %{
             run_id: run_id,
             approver: "ldangelo",
-            approver_identity: "github:ldangelo"
+            approver_identity: "github:ldangelo",
+            head_sha: "abc1234"
           }
         })
 
@@ -327,7 +328,8 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
                  payload: %{
                    run_id: run_id,
                    approver: "attacker",
-                   approver_identity: "github:attacker"
+                   approver_identity: "github:attacker",
+                   head_sha: "abc1234"
                  }
                })
 

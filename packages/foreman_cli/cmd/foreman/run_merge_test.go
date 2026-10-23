@@ -45,6 +45,7 @@ func TestRunApproveMergePostsMergeApprove(t *testing.T) {
 	env := captureCommand(t, func(c *client.Client) error {
 		return runApproveMerge(c, []string{
 			"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo",
+			"-head-sha", "4f33d4e6a1b2c3d4e5f60718293a4b5c6d7e8f90",
 		})
 	})
 
@@ -58,6 +59,7 @@ func TestRunApproveMergePostsMergeApprove(t *testing.T) {
 		"run_id":            "run-7",
 		"approver":          "leo",
 		"approver_identity": "github:ldangelo",
+		"head_sha":          "4f33d4e6a1b2c3d4e5f60718293a4b5c6d7e8f90",
 	}
 	if len(env.Payload) != len(want) {
 		t.Fatalf("payload = %v, want exactly %v", env.Payload, want)
@@ -95,13 +97,20 @@ func TestRunMergeVerbsRejectMissingFlagsWithoutCallingTheServer(t *testing.T) {
 	}{
 		{"merge without --id", func(c *client.Client) error { return runMerge(c, nil) }},
 		{"approve-merge without --id", func(c *client.Client) error {
-			return runApproveMerge(c, []string{"-approver", "leo", "-identity", "github:ldangelo"})
+			return runApproveMerge(c, []string{"-approver", "leo", "-identity", "github:ldangelo", "-head-sha", "abc123"})
 		}},
 		{"approve-merge without --approver", func(c *client.Client) error {
-			return runApproveMerge(c, []string{"-id", "run-7", "-identity", "github:ldangelo"})
+			return runApproveMerge(c, []string{"-id", "run-7", "-identity", "github:ldangelo", "-head-sha", "abc123"})
 		}},
 		{"approve-merge without --identity", func(c *client.Client) error {
-			return runApproveMerge(c, []string{"-id", "run-7", "-approver", "leo"})
+			return runApproveMerge(c, []string{"-id", "run-7", "-approver", "leo", "-head-sha", "abc123"})
+		}},
+		// Approving "whatever the head is" is what --head-sha exists to prevent: there is no default.
+		{"approve-merge without --head-sha", func(c *client.Client) error {
+			return runApproveMerge(c, []string{"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo"})
+		}},
+		{"approve-merge with an empty --head-sha", func(c *client.Client) error {
+			return runApproveMerge(c, []string{"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo", "-head-sha", ""})
 		}},
 	}
 
@@ -121,7 +130,7 @@ func TestRunRunDispatchesMergeVerbs(t *testing.T) {
 	} {
 		args := []string{verb, "-id", "run-7"}
 		if verb == "approve-merge" {
-			args = append(args, "-approver", "leo", "-identity", "github:ldangelo")
+			args = append(args, "-approver", "leo", "-identity", "github:ldangelo", "-head-sha", "abc123")
 		}
 
 		env := captureCommand(t, func(c *client.Client) error { return runRun(c, args) })
@@ -136,11 +145,11 @@ func TestRunRunDispatchesMergeVerbs(t *testing.T) {
 func TestRunApproveMergeAndMergeCarryRepoID(t *testing.T) {
 	approve := captureCommand(t, func(c *client.Client) error {
 		return runApproveMerge(c, []string{
-			"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo", "-repo-id", "b",
+			"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo", "-head-sha", "abc123", "-repo-id", "b",
 		})
 	})
-	if approve == nil || approve.Type != "merge_approve" || approve.Payload["repo_id"] != "b" {
-		t.Fatalf("approve envelope = %+v, want merge_approve with repo_id b", approve)
+	if approve == nil || approve.Type != "merge_approve" || approve.Payload["repo_id"] != "b" || approve.Payload["head_sha"] != "abc123" {
+		t.Fatalf("approve envelope = %+v, want merge_approve with repo_id b and head_sha abc123", approve)
 	}
 
 	merge := captureCommand(t, func(c *client.Client) error {

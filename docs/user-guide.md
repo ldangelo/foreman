@@ -171,7 +171,7 @@ app, unit tests and a `.github/workflows/ci.yml`). It needs `gh` authenticated w
 real checks, registers a real webhook through a cloudflared quick tunnel (a bad signature must be 401), injects a
 failing check (Waiting on you, then Fix CI), posts a review comment (Address comments), pushes a conflicting commit
 to `main` (Resolve conflicts), force-pushes the branch, re-runs the check, and merges only through the operator
-`approve-merge` + `merge` commands; it then restores the repo's `main`. Unset, it prints an explicit `SKIP` and counts
+`approve-merge` (naming the PR head it reads from GitHub) + `merge` commands; it then restores the repo's `main`. Unset, it prints an explicit `SKIP` and counts
 as `UNVERIFIED`. `E2E_GH_ONLY=1` runs only setup plus this stage (about 6 minutes). Evidence:
 `docs/acceptance/github-live-run.md`.
 
@@ -327,12 +327,17 @@ There is no MCP tool to approve, deny or answer.
 
 Every finished run and jobsite leaves a session archive and an automated review
 ([Session archive and automated review](#session-archive-and-automated-review)).
-When a PR is ready the merge gate holds it for you:
+When a PR is ready the merge gate holds it for you. You approve the exact commit you
+reviewed (`--head-sha`: the PR head as `foreman run prs <run-id>` or GitHub shows it),
+then merge:
 
 ```bash
-foreman run approve-merge --id <run-id> --approver <name> --identity github:<login>
+foreman run approve-merge --id <run-id> --approver <name> --identity github:<login> --head-sha <sha>
 foreman run merge --id <run-id>
 ```
+
+A push to the PR after you approved voids the approval and holds the gate again: review the
+new commit and approve it (the `run approve-merge` notes under "Runs" have the details).
 
 ### PR watching and auto-fix
 
@@ -563,7 +568,7 @@ bodies. A repository whose push or `gh` fails does not stop the others: the run
 completes (read as `completed_with_errors` on the dashboard) and
 `foreman run retry-pr --id <run> --repo-id <repo>` opens the missing PR once the
 cause is fixed. Each PR has its own merge gate (`approve-merge`/`merge` take
-`--repo-id`). A run with `stack_pr: true` phases cannot span several repositories
+`--repo-id`; each approval names that repository's own PR head). A run with `stack_pr: true` phases cannot span several repositories
 and is refused at start. An operator can close the gate again with
 `config :foreman_server, :multi_repo, runs: false` (new multi-repo runs are then
 refused at start with `multi_repo_runs_disabled`; single-repo runs are unaffected).
@@ -752,7 +757,7 @@ foreman run pause --id <run-id> --reason operator_pause
 foreman run resume --id <run-id>
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
-foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>
+foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha>
 foreman run merge --id <run-id>
 ```
 
@@ -772,20 +777,42 @@ foreman run merge --id <run-id>
 - `run reset` clears a **failed or stuck** run's projection state so it
   can be resubmitted fresh; cancelled or completed runs are rejected
   with `{:run_not_resettable, "<status>"}`.
-- `run approve-merge` opens the run's merge gate once its PR is ready. The
-  server accepts it only for an allowlisted approver identity
-  (`ApproverAuthorizer`); anyone else gets `unauthorized_approver`. The
-  identity is a claim made by whoever holds the API token — the token is the
-  trust boundary — which is why there is deliberately no MCP tool for it.
+- `run approve-merge` opens the run's merge gate once its PR is ready, for the exact
+  commit you name with `--head-sha` (required: there is no "approve whatever the head
+  is"). The server reads the PR head back from GitHub (`gh pr view`) and refuses the
+  approval unless it is that commit, naming both SHAs
+  (`{:head_sha_mismatch, "<yours>", "<GitHub's>"}`); an approval without one is
+  `{:missing_or_invalid, :head_sha}`; GitHub unreadable is a refusal, never an assumption.
+  An abbreviated SHA is a mismatch, not a prefix match: copy the full one. The recorded
+  head is not the authority here: the PR watch lags a push by up to a poll interval, and
+  polling is opt-in. The approval pins that commit. The server accepts it only for an
+  allowlisted approver identity (`ApproverAuthorizer`); anyone else gets
+  `unauthorized_approver`, before anything is read from GitHub. The identity is a claim
+  made by whoever holds the API token — the token is the trust boundary — which is why
+  there is deliberately no MCP tool for it.
 - `run merge` squash-merges the approved PR on GitHub (`gh pr merge --squash
-  --match-head-commit`). It refuses before approval (`pr_not_acceptable`)
+  --match-head-commit <approved sha>`). It refuses before approval (`pr_not_acceptable`)
   and if the PR head is no longer the approved commit
   (`head_moved_since_approval`), so nothing pushed after approval is merged
-  unreviewed. The approved commit is the head Foreman's PR watch had recorded when
-  you approved (so a PR that got a Fix CI or conflict-resolution push before
-  approval merges at that head); a push after approval needs a new approval
-  decision, which today means the gate cannot be re-opened (foreman-axmni follow-up). A PR that is already merged at the approved head is recorded without
+  unreviewed. The merge is pinned to exactly the commit you named when you approved
+  (so a PR that got a Fix CI or conflict-resolution push before approval merges at that
+  head). A PR that is already merged at the approved head is recorded without
   calling `gh` again, so a retry is safe. The server host needs an authenticated `gh`.
+- **A push after approval voids the approval** (foreman-ehxy6). An approval covers one
+  commit. When the PR head differs from it, the gate goes back to `pending`: the old
+  approval and its pin are gone, `run merge` is refused (`pr_not_acceptable`) and
+  `foreman run prs <run-id>` shows `merge_gate: pending` with the new `head_sha`. The head
+  is seen either by the PR watch (a webhook, a poll or a Fix CI push records it; the gate
+  is held again at once, as a `MergeGatePending` event with `reason:
+  head_moved_since_approval` and both SHAs) or by `run merge` itself, which reads GitHub:
+  it answers `head_moved_since_approval` and holds the gate again, so a PR watch that is
+  off cannot leave a PR approved but unmergeable. To merge the new commit, review it and
+  `run approve-merge ... --head-sha <new sha>` again; the old SHA is refused as a
+  mismatch. The moved head is never adopted as the pin, and a head that later returns to
+  the approved SHA does not revive the old approval: each approval is an explicit
+  operator decision. An approval recorded before heads were pinned (no `head_sha` on its
+  event) is pinned to the head the PR watch had recorded at that time and is voided the
+  same way.
 - **Multi-repository runs (E12)**: every repository opens its own PR with its own
   merge gate. `run approve-merge` / `run merge` take `--repo-id <repo>` (omit it for
   the primary repository); one call approves or merges exactly one PR, each merge
@@ -857,7 +884,9 @@ is exactly:
 - Tasks: `task.create`, `task.approve`, `task.retry`, `task.update`
 - Runs: `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
   `run.steer`, `inbox.send`
-- Merge gate (operator-only): `merge_approve`, `run.pr.merge`, `run.pr.retry`
+- Merge gate (operator-only): `merge_approve`, `run.pr.merge`, `run.pr.retry`. (Voiding a
+  stale approval, `run.pr.rehold`, is a system command sent by the server itself: it is on
+  no allowlist, and it can only ever make the gate stricter.)
 - PR watching: `run.pr.fix_ci`, `run.pr.address_comments`,
   `run.pr.resolve_conflicts`, `run.pr.watch_stop`, `run.pr.watch_start`,
   `run.pr.create` (merge is deliberately not among them)
@@ -2057,8 +2086,8 @@ checks `git rev-list --count base..head > 0` against the branch
 recorded when the run's first phase started, publishes with `git push
 -u origin <head>`, and calls `gh pr create`. When that final PR is created the
 run signals `run.pr.ready`, which puts the PR into the merge gate: Foreman will
-not merge it until an operator runs `foreman run approve-merge` and then
-`foreman run merge` (see the run commands above). The server can also follow
+not merge it until an operator runs `foreman run approve-merge ... --head-sha <sha>`
+(the commit they reviewed) and then `foreman run merge` (see the run commands above). The server can also follow
 the PR's state on GitHub in two opt-in ways, each appending a `PrUpdated`
 event to the run (neither changes task status or the PR fields `foreman run
 get` shows; the richer PR record is `foreman run prs`, see "PR watching and auto-fix"): `POST /webhooks/github`, which needs
@@ -2333,7 +2362,11 @@ Enable outbound Telegram/Slack delivery with `config :foreman_server, :messaging
 Foreman watches the pull requests its runs open and can start small, bounded
 "fix threads" on them. Nothing here ever merges: the merge gate
 (`foreman run approve-merge`, `foreman run merge`) stays operator-only, and no
-MCP tool, auto-fix policy or background reactor can approve or merge a PR.
+MCP tool, auto-fix policy or background reactor can approve or merge a PR. What the
+watcher can do is take an approval back: a head it records that differs from the
+approved one voids that approval and holds the gate again (see `run approve-merge`
+under "Runs"); a fix push to an approved PR therefore needs a
+fresh operator approval of the new head.
 
 **Observation.** `ForemanServer.PrWatcher` is on by default
 (`config :foreman_server, :pr_watcher, enabled:`; `FOREMAN_PR_WATCHER_ENABLED=false`
@@ -2363,7 +2396,9 @@ thread for a PR attaches that repository's checkout and that repository's
 worktree, never another repository's.
 
 **Reading.** `foreman run prs <run-id>` (HTTP `GET /api/runs/:id/prs`, MCP
-`foreman_pr_status`) returns one record per PR: URL, status, checks state, failing
+`foreman_pr_status`) returns one record per PR: URL, status, head SHA (as the watch last
+recorded it: the commit you review and name in `approve-merge --head-sha`; the server
+checks it against GitHub, which is the authority), checks state, failing
 checks, review decision, comment count, whether it is still watched, fix counters
 (`ci`, `comments`, `conflicts` attempts and what is in flight) and the merge gate.
 

@@ -81,8 +81,14 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
     post(build_conn(), "/api/commands", %{"type" => type, "payload" => payload})
   end
 
-  defp approve_body(run_id, identity),
-    do: %{"run_id" => run_id, "approver" => "leo", "approver_identity" => identity}
+  defp approve_body(run_id, identity) do
+    %{
+      "run_id" => run_id,
+      "approver" => "leo",
+      "approver_identity" => identity,
+      "head_sha" => @sha
+    }
+  end
 
   defp merge_calls do
     Stream.repeatedly(fn ->
@@ -137,5 +143,46 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
 
     assert %{"error" => error} = json_response(command("merge_approve", body), 422)
     assert error =~ "approver"
+  end
+
+  test "a merge_approve naming no head is a 422 naming head_sha, and gh is not asked", %{
+    run_id: run_id
+  } do
+    for body <- [
+          run_id |> approve_body("github:ldangelo") |> Map.delete("head_sha"),
+          run_id |> approve_body("github:ldangelo") |> Map.put("head_sha", "")
+        ] do
+      assert %{"error" => error} = json_response(command("merge_approve", body), 422)
+      assert error =~ "head_sha"
+    end
+
+    assert_received_no_gh_calls()
+  end
+
+  test "a merge_approve naming another head than GitHub shows is a 422 naming both", %{
+    run_id: run_id
+  } do
+    body = run_id |> approve_body("github:ldangelo") |> Map.put("head_sha", "reviewedsha000")
+
+    assert %{"error" => error} = json_response(command("merge_approve", body), 422)
+    assert error =~ "head_sha_mismatch"
+    assert error =~ "reviewedsha000"
+    assert error =~ @sha
+
+    assert %{"error" => refused} =
+             json_response(command("run.pr.merge", %{"run_id" => run_id}), 422)
+
+    assert refused =~ "pr_not_acceptable"
+  end
+
+  test "run.pr.rehold is system-only: the HTTP allowlist refuses it", %{run_id: run_id} do
+    conn =
+      command("run.pr.rehold", %{"run_id" => run_id, "pr_url" => @pr_url, "head_sha" => "x"})
+
+    assert response(conn, 400)
+  end
+
+  defp assert_received_no_gh_calls do
+    refute_received {:gh, _args}
   end
 end
