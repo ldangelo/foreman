@@ -749,7 +749,9 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
       ref = Process.monitor(executor)
       send(executor, :finish)
-      assert_receive {:DOWN, ^ref, :process, ^executor, _}, 1_000
+      # The executor runs `Capture.close_run/2` (git subprocesses) before it exits: on a
+      # loaded host that took longer than the 1 s this used to allow.
+      assert_receive {:DOWN, ^ref, :process, ^executor, _}, 10_000
 
       assert :ok = Task.await(task, 5_000)
 
