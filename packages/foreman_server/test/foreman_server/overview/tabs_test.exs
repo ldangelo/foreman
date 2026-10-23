@@ -5,7 +5,7 @@ defmodule ForemanServer.Overview.TabsTest do
 
   alias ForemanServer.{Overview, ProjectionStore}
   alias ForemanServer.Overview.Tabs
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{ProjectionStoreReset, Tmp}
 
   defmodule CrashingLibrary do
     @behaviour ForemanServer.Overview.TabProvider
@@ -72,7 +72,10 @@ defmodule ForemanServer.Overview.TabsTest do
       Path.join(System.tmp_dir!(), "overview-library-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
+
+    # The Library publishes its entries read-only, which `File.rm_rf/1` cannot delete (it swallows
+    # the `:eacces` and returns an error nobody looked at), so every suite run left this tree behind.
+    on_exit(fn -> :ok = Tmp.remove_tree(root) end)
 
     :ok =
       ProjectionStore.apply_events([
