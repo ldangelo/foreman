@@ -14,6 +14,10 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
   alias ForemanServer.MCP.{Policy, Tools}
 
   @operator_only ~w(merge_approve run.pr.merge run.pr.retry)
+  # `run.pr.rehold` voids a stale approval (foreman-ehxy6): automation sends it after a PR head
+  # observation, and it can only ever make the gate stricter - but no operator, agent or tool may
+  # dispatch it.
+  @system_only ~w(run.repo_pr_failed run.pr.rehold)
 
   test "the operator envelope accepts them (and rejects the system-only failure record)" do
     for type <- @operator_only do
@@ -29,19 +33,21 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
              "#{type} must be an allowed operator command"
     end
 
-    assert {:error, {:command_not_allowed, "run.repo_pr_failed"}} =
-             CommandGateway.dispatch_operator(%{
-               type: "run.repo_pr_failed",
-               command_id: "c-failed",
-               aggregate_id: "run:none",
-               payload: %{run_id: "none", repo_id: "b", reason: "x", at: 1}
-             })
+    for type <- @system_only do
+      assert {:error, {:command_not_allowed, ^type}} =
+               CommandGateway.dispatch_operator(%{
+                 type: type,
+                 command_id: "c-#{type}",
+                 aggregate_id: "run:none",
+                 payload: %{run_id: "none", repo_id: "b", reason: "x", at: 1}
+               })
+    end
   end
 
   test "no MCP tool is, or is named after, a merge-gate command" do
     names = Enum.map(Tools.list_tools(), & &1.name)
 
-    for type <- @operator_only ++ ["run.repo_pr_failed"] do
+    for type <- @operator_only ++ @system_only do
       flat = String.replace(type, ".", "_")
       refute type in names
       refute ("foreman_" <> flat) in names
@@ -68,7 +74,7 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
   end
 
   test "coordinator, approvals and PR-watch automation cannot dispatch them" do
-    for type <- @operator_only ++ ["run.repo_pr_failed"] do
+    for type <- @operator_only ++ @system_only do
       refute type in CoordinatorDispatch.command_types()
       refute type in ApprovalsDispatch.command_types()
       refute type in PrWatch.operator_types()

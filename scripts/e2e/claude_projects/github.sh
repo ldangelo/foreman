@@ -403,8 +403,11 @@ gh_stage_ready_and_merge() {
     fail "thread not Ready for review before merge: $(gh_card_line "$GH_CARD")"
   fi
   assert_not_has "the card offers no merge action (the gate is operator-only CLI/HTTP)" "$(printf '%s' "$GH_CARD" | jq -c '.actions // []')" "merge"
-  fm run approve-merge --id "$GH_RUN" --approver "e2e-operator" --identity "github:${GH_REPO%%/*}" >"$WORK/approve.out" 2>&1 \
-    && pass "operator approve-merge accepted: $(tr '\n' ' ' < "$WORK/approve.out" | cut -c1-160)" || { fail "approve-merge: $(cut -c1-300 "$WORK/approve.out")"; return 1; }
+  # The approval names the exact head the operator reviewed; the server checks it against GitHub.
+  gh_head=$(gh pr view "$GH_PR" -R "$GH_REPO" --json headRefOid -q .headRefOid 2>/dev/null)
+  [ -n "$gh_head" ] || { fail "could not read the head sha of PR $GH_PR from GitHub"; return 1; }
+  fm run approve-merge --id "$GH_RUN" --approver "e2e-operator" --identity "github:${GH_REPO%%/*}" --head-sha "$gh_head" >"$WORK/approve.out" 2>&1 \
+    && pass "operator approve-merge accepted (head $gh_head): $(tr '\n' ' ' < "$WORK/approve.out" | cut -c1-160)" || { fail "approve-merge: $(cut -c1-300 "$WORK/approve.out")"; return 1; }
   fm run merge --id "$GH_RUN" >"$WORK/merge.out" 2>&1 \
     && pass "operator run merge accepted: $(tr '\n' ' ' < "$WORK/merge.out" | cut -c1-160)" || { fail "run merge: $(cut -c1-300 "$WORK/merge.out")"; return 1; }
   assert_eq "GitHub reports the PR MERGED" "$(gh pr view "$GH_PR" -R "$GH_REPO" --json state -q .state 2>/dev/null)" "MERGED"

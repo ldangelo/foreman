@@ -624,12 +624,38 @@ gate never engages); `merge_approve` and `run.pr.merge` are operator commands on
 command is dispatched and never inside the aggregate — the actor re-runs `handle_command/2`
 on a version conflict, which would repeat a real merge. `RunPrMerge` reads the gate from the
 event-sourced aggregate (not the ETS `MergeGate`), pins `gh pr merge --squash
---match-head-commit` to the head SHA stored in `PrReady`, skips `gh` for a PR that is
-already merged at that same head (merged at any other head is `head_moved_since_approval`), and REPLACES the caller's payload wholesale. `approver_identity` is a
+--match-head-commit` to the head SHA the operator approved (`MergeGateApproved.head_sha`, held in the
+aggregate's `merge_pins`; the head stored in `PrReady` is only the fallback when no pin is recorded),
+skips `gh` for a PR that is already merged at that same head (merged at any other head is
+`head_moved_since_approval`), and REPLACES the caller's payload wholesale. `approver_identity` is a
 client-supplied string checked against `ApproverAuthorizer`'s hardcoded
 `["github:ldangelo"]`; the API bearer token is the real trust boundary. So do NOT add an MCP
 tool for either command: an agent with write MCP could approve and merge its own PR
 (`MergeToolRefuser` exists for the same reason).
+
+**An approval names the head it is for, and a push voids it (foreman-ehxy6).** `merge_approve`
+requires `head_sha`. `CommandGateway` reads the live PR head (`GitHub.PrStatus.fetch`, i.e.
+`gh pr view`) before dispatching, never inside the aggregate, and refuses a different head
+(`{:head_sha_mismatch, supplied, live}`) or none (`{:missing_or_invalid, :head_sha}`). GitHub is
+the authority, not the recorded `pr_watch` head: that lags a push, and polling is opt-in. The
+approval pins exactly that commit. Before this, the pin was inferred from the event stream (the
+head the PR watch had last recorded), so an approval could pin a head the operator never saw,
+and a push after approval stranded the PR: `merge_approve` was refused
+(`merge_gate_already_approved`) while `run.pr.merge` was refused (`head_moved_since_approval`).
+Now a head that differs from the pin of an approved gate returns the gate to `:pending` with
+the pin cleared: `run.pr.rehold` (system-only; emits `MergeGatePending` with `reason`,
+`approved_head_sha`, `head_sha`). It is dispatched from two places: `CommandGateway.dispatch_system/2`
+after every `run.pr.update|checks|review` observation, including a deduplicated one (a head that
+returns to an earlier recorded head appends no `PrUpdated`, yet it must still be compared), and
+the `run.pr.merge` side effect when `RunPrMerge` answers `head_moved_since_approval` (a push
+nothing observed, e.g. polling off). The moved head is never adopted as the pin: re-pinning
+would carry an approval over to code the operator never reviewed. A fresh operator
+`merge_approve` naming the new head is required, and the old approval is not honoured again,
+even if the head later returns to it. The decision is made in the aggregate from its own state,
+so it is idempotent; the command id carries the approval's `approved_at` so each approval cycle
+can be voided exactly once (a head-derived id would repeat across cycles and the router would
+hand back the first cycle's event). An approval recorded before heads were pinned (no
+`head_sha` on its event) is pinned at fold time to the head the PR watch had recorded then.
 
 `PrMonitor` (opt-in, `FOREMAN_PR_MONITOR_ENABLED=true`) and `POST /webhooks/github` both
 build `run.pr.update` through the one `ForemanServer.PrUpdate` builder, so the same

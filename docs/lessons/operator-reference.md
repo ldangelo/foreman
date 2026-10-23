@@ -232,7 +232,7 @@ foreman run pause --id <run-id> --reason "reason"   # stop now; keep the run res
 foreman run resume --id <run-id>                      # continue a paused run
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
-foreman run approve-merge --id <run-id> --approver <name> --identity <github:login>
+foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha>
 foreman run merge --id <run-id>                       # squash-merge the approved PR
 ```
 
@@ -270,8 +270,8 @@ foreman run pause --id <id> --reason <text>  # stop now, resumable
 foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
-foreman run approve-merge --id <id> --approver <name> --identity <github:login>  # open the merge gate
-foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head)
+foreman run approve-merge --id <id> --approver <name> --identity <github:login> --head-sha <sha>  # open the merge gate for the head you reviewed
+foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head; a push after approval voids the approval)
 foreman project list         # List projects
 foreman project get <id>     # Fetch project
 

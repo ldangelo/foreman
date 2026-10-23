@@ -56,7 +56,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run resume        --id
 > foreman run remove        --id
 > foreman run reset         --id
-> foreman run approve-merge --approver --id --identity
+> foreman run approve-merge --approver --head-sha --id --identity
 > foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 > foreman run prs           <run-id>
@@ -765,9 +765,11 @@ foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
 
-### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> [--repo-id <repo-id>]`
+### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]`
 
-Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`). Sends the `merge_approve` operator command. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut.
+Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`), for the exact commit named by `--head-sha`. Sends the `merge_approve` operator command with `head_sha` in its payload. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut, before anything is read from GitHub.
+
+`--head-sha` is the PR head you reviewed, as `foreman run prs <run-id>` (`head_sha`) or GitHub shows it, and there is no default. The CLI refuses a missing or empty one (`--head-sha is required`); the server answers `{:missing_or_invalid, :head_sha}` (HTTP 422) for a `merge_approve` that carries none. The server reads the PR head back from GitHub with `gh pr view` and refuses the approval unless it is exactly that commit: `{:head_sha_mismatch, "<yours>", "<GitHub's>"}`, naming both SHAs. An abbreviated SHA is a mismatch, not a prefix match. A head that cannot be read (`gh` missing or failing) is refused with the `gh` error, never assumed. The recorded head is not the authority: the PR watch lags a push by up to a poll interval and polling is opt-in. The approval pins the commit you named (`MergeGateApproved.head_sha`), and `run merge` merges exactly it.
 
 The identity is a claim made by whoever holds the API token, not an authenticated login: the token is the trust boundary. For the same reason there is deliberately no MCP tool for this command; an agent must not be able to approve its own PR.
 
@@ -776,15 +778,18 @@ The identity is a claim made by whoever holds the API token, not an authenticate
 | `--id <run-id>` | Run ID (required). |
 | `--approver <name>` | Approver name, recorded on the approval (required). |
 | `--identity <github:login>` | Approver identity checked against the allowlist (required). |
+| `--head-sha <sha>` | Full head commit SHA of the PR as you reviewed it (required). The approval is refused unless GitHub shows exactly this head; the merge is pinned to it. |
 | `--repo-id <repo-id>` | Repository whose PR to approve (E12 multi-repo runs). Omit for the run's primary repository. |
 
-Each PR of a multi-repository run has its own merge gate (`merge_gates`, keyed by `repo_id`; the primary's is `nil`), so one `approve-merge` call approves exactly one PR. There is no approve-all. An unknown `--repo-id` fails with `{:merge_gate_not_found, :run, "<repo-id>"}`; for the primary the legacy `{:merge_gate_not_found, :run}` is unchanged.
+Each PR of a multi-repository run has its own merge gate (`merge_gates`, keyed by `repo_id`; the primary's is `nil`), so one `approve-merge` call approves exactly one PR. There is no approve-all. An unknown `--repo-id` fails with `{:merge_gate_not_found, :run, "<repo-id>"}`; for the primary the legacy `{:merge_gate_not_found, :run}` is unchanged. An approved gate cannot be approved again (`merge_gate_already_approved`) until a push voids the approval, see below.
+
+**A push after approval voids the approval** (foreman-ehxy6). An approval covers one commit. When the PR head differs from it the gate returns to `pending`: the approval and its pin are cleared, `run merge` is refused (`pr_not_acceptable`), and `foreman run prs <run-id>` shows `merge_gate: pending` and the new `head_sha`. The server sees the move either through the PR watch (a webhook, a poll or a Fix CI push records the new head, and the gate is held again at once with a `MergeGatePending` event, `reason: "head_moved_since_approval"`, `approved_head_sha` and `head_sha`) or through `run merge` itself, which answers `head_moved_since_approval` and holds the gate again, so a PR watch that is off cannot strand an approved PR. Review the new commit and run `approve-merge --head-sha <new sha>`; the old SHA is refused as `head_sha_mismatch`. The new head is never adopted as the pin, and an approved head that returns later does not revive the old approval. The re-hold is the system command `run.pr.rehold`: it is not on the operator allowlist, not an MCP tool and not available to an agent or run token. An approval recorded before heads were pinned (its event carries no `head_sha`) is pinned to the head the PR watch had recorded at that time and is voided the same way.
 
 ### `foreman run merge --id <run-id> [--repo-id <repo-id>]`
 
-Squash-merges the run's PR on GitHub with `gh pr merge --squash --match-head-commit <sha>`. Sends the `run.pr.merge` operator command; only the run id is sent, because the server builds the rest from the run's stored `PrReady` event and ignores any other payload field.
+Squash-merges the run's PR on GitHub with `gh pr merge --squash --match-head-commit <sha>`. Sends the `run.pr.merge` operator command; only the run id is sent, because the server builds the rest from the run's stored `PrReady` event and the approval's pin and ignores any other payload field.
 
-It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless the PR head is still the commit that was approved (`head_moved_since_approval`), so commits pushed after approval are never merged unreviewed. The approved commit is the head the PR watch had last recorded when `approve-merge` ran (the head `run.pr.ready` carried only if the PR never moved), so a PR that was fixed (Fix CI, Address comments, Resolve conflicts, force-push) before approval is mergeable. A closed or conflicted PR fails with `pr_closed` or `pr_conflicted`, and a failing `gh` with `gh_merge_failed`. A PR that is already merged at the approved head is recorded without calling `gh` again, so retrying after a partial failure is safe; one merged at any other head is refused with `head_moved_since_approval`. The `gh` CLI must be installed and authenticated on the server host.
+It refuses unless the merge gate is approved (`pr_not_acceptable`), and unless the PR head is still the commit that was approved (`head_moved_since_approval`), so commits pushed after approval are never merged unreviewed; that refusal also voids the approval (see `approve-merge`), after which a retry answers `pr_not_acceptable` until the new head is approved. The merge is pinned to exactly the commit named in `approve-merge --head-sha`, so a PR that was fixed (Fix CI, Address comments, Resolve conflicts, force-push) before approval is mergeable. A closed or conflicted PR fails with `pr_closed` or `pr_conflicted`, and a failing `gh` with `gh_merge_failed`. A PR that is already merged at the approved head is recorded without calling `gh` again, so retrying after a partial failure is safe; one merged at any other head is refused with `head_moved_since_approval`. The `gh` CLI must be installed and authenticated on the server host.
 
 | Option | Description |
 |--------|-------------|

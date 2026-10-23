@@ -9,6 +9,9 @@ defmodule ForemanServer.PrGate do
   TRD-2026-4212be7e / MGH-T001 / TRD-071.
   """
 
+  alias ForemanServer.Aggregate
+  alias ForemanServer.Aggregates.Run
+
   @doc """
   Evaluate a raw PR status atom (as reported by GitHub webhooks or
   `ForemanServer.PrMonitor` polling) for merge acceptability.
@@ -85,5 +88,40 @@ defmodule ForemanServer.PrGate do
     )
 
     :ok
+  end
+
+  @doc """
+  The `run.pr.rehold` system command that voids `repo_id`'s approval because the PR now shows
+  `head_sha`, or `:current` when no approval is stale (the gate is not approved, or what it approved
+  is still the head). `pr_url` limits the check to an observation of the PR the gate holds; `nil`
+  says `head_sha` is that PR's own head (a merge attempt read it from GitHub).
+
+  The decision is `Run.stale_approval/4` on the run's event-sourced state; the aggregate decides
+  again when the command arrives, so a stale command is a no-op. The command id is the approval's:
+  one approval is voided at most once, and a head that comes round again in a later approval is a
+  new command. (An id derived from the heads would repeat across approvals, and the router answers
+  a repeated id with the earlier event instead of appending.)
+  """
+  @spec rehold_command(String.t(), String.t() | nil, String.t(), String.t() | nil) ::
+          {:ok, map()} | :current
+  def rehold_command(run_id, repo_id, head_sha, pr_url \\ nil)
+      when is_binary(run_id) and is_binary(head_sha) do
+    {state, _version} = Aggregate.load(Run, "run:#{run_id}")
+
+    case Run.stale_approval(state, repo_id, head_sha, pr_url) do
+      {:stale, %{pr_url: url, approved_at: approved_at}} when is_binary(url) ->
+        payload = %{run_id: run_id, pr_url: url, head_sha: head_sha}
+
+        {:ok,
+         %{
+           type: "run.pr.rehold",
+           command_id: "pr_rehold:#{run_id}:#{repo_id}:#{approved_at}",
+           aggregate_id: "run:#{run_id}",
+           payload: if(repo_id, do: Map.put(payload, :repo_id, repo_id), else: payload)
+         }}
+
+      :current ->
+        :current
+    end
   end
 end

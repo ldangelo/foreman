@@ -59,7 +59,9 @@ devbox run -- bash scripts/e2e/claude_projects_flow.sh                    # no e
   So the PR actions made the PR unmergeable through the operator path. Fix: pin the head the PR watch had recorded when the gate
   was approved (events before the latest `MergeGateApproved`); the live-head check at merge is unchanged, so a push *after*
   approval is still refused. Tests: `run_pr_merge_test.exs` (2 new; real `PrUpdate.command/3` events). Mutation check: removing the
-  pin call fails both. Still open: after a post-approval push the gate cannot be re-opened.
+  pin call fails both. Still open at the time: after a post-approval push the gate could not be re-opened. Closed by
+  `foreman-ehxy6`: `approve-merge` now names the head (`--head-sha`, checked against GitHub) and a push after approval
+  voids the approval and re-holds the gate (see the user guide, `run approve-merge`); not re-run against live GitHub.
 - **`foreman-v8wqe` (P3).** Unresolved review threads do not move a thread out of Ready for review.
 
 ### Harness defects found and fixed while writing the stage (not product defects)

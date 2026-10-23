@@ -16,6 +16,11 @@ defmodule ForemanServer.CommandGateway do
       `run.pr.merge` performs the real GitHub merge (see
       `ForemanServer.RunPrMerge`) before dispatching and replaces the caller's
       payload wholesale.
+      `merge_approve` must name the head SHA the operator reviewed (`head_sha`): it is read back from
+      GitHub first (`RunPrMerge.verify_head/3`) and pinned by the approval. A PR head observed
+      later that differs voids the approval - `dispatch_system/2` re-holds the gate (`run.pr.rehold`,
+      system-only) after every PR head observation, and `run.pr.merge` does after a merge attempt
+      that found the head moved.
       `aggregate_id` is required except for `task.create` in no-id mode
       (where both `aggregate_id` and `payload.task_id` are absent); in that
       case the gateway resolves the backend issue ID automatically.
@@ -47,12 +52,15 @@ defmodule ForemanServer.CommandGateway do
   to succeed even if the assets have since changed.
   """
 
-  alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.{CommandRouter, PrGate, ProjectionStore, Telemetry}
   alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
+  alias ForemanServer.Aggregates.Run
   alias ForemanServer.Workflow.ImplementationContext
   alias ForemanServer.RunPrMerge
+
+  require Logger
 
   @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E9: the operator PR-watch commands (fix threads, stop/start watching, create PR) are
@@ -68,6 +76,9 @@ defmodule ForemanServer.CommandGateway do
   @approval_operator_types ~w(tool.approve tool.deny)
   # E8 operator answers to agent questions (`question:<run_id>:<question_id>`).
   @question_operator_types ~w(question.answer)
+  # The PR watch's head observations: each records the head GitHub shows for a PR.
+  @pr_head_observations ~w(run.pr.update run.pr.checks run.pr.review)
+  @rehold_timeout 5_000
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -129,6 +140,20 @@ defmodule ForemanServer.CommandGateway do
     ForemanServer.Workflow.TaskFanout.execute(command)
   end
 
+  # A PR head observation records what GitHub shows, and is then checked against the operator's
+  # approval of that PR. An approval pins the head the operator reviewed, so a head that differs
+  # voids it: the gate returns to pending (`run.pr.rehold`) until the operator approves the new
+  # head. The check runs even when the router deduplicated the observation (a PR that returns to an
+  # earlier head repeats the command id and appends nothing), because the approval it voids may be
+  # newer than that record. If the re-hold cannot be recorded the observation is reported as
+  # failed, so its sender retries; a merge attempt re-checks against GitHub regardless.
+  def dispatch_system(%{type: type} = command, timeout) when type in @pr_head_observations do
+    with {:ok, _spec} = observed <- dispatch_and_emit_project_telemetry(command, timeout),
+         :ok <- hold_observed_head(command, timeout) do
+      observed
+    end
+  end
+
   def dispatch_system(command, timeout) when is_map(command) do
     dispatch_and_emit_project_telemetry(command, timeout)
   end
@@ -164,19 +189,47 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  # `merge_approve` pins the head the operator reviewed. That head is read back from GitHub here,
+  # before dispatch and never inside the aggregate (a network read, and the actor re-runs
+  # `handle_command/2` on a version conflict): an approval naming a head the PR does not have is
+  # refused with both SHAs, and one that cannot be checked is refused too. The approval's own
+  # fields are checked first with the aggregate's check (`Run.validate_approval/1`), so a
+  # malformed or unauthorized approval cannot make the server read GitHub at all.
+  defp perform_operator_side_effects(%{type: "merge_approve", payload: payload} = command) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
+
+    with :ok <- valid_repo_id(gate_repo(repo_id), true),
+         {:ok, approval} <- Run.validate_approval(payload),
+         :ok <- RunPrMerge.verify_head(run_id, gate_repo(repo_id), approval.head_sha) do
+      {:ok, command}
+    end
+  end
+
   # `run.pr.merge` is the one operator command with an external effect: the real
   # GitHub merge. It runs here, before dispatch, and never inside the aggregate
   # (the actor re-runs `handle_command/2` on a version conflict, which would
   # repeat it). The returned payload replaces the caller's wholesale — it is built
-  # from the stored `PrReady`, so a client cannot retarget the merge. Every other
-  # type passes through untouched.
+  # from the stored `PrReady`, so a client cannot retarget the merge. A merge refused because
+  # GitHub shows another head than the approved one also voids that approval (whether or not the
+  # PR watch had seen the push yet): the gate is re-held so the operator can approve the new head,
+  # instead of the PR staying approved and unmergeable. Every other type passes through untouched.
   defp perform_operator_side_effects(%{type: "run.pr.merge", payload: payload} = command) do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
     repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
 
-    with :ok <- valid_merge_ids(run_id, repo_id),
-         {:ok, merge_payload} <- RunPrMerge.execute(run_id, repo_id) do
-      {:ok, %{command | payload: merge_payload}}
+    with :ok <- valid_merge_ids(run_id, repo_id) do
+      case RunPrMerge.execute(run_id, repo_id) do
+        {:ok, merge_payload} ->
+          {:ok, %{command | payload: merge_payload}}
+
+        {:error, {:head_moved_since_approval, _approved, live}} = moved ->
+          rehold_after_refused_merge(run_id, repo_id, live)
+          moved
+
+        {:error, _reason} = refused ->
+          refused
+      end
     end
   end
 
@@ -269,6 +322,49 @@ defmodule ForemanServer.CommandGateway do
       {:ok, url} -> {:ok, url}
       :noop -> {:error, {:nothing_to_propose, repo_id}}
       {:error, _} = error -> error
+    end
+  end
+
+  # `""` addresses the primary repository exactly like an absent `repo_id`.
+  defp gate_repo(""), do: nil
+  defp gate_repo(repo_id), do: repo_id
+
+  defp hold_observed_head(%{payload: payload}, timeout) do
+    hold_stale_approval(
+      get_value(payload, :run_id) || get_value(payload, "run_id"),
+      gate_repo(get_value(payload, :repo_id) || get_value(payload, "repo_id")),
+      get_value(payload, :head_sha) || get_value(payload, "head_sha"),
+      get_value(payload, :pr_url) || get_value(payload, "pr_url"),
+      timeout
+    )
+  end
+
+  defp rehold_after_refused_merge(run_id, repo_id, live_head) do
+    case hold_stale_approval(run_id, gate_repo(repo_id), live_head, nil, @rehold_timeout) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "run #{run_id}: merge refused (head moved to #{live_head}) but the stale approval " <>
+            "could not be re-held: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # Void `repo_id`'s approval if it no longer covers `head_sha` (see `PrGate.rehold_command/4`).
+  defp hold_stale_approval(run_id, repo_id, head_sha, pr_url, timeout)
+       when is_binary(run_id) and is_binary(head_sha) do
+    case PrGate.rehold_command(run_id, repo_id, head_sha, pr_url) do
+      :current ->
+        :ok
+
+      {:ok, rehold} ->
+        case dispatch_and_emit_project_telemetry(rehold, timeout) do
+          {:ok, _spec} -> :ok
+          {:error, reason} -> {:error, {:merge_gate_rehold_failed, reason}}
+          {:error, reason, detail} -> {:error, {:merge_gate_rehold_failed, {reason, detail}}}
+        end
     end
   end
 

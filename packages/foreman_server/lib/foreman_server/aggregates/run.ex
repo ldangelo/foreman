@@ -28,6 +28,35 @@ defmodule ForemanServer.Aggregates.Run do
     defstruct [:attempt, :run_id, :reason, metadata: %{}]
   end
 
+  defmodule MergePin do
+    @moduledoc """
+    What one repository's merge gate holds: the PR it was opened for and, while the gate is
+    approved, the head the operator approved and when. A pending gate pins no head.
+    """
+    defstruct [:pr_url, :head_sha, :approved_at]
+
+    @type t :: %__MODULE__{
+            pr_url: String.t() | nil,
+            head_sha: String.t() | nil,
+            approved_at: integer() | nil
+          }
+  end
+
+  defmodule Approval do
+    @moduledoc """
+    The fields of a `merge_approve` command the aggregate accepts, validated: who approved, as
+    which authorized identity, and the PR head they reviewed. Nothing else a caller sends is kept.
+    """
+    @enforce_keys [:approver, :approver_identity, :head_sha]
+    defstruct [:approver, :approver_identity, :head_sha]
+
+    @type t :: %__MODULE__{
+            approver: String.t(),
+            approver_identity: String.t(),
+            head_sha: String.t()
+          }
+  end
+
   defmodule State do
     @enforce_keys [:exists?]
     defstruct [
@@ -40,6 +69,7 @@ defmodule ForemanServer.Aggregates.Run do
       :last_sequence,
       :base_branch,
       merge_gates: %{},
+      merge_pins: %{},
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
@@ -62,6 +92,7 @@ defmodule ForemanServer.Aggregates.Run do
       terminal?: false,
       last_sequence: 0,
       merge_gates: %{},
+      merge_pins: %{},
       base_branch: nil,
       phase_status: %{},
       worker_status: %{},
@@ -80,6 +111,56 @@ defmodule ForemanServer.Aggregates.Run do
   """
   @spec merge_gate(%State{}, String.t() | nil) :: :pending | :approved | nil
   def merge_gate(%State{merge_gates: gates}, repo_id \\ nil), do: Map.get(gates, repo_id)
+
+  @doc """
+  What `repo_id`'s merge gate holds (see `MergePin`), or `nil` when no PR has been readied for it.
+  """
+  @spec merge_pin(%State{}, String.t() | nil) :: MergePin.t() | nil
+  def merge_pin(%State{merge_pins: pins}, repo_id \\ nil), do: Map.get(pins, repo_id)
+
+  @doc """
+  Whether `repo_id`'s approval no longer covers the PR as `head_sha` shows it: the gate is
+  `:approved` and the head it approved differs. `pr_url` limits the check to an observation of the
+  PR the gate holds; `nil` says `head_sha` is that PR's own head. A pending gate holds no approval,
+  so it is never stale.
+  """
+  @spec stale_approval(%State{}, String.t() | nil, String.t(), String.t() | nil) ::
+          {:stale, MergePin.t()} | :current
+  def stale_approval(%State{} = state, repo_id, head_sha, pr_url \\ nil)
+      when is_binary(head_sha) do
+    case {merge_gate(state, repo_id), merge_pin(state, repo_id)} do
+      {:approved, %MergePin{head_sha: approved} = pin}
+      when is_binary(approved) and approved != head_sha ->
+        if is_nil(pr_url) or pin.pr_url == pr_url, do: {:stale, pin}, else: :current
+
+      {_gate, _pin} ->
+        :current
+    end
+  end
+
+  @doc """
+  Validate the operator-supplied fields of `merge_approve` - `approver`, `approver_identity` (which
+  must be on the approver allowlist) and `head_sha` - and keep only those. The aggregate handler
+  and `CommandGateway` (which refuses before it reads GitHub) share this one check, so they cannot
+  disagree about what a valid approval is. Errors name the field: `{:missing_or_invalid, key}`,
+  or `:unauthorized_approver`.
+  """
+  @spec validate_approval(map()) :: {:ok, Approval.t()} | {:error, term()}
+  def validate_approval(payload) when is_map(payload) do
+    with {:ok, approver} <-
+           Aggregate.required_binary(Aggregate.get(payload, :approver), :approver),
+         {:ok, approver_identity} <-
+           Aggregate.required_binary(
+             Aggregate.get(payload, :approver_identity),
+             :approver_identity
+           ),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         :ok <- ApproverAuthorizer.authorize(approver_identity) do
+      {:ok,
+       %Approval{approver: approver, approver_identity: approver_identity, head_sha: head_sha}}
+    end
+  end
 
   @impl true
   def apply_event(%State{} = state, event) do
@@ -119,7 +200,8 @@ defmodule ForemanServer.Aggregates.Run do
             state
             | exists?: true,
               run_id: Aggregate.get(payload, :run_id),
-              merge_gates: put_gate(state, payload, :pending)
+              merge_gates: put_gate(state, payload, :pending),
+              merge_pins: hold_pin(state, payload)
           },
           "PrReady",
           payload
@@ -129,6 +211,7 @@ defmodule ForemanServer.Aggregates.Run do
         %State{
           state
           | merge_gates: put_gate(state, payload, :approved),
+            merge_pins: approve_pin(state, payload),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 
@@ -264,6 +347,7 @@ defmodule ForemanServer.Aggregates.Run do
         %State{
           state
           | merge_gates: put_gate(state, payload, :pending),
+            merge_pins: hold_pin(state, payload),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 
@@ -807,21 +891,23 @@ defmodule ForemanServer.Aggregates.Run do
   end
 
   # merge_approve — explicit human approval after merge gate hold.
-  # Verifies approver identity before unblocking run.pr.merge.
+  # Verifies approver identity before unblocking run.pr.merge. The approval PINS the head the
+  # operator reviewed (`head_sha`, required): `CommandGateway` has already read it back from GitHub,
+  # so what is recorded is a commit that was the PR's head when it was approved. A later push voids
+  # the approval (`run.pr.rehold`); the pin is never moved to the new head.
   def handle_command(state, %{type: "merge_approve", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          {:ok, repo_key} <- repo_key(payload),
          :ok <- ensure_merge_gate_pending(state, repo_key),
-         {:ok, approver} <-
-           Aggregate.required_binary(Aggregate.get(payload, :approver), :approver),
-         {:ok, approver_identity} <-
-           Aggregate.required_binary(
-             Aggregate.get(payload, :approver_identity),
-             :approver_identity
-           ),
-         :ok <- ApproverAuthorizer.authorize(approver_identity) do
-      :ok = PrGate.record_approved(run_id, approver, approver_identity, repo_key)
+         {:ok, %Approval{} = approval} <- validate_approval(payload) do
+      :ok =
+        PrGate.record_approved(
+          run_id,
+          approval.approver,
+          approval.approver_identity,
+          repo_key
+        )
 
       {:ok,
        %{
@@ -831,13 +917,57 @@ defmodule ForemanServer.Aggregates.Run do
            put_repo_id(
              %{
                run_id: run_id,
-               approver: approver,
-               approver_identity: approver_identity,
+               approver: approval.approver,
+               approver_identity: approval.approver_identity,
+               head_sha: approval.head_sha,
                approved_at: System.system_time(:millisecond)
              },
              repo_key
            )
        }}
+    end
+  end
+
+  # run.pr.rehold (system, never operator-dispatched) - the PR head moved after the operator approved
+  # it. `CommandGateway` sends it after every PR head observation and after a merge attempt that
+  # found the head moved. The approval, and the head it pinned, are void: the gate returns to
+  # :pending and only a fresh `merge_approve` naming the new head reopens it. The pin is never moved
+  # to the new head, so a push can never merge code the operator did not review. A command that finds
+  # no stale approval (gate pending, head unchanged, another PR) is a no-op, which is what makes it
+  # safe to send after every observation.
+  def handle_command(state, %{type: "run.pr.rehold", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.rehold"),
+         {:ok, repo_key} <- repo_key(payload),
+         {:ok, pr_url} <- Aggregate.required_binary(Aggregate.get(payload, :pr_url), :pr_url),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha) do
+      case stale_approval(state, repo_key, head_sha, pr_url) do
+        {:stale, %MergePin{head_sha: approved}} ->
+          :ok = PrGate.record_pending(run_id, pr_url, repo_key)
+
+          {:ok,
+           %{
+             stream_id: "run:#{run_id}",
+             event_type: "MergeGatePending",
+             payload:
+               put_repo_id(
+                 %{
+                   run_id: run_id,
+                   pr_url: pr_url,
+                   paused_at: System.system_time(:millisecond),
+                   reason: "head_moved_since_approval",
+                   approved_head_sha: approved,
+                   head_sha: head_sha
+                 },
+                 repo_key
+               )
+           }}
+
+        :current ->
+          {:ok, nil}
+      end
     end
   end
 
@@ -976,6 +1106,47 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # A held gate pins no head. `PrReady` and `MergeGatePending` (re)open it for `pr_url` and drop any
+  # approval; a payload that names no PR keeps the one the gate already holds.
+  defp hold_pin(%State{merge_pins: pins}, payload) do
+    key = gate_key(payload)
+    pr_url = Aggregate.get(payload, :pr_url) || pin_url(pins, key)
+    Map.put(pins, key, %MergePin{pr_url: pr_url})
+  end
+
+  # An approval pins `head_sha`. One recorded before heads were pinned names none: it pinned the
+  # head the PR watch had last recorded for the PR by then (`state.pr_watch` folds in stream order,
+  # so that is exactly the head as of the approval).
+  defp approve_pin(%State{merge_pins: pins} = state, payload) do
+    key = gate_key(payload)
+    pr_url = pin_url(pins, key)
+
+    pin = %MergePin{
+      pr_url: pr_url,
+      head_sha: pinned_head(Aggregate.get(payload, :head_sha), watched_head(state, pr_url)),
+      approved_at: Aggregate.get(payload, :approved_at)
+    }
+
+    Map.put(pins, key, pin)
+  end
+
+  defp pin_url(pins, key) do
+    case Map.get(pins, key) do
+      %MergePin{pr_url: url} -> url
+      nil -> nil
+    end
+  end
+
+  defp watched_head(%State{pr_watch: watch}, pr_url) do
+    case Map.get(watch, pr_url) do
+      %{head_sha: head} -> head
+      nil -> nil
+    end
+  end
+
+  defp pinned_head(head, _watched) when is_binary(head) and head != "", do: head
+  defp pinned_head(_absent, watched), do: watched
+
   # `repo_id` absent/empty selects the primary repository; anything else but a
   # binary is a malformed command, not the primary.
   defp repo_key(payload) do
@@ -1080,7 +1251,8 @@ defmodule ForemanServer.Aggregates.Run do
               "run.pr.ready",
               "run.pr.retarget",
               "run.pr.reset",
-              "run.pr.merge"
+              "run.pr.merge",
+              "run.pr.rehold"
             ],
        do: :ok
 

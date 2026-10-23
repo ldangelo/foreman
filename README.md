@@ -34,7 +34,7 @@ A project is a registered repository with standing instructions, durable memory,
 - **Approvals and questions** — agent tool-permission requests and operator questions surface as "waiting on you"; there is no MCP tool to decide them.
 - **PR watching and auto-fix** — observation by default, bounded opt-in fix threads; verified against a real private GitHub repo except branch protection, the workspace buttons against real GitHub and the automatic `pr_auto_fix` policy (see `docs/acceptance/github-live-run.md`).
 - **Notifications, schedules, usage and limits, pause/resume, adoption and setup recommendations.**
-- **The merge gate is operator-only** (`foreman run approve-merge`, then `foreman run merge`).
+- **The merge gate is operator-only** (`foreman run approve-merge --head-sha <sha>`, then `foreman run merge`). You approve the exact commit you reviewed; a push after approval voids the approval and holds the gate again.
 - **Acceptance evidence** — verdicts for the Claude Projects capabilities C1-C13 and the residual gaps are in [`docs/acceptance/parity-audit.md`](docs/acceptance/parity-audit.md) (earlier narrative audit: [`docs/audit/claude-projects-parity-audit.md`](docs/audit/claude-projects-parity-audit.md)); how to run the live acceptance and the evidence index are in [`docs/acceptance/README.md`](docs/acceptance/README.md).
 
 Quickstart (server running via `devbox run server`; `FOREMAN_API_URL` defaults to `http://127.0.0.1:4766`, set `FOREMAN_API_TOKEN` for the CLI):
@@ -46,7 +46,7 @@ foreman project update --goal "Ship the importer" --instructions-file ./INSTRUCT
 foreman project memory write --name conventions --file notes.md demo
 foreman project chat demo "triage the failing nightly build"
 foreman thread list --project demo
-foreman run approve-merge --id <run-id> --approver me --identity github:<login>
+foreman run approve-merge --id <run-id> --approver me --identity github:<login> --head-sha <sha>
 foreman run merge --id <run-id>
 ```
 

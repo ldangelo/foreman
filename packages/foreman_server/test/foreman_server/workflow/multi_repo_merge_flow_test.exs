@@ -93,12 +93,23 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
   defp put_repo(payload, nil), do: payload
   defp put_repo(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
 
-  defp approve(run_id, repo_id, identity \\ @approver) do
+  # Names the head each repository's PR is at (`@sha_a` / `@sha_b`) unless told otherwise, the way
+  # an operator passes `--head-sha`.
+  defp approve(run_id, repo_id, identity \\ @approver, head_sha \\ nil) do
     CommandGateway.dispatch_operator(%{
       command_id: "approve-#{System.unique_integer([:positive])}",
       type: "merge_approve",
       aggregate_id: "run:#{run_id}",
-      payload: put_repo(%{run_id: run_id, approver: "leo", approver_identity: identity}, repo_id)
+      payload:
+        put_repo(
+          %{
+            run_id: run_id,
+            approver: "leo",
+            approver_identity: identity,
+            head_sha: head_sha || if(repo_id == "b", do: @sha_b, else: @sha_a)
+          },
+          repo_id
+        )
     })
   end
 
@@ -137,7 +148,7 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
     assert {:ok, _} = approve(run_id, nil)
 
     assert {:error, :pr_not_acceptable} = merge(run_id, "b")
-    assert receive_all([]) == [], "b is not approved: nothing may reach GitHub"
+    assert gh_merges() == [], "b is not approved: nothing may be merged"
 
     assert {:ok, _} = merge(run_id, nil)
     assert [["pr", "merge", @url_a, "--squash", "--match-head-commit", @sha_a]] = gh_merges()
@@ -154,7 +165,7 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
     assert {:ok, _} = approve(run_id, "b")
 
     assert {:error, :pr_not_acceptable} = merge(run_id, nil)
-    assert receive_all([]) == []
+    assert gh_merges() == []
 
     # The caller cannot steer the PR or the pin either.
     assert {:ok, _} = merge(run_id, "b", %{pr_url: @url_a, head_sha: "evil"})
@@ -201,17 +212,61 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
     assert receive_all([]) == []
   end
 
-  test "a head that moved after approval refuses that PR only", %{run_id: run_id} do
-    stub_gh(%{@url_a => "pushed-after-approval"})
+  test "a head that moved after approval refuses that PR only and re-holds its gate",
+       %{run_id: run_id} do
+    stub_gh()
     assert {:ok, _} = approve(run_id, nil)
     assert {:ok, _} = approve(run_id, "b")
+
+    # a gets a push GitHub shows but the PR watch has not recorded
+    stub_gh(%{@url_a => "pushed-after-approval"})
 
     assert {:error, {:head_moved_since_approval, @sha_a, "pushed-after-approval"}} =
              merge(run_id, nil)
 
+    assert {:error, :pr_not_acceptable} = merge(run_id, nil), "a's approval is void"
+
     assert {:ok, _} = merge(run_id, "b")
     assert [["pr", "merge", @url_b | _]] = gh_merges()
     assert [%{"pr_url" => @url_b}] = events(run_id, "PrMerged")
+
+    assert [%{"approved_head_sha" => @sha_a, "head_sha" => "pushed-after-approval"} = held] =
+             events(run_id, "MergeGatePending")
+
+    refute Map.has_key?(held, "repo_id"), "the primary's event keeps the single-repo shape"
+  end
+
+  test "a push recorded by the PR watch voids that repo's approval only", %{run_id: run_id} do
+    stub_gh()
+    assert {:ok, _} = approve(run_id, nil)
+    assert {:ok, _} = approve(run_id, "b")
+
+    pushed = %ForemanServer.GitHub.PrStatus{
+      status: :open,
+      head_sha: "pushed-to-b",
+      head_branch: "foreman/task-mm/b",
+      base_branch: "main"
+    }
+
+    {:ok, update} = ForemanServer.PrUpdate.command(run_id, @url_b, pushed, "b")
+    assert {:ok, _} = CommandGateway.dispatch_system(update)
+
+    assert [%{"repo_id" => "b", "approved_head_sha" => @sha_b, "head_sha" => "pushed-to-b"}] =
+             events(run_id, "MergeGatePending")
+
+    assert {:error, :pr_not_acceptable} = merge(run_id, "b")
+    assert {:ok, _} = merge(run_id, nil)
+    assert [["pr", "merge", @url_a | _]] = gh_merges()
+
+    # b's old head can no longer be approved, its new one can
+    stub_gh(%{@url_b => "pushed-to-b"})
+
+    assert {:error, {:head_sha_mismatch, @sha_b, "pushed-to-b"}} = approve(run_id, "b")
+    assert {:ok, _} = approve(run_id, "b", @approver, "pushed-to-b")
+    assert {:ok, _} = merge(run_id, "b")
+
+    assert [["pr", "merge", @url_b, "--squash", "--match-head-commit", "pushed-to-b"]] =
+             gh_merges()
   end
 
   test "a b PrReady after a's approval does not un-approve a", %{run_id: run_id} do
