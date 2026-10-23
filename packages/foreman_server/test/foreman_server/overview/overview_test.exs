@@ -113,6 +113,7 @@ defmodule ForemanServer.OverviewTest do
     {:ok, waiting} = Overview.build("p", now_fun: fn -> @now end)
     assert ["run:needs-ok"] == ids(waiting.groups.waiting_on_you)
     assert [%{reason: :approval}] = waiting.groups.waiting_on_you
+    assert [%{actions: ["run.cancel", "thread.resolve"]}] = waiting.groups.waiting_on_you
     assert %{needed: true, reasons: [:approval]} = waiting.attention
 
     :ok =
