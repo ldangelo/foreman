@@ -24,6 +24,7 @@ defmodule Jido.Harness.Event do
     :session_failed,
     :session_cancelled,
     :input_accepted,
+    :input_idle,
     :turn_queued,
     :turn_started,
     :output_text_delta,

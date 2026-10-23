@@ -18,5 +18,11 @@ defmodule Jido.Harness.Adapter do
   @callback install(map(), keyword()) :: {:ok, map()} | {:error, term()}
   @callback cancel(String.t(), context()) :: :ok | {:error, term()}
 
-  @optional_callbacks install: 2, cancel: 2
+  @doc """
+  Encodes one line of streaming input for a run started with the `live_input: true`
+  provider option (see `Jido.Harness.Run.send_input/3`).
+  """
+  @callback live_input_line(input_id :: String.t(), text :: String.t()) :: binary()
+
+  @optional_callbacks install: 2, cancel: 2, live_input_line: 2
 end
