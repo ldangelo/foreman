@@ -42,7 +42,9 @@ defmodule ForemanServer.ProjectDeferralTest do
     %{
       status: "in_progress",
       task_id: task_id,
-      run_id: "run-#{task_id}",
+      # Unique per project id: the Dispatcher reads the real run projection for this id
+      # (`crash_resume_opts/2`), so a shared "run-t1" could collide with another module's run.
+      run_id: "run-#{id}-#{task_id}",
       project_id: id,
       approval_id: "approval-#{task_id}",
       workflow_snapshot: %{phases: []}
