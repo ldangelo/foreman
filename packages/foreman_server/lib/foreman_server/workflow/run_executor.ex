@@ -1278,21 +1278,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @steering_heading "## Operator message(s) received while you were paused"
 
   # E6-S4 operator steering. The projection is the durable queue
-  # (`RunSteerQueued` minus `RunSteerConsumed`); `RunControl`'s mailbox is a
-  # cache that is wiped on every terminate/resume, so it is consulted first
-  # and the projection is the fallback. Command phases never see a prompt,
-  # so they neither inject nor consume.
+  # (`RunSteerQueued` minus `RunSteerConsumed`) and is the ONLY source read
+  # here. `RunControl`'s mailbox is a cache wiped on every terminate/resume and
+  # refilled one message at a time by the Dispatcher, so it can be partial: a
+  # non-empty cache that omitted an older pending message (or its approval
+  # override) would silently drop it from the launch. Command phases never see
+  # a prompt, so they neither inject nor consume.
   defp steering_messages(state, phase_spec) do
     pending =
-      case RunControl.peek_messages(state.run_id) do
-        [] ->
-          state.run_id
-          |> ProjectionStore.pending_steering()
-          |> Enum.map(&Map.take(&1, [:message_id, :text, :approval_mode_override]))
-
-        cached ->
-          cached
-      end
+      state.run_id
+      |> ProjectionStore.pending_steering()
+      |> Enum.map(&Map.take(&1, [:message_id, :text, :approval_mode_override]))
 
     # A command phase has no prompt to carry operator text, but an approval's
     # `approval_mode_override` still applies to its driver opts: only those
