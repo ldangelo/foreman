@@ -493,6 +493,73 @@ defmodule ForemanServer.Coordinator.RunnerTest do
     end
   end
 
+  describe "worker crash mid-turn" do
+    test "killing the worker ends its turn task and at most one turn is ever live", %{
+      project_id: p,
+      script: script
+    } do
+      test = self()
+
+      hold = fn _ ->
+        send(test, {:held, self()})
+        receive(do: (:release -> reply_turn("first")))
+      end
+
+      second = fn _ ->
+        send(test, {:second_turn, self()})
+        reply_turn("second")
+      end
+
+      Stub.push(script, [hold, second])
+      rt = start_runtime(script)
+      say(p, "m1", "start exactly one thread")
+      assert_receive {:held, turn_pid}, 10_000
+      turn_ref = Process.monitor(turn_pid)
+      [{worker, _}] = Registry.lookup(rt.registry, p)
+
+      Process.exit(worker, :kill)
+
+      # the orphaned turn must die with its worker; before the fix it kept running
+      assert_receive {:DOWN, ^turn_ref, :process, ^turn_pid, _}, 5_000
+
+      # a replacement worker then runs exactly one turn, never concurrently with the first
+      say(p, "m2", "also reply ACK")
+      assert_receive {:second_turn, second_pid}, 10_000
+      refute second_pid == turn_pid
+      completed(p)
+      refute_received {:held, _}
+    end
+
+    test "a replacement worker refuses to start a turn while a predecessor's turn is live", %{
+      project_id: p,
+      script: script
+    } do
+      test = self()
+
+      called = fn _ ->
+        send(test, :agent_called)
+        reply_turn("x")
+      end
+
+      Stub.push(script, [called])
+      rt = start_runtime(script)
+
+      holder =
+        spawn_link(fn ->
+          {:ok, _} = Registry.register(rt.registry, {:turn, p}, nil)
+          send(test, :fenced)
+          receive(do: (:release -> :ok))
+        end)
+
+      assert_receive :fenced
+      say(p, "m1", "hi")
+      refute_receive :agent_called, 300
+      send(holder, :release)
+      assert_receive :agent_called, 10_000
+      completed(p)
+    end
+  end
+
   test "health lists workers and which are mid-turn", %{project_id: p, script: script} do
     test = self()
 

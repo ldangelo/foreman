@@ -5,7 +5,13 @@ defmodule ForemanServer.Coordinator.ProjectWorker do
   parallel. A `notify/2` that arrives mid-turn only marks the worker dirty: the
   next turn consumes every message that arrived meanwhile (coalescing).
 
-  The turn runs in a supervised task so the worker stays responsive; a hard
+  The turn runs in a supervised task so the worker stays responsive. The task is
+  LINKED to the worker (which traps exits), so a worker crash or kill also ends
+  the in-flight turn instead of orphaning it. Additionally every turn registers
+  the unique key `{:turn, project_id}` in the runtime registry for its lifetime:
+  a replacement worker whose turn starts while a predecessor's turn is still
+  winding down gets `{:failed, :turn_in_flight}` and retries after
+  `retry_backoff_ms`, so at most one turn per project is ever live. A hard
   `turn_timeout_ms` kills a hung task and records the failure. After a failed
   turn the worker retries after `retry_backoff_ms` until the projection says the
   coordinator is unhealthy; from then on nothing runs until `coordinator.restart`.
@@ -64,8 +70,13 @@ defmodule ForemanServer.Coordinator.ProjectWorker do
   defp via(rt, project_id), do: {:via, Registry, {rt.registry, project_id}}
 
   @impl true
-  def init({rt, project_id}),
-    do: {:ok, %{project_id: project_id, rt: rt, task: nil, dirty?: false, timed_out?: false}}
+  def init({rt, project_id}) do
+    Process.flag(:trap_exit, true)
+    {:ok, initial_state(rt, project_id)}
+  end
+
+  defp initial_state(rt, project_id),
+    do: %{project_id: project_id, rt: rt, task: nil, dirty?: false, timed_out?: false}
 
   @impl true
   def handle_call(:busy?, _from, state), do: {:reply, state.task != nil, state}
@@ -112,12 +123,28 @@ defmodule ForemanServer.Coordinator.ProjectWorker do
   defp maybe_start(%{task: nil} = state) do
     project_id = state.project_id
     rt = state.rt
-    task = Task.Supervisor.async_nolink(rt.task_sup, fn -> TurnRunner.run(project_id, rt) end)
+    task = Task.Supervisor.async(rt.task_sup, fn -> fenced_turn(project_id, rt) end)
     Process.send_after(self(), {:turn_timeout, task.ref}, rt.turn_timeout_ms)
     %{state | task: {task.ref, task.pid}, dirty?: false}
   end
 
   defp maybe_start(state), do: %{state | dirty?: true}
+
+  # The registry key is released when this task dies, so it is the live-turn fence
+  # even for a turn orphaned by a hard-killed worker.
+  defp fenced_turn(project_id, rt) do
+    case Registry.register(rt.registry, {:turn, project_id}, nil) do
+      {:ok, _} ->
+        TurnRunner.run(project_id, rt)
+
+      {:error, {:already_registered, other}} ->
+        Logger.warning(
+          "coordinator #{project_id}: previous turn #{inspect(other)} still live; not starting a second"
+        )
+
+        {:failed, :turn_in_flight}
+    end
+  end
 
   defp after_turn(state, :idle), do: if(state.dirty?, do: maybe_start(state), else: state)
   defp after_turn(state, :ok), do: maybe_start(state)
