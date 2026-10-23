@@ -29,7 +29,10 @@ defmodule ForemanServer.Workflow.RunExecutorFailureReapTest do
 
     agent = await_pid("sleep #{marker}")
     {:os_pid, exec_port} = Port.info(port, :os_pid)
-    on_exit(fn -> System.cmd("kill", ["-9", Integer.to_string(agent)], stderr_to_stdout: true) end)
+
+    on_exit(fn ->
+      System.cmd("kill", ["-9", Integer.to_string(agent)], stderr_to_stdout: true)
+    end)
 
     System.cmd("kill", ["-9", Integer.to_string(exec_port)])
     await_orphaned(agent)
