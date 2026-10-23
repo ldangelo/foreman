@@ -177,6 +177,14 @@ as `UNVERIFIED`. `E2E_GH_ONLY=1` runs only setup plus this stage (about 6 minute
 
 The limitations listed next were written for the scripted flow alone; since then the Claude coordinator, thread, reviewer, in-flight approval and steering paths, and a real private GitHub repo (stage 8), were exercised live. The evidence index, the exact commands and the current verified-versus-unverified list are in `docs/acceptance/README.md`; the per-capability verdicts are in `docs/acceptance/parity-audit.md`.
 
+**More real-GitHub stages (opt-in).** `scripts/e2e/github_live_extras.sh` (`FOREMAN_E2E_GITHUB_REPO`, same guarded scratch repo; modes `all | serve |
+stage <name>... | stop`) covers what stage 8 leaves: the workspace Fix CI / Address comments / Resolve conflicts / Create PR buttons clicked in a
+real browser (Playwright, `scripts/e2e/ui-a11y/pr_actions_live.mjs`; use `http://localhost:<port>`, the LiveView socket refuses `127.0.0.1`), the
+`pr_auto_fix` policy off / on / bounded, what a push after `approve-merge` does, GitHub's refusal text for an operator merge, and (only with
+`E2E_GH_ALLOW_PUBLIC=1`, after a whole-history content scan, because branch protection needs a public repository on a free plan) merge under
+branch protection. The fixture carries `.coderabbit.yaml` and bead titles start with `e2e-skip` so an account-wide CodeRabbit stays silent.
+Evidence: `docs/acceptance/live-github-protection-ui-autofix.md`.
+
 Known limitations: pi has no tool-permission or ask mechanism, so approve/deny and question/answer are reported
 `UNVERIFIED` (only the empty list surfaces are checked); PR/CI/merge behaviour is exercised against real GitHub only when
 `FOREMAN_E2E_GITHUB_REPO` is set (stage 8; branch protection is not, see the evidence doc), and otherwise not at all
@@ -382,8 +390,11 @@ work while in-flight runs keep going ([Pause, resume and reactivate](#pause-resu
 
 These paths were built and tested with fakes only and are **UNVERIFIED** live:
 
-- E9 PR watching against real GitHub: webhook deliveries, force-pushes, check
-  re-runs, merge-conflict resolution and unresolved review threads (spike S4).
+- Merge under GitHub **branch protection** (required checks, a required review, linear history): protection does not exist on a private repo of a
+  free plan (HTTP 403) and the temporary public window was not taken (`docs/acceptance/live-github-protection-ui-autofix.md`, "Item 1"). GitHub's
+  refusal of an operator merge (repo forbids squash) **is** verified there, and so are the E9 PR paths (webhook deliveries, force-pushes, check re-runs,
+  merge-conflict resolution, unresolved review threads, the workspace PR action buttons, the `pr_auto_fix` policy): see also
+  `docs/acceptance/github-live-run.md`.
 - Resuming a **Claude** provider session (Claude auth was unavailable); `pi`
   sessions are verified and bound to their working directory.
 - The phase-wide effect of approving a tool on a **Claude** run (spike S2).
@@ -2374,7 +2385,8 @@ problem and pushes to that same branch. PR comments, review text and CI logs are
 untrusted and are passed to the agent inside a fence it cannot close. The agent is
 the one the run used (its provider session is resumed only when the original
 worktree path still exists), else `config :foreman_server, :pr_fix, agent:`.
-`foreman run create-pr <run-id>` opens the PR when the run has none;
+`foreman run create-pr <run-id>` (or the workspace Create PR button) opens the PR when the run has none and puts it
+in the merge gate like a run's own PR (`run.pr.ready`): approve it with `approve-merge` and merge it with `merge`;
 `foreman run watch-stop|watch-start <run-id> [--pr <url>]` pauses or resumes
 watching one PR (a merged or closed PR is dropped automatically).
 
@@ -2388,11 +2400,13 @@ is an event (`run.pr.fix_exhausted`), visible in `foreman run prs`.
 (kinds from `ci`, `comments`, `conflicts`; attempts 1..5; cooldown 0..86400 s).
 Without it PRs are observed but never changed unless an operator asks.
 
-**Not verified against real GitHub (spike S4).** Live webhook deliveries, force
-pushes to the PR branch, check re-run, merge-conflict resolution and unresolved
-review-thread reads were designed from the GitHub API documentation and tested
-with fakes only. Resuming a Claude provider session from a new directory is also
-unverified; pi sessions are bound to their working directory.
+**Verified against real GitHub.** Live webhook deliveries, force pushes to the PR branch, check re-run,
+merge-conflict resolution, unresolved review-thread reads, the workspace PR action buttons and the
+`pr_auto_fix` policy (off, on, bounded) were exercised on a real private repository
+(`docs/acceptance/github-live-run.md`, `docs/acceptance/live-github-protection-ui-autofix.md`). A push
+after `approve-merge` is not re-held: the gate stays approved, `merge` refuses the moved head and
+`approve-merge` cannot be repeated (bead `foreman-ehxy6`). Resuming a Claude provider session from a new
+directory is still unverified; pi sessions are bound to their working directory.
 
 ## Needs you: approvals and questions
 

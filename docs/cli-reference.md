@@ -1142,9 +1142,9 @@ Operator commands `run.pr.fix_ci`, `run.pr.address_comments`, `run.pr.resolve_co
 
 ### `foreman run create-pr <run-id>` / `foreman run watch-stop|watch-start <run-id> [--pr <url>]`
 
-`create-pr` (`run.pr.create`) opens the PR for a run that has none. `watch-stop` / `watch-start` (`run.pr.watch_stop`, `run.pr.watch_start`; MCP `foreman_pr_watch_stop`) pause or resume PR watching. None of them merge or approve: use `approve-merge` and `merge`.
+`create-pr` (`run.pr.create`) opens the PR for a run that has none and puts it in the merge gate like a run's own PR (`run.pr.ready`, so `approve-merge` and `merge` work on it); a failed gate signal is an error (`pr_ready_signal_failed`) and a retry resumes the open PR. `watch-stop` / `watch-start` (`run.pr.watch_stop`, `run.pr.watch_start`; MCP `foreman_pr_watch_stop`) pause or resume PR watching. None of them merge or approve: use `approve-merge` and `merge`.
 
-**Project policy.** `foreman project update <id> --pr-auto-fix '<json>'` sets `pr_auto_fix` (`kinds` from `ci|comments|conflicts`, `max_attempts` 1..5, `cooldown_seconds` 0..86400); `--clear pr_auto_fix` turns automatic fixing off. Server settings: `FOREMAN_PR_WATCHER_ENABLED`, `FOREMAN_PR_MONITOR_ENABLED` (polling, off by default), `FOREMAN_GITHUB_WEBHOOK_SECRET`. Live webhooks, force-push handling, check re-run, conflict resolution and unresolved-thread reads are UNVERIFIED against real GitHub (spike S4).
+**Project policy.** `foreman project update <id> --pr-auto-fix '<json>'` sets `pr_auto_fix` (`kinds` from `ci|comments|conflicts`, `max_attempts` 1..5, `cooldown_seconds` 0..86400); `--clear pr_auto_fix` turns automatic fixing off. Server settings: `FOREMAN_PR_WATCHER_ENABLED`, `FOREMAN_PR_MONITOR_ENABLED` (polling, off by default), `FOREMAN_GITHUB_WEBHOOK_SECRET`. Live webhooks, force-push handling, check re-run, conflict resolution, unresolved-thread reads, the workspace PR buttons and the `pr_auto_fix` policy (off, on, bounded) are verified against real GitHub (`docs/acceptance/github-live-run.md`, `docs/acceptance/live-github-protection-ui-autofix.md`).
 
 ### `foreman reset`
 
