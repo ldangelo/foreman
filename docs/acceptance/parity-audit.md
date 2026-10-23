@@ -63,6 +63,8 @@ Bold = created by this audit (labelled `claude-projects-parity`, none carries `f
 | Coordinator turns record no usage; documented `coordinator` role never emitted | C11 | **foreman-ba4y4** | new, P3 |
 | Daily-cap deferrals not re-admitted at the UTC rollover | C11 | **foreman-7wsyx** | new, P3 |
 | Notifier mapping rows, webhook URL safety, status surface, HTTPS client untested | C12 | **foreman-ireii** | new, P3 |
+| No `PR ready for review` notification when a run opens its own PR (auto-PR emits `PrReady`; the mapping row is keyed on `PrCreated`); found by the combined live run | C12 | **foreman-ehz7l** | new, P2 |
+| Failure injection `br-down` failed once (no thread appeared) and passed on re-run; not root-caused | R | **foreman-3ll3t** | new, P3 |
 | Telegram/Slack never run live | C12 | foreman-mivo7 | open, deferred by user |
 | Library upload/remove, proposal decline, settings editors absent from the workspace UI | C3 | **foreman-8ervf** | new, P3 |
 | In-container network blocking and the Scheduled tab not seen live | C4, C9 | foreman-8vf0s | open |
