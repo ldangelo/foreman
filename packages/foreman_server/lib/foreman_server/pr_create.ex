@@ -20,11 +20,20 @@ defmodule ForemanServer.PrCreate do
   write failed) is adopted, not duplicated; an association whose `PrCreated` was never
   recorded (the dispatch after `execute/1` failed) is resumed by the retry, not refused.
 
+  The PR enters the merge gate exactly as the PR of a run's own AutoPR does: once it is
+  opened and associated, `execute/1` signals `run.pr.ready` (`PrReady`: the PR url, its
+  branch, the head commit and the base) under the run's deterministic
+  `Identity.run_pr_ready_command_id/1`. Without it the run's gate stays `nil`,
+  `merge_approve` answers `merge_gate_not_found` and `run.pr.merge` has no head to pin, so a
+  PR opened from the workspace's Create PR button could never be merged through the operator
+  path. A signal that fails is an error (`{:pr_ready_signal_failed, reason}`), never a silent
+  success: the PR is already associated, so the operator's retry resumes it and signals again.
+
   `set_command_runner/1` is the test seam (3-arity `(cmd, args, opts)` returning
   `{output, exit_code}`); without it the installed `git`/`gh` run.
   """
 
-  alias ForemanServer.{EventStore, PrAssociate, ProjectionStore}
+  alias ForemanServer.{CommandGateway, EventStore, Identity, PrAssociate, ProjectionStore}
   alias ForemanServer.Workflow.AutoPR
 
   @runner_key {__MODULE__, :command_runner}
@@ -65,7 +74,9 @@ defmodule ForemanServer.PrCreate do
          {:ok, existing} <- existing_pr(run_id),
          {:ok, head} <- head_branch(run_id),
          {:ok, base} <- base_branch(run),
-         {:ok, pr_url} <- open_or_resume(run, run_id, existing, head, base) do
+         {:ok, project} <- project(run),
+         {:ok, pr_url} <- open_or_resume(run, run_id, existing, project, head, base),
+         :ok <- signal_ready(run, run_id, pr_url, project, head, base) do
       {:ok,
        %{
          run_id: run_id,
@@ -78,14 +89,63 @@ defmodule ForemanServer.PrCreate do
     end
   end
 
-  defp open_or_resume(_run, _run_id, existing, _head, _base) when is_binary(existing),
+  defp open_or_resume(_run, _run_id, existing, _project, _head, _base) when is_binary(existing),
     do: {:ok, existing}
 
-  defp open_or_resume(run, run_id, nil, head, base) do
-    with {:ok, project} <- project(run),
-         {:ok, pr_url} <- open(run, project, head, base),
+  defp open_or_resume(run, run_id, nil, project, head, base) do
+    with {:ok, pr_url} <- open(run, project, head, base),
          {:ok, _id} <- PrAssociate.store(run_id, pr_url) do
       {:ok, pr_url}
+    end
+  end
+
+  # `RunExecutor` and `RepoPr` signal the same command for the PRs they open, with the same
+  # deterministic id, so a repeat (a retry, a PR that already had its gate) is a no-op.
+  defp signal_ready(run, run_id, pr_url, project, head, base) do
+    with {:ok, head_sha} <- head_sha(project, head),
+         {:ok, _spec} <-
+           CommandGateway.dispatch_system(%{
+             type: "run.pr.ready",
+             command_id: Identity.run_pr_ready_command_id(run_id),
+             aggregate_id: "run:#{run_id}",
+             payload: %{
+               run_id: run_id,
+               project_id: run.project_id,
+               task_id: run.task_id,
+               pr_url: pr_url,
+               branch_name: head,
+               head_sha: head_sha,
+               base_branch: base
+             }
+           }) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:pr_ready_signal_failed, reason}}
+    end
+  end
+
+  # The commit the head branch points at in the project checkout (the branch was just pushed
+  # from there): the head `PrReady` records, from which the merge pin starts.
+  defp head_sha(project, branch) do
+    case run_command("git", ["rev-parse", "--verify", branch <> "^{commit}"],
+           stderr_to_stdout: true,
+           cd: project
+         ) do
+      {output, 0} ->
+        case output |> String.trim() |> String.downcase() do
+          "" -> {:error, :empty_revision}
+          sha -> {:ok, sha}
+        end
+
+      {output, _code} ->
+        {:error, {:unresolvable_revision, String.trim(output)}}
+    end
+  end
+
+  defp run_command(cmd, args, opts) do
+    case :persistent_term.get(@runner_key, :unset) do
+      :unset -> System.cmd(cmd, args, opts)
+      fun -> fun.(cmd, args, opts)
     end
   end
 
