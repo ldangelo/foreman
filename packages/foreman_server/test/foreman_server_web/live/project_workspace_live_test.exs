@@ -144,6 +144,129 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   end
 
   describe "overview pane" do
+    @review_pr "https://github.com/a/b/pull/9"
+
+    defp pr_event(type, id, extra) do
+      %{
+        event_type: type,
+        payload:
+          Map.merge(
+            %{
+              run_id: "r-pr2",
+              project_id: id,
+              task_id: "t-pr2",
+              pr_url: @review_pr,
+              head_sha: "h1",
+              pr_status: "open",
+              digest: "d",
+              observation_seq: 1
+            },
+            extra
+          )
+      }
+    end
+
+    defp pr_review(id, extra), do: pr_event("PrReviewChanged", id, extra)
+
+    defp pr_checks(id, state, seq),
+      do:
+        pr_event("PrChecksChanged", id, %{checks_state: state, failing: [], observation_seq: seq})
+
+    defp watch_pr(events) do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrAssociated",
+            payload: %{run_id: "r-pr2", pr_url: @review_pr, pr_number: 9}
+          }
+          | events
+        ])
+    end
+
+    defp in_group?(view, group),
+      do: has_element?(view, "#group-#{group} #thread-run\\:r-pr2")
+
+    test "an unresolved review thread raises the thread to Waiting on you and clears when resolved (foreman-v8wqe)",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+      assert in_group?(view, "ready_for_review")
+
+      watch_pr([pr_review(id, %{thread_ids: ["PRRT_1"], observation_seq: 1})])
+      html = await_until(view, fn _ -> in_group?(view, "waiting_on_you") end)
+
+      assert html =~ "Review threads unresolved"
+      refute in_group?(view, "ready_for_review")
+
+      {:ok, overview} = ForemanServer.Overview.build(id)
+      assert :review_threads in overview.attention.reasons
+
+      # The thread is resolved on GitHub: the next observation carries no thread ids.
+      watch_pr([pr_review(id, %{thread_ids: [], digest: "d2", observation_seq: 2})])
+      await_until(view, fn _ -> in_group?(view, "ready_for_review") end)
+
+      refute in_group?(view, "waiting_on_you")
+      {:ok, overview} = ForemanServer.Overview.build(id)
+      refute :review_threads in overview.attention.reasons
+    end
+
+    test "an outstanding CHANGES_REQUESTED review raises the thread to Waiting on you (foreman-v8wqe)",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      watch_pr([pr_review(id, %{review_decision: "changes_requested"})])
+      html = await_until(view, fn _ -> in_group?(view, "waiting_on_you") end)
+
+      assert html =~ "Changes requested"
+      {:ok, overview} = ForemanServer.Overview.build(id)
+      assert :changes_requested in overview.attention.reasons
+
+      watch_pr([pr_review(id, %{review_decision: "approved", digest: "d2", observation_seq: 2})])
+      await_until(view, fn _ -> in_group?(view, "ready_for_review") end)
+    end
+
+    test "conversation comments alone do not raise attention (they have no resolved state)",
+         %{id: id} do
+      watch_pr([pr_review(id, %{comment_ids: ["IC_1"]})])
+      {:ok, overview} = ForemanServer.Overview.build(id)
+
+      assert Enum.any?(overview.groups.ready_for_review, &(&1.thread_id == "run:r-pr2"))
+      refute Enum.any?(overview.groups.waiting_on_you, &(&1.thread_id == "run:r-pr2"))
+    end
+
+    test "failing CI and a pending review both hold the thread; CI is the reason until it clears (foreman-v8wqe)",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      watch_pr([
+        pr_checks(id, "failing", 1),
+        pr_review(id, %{thread_ids: ["PRRT_1"], review_decision: "changes_requested"})
+      ])
+
+      html = await_until(view, fn _ -> in_group?(view, "waiting_on_you") end)
+      assert html =~ "CI failing"
+      refute html =~ "Review threads unresolved"
+
+      # CI goes green: the review state still holds the thread.
+      :ok = ProjectionStore.apply_events([pr_checks(id, "passing", 2)])
+      html = await_until(view, fn h -> not (h =~ "CI failing") end)
+
+      assert in_group?(view, "waiting_on_you")
+      assert html =~ "Changes requested"
+
+      # The review is addressed too: back to Ready for review.
+      :ok =
+        ProjectionStore.apply_events([
+          pr_review(id, %{
+            thread_ids: [],
+            review_decision: "approved",
+            digest: "d2",
+            observation_seq: 2
+          })
+        ])
+
+      await_until(view, fn _ -> in_group?(view, "ready_for_review") end)
+    end
+
     test "a failing-CI PR raises its thread out of Ready for review (foreman-c1i34)", %{id: id} do
       pr = "https://github.com/a/b/pull/9"
 

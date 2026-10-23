@@ -24,6 +24,9 @@ defmodule ForemanServer.Overview.Group do
   |   |  | `:conflict` | `pr_state :conflicted` |
   |   |  | `:paused` | status `paused` and `paused_reason` is not `"steer"` |
   |   |  | `:review_not_met` | verdict `not_met` and `pr_state :open` |
+  |   |  | `:ci_failing` | `pr_state :open` and `checks_state :failing`, even while the merge gate is pending |
+  |   |  | `:changes_requested` | `pr_state :open` and `review_state :changes_requested` (an outstanding CHANGES_REQUESTED review) |
+  |   |  | `:review_threads` | `pr_state :open` and `review_state :threads_unresolved` (an unresolved review thread) |
   | 3 | `:landing` | `:merge_in_flight` | `pr_state :open` and `merge_gate :approved` |
   | 4 | `:ready_for_review` | `:pr_ready` | `pr_state :open` and `merge_gate :pending` |
   |   |  | `:review_ready` | status `completed`, verdict `met`/`partially_met`, `pr_state :open` |
@@ -32,6 +35,10 @@ defmodule ForemanServer.Overview.Group do
   | 6 | `:idle` | `:review_undetermined` | completed, open PR, no usable verdict |
   |   |  | `:unknown_status` | anything not recognised |
   |   |  | `:no_pr` | everything else |
+
+  When several PR rules hold at once the reason is the first listed (failing CI
+  before review state); the group is the same, and the reasons that do not show
+  surface once the earlier one clears.
 
   `failure_reason`, `door` and `idle_ms` are accepted for display and future
   rules; no current rule depends on them.
@@ -56,6 +63,8 @@ defmodule ForemanServer.Overview.Group do
     :paused,
     :review_not_met,
     :ci_failing,
+    :changes_requested,
+    :review_threads,
     :merge_in_flight,
     :pr_ready,
     :review_ready,
@@ -83,6 +92,8 @@ defmodule ForemanServer.Overview.Group do
           | :paused
           | :review_not_met
           | :ci_failing
+          | :changes_requested
+          | :review_threads
           | :merge_in_flight
           | :pr_ready
           | :review_ready
@@ -123,6 +134,7 @@ defmodule ForemanServer.Overview.Group do
       i.status == "paused" and i.paused_reason != "steer" -> {:waiting_on_you, :paused}
       i.review_verdict == "not_met" and i.pr_state == :open -> {:waiting_on_you, :review_not_met}
       i.pr_state == :open and i.checks_state == :failing -> {:waiting_on_you, :ci_failing}
+      i.pr_state == :open and i.review_state != :none -> {:waiting_on_you, review_reason(i)}
       i.pr_state == :open and i.merge_gate == :approved -> {:landing, :merge_in_flight}
       i.pr_state == :open and i.merge_gate == :pending -> {:ready_for_review, :pr_ready}
       reviewed_open_pr?(i) -> {:ready_for_review, :review_ready}
@@ -133,6 +145,9 @@ defmodule ForemanServer.Overview.Group do
       true -> {:idle, :no_pr}
     end
   end
+
+  defp review_reason(%Input{review_state: :changes_requested}), do: :changes_requested
+  defp review_reason(%Input{review_state: :threads_unresolved}), do: :review_threads
 
   defp reviewed_open_pr?(%Input{status: "completed", pr_state: :open, review_verdict: verdict}),
     do: verdict in ["met", "partially_met"]

@@ -88,6 +88,8 @@ defmodule ForemanServerWeb.Workspace.Components do
       </p>
       <p :if={@card.failure_reason} class="ws-error">Failure: {@card.failure_reason}</p>
       <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
+      <p :if={@card.reason == :changes_requested} class="ws-error">Changes requested: a reviewer asked for changes on the PR.</p>
+      <p :if={@card.reason == :review_threads} class="ws-error">Review threads unresolved: the PR has open review comments.</p>
       <p :if={@card.hint} class="ws-muted">{@card.hint}</p>
       <div class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
         <%= for action <- @card.actions do %>

@@ -174,6 +174,7 @@ defmodule ForemanServer.Overview do
       pr_state: pr && pr.pr_state,
       merge_gate: (pr && pr.merge_gate) || :none,
       checks_state: checks_state(watch),
+      review_state: review_state(watch),
       pending_approvals: signals.pending_approvals,
       open_questions: signals.open_questions,
       expired_approvals: signals.expired_approvals,
@@ -203,6 +204,20 @@ defmodule ForemanServer.Overview do
        ),
        do: :failing,
        else: :none
+  end
+
+  # An outstanding CHANGES_REQUESTED review, else an unresolved review thread, on
+  # any still-live watched PR of the head run. This is the same predicate as
+  # `PrWatcher.AutoFix`'s `comments` trigger; conversation comments are left out
+  # because they have no resolved state and could never clear.
+  defp review_state(watch) do
+    live = Enum.filter(watch, &(&1.status not in ["merged", "closed"]))
+
+    cond do
+      Enum.any?(live, &(&1.review_decision == "changes_requested")) -> :changes_requested
+      Enum.any?(live, &(&1.thread_ids != [])) -> :threads_unresolved
+      true -> :none
+    end
   end
 
   # The newest run of a workflow thread owns its PR state; jobsites have none.

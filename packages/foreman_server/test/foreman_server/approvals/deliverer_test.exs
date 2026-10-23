@@ -6,7 +6,7 @@ defmodule ForemanServer.Approvals.DelivererTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.Aggregates.ToolCall
-  alias ForemanServer.Approvals.{Deliverer, Live, Requester}
+  alias ForemanServer.Approvals.{Deliverer, Inflight, Live, Requester}
   alias ForemanServer.{CommandGateway, CommandRouter, ProjectionStore}
 
   defmodule FakeSession do
@@ -27,8 +27,18 @@ defmodule ForemanServer.Approvals.DelivererTest do
     live = start_supervised!({Live, name: :deliverer_test_live})
     _ = live
 
+    # The deliverer's startup recovery re-delivers every decided call in the global
+    # projection, including in-flight ones other test modules left behind. A private
+    # Inflight server (never the app's, which is off in test) answers those, so a stale
+    # call settles as a failed delivery instead of crash-looping the deliverer.
+    start_supervised!({Inflight, name: :deliverer_test_inflight})
+
     start_supervised!(
-      {Deliverer, name: :deliverer_test, live: :deliverer_test_live, session_module: FakeSession}
+      {Deliverer,
+       name: :deliverer_test,
+       live: :deliverer_test_live,
+       inflight: :deliverer_test_inflight,
+       session_module: FakeSession}
     )
 
     :ok
@@ -191,14 +201,22 @@ defmodule ForemanServer.Approvals.DelivererTest do
 
       start_supervised!(
         {Deliverer,
-         name: :deliverer_test_2, live: :deliverer_test_live, session_module: FakeSession}
+         name: :deliverer_test_2,
+         live: :deliverer_test_live,
+         inflight: :deliverer_test_inflight,
+         session_module: FakeSession}
       )
 
       await("ToolCallFinished", :run_id, run_id)
       assert %{status: "finished", outcome: "delivered"} = ProjectionStore.tool_call(run_id, id)
 
       # exactly once: a second recovery pass changes nothing
-      assert Deliverer.recover() >= 0
+      assert Deliverer.recover(
+               live: :deliverer_test_live,
+               inflight: :deliverer_test_inflight,
+               session_module: FakeSession
+             ) >= 0
+
       assert [%{message_id: "approval:" <> _}] = ProjectionStore.pending_steering(run_id)
       refute_receive {:projection_event, %{event_type: "RunSteerQueued"}}, 200
     end

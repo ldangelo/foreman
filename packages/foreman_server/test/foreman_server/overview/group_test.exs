@@ -31,6 +31,42 @@ defmodule ForemanServer.Overview.GroupTest do
      {:waiting_on_you, :ci_failing}},
     {[status: "completed", pr_state: :open, review_verdict: "met", checks_state: :failing],
      {:waiting_on_you, :ci_failing}},
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :pending,
+       review_state: :threads_unresolved
+     ], {:waiting_on_you, :review_threads}},
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :pending,
+       review_state: :changes_requested
+     ], {:waiting_on_you, :changes_requested}},
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :approved,
+       review_state: :threads_unresolved
+     ], {:waiting_on_you, :review_threads}},
+    {[
+       status: "completed",
+       pr_state: :open,
+       review_verdict: "met",
+       review_state: :threads_unresolved
+     ], {:waiting_on_you, :review_threads}},
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :pending,
+       checks_state: :failing,
+       review_state: :changes_requested
+     ], {:waiting_on_you, :ci_failing}},
+    {[status: "completed", pr_state: :open, merge_gate: :pending, review_state: :none],
+     {:ready_for_review, :pr_ready}},
+    {[status: "completed", pr_state: :merged, review_state: :threads_unresolved],
+     {:resolved, :pr_merged}},
+    {[status: "completed", pr_state: nil, review_state: :changes_requested], {:idle, :no_pr}},
     {[status: "completed", pr_state: :open, merge_gate: :pending, checks_state: :passing],
      {:ready_for_review, :pr_ready}},
     {[status: "completed", pr_state: :merged, checks_state: :failing], {:resolved, :pr_merged}},
