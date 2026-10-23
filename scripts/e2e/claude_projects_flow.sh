@@ -237,9 +237,6 @@ project_runs_active() {
 # earlier system report (a finished review) and before the turn for this message, so the threads
 # are awaited by polling the project, not inferred from the chat output. If the coordinator started
 # nothing, the user's remedy is a second nudge: the step sends one and says so.
-three_titles() { # <tag> -> "<thread id><TAB><title>" per thread whose title contains the tag
-  api_get "/api/projects/$PROJECT/threads" | jq -r --arg t "$1" '[.threads[]? | select(.title | contains($t))] | map("\(.id)\t\(.title)") | .[]' 2>/dev/null
-}
 step_three_tasks() {
   say "5b. three tasks pasted in one message start three threads that run in parallel"
   overlap_selftest
@@ -268,15 +265,21 @@ C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-
     if [ "$tn" -ge 240 ]; then
       if [ "$nudged" = 0 ] && [ -z "$titles" ]; then
         note "no thread appeared 240s after the paste; sending the same paste once more (a second nudge, as a user would)"
+        note "first paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
         note "conversation tail: $(fm project chat --history 4 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:160])}]' 2>/dev/null | cut -c1-900)"
         nudged=1; tn=0
         chat=$(fm project chat --timeout 6m -m "$paste" "$PROJECT" 2>&1)
+        note "second paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
         continue
       fi
       break
     fi
     sleep 5; tn=$((tn + 5))
   done
+  if [ "$nudged" = 1 ]; then
+    unverified "the coordinator started the three threads from the first paste" \
+      "coordinator needed a second paste: the first paste produced no thread within 240s (replies above); a flaky coordinator turn, not a clean pass"
+  fi
   sleep 10
   titles=$(three_titles "$tag")
   assert_eq "the coordinator started exactly three threads for the three items" "$(printf '%s' "$titles" | grep -c .)" "3"
@@ -304,12 +307,15 @@ C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-
       "$tag C") tfile=charlie-$SUFFIX.txt; tword=CHARLIE-$SUFFIX ;;
       *) fail "thread $tid has an unexpected title '$ttitle' (wanted '$tag A', '$tag B' or '$tag C')"; continue ;;
     esac
-    assert_eq "thread '$ttitle': $tfile on its branch holds exactly the requested word" \
-      "$(git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null | tr -d ' \n\r')" "$tword"
+    if git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null | content_is_exactly "$tword"; then
+      pass "thread '$ttitle': $tfile on its branch holds exactly '$tword' (one trailing newline allowed)"
+    else
+      fail "thread '$ttitle': $tfile on its branch is not exactly '$tword': $(git -C "$REPO" show "$tbranch:$tfile" 2>&1 | head -c 200 | tr '\n' ' ')"
+    fi
     [ -n "$trun" ] || { fail "thread $tid has no run"; continue; }
     run_interval "$trun" >> "$WORK/three-task-intervals.txt"
   done
-  assert_eq "still exactly three threads after the runs finished (no thread started later)" "$(three_titles "$tag" | grep -c .)" "3"
+  assert_eq "still exactly three threads after the runs finished (a 4th matching thread would fail this)" "$(thread_count "$tag")" "3"
 
   say "5b. run intervals (event store: RunStarted .. first terminal event)"
   while IFS= read -r l; do [ -n "$l" ] && note "$l"; done < "$WORK/three-task-intervals.txt"

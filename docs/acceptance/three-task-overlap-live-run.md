@@ -16,8 +16,10 @@ no GitHub (stage 8 prints `SKIP`, counted as UNVERIFIED).
 3. Pastes (`foreman project chat -m`): "start one thread for each of the three items ... titled `e2e-<pid> todo A|B|C`", then items A, B and
    C, each "create a file `alpha|bravo|charlie-<pid>.txt` containing exactly the single word ...". `project chat` can return on the
    coordinator's answer to an earlier system report (a finished review), before the turn for this message, so the step polls the project's
-   threads (up to 240 s) instead of trusting the chat output; if none appeared it sends the same paste once more and says so.
-4. Asserts: exactly three threads with three distinct titles; each reaches `completed`; each branch holds its file with its word.
+   threads (up to 240 s) instead of trusting the chat output; if none appeared it sends the same paste once more and records an UNVERIFIED line.
+4. Asserts: exactly three threads with three distinct titles; each reaches `completed`; each branch file equals its word exactly (one trailing
+   newline allowed; the self-test probes `ALPHA-7` and `ALPHA-7\n` pass, `ALPHA -7`, `ALPHA-7\n\n extra`, `ALPHA-7 \n` and empty fail); a
+   re-count after the runs still finds exactly three threads (the self-test stubs a fourth matching thread and checks it is counted).
 5. Reads `RunStarted` and the first terminal event of each thread's run from the event store (`claude_projects/run_interval.exs`, evaluated
    on the server node; the run projection only keeps `started_at_ms` and a `last_event_at_ms` that any later event moves), prints the
    intervals, and asserts `start_i < finish_j and start_j < finish_i` for at least one pair, and that the peak number of simultaneous runs
@@ -29,10 +31,11 @@ No server configuration beyond the harness's existing one was needed.
 
 ## Result of the complete flow (stages 1-7, no GitHub stage)
 
-`devbox run -- bash scripts/e2e/claude_projects_flow.sh` (the final script, after review feedback): `passed=67 failed=0 unverified=2`, exit 0.
+`devbox run -- bash scripts/e2e/claude_projects_flow.sh` (script after the first review round; its file check still ignored spaces and newlines): `passed=67 failed=0 unverified=2`, exit 0.
 UNVERIFIED: approve/deny a tool call and answer an agent question (pi has no permission or ask mechanism), and the GitHub stage (no scratch
 repo configured). An earlier complete run of the pre-review script was `passed=66 failed=0 unverified=2`; a step-5b-only run
-(`E2E_THREE_ONLY=1`) of the final script was `passed=24 failed=0`.
+(`E2E_THREE_ONLY=1`) after the second review round (exact content with one trailing newline allowed, probes below) was `passed=31 failed=0
+unverified=0`.
 
 Step 5b, as printed (19 PASS):
 
@@ -84,8 +87,11 @@ PASS  the project cap was respected (peak 1 <= 1 simultaneous runs)
 - A run of the flow before the final prompt wording asked each task to start with `sleep 20`. One pi agent then replaced it with a
   60-iteration shell polling loop of its own and the thread stayed `in_progress` for more than 10 minutes. The prompts no longer ask for a
   sleep (overlap does not need it: the three runs start within milliseconds of each other and last 8-22 s).
-- In one earlier flow run the step found zero threads 250 s after the paste. The cause was not captured (the harness had cleaned up);
-  the step now dumps the conversation tail when the count is not three and sends one nudge when no thread appeared.
+- In one earlier flow run the step found zero threads 250 s after the paste. The cause was not captured (the harness had cleaned up) and is
+  tracked in `foreman-ig27o`. The step now prints the coordinator reply, dumps the conversation tail when the count is not three, and when
+  no thread appeared sends the same paste once more, prints both replies and records an UNVERIFIED tally line ("coordinator needed a second
+  paste") so a flaky coordinator is never a clean pass; the "exactly three threads" assertion still fails on duplicates. That nudge path has
+  not been triggered live since it was added (it was only syntax-checked).
 
 ## Not exercised
 
