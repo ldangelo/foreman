@@ -79,7 +79,6 @@ Bold = created by this audit (labelled `claude-projects-parity`, none carries `f
 | Remote worker | C13 | foreman-zn7de | open, deferred by user |
 | Unresolved CodeRabbit findings on #573/#577/#579 and others: 26 still present (list in the bead) | C2, C6, C9 | foreman-3xrtg | open |
 | Spike S3/S4/S5 review items (3 script defects, 6 stale doc statements, 2 S5 design items) | C13 | foreman-i97tz | open |
-| `claude_projects_flow.sh` has no three-task coordinator paste and no `started_at`/`finished_at` overlap assertion | C5 | foreman-nb8w2.9.1 | open |
 | Test-hygiene residual after #595 | all | **foreman-bsp5f** | new, P3 |
 | Automated-test gaps listed in the Tests column above | C1-C12 | **foreman-q9zzo** | new, P4 |
 | Closed-bead discrepancies not covered above | all | **foreman-roeu9** | new, P4 |
