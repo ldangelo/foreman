@@ -187,6 +187,7 @@ cleanup() {
     out "E2E_KEEP=1: server pid=$SERVER_PID node=$NODE hook pid=$HOOK_PID work dir=$WORK database=$E2E_DB_NAME left in place"
     exit "$cl_rc"
   fi
+  if type github_cleanup >/dev/null 2>&1; then github_cleanup; fi
   stop_server
   stop_pid "$HOOK_PID"
   sweep_strays

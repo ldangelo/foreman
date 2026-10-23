@@ -23,7 +23,8 @@
 #                      still completes, the review verdict is still recorded, and the bead sink
 #                      failure is visible in the recorded summary (bead_unresolved/bead_write_failed)
 #   project-paused     `project pause` -> no new thread starts while paused (typed rejection),
-#                      the running thread is unaffected, resume restores admissions
+#                      a thread already running at pause time still completes while paused
+#                      (asserted), resume restores admissions
 #
 # Each scenario prints EXPECTED vs ACTUAL via PASS/FAIL lines; any FAIL makes the exit non-zero.
 # Exit: 0 all passed, 1 environment problem, 2 setup failed, 3 one or more assertions failed.
@@ -44,7 +45,6 @@ E2E_HOOK_PORT=${E2E_HOOK_PORT:-4930}
 
 SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed project-paused br-down"}
 for s in $SCENARIOS; do
-  quiesce
   case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|project-paused|br-down) ;; *) die "unknown scenario '$s'" 1 ;; esac
 done
 
@@ -311,6 +311,14 @@ scenario_port_closed() {
 scenario_project_paused() {
   say "scenario project-paused"
   note "EXPECTED: while paused no new thread starts (typed project_paused rejection), a running thread continues, resume restores admissions"
+  # A thread that is already running when the project is paused must keep going (E1: pause gates
+  # admission of NEW work only). Start one that is still busy at the moment of the pause.
+  new_bead "e2e-$SUFFIX running before pause" "Run the shell command 'sleep 45' and wait for it. Then create a file named before-pause.txt containing the word RUNNING."
+  bead_run "$BEAD_ID" 180
+  RUN_BEFORE=$RUN
+  THREAD_BEFORE=$THREAD
+  if [ -z "$RUN_BEFORE" ]; then fail "no thread started for the before-pause bead"; return 0; fi
+  wait_run_status "$RUN_BEFORE" "running|in_progress|working" 120 && pass "before-pause thread $RUN_BEFORE is running (status $RUN_STATUS)" || fail "before-pause thread never reached running (status '$RUN_STATUS')"
   fm project pause --reason "e2e pause" "$PROJECT" >"$WORK/pause.out" 2>&1 && pass "project pause accepted" || fail "project pause: $(cut -c1-200 "$WORK/pause.out")"
   assert_eq "project reads back paused" "$(api_get "/api/projects/$PROJECT" | jq -r '.project.status // .status // empty')" "paused"
   base=$(thread_count)
@@ -320,6 +328,16 @@ scenario_project_paused() {
   chat=$(fm project chat --timeout 2m -m "Start a thread that creates x.txt." "$PROJECT" 2>&1)
   note "ACTUAL chat while paused: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-300)"
   assert_eq "no thread started through the coordinator while paused" "$(thread_count)" "$base"
+  # The paused project must not have stopped the already-running thread.
+  if wait_run_status "$RUN_BEFORE" "completed|failed|cancelled|stopped" "$E2E_RUN_TIMEOUT"; then
+    assert_eq "the thread running at pause time still completed while the project was paused" "$RUN_STATUS" "completed"
+    pb=$(api_get "/api/projects/$PROJECT" | jq -r '.project.status // .status // empty')
+    assert_eq "project was still paused when that thread completed" "$pb" "paused"
+    pbranch=$(api_get "/api/threads/$THREAD_BEFORE" | jq -r '.thread.branch // empty')
+    assert_eq "the paused-project thread delivered its file" "$(git -C "$REPO" show "$pbranch:before-pause.txt" 2>/dev/null | tr -d ' \n\r')" "RUNNING"
+  else
+    fail "the thread running at pause time did not finish within ${E2E_RUN_TIMEOUT}s (status '$RUN_STATUS'): pause stopped it"
+  fi
   fm project resume "$PROJECT" >"$WORK/resume.out" 2>&1 && pass "project resume accepted" || fail "project resume: $(cut -c1-200 "$WORK/resume.out")"
   thread_for_bead "$BEAD_ID" 180
   if [ -n "$THREAD" ]; then pass "after resume the held bead started thread $THREAD (not lost)"; else fail "after resume the bead never started a thread"; fi
@@ -379,7 +397,6 @@ register_project || { cat "$WORK/project-create.out"; die "project create failed
 fm project update --coordinator-provider pi --coordinator-model "$E2E_MODEL" --max-concurrent-runs 3 "$PROJECT" >/dev/null 2>&1 || die "project update failed" 2
 note "project $PROJECT registered; scenarios: $SCENARIOS"
 for s in $SCENARIOS; do
-  quiesce
   case "$s" in
     provider-down) scenario_provider_down ;;
     agent-crash) scenario_agent_crash ;;
