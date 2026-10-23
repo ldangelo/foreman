@@ -121,7 +121,7 @@ defmodule Jido.Harness.LiveInputTest do
 
       assert Enum.any?(
                result.events,
-               &(&1.type == :input_accepted and &1.payload["text"] == "Reply with the word STEERED instead.")
+               &(&1.type == :input_accepted and &1.payload["input_id"] == "steer-1")
              )
 
       assert result.provider_session_id =~ ~r/^[0-9a-f-]{36}$/

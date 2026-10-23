@@ -253,8 +253,9 @@ foreman thread stop run:<run-id>
 foreman thread resolve run:<run-id>
 ```
 
-Steering is pause, commit partial work, resume with your message injected once
-into the next phase prompt ([Steering v1](#steering-v1-and-thread-housekeeping)).
+Steering a running claude or pi phase writes your message into the live agent session
+(no pause); anything else is pause, commit partial work, resume with your message
+injected once into the next phase prompt ([Steering](#steering-v1-and-thread-housekeeping)).
 `resolve` is a disposition flag; it never stops a run. Terminal threads without a
 PR resolve themselves after `idle_resolve_after_days` (default 7), and a thread
 resolves when its PR merges.
@@ -845,7 +846,8 @@ is exactly:
 - Approvals and questions (accepted alongside the list above):
   `tool.approve`, `tool.deny`, `question.answer`
 
-System-only commands are never on the allowlist: `run.steer.consume`,
+System-only commands are never on the allowlist: `run.steer.consume`, `run.steer.deliver`,
+`run.steer.undeliver`,
 `schedule.mark_fired` / `schedule.skip_fire`, the `coordinator.append|turn.*|action.record`
 family, `review.record` and the PR observation commands.
 
@@ -890,8 +892,8 @@ Read endpoints are projection-only:
   tasks, runs and jobsites. Fields: `id, door, project_id, task_id, title,
   status, branch, repo_path, pr_url, last_report {verdict, summary, at},
   provider_session_id, resolved, steering, run_ids, created_at, updated_at`.
-  `steering` is always `"pause_resume"` (steer = pause, then resume with the
-  operator message injected); `resolved` is `true` after `thread.resolve`
+  `steering` is always `"pause_resume"`, the guaranteed fallback (a live claude/pi
+  phase takes a steer in-session first; see Steering below); `resolved` is `true` after `thread.resolve`
   until `thread.reopen`.
 - Thread actions: `POST /api/threads/{id}/stop` (`run.cancel` / jobsite
   cancel), `POST /api/threads/{id}/steer` (`text`, optional `message_id`,
@@ -913,7 +915,18 @@ Read endpoints are projection-only:
 
 #### Steering v1 and thread housekeeping
 
-Steering is pause, partial-work commit, resume. `run.steer` queues a
+**Live steering (claude, pi).** A phase run by `claude` or `pi` is started with streaming
+input. `run.steer` writes your message into that running session: the provider queues it
+and takes it after the tool call in flight (no interrupt, no pause, same provider session,
+no phase boundary). The run records `RunSteerDelivered` (written), then `RunSteerConsumed`
+with `delivery: "live"` when the agent took it. If the session already closed its input,
+no agent is running, or the provider has no streaming input, the steer falls back to the
+pause/resume flow below. A steer the run ends without taking (it completed or failed
+first) is recorded `RunSteerUndelivered` with the reason, listed under the run's
+`undelivered_steering`, and shown in the thread transcript; it is never dropped silently.
+Disable with `config :foreman_server, :live_steering, enabled: false`.
+
+Pause/resume flow. `run.steer` queues a
 `RunSteerQueued` event (durable, idempotent per `message_id`); the run is
 paused (the executor commits partial work while it unwinds) and resumed with
 the message appended to the next phase prompt. When that prompt is built the

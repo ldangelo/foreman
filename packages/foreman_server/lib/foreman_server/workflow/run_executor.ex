@@ -39,6 +39,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime.JidoHarness.{ModelCatalog, ReadinessCheck}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.LiveSteer
   alias ForemanServer.RunControl
   alias ForemanServer.Identity
   alias ForemanServer.PrAssociate
@@ -1407,6 +1408,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec, steering)
          |> maybe_put_add_dirs(state, JidoHarness.request_provider(request))
+         |> LiveSteer.put_driver_opts(JidoHarness.request_provider(request))
        end,
        launch_opts: [
          prompt_path: materialize_prompt(state, phase_index, prompt),

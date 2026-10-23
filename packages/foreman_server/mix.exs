@@ -93,7 +93,7 @@ defmodule ForemanServer.MixProject do
        override: true},
       {:jido_harness,
        git: "https://github.com/Sunstone-Partners/jido_harness.git",
-       ref: "e41fc1651282469f2db4219a48d9f7feef1b0dbc",
+       ref: "2f92f09249acc396d43df4f58a8d58a62a8f81b4",
        override: true},
       {:jido_ecto,
        git: "https://github.com/Sunstone-Partners/jido_ecto.git",

@@ -158,6 +158,7 @@ defmodule Jido.Harness.RunWorker do
     if event.type == :run_started do
       {:noreply, state}
     else
+      event = resolve_live_input(state, event)
       state = append(state, event)
       state = if Event.terminal?(event), do: %{state | terminal_event: event}, else: state
       {:noreply, live_after_event(state, event)}
@@ -291,6 +292,21 @@ defmodule Jido.Harness.RunWorker do
     end
   end
 
+  # A provider that echoes only text (pi) is matched to the pending input FIFO
+  # BEFORE the event is journaled, so every `:input_accepted` a consumer sees
+  # names the input it consumed (nil only for the initial prompt's echo).
+  defp resolve_live_input(
+         %{live: %{pending: pending}},
+         %Event{type: :input_accepted, payload: %{"input_id" => nil, "text" => text} = payload} = event
+       ) do
+    case Enum.find(pending, fn {_id, pending_text} -> pending_text == text end) do
+      {input_id, _text} -> %{event | payload: Map.put(payload, "input_id", input_id)}
+      nil -> event
+    end
+  end
+
+  defp resolve_live_input(_state, event), do: event
+
   defp live_after_event(%{live: nil} = state, _event), do: state
 
   defp live_after_event(state, %Event{type: :input_accepted, payload: payload}) do
@@ -315,18 +331,13 @@ defmodule Jido.Harness.RunWorker do
 
   defp live_after_event(state, _event), do: state
 
-  # Consumption is matched by the id the provider echoes; a provider that only
-  # echoes text (pi) is matched FIFO by text. An echo that matches nothing (the
-  # initial prompt) changes nothing.
+  # Consumption is matched by input id (resolved from the echoed text first, see
+  # `resolve_live_input/2`). An echo that matches nothing (the initial prompt)
+  # changes nothing.
   defp take_pending(pending, input_id, _text) when is_binary(input_id),
     do: List.keydelete(pending, input_id, 0)
 
-  defp take_pending(pending, _input_id, text) do
-    case Enum.find_index(pending, fn {_id, pending_text} -> pending_text == text end) do
-      nil -> pending
-      index -> List.delete_at(pending, index)
-    end
-  end
+  defp take_pending(pending, nil, _text), do: pending
 
   defp close_live_input(%{live: %{closed?: true}} = state), do: state
 

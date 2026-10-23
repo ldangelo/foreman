@@ -43,7 +43,15 @@ defmodule ForemanServer.Workflow.Dispatcher do
   alias ForemanServer.Work.RunPayload
   alias ForemanServer.{ProjectionStore, RunAdmission, Telemetry}
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Workflow.{BootReconciliation, RunExecutor, RunSupervisor, Worktree}
+
+  alias ForemanServer.Workflow.{
+    BootReconciliation,
+    LiveSteer,
+    RunExecutor,
+    RunSupervisor,
+    Worktree
+  }
+
   alias ForemanServer.RunControl
 
   @spec start_link(term()) :: GenServer.on_start()
@@ -108,6 +116,9 @@ defmodule ForemanServer.Workflow.Dispatcher do
   # because the executor is already finished or halting on its own for
   # those, so there is nothing left to cancel.
   @agent_killing_terminal_event_types ~w(RunCancelled RunFlaggedStuck RunFailed RunDeleted)
+  # Terminal for good: a pending steer can never be taken afterwards. (RunBlocked /
+  # RunFlaggedStuck can be reset and resumed, so they keep their queue.)
+  @steer_losing_terminal_event_types ~w(RunCancelled RunCompleted RunFailed RunDeleted)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
   @slot_promotion_event_types ~w(RunSlotTransferred)
   @run_stop_event_types ~w(RunPaused)
@@ -281,6 +292,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
       end
 
       if event_type == "RunDeleted", do: Worktree.clean_for_run(run_id)
+
+      # A steer the run ended without taking must surface, not stay pending forever.
+      if event_type in @steer_losing_terminal_event_types do
+        Task.start(fn ->
+          LiveSteer.undeliver_pending(run_id, terminal_reason_from_event_type(event_type))
+        end)
+      end
+
       BootReconciliation.run_terminated(run_id, reason)
       terminate_lease(run_id, reason)
       terminate_slot(run_id, reason)
@@ -353,12 +372,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
       case ProjectionStore.run(run_id) do
         %{status: status} when status in ["in_progress", "awaiting_worker"] ->
-          safe_dispatch_system(%{
-            type: "run.pause",
-            command_id: "steer-pause:#{run_id}:#{message_id}",
-            aggregate_id: "run:#{run_id}",
-            payload: %{run_id: run_id, reason: @steer_reason}
-          })
+          steer_running_run(run_id, message_id, message)
 
         _already_paused_or_terminal ->
           :ok
@@ -366,6 +380,30 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
 
     {:noreply, state}
+  end
+
+  # Mid-phase steering first: a running live-input agent takes the message in its
+  # own session without a pause. Anything else (provider without streaming input,
+  # no agent between phases, input already closed) falls back to pause -> resume.
+  defp steer_running_run(run_id, message_id, message) do
+    case LiveSteer.deliver(run_id, message) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.info(
+          "ForemanServer.Workflow.Dispatcher: no live steering for #{run_id} (#{inspect(reason)}); pausing to resume with the message",
+          run_id: run_id,
+          operation: "dispatcher.steer_fallback"
+        )
+
+        safe_dispatch_system(%{
+          type: "run.pause",
+          command_id: "steer-pause:#{run_id}:#{message_id}",
+          aggregate_id: "run:#{run_id}",
+          payload: %{run_id: run_id, reason: @steer_reason}
+        })
+    end
   end
 
   defp pending_steer_message(run_id, message_id) when is_binary(message_id) do
