@@ -124,6 +124,17 @@ defmodule Jido.Harness.Adapters.Helpers do
     end
   end
 
+  @doc false
+  # The one live (stdin-open) CLI process a harness run owns, if any.
+  def live_process_id(process_manager, run_id) do
+    process_manager.list_processes(states: [:starting, :running])
+    |> Enum.find(&(Map.get(&1.metadata, :run_id) == run_id or Map.get(&1.metadata, "run_id") == run_id))
+    |> case do
+      nil -> {:error, :not_running}
+      info -> {:ok, info.process_id}
+    end
+  end
+
   def cancel_cli_run(run_id) do
     ProcessManager.list_processes(states: [:starting, :running, :stopping])
     |> Enum.filter(&(Map.get(&1.metadata, :run_id) == run_id or Map.get(&1.metadata, "run_id") == run_id))

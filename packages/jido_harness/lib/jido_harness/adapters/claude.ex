@@ -11,7 +11,8 @@ defmodule Jido.Harness.Adapters.Claude do
     :max_budget_usd,
     :fork_session,
     :settings,
-    :betas
+    :betas,
+    :live_input
   ]
 
   @impl true
@@ -58,7 +59,14 @@ defmodule Jido.Harness.Adapters.Claude do
          {:ok, argv} <- build_argv(request, options) do
       request = %{request | env: Helpers.merge_env(request, context.config)}
       executable = options[:cli_path] || Helpers.cli_path(context.config, spec().executable)
-      CLIStream.run(:claude, request, context, executable, argv, &CLIMapper.claude/1)
+
+      if options[:live_input] == true do
+        CLIStream.run(:claude, request, context, executable, argv, &CLIMapper.claude_live/1, nil,
+          live_input: [live_input_line(Jido.Harness.ID.generate("input"), request.prompt)]
+        )
+      else
+        CLIStream.run(:claude, request, context, executable, argv, &CLIMapper.claude/1)
+      end
     end
   rescue
     exception ->
@@ -83,11 +91,21 @@ defmodule Jido.Harness.Adapters.Claude do
   @impl true
   def cancel(run_id, _context), do: Helpers.cancel_cli_run(run_id)
 
+  @impl true
+  # One stream-json user message. `uuid` is echoed back on the `isReplay` user record
+  # (`--replay-user-messages`) the moment the model takes the message, which is how a
+  # caller learns the message was consumed (docs/spikes/LS1/claude-bg.txt).
+  def live_input_line(input_id, text) when is_binary(input_id) and is_binary(text) do
+    Jason.encode!(%{"type" => "user", "uuid" => input_id, "message" => %{"role" => "user", "content" => text}}) <>
+      "\n"
+  end
+
   @doc false
   def build_argv(request, options) do
     with {:ok, settings} <- settings_value(options[:settings], request.sandbox_mode) do
       argv =
         ["--print", "--output-format", "stream-json", "--include-partial-messages", "--verbose"] ++
+          live_input_args(options[:live_input]) ++
           CLIArgs.pair("--model", request.model) ++
           CLIArgs.pair("--resume", request.provider_session_id) ++
           CLIArgs.pair("--max-turns", request.max_turns) ++
@@ -103,11 +121,18 @@ defmodule Jido.Harness.Adapters.Claude do
           CLIArgs.pair("--settings", settings) ++
           CLIArgs.comma_pair("--betas", options[:betas]) ++
           CLIArgs.flag("--fork-session", options[:fork_session]) ++
-          ["--", request.prompt]
+          prompt_args(options[:live_input], request.prompt)
 
       {:ok, argv}
     end
   end
+
+  # Streaming-input mode: the prompt travels on stdin (`live_input_line/2`), never argv.
+  defp live_input_args(true), do: ["--input-format", "stream-json", "--replay-user-messages"]
+  defp live_input_args(_other), do: []
+
+  defp prompt_args(true, _prompt), do: []
+  defp prompt_args(_other, prompt), do: ["--", prompt]
 
   defp validate_options(options) do
     cond do
@@ -116,6 +141,7 @@ defmodule Jido.Harness.Adapters.Claude do
       not optional_string?(options[:settings]) -> invalid(:settings, "a JSON string or file path")
       not optional_number?(options[:max_budget_usd]) -> invalid(:max_budget_usd, "a number")
       not optional_boolean?(options[:fork_session]) -> invalid(:fork_session, "a boolean")
+      not optional_boolean?(options[:live_input]) -> invalid(:live_input, "a boolean")
       not optional_string_list?(options[:betas]) -> invalid(:betas, "a list of strings")
       true -> :ok
     end

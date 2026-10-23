@@ -30,6 +30,26 @@ defmodule Jido.Harness.Adapters.CLIMapper.ClaudeStream do
     |> Enum.flat_map(&content_block(provider, &1, sid, raw, emit_text?))
   end
 
+  # Streaming-input runs: `--replay-user-messages` re-emits each stdin message
+  # (`isReplay`, our `uuid`) when the model takes it, i.e. consumption.
+  def map(provider, %{"type" => "user", "isReplay" => true} = raw, options) do
+    if Keyword.get(options, :live_input, false) do
+      text = replay_text(get_in(raw, ["message", "content"]))
+
+      [
+        Helpers.event(
+          provider,
+          :input_accepted,
+          raw["session_id"],
+          %{"kind" => "message", "input_id" => raw["uuid"], "text" => text},
+          raw
+        )
+      ]
+    else
+      []
+    end
+  end
+
   def map(provider, %{"type" => "user"} = raw, _options) do
     sid = raw["session_id"]
 
@@ -55,24 +75,13 @@ defmodule Jido.Harness.Adapters.CLIMapper.ClaudeStream do
     failed_result(provider, raw)
   end
 
-  def map(provider, %{"type" => "result", "subtype" => "success"} = raw, _options) do
-    sid = raw["session_id"]
-
-    usage_event(provider, sid, raw["usage"], raw) ++
-      maybe_text(provider, :output_text_final, sid, raw["result"], raw) ++
-      [
-        Helpers.event(
-          provider,
-          :run_completed,
-          sid,
-          %{
-            "num_turns" => raw["num_turns"],
-            "duration_ms" => raw["duration_ms"],
-            "cost_usd" => raw["total_cost_usd"]
-          },
-          raw
-        )
-      ]
+  # Streaming-input runs: a `result` ends a TURN, not the process (more stdin may
+  # follow). `:input_idle` carries what `:run_completed` would; the run worker
+  # closes stdin when nothing is pending and the exit then completes the run.
+  def map(provider, %{"type" => "result", "subtype" => "success"} = raw, options) do
+    if Keyword.get(options, :live_input, false),
+      do: live_result(provider, raw),
+      else: completed_result(provider, raw)
   end
 
   def map(provider, %{"type" => "result"} = raw, _options) do
@@ -82,6 +91,36 @@ defmodule Jido.Harness.Adapters.CLIMapper.ClaudeStream do
   def map(provider, raw, _options) do
     [Helpers.event(provider, :provider_event, session_id(raw), %{"type" => event_type(raw), "mapped" => false}, raw)]
   end
+
+  defp completed_result(provider, raw) do
+    sid = raw["session_id"]
+
+    usage_event(provider, sid, raw["usage"], raw) ++
+      maybe_text(provider, :output_text_final, sid, raw["result"], raw) ++
+      [Helpers.event(provider, :run_completed, sid, result_payload(raw), raw)]
+  end
+
+  defp live_result(provider, raw) do
+    sid = raw["session_id"]
+
+    usage_event(provider, sid, raw["usage"], raw) ++
+      maybe_text(provider, :output_text_final, sid, raw["result"], raw) ++
+      [Helpers.event(provider, :input_idle, sid, result_payload(raw), raw)]
+  end
+
+  defp result_payload(raw),
+    do: %{
+      "num_turns" => raw["num_turns"],
+      "duration_ms" => raw["duration_ms"],
+      "cost_usd" => raw["total_cost_usd"]
+    }
+
+  defp replay_text(content) when is_binary(content), do: content
+
+  defp replay_text(content) when is_list(content),
+    do: content |> Enum.map(&(is_map(&1) && &1["text"])) |> Enum.filter(&is_binary/1) |> Enum.join("")
+
+  defp replay_text(_content), do: nil
 
   defp content_block(provider, %{"type" => "text", "text" => text}, sid, raw, true),
     do: maybe_text(provider, :output_text_delta, sid, text, raw)

@@ -3,7 +3,13 @@ defmodule Jido.Harness.Adapters.CLIStream do
 
   alias Jido.Harness.{Adapters.Helpers, Error, ProcessEvent, ProcessManager, RunRequest}
 
-  def run(provider, %RunRequest{} = request, context, executable, argv, mapper, mapper_state \\ nil) do
+  # `opts[:live_input]` is the list of stdin lines written right after start (the
+  # prompt, in streaming-input mode). A live run keeps stdin open so
+  # `Jido.Harness.Run.send_input/3` can write more lines later; every other run
+  # closes stdin as before.
+  def run(provider, %RunRequest{} = request, context, executable, argv, mapper, mapper_state \\ nil, opts \\ []) do
+    live_lines = Keyword.get(opts, :live_input)
+
     spec = %{
       executable: executable,
       argv: argv,
@@ -12,7 +18,7 @@ defmodule Jido.Harness.Adapters.CLIStream do
       env_mode: request.env_mode,
       runtime_timeout_ms: request.runtime_timeout_ms,
       idle_timeout_ms: request.idle_timeout_ms,
-      stdin: false,
+      stdin: is_list(live_lines),
       pty: false,
       metadata: %{run_id: context.run_id, provider: provider}
     }
@@ -20,9 +26,21 @@ defmodule Jido.Harness.Adapters.CLIStream do
     process_manager = Map.get(context, :process_manager, ProcessManager)
 
     with {:ok, process_id} <- process_manager.start_owned_process(spec, context.run_owner),
-         {:ok, process_stream} <- process_manager.stream_process(process_id) do
+         {:ok, process_stream} <- process_manager.stream_process(process_id),
+         :ok <- write_live_lines(process_manager, process_id, live_lines) do
       {:ok, decode(process_stream, provider, mapper, mapper_state)}
     end
+  end
+
+  defp write_live_lines(_process_manager, _process_id, nil), do: :ok
+
+  defp write_live_lines(process_manager, process_id, lines) do
+    Enum.reduce_while(lines, :ok, fn line, :ok ->
+      case process_manager.send_input(process_id, line) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, Error.execution("could not write live input", cause: reason)}}
+      end
+    end)
   end
 
   defp decode(stream, provider, mapper, mapper_state) do

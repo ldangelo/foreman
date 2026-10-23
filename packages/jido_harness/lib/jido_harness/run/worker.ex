@@ -2,7 +2,12 @@ defmodule Jido.Harness.RunWorker do
   @moduledoc false
   use GenServer, restart: :temporary
 
-  alias Jido.Harness.{Buffer, Error, Event, EventLog, RunInfo, RunResult, TextTail, Waiters}
+  alias Jido.Harness.{Adapters.Helpers, Buffer, Error, Event, EventLog, RunInfo, RunResult, TextTail, Waiters}
+
+  # An idle live run with a written-but-unconsumed message waits this long for the
+  # provider to take it before stdin is closed anyway (the message then stays
+  # unconsumed and the caller sees it as undelivered).
+  @live_input_grace_ms 10_000
 
   def start_link({id, provider, request, adapter, config}) do
     GenServer.start_link(
@@ -53,7 +58,8 @@ defmodule Jido.Harness.RunWorker do
       usage: %{},
       error: nil,
       result: nil,
-      waiters: %{}
+      waiters: %{},
+      live: init_live(request, adapter)
     }
 
     {:ok, state, {:continue, :start}}
@@ -103,6 +109,13 @@ defmodule Jido.Harness.RunWorker do
     {:reply, {:ok, Enum.map(records, &record_to_event(state, &1))}, state}
   end
 
+  def handle_call({:send_input, input_id, text}, _from, state) do
+    case send_live_input(state, input_id, text) do
+      {:ok, state} -> {:reply, :ok, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call(:cancel, _from, %{result: %RunResult{}} = state), do: {:reply, :ok, state}
 
   def handle_call(:cancel, _from, %{terminal_event: %Event{}} = state) do
@@ -147,7 +160,7 @@ defmodule Jido.Harness.RunWorker do
     else
       state = append(state, event)
       state = if Event.terminal?(event), do: %{state | terminal_event: event}, else: state
-      {:noreply, state}
+      {:noreply, live_after_event(state, event)}
     end
   end
 
@@ -173,6 +186,9 @@ defmodule Jido.Harness.RunWorker do
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
     {:noreply, %{state | waiters: Waiters.drop_monitor(state.waiters, monitor)}}
   end
+
+  def handle_info({:live_input_grace, token}, %{live: %{idle_token: token}} = state) when not is_nil(token),
+    do: {:noreply, close_live_input(state)}
 
   def handle_info({:run_timeout, :runtime, token}, %{runtime_token: token, status: status} = state)
       when status in [:starting, :running] do
@@ -231,6 +247,104 @@ defmodule Jido.Harness.RunWorker do
     end
   end
 
+  # ---------------------------------------------------------------------
+  # Streaming input (`provider_options: %{live_input: true}`).
+  #
+  # The run's CLI stays alive with stdin open after a turn finishes, so more input
+  # can be written. All bookkeeping lives in this process, so a write and the
+  # decision to close stdin are serialized: either the write lands while the input
+  # is open and keeps it open until the provider consumes it, or it is refused
+  # with `:input_closed`. Nothing is written into a closed pipe and nothing is
+  # lost silently.
+  # ---------------------------------------------------------------------
+  defp init_live(request, adapter) do
+    options = Helpers.provider_options(request.provider_options, [:live_input])
+
+    if options[:live_input] == true and function_exported?(adapter, :live_input_line, 2),
+      do: %{pending: [], closed?: false, idle_token: nil, idle_payload: nil},
+      else: nil
+  end
+
+  defp send_live_input(%{live: nil}, _input_id, _text), do: {:error, :not_live}
+
+  defp send_live_input(%{live: %{closed?: true}}, _input_id, _text), do: {:error, :input_closed}
+
+  defp send_live_input(%{result: %RunResult{}}, _input_id, _text), do: {:error, :not_running}
+  defp send_live_input(%{terminal_event: %Event{}}, _input_id, _text), do: {:error, :not_running}
+  defp send_live_input(%{status: status}, _input_id, _text) when status != :running, do: {:error, :not_running}
+
+  defp send_live_input(%{live: live} = state, input_id, text) do
+    manager = state.context.process_manager
+
+    cond do
+      List.keymember?(live.pending, input_id, 0) ->
+        {:error, :duplicate_input}
+
+      true ->
+        with {:ok, process_id} <- Helpers.live_process_id(manager, state.id),
+             :ok <- manager.send_input(process_id, state.adapter.live_input_line(input_id, text)) do
+          {:ok, %{state | live: %{live | pending: live.pending ++ [{input_id, text}], idle_token: nil}}}
+        else
+          {:error, :not_running} -> {:error, :not_running}
+          {:error, reason} -> {:error, {:write_failed, reason}}
+        end
+    end
+  end
+
+  defp live_after_event(%{live: nil} = state, _event), do: state
+
+  defp live_after_event(state, %Event{type: :input_accepted, payload: payload}) do
+    put_in_live(state, :pending, take_pending(state.live.pending, payload["input_id"], payload["text"]))
+  end
+
+  defp live_after_event(%{live: live} = state, %Event{type: :input_idle, payload: payload}) do
+    state = %{state | live: %{live | idle_payload: payload}}
+
+    if state.live.pending == [] do
+      close_live_input(state)
+    else
+      token = make_ref()
+      Process.send_after(self(), {:live_input_grace, token}, @live_input_grace_ms)
+      put_in_live(state, :idle_token, token)
+    end
+  end
+
+  defp live_after_event(state, %Event{type: type})
+       when type in [:turn_started, :tool_call, :output_text_delta, :thinking_delta],
+       do: put_in_live(state, :idle_token, nil)
+
+  defp live_after_event(state, _event), do: state
+
+  # Consumption is matched by the id the provider echoes; a provider that only
+  # echoes text (pi) is matched FIFO by text. An echo that matches nothing (the
+  # initial prompt) changes nothing.
+  defp take_pending(pending, input_id, _text) when is_binary(input_id),
+    do: List.keydelete(pending, input_id, 0)
+
+  defp take_pending(pending, _input_id, text) do
+    case Enum.find_index(pending, fn {_id, pending_text} -> pending_text == text end) do
+      nil -> pending
+      index -> List.delete_at(pending, index)
+    end
+  end
+
+  defp close_live_input(%{live: %{closed?: true}} = state), do: state
+
+  defp close_live_input(state) do
+    manager = state.context.process_manager
+
+    with {:ok, process_id} <- Helpers.live_process_id(manager, state.id) do
+      _ = manager.close_input(process_id)
+    end
+
+    put_in_live(state, :closed?, true)
+  end
+
+  defp put_in_live(%{live: live} = state, key, value), do: %{state | live: Map.put(live, key, value)}
+
+  defp completion_payload(%{live: %{idle_payload: payload}}) when is_map(payload), do: payload
+  defp completion_payload(_state), do: %{}
+
   defp append(state, %Event{} = event) do
     event = Event.attach(event, state.id, state.provider, state.sequence + 1)
     secrets = Jido.Harness.Redaction.secrets_from_env(state.request.env)
@@ -282,7 +396,7 @@ defmodule Jido.Harness.RunWorker do
   defp accumulate(state, _event), do: state
 
   defp finish_success(%{terminal_event: nil} = state) do
-    state |> append_terminal(:run_completed, %{}) |> finalize(:completed, nil)
+    state |> append_terminal(:run_completed, completion_payload(state)) |> finalize(:completed, nil)
   end
 
   defp finish_success(%{terminal_event: %{type: :run_completed}} = state), do: finalize(state, :completed, nil)
