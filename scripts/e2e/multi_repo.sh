@@ -51,6 +51,8 @@ ROOT=$(cd "$HERE/../.." && pwd)
 ASSETS="$HERE/multi_repo"
 SERVER_DIR="$ROOT/packages/foreman_server"
 CLI_DIR="$ROOT/packages/foreman_cli"
+# shellcheck source=exact_content.sh
+. "$HERE/exact_content.sh"
 
 E2E_PROVIDER=${E2E_PROVIDER:-pi}
 E2E_MODEL=${E2E_MODEL:-minimax/MiniMax-M2.7-highspeed}
@@ -466,8 +468,8 @@ stage_green() {
     if [ -n "$sha" ]; then pass "branch $GREEN_BRANCH pushed to the origin of repo $id ($sha)"; else fail "branch $GREEN_BRANCH missing on the origin of repo $id"; fi
     ahead=$(git --git-dir="$(origin_of "$id")" rev-list --count "main..$GREEN_BRANCH" 2>/dev/null || echo 0)
     assert_eq "repo $id: pushed branch carries commits ahead of main" "$([ "$ahead" -ge 1 ] && echo yes || echo no)" "yes"
-    assert_eq "repo $id: VERSION committed on the run branch" \
-      "$(git --git-dir="$(origin_of "$id")" show "$GREEN_BRANCH:VERSION" 2>/dev/null | tr -d ' \n\r')" "$GREEN_VERSION"
+    assert_content_exactly "repo $id: VERSION committed on the run branch" \
+      "$(git --git-dir="$(origin_of "$id")" show "$GREEN_BRANCH:VERSION" 2>/dev/null)" "$GREEN_VERSION"
     note "repo $id head commit: $(git --git-dir="$(origin_of "$id")" log -1 --format='%h %s' "$GREEN_BRANCH" 2>/dev/null)"
   done
 
@@ -616,8 +618,8 @@ stage_failure() {
   out "   retry-pr: exit $rc: $(tr '\n' ' ' < "$WORK/retry-b.out" | cut -c1-240)"
   assert_eq "run retry-pr: exit status" "$rc" "0"
   assert_eq "the branch of b is now on its origin" "$(yes_no "$(origin_branch_sha b "$fail_branch")")" "yes"
-  assert_eq "VERSION of b on the pushed branch" \
-    "$(git --git-dir="$ORIGIN_B" show "$fail_branch:VERSION" 2>/dev/null | tr -d ' \n\r')" "$FAIL_VERSION"
+  assert_content_exactly "VERSION of b on the pushed branch" \
+    "$(git --git-dir="$ORIGIN_B" show "$fail_branch:VERSION" 2>/dev/null)" "$FAIL_VERSION"
   assert_eq "fake gh: the retry created the PR of b" "$(gh_calls "repo-b${TAB}pr create .*--head $fail_branch")" "1"
   assert_eq "fake gh: the retry left a alone (still one PR for a)" "$(gh_calls "repo-a${TAB}pr create .*--head $fail_branch")" "1"
   assert_eq "the pushed branch of a is untouched by b's retry" "$(origin_branch_sha a "$fail_branch")" "$sha_a_before"
@@ -665,7 +667,7 @@ stage_legacy() {
   assert_eq "the run projection has no repo_ids / pr_urls / repo_id keys" \
     "$(printf '%s' "$runjson" | jq -c '.run | [has("repo_ids"), has("pr_urls"), has("repo_id")]')" "[false,false,false]"
   assert_eq "the branch is on the origin of c" "$(yes_no "$(origin_branch_sha c "$legacy_branch")")" "yes"
-  assert_eq "VERSION committed" "$(git --git-dir="$ORIGIN_C" show "$legacy_branch:VERSION" 2>/dev/null | tr -d ' \n\r')" "$LEGACY_VERSION"
+  assert_content_exactly "VERSION committed" "$(git --git-dir="$ORIGIN_C" show "$legacy_branch:VERSION" 2>/dev/null)" "$LEGACY_VERSION"
   events=$(rpc_json "E2EMultiRepoProbe.events(\"$legacy_run\", \"$legacy_task\")")
   out "   events: $(printf '%s' "$events" | jq -r '[.[] | .type] | unique | join(",")')"
   assert_eq "events were read (run + task)" "$([ "$(printf '%s' "$events" | jq 'length')" -gt 5 ] && echo yes || echo no)" "yes"

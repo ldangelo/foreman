@@ -172,8 +172,8 @@ step_thread_control() {
   if wait_thread "$T_STEER" "completed|ready_for_review|resolved|done" "$E2E_RUN_TIMEOUT"; then
     STEER_RUN=$(api_get "/api/threads/$T_STEER" | jq -r '.thread.run_ids[0] // empty')
     STEER_BRANCH=$(api_get "/api/threads/$T_STEER" | jq -r '.thread.branch // empty')
-    assert_eq "steered thread: the agent obeyed the steering message" \
-      "$(git -C "$REPO" show "$STEER_BRANCH:steer-marker.txt" 2>/dev/null | tr -d ' \n\r')" "STEERED-BY-OPERATOR"
+    assert_content_exactly "steered thread: steer-marker.txt (the agent obeyed the steering message)" \
+      "$(git -C "$REPO" show "$STEER_BRANCH:steer-marker.txt" 2>/dev/null)" "STEERED-BY-OPERATOR"
     kinds=$(transcript_kinds "$T_STEER" | sort | uniq -c | tr '\n' ';')
     note "steered thread transcript turns: $kinds"
     assert_has "transcript shows the operator steer turn" "$kinds" "operator/steer"
@@ -235,8 +235,8 @@ project_runs_active() {
 #
 # `project chat` returns when the coordinator next goes idle, which can be after its answer to an
 # earlier system report (a finished review) and before the turn for this message, so the threads
-# are awaited by polling the project, not inferred from the chat output. If the coordinator started
-# nothing, the user's remedy is a second nudge: the step sends one and says so.
+# are awaited by polling the project, not inferred from the chat output (paste_three_tasks in
+# claude_projects/overlap.sh, whose branches are driven against stubs by overlap_selftest).
 step_three_tasks() {
   say "5b. three tasks pasted in one message start three threads that run in parallel"
   overlap_selftest
@@ -254,38 +254,7 @@ step_three_tasks() {
 A. Create a file alpha-$SUFFIX.txt containing exactly the single word ALPHA-$SUFFIX.
 B. Create a file bravo-$SUFFIX.txt containing exactly the single word BRAVO-$SUFFIX.
 C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-$SUFFIX."
-  chat=$(fm project chat --timeout 6m -m "$paste" "$PROJECT" 2>&1); rc=$?
-  assert_eq "coordinator chat with the three-item paste exits 0" "$rc" "0"
-  note "coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
-
-  titles=""; nudged=0; tn=0
-  while :; do
-    titles=$(three_titles "$tag")
-    [ "$(printf '%s' "$titles" | grep -c .)" -ge 3 ] && break
-    if [ "$tn" -ge 240 ]; then
-      if [ "$nudged" = 0 ] && [ -z "$titles" ]; then
-        note "no thread appeared 240s after the paste; sending the same paste once more (a second nudge, as a user would)"
-        note "first paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
-        note "conversation tail: $(fm project chat --history 4 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:160])}]' 2>/dev/null | cut -c1-900)"
-        nudged=1; tn=0
-        chat=$(fm project chat --timeout 6m -m "$paste" "$PROJECT" 2>&1)
-        note "second paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
-        continue
-      fi
-      break
-    fi
-    sleep 5; tn=$((tn + 5))
-  done
-  if [ "$nudged" = 1 ]; then
-    unverified "the coordinator started the three threads from the first paste" \
-      "coordinator needed a second paste: the first paste produced no thread within 240s (replies above); a flaky coordinator turn, not a clean pass"
-  fi
-  sleep 10
-  titles=$(three_titles "$tag")
-  assert_eq "the coordinator started exactly three threads for the three items" "$(printf '%s' "$titles" | grep -c .)" "3"
-  if [ "$(printf '%s' "$titles" | grep -c .)" -ne 3 ]; then
-    note "conversation tail: $(fm project chat --history 6 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:300])}]' 2>/dev/null | cut -c1-1800)"
-  fi
+  paste_three_tasks "$tag" "$paste"
   printf '%s\n' "$titles" | while IFS= read -r l; do [ -n "$l" ] && note "thread $l"; done
   assert_eq "the three threads have three distinct titles" "$(printf '%s\n' "$titles" | cut -f2 | sort -u | grep -c .)" "3"
   [ "$(printf '%s' "$titles" | grep -c .)" -ge 1 ] || { fail "no thread to wait for"; return 1; }
@@ -307,10 +276,11 @@ C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-
       "$tag C") tfile=charlie-$SUFFIX.txt; tword=CHARLIE-$SUFFIX ;;
       *) fail "thread $tid has an unexpected title '$ttitle' (wanted '$tag A', '$tag B' or '$tag C')"; continue ;;
     esac
-    if git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null | content_is_exactly "$tword"; then
-      pass "thread '$ttitle': $tfile on its branch holds exactly '$tword' (one trailing newline allowed)"
-    else
-      fail "thread '$ttitle': $tfile on its branch is not exactly '$tword': $(git -C "$REPO" show "$tbranch:$tfile" 2>&1 | head -c 200 | tr '\n' ' ')"
+    tgot=$(git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null)
+    assert_content_exactly "thread '$ttitle': $tfile on its branch" "$tgot" "$tword"
+    if ! content_exactly "$tgot" "$tword"; then
+      note "diagnostics for $tid: branch='$tbranch' run='$trun' thread=$(api_get "/api/threads/$tid" | jq -c '.thread | {status, branch, run_ids, resolved}' 2>/dev/null)"
+      note "diagnostics: files on that branch: $(git -C "$REPO" ls-tree --name-only "$tbranch" 2>&1 | tr '\n' ' ' | cut -c1-300); branches: $(git -C "$REPO" branch --list 'foreman/*' 2>&1 | tr '\n' ' ' | cut -c1-600)"
     fi
     [ -n "$trun" ] || { fail "thread $tid has no run"; continue; }
     run_interval "$trun" >> "$WORK/three-task-intervals.txt"

@@ -69,7 +69,9 @@ first terminal event of each thread's run from the event store (`claude_projects
 that at least two intervals overlap (`start_i < finish_j and start_j < finish_i`) and that the project cap was respected. It prints the
 intervals. Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
 the project to 3 in step 1; the global default is 3) and no `coordinator_max_active_threads` below 3 (unset). The assertion can fail:
-`bash scripts/e2e/claude_projects/overlap.sh` runs its stack-free self-test (serial, touching, overlapping and unfinished intervals),
+`bash scripts/e2e/claude_projects/overlap.sh` runs its stack-free self-test (serial, touching, overlapping and unfinished intervals, the
+exact-file-content comparison, and the paste/nudge branch against a stubbed coordinator; `sh scripts/e2e/exact_content.sh` runs the
+comparison probes alone),
 `E2E_THREE_ONLY=1` runs only setup, step 1 and step 5b, and `E2E_THREE_TASK_MAX_RUNS=1` forces one run at a time for that step,
 which must (and does) make the overlap assertion FAIL.
 

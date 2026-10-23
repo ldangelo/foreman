@@ -334,7 +334,7 @@ scenario_project_paused() {
     pb=$(api_get "/api/projects/$PROJECT" | jq -r '.project.status // .status // empty')
     assert_eq "project was still paused when that thread completed" "$pb" "paused"
     pbranch=$(api_get "/api/threads/$THREAD_BEFORE" | jq -r '.thread.branch // empty')
-    assert_eq "the paused-project thread delivered its file" "$(git -C "$REPO" show "$pbranch:before-pause.txt" 2>/dev/null | tr -d ' \n\r')" "RUNNING"
+    assert_content_exactly "the paused-project thread delivered its file (before-pause.txt)" "$(git -C "$REPO" show "$pbranch:before-pause.txt" 2>/dev/null)" "RUNNING"
   else
     fail "the thread running at pause time did not finish within ${E2E_RUN_TIMEOUT}s (status '$RUN_STATUS'): pause stopped it"
   fi
