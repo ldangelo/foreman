@@ -144,6 +144,19 @@ gh_fm() {
   printf '%s\n' "$GH_OUT" > "$EVID/$gf_label.out"
 }
 
+# gh_approve_merge <label>: the operator approval of the current PR. `merge_approve` names the head the operator
+# reviewed (foreman-ehxy6: `--head-sha` is required and the server checks it against GitHub), so this reads the
+# PR's live head on GitHub and approves exactly that commit.
+gh_approve_merge() {
+  gam_head=$(gh_head)
+  if [ -z "$gam_head" ]; then
+    GH_RC=1; GH_OUT="could not read the head sha of PR $GH_PR from GitHub"
+    printf '%s\n' "$GH_OUT" > "$EVID/$1.out"
+    return 1
+  fi
+  gh_fm "$1" run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$gam_head"
+}
+
 # gh_ui <thread> [driver flags]: the Playwright driver; one JSON object in GH_UI. Non-zero exit = the driver failed.
 # The dev endpoint's check_origin accepts the LiveView websocket only from its configured host,
 # `localhost`: a browser on 127.0.0.1 gets the page but its socket is refused and never mounts.
@@ -422,7 +435,7 @@ gh_x_createpr() {
   else
     fail "the PR the button opened is not held at the merge gate: $(gh_card_line "$GH_CARD")"
   fi
-  gh_fm createpr-approve run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
+  gh_approve_merge createpr-approve
   [ "$GH_RC" = 0 ] && pass "operator approve-merge accepted for the PR the button opened" || { fail "approve-merge refused: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-300)"; return 1; }
   gh_fm createpr-merge run merge --id "$GH_RUN"
   [ "$GH_RC" = 0 ] && pass "operator merge accepted for the PR the button opened" || fail "merge refused: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-300)"
@@ -431,14 +444,16 @@ gh_x_createpr() {
   return 0
 }
 
-# 9h: observation only (foreman-ehxy6 owns the fix)
+# 9h: a push AFTER merge approval. Written against the contract of foreman-ehxy6 (#650): the push voids the approval and the
+# gate is held again. NOT yet run live (the scratch repository this harness was built against is archived); the build before
+# #650 was observed to strand the PR instead, see docs/acceptance/live-github-protection-ui-autofix.md.
 gh_x_postapproval() {
-  say "9h. a push AFTER merge approval: what happens to the gate and the PR (observation only)"
+  say "9h. a push AFTER merge approval voids the approval: the gate is held again and only a fresh approval of the new head merges"
   gh_pr_use PRA || return 1
   gh_wait_card "$GH_THREAD" '.group == "ready_for_review"' 420 || true
   note "before approval: $(gh_card_line "$GH_CARD") head=$(gh_head | cut -c1-8) record=$(gh_pr_record)"
   mark=$(gh_events_mark "$GH_RUN")
-  gh_fm pa-approve run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
+  gh_approve_merge pa-approve
   [ "$GH_RC" = 0 ] && pass "operator approve-merge accepted" || { fail "approve-merge failed: $(printf '%s' "$GH_OUT" | cut -c1-300)"; return 1; }
   approved_head=$(gh_head)
   sleep 5
@@ -455,11 +470,13 @@ gh_x_postapproval() {
   note "after the push: card=$(gh_card_line "$(gh_card "$GH_THREAD")") merge_gate=$(gh_pr_field .merge_gate) record=$(gh_pr_record)"
   gh_events_note "$GH_RUN" "$mark"
   assert_eq "no second PrReady was recorded by the push" "$(gh_events_count "$GH_RUN" "$mark" PrReady)" "0"
-  gh_fm pa-reapprove run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
-  note "approve-merge again: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
+  assert_eq "the push voided the approval: the merge gate is pending again" "$(gh_pr_field .merge_gate)" "pending"
+  gh_fm pa-stale run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$approved_head"
+  note "approve-merge naming the OLD head ${approved_head:0:8}: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
+  [ "$GH_RC" != 0 ] && pass "approving the old head is refused after the push" || fail "the old head was approved after a push moved the PR"
   gh_fm pa-merge run merge --id "$GH_RUN"
   note "merge: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
-  [ "$GH_RC" != 0 ] && pass "the merge was refused after the post-approval push" || fail "the merge succeeded after a post-approval push (the pin did not hold)"
+  [ "$GH_RC" != 0 ] && pass "the merge was refused after the post-approval push" || fail "the merge succeeded after a post-approval push (the approval was not voided)"
   assert_eq "the PR is still OPEN on GitHub" "$(gh pr view "$GH_PR" -R "$GH_REPO" --json state -q .state 2>/dev/null)" "OPEN"
   # (b) the push of an operator-requested Fix CI after approval
   mark2=$(gh_events_mark "$GH_RUN")
@@ -474,12 +491,13 @@ gh_x_postapproval() {
   note "after the post-approval fix: card=$(gh_card_line "$(gh_card "$GH_THREAD")") merge_gate=$(gh_pr_field .merge_gate) record=$(gh_pr_record)"
   gh_events_note "$GH_RUN" "$mark2"
   assert_eq "no PrReady after the fix push either" "$(gh_events_count "$GH_RUN" "$mark2" PrReady)" "0"
-  gh_fm pa-reapprove2 run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
-  note "approve-merge after the fix: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
+  gh_approve_merge pa-reapprove2
+  note "approve-merge naming the fixed head: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
+  [ "$GH_RC" = 0 ] && pass "a fresh approval naming the fixed head is accepted" || fail "approve-merge of the fixed head refused: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-300)"
   gh_fm pa-merge2 run merge --id "$GH_RUN"
   note "merge after the fix: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
-  gh_fm pa-retry run retry-pr --id "$GH_RUN"
-  note "retry-pr (recovery probe): rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
+  [ "$GH_RC" = 0 ] && pass "the merge of the freshly approved head was accepted" || fail "merge of the freshly approved head refused: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-300)"
+  assert_eq "GitHub reports the PR MERGED" "$(gh pr view "$GH_PR" -R "$GH_REPO" --json state -q .state 2>/dev/null)" "MERGED"
   note "final: card=$(gh_card_line "$(gh_card "$GH_THREAD")") merge_gate=$(gh_pr_field .merge_gate) record=$(gh_pr_record)"
   return 0
 }
@@ -660,7 +678,7 @@ gh_x_merge_refusal() {
   say "9j. operator merge refused by GitHub: the repository forbids squash merges (Foreman only squashes)"
   gh_new_pr p4 PRP4 || return 1
   gh_x_ready || return 1
-  gh_fm mr-approve run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
+  gh_approve_merge mr-approve
   [ "$GH_RC" = 0 ] && pass "operator approve-merge accepted" || { fail "approve-merge failed: $(printf '%s' "$GH_OUT" | cut -c1-300)"; return 1; }
   mark=$(gh_events_mark "$GH_RUN")
   gh api -X PATCH "repos/$GH_REPO" -F allow_squash_merge=false -F allow_rebase_merge=true >/dev/null 2>&1 && note "repository merge methods: squash DISABLED (rebase allowed)"
@@ -717,7 +735,7 @@ gh_x_protection() {
   gh_status_post "$(gh_head)" success "$GH_EXT_CONTEXT"
   gh_pr_use PRP1
   note "P1 before any merge attempt: $(gh_pr_gates_line)"
-  gh_fm m1-approve run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
+  gh_approve_merge m1-approve
   [ "$GH_RC" = 0 ] && pass "operator approve-merge accepted" || { fail "approve-merge failed: $(printf '%s' "$GH_OUT" | cut -c1-300)"; gh_unwind_protection; return 1; }
   mark=$(gh_events_mark "$GH_RUN")
   gh_merge_attempt m1
@@ -733,7 +751,7 @@ gh_x_protection() {
   # --- M2: admins enforced
   say "9i-M2. protected main (admins ENFORCED): refusal without a review, then success after the bot's approval"
   gh api -X POST "repos/$GH_REPO/branches/main/protection/enforce_admins" >/dev/null 2>&1 && note "protection now: $(gh_protection_line)"
-  if [ "$m1_state" = MERGED ]; then gh_pr_use PRP2; gh_fm m2-approve run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"; fi
+  if [ "$m1_state" = MERGED ]; then gh_pr_use PRP2; gh_approve_merge m2-approve; fi
   note "M2 PR ${GH_PR}: $(gh_pr_gates_line)"
   gh_merge_attempt m2-noreview
   assert_eq "M2: refused without a review: the PR is still OPEN" "$(gh pr view "$GH_PR" -R "$GH_REPO" --json state -q .state 2>/dev/null)" "OPEN"
@@ -756,7 +774,7 @@ gh_x_protection() {
   gh_bot_approve "$GH_PR" && pass "github-actions[bot] approved PR $GH_PR" || fail "the approve workflow failed for PR $GH_PR"
   gh_wait 120 "review decision" gh_review_is_approved || true
   note "M3 PR ${GH_PR}: $(gh_pr_gates_line)"
-  gh_fm m3-approve run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}"
+  gh_approve_merge m3-approve
   [ "$GH_RC" = 0 ] && pass "operator approve-merge accepted" || fail "approve-merge failed: $(printf '%s' "$GH_OUT" | cut -c1-300)"
   gh_merge_attempt m3-status-absent
   assert_eq "M3: refused while the required status '$GH_EXT_CONTEXT' is absent" "$(gh pr view "$GH_PR" -R "$GH_REPO" --json state -q .state 2>/dev/null)" "OPEN"
