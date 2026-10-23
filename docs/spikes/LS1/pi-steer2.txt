@@ -1,0 +1,28 @@
+[  0.00] SENT {"id": "req-1", "type": "prompt", "message": "Run the bash command `sleep 8` then reply 'done'."}
+[  1.28] response {"id": "req-1", "type": "response", "command": "prompt", "success": true, "data": {"disposition": "started"}}
+[  1.38] agent_start
+[  1.39] turn_start
+[  1.39] message_start
+[  1.39] message_end
+[  1.39] message_start {"type": "message_start", "message": {"role": "user", "content": [{"type": "text", "text": "Run the bash command `sleep 8` then reply 'done'."}], "timestamp": 1792718000678}}
+[  1.39] message_end {"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": "Run the bash command `sleep 8` then reply 'done'."}], "timestamp": 1792718000678}}
+[  3.32] message_start
+[  3.38] message_end
+[  3.38] tool_execution_start
+[  3.38] SENT {"id": "steer-1", "type": "steer", "message": "Reply with the word STEERED instead."}
+[  3.43] queue_update {"type": "queue_update", "steering": ["Reply with the word STEERED instead."], "followUp": []}
+[  3.43] response {"id": "steer-1", "type": "response", "command": "steer", "success": true, "data": {"disposition": "queued"}}
+[ 11.62] tool_execution_end
+[ 11.62] message_start
+[ 11.62] message_end
+[ 11.62] turn_end
+[ 11.63] turn_start
+[ 11.63] queue_update {"type": "queue_update", "steering": [], "followUp": []}
+[ 11.63] message_start {"type": "message_start", "message": {"role": "user", "content": [{"type": "text", "text": "Reply with the word STEERED instead."}], "timestamp": 1792718002837}}
+[ 11.63] message_end {"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": "Reply with the word STEERED instead."}], "timestamp": 1792718002837}}
+[ 12.98] message_start
+[ 12.98] message_end
+[ 12.98] turn_end
+[ 13.28] agent_settled keys=type,aborted
+[ 13.28] CLOSED STDIN
+exit rc=0 after 3.0s from stdin close

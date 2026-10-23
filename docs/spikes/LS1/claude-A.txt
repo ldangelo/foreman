@@ -1,0 +1,29 @@
+[  0.01] SENT 'Run the bash command `sleep 12` and then create the file a.txt contain'
+[  0.40] system:hook_started
+[  0.40] system:hook_started
+[  0.40] system:hook_started
+[  0.40] system:hook_started
+[  0.40] system:hook_response
+[  0.40] system:hook_response
+[  0.40] system:hook_response
+[  0.40] system:hook_response
+[  0.56] system:init session=8357993c-7793-4261-9eb0-a53b0f0f6770
+[  1.98] system:thinking_tokens
+[  2.58] system:thinking_tokens
+[  2.58] assistant
+[  2.59] assistant tool_use Bash {"command": "sleep 12", "description": "Sleep for 12 seconds"}
+[  2.59] SENT 'Change of plan: ALSO create b.txt containing BETA, and write BETA not '
+[  2.60] rate_limit_event
+[  5.65] system:task_started
+[ 14.67] system:task_notification
+[ 14.75] user
+[ 16.08] system:thinking_tokens
+[ 17.08] system:thinking_tokens
+[ 17.08] assistant
+[ 17.52] assistant tool_use Write {"file_path": "/Users/ldangelo/Development/Fortium/foreman-wt/livestee
+[ 17.61] user
+[ 17.78] assistant tool_use Write {"file_path": "/Users/ldangelo/Development/Fortium/foreman-wt/livestee
+[ 17.88] user
+[ 19.28] assistant text 'I waited 12 seconds, then created both files in the working directory,'
+[ 19.40] result:success result='I waited 12 seconds, then created both files in the working directory, following' session=8357993c-7793-4261-9eb0-a53b0f0f6770
+a.txt: BETA | b.txt: BETA
