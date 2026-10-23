@@ -13,7 +13,7 @@ Session API; this uses the one-shot Run path the workflow door already runs on).
 | Delivery ack | none needed: the write is the delivery | `response {success:true, data:{disposition:"queued"}}` |
 | **Consumption proof** | the echoed user event (`isReplay:true`) carries **our `uuid`** (`claude-bg.txt`) at the moment the model takes it | user `message_start` with the steer text + `queue_update` removes it from `steering[]` (no id: matched FIFO by text) |
 | Turn end | `result` event. With stdin open the process stays alive and a later stdin message starts a new turn in the same session (`claude-C-replay.txt`) | `agent_settled`; **pi exits 0 ~3 s after stdin EOF** |
-| Background task (b3jtt) | with stdin open, a steer sent after the first `result` while a `run_in_background` task runs IS consumed as a new turn (`claude-bg.txt`); the CLI also wakes itself when the task completes | n/a |
+| Background task (b3jtt) | **Probe only, not the shipped behaviour.** With stdin held open a steer sent after the first `result` while a `run_in_background` task runs IS consumed as a new turn (`claude-bg.txt`). The shipped harness closes live input after the first `result` when nothing is pending, so in the live acceptance run (`docs/acceptance/live-steering-live-run.md`, scenario 4) that steer fell back to pause/resume and was consumed by prompt injection: not lost, but not consumed in-session. In-session consumption for this case is UNVERIFIED end to end. | n/a |
 | Session id | `result.session_id` (already mapped) | rpc mode emits no `session` header; `get_state` -> `data.sessionId` (measured) |
 
 Other adapters (codex, gemini, opencode, kimi, grok, amp, zai) keep `pause_resume`; the capability is typed
