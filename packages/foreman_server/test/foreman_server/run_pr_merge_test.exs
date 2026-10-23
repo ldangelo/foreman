@@ -100,6 +100,21 @@ defmodule ForemanServer.RunPrMergeTest do
     })
   end
 
+  # A head the PR watch recorded after the PR was opened (what a Fix CI push, a conflict
+  # resolution or a force-push looks like on the run stream).
+  defp record_head(run_id, head_sha) do
+    # The real builder, so the event carries exactly what PrWatcher/PrMonitor record.
+    pr = %ForemanServer.GitHub.PrStatus{
+      status: :open,
+      head_sha: head_sha,
+      head_branch: "foreman/task-pr-merge/run",
+      base_branch: "main"
+    }
+
+    {:ok, command} = ForemanServer.PrUpdate.command(run_id, @pr_url, pr)
+    CommandGateway.dispatch_system(command)
+  end
+
   defp events(run_id, type) do
     {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
     Enum.filter(events, &(&1.event_type == type))
@@ -144,6 +159,36 @@ defmodule ForemanServer.RunPrMergeTest do
 
       assert {:error, {:missing_or_invalid, :approver_identity}} =
                approve(run_id, %{approver_identity: nil})
+    end
+  end
+
+  describe "a head that moved after the PR was opened (foreman-axmni)" do
+    test "approving after the move pins the head that was approved, so the PR is mergeable", %{
+      run_id: run_id
+    } do
+      {:ok, _} = record_head(run_id, "fixedhead222")
+      {:ok, _} = approve(run_id)
+      stub_gh(view: %{"headRefOid" => "fixedhead222"})
+
+      assert {:ok, _} = merge(run_id)
+
+      assert [["pr", "merge", @pr_url, "--squash", "--match-head-commit", "fixedhead222"]] =
+               gh_merge_calls()
+
+      assert [_one] = events(run_id, "PrMerged")
+    end
+
+    test "a head recorded AFTER approval is never the pin", %{run_id: run_id} do
+      {:ok, _} = record_head(run_id, "fixedhead222")
+      {:ok, _} = approve(run_id)
+      {:ok, _} = record_head(run_id, "pushedafterapproval")
+      stub_gh(view: %{"headRefOid" => "pushedafterapproval"})
+
+      assert {:error, {:head_moved_since_approval, "fixedhead222", "pushedafterapproval"}} =
+               merge(run_id)
+
+      assert gh_merge_calls() == []
+      assert events(run_id, "PrMerged") == []
     end
   end
 

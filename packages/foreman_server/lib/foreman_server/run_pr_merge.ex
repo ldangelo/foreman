@@ -13,8 +13,9 @@ defmodule ForemanServer.RunPrMerge do
     * the run's merge gate is `:approved`, read from the event-sourced aggregate
       (not the ETS-backed `MergeGate`, which does not survive a restart);
     * the PR is still open and unconflicted, or already merged;
-    * the PR head is still the commit that was approved (`PrReady` carries it),
-      so commits pushed after approval cannot be merged unreviewed. `gh` is also
+    * the PR head is still the commit that was approved - the head the PR watch had
+      last recorded when the gate was approved (the `PrReady` head when it never
+      moved) - so commits pushed after approval cannot be merged unreviewed. `gh` is also
       told `--match-head-commit`, so the pin holds against a push that lands
       between the check and the merge.
 
@@ -33,6 +34,7 @@ defmodule ForemanServer.RunPrMerge do
   alias ForemanServer.GitHub.PrStatus
 
   @runner_key {__MODULE__, :command_runner}
+  @head_events ~w(PrReady PrUpdated PrChecksChanged PrReviewChanged PrRetargeted)
   @payload_keys [:project_id, :task_id, :pr_url, :branch_name, :head_sha, :base_branch]
 
   @doc """
@@ -95,6 +97,7 @@ defmodule ForemanServer.RunPrMerge do
         |> Enum.filter(&(&1.event_type == "PrReady" and ready_repo_key(&1.data) == repo_key))
         |> List.last()
         |> ready_payload(run_id)
+        |> pin_head_at_approval(events, repo_key)
 
       {:error, :stream_not_found} ->
         {:error, {:run_not_found, run_id}}
@@ -103,6 +106,43 @@ defmodule ForemanServer.RunPrMerge do
         {:error, {:pr_ready_read_failed, reason}}
     end
   end
+
+  # `PrReady` is recorded once, when the PR is opened. A Fix CI / Address comments /
+  # Resolve conflicts push (or a force-push) moves the head afterwards, and approving
+  # that PR must pin the head the PR had WHEN IT WAS APPROVED, not the stale one from
+  # PrReady - or no PR that ever needed a fix could be merged (foreman-axmni). The
+  # head as of approval is the last one the PR watch recorded before this
+  # repository's most recent `MergeGateApproved`. A push after approval still moves
+  # the live head off the pin, and the merge refuses it (`head_moved_since_approval`).
+  defp pin_head_at_approval({:ok, %{pr_url: url} = ready}, events, repo_key) do
+    approved_at =
+      events
+      |> Enum.with_index()
+      |> Enum.filter(fn {event, _i} ->
+        event.event_type == "MergeGateApproved" and ready_repo_key(event.data) == repo_key
+      end)
+      |> List.last()
+
+    case approved_at do
+      nil ->
+        {:ok, ready}
+
+      {_event, index} ->
+        head =
+          events
+          |> Enum.take(index)
+          |> Enum.filter(
+            &(&1.event_type in @head_events and Aggregate.get(&1.data, :pr_url) == url)
+          )
+          |> Enum.map(&Aggregate.get(&1.data, :head_sha))
+          |> Enum.filter(&(is_binary(&1) and &1 != ""))
+          |> List.last()
+
+        {:ok, Map.put(ready, :head_sha, head || ready.head_sha)}
+    end
+  end
+
+  defp pin_head_at_approval(other, _events, _repo_key), do: other
 
   defp ready_repo_key(data) do
     case Aggregate.get(data, :repo_id) do
