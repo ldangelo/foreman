@@ -1285,6 +1285,21 @@ expected shape; the two declarations would otherwise describe different things
 and could never resolve to a catalog row. Declaring `models.default` alone, with
 no `provider:`, stays legal and matches on the model column only.
 
+**`provider: claude` is the exception.** The claude CLI takes a bare alias or model
+id (`haiku`, `sonnet`, `claude-sonnet-4-5`) and rejects `<x>/<y>`, so a phase with
+`provider: claude` must pin `models.default` as a bare value, the same form as the
+project's `thread_model` for claude threads. A slashed value (`claude/haiku`,
+`litellm-stack/smart_router`) is refused at load time with a message naming the
+phase and the value; a proxy model is reached through `provider: pi`. Foreman still
+never infers the provider from the model name, and passes the string verbatim.
+
+```yaml
+  - name: review
+    provider: claude
+    models:
+      default: haiku
+```
+
 ### Provider/model preflight
 
 Before a run's first phase dispatches, every phase that declares a `provider:`

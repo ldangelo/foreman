@@ -562,6 +562,9 @@ defmodule ForemanServer.Workflow.Interpreter do
   # Same discipline: read via the one accepted-spellings table, not a hedge.
   defp assert_default_qualified(phase, index, path, default) do
     case PhaseSpec.fetch(phase, :provider) do
+      "claude" ->
+        assert_claude_model_bare(index, path, default)
+
       provider when is_binary(provider) and provider != "" ->
         if qualified_model?(default) do
           :ok
@@ -573,6 +576,24 @@ defmodule ForemanServer.Workflow.Interpreter do
 
       _no_provider_declared ->
         :ok
+    end
+  end
+
+  # `claude` is the exception to the qualified rule: the claude CLI takes a bare
+  # alias or model id (`haiku`, `sonnet`, `claude-sonnet-4-5`) and REJECTS
+  # `<x>/<y>` ("issue with the selected model"), while Foreman passes the
+  # declared string to the provider verbatim. A `claude` phase therefore pins a
+  # bare model, exactly like the project's `thread_model` for claude threads.
+  # A slashed value (`claude/haiku`, `litellm-stack/smart_router`) is refused
+  # here instead of failing the run after the worktree is paid for; a proxy
+  # model is reached through `provider: pi`, never by naming it on claude.
+  defp assert_claude_model_bare(index, path, default) do
+    if String.contains?(default, "/") do
+      raise Workflow.MissingRequiredPhaseError,
+        message:
+          "workflow template #{path} phase #{index} \"models.default\" must be a bare model alias or id (e.g. \"haiku\", \"sonnet\") when the phase declares provider \"claude\"; the claude CLI rejects the \"<provider>/<model>\" form (got #{inspect(default)}). A proxy model such as \"litellm-stack/x\" is reached through provider \"pi\""
+    else
+      :ok
     end
   end
 

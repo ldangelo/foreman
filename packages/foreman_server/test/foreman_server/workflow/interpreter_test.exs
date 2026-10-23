@@ -912,6 +912,34 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
     end
 
+    test "claude phase accepts a bare model alias or id" do
+      for model <- ["haiku", "sonnet", "claude-sonnet-4-5"] do
+        assert {:ok, workflow} =
+                 Workflow.Interpreter.load!(write_temp_yaml!(model_manifest(model, "claude")))
+
+        assert hd(workflow["phases"])["models"]["default"] == model
+      end
+    end
+
+    test "claude phase rejects any slashed model with a message naming the contract" do
+      for model <- ["claude/haiku", "litellm-stack/x"] do
+        e =
+          assert_raise Workflow.MissingRequiredPhaseError, fn ->
+            Workflow.Interpreter.load!(write_temp_yaml!(model_manifest(model, "claude")))
+          end
+
+        assert e.message =~ ~s(provider "claude")
+        assert e.message =~ "bare model"
+        assert e.message =~ inspect(model)
+      end
+    end
+
+    test "pi keeps requiring the qualified form" do
+      assert_raise Workflow.MissingRequiredPhaseError, fn ->
+        Workflow.Interpreter.load!(write_temp_yaml!(model_manifest("haiku", "pi")))
+      end
+    end
+
     test "every bundled manifest still loads under the qualified-model rule" do
       # Guards the one failure mode that would make this validator a load-time
       # brick: a bundled workflow that stops loading once it ships. The set is
