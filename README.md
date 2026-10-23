@@ -61,10 +61,10 @@ A thread is the operator-facing unit of work (a workflow run, `run:<id>`, or a j
 - MCP: `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`, `foreman_thread_find` (read) and the write-gated `foreman_thread_stop`, `foreman_thread_steer`.
 - CLI: `foreman thread list|get|stop|steer|resolve|reopen`.
 - Overview: `GET /api/projects/:project_id/overview` groups a project's threads (ready for review / waiting on you / working / landing / idle / resolved) with counts, an attention flag and tab data; MCP `foreman_overview` (read-only); `attention` on project payloads. Merging stays operator-only.
-- Commands/events: `thread.resolve` / `thread.reopen` (`ThreadResolved` / `ThreadReopened`) and `run.steer` (`RunSteerQueued`, consumed by the system-only `run.steer.consume` -> `RunSteerConsumed`; deliberately not operator-allowlisted).
+- Commands/events: `thread.resolve` / `thread.reopen` (`ThreadResolved` / `ThreadReopened`) and `run.steer` (`RunSteerQueued`, then the system-only `run.steer.deliver|consume|undeliver` -> `RunSteerDelivered|Consumed|Undelivered`; deliberately not operator-allowlisted).
 - Config: `config :foreman_server, :threads, idle_resolver:, idle_resolve_after_days:, sweep_interval_ms:` (idle auto-resolve of terminal, PR-less threads).
 
-Steering v1 is `"pause_resume"` (the thread DTO's `steering` field): pause, commit partial work, resume with the operator message in the next phase prompt (jobsite door: `POST /api/jobsites/:id/resume` with a `prompt`, i.e. `Jobsite.steer/3`). Transcripts are bounded: `omitted_entries`/`truncated` flag dropped `run_logs`, and jobsite turns carry no timestamps or operator turns. Details: [`docs/user-guide.md`](./docs/user-guide.md), [`docs/cli-reference.md`](./docs/cli-reference.md).
+Steering: a steer to a running claude/pi phase is written into the live agent session (taken after its in-flight tool call, no pause; delivery states `RunSteerDelivered` / `RunSteerConsumed` / `RunSteerUndelivered` show in the transcript). Every other case falls back to `"pause_resume"` (the thread DTO's `steering` field): pause, commit partial work, resume with the operator message in the next phase prompt (jobsite door: `POST /api/jobsites/:id/resume` with a `prompt`, i.e. `Jobsite.steer/3`). Transcripts are bounded: `omitted_entries`/`truncated` flag dropped `run_logs`, and jobsite turns carry no timestamps or operator turns. Details: [`docs/user-guide.md`](./docs/user-guide.md), [`docs/cli-reference.md`](./docs/cli-reference.md).
 
 ## Operator run dashboard
 
