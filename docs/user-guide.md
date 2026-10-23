@@ -2514,8 +2514,9 @@ Without it PRs are observed but never changed unless an operator asks.
 merge-conflict resolution, unresolved review-thread reads, the workspace PR action buttons and the
 `pr_auto_fix` policy (off, on, bounded) were exercised on a real private repository
 (`docs/acceptance/github-live-run.md`, `docs/acceptance/live-github-protection-ui-autofix.md`). A push
-after `approve-merge` is not re-held: the gate stays approved, `merge` refuses the moved head and
-`approve-merge` cannot be repeated (bead `foreman-ehxy6`). Resuming a Claude provider session from a new
+after `approve-merge` was observed on the build before foreman-ehxy6 (#650) to leave the gate approved
+and the PR unmergeable (`approve-merge` could not be repeated); since #650 it voids the approval and
+holds the gate again (see `run approve-merge`), which tests cover and no live run has re-checked. Resuming a Claude provider session from a new
 directory is still unverified; pi sessions are bound to their working directory.
 
 ## Needs you: approvals and questions

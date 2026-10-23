@@ -20,7 +20,7 @@ meets from the outside: a failing commit pushed to the PR branch, a review poste
 | 3a | `pr_auto_fix` disabled: a failing PR is observed and not fixed | **PASS** | 9c (150 s) and 9f (90 s) quiet windows |
 | 3b | `pr_auto_fix` enabled: the failing PR is fixed automatically, once | **PASS** | 9f |
 | 3c | `pr_auto_fix` bounded: an unfixable failure stops at `max_attempts` with `PrFixExhausted` | **PASS** | 9f |
-| 4 | After `MergeGateApproved`, a push to the PR branch (observation only, fix is `foreman-ehxy6`) | **observed, PR stranded** | 9h |
+| 4 | After `MergeGateApproved`, a push to the PR branch (observation only; the fix landed afterwards as #650, `foreman-ehxy6`) | **observed on the build before #650: PR stranded**. The post-#650 behaviour (approval voided, gate held again) is UNVERIFIED live | 9h |
 
 ## Environment
 
@@ -133,7 +133,13 @@ Exactly one automatic attempt (`attempts.ci = 1`, zero `trigger=operator`). Boun
 `attempts.ci = 2 = max_attempts`, `exhausted.ci = e62459ca`; for the next 120 s no `PrFixRequested` and `attempts` did not grow. The policy was
 cleared afterwards (`--clear pr_auto_fix`).
 
-## A push after merge approval (9h), PR #3: observation only (`foreman-ehxy6` owns the fix)
+## A push after merge approval (9h), PR #3: observation on the build before #650 (`foreman-ehxy6`)
+
+> **Superseded by #650 (`foreman-ehxy6`).** Everything in this section was observed on the build before #650 (`origin/main` `126ff019`).
+> Since #650, `merge_approve` must name the head (`--head-sha`, read back from GitHub), a push after approval voids the approval and holds
+> the gate again (`MergeGatePending`, `reason: head_moved_since_approval`), the old head is refused as a mismatch, and only a fresh approval
+> naming the new head merges. `run_pr_merge_test.exs` covers that. The harness stage 9h is rewritten for it and has **not** been run live
+> (the scratch repository is archived), so the new behaviour is UNVERIFIED against real GitHub.
 
 ```text
 31 13:09:31 MergeGateApproved approver=e2e-operator                       # card: landing / merge_in_flight, merge_gate=approved
@@ -149,7 +155,7 @@ cleared afterwards (`--clear pr_auto_fix`).
   (events 35-44: `PrFixRequested trigger=operator attempt=2` ... `PrFixFinished outcome=pushed`, `PrChecksChanged passing`): again no
   `PrReady`; `approve-merge` still `merge_gate_already_approved`, `merge` still `head_moved_since_approval` against the original pin `dafd2650`.
 - `foreman run retry-pr` needs `--repo-id` (multi-repo runs only): not a recovery path for a single-repository run.
-- **Net: the PR is stranded.** No operator verb re-opens the gate; the only exit is merging outside Foreman or opening a new PR.
+- **Net, on that build: the PR was stranded.** No operator verb re-opened the gate; the only exit was merging outside Foreman or opening a new PR.
 
 ## Operator merge when GitHub refuses it (9j, PR #10)
 
@@ -183,4 +189,4 @@ GitHub's own text reaches the operator verbatim (inside an inspected Elixir tupl
 
 ## Bead status
 
-`foreman-ksy0q`: items 2, 3 and 4 and the refusal path (1b) are verified live; item 1 (merge under real branch protection) is not, so the bead stays open.
+`foreman-ksy0q`: items 2 and 3 and the refusal path (1b) are verified live, and item 4 was observed live on the build before #650 (the fix is not re-run live); item 1 (merge under real branch protection) is not verified, so the bead stays open.
