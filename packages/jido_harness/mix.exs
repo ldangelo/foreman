@@ -9,7 +9,7 @@ defmodule Jido.Harness.MixProject do
     [
       app: :jido_harness,
       version: @version,
-      elixir: "~> 1.18",
+      elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -31,6 +31,7 @@ defmodule Jido.Harness.MixProject do
           "guides/detached_runs.md",
           "guides/interactive_sessions.md",
           "guides/managed_processes.md",
+          "guides/escripts.md",
           "guides/normalization_and_data_model.md",
           "guides/streaming_replay_and_retention.md",
           "guides/ownership_timeouts_and_cancellation.md",
@@ -64,7 +65,8 @@ defmodule Jido.Harness.MixProject do
             "guides/one_shot_requests.md",
             "guides/detached_runs.md",
             "guides/interactive_sessions.md",
-            "guides/managed_processes.md"
+            "guides/managed_processes.md",
+            "guides/escripts.md"
           ],
           "Shared concepts": [
             "guides/normalization_and_data_model.md",
@@ -98,7 +100,8 @@ defmodule Jido.Harness.MixProject do
             Jido.Harness,
             Jido.Harness.Run,
             Jido.Harness.Session,
-            Jido.Harness.Process
+            Jido.Harness.Process,
+            Jido.Harness.Escript
           ],
           "Requests and results": [
             Jido.Harness.RunRequest,

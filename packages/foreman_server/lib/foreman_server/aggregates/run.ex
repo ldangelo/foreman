@@ -278,10 +278,34 @@ defmodule ForemanServer.Aggregates.Run do
                   %{
                     message_id: message_id,
                     text: Aggregate.get(payload, :text),
-                    resume: Aggregate.get(payload, :resume, true)
+                    resume: Aggregate.get(payload, :resume, true),
+                    delivered: false
                   }
                 ],
             steer_message_ids: MapSet.put(state.steer_message_ids, message_id)
+        }
+
+      # Written to a live provider session, not yet taken by the agent. Still
+      # pending: only `RunSteerConsumed` / `RunSteerUndelivered` retire a message.
+      "RunSteerDelivered" ->
+        message_id = Aggregate.get(payload, :message_id)
+
+        %State{
+          state
+          | pending_steer:
+              Enum.map(state.pending_steer, fn
+                %{message_id: ^message_id} = entry -> %{entry | delivered: true}
+                entry -> entry
+              end)
+        }
+
+      "RunSteerUndelivered" ->
+        undelivered = MapSet.new(Aggregate.get(payload, :message_ids, []))
+
+        %State{
+          state
+          | pending_steer:
+              Enum.reject(state.pending_steer, &MapSet.member?(undelivered, &1.message_id))
         }
 
       "RunSteerConsumed" ->
@@ -555,6 +579,7 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(state, %{type: "run.steer.consume", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, message_ids} <- steer_message_ids(Aggregate.get(payload, :message_ids)),
+         {:ok, delivery} <- steer_delivery(Aggregate.get(payload, :delivery), "prompt"),
          :ok <- require_exists(state, run_id) do
       pending_ids = MapSet.new(state.pending_steer, & &1.message_id)
       consumable = Enum.filter(message_ids, &MapSet.member?(pending_ids, &1))
@@ -566,7 +591,61 @@ defmodule ForemanServer.Aggregates.Run do
          %{
            stream_id: "run:#{run_id}",
            event_type: "RunSteerConsumed",
-           payload: %{run_id: run_id, message_ids: consumable}
+           payload: %{run_id: run_id, message_ids: consumable, delivery: delivery}
+         }}
+      end
+    end
+  end
+
+  # run.steer.deliver - system-only: appends `RunSteerDelivered` once a pending
+  # message was written to the live provider session of the running phase
+  # (mid-phase steering). The message stays pending until the agent takes it
+  # (`RunSteerConsumed`) or the run ends without it (`RunSteerUndelivered`).
+  # Re-delivering a message already marked delivered, or one that is not
+  # pending, is a no-op so a retried dispatch is safe.
+  def handle_command(state, %{type: "run.steer.deliver", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, message_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :message_id), :message_id),
+         {:ok, mode} <- steer_delivery(Aggregate.get(payload, :mode), "live"),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      case Enum.find(state.pending_steer, &(&1.message_id == message_id)) do
+        %{delivered: false} ->
+          {:ok,
+           %{
+             stream_id: "run:#{run_id}",
+             event_type: "RunSteerDelivered",
+             payload: %{run_id: run_id, message_id: message_id, mode: mode}
+           }}
+
+        _delivered_or_not_pending ->
+          {:ok, nil}
+      end
+    end
+  end
+
+  # run.steer.undeliver - system-only: appends `RunSteerUndelivered` for pending
+  # messages the run will never take (it went terminal, or its live session
+  # closed first). Unlike the other steer commands it IS accepted on a terminal
+  # run: surfacing the loss is the point.
+  def handle_command(state, %{type: "run.steer.undeliver", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, message_ids} <- steer_message_ids(Aggregate.get(payload, :message_ids)),
+         {:ok, reason} <-
+           Aggregate.required_binary(Aggregate.get(payload, :reason), :reason),
+         :ok <- require_exists(state, run_id) do
+      pending_ids = MapSet.new(state.pending_steer, & &1.message_id)
+      lost = Enum.filter(message_ids, &MapSet.member?(pending_ids, &1))
+
+      if lost == [] do
+        {:ok, nil}
+      else
+        {:ok,
+         %{
+           stream_id: "run:#{run_id}",
+           event_type: "RunSteerUndelivered",
+           payload: %{run_id: run_id, message_ids: lost, reason: reason}
          }}
       end
     end
@@ -1089,6 +1168,10 @@ defmodule ForemanServer.Aggregates.Run do
       n -> {:error, {:text_too_long, n}}
     end
   end
+
+  defp steer_delivery(nil, default), do: {:ok, default}
+  defp steer_delivery(mode, _default) when mode in ["live", "prompt"], do: {:ok, mode}
+  defp steer_delivery(_mode, _default), do: {:error, {:missing_or_invalid, :delivery}}
 
   defp steer_resume_flag(nil), do: {:ok, true}
   defp steer_resume_flag(flag) when is_boolean(flag), do: {:ok, flag}

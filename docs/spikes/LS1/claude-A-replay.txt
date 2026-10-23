@@ -1,0 +1,19 @@
+[  0.01] SENT 'Run the bash command `sleep 12` and then create the file a.txt contain'
+[  0.69] system:init session=fdca8bc0-b0eb-4886-9b43-a468ef50d67c
+[  2.56] user
+[  2.56] assistant
+[  2.73] assistant tool_use Bash {"command": "sleep 12", "description": "Pause for 12 seconds"}
+[  2.73] SENT 'Change of plan: ALSO create b.txt containing BETA, and write BETA not '
+[  2.74] rate_limit_event
+[  5.79] system:task_started
+[ 14.80] system:task_notification
+[ 14.87] user
+[ 14.94] user
+[ 17.74] assistant
+[ 18.11] assistant tool_use Write {"file_path": "/Users/ldangelo/Development/Fortium/foreman-wt/livestee
+[ 18.19] user
+[ 18.36] assistant tool_use Write {"file_path": "/Users/ldangelo/Development/Fortium/foreman-wt/livestee
+[ 18.44] user
+[ 19.91] assistant text 'I waited 12 seconds, then created `a.txt` containing `BETA`, per your '
+[ 20.01] result:success result='I waited 12 seconds, then created `a.txt` containing `BETA`, per your change of ' session=fdca8bc0-b0eb-4886-9b43-a468ef50d67c
+a.txt: BETA | b.txt: BETA

@@ -59,6 +59,21 @@ defmodule Jido.Harness.Run do
   @spec await(String.t(), timeout()) :: Jido.Harness.result(Jido.Harness.RunResult.t())
   def await(run_id, timeout \\ :infinity), do: RunManager.await(run_id, timeout)
 
+  @doc """
+  Writes one more input to a run started with `provider_options: %{live_input: true}`.
+
+  The provider queues it and takes it at its next safe point (after the in-flight
+  tool call), inside the same provider session. `:ok` means the line was written,
+  not that it was taken: the run emits an `:input_accepted` event carrying
+  `input_id` when the provider consumes it. `{:error, reason}` is
+  `:not_live` (run was not started live), `:input_closed` (the run already
+  finished its work and closed stdin), `:not_running`, `:duplicate_input`, or
+  `{:write_failed, term}`.
+  """
+  @spec send_input(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def send_input(run_id, input_id, text) when is_binary(input_id) and is_binary(text),
+    do: RunManager.send_input(run_id, input_id, text)
+
   @doc "Requests cancellation of a running provider execution."
   @spec cancel(String.t()) :: :ok | {:error, term()}
   def cancel(run_id), do: RunManager.cancel(run_id)

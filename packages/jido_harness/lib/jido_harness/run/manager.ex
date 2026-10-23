@@ -73,6 +73,7 @@ defmodule Jido.Harness.RunManager do
     end
   end
 
+  def send_input(id, input_id, text), do: call(id, {:send_input, input_id, text})
   def cancel(id), do: call(id, :cancel)
   def prune(id), do: call(id, :prune)
 

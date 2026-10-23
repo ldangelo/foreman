@@ -1,0 +1,21 @@
+[  0.00] SENT 'Run the bash command `sleep 12` and then create the file a.txt contain'
+[  0.48] system:init session=7d55be09-c21d-42b7-96db-715d21e899b1
+[  3.68] user "Run the bash command `sleep 12` and then create the file a.txt containing ALPHA. Do nothi replay=True uuid=853559d4
+[  3.68] assistant
+[  3.88] assistant tool_use Bash {"command": "sleep 12", "description": "Sleep for 12 seconds"}
+[  3.90] rate_limit_event
+[  6.93] system:task_started
+[ 15.94] system:task_notification
+[ 16.00] user [{"tool_use_id": "toolu_01HdDsvT42YACeDd4NEgq4eL", "type": "tool_result", "content": "(Bas replay=None uuid=b50ea589
+[ 17.70] assistant tool_use Write {"file_path": "/Users/ldangelo/Development/Fortium/foreman-wt/livestee
+[ 17.80] user [{"tool_use_id": "toolu_01BKfWTSLHzDxeNMWLCLs6SE", "type": "tool_result", "content": "File replay=None uuid=d9b3e779
+[ 19.95] assistant text 'I waited 12 seconds with `sleep 12`, then created `a.txt` in the worki'
+[ 20.07] result:success result='I waited 12 seconds with `sleep 12`, then created `a.txt` in the working directo' session=7d55be09-c21d-42b7-96db-715d21e899b1
+[ 20.07] SENT 'Now also create c.txt containing GAMMA.'
+[ 20.15] system:init session=7d55be09-c21d-42b7-96db-715d21e899b1
+[ 21.48] user "Now also create c.txt containing GAMMA." replay=True uuid=410c2589
+[ 21.48] assistant tool_use Write {"file_path": "/Users/ldangelo/Development/Fortium/foreman-wt/livestee
+[ 21.60] user [{"tool_use_id": "toolu_01QFZjfAhFc6nWJzSwVAEv8v", "type": "tool_result", "content": "File replay=None uuid=85bc04cc
+[ 22.93] assistant text 'I created `c.txt` in the working directory with the contents `GAMMA`.'
+[ 23.03] result:success result='I created `c.txt` in the working directory with the contents `GAMMA`.' session=7d55be09-c21d-42b7-96db-715d21e899b1
+a.txt: ALPHA | b.txt: None

@@ -22,7 +22,7 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
         executable: "stub",
         capabilities: %Capabilities{streaming?: true, resume?: true},
         normalized_options: [:system_prompt],
-        provider_options: []
+        provider_options: [:live_input]
       }
     end
 

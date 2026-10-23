@@ -59,7 +59,8 @@ defmodule Jido.Harness.Adapters.Pi do
     :no_skills,
     :no_context_files,
     :offline,
-    :extra_args
+    :extra_args,
+    :live_input
   ]
 
   @read_only_tools ["read", "grep", "find", "ls"]
@@ -186,7 +187,17 @@ defmodule Jido.Harness.Adapters.Pi do
 
     with {:ok, argv} <- build_argv(request, options) do
       executable = options[:cli_path] || Helpers.cli_path(context.config, spec().executable)
-      CLIStream.run(:pi, prepare_request(request), context, executable, argv, &map_event/1)
+
+      if options[:live_input] == true do
+        CLIStream.run(:pi, prepare_request(request), context, executable, argv, &map_live_event/1, nil,
+          live_input: [
+            Jason.encode!(%{"id" => "foreman-prompt", "type" => "prompt", "message" => request.prompt}) <> "\n",
+            Jason.encode!(%{"id" => "foreman-get-state", "type" => "get_state"}) <> "\n"
+          ]
+        )
+      else
+        CLIStream.run(:pi, prepare_request(request), context, executable, argv, &map_event/1)
+      end
     end
   end
 
@@ -206,6 +217,12 @@ defmodule Jido.Harness.Adapters.Pi do
   @impl true
   def cancel(run_id, _context), do: Helpers.cancel_cli_run(run_id)
 
+  @impl true
+  # `pi --mode rpc` `steer`: queued by pi and injected after the in-flight tool call
+  # finishes (docs/spikes/LS1/pi-steer2.txt).
+  def live_input_line(input_id, text) when is_binary(input_id) and is_binary(text),
+    do: Jason.encode!(%{"id" => input_id, "type" => "steer", "message" => text}) <> "\n"
+
   @doc false
   def prepare_request(%RunRequest{} = request) do
     env = request.env |> Map.put("PI_SKIP_VERSION_CHECK", "1") |> Map.put("PI_TELEMETRY", "0")
@@ -221,7 +238,10 @@ defmodule Jido.Harness.Adapters.Pi do
          {:ok, skills} <- string_list(options[:skills], :skills),
          {:ok, extra_args} <- extra_args(options[:extra_args]) do
       argv =
-        ["--mode", "json"] ++
+        [
+          "--mode",
+          if(options[:live_input] == true, do: "rpc", else: "json")
+        ] ++
           pair("--provider", options[:model_provider]) ++
           pair("--model", request.model) ++
           pair("--thinking", request.reasoning_effort) ++
@@ -241,7 +261,7 @@ defmodule Jido.Harness.Adapters.Pi do
           flag("--no-skills", options[:no_skills]) ++
           flag("--no-context-files", options[:no_context_files]) ++
           flag("--offline", options[:offline]) ++
-          extra_args ++ Enum.map(request.attachments, &("@" <> &1)) ++ [request.prompt]
+          extra_args ++ prompt_args(options[:live_input], request)
 
       {:ok, argv}
     end
@@ -294,6 +314,38 @@ defmodule Jido.Harness.Adapters.Pi do
          flag("--offline", options[:offline]) ++ extra_args}
     end
   end
+
+  # rpc mode carries the prompt as a stdin command, never argv, and has no file
+  # attachment channel: refuse rather than drop them.
+  defp prompt_args(true, _request), do: []
+  defp prompt_args(_other, request), do: Enum.map(request.attachments, &("@" <> &1)) ++ [request.prompt]
+
+  @doc false
+  # Streaming-input (`--mode rpc`) records. rpc emits no `session` header, so the
+  # session id comes from the `get_state` response; a user `message_start` is the
+  # consumption of a stdin message; `agent_settled` means the agent is idle.
+  def map_live_event(%{"type" => "message_start", "message" => %{"role" => "user", "content" => content}} = raw) do
+    [
+      Helpers.event(
+        :pi,
+        :input_accepted,
+        nil,
+        %{"kind" => "message", "input_id" => nil, "text" => content_text(content)},
+        raw
+      )
+    ]
+  end
+
+  def map_live_event(%{"type" => "agent_settled"} = raw), do: [Helpers.event(:pi, :input_idle, nil, %{}, raw)]
+
+  def map_live_event(
+        %{"type" => "response", "command" => "get_state", "success" => true, "data" => %{"sessionId" => session_id}} =
+          raw
+      )
+      when is_binary(session_id),
+      do: [Helpers.event(:pi, :provider_event, session_id, %{"kind" => "session_state"}, raw)]
+
+  def map_live_event(raw), do: map_event(raw)
 
   @doc false
   def map_event(%{"type" => "session", "id" => session_id} = raw) do
@@ -392,6 +444,9 @@ defmodule Jido.Harness.Adapters.Pi do
 
   def map_event(raw),
     do: [Helpers.event(:pi, :provider_event, nil, %{"mapped" => false, "value_type" => value_type(raw)}, raw)]
+
+  defp validate_options(%{attachments: [_ | _]}, %{live_input: true}),
+    do: conflict("attachments and provider live_input")
 
   defp validate_options(%{provider_session_id: session_id}, %{continue: true}) when is_binary(session_id),
     do: conflict("provider_session_id and provider continue")

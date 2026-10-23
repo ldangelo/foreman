@@ -39,6 +39,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   alias ForemanServer.Overwatch.{RunMeta, WorkerLogPolicy, WorkerProtocol}
   alias ForemanServer.RunControl
   alias ForemanServer.Usage
+  alias ForemanServer.Workflow.LiveSteer
 
   @default_heartbeat_interval_ms 5_000
 
@@ -203,10 +204,13 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     driver_opts =
       Keyword.put(driver_opts, :on_start, fn harness_run_id ->
         RunControl.register_agent(run_id, harness_run_id)
+        if LiveSteer.live?(driver_opts), do: LiveSteer.watch(run_id, harness_run_id)
       end)
 
     case Driver.run(provider, prompt, driver_opts) do
       {:ok, %Jido.Harness.RunResult{} = run_result} ->
+        LiveSteer.reconcile(run_id, run_result.events)
+
         {normalize_result(run_result, secrets), log_events(run_result),
          build_meta(provider, run_result)}
 
@@ -216,6 +220,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
         case Driver.await(harness_run_id, timeout) do
           {:ok, %Jido.Harness.RunResult{} = run_result} ->
+            LiveSteer.reconcile(run_id, run_result.events)
+
             {normalize_result(run_result, secrets), log_events(run_result),
              build_meta(provider, run_result)}
 

@@ -14,6 +14,24 @@ This package is a vendored fork of the upstream Elixir library
 | Pinned on        | 2026-08-16                                                 |
 | License          | Apache License 2.0 — see `LICENSE`                         |
 
+## Build role and sync to the Sunstone fork (2026-10)
+
+`packages/foreman_server` now compiles THIS directory (`{:jido_harness, path:
+"../jido_harness", override: true}`), not the Sunstone-Partners fork. To keep
+behaviour identical to the previously pinned fork, `lib/`, `test/` and
+`mix.exs` were synced verbatim from `Sunstone-Partners/jido_harness` at
+`e41fc1651282469f2db4219a48d9f7feef1b0dbc` (adds the Grok 1.0 mapper and
+`Jido.Harness.Escript` on top of the upstream SHA above; `mix.lock` and
+`config/` were already identical). `smoke_test.exs` is local to this repo.
+`test/jido_harness/escript_test.exs` and `fixtures/escript_fixture/` are deliberately NOT
+vendored: that test runs `mix escript.build` into this package's shared `_build/test`,
+which overwrites the compiled test-support adapters and makes unrelated tests
+(`RunManagerTest`, `SessionManagerTest`) fail depending on order, and its fixture
+resolves erlexec independently of `mix.lock`. It stays covered in the fork.
+Foreman-specific changes (live-input runs, `Run.send_input/3`) land as
+ordinary commits here; re-syncing against the fork or upstream must be done
+as a deliberate commit that preserves them.
+
 ## License (verbatim, first 200 characters)
 
 ```
