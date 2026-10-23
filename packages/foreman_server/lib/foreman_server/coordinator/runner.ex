@@ -30,7 +30,10 @@ defmodule ForemanServer.Coordinator.Runner do
   @doc "Projects with a running worker, and which of them are mid-turn."
   @spec health(Runtime.t()) :: %{workers: [String.t()], busy: [String.t()]}
   def health(%Runtime{} = rt) do
-    workers = Registry.select(rt.registry, [{{:"$1", :_, :_}, [], [:"$1"]}]) |> Enum.sort()
+    workers =
+      Registry.select(rt.registry, [{{:"$1", :_, :_}, [{:is_binary, :"$1"}], [:"$1"]}])
+      |> Enum.sort()
+
     %{workers: workers, busy: Enum.filter(workers, &ProjectWorker.busy?(rt, &1))}
   end
 
