@@ -94,6 +94,15 @@ you no longer need it.
 workflow the base is the project checkout's `HEAD` when the run's first phase
 starts.
 
+Manifests are read by a small YAML-subset parser (not a full YAML library). A
+mapping may be written in **block** style (indented `key: value` lines) or in
+**flow** style (`worktree: {enabled: false, base: main}`); both load to the
+same manifest and go through the same validation, so a flow-style `worktree:`
+or `models:` block is never rejected merely for its style. Flow mappings may
+hold quoted values and flow lists (`{to: [ops, dev]}`); a value that only looks
+like one (`{{input.prompt}} --foreman`, `{run_id}`) stays a plain string. The
+vocabulary is unchanged and closed — only the syntax is accepted both ways.
+
 ## Local Development Environment
 
 `direnv allow` loads Devbox and sources `.env` on entering the
