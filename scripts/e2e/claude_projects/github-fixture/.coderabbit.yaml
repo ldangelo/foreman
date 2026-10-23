@@ -1,0 +1,12 @@
+# Scratch repo for the Foreman GitHub live acceptance. CodeRabbit is installed account-wide; its
+# walkthrough comment and "CodeRabbit" commit status would be observed as PR comments/checks by the
+# watcher and make every assertion about comments and check state ambiguous. Skip PRs whose title
+# carries the marker and do not post a review status.
+reviews:
+  review_status: false
+  high_level_summary: false
+  auto_review:
+    ignore_title_keywords:
+      - "e2e-skip"
+chat:
+  auto_reply: false

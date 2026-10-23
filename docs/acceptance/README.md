@@ -13,6 +13,7 @@ that CI cannot give.
 | `claude-projects-live-run.md` | First manual end-to-end run on pi with a faked `gh`: instructions, memory, library, parallel threads, steer, stop, resolve, Overview groups, pause/resume, webhook notifications, review verdict, usage. Findings F1-F10 and their fixes. |
 | `claude-projects-acceptance-2026-10-22.md` | The scripted flow (`claude_projects_flow.sh`, 7 stages) plus the failure injection table (`failure_injection.sh`), transcript and defects filed as beads. |
 | `github-live-run.md` | Stage 8 on a real private GitHub repo: PR created by a run, checks, a real webhook through a `cloudflared` tunnel, Fix CI, Address comments, Resolve conflicts, force-push, check re-run, operator merge (36 PASS). Branch protection UNVERIFIED (HTTP 403 on that plan). |
+| `live-github-protection-ui-autofix.md` + `live-github-ui-*.png` | The workspace Fix CI, Address comments, Resolve conflicts and Create PR buttons clicked on real PRs, `pr_auto_fix` off, on and bounded, a push after merge approval, GitHub's refusal text for an operator merge, and the Create PR merge-gate defect found and fixed there (`foreman-ksy0q`). Merge under branch protection UNVERIFIED. |
 | `parity-gaps-live-run.md` | Live proof of the parity-gap beads with real `claude` (haiku) and pi: claude coordinator and thread, project env and secrets on both doors, setup script, docker network shim, schedules, adopt (move, mint, continue), recommend, per-thread usage, multi-repo self-add and fanout. |
 | `live-steering-live-run.md` | Live in-session steering for claude and pi, the pause/resume fallback, `RunSteerUndelivered` on cancel. |
 | `inflight-approvals-live-run.md` | Per-call approvals for claude (`--permission-prompt-tool`): approve from the CLI, deny from the workspace UI, timeout deny. |
@@ -111,8 +112,9 @@ Details and bead ids are in [`parity-audit.md`](parity-audit.md).
 
 - pi on MiniMax carries almost all of the evidence; `claude` is proven only for short haiku sessions (coordinator, thread, reviewer,
   in-flight approvals, steering). Claude paths beyond that (for example fix-thread resume) are tracked in `foreman-nufr9`.
-- GitHub is proven on a real private repo except branch protection (HTTP 403 on that plan), the workspace buttons against real
-  GitHub and the automatic `pr_auto_fix` policy (`foreman-ksy0q`).
+- GitHub is proven on a real private repo except merge under branch protection (HTTP 403 on a private repo of that plan; the temporary public
+  window was not taken because the pre-flip content scan found a real identity in the history, see `live-github-protection-ui-autofix.md`,
+  `foreman-ksy0q`). A push after merge approval strands the PR (observed live, `foreman-ehxy6`).
 - Telegram and Slack were never run against the real APIs; this is deferred by the user (`foreman-mivo7`). Only the signed webhook
   is live-verified.
 - Not seen live: UI Approve click, stop or restart while a call is blocked, a block longer than about 100 s (`foreman-exofh`);

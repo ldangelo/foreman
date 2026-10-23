@@ -7,16 +7,18 @@ defmodule ForemanServer.PrCreateTest do
   """
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{CommandGateway, PrCreate, ProjectionStore}
+  alias ForemanServer.{Aggregate, CommandGateway, PrCreate, ProjectionStore, RunPrMerge}
+  alias ForemanServer.Aggregates.Run
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
 
   @base "main"
+  @head_sha "0123456789abcdef0123456789abcdef01234567"
 
   setup do
     test_pid = self()
     pr_url = "https://github.com/acme/widgets/pull/#{System.unique_integer([:positive])}"
-    state = %{gh: {pr_url <> "\n", 0}, ahead: "2\n", push: {"", 0}}
+    state = %{gh: {pr_url <> "\n", 0}, ahead: "2\n", push: {"", 0}, rev: {@head_sha <> "\n", 0}}
     {:ok, script} = Agent.start_link(fn -> state end)
 
     runner = fn cmd, args, opts ->
@@ -25,6 +27,7 @@ defmodule ForemanServer.PrCreateTest do
 
       case {cmd, args} do
         {"git", ["rev-list" | _]} -> {reply.ahead, 0}
+        {"git", ["rev-parse" | _]} -> reply.rev
         {"git", ["push" | _]} -> reply.push
         {"gh", ["pr", "create" | _]} -> run_gh(reply.gh, test_pid)
         other -> flunk("unexpected command #{inspect(other)}")
@@ -35,6 +38,7 @@ defmodule ForemanServer.PrCreateTest do
 
     on_exit(fn ->
       PrCreate.clear_command_runner()
+      RunPrMerge.clear_command_runner()
       if Process.alive?(script), do: Agent.stop(script)
     end)
 
@@ -175,7 +179,10 @@ defmodule ForemanServer.PrCreateTest do
       assert {:ok, %{pr_url: ^pr_url, head_branch: head}} = PrCreate.execute(t.run_id)
       assert head == t.branch
       assert ran("gh") == []
-      assert ran("git") == []
+      # only the head of the gate signal is resolved again: nothing is pushed or counted
+      assert [{["rev-parse" | _], _opts}] = ran("git")
+      # ...and the repeated signal is the same deterministic command: still ONE PrReady
+      assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrReady")) == 1
     end
 
     test "concurrent Create PR calls for one run open exactly one PR", %{script: script} do
@@ -346,6 +353,115 @@ defmodule ForemanServer.PrCreateTest do
 
       assert {:error, {:run_not_found, "run-ghost"}} =
                CommandGateway.dispatch_operator(create_command("run-ghost"))
+    end
+  end
+
+  describe "the merge gate" do
+    test "the PR Create PR opens is held for approval: PrReady names the PR, branch, head and base",
+         %{pr_url: pr_url} do
+      t = thread!()
+
+      assert {:ok, _spec} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      assert [ready] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrReady"))
+
+      assert ready.data.pr_url == pr_url
+      assert ready.data.branch_name == t.branch
+      assert ready.data.head_sha == @head_sha
+      assert ready.data.base_branch == @base
+      assert ready.data.project_id == t.project_id
+      assert ready.data.task_id == t.task_id
+
+      {state, _version} = Aggregate.load(Run, "run:#{t.run_id}")
+      assert Run.merge_gate(state) == :pending
+
+      # the head is resolved from the pushed branch, in the project checkout
+      assert [{["rev-parse", "--verify", rev], opts}] = ran("git", &(hd(&1) == "rev-parse"))
+      assert rev == t.branch <> "^{commit}"
+      assert opts[:cd] == t.repo
+    end
+
+    test "the operator can approve and merge the PR it opened, pinned to its head",
+         %{pr_url: pr_url} do
+      t = thread!()
+      assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      test_pid = self()
+      branch = t.branch
+
+      RunPrMerge.set_command_runner(fn "gh", args, _opts ->
+        send(test_pid, {:merge_gh, args})
+
+        case args do
+          ["pr", "view" | _] ->
+            view = %{
+              "state" => "OPEN",
+              "mergeable" => "MERGEABLE",
+              "headRefOid" => @head_sha,
+              "headRefName" => branch,
+              "baseRefName" => @base
+            }
+
+            {Jason.encode!(view), 0}
+
+          ["pr", "merge" | _] ->
+            {"", 0}
+        end
+      end)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "approve-#{t.run_id}",
+                 type: "merge_approve",
+                 aggregate_id: "run:#{t.run_id}",
+                 payload: %{
+                   run_id: t.run_id,
+                   approver: "leo",
+                   approver_identity: "github:ldangelo"
+                 }
+               })
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "merge-#{t.run_id}",
+                 type: "run.pr.merge",
+                 aggregate_id: "run:#{t.run_id}",
+                 payload: %{run_id: t.run_id}
+               })
+
+      assert_received {:merge_gh,
+                       ["pr", "merge", ^pr_url, "--squash", "--match-head-commit", @head_sha]}
+
+      assert "PrMerged" in Support.run_event_types(t.run_id)
+    end
+
+    test "a failed gate signal is an error, never a silent success, and the retry signals it again",
+         %{script: script} do
+      t = thread!()
+      script!(script, :rev, {"fatal: Needed a single revision", 128})
+
+      assert {:error,
+              {:pr_ready_signal_failed,
+               {:unresolvable_revision, "fatal: Needed a single revision"}}} =
+               CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      # the PR is open and associated, but neither the gate nor PrCreated was recorded
+      assert {:ok, _} = ProjectionStore.pr_association(t.run_id)
+      refute "PrReady" in Support.run_event_types(t.run_id)
+      refute "PrCreated" in Support.run_event_types(t.run_id)
+
+      script!(script, :rev, {@head_sha <> "\n", 0})
+      _ = {ran("gh"), ran("git")}
+
+      assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      types = Support.run_event_types(t.run_id)
+      assert Enum.count(types, &(&1 == "PrReady")) == 1
+      assert Enum.count(types, &(&1 == "PrCreated")) == 1
+      # the retry resumed the open PR: no second push or PR
+      assert ran("gh") == []
+      assert ran("git", &(hd(&1) == "push")) == []
     end
   end
 end

@@ -61,6 +61,9 @@ github_prepare() {
 }
 
 github_cleanup() {
+  # github_extras.sh (when sourced) puts back what its stages changed: branch protection, merge
+  # methods and the repository's visibility. Before main is restored: a protected main refuses it.
+  if type github_extras_unwind >/dev/null 2>&1; then github_extras_unwind; fi
   if [ -n "$GH_OP" ]; then gh_restore_repo; fi
   if [ -n "$GH_HOOK_ID" ] && [ -n "$GH_REPO" ]; then
     gh api -X DELETE "repos/$GH_REPO/hooks/$GH_HOOK_ID" >/dev/null 2>&1
