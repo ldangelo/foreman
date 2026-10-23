@@ -28,13 +28,14 @@ service in `packages/foreman_server`. This repository contains:
 A project is a registered repository with standing instructions, durable memory, a read-only library, a coordinator you can chat with, and a set of threads (agent work, each with its own branch and PR). What ships on `main`:
 
 - **Standing context** — goal and instructions, memory (`.foreman/memory/`) and library (`.foreman/library/`) reach every agent launch on both doors through `ProjectContext.build/2`; environment, secrets, setup script and network policy are per-project records.
-- **Threads and steering** — list, stop, resolve and steer threads; steering is pause, commit, resume with your message.
+- **Threads and steering** — list, stop, resolve and steer threads; steering is delivered into the running session for claude and pi, with pause, commit, resume with your message as the fallback.
 - **Overview and workspace** — "what needs me?" grouping at `GET /api/projects/:id/overview` and the LiveView workspace at `/dashboard/projects/:id` (bearer-token guarded).
 - **Coordinator** — one durable conversation per project that answers, asks, proposes and starts threads through a closed command set; it can never merge or approve.
 - **Approvals and questions** — agent tool-permission requests and operator questions surface as "waiting on you"; there is no MCP tool to decide them.
-- **PR watching and auto-fix** — observation by default, bounded opt-in fix threads (UNVERIFIED against live GitHub, see the user guide).
+- **PR watching and auto-fix** — observation by default, bounded opt-in fix threads; verified against a real private GitHub repo except branch protection, the workspace buttons against real GitHub and the automatic `pr_auto_fix` policy (see `docs/acceptance/github-live-run.md`).
 - **Notifications, schedules, usage and limits, pause/resume, adoption and setup recommendations.**
 - **The merge gate is operator-only** (`foreman run approve-merge`, then `foreman run merge`).
+- **Acceptance evidence** — verdicts for the Claude Projects capabilities C1-C13 and the residual gaps are in [`docs/acceptance/parity-audit.md`](docs/acceptance/parity-audit.md) (earlier narrative audit: [`docs/audit/claude-projects-parity-audit.md`](docs/audit/claude-projects-parity-audit.md)); how to run the live acceptance and the evidence index are in [`docs/acceptance/README.md`](docs/acceptance/README.md).
 
 Quickstart (server running via `devbox run server`; `FOREMAN_API_URL` defaults to `http://127.0.0.1:4766`, set `FOREMAN_API_TOKEN` for the CLI):
 

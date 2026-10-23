@@ -175,6 +175,8 @@ to `main` (Resolve conflicts), force-pushes the branch, re-runs the check, and m
 as `UNVERIFIED`. `E2E_GH_ONLY=1` runs only setup plus this stage (about 6 minutes). Evidence:
 `docs/acceptance/github-live-run.md`.
 
+The limitations listed next were written for the scripted flow alone; since then the Claude coordinator, thread, reviewer, in-flight approval and steering paths, and a real private GitHub repo (stage 8), were exercised live. The evidence index, the exact commands and the current verified-versus-unverified list are in `docs/acceptance/README.md`; the per-capability verdicts are in `docs/acceptance/parity-audit.md`.
+
 Known limitations: pi has no tool-permission or ask mechanism, so approve/deny and question/answer are reported
 `UNVERIFIED` (only the empty list surfaces are checked); PR/CI/merge behaviour is exercised against real GitHub only when
 `FOREMAN_E2E_GITHUB_REPO` is set (stage 8; branch protection is not, see the evidence doc), and otherwise not at all

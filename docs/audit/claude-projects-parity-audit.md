@@ -1,5 +1,7 @@
 # Claude Projects parity audit (C1-C13)
 
+> **Superseded in part.** The newer evidence-and-verdict audit is [`docs/acceptance/parity-audit.md`](../acceptance/parity-audit.md) (audited at `126ff019`, with a "Corrections" section for this file). Steering is now live in-session, GitHub was verified on a real private repo, and several statements below are out of date; this file is kept as written.
+
 Audit of `main` @ `13cf5e00` (re-run for bead E16-S9 after the scripted acceptance; first written at `33d7cb24`) against the capability list in the parity plan (`docs/plans/claude-projects-parity-plan.md`, untracked). Method: entry points were checked by grep at the cited file:line; behaviour claims come from code reading, the committed tests' existence, `docs/acceptance/claude-projects-live-run.md` (the first live run, "ACC"), `docs/acceptance/claude-projects-acceptance-2026-10-22.md` (the scripted acceptance, "ACC2"), `docs/acceptance/parity-gaps-live-run.md` ("LV"), `docs/acceptance/review-*.md` and `docs/lessons/multi-repo-e2e-2026-10-21.md` ("MR"). "LIVE" below always means "observed in ACC, ACC2, LV, MR or a review acceptance run", nothing else. File:line citations were not re-verified against `13cf5e00` except where a row says so. Test suites were not re-run here.
 
 Status vocabulary: **LIVE** = shipped and observed in a live run; **TESTED** = shipped, covered by tests only; **PARTIAL** = something named is missing; **NOT SHIPPED**.
