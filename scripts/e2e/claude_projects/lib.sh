@@ -34,6 +34,8 @@ E2E_GITHUB=${E2E_GITHUB:-0}
 SERVER_DIR="$ROOT/packages/foreman_server"
 CLI_DIR="$ROOT/packages/foreman_cli"
 ASSETS="$ROOT/scripts/e2e/claude_projects"
+# shellcheck source=../exact_content.sh
+. "$ROOT/scripts/e2e/exact_content.sh"
 
 PASSED=0
 FAILED=0

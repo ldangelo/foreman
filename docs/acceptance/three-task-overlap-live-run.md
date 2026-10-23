@@ -90,8 +90,69 @@ PASS  the project cap was respected (peak 1 <= 1 simultaneous runs)
 - In one earlier flow run the step found zero threads 250 s after the paste. The cause was not captured (the harness had cleaned up) and is
   tracked in `foreman-ig27o`. The step now prints the coordinator reply, dumps the conversation tail when the count is not three, and when
   no thread appeared sends the same paste once more, prints both replies and records an UNVERIFIED tally line ("coordinator needed a second
-  paste") so a flaky coordinator is never a clean pass; the "exactly three threads" assertion still fails on duplicates. That nudge path has
-  not been triggered live since it was added (it was only syntax-checked).
+  paste") so a flaky coordinator is never a clean pass; the "exactly three threads" assertion still fails on duplicates. The nudge branch is
+  driven against a stubbed coordinator by the self-test (see the follow-up section); it has not been triggered by the real coordinator.
+
+## Follow-up: exact content everywhere, the nudge net exercised, one complete pass and the failure injection
+
+Script version: `origin/main` `8ea50a1e` (#658) plus this change (`scripts/e2e/exact_content.sh`).
+
+- Every file-content comparison that went through `tr -d ' \n\r'` (it accepts `ALPHA -7` for `ALPHA-7`) now uses `assert_content_exactly`
+  from `scripts/e2e/exact_content.sh`: only trailing newlines may differ. Sites: `claude_projects_flow.sh` (steer marker and the three
+  step 5b files), `failure_injection.sh` (`before-pause.txt`), `multi_repo.sh` (three `VERSION` checks). The helper is sourced by
+  `claude_projects/lib.sh` (the flow and the failure injection) and by `multi_repo.sh` (POSIX sh). Left alone on purpose: `tr -d ' '` on
+  `wc` counts and `ps` pids, `tr -d ' \n'` on `od` output that builds a random webhook secret (`github.sh`), and the UI text trimming in the
+  `.mjs` drivers; none compares file content.
+- Self-test (`bash scripts/e2e/claude_projects/overlap.sh`, `passed=21 failed=0`): 11 probes of the comparison (`ALPHA-7`, `ALPHA-7\n`,
+  `ALPHA-7\n\n` accepted; `ALPHA -7`, ` ALPHA-7`, `ALPHA-7 \n`, `ALPHA-7\r\n`, `ALPHA-7\n\n extra`, `ALPHA-7\nB`, empty, other word rejected;
+  `sh scripts/e2e/exact_content.sh` alone: `passed=11`, also under `dash`), the four-thread count, and `paste_three_tasks` against a
+  stubbed coordinator in a subshell with counters (nothing leaks into the real tally):
+
+  | Stub | pastes | pass | fail | unverified |
+  |---|---|---|---|---|
+  | threads appear after the first paste | 1 | 2 | 0 | 0 |
+  | threads appear only after the second paste | 2 | 2 | 0 | 1 |
+  | no thread ever appears | 2 | 1 | 1 ("exactly three threads") | 1 |
+  | four threads appear | 1 | 1 | 1 ("exactly three threads") | 0 |
+
+  Mutation check: replacing the `unverified` call by a no-op makes the second and third rows fail.
+- Complete flow, stages 1-7, GitHub stage off, pi/MiniMax, private stack:
+  - First run (script before the diagnostics below): `passed=80 failed=3 unverified=2`, exit 3. The three failures are step 5b's file checks:
+    all three threads completed and the overlap, cap and three-thread assertions passed, but `git show <branch>:<file>` returned nothing
+    for each. Not reproduced (below); filed as `foreman-2onq1`.
+  - Second run (adds diagnostics on a failed content check): `passed=83 failed=0 unverified=2`, exit 0.
+  - Step 5b alone: `passed=40 failed=0` (and `passed=31` earlier in this PR's history).
+
+  | Stage | PASS | FAIL | UNVERIFIED (second run) |
+  |---|---|---|---|
+  | 1 project | 5 | 0 | 0 |
+  | 2 memory and library | 6 | 0 | 0 |
+  | 3 bead to thread | 5 | 0 | 0 |
+  | 4 steer / stop / resolve | 13 | 0 | 0 |
+  | 5 Overview, chat, approvals | 6 | 0 | 1 (pi has no approvals) |
+  | 5b three tasks, overlap, self-test | 35 | 0 | 0 |
+  | 6 notifications and usage | 2 | 0 | 0 |
+  | 7 review archive and verdict | 11 | 0 | 0 |
+  | 8 GitHub | 0 | 0 | 1 (SKIP, no scratch repo) |
+
+  In the second run the runs of step 5b took 4.7 s, 7.7 s and 425.3 s (one pi agent was slow); all three started within milliseconds.
+- `failure_injection.sh`, all seven scenarios: `passed=35 failed=1 unverified=1`, exit 3.
+
+  | Scenario | PASS | FAIL | UNVERIFIED |
+  |---|---|---|---|
+  | provider-down | 8 | 0 | 0 |
+  | agent-crash | 6 | 0 | 0 |
+  | coordinator-crash | 3 | 0 | 0 |
+  | server-crash | 2 | 0 | 1 (no orphan was produced in 3 attempts) |
+  | port-closed | 2 | 1 | 0 |
+  | project-paused (includes the changed `before-pause.txt` check: PASS, exact content) | 10 | 0 | 0 |
+  | br-down | 4 | 0 | 0 |
+
+  The one FAIL is `port-closed`: `server log records the reap: 'OrphanReaper: terminating' not found`, reproduced 3 of 3 (once in this run,
+  twice alone). The run does fail with `port_closed` and no agent is left running, but the agent exits together with its exec-port, so the
+  reaper has nothing to log; the scenario asserts the log line unconditionally. The same host fact is why `server-crash` finds no orphan.
+  Not caused by this change (different scenario); filed as `foreman-e01a1`, not fixed here. Consequence: the OrphanReaper path of
+  `foreman-zmhzw` is currently not exercised live by either scenario.
 
 ## Not exercised
 

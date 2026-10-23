@@ -41,10 +41,78 @@ three_titles() {
 }
 thread_count() { three_titles "$1" | grep -c .; }
 
-# content_is_exactly <word>: stdin must equal the word; $(...) drops trailing newlines, nothing else is dropped
-content_is_exactly() {
-  ci_content=$(cat)
-  [ "$ci_content" = "$1" ]
+# send_paste <text>: one message to the coordinator; leaves its reply in $chat and the exit status in $chat_rc
+send_paste() {
+  chat=$(fm project chat --timeout 6m -m "$1" "$PROJECT" 2>&1)
+  chat_rc=$?
+}
+
+# paste_three_tasks <tag> <paste>: sends the paste, waits for the threads, asserts exactly three. Sets $titles
+# and $nudged. `project chat` may return on the answer to an earlier system report, so the project's threads
+# are polled (240 s). If none appeared the user's remedy is a second paste: it is sent, both replies are
+# printed and an UNVERIFIED line is recorded, so a flaky coordinator is never a clean pass. Duplicates are
+# caught by the 'exactly three' assertion.
+paste_three_tasks() {
+  ptt_tag=$1; ptt_paste=$2
+  send_paste "$ptt_paste"
+  assert_eq "coordinator chat with the three-item paste exits 0" "$chat_rc" "0"
+  note "coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
+  titles=""; nudged=0; tn=0
+  while :; do
+    titles=$(three_titles "$ptt_tag")
+    [ "$(printf '%s' "$titles" | grep -c .)" -ge 3 ] && break
+    if [ "$tn" -ge 240 ]; then
+      if [ "$nudged" = 0 ] && [ -z "$titles" ]; then
+        note "no thread appeared 240s after the paste; sending the same paste once more (a second nudge, as a user would)"
+        note "first paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
+        note "conversation tail: $(fm project chat --history 4 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:160])}]' 2>/dev/null | cut -c1-900)"
+        nudged=1; tn=0
+        send_paste "$ptt_paste"
+        note "second paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
+        continue
+      fi
+      break
+    fi
+    sleep 5; tn=$((tn + 5))
+  done
+  if [ "$nudged" = 1 ]; then
+    unverified "the coordinator started the three threads from the first paste" \
+      "coordinator needed a second paste: the first paste produced no thread within 240s (replies above); a flaky coordinator turn, not a clean pass"
+  fi
+  sleep 10
+  titles=$(three_titles "$ptt_tag")
+  assert_eq "the coordinator started exactly three threads for the three items" "$(printf '%s' "$titles" | grep -c .)" "3"
+  if [ "$(printf '%s' "$titles" | grep -c .)" -ne 3 ]; then
+    note "conversation tail: $(fm project chat --history 6 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:300])}]' 2>/dev/null | cut -c1-1800)"
+  fi
+}
+
+# nudge_scenario <first|second|never|four>: runs paste_three_tasks in a SUBSHELL against a stubbed coordinator
+# and thread list, with pass/fail/unverified/assert_eq/note/sleep replaced by counters, so nothing leaks
+# into the real tally. Prints "pastes=N pass=P fail=F unverified=U".
+nudge_scenario() {
+  (
+    MODE=$1; PASTES=0; NP=0; NF=0; NU=0
+    sleep() { :; }
+    note() { :; }
+    pass() { NP=$((NP + 1)); }
+    fail() { NF=$((NF + 1)); }
+    unverified() { NU=$((NU + 1)); }
+    assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1"; fi; }
+    fm() { printf '[]'; }
+    send_paste() { PASTES=$((PASTES + 1)); chat="stub reply $PASTES"; chat_rc=0; }
+    api_get() {
+      ns_n=0
+      case "$MODE" in
+        first) [ "$PASTES" -ge 1 ] && ns_n=3 ;;
+        second) [ "$PASTES" -ge 2 ] && ns_n=3 ;;
+        four) [ "$PASTES" -ge 1 ] && ns_n=4 ;;
+      esac
+      jq -nc --argjson n "$ns_n" '{threads: [range($n) | {id: "t\(.)", title: ("x todo " + (["A","B","C","D"][.]))}]}'
+    }
+    paste_three_tasks "x todo" "stub paste"
+    printf 'pastes=%s pass=%s fail=%s unverified=%s' "$PASTES" "$NP" "$NF" "$NU"
+  )
 }
 
 # overlap_selftest: proves the assertion can fail. Serial and merely touching intervals must report no
@@ -58,17 +126,21 @@ overlap_selftest() {
   assert_eq "overlapping intervals are found" "$overlapping" "a b;"
   assert_eq "three simultaneous intervals peak at 3" "$(printf 'a 1000 5000\nb 2000 6000\nc 3000 7000\n' | intervals_peak)" "3"
   assert_eq "an unfinished run (finish '-') is ignored" "$(printf 'a 1000 5000\nb 2000 -\n' | intervals_overlap_pairs | tr '\n' ';')" ""
-  # exact file content: only trailing newlines may differ from the requested word
-  for probe in 'ALPHA-7|ALPHA-7|yes' 'ALPHA-7\n|ALPHA-7|yes' 'ALPHA -7|ALPHA-7|no' 'ALPHA-7\n\n extra|ALPHA-7|no' 'ALPHA-7 \n|ALPHA-7|no' '|ALPHA-7|no'; do
-    ps_content=${probe%%|*}; ps_rest=${probe#*|}; ps_want=${ps_rest%%|*}; ps_expect=${ps_rest##*|}
-    if printf "$ps_content" | content_is_exactly "$ps_want"; then ps_got=yes; else ps_got=no; fi
-    assert_eq "file content '$ps_content' is exactly '$ps_want'" "$ps_got" "$ps_expect"
-  done
+  exact_content_selftest
   # the final re-count must be able to fail: a fourth matching thread is counted (stubbed thread list)
   ps_saved_api_get=$(declare -f api_get)
   api_get() { printf '%s' '{"threads":[{"id":"t1","title":"x todo A"},{"id":"t2","title":"x todo B"},{"id":"t3","title":"x todo C"},{"id":"t4","title":"x todo C"},{"id":"t5","title":"other"}]}'; }
   assert_eq "a fourth matching thread is counted (the final three-thread assertion would FAIL)" "$(thread_count "x todo")" "4"
   eval "$ps_saved_api_get"
+  # the wait/nudge branch of the paste, driven against a stubbed coordinator (a result is "pastes pass fail unverified")
+  assert_eq "stub: threads appear after the first paste -> one paste, clean pass, nothing unverified" \
+    "$(nudge_scenario first)" "pastes=1 pass=2 fail=0 unverified=0"
+  assert_eq "stub: threads appear only after the second paste -> nudged, recorded UNVERIFIED (not a clean pass)" \
+    "$(nudge_scenario second)" "pastes=2 pass=2 fail=0 unverified=1"
+  assert_eq "stub: no thread ever appears -> nudged, UNVERIFIED, and 'exactly three threads' FAILS" \
+    "$(nudge_scenario never)" "pastes=2 pass=1 fail=1 unverified=1"
+  assert_eq "stub: four threads appear -> 'exactly three threads' FAILS" \
+    "$(nudge_scenario four)" "pastes=1 pass=1 fail=1 unverified=0"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
