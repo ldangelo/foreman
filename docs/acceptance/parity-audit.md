@@ -73,7 +73,7 @@ Bold = created by this audit (labelled `claude-projects-parity`, none carries `f
 | ~~Unresolved review threads do not surface; merge approval should carry the reviewed head~~ Fixed: threads and CHANGES_REQUESTED raise "Waiting on you" (#647); approval names the head and a push after approval voids it (#650); the post-approval path is covered by tests, not re-run live | C6, C8 | foreman-v8wqe, foreman-ehxy6 | closed |
 | ~~Invalid workflow manifest dropped silently~~ Fixed: typed load error shown in doctor, the coordinator prompt and the MCP/API list (#646) | C5 | foreman-gl3nu | closed |
 | Agent tool children outlive cancel, `thread stop` and graceful shutdown (the dead exec-port case is fixed, #638) | C7 | foreman-zmhzw | open |
-| ~~`undetermined` review verdict once under load~~ Root-caused: a provider 429 under a burst of concurrent reviewers; reasons are now kept, one backoff retry, analyses bounded to 3 (#652). Which mechanism caused the single original occurrence is not proven | R | foreman-uxfwb | closed |
+| ~~`undetermined` review verdict once under load~~ Reproduced, not root-caused: a provider 429 under a burst of concurrent reviewers yields the same failure signature; reasons are now kept, one backoff retry, analyses bounded to 3 (#652). That this caused the single original occurrence is not proven | R | foreman-uxfwb | closed |
 | Bundled `fix.yaml` depends on the external `ensemble-fix-issue` skill | C8 | foreman-nhe4v | open |
 | `/dashboard/runs` has no root layout (no title, no `lang`, inert) | UI | foreman-70eq6 | open |
 | Remote worker | C13 | foreman-zn7de | open, deferred by user |
