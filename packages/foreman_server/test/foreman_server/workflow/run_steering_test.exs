@@ -234,6 +234,37 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
     assert [%{message_id: "plain"}] = ProjectionStore.pending_steering(run_id)
   end
 
+  # The mailbox is only a cache and can be PARTIAL: `clear/1` (every pause,
+  # resume and executor exit) wipes it, and the Dispatcher then re-pushes only
+  # the message whose `RunSteerQueued` it handles next. A launch that trusted a
+  # non-empty cache would drop every older still-pending message, including an
+  # approval's one-phase override. Pin that interleaving: the cache holds only
+  # the text-only message while the projection (the durable queue) holds both.
+  test "a partial mailbox cache never hides a pending approval override",
+       %{run_id: run_id, project_id: project_id} do
+    steer!(run_id, "approval:c3", "approved Bash", %{
+      resume: false,
+      approval_mode_override: "auto_approve"
+    })
+
+    steer!(run_id, "plain2", "more text", %{resume: false})
+    assert_event("RunPaused", run_id)
+
+    # Wait until the projection holds both and the Dispatcher has handled both
+    # `RunSteerQueued` events, so none of its pushes can land after the clear.
+    wait_until(fn -> length(ProjectionStore.pending_steering(run_id)) == 2 end)
+    _ = :sys.get_state(Dispatcher)
+
+    RunControl.clear(run_id)
+    :ok = RunControl.push_message(run_id, %{message_id: "plain2", text: "more text"})
+
+    launch = launch(run_id, project_id, %{name: "cmd", action: :command, command: "echo hi"})
+    assert Keyword.fetch!(launch.driver_opts.(60_000), :approval_mode) == :auto_approve
+
+    assert_event("RunSteerConsumed", run_id)
+    assert [%{message_id: "plain2"}] = ProjectionStore.pending_steering(run_id)
+  end
+
   test "an unknown override name is rejected, never queued", %{run_id: run_id} do
     assert {:error, {:invalid_approval_mode_override, "yolo"}} =
              CommandGateway.dispatch_operator(%{
@@ -296,6 +327,14 @@ defmodule ForemanServer.Workflow.RunSteeringTest do
 
   defp occurrences(haystack, needle),
     do: haystack |> String.split(needle) |> length() |> Kernel.-(1)
+
+  defp wait_until(fun, attempts \\ 100) do
+    cond do
+      fun.() -> :ok
+      attempts == 0 -> flunk("condition not reached")
+      true -> Process.sleep(20) && wait_until(fun, attempts - 1)
+    end
+  end
 
   defp stream_events(run_id) do
     {:ok, events} = Store.read_stream_forward("run:#{run_id}", 0, 1_000)
