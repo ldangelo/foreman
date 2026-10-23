@@ -23,7 +23,7 @@ Agent tool-permission requests. approve/deny decide ONE agent tool call
 only ever 'foreman run approve-merge/merge'. An approval resumes the run with a
 relaxed approval mode for the NEXT PHASE ONLY (auto_edit for edit tools,
 auto_approve otherwise), so it grants more than the single tool for that phase
-(pi/claude have no per-tool grant; claude is unverified live).
+(post-hoc path: pi/claude have no per-tool grant). A Claude phase in approval_mode prompt is asked in flight instead (approval_delivery inflight): approve/deny answers the blocked call itself.
 `
 
 const questionsHelp = `Usage of questions:

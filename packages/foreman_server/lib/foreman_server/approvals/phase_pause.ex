@@ -35,7 +35,10 @@ defmodule ForemanServer.Approvals.PhasePause do
   Record a request for each denied tool and pause the run. `:ok` only when every
   request and the pause were recorded; otherwise `{:error, reason}` and the caller
   keeps the phase-failure path (a denied run is never silently left running).
-  `opts[:gateway]` is a test seam.
+  A tool whose denial was already decided in flight (`Approvals.Inflight`: the
+  operator or a timeout refused it while the agent was blocked, and the agent was
+  told) is not requested again; when every denied tool is of that kind the result
+  is `{:error, :denied_in_flight}`. `opts[:gateway]` is a test seam.
   """
   @spec request_and_pause(context(), non_neg_integer(), [String.t()], keyword()) ::
           :ok | {:error, term()}
@@ -43,9 +46,23 @@ defmodule ForemanServer.Approvals.PhasePause do
       when is_list(tools) and tools != [] do
     gateway = Keyword.get(opts, :gateway, ForemanServer.CommandGateway)
 
-    with {:ok, ids} <- request_all(context, phase_index, tools, gateway) do
-      pause(run_id, hd(ids), gateway)
+    case Enum.reject(tools, &denied_in_flight?(run_id, &1)) do
+      [] ->
+        {:error, :denied_in_flight}
+
+      pending ->
+        with {:ok, ids} <- request_all(context, phase_index, pending, gateway) do
+          pause(run_id, hd(ids), gateway)
+        end
     end
+  end
+
+  defp denied_in_flight?(run_id, tool) do
+    run_id
+    |> ProjectionStore.run_approvals(status: :all)
+    |> Enum.any?(
+      &(&1.tool_name == tool and &1.delivery == "inflight" and &1.status in ["denied", "expired"])
+    )
   end
 
   @doc "Whether permission-denied phases pause for approval (`Approvals.Config`)."

@@ -280,6 +280,7 @@ defmodule ForemanServer.Application do
     if ForemanServer.Approvals.Config.start_children?() do
       [
         ForemanServer.Approvals.Live,
+        ForemanServer.Approvals.Inflight,
         ForemanServer.Approvals.Deliverer,
         ForemanServer.Questions.Deliverer,
         ForemanServer.Approvals.Sweeper

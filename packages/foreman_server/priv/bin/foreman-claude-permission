@@ -1,0 +1,9 @@
+#!/bin/sh
+# Starts the claude CLI with Foreman's permission-prompt tool, so every tool call that would
+# prompt is sent to Foreman's per-run endpoint and answered by the operator while the call is
+# blocked (docs/plans/inflight-approvals.md). Foreman hands this script to the Jido.Harness
+# claude adapter as its `cli_path` provider option: the adapter Foreman runs has no
+# `--permission-prompt-tool` option of its own, and `cli_path` is the supported seam.
+# The adapter's own arguments (`--print ... --mcp-config <foreman endpoint> ... -- <prompt>`)
+# follow unchanged. FOREMAN_CLAUDE_CLI overrides which claude binary runs (default: PATH).
+exec "${FOREMAN_CLAUDE_CLI:-claude}" --permission-prompt-tool mcp__foreman_permission__approve "$@"

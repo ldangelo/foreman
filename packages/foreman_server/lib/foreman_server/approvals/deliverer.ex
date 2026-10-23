@@ -11,6 +11,10 @@ defmodule ForemanServer.Approvals.Deliverer do
     * `"live"` - `ForemanServer.Approvals.Live.respond/4` answers the provider
       session (`Session.respond_approval/3`). No registered session is a failed
       delivery, not a silent success.
+    * `"inflight"` - `ForemanServer.Approvals.Inflight.respond/5` wakes the claude
+      permission prompt blocked in `ForemanServer.Approvals.PermissionPrompt`; the
+      call proceeds (or is refused) inside the same session. No waiter is a failed
+      delivery.
     * `"resume_with_override"` - the decision is queued as an E6 steering message
       on the paused run (`run.steer`): an approval carries the one-phase
       `approval_mode_override` for the approved tool (`Capability.override_for/1`)
@@ -31,7 +35,7 @@ defmodule ForemanServer.Approvals.Deliverer do
   require Logger
 
   alias ForemanServer.Aggregates.ToolCall
-  alias ForemanServer.Approvals.{Capability, Dispatch, Live}
+  alias ForemanServer.Approvals.{Capability, Dispatch, Inflight, Live}
   alias ForemanServer.ProjectionStore
 
   @decision_events %{"ToolCallApproved" => :approve, "ToolCallDenied" => :deny}
@@ -121,6 +125,17 @@ defmodule ForemanServer.Approvals.Deliverer do
   defp apply_decision(:live, decision, call, opts, _gateway) do
     live_opts = Keyword.take(opts, [:session_module]) ++ live_server(opts)
     Live.respond(call.run_id, call.tool_call_id, decision, live_opts)
+  end
+
+  # Claude's blocked permission prompt: wake the waiter (`Approvals.PermissionPrompt`).
+  defp apply_decision(:inflight, decision, call, opts, _gateway) do
+    Inflight.respond(
+      call.run_id,
+      call.tool_call_id,
+      decision,
+      call.reason,
+      Keyword.get(opts, :inflight, Inflight)
+    )
   end
 
   defp apply_decision(:resume_with_override, decision, call, _opts, gateway) do

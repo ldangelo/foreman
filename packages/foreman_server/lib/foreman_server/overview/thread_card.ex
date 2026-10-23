@@ -9,10 +9,13 @@ defmodule ForemanServer.Overview.ThreadCard do
   approve-merge/merge"` on PR-bearing groups and is not a command link.
 
   `pr_actions` (see `ForemanServer.Overview.PrActions`) is the workspace's PR
-  fix/create buttons with their disabled reasons; it is not part of the HTTP/MCP DTO.
+  fix/create buttons with their disabled reasons; `approvals` is the thread's pending
+  tool-call requests the workspace offers approve/deny for (decided with the
+  operator-only `tool.approve` / `tool.deny`). Neither is part of the HTTP/MCP DTO.
   """
 
-  alias ForemanServer.Overview.{Group, PrActions}
+  alias ForemanServer.Approvals.DTO, as: ApprovalDTO
+  alias ForemanServer.Overview.{Group, PrActions, Signals}
   alias ForemanServer.Threads.Thread
 
   @enforce_keys [:thread_id, :group, :reason]
@@ -32,6 +35,7 @@ defmodule ForemanServer.Overview.ThreadCard do
           steering: String.t(),
           actions: [String.t()],
           pr_actions: [PrActions.t()],
+          approvals: [ApprovalDTO.t()],
           hint: String.t() | nil,
           updated_at: integer() | nil
         }
@@ -52,7 +56,8 @@ defmodule ForemanServer.Overview.ThreadCard do
     :updated_at,
     merge_gate: :none,
     actions: [],
-    pr_actions: []
+    pr_actions: [],
+    approvals: []
   ]
 
   @merge_hint "operator: foreman run approve-merge/merge"
@@ -76,6 +81,7 @@ defmodule ForemanServer.Overview.ThreadCard do
       steering: thread.steering,
       actions: actions(thread, group, reason),
       pr_actions: if(group == :resolved, do: [], else: PrActions.build(thread, pr, watch)),
+      approvals: approvals(thread, reason),
       hint: if(group in [:ready_for_review, :landing], do: @merge_hint),
       updated_at: thread.updated_at
     }
@@ -102,6 +108,11 @@ defmodule ForemanServer.Overview.ThreadCard do
       "updated_at" => card.updated_at
     }
   end
+
+  defp approvals(thread, :approval),
+    do: thread |> Signals.pending_approvals() |> ApprovalDTO.list()
+
+  defp approvals(_thread, _reason), do: []
 
   defp report_dto(nil), do: nil
 

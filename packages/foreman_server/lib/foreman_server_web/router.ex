@@ -36,6 +36,14 @@ defmodule ForemanServerWeb.Router do
 
   forward("/mcp", ForemanServerWeb.MCPRouter, [])
 
+  # The permission-prompt MCP tool of a claude run (`claude --permission-prompt-tool`).
+  # Authenticated by a per-run token (`Approvals.Inflight.token/1`), not the operator
+  # bearer token: the agent never holds a credential that opens anything but this.
+  scope "/agent-permission", ForemanServerWeb do
+    post("/:run_id", AgentPermissionController, :rpc)
+    get("/:run_id", AgentPermissionController, :stream_unsupported)
+  end
+
   scope "/api/jobsites", ForemanServerWeb do
     pipe_through(:jobsite_api)
 
