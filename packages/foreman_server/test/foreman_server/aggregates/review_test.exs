@@ -108,6 +108,29 @@ defmodule ForemanServer.Aggregates.ReviewTest do
     assert id == p.subject_id
   end
 
+  # foreman-uxfwb: an `undetermined` review (the reviewer failed, not the work) must be
+  # re-runnable; any real verdict stays final.
+  test "an undetermined review may be superseded, and only an undetermined one" do
+    {:ok, undetermined} =
+      handle(payload(%{verdict: "undetermined", error_code: "evaluator_failed"}))
+
+    state =
+      Review.apply_event(Review.initial_state(), struct!(ReviewRecorded, undetermined.payload))
+
+    assert %State{recorded: true, verdict: "undetermined"} = state
+
+    p = payload(%{subject_id: undetermined.payload.subject_id, verdict: "met"})
+    assert {:ok, %{event_type: "ReviewRecorded"} = met} = handle(p, state)
+
+    # A second failure may be superseded again; a real verdict is final.
+    again = Review.apply_event(state, struct!(ReviewRecorded, undetermined.payload))
+    assert {:ok, _} = handle(p, again)
+
+    final = Review.apply_event(state, struct!(ReviewRecorded, met.payload))
+    assert %State{recorded: true, verdict: "met"} = final
+    assert {:error, {:already_recorded, "run", _id}} = handle(p, final)
+  end
+
   test "apply_event handles typed, decoded and unknown events" do
     {:ok, spec} = handle(payload(%{verdict: "not_met"}))
     s0 = Review.initial_state()
@@ -191,6 +214,46 @@ defmodule ForemanServer.Aggregates.ReviewTest do
 
       assert {:error, {:command_not_allowed, "review.record"}} =
                CommandGateway.dispatch_operator(Map.put(command(p), :command_id, "op-#{uuid()}"))
+    end
+
+    test "an undetermined review is superseded by a record under a new command id only" do
+      p = payload(%{verdict: "undetermined", error_code: "evaluator_failed"})
+      first = command(p)
+      assert {:ok, _} = CommandGateway.dispatch_system(first)
+
+      met = payload(%{subject_id: p.subject_id, verdict: "met", summary: "Re-run: met."})
+      rerun = %{command(met) | command_id: first.command_id <> ":supersedes:" <> p.at}
+
+      assert {:ok, _} = CommandGateway.dispatch_system(rerun)
+      # The same re-run command again appends nothing.
+      assert {:ok, _} = CommandGateway.dispatch_system(rerun)
+
+      assert {:ok, [first_event, second_event]} =
+               EventStore.read_stream_forward(Review.stream_id("run", p.subject_id), 0, 99_999)
+
+      assert first_event.event_type == "ReviewRecorded"
+      assert second_event.event_type == "ReviewRecorded"
+
+      review = await_review_verdict("run", p.subject_id, "met")
+      assert review.summary == "Re-run: met."
+
+      # A real verdict is final: another command id is rejected.
+      other = %{command(met) | command_id: "review:other-attempt-" <> uuid()}
+      assert {:error, {:already_recorded, "run", _}} = CommandGateway.dispatch_system(other)
+    end
+
+    defp await_review_verdict(kind, id, verdict, tries \\ 100) do
+      case ProjectionStore.review(kind, id) do
+        %{verdict: ^verdict} = review ->
+          review
+
+        _other when tries > 0 ->
+          Process.sleep(20)
+          await_review_verdict(kind, id, verdict, tries - 1)
+
+        other ->
+          other
+      end
     end
   end
 end

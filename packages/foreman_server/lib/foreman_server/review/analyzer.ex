@@ -9,8 +9,12 @@ defmodule ForemanServer.Review.Analyzer do
   `ForemanServer.Review.TaskSupervisor` so a slow evaluator never blocks the
   projection subscriber.
 
-  At most one analysis per subject runs at a time: a terminal event for a
-  subject whose analysis is still running is dropped (`start_analysis/3`).
+  At most one analysis per subject runs at a time, and at most
+  `config :foreman_server, :review, max_concurrent_analyses:` run at once: a
+  terminal event for a subject whose analysis is running or queued is dropped,
+  and one that finds every slot taken waits in a first-in-first-out queue until
+  a slot frees (`start_analysis/3`, `drain/1`). The queue is in memory, like the
+  tasks it feeds: nothing is replayed after a restart.
 
   `RunCancelled` and `RunFailed` are recorded before the run's executor has
   finished with the run's archive, so their task first waits (bounded) for the
@@ -24,12 +28,19 @@ defmodule ForemanServer.Review.Analyzer do
   A subject that cannot be resolved (no repo path, unknown run, ...) is recorded
   as `undetermined` when its project id is known, because `ReviewRecorded`
   requires one; otherwise it is logged at `:error` and dropped.
+
+  A review recorded `undetermined` is re-run with `rerun/2` (`analyze/2` with
+  `rerun: true`): the subject is rebuilt from the review's archive and manifest
+  (the run or jobsite need not still be projected), the archive is not
+  finalized again, and the new verdict supersedes the old one under its own
+  command id. Any other recorded verdict is final.
   """
 
   use GenServer
 
   require Logger
 
+  alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Review.Archive
@@ -56,6 +67,7 @@ defmodule ForemanServer.Review.Analyzer do
   @task_supervisor ForemanServer.Review.TaskSupervisor
   # The only event-payload fields this module reads; see `unwrap_data/1`.
   @payload_keys [:run_id, :jobsite_id]
+  @default_max_concurrent_analyses 3
 
   @type unresolved :: %{
           kind: :run | :jobsite,
@@ -64,8 +76,24 @@ defmodule ForemanServer.Review.Analyzer do
         }
 
   @type subject_key :: {:run | :jobsite, String.t()}
-  # `in_flight` maps a subject to the monitor of the task analysing it.
-  @type state :: %{in_flight: %{subject_key() => reference()}}
+  # What runs for a subject: a terminal event to resolve and review, or the re-run of an
+  # `undetermined` review whose subject was already rebuilt from its archive.
+  @type job :: {:event, String.t(), event_payload()} | {:rerun, Subject.t()}
+
+  # `in_flight` maps a subject to the monitor of the task analysing it; `queue` holds, in
+  # arrival order, the `{job, subject_key}` pairs waiting for a slot, `queued` their keys.
+  @type state :: %{
+          in_flight: %{subject_key() => reference()},
+          queue: :queue.queue({job(), subject_key()}),
+          queued: MapSet.t(subject_key())
+        }
+
+  @type rerun_error ::
+          :not_reviewed
+          | {:not_rerunnable, String.t()}
+          | :already_running
+          | {:archive_unusable, Error.t()}
+          | :analysis_disabled
 
   # A terminal event's payload as normalised by `unwrap_data/1`: atom-keyed, with
   # an absent field left out.
@@ -77,9 +105,47 @@ defmodule ForemanServer.Review.Analyzer do
 
   @impl true
   def init(_opts) do
+    # Fail at boot on a bound that cannot be honoured, not at the first terminal event.
+    _ = max_concurrent_analyses()
+
     case ProjectionStore.subscribe(replay_existing: false) do
-      :ok -> {:ok, %{in_flight: %{}}}
+      :ok -> {:ok, %{in_flight: %{}, queue: :queue.new(), queued: MapSet.new()}}
       {:error, reason} -> {:stop, {:projection_subscribe_failed, reason}}
+    end
+  end
+
+  @doc """
+  Re-run the review of a subject whose recorded review is `undetermined` (the reviewer
+  failed: a provider rate limit, a killed process; the work was never judged).
+
+  The subject is rebuilt from the review's archive, so the run or jobsite need not
+  still be projected. Returns `:ok` once the re-run is accepted (it runs, or queues
+  for a slot, like any analysis) or an error naming why not: no review recorded
+  (`:not_reviewed`), a real verdict already recorded (`{:not_rerunnable, verdict}`),
+  an analysis of the subject running or queued (`:already_running`), an archive that
+  cannot be read (`{:archive_unusable, error}`), or analysis switched off
+  (`:analysis_disabled`). A verdict other than `undetermined` is never re-run.
+  """
+  @spec rerun(:run | :jobsite, String.t()) :: :ok | {:error, rerun_error()}
+  def rerun(kind, subject_id) when kind in [:run, :jobsite] and is_binary(subject_id) do
+    GenServer.call(__MODULE__, {:rerun, kind, subject_id})
+  catch
+    :exit, {:noproc, _call} -> {:error, :analysis_disabled}
+  end
+
+  @impl true
+  def handle_call({:rerun, kind, subject_id}, _from, state) do
+    key = {kind, subject_id}
+
+    # A recorded real verdict is final whether or not the analysis task that wrote it has
+    # been seen to exit yet, so it is checked before busy-ness: the answer must not
+    # depend on that race.
+    with {:ok, review} <- rerunnable(kind, subject_id),
+         :ok <- reject_busy(state, key),
+         {:ok, %Subject{} = subject} <- subject_from_archive(kind, subject_id, review) do
+      {:reply, :ok, start_analysis({:rerun, subject}, key, state)}
+    else
+      {:error, _reason} = error -> {:reply, error, state}
     end
   end
 
@@ -88,7 +154,8 @@ defmodule ForemanServer.Review.Analyzer do
     type = event_type(event)
 
     if type in @terminal_events do
-      {:noreply, start_analysis(type, unwrap_data(event), state)}
+      payload = unwrap_data(event)
+      {:noreply, start_analysis({:event, type, payload}, subject_key(type, payload), state)}
     else
       {:noreply, state}
     end
@@ -96,7 +163,7 @@ defmodule ForemanServer.Review.Analyzer do
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     in_flight = Map.reject(state.in_flight, fn {_key, task_ref} -> task_ref == ref end)
-    {:noreply, %{state | in_flight: in_flight}}
+    {:noreply, drain(%{state | in_flight: in_flight})}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
@@ -193,29 +260,59 @@ defmodule ForemanServer.Review.Analyzer do
   # duplicate delivery) would pass that check and repeat those side effects, none
   # of which is idempotent. The running analysis records the review, so the
   # duplicate is dropped.
-  defp start_analysis(type, payload, state) do
-    key = subject_key(type, payload)
+  defp start_analysis(job, key, state) do
+    cond do
+      key != nil and (Map.has_key?(state.in_flight, key) or MapSet.member?(state.queued, key)) ->
+        {kind, subject_id} = key
 
-    if key != nil and Map.has_key?(state.in_flight, key) do
-      {kind, subject_id} = key
+        Logger.info(
+          "review analyzer: #{kind} #{subject_id} ignored; its analysis is already running or queued"
+        )
 
-      Logger.info(
-        "review analyzer: #{type} for #{kind} #{subject_id} ignored; its analysis is already running"
-      )
+        state
 
-      state
-    else
-      case Task.Supervisor.start_child(@task_supervisor, fn -> handle_event(type, payload) end) do
-        {:ok, pid} ->
-          track(state, key, pid)
+      key != nil and map_size(state.in_flight) >= max_concurrent_analyses() ->
+        {kind, subject_id} = key
 
-        other ->
-          Logger.error(
-            "review analyzer: could not start analysis task for #{type}: #{inspect(other)}"
-          )
+        Logger.info(
+          "review analyzer: #{kind} #{subject_id} queued; #{map_size(state.in_flight)} analyses already running"
+        )
 
+        %{
           state
-      end
+          | queue: :queue.in({job, key}, state.queue),
+            queued: MapSet.put(state.queued, key)
+        }
+
+      true ->
+        launch(job, key, state)
+    end
+  end
+
+  defp launch(job, key, state) do
+    case Task.Supervisor.start_child(@task_supervisor, fn -> run_job(job) end) do
+      {:ok, pid} ->
+        track(state, key, pid)
+
+      other ->
+        Logger.error(
+          "review analyzer: could not start analysis task for #{inspect(key)}: #{inspect(other)}"
+        )
+
+        state
+    end
+  end
+
+  defp run_job({:event, type, payload}), do: handle_event(type, payload)
+  defp run_job({:rerun, %Subject{} = subject}), do: rerun_subject(subject)
+
+  # A finished analysis frees its slot for the next queued subject, oldest first.
+  defp drain(state) do
+    with true <- map_size(state.in_flight) < max_concurrent_analyses(),
+         {{:value, {job, key}}, queue} <- :queue.out(state.queue) do
+      drain(launch(job, key, %{state | queue: queue, queued: MapSet.delete(state.queued, key)}))
+    else
+      _nothing_to_start -> state
     end
   end
 
@@ -225,6 +322,71 @@ defmodule ForemanServer.Review.Analyzer do
 
   defp track(state, key, pid),
     do: %{state | in_flight: Map.put(state.in_flight, key, Process.monitor(pid))}
+
+  defp reject_busy(state, key) do
+    if Map.has_key?(state.in_flight, key) or MapSet.member?(state.queued, key),
+      do: {:error, :already_running},
+      else: :ok
+  end
+
+  defp rerunnable(kind, subject_id) do
+    case ProjectionStore.review(Atom.to_string(kind), subject_id) do
+      nil -> {:error, :not_reviewed}
+      %{verdict: "undetermined"} = review -> {:ok, review}
+      %{verdict: verdict} -> {:error, {:not_rerunnable, verdict}}
+    end
+  end
+
+  # The subject of a re-run is rebuilt from the archive the first review wrote, not
+  # from the run or jobsite projections: the archive is what is reviewed, and it
+  # outlives them.
+  defp subject_from_archive(kind, subject_id, review) do
+    with {:ok, dir} <- recorded_archive_dir(review, kind, subject_id),
+         {:ok, manifest} <- Archive.read_manifest(dir),
+         {:ok, repo_path} <- manifest_repo_path(manifest, dir) do
+      request = request_block(manifest)
+
+      {:ok,
+       %Subject{
+         kind: kind,
+         subject_id: subject_id,
+         project_id: non_empty(Map.get(review, :project_id)) || non_empty(manifest["project_id"]),
+         repo_path: repo_path,
+         archive_dir: dir,
+         status: non_empty(manifest["status"]) || "unknown",
+         bead_id: non_empty(manifest["bead_id"]) || non_empty(Map.get(review, :bead_id)),
+         request_title: non_empty(request["title"]),
+         request_text: non_empty(request["prompt"]),
+         workflow_name: non_empty(request["workflow_name"])
+       }}
+    else
+      {:error, %Error{} = error} -> {:error, {:archive_unusable, error}}
+    end
+  end
+
+  defp recorded_archive_dir(review, kind, subject_id) do
+    case non_empty(Map.get(review, :archive_path)) do
+      nil ->
+        {:error,
+         Error.new(:archive_missing, "the recorded review names no archive", %{
+           kind: kind,
+           subject_id: subject_id
+         })}
+
+      dir ->
+        {:ok, dir}
+    end
+  end
+
+  defp manifest_repo_path(manifest, dir) do
+    case non_empty(manifest["repo_path"]) do
+      nil -> {:error, Error.new(:archive_malformed, "manifest has no repo_path", %{path: dir})}
+      repo_path -> {:ok, repo_path}
+    end
+  end
+
+  defp request_block(%{"request" => %{} = request}), do: request
+  defp request_block(_manifest), do: %{}
 
   defp subject_key("Run" <> _, payload), do: keyed(:run, Map.get(payload, :run_id))
   defp subject_key("Jobsite" <> _, payload), do: keyed(:jobsite, Map.get(payload, :jobsite_id))
@@ -283,37 +445,85 @@ defmodule ForemanServer.Review.Analyzer do
   @doc """
   Synchronously review one subject and record the result. Always returns `:ok`;
   every failure is logged and, where possible, carried in the recorded verdict.
+
+  `rerun: true` re-reviews a subject whose recorded review is `undetermined`
+  (see `rerun/2`); without it, a subject that already has a review is skipped.
   """
-  @spec analyze(Subject.t()) :: :ok
-  def analyze(%Subject{} = subject) do
+  @spec analyze(Subject.t(), keyword()) :: :ok
+  def analyze(%Subject{} = subject, opts \\ []) do
     kind = Atom.to_string(subject.kind)
 
-    if ProjectionStore.review(kind, subject.subject_id) do
-      Logger.info("review analyzer: #{kind} #{subject.subject_id} already reviewed; skipping")
-      :ok
-    else
-      verdict = produce_verdict(subject)
-      analysis_note = write_analysis(subject, verdict)
-      {gap_bead_ids, sink_note} = publish(subject, verdict)
+    case {ProjectionStore.review(kind, subject.subject_id), Keyword.get(opts, :rerun, false)} do
+      {nil, false} ->
+        review_subject(subject, nil)
 
-      summary =
-        [verdict.summary, sink_note, analysis_note]
-        |> Enum.reject(&is_nil/1)
-        |> Enum.join("\n\n")
+      {%{verdict: "undetermined"} = previous, true} ->
+        review_subject(subject, previous)
 
-      dispatch_record(subject, verdict, summary, gap_bead_ids, analysis_note == nil)
+      {nil, true} ->
+        Logger.warning(
+          "review analyzer: #{kind} #{subject.subject_id} has no review to re-run; skipping"
+        )
+
+        :ok
+
+      {_recorded, _rerun} ->
+        Logger.info("review analyzer: #{kind} #{subject.subject_id} already reviewed; skipping")
+        :ok
     end
+  end
+
+  defp rerun_subject(%Subject{} = subject) do
+    analyze(subject, rerun: true)
+  rescue
+    exception ->
+      Logger.error(
+        "review analyzer: re-run of #{subject.kind} #{subject.subject_id} crashed: " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      :ok
+  end
+
+  defp review_subject(subject, previous) do
+    verdict = produce_verdict(subject, previous)
+    analysis_note = write_analysis(subject, verdict)
+    {gap_bead_ids, sink_note} = publish(subject, verdict)
+
+    summary =
+      ([verdict.summary] ++ verdict.notes ++ [sink_note, analysis_note])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n\n")
+
+    dispatch_record(subject, verdict, summary, gap_bead_ids, analysis_note == nil, previous)
   end
 
   # ---------------------------------------------------------------------
 
-  defp produce_verdict(subject) do
-    with :ok <- Capture.finalize(subject),
+  defp produce_verdict(subject, previous) do
+    with :ok <- finalize(subject, previous),
          {:ok, %Verdict{} = verdict} <- evaluate(subject) do
-      verdict
+      lineage(verdict, previous)
     else
-      {:error, %Error{} = error} -> undetermined(error)
+      {:error, %Error{} = error} -> error |> undetermined() |> lineage(previous)
     end
+  end
+
+  defp finalize(subject, nil), do: Capture.finalize(subject)
+
+  # A re-run reviews the archive the first review finalized. Finalizing again would
+  # rebuild a run's transcript from run logs that may no longer exist.
+  defp finalize(_subject, _previous), do: :ok
+
+  defp lineage(verdict, nil), do: verdict
+
+  defp lineage(%Verdict{} = verdict, %{at: at, summary: summary}) do
+    first = summary |> String.split("\n\n", parts: 2) |> hd() |> String.slice(0, 300)
+
+    %Verdict{
+      verdict
+      | notes: ["re-run of the review recorded undetermined at #{at}: #{first}" | verdict.notes]
+    }
   end
 
   defp evaluate(subject) do
@@ -321,18 +531,27 @@ defmodule ForemanServer.Review.Analyzer do
   rescue
     exception ->
       {:error,
-       Error.new(:evaluator_failed, "evaluator raised: " <> Exception.message(exception), %{
-         exception: inspect(exception.__struct__)
-       })}
+       Error.new(
+         :evaluator_failed,
+         "evaluator raised: " <> reason_text(Exception.message(exception)),
+         %{exception: inspect(exception.__struct__)}
+       )}
   catch
     kind, reason ->
-      {:error, Error.new(:evaluator_failed, "evaluator #{kind}: #{inspect(reason)}", %{})}
+      {:error,
+       Error.new(:evaluator_failed, "evaluator #{kind}: " <> reason_text(inspect(reason)), %{})}
   end
 
   defp undetermined(%Error{code: code, message: message, details: details}) do
     spent = if is_map(details), do: Map.get(details, :usage), else: nil
+    notes = if is_map(details), do: Map.get(details, :notes, []), else: []
 
-    verdict = %Verdict{verdict: :undetermined, error_code: code, summary: message}
+    verdict = %Verdict{
+      verdict: :undetermined,
+      error_code: code,
+      summary: message,
+      notes: notes
+    }
 
     case spent do
       %{usage: %ForemanServer.Usage{} = usage, model: model, provider: provider} ->
@@ -384,7 +603,7 @@ defmodule ForemanServer.Review.Analyzer do
       {[], "bead sink failed: crashed"}
   end
 
-  defp dispatch_record(subject, verdict, summary, gap_bead_ids, analysis_written?) do
+  defp dispatch_record(subject, verdict, summary, gap_bead_ids, analysis_written?, previous) do
     kind = Atom.to_string(subject.kind)
 
     payload = %{
@@ -406,7 +625,7 @@ defmodule ForemanServer.Review.Analyzer do
       at: DateTime.to_iso8601(DateTime.utc_now())
     }
 
-    dispatch(kind, subject.subject_id, payload)
+    dispatch(kind, subject.subject_id, payload, previous)
   end
 
   defp record_unresolved(%{project_id: project_id} = ctx, %Error{} = error)
@@ -438,12 +657,16 @@ defmodule ForemanServer.Review.Analyzer do
     )
   end
 
-  defp dispatch(kind, subject_id, payload) do
+  # The first record of a subject is its stream id; the record that supersedes an
+  # `undetermined` one carries the superseded record's timestamp, so a re-run is
+  # idempotent (the same command id replays to nothing) yet each re-run of a subject that
+  # fails again is a new command.
+  defp dispatch(kind, subject_id, payload, previous \\ nil) do
     id = "review:" <> kind <> ":" <> subject_id
 
     command = %{
       type: "review.record",
-      command_id: id,
+      command_id: command_id(id, previous),
       aggregate_id: id,
       payload: payload
     }
@@ -457,6 +680,9 @@ defmodule ForemanServer.Review.Analyzer do
         :ok
     end
   end
+
+  defp command_id(id, nil), do: id
+  defp command_id(id, %{at: at}), do: id <> ":supersedes:" <> at
 
   # ---------------------------------------------------------------------
 
@@ -543,4 +769,20 @@ defmodule ForemanServer.Review.Analyzer do
   end
 
   defp config, do: Application.get_env(:foreman_server, :review, [])
+
+  # Parsed once per use so a test or an operator changing it is honoured. A bound that
+  # cannot be honoured (not a positive integer) is a loud failure at boot, not a stall.
+  defp max_concurrent_analyses do
+    case Keyword.get(config(), :max_concurrent_analyses, @default_max_concurrent_analyses) do
+      bound when is_integer(bound) and bound >= 1 ->
+        bound
+
+      other ->
+        raise ArgumentError,
+              "config :foreman_server, :review, max_concurrent_analyses must be a positive " <>
+                "integer, got #{inspect(other)}"
+    end
+  end
+
+  defp reason_text(text), do: FailureCause.sanitize(text, Archive.env_secrets())
 end

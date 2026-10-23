@@ -39,7 +39,8 @@ defmodule ForemanServer.Review.VerdictTest do
                  "severity" => "major"
                }
              ],
-             "error_code" => nil
+             "error_code" => nil,
+             "notes" => []
            }
 
     assert {:ok, ^map} = map |> Jason.encode!() |> Jason.decode()
@@ -73,5 +74,17 @@ defmodule ForemanServer.Review.VerdictTest do
     assert md =~ "Error: `evaluator_failed`"
     refute md =~ "## Scores"
     refute md =~ "## Gaps"
+  end
+
+  test "notes are carried in to_map and rendered in the markdown" do
+    note = "reviewer retried once after 60000 ms: 429 rate limited"
+    v = %{verdict() | notes: [note]}
+
+    assert %{"notes" => [^note]} = Verdict.to_map(v)
+
+    md = Verdict.to_markdown(v)
+    assert md =~ "## Notes"
+    assert md =~ "- " <> note
+    refute Verdict.to_markdown(verdict()) =~ "## Notes"
   end
 end

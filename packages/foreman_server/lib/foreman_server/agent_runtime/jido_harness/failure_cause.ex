@@ -31,14 +31,21 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.FailureCause do
   """
   @spec from_run_result(RunResult.t(), term(), [String.t()]) :: t()
   def from_run_result(%RunResult{} = result, code, secrets) when is_list(secrets) do
-    detail =
-      result
-      |> describe()
-      |> WorkerLogPolicy.redact(secrets)
-      |> one_line()
-      |> truncate()
+    %__MODULE__{code: code, detail: result |> describe() |> sanitize(secrets)}
+  end
 
-    %__MODULE__{code: code, detail: detail}
+  @doc """
+  The text of any failure as it may be persisted or shown: `secrets` scrubbed, one
+  line, bounded. The one pipeline `from_run_result/3` uses, public so another failure
+  reporter (the review evaluator's provider/await/start errors) shares it instead of
+  growing a second.
+  """
+  @spec sanitize(String.t(), [String.t()]) :: String.t()
+  def sanitize(text, secrets) when is_binary(text) and is_list(secrets) do
+    text
+    |> WorkerLogPolicy.redact(secrets)
+    |> one_line()
+    |> truncate()
   end
 
   @doc "Text persisted for a failure reason: the cause for a `%FailureCause{}`, `inspect/1` otherwise."

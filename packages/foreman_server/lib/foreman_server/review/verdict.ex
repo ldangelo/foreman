@@ -1,5 +1,11 @@
 defmodule ForemanServer.Review.Verdict do
-  @moduledoc "The reviewer's graded judgement of a finished run against its request."
+  @moduledoc """
+  The reviewer's graded judgement of a finished run against its request.
+
+  `notes` records what happened around the verdict that a reader comparing verdicts
+  must know: a review that needed a retry after a provider rate limit, or the re-run of
+  an earlier `undetermined` review. It is empty for an ordinary one-attempt review.
+  """
 
   @enforce_keys [:verdict, :summary]
   @type dimension :: :correctness | :tests | :documentation | :robustness
@@ -9,6 +15,7 @@ defmodule ForemanServer.Review.Verdict do
           summary: String.t(),
           gaps: [ForemanServer.Review.Gap.t()],
           error_code: atom() | nil,
+          notes: [String.t()],
           usage: ForemanServer.Usage.t() | nil,
           model: String.t() | nil,
           usage_provider: String.t() | nil
@@ -21,7 +28,8 @@ defmodule ForemanServer.Review.Verdict do
     :usage_provider,
     scores: %{},
     gaps: [],
-    error_code: nil
+    error_code: nil,
+    notes: []
   ]
 
   @dimensions [:correctness, :tests, :documentation, :robustness]
@@ -42,7 +50,8 @@ defmodule ForemanServer.Review.Verdict do
             "severity" => Atom.to_string(gap.severity)
           }
         end),
-      "error_code" => v.error_code && Atom.to_string(v.error_code)
+      "error_code" => v.error_code && Atom.to_string(v.error_code),
+      "notes" => v.notes
     }
   end
 
@@ -64,7 +73,8 @@ defmodule ForemanServer.Review.Verdict do
     (["# Review verdict: #{v.verdict}", "", v.summary] ++
        error ++
        section("Scores", scores) ++
-       section("Gaps", gaps))
+       section("Gaps", gaps) ++
+       section("Notes", Enum.map(v.notes, &"- #{&1}")))
     |> Enum.join("\n")
     |> Kernel.<>("\n")
   end

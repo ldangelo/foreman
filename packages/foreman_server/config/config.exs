@@ -273,6 +273,10 @@ config :foreman_server, :usage, cache_ttl_seconds: %{claude: 300}
 # restores pause -> resume at the phase boundary for every provider.
 config :foreman_server, :live_steering, enabled: true
 
+# `max_concurrent_analyses` bounds how many reviewer agents run at once (the rest queue):
+# 32 reviewers started together all failed on a provider 429 (foreman-uxfwb).
+# `evaluator_retry_backoff_ms` is how long a reviewer that failed on a provider rate
+# limit waits before its one retry.
 config :foreman_server, :review,
   capture: true,
   analysis: true,
@@ -280,6 +284,8 @@ config :foreman_server, :review,
   agent: %{provider: :claude, model: nil, effort: nil},
   evaluator: ForemanServer.Review.Evaluator.Agent,
   evaluator_timeout_ms: 900_000,
+  evaluator_retry_backoff_ms: 60_000,
+  max_concurrent_analyses: 3,
   max_transcript_bytes: 2_000_000,
   max_diff_bytes: 1_000_000,
   max_comment_bytes: 8_000,
@@ -297,6 +303,7 @@ config :foreman_server, :pr_fix,
   agent: %{"provider" => "claude"},
   max_iterations: 1,
   log_tail_bytes: 20_000
+
 # Per-project coordinator conversation (ForemanServer.Coordinator).
 config :foreman_server, :coordinator,
   enabled: true,

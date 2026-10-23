@@ -16,4 +16,13 @@ defmodule ForemanServer.Review.Error do
       when is_atom(code) and is_binary(message) and is_map(details) do
     %__MODULE__{code: code, message: message, details: details}
   end
+
+  @doc """
+  True when the failure is a provider condition a later attempt can clear on its own.
+  Only the evaluator sets it (`details.retryable: true`), and only for a failure it has
+  evidence is transient; every other error is final.
+  """
+  @spec retryable?(t()) :: boolean()
+  def retryable?(%__MODULE__{details: %{retryable: true}}), do: true
+  def retryable?(%__MODULE__{}), do: false
 end

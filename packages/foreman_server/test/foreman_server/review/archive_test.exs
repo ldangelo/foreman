@@ -204,5 +204,34 @@ defmodule ForemanServer.Review.ArchiveTest do
       assert %{"text" => nil, "stream" => nil} =
                decode(:provider_event, %{"mapped" => false, "type" => "message_end"})
     end
+
+    # The reason a provider run ended is the one fact a post-mortem needs. A pi 429
+    # arrives as `run_failed` with `%{"error" => ...}` (`Adapters.Pi.map_event/1`), a
+    # killed process as `%{"error" => inspect(%{"exit_status" => ...})}`
+    # (`CLIStream.decode/4`); neither has a "text" key.
+    test "a run_failed event keeps the provider's error text" do
+      error = ~s(429 {"type":"error","error":{"type":"rate_limit_error"}})
+
+      assert %{"type" => "run_failed", "text" => ^error, "stream" => nil} =
+               decode(:run_failed, %{"error" => error})
+    end
+
+    test "a run_cancelled event keeps its reason" do
+      assert %{"type" => "run_cancelled", "text" => "operator stop"} =
+               decode(:run_cancelled, %{"reason" => "operator stop"})
+    end
+
+    test "a run_failed event is redacted like any other transcript text" do
+      System.put_env("REVIEW_ARCHIVE_TEST_API_KEY", "hunter2-secret-value")
+      on_exit(fn -> System.delete_env("REVIEW_ARCHIVE_TEST_API_KEY") end)
+
+      %{"text" => text} = decode(:run_failed, %{"error" => "401 bad key hunter2-secret-value"})
+      refute text =~ "hunter2-secret-value"
+    end
+
+    test "an error key on an event that is not a terminal failure is not promoted to text" do
+      assert %{"text" => nil} =
+               decode(:tool_result, %{"error" => "tool said no", "output" => nil})
+    end
   end
 end
