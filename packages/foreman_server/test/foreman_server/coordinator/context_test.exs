@@ -15,6 +15,8 @@ defmodule ForemanServer.Coordinator.ContextTest do
     def workflows,
       do: [%{name: "fix", description: "Fix a bug"}, %{name: "implement-trd", description: nil}]
 
+    def invalid_workflows, do: Process.get(:invalid_workflows, [])
+
     def tuning(_), do: %Tuning{propose_before_start: true, max_active_threads: 2}
     def limits(_), do: %{max_concurrent_runs: 2, active_runs: 1}
     def status_counts(_), do: Process.get(:status_counts, %{})
@@ -112,6 +114,33 @@ defmodule ForemanServer.Coordinator.ContextTest do
     assert [%{message_id: "new1"}] = ctx.trigger_messages
     assert ctx.text =~ "fix: Fix a bug"
     assert ctx.text =~ "propose_before_start: true"
+  end
+
+  test "refused workflows are listed as invalid with their reason, apart from the valid ones" do
+    setup_fixture()
+
+    Process.put(:invalid_workflows, [
+      %{name: "lvclaude", reason: "models.default\nmust be a bare model alias"}
+    ])
+
+    assert {:ok, ctx} = build()
+
+    [workflows, invalid] =
+      ctx.text
+      |> String.split("# INVALID WORKFLOWS", parts: 2)
+      |> then(fn [before, rest] -> [before, "# INVALID WORKFLOWS" <> rest] end)
+
+    assert workflows =~ "- fix: Fix a bug"
+    refute workflows =~ "lvclaude"
+    assert invalid =~ "installed but refused"
+    # One line, reason intact.
+    assert invalid =~ "- lvclaude: models.default must be a bare model alias"
+  end
+
+  test "no INVALID WORKFLOWS section when every manifest loaded" do
+    setup_fixture()
+    assert {:ok, ctx} = build()
+    refute ctx.text =~ "# INVALID WORKFLOWS"
   end
 
   test "the Overview counts are rendered and survive any budget cut" do

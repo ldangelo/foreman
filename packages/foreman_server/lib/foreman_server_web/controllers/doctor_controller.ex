@@ -8,6 +8,8 @@ defmodule ForemanServerWeb.DoctorController do
     * `provider.<name>` - one row per jido_harness provider
       (`MCP.Tools.Doctor.rows/0`, the same data as the `foreman_doctor` MCP tool);
     * `workflows` - the workflow catalog has manifests installed;
+    * `workflow.<file>` - one `warn` row per manifest the catalog REFUSED to
+      load (`Catalog.invalid/0`), carrying the file's validation error;
     * `project.recommendations` - with `?project=`, counts of setup
       recommendations by severity (`Projects.Recommendations`).
 
@@ -19,6 +21,7 @@ defmodule ForemanServerWeb.DoctorController do
 
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.LoadError
   alias ForemanServerWeb.MCP.Tools.Doctor
   alias ForemanServerWeb.RecommendationsController
 
@@ -31,7 +34,7 @@ defmodule ForemanServerWeb.DoctorController do
 
     checks =
       [check("server", :ok, "Server reachable", "The server answered this request.")] ++
-        [event_store_check()] ++ provider_checks() ++ [workflows_check()] ++ project_check
+        [event_store_check()] ++ provider_checks() ++ workflow_checks() ++ project_check
 
     case Enum.find(project_check, &(&1["status"] == "not_found")) do
       nil -> conn |> put_status(:ok) |> json(%{checks: checks})
@@ -65,6 +68,10 @@ defmodule ForemanServerWeb.DoctorController do
     end
   end
 
+  defp workflow_checks do
+    [workflows_check() | invalid_workflow_checks()]
+  end
+
   defp workflows_check do
     case safely(&Catalog.installed?/0) do
       {:ok, true} ->
@@ -75,6 +82,31 @@ defmodule ForemanServerWeb.DoctorController do
 
       :error ->
         check("workflows", :warn, "Workflow catalog unknown", "The catalog did not answer.")
+    end
+  end
+
+  # A refused manifest is still refused; doctor's job is to say so and why.
+  defp invalid_workflow_checks do
+    case safely(&Catalog.invalid/0) do
+      {:ok, errors} ->
+        for %LoadError{} = error <- errors do
+          check(
+            "workflow.#{error.filename}",
+            :warn,
+            "Workflow #{error.filename} is invalid and was not loaded",
+            LoadError.describe(error)
+          )
+        end
+
+      :error ->
+        [
+          check(
+            "workflows.invalid",
+            :warn,
+            "Invalid workflows unknown",
+            "The catalog did not answer, so refused manifests cannot be listed."
+          )
+        ]
     end
   end
 

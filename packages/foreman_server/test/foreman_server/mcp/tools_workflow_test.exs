@@ -31,9 +31,11 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
         "workflow-b.yaml"
       ])
 
+      :meck.expect(ForemanServer.Workflow.Catalog, :invalid, 0, [])
+
       try do
         assert Tools.call_tool("foreman_workflow_list", %{}) ==
-                 {:ok, ["workflow-a.yaml", "workflow-b.yaml"]}
+                 {:ok, %{workflows: ["workflow-a.yaml", "workflow-b.yaml"], invalid: []}}
       after
         :meck.unload(ForemanServer.Workflow.Catalog)
       end

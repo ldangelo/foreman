@@ -52,4 +52,56 @@ defmodule ForemanServerWeb.DoctorControllerTest do
 
     assert %{"error" => "project_not_found"} = get_json("/api/doctor?project=nope", 404)
   end
+
+  describe "workflow manifests the catalog refused (foreman-gl3nu)" do
+    setup %{tmp_dir: tmp} do
+      File.mkdir_p!(Path.join(tmp, "prompts"))
+
+      File.write!(
+        Path.join(tmp, "good.yaml"),
+        "name: good\nphases:\n  - name: p1\n    command: /skill:x\n"
+      )
+
+      File.write!(
+        Path.join(tmp, "lvclaude.yaml"),
+        "name: lvclaude\nphases:\n  - name: a\n    command: /skill:x\n    provider: claude\n" <>
+          "    models:\n      default: litellm-stack/smart_router\n"
+      )
+
+      server = :"doctor_catalog_#{System.unique_integer([:positive])}"
+      previous = Application.get_env(:foreman_server, :workflow_catalog)
+      Application.put_env(:foreman_server, :workflow_catalog, server)
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:foreman_server, :workflow_catalog, previous),
+          else: Application.delete_env(:foreman_server, :workflow_catalog)
+      end)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        start_supervised!(
+          {ForemanServer.Workflow.Catalog,
+           name: server, catalog: ForemanServer.Workflow.AssetCatalog.new(tmp)}
+        )
+      end)
+
+      :ok
+    end
+
+    test "each refused manifest gets its own warn row carrying the validation error" do
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      # The catalog still has a loaded manifest, so the summary row is unchanged...
+      assert %{"status" => "ok", "title" => "Workflows installed"} =
+               Enum.find(checks, &(&1["id"] == "workflows"))
+
+      # ...and the refused one is no longer invisible.
+      assert %{"status" => "warn", "title" => title, "detail" => detail} =
+               Enum.find(checks, &(&1["id"] == "workflow.lvclaude.yaml"))
+
+      assert title =~ "lvclaude.yaml is invalid and was not loaded"
+      assert detail =~ "must be a bare model alias or id"
+      refute Enum.any?(checks, &(&1["id"] == "workflow.good.yaml"))
+    end
+  end
 end

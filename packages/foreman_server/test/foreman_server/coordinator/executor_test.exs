@@ -144,6 +144,19 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
       refute "task.create" in sent_types()
     end
 
+    test "a workflow whose manifest was refused is rejected with the validation error, not as unknown",
+         %{project_id: p} do
+      invalid = [%{name: "lvclaude", reason: "models.default must be a bare model alias"}]
+
+      assert [%{status: "rejected", reason: reason}] =
+               run(p, [start("t", %{"workflow" => "lvclaude"})], %{invalid_workflows: invalid})
+
+      assert reason =~ ~s(workflow "lvclaude" is installed but INVALID)
+      assert reason =~ "models.default must be a bare model alias"
+      refute reason =~ "unknown workflow"
+      refute "task.create" in sent_types()
+    end
+
     test "no workflow and no task_type asks instead of guessing", %{project_id: p} do
       raw = %{"kind" => "start_thread", "title" => "t", "prompt" => "p"}
       assert [%{status: "rejected", reason: reason}] = run(p, [raw])

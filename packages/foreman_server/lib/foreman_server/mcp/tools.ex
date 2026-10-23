@@ -15,6 +15,7 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.PromptWriter
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Interpreter
+  alias ForemanServer.Workflow.LoadError
   alias ForemanServer.Workflow.Validator
   alias ForemanServer.Workflow.ErrorReporter
   alias ForemanServer.AgentRuntime.Router
@@ -639,7 +640,8 @@ defmodule ForemanServer.MCP.Tools do
 
   @schema_foreman_workflow_list %{
     name: "foreman_workflow_list",
-    description: "List all available workflows",
+    description:
+      "List installed workflows (`workflows`) and the manifests the catalog refused to load (`invalid`, each with its file and validation error)",
     inputSchema: %{
       type: "object",
       properties: %{}
@@ -2521,7 +2523,12 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_workflow_list(%{}) do
     start_us = System.monotonic_time(:microsecond)
-    result = Catalog.manifests()
+
+    result = %{
+      workflows: Catalog.manifests(),
+      invalid: Enum.map(Catalog.invalid(), &LoadError.to_map/1)
+    }
+
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_workflow_list", :ok)
     {:ok, result}
@@ -2544,6 +2551,16 @@ defmodule ForemanServer.MCP.Tools do
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :ok)
         {:ok, result}
+
+      {:error, {:workflow_invalid, %LoadError{} = error}} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :error)
+
+        {:error,
+         %ToolError{
+           code: "INVALID_MANIFEST",
+           message: "Workflow #{name} is invalid and was not loaded: #{LoadError.describe(error)}"
+         }}
 
       {:error, _reason} ->
         duration_us = System.monotonic_time(:microsecond) - start_us

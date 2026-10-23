@@ -8,6 +8,7 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Threads
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.LoadError
 
   @impl true
   def conversation(project_id), do: ProjectionStore.coordinator_state(project_id)
@@ -49,6 +50,15 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
         {:error, _} ->
           []
       end
+    end)
+  end
+
+  # Manifests the catalog refused. Named by file (`lvclaude.yaml` -> `lvclaude`),
+  # the only name a refused file has: its own `name:` was never trusted.
+  @impl true
+  def invalid_workflows do
+    Enum.map(Catalog.invalid(), fn error ->
+      %{name: Path.rootname(error.filename), reason: LoadError.describe(error)}
     end)
   end
 

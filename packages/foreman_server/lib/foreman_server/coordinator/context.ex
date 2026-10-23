@@ -64,6 +64,9 @@ defmodule ForemanServer.Coordinator.Context do
   ]
 
   @system_prompt_file "coordinator/system_prompt.md"
+  # A validation message can be long (it names the path and the offending value);
+  # the coordinator only needs enough to tell the operator what to fix.
+  @invalid_reason_chars 400
 
   @doc "Defaults merged with `config :foreman_server, :coordinator, context: [...]`."
   @spec config() :: keyword()
@@ -96,6 +99,7 @@ defmodule ForemanServer.Coordinator.Context do
         triggers: triggers,
         cards: order_cards(sources.threads(project_id)),
         workflows: sources.workflows(),
+        invalid_workflows: sources.invalid_workflows(),
         tuning: sources.tuning(project_id),
         limits: sources.limits(project_id),
         status_counts: sources.status_counts(project_id),
@@ -263,7 +267,7 @@ defmodule ForemanServer.Coordinator.Context do
 
     [
       system_section(),
-      workflows_section(model.workflows),
+      workflows_section(model.workflows, model.invalid_workflows),
       project_section(model.project),
       memory_section(model.memory_lines, cuts.memory_dropped),
       status_section(model.status_counts),
@@ -282,11 +286,29 @@ defmodule ForemanServer.Coordinator.Context do
     File.read!(path) <> "\n\n" <> Untrusted.preamble()
   end
 
-  defp workflows_section([]), do: "# WORKFLOWS\n(none installed)"
+  defp workflows_section([], invalid),
+    do: "# WORKFLOWS\n(none installed)" <> invalid_lines(invalid)
 
-  defp workflows_section(workflows) do
+  defp workflows_section(workflows, invalid) do
     lines = Enum.map(workflows, fn w -> "- #{w.name}: #{one_line(w.description)}" end)
-    "# WORKFLOWS\n" <> Enum.join(lines, "\n")
+    "# WORKFLOWS\n" <> Enum.join(lines, "\n") <> invalid_lines(invalid)
+  end
+
+  # Manifests that are installed but refused (see `Workflow.LoadError`). Listing
+  # them separately is the point: without it the coordinator can only say a
+  # workflow "is not available" and the operator cannot tell a typo from a
+  # manifest that failed validation. The reason is operator-authored file text,
+  # so it is flattened to one line and bounded like every other free-text field.
+  defp invalid_lines([]), do: ""
+
+  defp invalid_lines(invalid) do
+    lines =
+      Enum.map(invalid, fn w ->
+        "- #{w.name}: #{w.reason |> one_line() |> String.slice(0, @invalid_reason_chars)}"
+      end)
+
+    "\n# INVALID WORKFLOWS (installed but refused: they cannot be started)\n" <>
+      Enum.join(lines, "\n")
   end
 
   defp project_section(project) do
