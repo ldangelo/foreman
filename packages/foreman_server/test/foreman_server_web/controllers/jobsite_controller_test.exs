@@ -6,6 +6,7 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
   import Phoenix.ConnTest
 
   alias ForemanServer.Aggregates.JobsiteAudit
+  alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore
   alias ForemanServer.Jobsite
   alias ForemanServer.ProjectionStore
@@ -305,7 +306,7 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
                Registry.register_for_project(@project_id, BeadsAdapter, %{database_path: @db})
     end
 
-    # show: :found | :not_found | :locked
+    # show: :found | :gap_labelled | :not_found | :locked
     defp stub_show(show) do
       test = self()
 
@@ -322,6 +323,14 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
           case show do
             :found ->
               {:ok, %{stdout: BrFixtures.read!("show_plain.json"), stderr: "", exit_code: 0}}
+
+            :gap_labelled ->
+              {:ok,
+               %{
+                 stdout: BrFixtures.read!("show_labels_with_dependency.json"),
+                 stderr: "",
+                 exit_code: 0
+               }}
 
             :not_found ->
               envelope =
@@ -376,6 +385,74 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
                authed() |> get("/api/jobsites/#{id}") |> json_response(200)
 
       await_terminal(id)
+    end
+
+    test "a bead carrying the foreman-gap label => 422 spec_bead_ineligible, audited, nothing started" do
+      register_provider!()
+      stub_show(:gap_labelled)
+      before = length(audited("/api/jobsites", "rejected", "spec_bead_ineligible"))
+      jobsites_before = length(Jobsite.list())
+
+      conn = post_json(authed(), "/api/jobsites", with_bead("labelled-gap-bead"))
+      assert %{"error" => "spec_bead_ineligible"} = json_response(conn, 422)
+
+      assert length(audited("/api/jobsites", "rejected", "spec_bead_ineligible")) == before + 1
+      assert length(Jobsite.list()) == jobsites_before
+    end
+
+    test "a bead an earlier review filed as a gap bead (event log, no label) => 422" do
+      register_provider!()
+      stub_show(:found)
+      record_review_filing_gap_bead!(@bead_id)
+      jobsites_before = length(Jobsite.list())
+
+      conn = post_json(authed(), "/api/jobsites", with_bead(@bead_id))
+      assert %{"error" => "spec_bead_ineligible"} = json_response(conn, 422)
+      assert length(Jobsite.list()) == jobsites_before
+    end
+
+    defp record_review_filing_gap_bead!(bead_id) do
+      subject_id = "review-src-#{System.unique_integer([:positive])}"
+      id = "review:run:" <> subject_id
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "review.record",
+                 command_id: id,
+                 aggregate_id: id,
+                 payload: %{
+                   subject_kind: "run",
+                   subject_id: subject_id,
+                   project_id: @project_id,
+                   bead_id: "bead-origin",
+                   verdict: "partially_met",
+                   scores: %{"correctness" => 3},
+                   summary: "filed a gap",
+                   gap_bead_ids: [bead_id],
+                   archive_path: nil,
+                   analysis_path: nil,
+                   evaluator: "stub",
+                   error_code: nil,
+                   at: DateTime.to_iso8601(DateTime.utc_now())
+                 }
+               })
+
+      deadline = System.monotonic_time(:millisecond) + 5_000
+      await_gap_bead(bead_id, deadline)
+    end
+
+    defp await_gap_bead(bead_id, deadline) do
+      cond do
+        ProjectionStore.gap_bead?(bead_id) ->
+          :ok
+
+        System.monotonic_time(:millisecond) > deadline ->
+          flunk("review never projected")
+
+        true ->
+          Process.sleep(25)
+          await_gap_bead(bead_id, deadline)
+      end
     end
 
     test "no bead_id => the provider is never consulted" do

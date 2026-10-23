@@ -21,7 +21,7 @@ defmodule ForemanServerWeb.JobsiteController do
   at `error` and does not undo a request that already took effect.
 
   Status mapping: 400 missing/malformed required input, 403 forbidden by policy,
-  404 unknown id (or a `bead_id` absent from the project), 409 wrong state, 422 invalid spec, 429 capacity, 502 the
+  404 unknown id (or a `bead_id` absent from the project), 409 wrong state, 422 invalid spec (including a `bead_id` that is a gap bead), 429 capacity, 502 the
   executor could not be started, 503 the project's task provider could not verify a
   `bead_id`.
   """
@@ -34,6 +34,7 @@ defmodule ForemanServerWeb.JobsiteController do
   alias ForemanServer.CommandGateway
   alias ForemanServer.Jobsite
   alias ForemanServer.Jobsite.{Error, Executor, Spec}
+  alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry
 
   @default_max_concurrent 3
@@ -71,8 +72,8 @@ defmodule ForemanServerWeb.JobsiteController do
     case Registry.project_config(project_id) do
       {:ok, %{provider_module: provider, config: config}} ->
         case provider.get(bead_id, config) do
-          {:ok, _issue} ->
-            :ok
+          {:ok, issue} ->
+            check_not_gap(project_id, bead_id, issue)
 
           {:error, %{code: "ISSUE_NOT_FOUND"}} ->
             {:error,
@@ -89,6 +90,35 @@ defmodule ForemanServerWeb.JobsiteController do
       {:error, reason} ->
         bead_unavailable(project_id, bead_id, reason)
     end
+  end
+
+  # A bead a review filed as a gap bead is not a valid jobsite target: reporting on
+  # it would extend the review chain past its depth cap of 1. Same two predicates as
+  # `Review.BeadSink`: the event log (survives a lost label) and the `foreman-gap`
+  # label (covers a hand-labelled bead or one filed before the log recorded it).
+  # Unreadable labels fail closed, as in BeadSink.
+  defp check_not_gap(project_id, bead_id, issue) do
+    cond do
+      ProjectionStore.gap_bead?(bead_id) ->
+        bead_ineligible(project_id, bead_id, "was filed by a review as a gap bead")
+
+      match?(%{labels: labels} when is_list(labels), issue) ->
+        if "foreman-gap" in issue.labels,
+          do: bead_ineligible(project_id, bead_id, "carries the foreman-gap label"),
+          else: :ok
+
+      true ->
+        bead_unavailable(project_id, bead_id, {:unreadable_labels, issue})
+    end
+  end
+
+  defp bead_ineligible(project_id, bead_id, why) do
+    {:error,
+     Error.new(
+       :spec_bead_ineligible,
+       "bead #{inspect(bead_id)} #{why} and cannot be a jobsite's bead_id",
+       %{project_id: project_id, bead_id: bead_id}
+     )}
   end
 
   defp bead_unavailable(project_id, bead_id, reason) do
