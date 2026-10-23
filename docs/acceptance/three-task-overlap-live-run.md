@@ -29,10 +29,12 @@ No server configuration beyond the harness's existing one was needed.
 
 ## Result of the complete flow (stages 1-7, no GitHub stage)
 
-`devbox run -- bash scripts/e2e/claude_projects_flow.sh`: `passed=66 failed=0 unverified=2`, exit 0. UNVERIFIED: approve/deny a tool call and
-answer an agent question (pi has no permission or ask mechanism), and the GitHub stage (no scratch repo configured).
+`devbox run -- bash scripts/e2e/claude_projects_flow.sh` (the final script, after review feedback): `passed=67 failed=0 unverified=2`, exit 0.
+UNVERIFIED: approve/deny a tool call and answer an agent question (pi has no permission or ask mechanism), and the GitHub stage (no scratch
+repo configured). An earlier complete run of the pre-review script was `passed=66 failed=0 unverified=2`; a step-5b-only run
+(`E2E_THREE_ONLY=1`) of the final script was `passed=24 failed=0`.
 
-Step 5b, as printed:
+Step 5b, as printed (19 PASS):
 
 | Check | Result |
 |---|---|
@@ -41,22 +43,25 @@ Step 5b, as printed:
 | coordinator chat with the three-item paste exits 0 | PASS |
 | coordinator started exactly three threads | PASS |
 | three distinct titles | PASS |
-| each of the 3 threads reached `completed` and delivered its file | PASS (6 assertions) |
+| each of the 3 threads reached `completed` | PASS (3) |
+| each branch holds exactly its requested word (`ALPHA-`, `BRAVO-`, `CHARLIE-<pid>`) | PASS (3) |
+| still exactly three threads after the runs finished | PASS |
 | start and finish read for all three runs | PASS |
 | at least two runs overlapped | PASS (3 pairs) |
 | project cap respected (peak 3 <= 3) | PASS |
 
 ```
-run-d4ab22f3c1ac0b86f501976c444ed5c2 1792785240738 1792785262868 RunCompleted
-run-0bd282ae1863ae2d85b6de3933ebdf5d 1792785240729 1792785256076 RunCompleted
-run-3f969fcbe167a62ea3f071bb1255365d 1792785240748 1792785249318 RunCompleted
-run-d4ab22f3c1ac0b86f501976c444ed5c2  start +0.0s  finish +22.1s  (ran 22.1s)
-run-0bd282ae1863ae2d85b6de3933ebdf5d  start +0.0s  finish +15.3s  (ran 15.3s)
-run-3f969fcbe167a62ea3f071bb1255365d  start +0.0s  finish +8.6s  (ran 8.6s)
+run-01c7eff214982d8e437dacefb538d045 1792787315342 1792787412217 RunCompleted
+run-d0314206f4f8f5eb90518c262887b121 1792787315332 1792787634565 RunCompleted
+run-3d815711fd9541a0bfcaad6111ea803c 1792787315324 1792787324307 RunCompleted
+run-01c7eff214982d8e437dacefb538d045  start +0.0s  finish +96.9s   (ran 96.9s)
+run-d0314206f4f8f5eb90518c262887b121  start +0.0s  finish +319.2s  (ran 319.2s)
+run-3d815711fd9541a0bfcaad6111ea803c  start +0.0s  finish +9.0s    (ran 9.0s)
 overlapping pairs: 3 of 3 ; peak simultaneous runs: 3 ; project cap: 3
 ```
 
-All three `RunStarted` events are within 19 ms of each other (epoch milliseconds above).
+All three `RunStarted` events are within 18 ms of each other (epoch milliseconds above). Run lengths vary a lot with the model (an earlier
+run of the pre-review script printed 22.1 s, 15.3 s and 8.6 s); the starts do not.
 
 ## The assertion can fail
 

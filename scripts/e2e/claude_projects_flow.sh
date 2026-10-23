@@ -298,11 +298,18 @@ C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-
     trun=$(api_get "/api/threads/$tid" | jq -r '.thread.run_ids[0] // empty')
     tbranch=$(api_get "/api/threads/$tid" | jq -r '.thread.branch // empty')
     ttitle=$(printf '%s\n' "$titles" | awk -F'\t' -v t="$tid" '$1 == t { print $2 }')
-    case "$ttitle" in *" A") tfile=alpha-$SUFFIX.txt; tword=ALPHA-$SUFFIX ;; *" B") tfile=bravo-$SUFFIX.txt; tword=BRAVO-$SUFFIX ;; *) tfile=charlie-$SUFFIX.txt; tword=CHARLIE-$SUFFIX ;; esac
-    assert_has "thread '$ttitle' delivered $tfile on its branch" "$(git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null)" "$tword"
+    case "$ttitle" in
+      "$tag A") tfile=alpha-$SUFFIX.txt; tword=ALPHA-$SUFFIX ;;
+      "$tag B") tfile=bravo-$SUFFIX.txt; tword=BRAVO-$SUFFIX ;;
+      "$tag C") tfile=charlie-$SUFFIX.txt; tword=CHARLIE-$SUFFIX ;;
+      *) fail "thread $tid has an unexpected title '$ttitle' (wanted '$tag A', '$tag B' or '$tag C')"; continue ;;
+    esac
+    assert_eq "thread '$ttitle': $tfile on its branch holds exactly the requested word" \
+      "$(git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null | tr -d ' \n\r')" "$tword"
     [ -n "$trun" ] || { fail "thread $tid has no run"; continue; }
     run_interval "$trun" >> "$WORK/three-task-intervals.txt"
   done
+  assert_eq "still exactly three threads after the runs finished (no thread started later)" "$(three_titles "$tag" | grep -c .)" "3"
 
   say "5b. run intervals (event store: RunStarted .. first terminal event)"
   while IFS= read -r l; do [ -n "$l" ] && note "$l"; done < "$WORK/three-task-intervals.txt"
