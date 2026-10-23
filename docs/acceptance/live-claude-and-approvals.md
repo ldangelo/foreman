@@ -54,7 +54,7 @@ E2E_APPROVAL_TIMEOUT_MS=30000 stack.sh restart        E2E_EXTRA_ENV=FOREMAN_CLAU
 | Block ~41 s, then approve (UI) | PASS | requested 12:42:38.9, approved 12:43:20.36; one `Write`, same session, `slow.txt` committed |
 | Block longer than 60 s | FAIL, fixed in this PR | the Inflight waiter registry went from 1 entry (12:48:58) to 0 (12:49:08), i.e. ~60 s after the request (Cowboy `idle_timeout`: no data RECEIVED; progress events sent do not count, `reset_idle_timeout_on_send` is off). Approve at 118 s (12:50:04): UI "Done", event `ToolCallFinished outcome "delivery_failed: :no_live_request"`. Claude dropped the call at 12:50:36.10 (+150 s: `transport dropped mid-call; response for tool "approve" was lost`) and the model re-asked (new request 12:50:38.9). After the fix, live: approve at 100.0 s (13:10:36 -> 13:12:16) and at 172.8 s (13:10:40 -> 13:13:33): `outcome "delivered"`, same session, files committed |
 | Unanswered past `approval_timeout_ms` | PASS | `E2E_APPROVAL_TIMEOUT_MS=30000`: requested 12:52:40.267, `ToolCallDenied decided_by system reason timeout` 12:53:10.281 (30.01 s); agent saw `Nobody answered the request to use the `Write` tool in time, so it was denied. Do not use it; continue without it, or say plainly what you cannot do.`; run failed `permission_denied`. The 30 min default is UNVERIFIED (not waited) |
-| Server restart (TERM and kill -9) while blocked | PARTIAL | the agent dies and the run is re-driven within ~15 s, asking again (new `tool_use_id`). The pre-restart request stays `requested`: two actionable rows; approving the stale one is `Done` in the UI/CLI but the log says `delivery_failed: :no_live_request`; after the run completes the stale request keeps the thread in "Waiting on you" until the 30 min sweeper (`run-91a7...`: still `requested` 20 min later; the sweep itself UNVERIFIED if not noted below). Bead foreman-u0646 |
+| Server restart (TERM and kill -9) while blocked | PARTIAL | the agent dies and the run is re-driven within ~15 s, asking again (new `tool_use_id`). The pre-restart request stays `requested`: two actionable rows; approving the stale one is `Done` in the UI/CLI but the log says `delivery_failed: :no_live_request`; after the run completes the stale request keeps the thread in "Waiting on you" until the sweeper: `run-91a7...` request 12:54:30.49 -> `ToolCallExpired reason timeout` 13:25:29.70 (30 min + one sweep), after which the thread became `idle`. Bead foreman-u0646 |
 | Older claude CLI without `--permission-prompt-tool` | SIMULATED, fails loudly | `fake-old-claude.sh` (commander-style `error: unknown option`, exit 1) via `FOREMAN_CLAUDE_CLI`: run `failed` in seconds with `{:other, :execution}: execution: claude: %{"exit_status" => 1, ...}`; the flag name is only in the transcript; no fallback to the pause path. Bead foreman-dc618 |
 
 ## Defects
@@ -68,8 +68,8 @@ Observations, not filed: run logs join claude stream deltas with newlines (trans
 the failure text is a raw Elixir term (`{:permission_denied, ["Write"]}: ...`).
 
 ## Not done / UNVERIFIED
-PrFix claude resume (GitHub); the 30 min default timeout; the sweeper's 30 min expiry of an orphaned request (see note);
-other providers; real GitHub; the `approval_mode` default on hosts without `defaultMode: auto`.
+PrFix claude resume (GitHub); the 30 min default approval timeout (a 30 s one was used); other providers; real GitHub;
+the `approval_mode` default on hosts without `defaultMode: auto`.
 
 ## Cleanup
 Server and notification sink stopped by recorded PID, database dropped, scratch removed, worktree removed after the PR was pushed.
