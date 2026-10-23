@@ -9,6 +9,11 @@ defmodule ForemanServer.Overview.Input do
     * `merge_gate` - `:none | :pending | :approved`
     * `checks_state` - `:none | :pending | :failing | :passing`, the PR watcher's
       folded CI rollup of the open PR (`:none` when unwatched)
+    * `review_state` - `:none | :changes_requested | :threads_unresolved`, the PR
+      watcher's review rollup of the open PR: `:changes_requested` while the review
+      decision is CHANGES_REQUESTED, else `:threads_unresolved` while any review
+      thread is unresolved (`:none` when unwatched). Conversation comments are not
+      part of it: they have no resolved state, so they could never clear.
     * `pending_approvals`, `open_questions` - counts of requests / questions waiting
       for the operator (E8)
     * `expired_approvals`, `expired_questions` - requests / questions that timed out
@@ -30,6 +35,7 @@ defmodule ForemanServer.Overview.Input do
           pr_state: :open | :merged | :closed | :conflicted | nil,
           merge_gate: :none | :pending | :approved,
           checks_state: :none | :pending | :failing | :passing,
+          review_state: :none | :changes_requested | :threads_unresolved,
           pending_approvals: non_neg_integer(),
           open_questions: non_neg_integer(),
           expired_approvals: non_neg_integer(),
@@ -50,6 +56,7 @@ defmodule ForemanServer.Overview.Input do
     resolved?: false,
     merge_gate: :none,
     checks_state: :none,
+    review_state: :none,
     pending_approvals: 0,
     open_questions: 0,
     expired_approvals: 0,

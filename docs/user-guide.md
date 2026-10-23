@@ -977,7 +977,7 @@ The body has `project_id`, `groups`, `counts`, `attention`, `tabs` and
 (newest first): `ready_for_review` (PR open and merge gate pending, or a
 completed thread with a `met`/`partially_met` review and an open PR),
 `waiting_on_you` (pending approval or question, blocked/stuck, failed, PR
-conflict, plain pause, review `not_met` on an open PR, or failing CI on an open PR: reason `ci_failing`, from the E9 PR watch's `checks_state`, even while the merge gate is pending), `working`, `landing`
+conflict, plain pause, review `not_met` on an open PR, or failing CI on an open PR: reason `ci_failing`, from the E9 PR watch's `checks_state`, even while the merge gate is pending; or an outstanding CHANGES_REQUESTED review (reason `changes_requested`) or an unresolved review thread (reason `review_threads`) on an open PR, from the same watch's `review_decision` and `thread_ids`; conversation comments alone do not count because they have no resolved state; when CI is failing too the reason stays `ci_failing` and the review reason shows once CI clears; all of them clear on the next PR observation after the review is resolved), `working`, `landing`
 (merge approved, PR still open), `idle` and `resolved` (flag, PR merged or
 closed, cancelled). `attention` is `{needed, count, reasons}`: needed when
 `waiting_on_you` or `ready_for_review` is non-empty. An unknown project is
