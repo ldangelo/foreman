@@ -6,7 +6,8 @@
 #
 #   project + goal + instructions -> memory -> library -> a thread started from a bead
 #   -> the thread sees instructions/memory/library -> steer a running thread -> stop one
-#   -> resolve one -> Overview groups -> coordinator chat -> approvals/questions surfaces
+#   -> Overview groups -> coordinator chat -> three tasks pasted in ONE message start three
+#   threads whose runs overlap in time -> approvals/questions surfaces
 #   -> notifications reach a webhook sink -> the review archive and verdict are written.
 #
 # Optional stage 8 (real GitHub): with FOREMAN_E2E_GITHUB_REPO=<owner>/foreman-scratch-<suffix>
@@ -34,6 +35,10 @@
 # never /tmp), E2E_DB_NAME, E2E_PG_HOST/PORT/USER/PASSWORD, E2E_PORT, E2E_HOOK_PORT,
 # E2E_API_TOKEN, E2E_RUN_TIMEOUT (s, default 600), E2E_POLL_SECS, E2E_REVIEW=0 to skip the
 # review-archive step, E2E_TRANSCRIPT=<file>, E2E_KEEP=1 to keep everything for a post-mortem.
+# E2E_THREE_ONLY=1 runs only setup, step 1 and step 5b (the three-task paste and overlap assertion);
+# E2E_THREE_TASK_MAX_RUNS=1 forces the project to one run at a time for step 5b, so the overlap
+# assertion must FAIL (the evidence that it can). `bash claude_projects/overlap.sh` runs only the
+# stack-free self-test of the interval helpers.
 # E2E_GITHUB=1 is refused: the harness never creates a GitHub repository (use
 # FOREMAN_E2E_GITHUB_REPO with an existing scratch repo instead).
 
@@ -44,6 +49,8 @@ E2E_NAME=cp
 . "$HERE/claude_projects/lib.sh"
 # shellcheck source=claude_projects/github.sh
 . "$HERE/claude_projects/github.sh"
+# shellcheck source=claude_projects/overlap.sh
+. "$HERE/claude_projects/overlap.sh"
 
 check_environment
 github_prepare
@@ -213,6 +220,109 @@ step_overview_coordinator() {
     "pi has no tool-permission or ask mechanism, so no approval or question is ever raised; only the empty list surfaces are checked"
 }
 
+# ---------------------------------------------------------------- 5b. three tasks in one message, run in parallel
+
+# project_runs_active: number of this project's runs that have not reached a terminal status
+project_runs_active() {
+  api_get "/api/runs?project_id=$PROJECT&limit=500" | jq '[.runs[]? | select(.["terminal?"] != true)] | length' 2>/dev/null
+}
+
+# The user's paste: a to-do list of three distinct small tasks in ONE message. Concurrency comes from
+# the project cap (`max_concurrent_runs`, 3 here, set in step 1) and the global RunSlots cap
+# (default 3): neither is below 3. `coordinator_max_active_threads` is left unset, so the coordinator
+# imposes no cap of its own. E2E_THREE_TASK_MAX_RUNS=1 forces serial execution and must make the
+# overlap assertion FAIL.
+#
+# `project chat` returns when the coordinator next goes idle, which can be after its answer to an
+# earlier system report (a finished review) and before the turn for this message, so the threads
+# are awaited by polling the project, not inferred from the chat output. If the coordinator started
+# nothing, the user's remedy is a second nudge: the step sends one and says so.
+three_titles() { # <tag> -> "<thread id><TAB><title>" per thread whose title contains the tag
+  api_get "/api/projects/$PROJECT/threads" | jq -r --arg t "$1" '[.threads[]? | select(.title | contains($t))] | map("\(.id)\t\(.title)") | .[]' 2>/dev/null
+}
+step_three_tasks() {
+  say "5b. three tasks pasted in one message start three threads that run in parallel"
+  overlap_selftest
+  cap=${E2E_THREE_TASK_MAX_RUNS:-3}
+  qn=0
+  while [ "$(project_runs_active)" != "0" ] && [ "$qn" -lt 300 ]; do sleep 5; qn=$((qn + 5)); done
+  assert_eq "no run of the project is active before the paste (slots are free)" "$(project_runs_active)" "0"
+  if [ "$cap" != 3 ]; then
+    fm project update --max-concurrent-runs "$cap" "$PROJECT" >/dev/null 2>&1 \
+      && note "project max_concurrent_runs forced to $cap for this step (E2E_THREE_TASK_MAX_RUNS)" \
+      || fail "could not set max_concurrent_runs=$cap"
+  fi
+  tag="e2e-$SUFFIX todo"
+  paste="Here is my to-do list for today, please start one thread for each of the three items, all in this one reply (exactly three threads). Title the threads exactly '$tag A', '$tag B' and '$tag C'.
+A. Create a file alpha-$SUFFIX.txt containing exactly the single word ALPHA-$SUFFIX.
+B. Create a file bravo-$SUFFIX.txt containing exactly the single word BRAVO-$SUFFIX.
+C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-$SUFFIX."
+  chat=$(fm project chat --timeout 6m -m "$paste" "$PROJECT" 2>&1); rc=$?
+  assert_eq "coordinator chat with the three-item paste exits 0" "$rc" "0"
+  note "coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
+
+  titles=""; nudged=0; tn=0
+  while :; do
+    titles=$(three_titles "$tag")
+    [ "$(printf '%s' "$titles" | grep -c .)" -ge 3 ] && break
+    if [ "$tn" -ge 240 ]; then
+      if [ "$nudged" = 0 ] && [ -z "$titles" ]; then
+        note "no thread appeared 240s after the paste; sending the same paste once more (a second nudge, as a user would)"
+        note "conversation tail: $(fm project chat --history 4 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:160])}]' 2>/dev/null | cut -c1-900)"
+        nudged=1; tn=0
+        chat=$(fm project chat --timeout 6m -m "$paste" "$PROJECT" 2>&1)
+        continue
+      fi
+      break
+    fi
+    sleep 5; tn=$((tn + 5))
+  done
+  sleep 10
+  titles=$(three_titles "$tag")
+  assert_eq "the coordinator started exactly three threads for the three items" "$(printf '%s' "$titles" | grep -c .)" "3"
+  if [ "$(printf '%s' "$titles" | grep -c .)" -ne 3 ]; then
+    note "conversation tail: $(fm project chat --history 6 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:300])}]' 2>/dev/null | cut -c1-1800)"
+  fi
+  printf '%s\n' "$titles" | while IFS= read -r l; do [ -n "$l" ] && note "thread $l"; done
+  assert_eq "the three threads have three distinct titles" "$(printf '%s\n' "$titles" | cut -f2 | sort -u | grep -c .)" "3"
+  [ "$(printf '%s' "$titles" | grep -c .)" -ge 1 ] || { fail "no thread to wait for"; return 1; }
+  note "Overview counts while they run: $(overview_counts)"
+
+  : > "$WORK/three-task-intervals.txt"
+  for tid in $(printf '%s\n' "$titles" | cut -f1); do
+    if wait_thread "$tid" "completed|ready_for_review|resolved|done" "$E2E_RUN_TIMEOUT"; then
+      pass "thread $tid reached terminal-success status '$THREAD_STATUS'"
+    else
+      fail "thread $tid ended as '$THREAD_STATUS' (expected completed)"
+    fi
+    trun=$(api_get "/api/threads/$tid" | jq -r '.thread.run_ids[0] // empty')
+    tbranch=$(api_get "/api/threads/$tid" | jq -r '.thread.branch // empty')
+    ttitle=$(printf '%s\n' "$titles" | awk -F'\t' -v t="$tid" '$1 == t { print $2 }')
+    case "$ttitle" in *" A") tfile=alpha-$SUFFIX.txt; tword=ALPHA-$SUFFIX ;; *" B") tfile=bravo-$SUFFIX.txt; tword=BRAVO-$SUFFIX ;; *) tfile=charlie-$SUFFIX.txt; tword=CHARLIE-$SUFFIX ;; esac
+    assert_has "thread '$ttitle' delivered $tfile on its branch" "$(git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null)" "$tword"
+    [ -n "$trun" ] || { fail "thread $tid has no run"; continue; }
+    run_interval "$trun" >> "$WORK/three-task-intervals.txt"
+  done
+
+  say "5b. run intervals (event store: RunStarted .. first terminal event)"
+  while IFS= read -r l; do [ -n "$l" ] && note "$l"; done < "$WORK/three-task-intervals.txt"
+  nrun=$(grep -c -E '^[^ ]+ [0-9]+ [0-9]+ ' "$WORK/three-task-intervals.txt")
+  assert_eq "start and finish times were read for all three runs" "$nrun" "3"
+  intervals_render < "$WORK/three-task-intervals.txt" | while IFS= read -r l; do note "$l"; done
+  pairs=$(intervals_overlap_pairs < "$WORK/three-task-intervals.txt")
+  peak=$(intervals_peak < "$WORK/three-task-intervals.txt")
+  note "overlapping pairs: $(printf '%s' "$pairs" | tr '\n' ';' | sed 's/;$//') ; peak simultaneous runs: $peak ; project cap: $cap"
+  if [ -n "$pairs" ]; then
+    pass "at least two of the three runs overlapped (start_i < finish_j and start_j < finish_i): $(printf '%s' "$pairs" | grep -c .) pair(s)"
+  else
+    fail "no two of the three runs overlapped: they ran serially (start_i < finish_j and start_j < finish_i never held)"
+  fi
+  [ "$peak" -le "$cap" ] && pass "the project cap was respected (peak $peak <= $cap simultaneous runs)" || fail "peak $peak simultaneous runs exceeded the project cap $cap"
+  if [ "$cap" != 3 ]; then
+    fm project update --max-concurrent-runs 3 "$PROJECT" >/dev/null 2>&1 || fail "could not restore max_concurrent_runs=3"
+  fi
+}
+
 # ---------------------------------------------------------------- 6. notifications, usage
 
 step_notifications_usage() {
@@ -269,11 +379,18 @@ if [ "${E2E_GH_ONLY:-0}" = 1 ]; then
   summary
   exit $?
 fi
+if [ "${E2E_THREE_ONLY:-0}" = 1 ]; then
+  step_project
+  step_three_tasks
+  summary
+  exit $?
+fi
 step_project
 step_memory_library
 if step_bead_thread; then
   step_thread_control
   step_overview_coordinator
+  step_three_tasks
   step_notifications_usage
   step_review
 else

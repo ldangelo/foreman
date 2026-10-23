@@ -12,6 +12,7 @@ that CI cannot give.
 |---|---|
 | `claude-projects-live-run.md` | First manual end-to-end run on pi with a faked `gh`: instructions, memory, library, parallel threads, steer, stop, resolve, Overview groups, pause/resume, webhook notifications, review verdict, usage. Findings F1-F10 and their fixes. |
 | `claude-projects-acceptance-2026-10-22.md` | The scripted flow (`claude_projects_flow.sh`, 7 stages) plus the failure injection table (`failure_injection.sh`), transcript and defects filed as beads. |
+| `three-task-overlap-live-run.md` | Step 5b of the flow: three tasks pasted in one coordinator message, three threads, the printed `RunStarted`/terminal intervals and the overlap assertion (PASS at cap 3; FAIL when the project is forced to one run at a time). |
 | `github-live-run.md` | Stage 8 on a real private GitHub repo: PR created by a run, checks, a real webhook through a `cloudflared` tunnel, Fix CI, Address comments, Resolve conflicts, force-push, check re-run, operator merge (36 PASS). Branch protection UNVERIFIED (HTTP 403 on that plan). |
 | `live-github-protection-ui-autofix.md` + `live-github-ui-*.png` | The workspace Fix CI, Address comments, Resolve conflicts and Create PR buttons clicked on real PRs, `pr_auto_fix` off, on and bounded, a push after merge approval (observed on the build before #650), GitHub's refusal text for an operator merge, and the Create PR merge-gate defect found and fixed there (`foreman-ksy0q`). Merge under branch protection UNVERIFIED. |
 | `parity-gaps-live-run.md` | Live proof of the parity-gap beads with real `claude` (haiku) and pi: claude coordinator and thread, project env and secrets on both doors, setup script, docker network shim, schedules, adopt (move, mint, continue), recommend, per-thread usage, multi-repo self-add and fanout. |
@@ -48,9 +49,9 @@ devbox run -- bash scripts/e2e/claude_projects_flow.sh
 
 It starts its own server (own port, own database, own scratch repo, own `br` database) and drives the real Go CLI and HTTP API:
 project, goal and instructions, memory, library, a thread started from a bead, the thread seeing instructions, memory and library,
-steer a running thread, stop one, resolve one, Overview groups, coordinator chat, approvals and questions surfaces, notifications
-reaching a local webhook sink, and the review archive and verdict (seven archive files, verdict, comment on the bead). Nothing is
-pushed anywhere but a local bare origin.
+steer a running thread, stop one, resolve one, Overview groups, coordinator chat, three tasks pasted in one message that must run in
+parallel (step 5b), approvals and questions surfaces, notifications reaching a local webhook sink, and the review archive and
+verdict (seven archive files, verdict, comment on the bead). Nothing is pushed anywhere but a local bare origin.
 
 Stage 8 (real GitHub) is opt-in:
 
@@ -61,6 +62,16 @@ FOREMAN_E2E_GITHUB_REPO=<owner>/foreman-scratch-<suffix> E2E_GH_ONLY=1 devbox ru
 
 Unset, the stage prints an explicit SKIP and counts as UNVERIFIED. `E2E_GH_ONLY=1` runs only setup plus stage 8. `E2E_GH_TUNNEL=0`
 and `E2E_GH_STAGE_TIMEOUT` tune the tunnel and the stage timeout; `scripts/e2e/claude_projects/github.sh` is the stage's source.
+
+Step 5b is the parallelism proof: one coordinator message pastes a to-do list of three distinct small tasks, the step asserts the
+coordinator started exactly three threads (distinct titles), each delivered its file on its branch, and then reads `RunStarted` and the
+first terminal event of each thread's run from the event store (`claude_projects/run_interval.exs`, via the server node) and asserts
+that at least two intervals overlap (`start_i < finish_j and start_j < finish_i`) and that the project cap was respected. It prints the
+intervals. Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
+the project to 3 in step 1; the global default is 3) and no `coordinator_max_active_threads` below 3 (unset). The assertion can fail:
+`bash scripts/e2e/claude_projects/overlap.sh` runs its stack-free self-test (serial, touching, overlapping and unfinished intervals),
+`E2E_THREE_ONLY=1` runs only setup, step 1 and step 5b, and `E2E_THREE_TASK_MAX_RUNS=1` forces one run at a time for that step,
+which must (and does) make the overlap assertion FAIL.
 
 Environment (all optional): `E2E_MODEL`, `E2E_WORK_DIR`, `E2E_DB_NAME` (lower case letters, digits, underscore), `E2E_PORT`,
 `E2E_HOOK_PORT`, `E2E_API_TOKEN`, `E2E_RUN_TIMEOUT` (seconds, default 600), `E2E_POLL_SECS`, `E2E_REVIEW=0` (skip the review archive
@@ -117,10 +128,11 @@ Details and bead ids are in [`parity-audit.md`](parity-audit.md).
   `foreman-ksy0q`). A push after merge approval stranded the PR on the build before #650 (observed live); #650 now voids the approval and holds the gate again (`foreman-ehxy6`), covered by tests and not re-run live.
 - Telegram and Slack were never run against the real APIs; this is deferred by the user (`foreman-mivo7`). Only the signed webhook
   is live-verified.
-- Not seen live: UI Approve click, stop or restart while a call is blocked, a block longer than about 100 s (`foreman-exofh`);
-  blocking inside a real container and the Scheduled tab (`foreman-8vf0s`); project archive and delete.
-- `scripts/e2e` has no schedule step, and the flow has no three-task coordinator paste and no `started_at`/`finished_at`
-  overlap assertion (`foreman-nb8w2.9.1`).
+- Not seen live: blocking inside a real container and the Scheduled tab (`foreman-8vf0s`); project archive and delete. Restart while a call
+  is blocked is only PARTIAL (a stale pre-restart request stays actionable, `foreman-u0646`). The in-flight approvals UI Approve and Deny,
+  stop while blocked, the approval timeout and a block longer than 60 s were verified live on claude (#654,
+  `live-claude-and-approvals.md`); the 30 min default timeout was not waited.
+- `scripts/e2e` has no schedule step.
 - Per-phase repo selection and multi-repo on real GitHub were not exercised (`foreman-he4yf`); multi-repo was proven with a fake `gh`.
 - Not built: the first-turn setup proposal and `apply_recommendation` (`foreman-4orxm`), coordinator `add_repo` and `schedule`
   actions (`foreman-tdjj8`), coordinator usage recording (`foreman-ba4y4`), library upload in the workspace (`foreman-8ervf`),

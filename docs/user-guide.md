@@ -186,7 +186,7 @@ Two scripts prove the Claude Projects flow against a **real, throwaway** server,
 
 ```bash
 devbox run -- bash scripts/e2e/claude_projects_flow.sh        # ~2 min: project, memory, library, bead -> thread,
-                                                              # steer/stop/resolve, Overview, chat, webhook, review archive
+                                                              # steer/stop/resolve, Overview, chat, three tasks in parallel, webhook, review archive
 devbox run -- bash scripts/e2e/failure_injection.sh           # ~4 min: provider-down agent-crash coordinator-crash
 devbox run -- bash scripts/e2e/failure_injection.sh server-crash   # server-crash port-closed project-paused: run one scenario
 ```
@@ -198,7 +198,9 @@ Prerequisites: `pi` (authenticated for the model), `br`, `git`, `jq`, `curl`, `p
 dir under `<checkout>/tmp/e2e-claude-projects-<cp|fail>` (never `/tmp`; the server runs with a redirected `HOME`
 and `FOREMAN_VFS_ALLOWED_ROOT`). It removes only that work dir, database and the PIDs it started; `E2E_KEEP=1`
 leaves everything for a post-mortem (you then stop the printed server PID and drop the database yourself).
-Other knobs: `E2E_MODEL`, `E2E_RUN_TIMEOUT`, `E2E_REVIEW=0` (skip the review-archive step), `E2E_TRANSCRIPT=<file>`.
+Other knobs: `E2E_MODEL`, `E2E_RUN_TIMEOUT`, `E2E_REVIEW=0` (skip the review-archive step), `E2E_TRANSCRIPT=<file>`,
+`E2E_THREE_ONLY=1` (setup, step 1 and the three-task parallel step only) and `E2E_THREE_TASK_MAX_RUNS=1` (force one run at a
+time for that step; its overlap assertion must then FAIL).
 `E2E_GITHUB=1` is refused (the harness never creates a repository). The scripts use their own workflows pinned to
 pi/minimax, not the bundled defaults.
 
