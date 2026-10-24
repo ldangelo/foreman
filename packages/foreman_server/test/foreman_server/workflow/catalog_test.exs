@@ -111,7 +111,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
             command: "/skill:ensemble-full-create-prd --foreman"
             requiredFile: planning.prd_path
           - name: create-trd
-            command: "/skill:ensemble-full-create-trd-foreman --foreman"
+            command: "/skill:ensemble-full-create-trd --foreman"
             requiredFile: planning.trd_path
         """
       )
@@ -133,7 +133,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
 
       assert create_trd["name"] == "create-trd"
       assert create_trd.action == :command
-      assert create_trd.command == "/skill:ensemble-full-create-trd-foreman --foreman"
+      assert create_trd.command == "/skill:ensemble-full-create-trd --foreman"
       assert create_trd.required_file == "planning.trd_path"
       assert create_trd.prompt_path in [nil, ""]
     end

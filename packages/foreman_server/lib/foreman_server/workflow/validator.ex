@@ -14,7 +14,7 @@ defmodule ForemanServer.Workflow.Validator do
     create-prd refine-prd create-trd refine-trd
     implement-trd fix-issue
     ensemble-full-create-prd ensemble-full-refine-prd
-    ensemble-full-create-trd ensemble-full-create-trd-foreman
+    ensemble-full-create-trd
     ensemble-full-implement-trd ensemble-full-implement-trd-beads
     ensemble-full-refine-trd-foreman
     ensemble-fix-issue

@@ -31,7 +31,7 @@ defmodule ForemanServer.Workflow.ErrorReporter do
   # Skill validation
   defp format({:unknown_skill, skill}),
     do:
-      "Unknown skill: '#{skill}'. Known skills: create-prd, refine-prd, create-trd, refine-trd, implement-trd, fix-issue, ensemble-fix-issue, ensemble-full-create-prd, ensemble-full-refine-prd, ensemble-full-create-trd, ensemble-full-create-trd-foreman, ensemble-full-implement-trd, ensemble-full-implement-trd-beads, ensemble-full-refine-trd-foreman."
+      "Unknown skill: '#{skill}'. Known skills: create-prd, refine-prd, create-trd, refine-trd, implement-trd, fix-issue, ensemble-fix-issue, ensemble-full-create-prd, ensemble-full-refine-prd, ensemble-full-create-trd, ensemble-full-implement-trd, ensemble-full-implement-trd-beads, ensemble-full-refine-trd-foreman."
 
   # Validator.validate_phase/2 errors — bare inner tuples (outer {:error, ..} stripped by caller)
   defp format({:missing_phase_name, index}),
