@@ -43,8 +43,11 @@ defmodule ForemanServer.Jobsite do
   The id is readable (`get/1`, `GET /api/jobsites/:id`) when this returns: the call holds until
   the Executor has recorded `jobsite.start` (or, for a spec it refuses, the stub start that its
   typed failure hangs on), which is after `build_spec`, so a slow project setup delays the
-  return by that long, bounded by `@started_timeout_ms`. If the Executor ends first, or the
-  bound passes, the id is returned as before; the Executor keeps running.
+  return by that long, bounded by `@started_timeout_ms`. If the Executor ends without ever
+  recording a start (a rejected start dispatch, a crash in `build_spec`) the id would 404
+  forever, so that is `{:error, :dispatch_rejected}`. If only the bound passes the Executor is
+  still working: the id is returned (and a warning logged) because it becomes readable once
+  the start lands.
   """
   @spec run_async(keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def run_async(opts) do
@@ -54,8 +57,10 @@ defmodule ForemanServer.Jobsite do
     with :ok <- Executor.reserve_thread(id, opts) do
       case Supervisor.start_jobsite(id, Keyword.put(opts, :started_notify, {self(), ref})) do
         {:ok, pid} ->
-          await_started(id, pid, ref)
-          {:ok, id}
+          case await_started(id, pid, ref) do
+            :ok -> {:ok, id}
+            {:error, reason} -> {:error, start_failed_error(reason)}
+          end
 
         {:error, reason} ->
           {:error, start_failed_error(reason)}
@@ -71,24 +76,26 @@ defmodule ForemanServer.Jobsite do
     receive do
       {^ref, :jobsite_started} ->
         Process.demonitor(monitor, [:flush])
+        :ok
 
-      {:DOWN, ^monitor, :process, ^pid, _reason} ->
-        receive do
-          {^ref, :jobsite_started} -> :ok
-        after
-          0 -> :ok
-        end
+      # The Executor sends `:jobsite_started` before it can exit, so a `:DOWN` first means it
+      # ended with no `jobsite.start` recorded.
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:error, {:executor_exited_before_start, reason}}
     after
       @started_timeout_ms ->
         Process.demonitor(monitor, [:flush])
 
         receive do
-          {^ref, :jobsite_started} -> :ok
+          {^ref, :jobsite_started} ->
+            :ok
         after
           0 ->
             Logger.warning(
               "Jobsite #{id} not yet started after #{@started_timeout_ms}ms; returning its id anyway"
             )
+
+            :ok
         end
     end
   end
