@@ -12,6 +12,7 @@ defmodule ForemanServerWeb.AgentPermissionListenerTest do
   alias ForemanServer.Aggregates.ToolCall
   alias ForemanServer.Approvals.{Deliverer, Inflight}
   alias ForemanServer.{CommandGateway, CommandRouter, ProjectionStore}
+  alias ForemanServer.TestSupport.Eventually
 
   @moduletag :controller
 
@@ -89,10 +90,20 @@ defmodule ForemanServerWeb.AgentPermissionListenerTest do
     answer = read_until(socket, ~S(\"behavior\":\"allow\"), acc)
     assert answer =~ ~S(\"behavior\":\"allow\")
 
-    assert_receive {:projection_event, %{event_type: "ToolCallFinished"}}, 15_000
-
+    # The projection is shared and broadcasts every test's events, so a bare
+    # `assert_receive ToolCallFinished` can be satisfied by another test. Wait on THIS run's
+    # tool call instead; the delivery lands a moment after the socket has the answer.
     assert %{status: "finished", outcome: "delivered"} =
-             ProjectionStore.tool_call(run_id, "inflight-toolu_idle")
+             Eventually.await(
+               fn ->
+                 case ProjectionStore.tool_call(run_id, "inflight-toolu_idle") do
+                   %{status: "finished", outcome: "delivered"} = call -> call
+                   _ -> nil
+                 end
+               end,
+               timeout: 15_000,
+               message: "tool call inflight-toolu_idle was not delivered"
+             )
 
     :gen_tcp.close(socket)
   end

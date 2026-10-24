@@ -1,3 +1,5 @@
+Code.require_file("../../scripts/patch_erlexec.exs", __DIR__)
+
 defmodule Jido.Harness.MixProject do
   use Mix.Project
 
@@ -230,6 +232,9 @@ defmodule Jido.Harness.MixProject do
   defp aliases do
     [
       setup: ["deps.get"],
+      "deps.get": ["deps.get", &ErlexecPatch.apply/1],
+      "deps.loadpaths": [&ErlexecPatch.apply/1, "deps.loadpaths"],
+      "deps.compile": [&ErlexecPatch.apply/1, "deps.compile"],
       install_hooks: ["git_hooks.install"],
       q: ["quality"],
       quality: [

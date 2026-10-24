@@ -57,25 +57,69 @@ The following upstream contents are copied verbatim into this directory:
 - `config/`
 - `LICENSE`
 
-Functional behavior of the upstream code is unchanged. The package name
-remains `:jido_harness`.
+Functional behavior of the upstream code is NOT unchanged: see the next section.
+The package name remains `:jido_harness`.
 
 ## Deviations from upstream
 
-None. The vendored copy is byte-identical to upstream at the pinned SHA
-for `mix.exs`, `mix.lock`, `lib/`, `test/`, `config/`, `LICENSE`, and
-`.formatter.exs`. The only additions are:
+This tree is not byte-identical to upstream at the pinned SHA. It differs in
+three ways; the first two are described under "Build role and sync" above.
 
-- `UPSTREAM_PIN.md` — this file.
-- `deps/` — vendored hex packages extracted from upstream's `mix.lock`,
-  committed so that `mix deps.get` and `mix compile` succeed offline.
-- `smoke_test.exs` — a standalone runnable smoke check
-  (`mix run smoke_test.exs`) that exercises `Jido.Harness.run(:pi, "ping", [])`
-  through a stub adapter and asserts a normalized `RunResult`.
+1. **Sync from the Sunstone-Partners fork** (`e41fc165`): the Grok 1.0 mapper
+   and `Jido.Harness.Escript`, in neither upstream SHA `8bf0d52f` nor 2.0.0.
+2. **Foreman live-input work** (#641, `ecf0e94f`): `Jido.Harness.Run.send_input/3`,
+   the optional `live_input_line/2` adapter callback, the `live_input` option in
+   `adapters/cli_stream.ex`, and the matching changes in `run/worker.ex`,
+   `run/manager.ex` and the `claude` and `pi` adapters, with tests and fixtures.
+   Upstream `main` (3.0.0-rc.1) has no `Run.send_input/3`; its steering is ACP-based.
+3. **erlexec process-group startup patch** (below), plus the `deps.get` /
+   `deps.loadpaths` / `deps.compile` aliases and a `Code.require_file` line it
+   adds to `mix.exs`, and a patched `deps/erlexec/c_src/exec_impl.cpp`.
 
-`mix.exs` still declares the app as `:jido_harness`. No upstream code paths
-have been edited; the local surface required by the monorepo is satisfied by
-the path dependency from `packages/foreman_server/`.
+Local-only additions: `UPSTREAM_PIN.md`, `patches/erlexec/` (the patch above),
+`deps/` (committed so `mix deps.get` and `mix compile` succeed offline) and
+`smoke_test.exs` (a standalone smoke check, `mix run smoke_test.exs`, that runs
+`Jido.Harness.run(:pi, "ping", [])` through a stub adapter and asserts a normalized
+`RunResult`).
+
+This repo carries no upstream history, so `8bf0d52f` does not exist here. The delta
+introduced inside this repo since the import (`d0af9fb9`) is
+`git diff --stat d0af9fb9 -- packages/jido_harness/lib packages/jido_harness/test packages/jido_harness/mix.exs`;
+the delta against upstream itself needs a checkout of `agentjido/jido_harness` at
+`8bf0d52f` (plus the fork sync at `e41fc165`) to diff against.
+
+### erlexec process-group startup patch
+
+`erlexec` 2.3.4 (hex) lets the parent and the child both call `setpgid()` after
+`fork()`, and the child treats any failure as fatal. The harness starts every
+process with `{:group, 0}` (`lib/jido_harness/process/driver/erlexec.ex`), so on
+macOS a child that exits immediately can die at startup with stderr
+`Cannot set effective group to 0: Operation not permitted` and exit status 1; the
+harness reports the process as `:failed` instead of `:exited`. This was seen once
+as a `ProcessManagerTest` "runs concurrent processes" failure and reproduced in a
+300-round, 8-concurrent-`/bin/echo` run (3 failing rounds, clustered within about
+four seconds). It could not be re-measured afterwards: the unpatched build showed
+0 failures in roughly 24,000 spawns, including under CPU load, so the failure
+rate is not established, only the mechanism (the stderr text is exactly the child
+fatal path the patch removes).
+
+The fix is a hand port, onto 2.3.4, of upstream `agentjido/jido_harness` commit
+`e109aa5` ("synchronize native process group startup"): the parent finishes its
+`setpgid()` first and releases a pipe, the child waits on that pipe, then calls
+`setpgid()` and tolerates an already-established group (`getpgrp() == gid`). The
+patch applies to `c_src/exec_impl.cpp` and is kept as
+`patches/erlexec/process-group-startup.patch`.
+
+- `deps/erlexec` here is tracked, so the patched file is committed.
+- `packages/foreman_server/deps` is gitignored and fetched from hex, so a fresh
+  checkout gets stock `erlexec`. `scripts/patch_erlexec.exs` applies the patch
+  from the `deps.get` and `deps.loadpaths` aliases in both packages' `mix.exs`.
+  It is idempotent (marker string), dry-runs first, and fails the build loudly if
+  the patch cannot be applied.
+- A `mix deps.update` / hex bump of `erlexec` will bring a new base file: re-port
+  the patch (or drop it if `saleyn/erlexec` ships the fix), and refresh the marker
+  in `scripts/patch_erlexec.exs` if the patched text changes.
+- Not observed on Linux, and not tested there, so CI does not exercise it.
 
 ## Vendored dependencies
 
