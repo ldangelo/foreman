@@ -21,7 +21,7 @@ defmodule ForemanServer.Jobsite.RunAsyncStartTest do
     ]
 
     capture_log(fn ->
-      assert {:error, %Error{code: :dispatch_rejected, details: %{reason: reason}}} =
+      assert {:error, %Error{code: :jobsite_start_failed, details: %{reason: reason}}} =
                Jobsite.run_async(opts)
 
       assert {:executor_exited_before_start, _} = reason

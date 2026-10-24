@@ -192,8 +192,11 @@ defmodule ForemanServer.Jobsite.Executor do
 
     case dispatch(jobsite_id, "jobsite.start", "start", stub) do
       {:ok, _} ->
+        # Notify only once the failure is recorded (or its dispatch was rejected): the caller's
+        # 202 means "the failure is already readable", not "a stub exists in `starting`".
+        failed = dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
         notify_started(opts)
-        dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+        failed
 
       {:error, _} = rejected ->
         rejected

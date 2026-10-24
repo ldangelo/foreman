@@ -1,15 +1,15 @@
 defmodule ForemanServerWeb.JobsiteBuildSpecFailureTest do
-  # foreman-bg2kq. POST /api/jobsites answers 202 + id before the executor builds
-  # its spec. A build_spec refusal (here: the project's network policy is not
+  # foreman-bg2kq. A build_spec refusal (here: the project's network policy is not
   # supported by the host sandbox) used to leave no event at all, so the id the
-  # caller was handed answered 404 forever. The id must resolve to a failed
-  # jobsite carrying the typed reason.
+  # caller was handed answered 404 forever. POST /api/jobsites holds its 202 until
+  # the refusal is recorded, so the id must already resolve to a failed jobsite
+  # carrying the typed reason when the caller has it: no polling.
   use ExUnit.Case, async: false
 
   import Plug.Conn
   import Phoenix.ConnTest
 
-  alias ForemanServer.{CommandGateway, Jobsite}
+  alias ForemanServer.CommandGateway
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @endpoint ForemanServerWeb.Endpoint
@@ -82,8 +82,6 @@ defmodule ForemanServerWeb.JobsiteBuildSpecFailureTest do
 
     assert %{"id" => id} = json_response(conn, 202)
 
-    await(fn -> match?(%{terminal?: true}, Jobsite.get(id)) end)
-
     shown = authed() |> get("/api/jobsites/#{id}") |> json_response(200)
 
     assert %{
@@ -91,13 +89,5 @@ defmodule ForemanServerWeb.JobsiteBuildSpecFailureTest do
              "project_id" => ^project_id,
              "last_error" => %{"code" => "network_policy_unsupported"}
            } = shown
-  end
-
-  defp await(fun, tries \\ 500) do
-    cond do
-      fun.() -> :ok
-      tries == 0 -> flunk("condition never became true")
-      true -> Process.sleep(10) && await(fun, tries - 1)
-    end
   end
 end

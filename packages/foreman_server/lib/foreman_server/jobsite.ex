@@ -45,7 +45,7 @@ defmodule ForemanServer.Jobsite do
   typed failure hangs on), which is after `build_spec`, so a slow project setup delays the
   return by that long, bounded by `@started_timeout_ms`. If the Executor ends without ever
   recording a start (a rejected start dispatch, a crash in `build_spec`) the id would 404
-  forever, so that is `{:error, :dispatch_rejected}`. If only the bound passes the Executor is
+  forever, so that is `{:error, :jobsite_start_failed}`. If only the bound passes the Executor is
   still working: the id is returned (and a warning logged) because it becomes readable once
   the start lands.
   """
@@ -59,7 +59,7 @@ defmodule ForemanServer.Jobsite do
         {:ok, pid} ->
           case await_started(id, pid, ref) do
             :ok -> {:ok, id}
-            {:error, reason} -> {:error, start_failed_error(reason)}
+            {:error, reason} -> {:error, executor_died_error(reason)}
           end
 
         {:error, reason} ->
@@ -417,6 +417,14 @@ defmodule ForemanServer.Jobsite do
 
   defp start_failed_error(reason) do
     Error.new(:dispatch_rejected, "failed to start jobsite executor", %{reason: reason})
+  end
+
+  defp executor_died_error({:executor_exited_before_start, exit_reason}) do
+    Error.new(
+      :jobsite_start_failed,
+      "jobsite executor exited before recording its start",
+      %{reason: {:executor_exited_before_start, exit_reason}}
+    )
   end
 
   defp generate_id do

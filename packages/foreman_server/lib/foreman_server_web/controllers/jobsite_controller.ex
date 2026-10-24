@@ -348,6 +348,7 @@ defmodule ForemanServerWeb.JobsiteController do
     do: :too_many_requests
 
   defp status_for(:dispatch_rejected), do: :bad_gateway
+  defp status_for(:jobsite_start_failed), do: :internal_server_error
   defp status_for(_other_validation_or_domain_error), do: :unprocessable_entity
 
   defp audit(conn, outcome, error_code, jobsite_id) do
