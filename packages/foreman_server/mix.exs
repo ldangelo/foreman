@@ -1,3 +1,5 @@
+Code.require_file("../../scripts/patch_erlexec.exs", __DIR__)
+
 defmodule ForemanServer.MixProject do
   use Mix.Project
 
@@ -124,6 +126,9 @@ defmodule ForemanServer.MixProject do
   defp aliases do
     [
       q: ["quality"],
+      "deps.get": ["deps.get", &ErlexecPatch.apply/1],
+      "deps.loadpaths": [&ErlexecPatch.apply/1, "deps.loadpaths"],
+      "deps.compile": [&ErlexecPatch.apply/1, "deps.compile"],
       quality: [
         "format --check-formatted",
         "compile --warnings-as-errors",

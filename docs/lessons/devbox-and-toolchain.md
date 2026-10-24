@@ -149,5 +149,30 @@ whole `.env` (that leaked its `ANTHROPIC_API_KEY` into every dev shell and
 overrode the operator's own credentials). It exports only `LITELLM_MASTER_KEY`;
 `test:langfuse`/`test:all` source the stack `.env` themselves.
 
----
+### erlexec is patched in-repo (process-group startup race, macOS)
 
+Symptom: a process started through `Jido.Harness.Process` ends `:failed` with exit status 1 and stderr
+`Cannot set effective group to 0: Operation not permitted`; in the suite it shows up as a rare
+`ProcessManagerTest` / `DirectCLIAdapterTest` failure, in production as an agent CLI that never starts.
+
+Cause: hex `erlexec` 2.3.4 has the parent and the child both call `setpgid()` after `fork()` and the child treats any
+failure as fatal. The harness always spawns with `{:group, 0}` (`jido_harness/lib/jido_harness/process/driver/erlexec.ex`).
+Observed once on macOS and not re-measured afterwards (the unpatched build showed 0 failures in ~24k spawns, also under
+load). Not observed on Linux and not tested there, so CI does not exercise it.
+
+Fix: `packages/jido_harness/patches/erlexec/process-group-startup.patch`, a hand port of upstream
+`agentjido/jido_harness` `e109aa5`. The parent assigns the group, then closes the write end of a pipe; the child blocks on
+`read` until EOF (EOF means "released", never write a byte), then calls `setpgid()` and accepts an already-established group.
+
+Mechanics, because the dep is a hex copy and easy to revert silently:
+
+- `packages/jido_harness/deps/erlexec` is tracked, so its `exec_impl.cpp` is committed already patched.
+  `packages/foreman_server/deps` is gitignored and fetched from hex.
+- `scripts/patch_erlexec.exs` (loaded from both `mix.exs`) applies the patch from the `deps.get`, `deps.loadpaths` and
+  `deps.compile` aliases. It dry-runs first, recognises a patched file by two strings, deletes `_build/*/lib/erlexec` plus
+  the dep's `*.o`, `*.d` and `exec-port` so the port is rebuilt, and raises if the patch cannot be applied.
+- Mix does not track a hex dep's sources: after hand-editing `exec_impl.cpp` run `mix deps.compile erlexec --force`.
+  Check the built port with `strings deps/erlexec/priv/*/exec-port | grep 'Process group startup'`.
+- A new `erlexec` version means a new base file: re-port the patch or drop it once `saleyn/erlexec` carries the fix.
+
+---

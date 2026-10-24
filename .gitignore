@@ -83,6 +83,22 @@
 /packages/jido_harness/_build/**
 /packages/jido_harness/cover/**
 /packages/jido_harness/deps/**/_build/**
+
+# Vendored hex packages (TRD-001 offline `deps/`) ship their own `.credo.exs`,
+# and the git index still carries `packages/jido_harness/deps/credo/.credo.exs`
+# from the vendoring commit. That file is third-party source, not this repo's
+# config, but it is git-VISIBLE, and OMP's `cleanse` checker discovery treats
+# every visible `.credo.exs` as a Credo project root: it ran `mix credo` inside
+# `packages/jido_harness/deps/credo`, i.e. it tried to lint Credo's own source,
+# which fails immediately on Credo's uninstalled dev-only deps (`inch_ex`,
+# `mix_test_watch`, `ex_doc`, `file_system`, `bunt`, `jason`) with
+# "Unchecked dependencies ... ** (Mix) Can't continue due to errors on
+# dependencies". Ignoring the path removes it from the visible set that
+# discovery scans (`git ls-files` + `git ls-files --others --exclude-standard`)
+# while leaving the blob in history; `git rm --cached` pairs with it, so nothing
+# under any `deps/` directory can be mistaken for a project root again. Real
+# configs (`packages/foreman_server/.credo.exs`) are untouched and stay visible.
+packages/*/deps/**/*.credo.exs
 .devbox/
 
 # Stray worktree test-fixture snapshots dropped at repo root by some
