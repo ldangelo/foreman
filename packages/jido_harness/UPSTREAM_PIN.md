@@ -110,16 +110,26 @@ The fix is a hand port, onto 2.3.4, of upstream `agentjido/jido_harness` commit
 patch applies to `c_src/exec_impl.cpp` and is kept as
 `patches/erlexec/process-group-startup.patch`.
 
-- `deps/erlexec` here is tracked, so the patched file is committed.
+- `deps/erlexec` here is tracked and committed patched, but the committed copy alone
+  does not guarantee a patched build. In PR #662's CI the `jido_harness` job logged
+  `* patched erlexec`, i.e. the file was pristine when the script ran. The job restores
+  `packages/jido_harness/deps` from an `actions/cache` entry keyed only on `mix.lock`,
+  which most likely overwrote the checkout with an older pristine copy (inferred from
+  the workflow, not inspected in the cache). The apply script is what guarantees a
+  patched build.
 - `packages/foreman_server/deps` is gitignored and fetched from hex, so a fresh
-  checkout gets stock `erlexec`. `scripts/patch_erlexec.exs` applies the patch
-  from the `deps.get` and `deps.loadpaths` aliases in both packages' `mix.exs`.
-  It is idempotent (marker string), dry-runs first, and fails the build loudly if
-  the patch cannot be applied.
+  checkout gets stock `erlexec` (confirmed: CI logged the patch step there too).
+  `scripts/patch_erlexec.exs` applies the patch from the `deps.get`, `deps.loadpaths`
+  and `deps.compile` aliases in both packages' `mix.exs`. It is idempotent (two
+  markers), dry-runs first, rebuilds a port that predates already-patched source, and
+  fails the build loudly if the patch cannot be applied. That loud failure and the
+  tracked patched copy are the guard; there is deliberately no regression test,
+  because the race is too rare to reproduce reliably (see above).
 - A `mix deps.update` / hex bump of `erlexec` will bring a new base file: re-port
-  the patch (or drop it if `saleyn/erlexec` ships the fix), and refresh the marker
+  the patch (or drop it if `saleyn/erlexec` ships the fix), and refresh the markers
   in `scripts/patch_erlexec.exs` if the patched text changes.
-- Not observed on Linux, and not tested there, so CI does not exercise it.
+- Not observed on Linux, and not tested there, so CI does not exercise the race;
+  it does exercise the apply step and a build of the patched C.
 
 ## Vendored dependencies
 

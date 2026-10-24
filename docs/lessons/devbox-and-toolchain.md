@@ -166,8 +166,9 @@ Fix: `packages/jido_harness/patches/erlexec/process-group-startup.patch`, a hand
 
 Mechanics, because the dep is a hex copy and easy to revert silently:
 
-- `packages/jido_harness/deps/erlexec` is tracked, so its `exec_impl.cpp` is committed already patched.
-  `packages/foreman_server/deps` is gitignored and fetched from hex.
+- `packages/jido_harness/deps/erlexec` is tracked and committed already patched, but do not rely on that:
+  CI restores `packages/jido_harness/deps` from a `mix.lock`-keyed cache that can bring back a pristine copy
+  (the job logged `* patched erlexec`). `packages/foreman_server/deps` is gitignored and fetched from hex.
 - `scripts/patch_erlexec.exs` (loaded from both `mix.exs`) applies the patch from the `deps.get`, `deps.loadpaths` and
   `deps.compile` aliases. It dry-runs first, recognises a patched file by two strings, deletes `_build/*/lib/erlexec` plus
   the dep's `*.o`, `*.d` and `exec-port` so the port is rebuilt, and raises if the patch cannot be applied.

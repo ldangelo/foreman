@@ -36,16 +36,21 @@ defmodule ErlexecPatch do
 
   defp patched?(contents), do: Enum.all?(@markers, &String.contains?(contents, &1))
 
-  # The source can already be patched (tracked copy, an earlier run) while a port built
-  # from the unpatched source is still on disk: Mix does not track a hex dep's sources,
-  # so it would keep using that port. The handshake's error string is compiled into a
-  # patched port, so a built port without it is stale.
+  # The source can already be patched (tracked copy, restored CI cache, an earlier run)
+  # while a port built from the unpatched source is still on disk: Mix does not track a hex
+  # dep's sources, so it would keep using that port. The handshake's error string is
+  # compiled into a patched port, so a built port without it is stale. Both the port in the
+  # dep tree and the copies Mix places under `_build/<env>/lib/erlexec` are checked.
   defp ensure_fresh_port(dep_dir) do
+    build_root = Path.dirname(Mix.Project.build_path())
+
     stale? =
-      dep_dir
-      |> Path.join("priv/*/exec-port")
-      |> Path.wildcard()
-      |> Enum.any?(&(not String.contains?(File.read!(&1), hd(@markers))))
+      [
+        Path.join(dep_dir, "priv/*/exec-port"),
+        Path.join([build_root, "*", "lib", "erlexec", "priv", "*", "exec-port"])
+      ]
+      |> Enum.flat_map(&Path.wildcard/1)
+      |> Enum.any?(&(:binary.match(File.read!(&1), hd(@markers)) == :nomatch))
 
     if stale? do
       invalidate_build(dep_dir)
