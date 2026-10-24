@@ -191,8 +191,12 @@ defmodule ForemanServer.Jobsite.Executor do
     }
 
     case dispatch(jobsite_id, "jobsite.start", "start", stub) do
-      {:ok, _} -> dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
-      {:error, _} = rejected -> rejected
+      {:ok, _} ->
+        notify_started(opts)
+        dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
+
+      {:error, _} = rejected ->
+        rejected
     end
   end
 
@@ -210,11 +214,22 @@ defmodule ForemanServer.Jobsite.Executor do
   defp run_spec(jobsite_id, spec) do
     with {:ok, _} <-
            dispatch(jobsite_id, "jobsite.start", "start", start_payload(jobsite_id, spec)) do
+      notify_started(spec.opts)
       execute(jobsite_id, spec)
     else
       {:error, %Error{} = error} ->
         dispatch(jobsite_id, "jobsite.fail", "terminal", fail_payload(error))
         {:error, error}
+    end
+  end
+
+  # `Jobsite.run_async/1` passes `started_notify: {pid, ref}` and holds its `202` until the
+  # `jobsite.start` event is appended (`CommandRouter` projects it synchronously), so an id it
+  # returns is readable at once. Absent for `Jobsite.run/1` and resumes.
+  defp notify_started(opts) do
+    case Keyword.get(opts, :started_notify) do
+      {pid, ref} when is_pid(pid) -> send(pid, {ref, :jobsite_started})
+      nil -> :ok
     end
   end
 

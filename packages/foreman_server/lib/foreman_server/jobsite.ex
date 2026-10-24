@@ -8,6 +8,8 @@ defmodule ForemanServer.Jobsite do
   `EventStore` + Postgres.
   """
 
+  require Logger
+
   alias ForemanServer.Jobsite.{
     Control,
     Error,
@@ -35,16 +37,59 @@ defmodule ForemanServer.Jobsite do
     end
   end
 
-  @doc "Start a jobsite in the background and return its id immediately."
+  @doc """
+  Start a jobsite in the background and return its id.
+
+  The id is readable (`get/1`, `GET /api/jobsites/:id`) when this returns: the call holds until
+  the Executor has recorded `jobsite.start` (or, for a spec it refuses, the stub start that its
+  typed failure hangs on), which is after `build_spec`, so a slow project setup delays the
+  return by that long, bounded by `@started_timeout_ms`. If the Executor ends first, or the
+  bound passes, the id is returned as before; the Executor keeps running.
+  """
   @spec run_async(keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def run_async(opts) do
     id = generate_id()
+    ref = make_ref()
 
     with :ok <- Executor.reserve_thread(id, opts) do
-      case Supervisor.start_jobsite(id, opts) do
-        {:ok, _pid} -> {:ok, id}
-        {:error, reason} -> {:error, start_failed_error(reason)}
+      case Supervisor.start_jobsite(id, Keyword.put(opts, :started_notify, {self(), ref})) do
+        {:ok, pid} ->
+          await_started(id, pid, ref)
+          {:ok, id}
+
+        {:error, reason} ->
+          {:error, start_failed_error(reason)}
       end
+    end
+  end
+
+  @started_timeout_ms 30_000
+
+  defp await_started(id, pid, ref) do
+    monitor = Process.monitor(pid)
+
+    receive do
+      {^ref, :jobsite_started} ->
+        Process.demonitor(monitor, [:flush])
+
+      {:DOWN, ^monitor, :process, ^pid, _reason} ->
+        receive do
+          {^ref, :jobsite_started} -> :ok
+        after
+          0 -> :ok
+        end
+    after
+      @started_timeout_ms ->
+        Process.demonitor(monitor, [:flush])
+
+        receive do
+          {^ref, :jobsite_started} -> :ok
+        after
+          0 ->
+            Logger.warning(
+              "Jobsite #{id} not yet started after #{@started_timeout_ms}ms; returning its id anyway"
+            )
+        end
     end
   end
 
