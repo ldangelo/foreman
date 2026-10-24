@@ -381,13 +381,12 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       assert %{"id" => id} = json_response(conn, 202)
       assert_received {:br, :show, @bead_id}
 
-      # `POST` answers 202 once the executor process is started; `jobsite.start` (the event that
-      # makes the jobsite visible to `GET`) is dispatched afterwards from `handle_continue`. Reading
-      # at once raced it (404 on CI). Let the executor finish first, as the sibling tests do.
-      await_terminal(id)
-
+      # The 202's id is readable at once (user guide: never 404). `await_terminal` only drains
+      # the executor so it cannot leak into other tests.
       assert %{"bead_id" => @bead_id} =
                authed() |> get("/api/jobsites/#{id}") |> json_response(200)
+
+      await_terminal(id)
     end
 
     test "a bead carrying the foreman-gap label => 422 spec_bead_ineligible, audited, nothing started" do
