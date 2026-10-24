@@ -17,7 +17,10 @@
 # looks healthy.
 defmodule ErlexecPatch do
   @markers ["Process group startup parent unavailable", "getpgrp() != gid"]
-  @patch Path.expand("../packages/jido_harness/patches/erlexec/process-group-startup.patch", __DIR__)
+  @patch Path.expand(
+           "../packages/jido_harness/patches/erlexec/process-group-startup.patch",
+           __DIR__
+         )
 
   def apply(_args \\ []) do
     dep_dir = Path.join(Mix.Project.deps_path(), "erlexec")
@@ -26,12 +29,31 @@ defmodule ErlexecPatch do
     cond do
       # Deps not fetched yet; Mix reports that itself, and `deps.get` re-runs this step.
       not File.regular?(source) -> :ok
-      patched?(File.read!(source)) -> :ok
+      patched?(File.read!(source)) -> ensure_fresh_port(dep_dir)
       true -> patch!(dep_dir)
     end
   end
 
   defp patched?(contents), do: Enum.all?(@markers, &String.contains?(contents, &1))
+
+  # The source can already be patched (tracked copy, an earlier run) while a port built
+  # from the unpatched source is still on disk: Mix does not track a hex dep's sources,
+  # so it would keep using that port. The handshake's error string is compiled into a
+  # patched port, so a built port without it is stale.
+  defp ensure_fresh_port(dep_dir) do
+    stale? =
+      dep_dir
+      |> Path.join("priv/*/exec-port")
+      |> Path.wildcard()
+      |> Enum.any?(&(not String.contains?(File.read!(&1), hd(@markers))))
+
+    if stale? do
+      invalidate_build(dep_dir)
+      Mix.shell().info("* erlexec port predates the patched source; rebuilding: #{dep_dir}")
+    end
+
+    :ok
+  end
 
   defp patch!(dep_dir) do
     unless File.regular?(@patch), do: Mix.raise("erlexec patch missing: #{@patch}")
