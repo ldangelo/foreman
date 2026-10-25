@@ -555,7 +555,7 @@ read-only and may use projected worktree/branch/base data only.
 The project workspace is `GET /dashboard/projects/:id` (+ `/settings`,
 `ForemanServerWeb.ProjectWorkspaceLive` / `ProjectSettingsLive`), same guard.
 It adds no mutation path: actions go through `ForemanServerWeb.Workspace.Actions`
-(Threads.Actions, CoordinatorAPI, operator-allowlisted commands) and updates
+(Threads.Actions, CoordinatorAPI, Library add/remove, operator-allowlisted commands) and updates
 come from one coalesced `ProjectionStore` subscription (`Workspace.Refresh`),
 never a polling timer. It has no merge/approve-PR control.
 

@@ -3,10 +3,13 @@ defmodule ForemanServerWeb.Workspace.Actions do
   The workspace's mutations. Every function calls an EXISTING operator path:
   `ForemanServer.Threads.Actions` (stop, steer, the same functions the HTTP
   thread routes call), `ForemanServer.CoordinatorAPI` (the coordinator message
-  and restart entry the HTTP routes use), and `CommandGateway.dispatch_operator/1`
-  with an operator-allowlisted command type (`thread.resolve`, `thread.reopen`,
-  `run.pause`, `run.resume`, `task.approve`, `project.*`, `schedule.*`). The
-  workspace adds no mutation path and no merge/approve-PR control.
+  and restart entry the HTTP routes use), `ForemanServer.Library` (the library's
+  single entry point: the HTTP routes, MCP and the CLI call the same `add/4` and
+  `remove/3`) and `CommandGateway.dispatch_operator/1` with an
+  operator-allowlisted command type (`thread.resolve`, `thread.reopen`,
+  `run.pause`, `run.resume`, `task.approve`, `task.update`, `project.*`,
+  `schedule.*`). The workspace adds no mutation path and no merge/approve-PR
+  control.
 
   ## Idempotency
 
@@ -28,14 +31,18 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
   require Logger
 
-  alias ForemanServer.{CommandGateway, CoordinatorAPI, ProjectionStore, Threads}
+  alias ForemanServer.{CommandGateway, CoordinatorAPI, Library, ProjectionStore, Threads}
+  alias ForemanServer.Aggregates.Project.Environment
   alias ForemanServer.Aggregates.ToolCall
+  alias ForemanServer.Library.Error, as: LibraryError
+  alias ForemanServer.Library.Ingest
   alias ForemanServer.Overview.{PrActions, Signals}
   alias ForemanServer.Threads.{Actions, Thread}
 
   @type result :: {:ok, String.t()} | {:error, String.t()}
   @type intent :: String.t()
   @actor "dashboard"
+  @operator %{kind: :operator, ref: @actor}
 
   @doc "Stops a thread of the project (confirmation is the caller's job)."
   @spec stop_thread(String.t(), String.t(), intent()) :: result()
@@ -232,6 +239,27 @@ defmodule ForemanServerWeb.Workspace.Actions do
     end
   end
 
+  @doc """
+  Declines a task the coordinator proposed for this project: the operator's
+  `task.update` to `closed` (the command `POST /api/commands` and the MCP
+  `foreman_task_update` carry; there is no separate decline command). A closed
+  task can no longer be approved, because `task.approve` needs an `open` task.
+  The guards are `start_proposed/3`'s: the task must be a still-open proposal of
+  THIS project.
+  """
+  @spec decline_proposed(String.t(), String.t(), intent()) :: result()
+  def decline_proposed(project_id, task_id, intent) do
+    with :ok <- proposed?(project_id, task_id) do
+      dispatch(
+        "task.update",
+        "task:" <> task_id,
+        %{task_id: task_id, status: "closed"},
+        intent,
+        "task.update #{task_id}"
+      )
+    end
+  end
+
   @doc "Pauses, resumes or deletes one of the project's schedules."
   @spec schedule_control(String.t(), String.t(), :pause | :resume | :delete, intent()) :: result()
   def schedule_control(project_id, schedule_id, which, intent) do
@@ -266,28 +294,103 @@ defmodule ForemanServerWeb.Workspace.Actions do
   end
 
   @doc """
+  Adds `files` (`%{relative_path:, source_path:}`: the uploaded temp files) to the
+  project's library as ONE entry through `Library.add/4`, the call behind
+  `POST /api/projects/:id/library` and `foreman project library add`. The library
+  therefore applies the same name, path, count (`max_files_per_add`) and size
+  (`max_file_bytes`) rules, whatever the browser claimed. A blank `name` lets the
+  library derive one.
+  """
+  @spec library_add(String.t(), [Ingest.file_source()], String.t()) :: result()
+  def library_add(project_id, files, name) when is_binary(name) do
+    case Library.add(project_id, {:files, files}, %{name: blank_to_nil(name)}, @operator) do
+      {:ok, %{entry: entry}} ->
+        {:ok, "Added #{entry.name} to the library (#{files_label(entry.file_count)})."}
+
+      {:error, %LibraryError{} = error} ->
+        library_failed("add", error)
+    end
+  end
+
+  @doc "Removes one library entry of the project (confirmation is the caller's job)."
+  @spec library_remove(String.t(), String.t()) :: result()
+  def library_remove(project_id, entry_id) do
+    case Library.remove(project_id, entry_id, @operator) do
+      {:ok, entry} ->
+        {:ok, "Removed #{entry.name} from the library."}
+
+      {:error, %LibraryError{code: :not_found}} ->
+        {:error, "That library entry no longer exists."}
+
+      {:error, %LibraryError{} = error} ->
+        library_failed("remove", error)
+    end
+  end
+
+  @doc """
   Writes project settings through `project.update`. `settings` holds ONLY the
   settings the operator changed (key => value; `nil` clears that setting), so a
   setting changed elsewhere since the page loaded is never overwritten. Returns
   the aggregate's distinct error tuple untouched so the form can show it against
-  its field. The command id also hashes the changed settings: two different saves
-  in one intent window are different actions.
+  its field. The command id also hashes the payload: two different saves in one
+  intent window are different actions.
   """
   @spec update_settings(String.t(), map(), intent()) :: :ok | {:error, term()}
-  def update_settings(project_id, settings, intent) do
-    envelope = %{
-      type: "project.update",
-      command_id:
-        command_id("project.update", project_id, "#{intent}-#{:erlang.phash2(settings)}"),
-      aggregate_id: "project:" <> project_id,
-      payload: Map.put(settings, :project_id, project_id)
-    }
+  def update_settings(project_id, settings, intent),
+    do:
+      dispatch_project(
+        "project.update",
+        project_id,
+        Map.put(settings, :project_id, project_id),
+        intent
+      )
 
-    case safe_dispatch(envelope) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-      {:error, reason, detail} -> {:error, {reason, detail}}
-    end
+  @doc """
+  Installs (`script` a string) or clears (`nil` or blank) the project's setup
+  script through `project.environment.set`, the operator-only command behind
+  `PUT /api/projects/:id/environment` and `foreman project setup-script`: the
+  script is arbitrary code that runs on the server host, so `project.update`
+  refuses it. The payload names only `setup_script`; the variables and the
+  network policy keep their stored values. Returns the aggregate's error tuple
+  untouched (`{:setup_script_too_long, bytes}`, `{:setup_script_invalid, _}`).
+  """
+  @spec update_setup_script(String.t(), String.t() | nil, intent()) :: :ok | {:error, term()}
+  def update_setup_script(project_id, script, intent),
+    do:
+      dispatch_project(
+        "project.environment.set",
+        project_id,
+        %{project_id: project_id, setup_script: script},
+        intent
+      )
+
+  @typedoc "A repository to attach: id, absolute path on the server host, optional default branch."
+  @type repository :: %{id: String.t(), path: String.t(), default_branch: String.t() | nil}
+
+  @doc """
+  Attaches an extra repository through `project.repo.add`, the operator command
+  behind `foreman project repo add`: `CommandGateway` canonicalises the path and
+  checks it is a git work tree before the aggregate checks the id and uniqueness.
+  Returns the typed error tuple untouched so the form can show it at its field.
+  """
+  @spec add_repository(String.t(), repository(), intent()) :: :ok | {:error, term()}
+  def add_repository(project_id, %{id: id, path: path, default_branch: branch}, intent) do
+    payload =
+      %{project_id: project_id, repo_id: id, path: path, added_by: @actor}
+      |> put_default_branch(branch)
+
+    dispatch_project("project.repo.add", project_id, payload, intent)
+  end
+
+  @doc "Detaches an extra repository (`project.repo.remove`; the primary one is refused)."
+  @spec remove_repository(String.t(), String.t(), intent()) :: :ok | {:error, term()}
+  def remove_repository(project_id, repo_id, intent) do
+    dispatch_project(
+      "project.repo.remove",
+      project_id,
+      %{project_id: project_id, repo_id: repo_id, removed_by: @actor},
+      intent
+    )
   end
 
   # -- helpers ---------------------------------------------------------------
@@ -371,6 +474,47 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
   defp command_id(type, key, intent), do: "dashboard:#{type}:#{key}:#{intent}"
 
+  # `:ok | {:error, term()}` for the forms that show the aggregate's typed error at
+  # their own field. The command id hashes the payload too, so two different
+  # submissions inside one intent window (two repositories added back to back) are
+  # different actions while a double click of one is the same.
+  defp dispatch_project(type, project_id, payload, intent) do
+    envelope = %{
+      type: type,
+      command_id: command_id(type, project_id, "#{intent}-#{:erlang.phash2(payload)}"),
+      aggregate_id: "project:" <> project_id,
+      payload: payload
+    }
+
+    case safe_dispatch(envelope) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+      {:error, reason, detail} -> {:error, {reason, detail}}
+    end
+  end
+
+  defp put_default_branch(payload, nil), do: payload
+  defp put_default_branch(payload, branch), do: Map.put(payload, :default_branch, branch)
+
+  defp blank_to_nil(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp files_label(1), do: "1 file"
+  defp files_label(count), do: "#{count} files"
+
+  # Only a failure of the disk or of the audit command is worth a log line: the
+  # rest (a taken name, a path or size rule) is the operator's input, not a fault.
+  defp library_failed(verb, %LibraryError{code: code, message: message} = error) do
+    if code in [:write_failed, :dispatch_failed],
+      do: Logger.warning("workspace library #{verb} failed: #{inspect(error, limit: 8)}")
+
+    {:error, "Could not #{verb}: #{message}"}
+  end
+
   @doc "Plain-text rendering of an error term (never raises)."
   @spec describe(term()) :: String.t()
   def describe({:message_too_large, bytes, max}),
@@ -395,5 +539,41 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe({:fix_exhausted, kind}), do: "#{kind} fixes are exhausted for this head"
   def describe({:pr_url_required, _run}), do: "name the pull request (the run watches several)"
   def describe({:pr_not_watched, _}), do: "no pull request is being watched"
+  def describe({:project_archived, id}), do: "project #{id} is archived"
+  def describe({:not_found, :project, id}), do: "project #{id} is not registered"
+  def describe(:dispatch_timeout), do: "the server did not answer in time"
+
+  def describe({:setup_script_too_long, bytes}),
+    do: "the script is #{bytes} bytes; at most #{Environment.max_script_bytes()} are accepted"
+
+  def describe({:setup_script_invalid, :nul_byte}), do: "the script contains a NUL byte"
+  def describe({:setup_script_invalid, _}), do: "the script must be text"
+
+  # A script-only save still re-checks the stored variables (a legacy flat `env` is
+  # ported into the record), so a bad stored variable can refuse it.
+  def describe({:secret_in_vars, name}),
+    do:
+      "the stored variable #{name} looks like a secret; move it to a project secret " <>
+        "(foreman project secret set) and remove it from the environment"
+
+  def describe({:reserved_env_name, name}),
+    do: "the stored variable #{name} uses the reserved FOREMAN_ prefix"
+
+  def describe({:invalid_repo_id, _}),
+    do: "the id must be 1-32 lowercase letters, digits or dashes and not start with a dash"
+
+  def describe({:repo_id_taken, id}), do: "the id #{id} is already used in this project"
+  def describe({:repo_path_not_absolute, _}), do: "the path must be absolute"
+  def describe({:repo_path_not_found, path}), do: "#{path} does not exist on the server host"
+  def describe({:repo_not_git_work_tree, path}), do: "#{path} is not the root of a git work tree"
+  def describe({:repo_path_duplicate, path}), do: "#{path} is already attached to this project"
+  def describe({:repo_remote_duplicate, id}), do: "that remote is already attached as #{id}"
+  def describe({:invalid_default_branch, _}), do: "the default branch must be a branch name"
+  def describe(:primary_repo_not_removable), do: "the primary repository cannot be removed"
+  def describe({:repo_not_found, id}), do: "repository #{id} is not attached to this project"
+
+  def describe(:project_has_active_runs),
+    do: "the project has active runs; try again when they have finished"
+
   def describe(reason), do: inspect(reason, limit: 8, printable_limit: 200)
 end

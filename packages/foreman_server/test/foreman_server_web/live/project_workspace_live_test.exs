@@ -519,6 +519,106 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       assert render_click(view, "start_proposed", %{"task-id" => "ghost"}) =~ "Task not found."
     end
+
+    # Real task aggregates (`task.create` the way the coordinator makes them, not
+    # tracked by a task provider): Decline dispatches `task.update`, which the
+    # aggregate only accepts for a task that exists.
+    defp seed_proposals(id, other) do
+      uniq = System.unique_integer([:positive])
+      prop = "t-prop-#{uniq}"
+      foreign = "t-foreign-#{uniq}"
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 command_id: "prop-#{id}",
+                 aggregate_id: "coordinator:" <> id,
+                 type: "coordinator.message",
+                 payload: %{project_id: id, message_id: "m-seed", text: "hi", source: "http"}
+               })
+
+      for {task_id, project, title} <- [
+            {prop, id, "Proposed work"},
+            {foreign, other, "Foreign"}
+          ] do
+        assert {:ok, _} =
+                 CommandGateway.dispatch_system(%{
+                   command_id: "prop-task-#{task_id}-#{id}",
+                   aggregate_id: "task:" <> task_id,
+                   type: "task.create",
+                   payload: %{
+                     task_id: task_id,
+                     project_id: project,
+                     title: title,
+                     status: "open",
+                     source: "coordinator",
+                     provider_tracked: false
+                   }
+                 })
+
+        ForemanServer.TestSupport.Eventually.await(fn ->
+          ProjectionStore.task_projection(task_id)
+        end)
+      end
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "CoordinatorActionRecorded",
+            payload: %{
+              project_id: id,
+              action_id: "a1",
+              turn_id: "turn1",
+              kind: "propose_threads",
+              status: "proposed",
+              result_ref: %{"task_ids" => [prop, foreign]}
+            }
+          }
+        ])
+
+      %{prop: prop, foreign: foreign}
+    end
+
+    test "Decline closes a proposed task: the card loses its buttons and Start is refused", %{
+      id: id,
+      other: other
+    } do
+      %{prop: prop, foreign: foreign} = seed_proposals(id, other)
+      {view, _} = mount_view(id)
+
+      assert has_element?(view, "#proposal-#{prop} button", "Decline")
+      refute has_element?(view, "#proposal-#{foreign} button")
+
+      html = view |> element("#proposal-#{prop} button", "Decline") |> render_click()
+      assert html =~ "Done: task.update #{prop}."
+
+      await_until(view, fn _ -> not has_element?(view, "#proposal-#{prop} button") end)
+      assert %{status: "closed"} = ProjectionStore.task_projection(prop)
+      assert has_element?(view, "#proposal-#{prop}", "(closed)")
+
+      # a declined proposal can be neither started nor declined again
+      assert render_click(view, "start_proposed", %{"task-id" => prop}) =~
+               "That task is no longer open (closed)."
+
+      assert render_click(view, "decline_proposed", %{"task-id" => prop}) =~
+               "That task is no longer open (closed)."
+    end
+
+    test "a forged Decline is refused and closes nothing", %{id: id, other: other} do
+      %{prop: prop, foreign: foreign} = seed_proposals(id, other)
+      {view, _} = mount_view(id)
+
+      # another project's task named in the proposal, a task nobody proposed, an unknown one
+      assert render_click(view, "decline_proposed", %{"task-id" => foreign}) =~
+               "That task belongs to another project."
+
+      assert render_click(view, "decline_proposed", %{"task-id" => "t-ready"}) =~
+               "The coordinator did not propose that task."
+
+      assert render_click(view, "decline_proposed", %{"task-id" => "ghost"}) =~ "Task not found."
+
+      for task_id <- [prop, foreign, "t-ready"],
+          do: assert(%{status: "open"} = ProjectionStore.task_projection(task_id))
+    end
   end
 
   describe "bounded updates" do
@@ -553,6 +653,26 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       ref = Process.get(:refresh_ref)
       render(view)
       refute_receive {[:foreman_server, :workspace, :refresh], ^ref, _, _}, 100
+    end
+
+    # E16-S6-T4: the page stays usable with a big project. Wall-clock, so the bound is
+    # generous (an order of magnitude over the observed cost).
+    test "a project with 200 threads mounts and renders within the budget", %{id: id} do
+      events =
+        Enum.flat_map(1..200, fn n ->
+          [
+            task("t-budget-#{n}", id, "Budget thread #{n}"),
+            run(ForemanServer.TestSupport.UniqueIds.unique_run_id("budget"), "t-budget-#{n}", id)
+          ]
+        end)
+
+      :ok = ProjectionStore.apply_events(events)
+
+      {micros, {:ok, view, html}} = :timer.tc(fn -> live(build_conn(), path(id)) end)
+
+      assert html =~ "Budget thread 200"
+      assert render(view) =~ "Budget thread 1"
+      assert div(micros, 1_000) < 1_500
     end
   end
 

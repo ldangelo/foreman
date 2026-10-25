@@ -56,6 +56,10 @@ defmodule ForemanServer.Aggregates.Project.Environment do
   @spec network_modes() :: [String.t()]
   def network_modes, do: @modes
 
+  @doc "Largest accepted setup script, in bytes."
+  @spec max_script_bytes() :: pos_integer()
+  def max_script_bytes, do: @max_script_bytes
+
   @doc "True when an env var name looks like it holds a secret."
   @spec secret_name?(term()) :: boolean()
   def secret_name?(name) when is_binary(name), do: name =~ @secret_key_pattern

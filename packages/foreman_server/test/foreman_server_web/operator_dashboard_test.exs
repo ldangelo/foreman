@@ -60,6 +60,20 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
     assert html_response(jido, 200) =~ "Jido Live Dashboard"
   end
 
+  # foreman-70eq6: the page used to render with no root layout, so axe found no
+  # <title> and no <html lang>, and no client script loaded: every phx-click and
+  # phx-submit on it was dead in a browser.
+  test "the run dashboard has the shared root layout: title, lang, LiveSocket bootstrap, skip target" do
+    html = build_conn() |> get("/dashboard/runs?token=#{@token}") |> html_response(200)
+
+    assert html =~ ~s(<html lang="en")
+    assert html =~ "<title>Operator Run Dashboard</title>"
+    assert html =~ ~s(<script src="/assets/vendor/phoenix_live_view.min.js")
+    assert html =~ ~s(new window.LiveView.LiveSocket("/live")
+    assert html =~ ~s(<a class="ws-skip" href="#main">)
+    assert html =~ ~s(<main id="main")
+  end
+
   test "list and detail DTOs use projections, durable logs, phase status, absent markers, and truncation metadata" do
     seed_run("run-dashboard", status: "in_progress")
 

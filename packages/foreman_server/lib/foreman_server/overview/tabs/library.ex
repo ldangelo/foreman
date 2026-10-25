@@ -1,8 +1,9 @@
 defmodule ForemanServer.Overview.Tabs.Library do
   @moduledoc """
   Library tab: one row per entry of the project's library (`ForemanServer.Library`),
-  sorted by name. Rows are string-keyed and read-only; adding, replacing and
-  removing stay on the library API/CLI.
+  sorted by name. Rows are string-keyed and read-only; the workspace adds and
+  removes entries through `Library.add/4` and `Library.remove/3`
+  (`ForemanServerWeb.Workspace.Actions`), while replacing stays on the library API/CLI.
 
   An unknown project has no library, so its tab is an empty list; any other
   failure (unreadable disk) raises and `Overview.Tabs` reports the tab as

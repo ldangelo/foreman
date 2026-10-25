@@ -1,12 +1,14 @@
 defmodule ForemanServerWeb.Workspace.Layouts do
   @moduledoc """
-  Root layout of the project workspace LiveViews.
+  Root layout of the project workspace LiveViews and of the operator run
+  dashboard (`/dashboard/runs`).
 
   The rest of the browser surface renders without a root layout (and ships no
-  client JavaScript), so the workspace carries its own: the CSRF meta tag, the
+  client JavaScript), so these pages carry their own: the CSRF meta tag, the
   two vendored client libraries served from `/assets/vendor/` (see the endpoint)
   and the LiveSocket bootstrap. A page title and a visible-focus stylesheet live
-  here too, so every workspace page has the same landmarks and focus ring.
+  here too, so every page has the same landmarks and focus ring. The skip link
+  targets `#main`: each page marks its `<main>` with that id.
   """
 
   use Phoenix.Component

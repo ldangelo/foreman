@@ -97,7 +97,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main id="operator-run-dashboard" class="operator-run-dashboard">
+    <main id="main" class="operator-run-dashboard">
       <header>
         <h1>{@page_title}</h1>
         <p>Run management dashboard. Existing Jido dashboard remains at <a href="/dashboard">/dashboard</a>.</p>

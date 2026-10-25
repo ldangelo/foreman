@@ -145,7 +145,16 @@ defmodule ForemanServerWeb.Router do
   scope "/dashboard", ForemanServerWeb do
     pipe_through([:browser, :require_authenticated])
     live("/", LiveDashboard)
-    live("/runs", OperatorRunDashboardLive, :index)
+
+    # The run dashboard takes the same root layout as the workspace (`<title>`,
+    # `<html lang>`, the LiveSocket bootstrap). Without one the page was inert in a
+    # browser: no client script, so none of its buttons or forms ever worked
+    # (foreman-70eq6). A live_session of its own: nothing live-navigates between
+    # it and the workspace.
+    live_session :operator_runs,
+      root_layout: {ForemanServerWeb.Workspace.Layouts, :root} do
+      live("/runs", OperatorRunDashboardLive, :index)
+    end
 
     # E16: the project workspace. One live_session so navigating between the
     # workspace and its settings stays on the already-authenticated socket.

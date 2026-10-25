@@ -2,15 +2,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   @moduledoc """
   The project workspace: `GET /dashboard/projects/:id` (authenticated).
 
-  Left, the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`);
-  right, the Overview (E7: threads grouped by state with the E6 thread cards and
-  their existing actions) and the Library / Pull requests / Scheduled tabs.
+  Left, the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`) with
+  its proposed threads (Start / Decline); right, the Overview (E7: threads grouped
+  by state with the E6 thread cards and their existing actions) and the Library
+  (upload and remove, `ForemanServer.Library`) / Pull requests / Scheduled tabs.
 
   Reads and writes go through the same Elixir functions the HTTP API uses (see
   `ForemanServerWeb.Workspace.Actions`); there is no HTTP-to-self call and no
   new mutation path. Updates arrive through one `ProjectionStore` subscription
   with a coalescing window (`ForemanServerWeb.Workspace.Refresh`): no periodic
   polling. A tab or conversation that is not shown costs nothing on refresh.
+
+  Library files travel over the LiveView socket (`allow_upload/3`) with the
+  library's own limits (`Library.Ingest.limits/0`: files per add, bytes per file);
+  `Library.add/4` stays authoritative for names, paths and sizes.
   """
 
   use ForemanServerWeb, :live_view
@@ -18,6 +23,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   require Logger
 
   alias ForemanServer.{CoordinatorAPI, Overview, ProjectionStore, ProjectStore}
+  alias ForemanServer.Library.Ingest
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
   alias ForemanServerWeb.Workspace.{Actions, Components, ProjectNotFound, ProjectView, Refresh}
 
@@ -55,8 +61,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             truncated_before_seq: nil,
             status: nil,
             proposals: [],
-            schedules: []
+            schedules: [],
+            confirm_remove: nil,
+            library_name: ""
           )
+          |> allow_library_upload()
           |> load_conversation_tail()
           |> load_state()
 
@@ -188,6 +197,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
      )}
   end
 
+  def handle_event("decline_proposed", %{"task-id" => task_id}, socket) do
+    {:noreply,
+     notify(
+       socket,
+       Actions.decline_proposed(socket.assigns.project_id, task_id, Refresh.intent(socket))
+     )}
+  end
+
   def handle_event("schedule", %{"op" => op, "id" => id}, socket)
       when is_map_key(@schedule_ops, op) do
     {:noreply,
@@ -202,9 +219,85 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
      )}
   end
 
+  def handle_event("library_validate", %{"name" => name}, socket) when is_binary(name),
+    do: {:noreply, assign(socket, :library_name, name)}
+
+  # A stale click (the entry was already added or cancelled) is a no-op, not a crash.
+  def handle_event("library_cancel_upload", %{"ref" => ref}, socket) do
+    if Enum.any?(socket.assigns.uploads.library.entries, &(&1.ref == ref)),
+      do: {:noreply, cancel_upload(socket, :library, ref)},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("library_add", %{"name" => name}, socket) when is_binary(name),
+    do: {:noreply, socket |> assign(:library_name, name) |> add_library_files(name)}
+
+  def handle_event("library_confirm_remove", %{"entry-id" => id}, socket),
+    do: {:noreply, assign(socket, :confirm_remove, id)}
+
+  def handle_event("library_cancel_remove", _params, socket),
+    do: {:noreply, assign(socket, :confirm_remove, nil)}
+
+  def handle_event("library_remove", %{"entry-id" => id}, socket) do
+    result = Actions.library_remove(socket.assigns.project_id, id)
+    {:noreply, socket |> assign(:confirm_remove, nil) |> notify(result) |> load_state()}
+  end
+
   # -- state -----------------------------------------------------------------
 
   defp notify(socket, {kind, message}), do: assign(socket, notice: message, notice_kind: kind)
+
+  # The same count and per-file limits the library enforces for HTTP and the CLI
+  # (`Library.Ingest.limits/0`); `Library.add/4` checks them again server-side.
+  defp allow_library_upload(socket) do
+    limits = Ingest.limits()
+
+    socket
+    |> assign(
+      :library_limits,
+      %{max_entries: limits.max_files_per_add, max_file_bytes: limits.max_file_bytes}
+    )
+    |> allow_upload(:library,
+      accept: :any,
+      max_entries: limits.max_files_per_add,
+      max_file_size: limits.max_file_bytes
+    )
+  end
+
+  # Uploaded files are consumed in two steps. `{:postpone, _}` hands out the temp
+  # paths without freeing them while `Actions.library_add/3` copies the files into the
+  # library; only a successful add consumes them for good (which frees the temp files
+  # and clears the form). A refused add (a taken name, say) therefore keeps the
+  # selection, uploaded already, for another try.
+  defp add_library_files(socket, name) do
+    upload = socket.assigns.uploads.library
+
+    cond do
+      upload.entries == [] ->
+        notify(socket, {:error, "Choose at least one file to add."})
+
+      upload.errors != [] or not Enum.all?(upload.entries, &(&1.valid? and &1.done?)) ->
+        notify(
+          socket,
+          {:error, "Wait for the uploads to finish and cancel the files marked with an error."}
+        )
+
+      true ->
+        files =
+          consume_uploaded_entries(socket, :library, fn %{path: path}, entry ->
+            {:postpone, %{relative_path: entry.client_name, source_path: path}}
+          end)
+
+        case Actions.library_add(socket.assigns.project_id, files, name) do
+          {:ok, _message} = added ->
+            consume_uploaded_entries(socket, :library, fn _meta, _entry -> {:ok, :added} end)
+            socket |> assign(:library_name, "") |> notify(added) |> load_state()
+
+          {:error, _message} = refused ->
+            notify(socket, refused)
+        end
+    end
+  end
 
   # Overview, project row, coordinator health and proposals on every refresh;
   # the schedules only while their tab is shown.
@@ -359,7 +452,15 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           <div id="overview-live" aria-live="polite" aria-relevant="additions text">
             <Components.overview_pane overview={@overview} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
           </div>
-          <Components.tabs_pane tab={@tab} tabs={@overview.tabs} schedules={@schedules} />
+          <Components.tabs_pane
+            tab={@tab}
+            tabs={@overview.tabs}
+            schedules={@schedules}
+            upload={@uploads.library}
+            library_name={@library_name}
+            confirm_remove={@confirm_remove}
+            library_limits={@library_limits}
+          />
         </div>
       </div>
     </main>

@@ -10,6 +10,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   use Phoenix.Component
 
   alias ForemanServer.Overview.{Group, ThreadCard}
+  alias Phoenix.LiveView.UploadConfig
 
   @group_titles %{
     ready_for_review: "Ready for review",
@@ -251,9 +252,10 @@ defmodule ForemanServerWeb.Workspace.Components do
       </div>
       <div :if={@proposals != []} id="proposals" aria-label="Proposed threads">
         <h3>Proposed threads</h3>
-        <article :for={p <- @proposals} class="ws-card" id={"proposal-#{p.task_id}"}>
+        <article :for={p <- @proposals} class="ws-card" id={"proposal-#{p.task_id}"} aria-label={"Proposal: " <> p.title}>
           <span>{p.title}</span>
           <button :if={p.startable?} type="button" phx-click="start_proposed" phx-value-task-id={p.task_id}>Start</button>
+          <button :if={p.startable?} type="button" phx-click="decline_proposed" phx-value-task-id={p.task_id}>Decline</button>
           <span :if={not p.startable?} class="ws-muted">({p.status})</span>
         </article>
       </div>
@@ -272,6 +274,10 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:tab, :atom, required: true)
   attr(:tabs, :map, required: true)
   attr(:schedules, :list, required: true)
+  attr(:upload, UploadConfig, required: true)
+  attr(:library_name, :string, default: "")
+  attr(:confirm_remove, :string, default: nil)
+  attr(:library_limits, :map, required: true)
 
   @doc "Library / Pull requests / Scheduled tabs."
   def tabs_pane(assigns) do
@@ -283,7 +289,15 @@ defmodule ForemanServerWeb.Workspace.Components do
           aria-selected={to_string(@tab == name)} phx-click="tab" phx-value-tab={name}>{label}</button>
       </div>
       <div role="tabpanel" id={"panel-#{@tab}"} aria-labelledby={"tab-#{@tab}"} tabindex="0">
-        <.tab_body tab={@tab} tabs={@tabs} schedules={@schedules} />
+        <.tab_body
+          tab={@tab}
+          tabs={@tabs}
+          schedules={@schedules}
+          upload={@upload}
+          library_name={@library_name}
+          confirm_remove={@confirm_remove}
+          library_limits={@library_limits}
+        />
       </div>
     </section>
     """
@@ -310,6 +324,29 @@ defmodule ForemanServerWeb.Workspace.Components do
     """
   end
 
+  defp tab_body(%{tab: :library, tabs: tabs} = assigns) do
+    assigns = assign(assigns, :data, Map.get(tabs, :library, %{available: false, rows: []}))
+
+    ~H"""
+    <p :if={not @data.available} class="ws-muted">Not available yet.</p>
+    <p :if={@data[:error]} class="ws-error">This tab failed to load.</p>
+    <p :if={@data.available and @data.rows == []} class="ws-muted">Nothing to show.</p>
+    <ul :if={@data.available and @data.rows != []} id="library-list">
+      <li :for={row <- @data.rows} id={"library-entry-#{row["entry_id"]}"}>
+        <strong>{row["name"]}</strong>
+        <span class="ws-muted"> · {row["kind"]} · {files_label(row["file_count"])} · {format_bytes(row["bytes"])}</span>
+        <%= if @confirm_remove == row["entry_id"] do %>
+          <button type="button" phx-click="library_remove" phx-value-entry-id={row["entry_id"]}>Confirm remove {row["name"]}</button>
+          <button type="button" phx-click="library_cancel_remove">Cancel</button>
+        <% else %>
+          <button type="button" phx-click="library_confirm_remove" phx-value-entry-id={row["entry_id"]}>Remove {row["name"]}</button>
+        <% end %>
+      </li>
+    </ul>
+    <.library_upload upload={@upload} library_name={@library_name} library_limits={@library_limits} />
+    """
+  end
+
   defp tab_body(%{tab: tab, tabs: tabs} = assigns) do
     assigns = assign(assigns, :data, Map.get(tabs, tab, %{available: false, rows: []}))
 
@@ -324,9 +361,71 @@ defmodule ForemanServerWeb.Workspace.Components do
         <a :if={safe_url(row["pr_url"])} href={safe_url(row["pr_url"])} rel="noopener noreferrer" target="_blank">open</a>
       </li>
     </ul>
-    <ul :if={@data.available and @tab == :library}>
-      <li :for={row <- @data.rows}>{row["name"] || row["path"] || inspect(row)}</li>
-    </ul>
     """
+  end
+
+  attr(:upload, UploadConfig, required: true)
+  attr(:library_name, :string, required: true)
+  attr(:library_limits, :map, required: true)
+
+  # Files are uploaded over the LiveView socket (`allow_upload/3`, same count and
+  # size limits as `POST /api/projects/:id/library`) and added in ONE entry.
+  defp library_upload(assigns) do
+    ~H"""
+    <form id="library-form" phx-submit="library_add" phx-change="library_validate">
+      <fieldset>
+        <legend>Add files</legend>
+        <p id="library-limits" class="ws-muted">
+          Up to {@library_limits.max_entries} files per add, {format_bytes(@library_limits.max_file_bytes)} each.
+          Agents read them, read-only, from $FOREMAN_LIBRARY_PATH.
+        </p>
+        <div>
+          <label for="library_name">Name (optional)</label>
+          <input id="library_name" type="text" name="name" value={@library_name} maxlength="128" autocomplete="off" aria-describedby="library-name-help" />
+          <p id="library-name-help" class="ws-muted">Letters, digits, spaces, dashes and underscores. Left blank, the entry is named after the file.</p>
+        </div>
+        <div>
+          <label for={@upload.ref}>Files</label>
+          <.live_file_input upload={@upload} aria-describedby="library-limits" />
+        </div>
+        <ul :if={@upload.entries != []} id="library-selected" aria-label="Selected files">
+          <li :for={entry <- @upload.entries} id={"library-selected-#{entry.ref}"}>
+            <span>{entry.client_name}</span>
+            <span class="ws-muted">({format_bytes(entry.client_size)})</span>
+            <progress :if={entry.progress > 0} value={entry.progress} max="100" aria-label={"Upload progress of " <> entry.client_name}>{entry.progress}%</progress>
+            <button type="button" phx-click="library_cancel_upload" phx-value-ref={entry.ref} aria-label={"Cancel upload of " <> entry.client_name}>Cancel upload</button>
+            <span :for={error <- upload_errors(@upload, entry)} class="ws-error" role="alert">{upload_error_text(error)}</span>
+          </li>
+        </ul>
+        <p :for={error <- upload_errors(@upload)} class="ws-error" role="alert">{upload_error_text(error)}</p>
+        <button type="submit">Add to library</button>
+      </fieldset>
+    </form>
+    """
+  end
+
+  defp upload_error_text(:too_large), do: "This file is over the per-file limit."
+  defp upload_error_text(:too_many_files), do: "Too many files: cancel some of them."
+  defp upload_error_text(:not_accepted), do: "This kind of file is not accepted."
+  defp upload_error_text(_other), do: "This file could not be uploaded."
+
+  defp files_label(1), do: "1 file"
+  defp files_label(count), do: "#{count} files"
+
+  @doc "Binary-unit size for display: `480 MiB`, `1.5 KiB`, `12 B`."
+  @spec format_bytes(non_neg_integer()) :: String.t()
+  def format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
+    cond do
+      bytes < 1024 -> "#{bytes} B"
+      bytes < 1024 * 1024 -> "#{unit(bytes / 1024)} KiB"
+      bytes < 1024 * 1024 * 1024 -> "#{unit(bytes / (1024 * 1024))} MiB"
+      true -> "#{unit(bytes / (1024 * 1024 * 1024))} GiB"
+    end
+  end
+
+  defp unit(value) do
+    if value == Float.round(value, 0),
+      do: value |> trunc() |> Integer.to_string(),
+      else: :erlang.float_to_binary(value, decimals: 1)
   end
 end
