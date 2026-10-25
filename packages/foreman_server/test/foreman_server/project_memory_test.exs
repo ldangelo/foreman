@@ -50,6 +50,11 @@ defmodule ForemanServer.ProjectMemoryTest do
                ProjectionStore.project_memory(p)
 
       assert sha == topic.sha256
+
+      assert %{version: 1, author_kind: "agent", author_ref: "run-1", updated_at: updated_at} =
+               topic
+
+      assert is_binary(updated_at)
       assert length(stream_events(p)) == 1
     end
 

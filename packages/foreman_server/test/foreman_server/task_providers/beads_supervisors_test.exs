@@ -88,7 +88,7 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
       File.rm_rf!(tmp_root)
     end)
 
-    :ok
+    {:ok, tmp_root: tmp_root}
   end
 
   # --- Child-spec builder: scenarios 1-4 -------------------------------
@@ -134,11 +134,16 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
       :ok
     end
 
-    test "spawns one child per registered project and tears it down on unregister" do
+    test "spawns one child per registered project and tears it down on unregister", %{
+      tmp_root: tmp_root
+    } do
       assert [] = BeadsWatcherSupervisor.which_children()
 
       {:ok, started_pid} =
-        BeadsWatcherSupervisor.start_child("project-watcher-1", "/tmp/project-watcher-1.db")
+        BeadsWatcherSupervisor.start_child(
+          "project-watcher-1",
+          Path.join(tmp_root, "project-watcher-1.db")
+        )
 
       assert [{"project-watcher-1", ^started_pid}] = BeadsWatcherSupervisor.which_children()
       assert is_pid(started_pid)
@@ -161,19 +166,19 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
       :ok
     end
 
-    test "spawns children per project; tearing one down leaves the other" do
+    test "spawns children per project; tearing one down leaves the other", %{tmp_root: tmp_root} do
       assert [] = BeadsOrphanJanitorSupervisor.which_children()
 
       {:ok, _pid1} =
         BeadsOrphanJanitorSupervisor.start_child(
           "project-janitor-1",
-          "/tmp/project-janitor-1.db"
+          Path.join(tmp_root, "project-janitor-1.db")
         )
 
       {:ok, _pid2} =
         BeadsOrphanJanitorSupervisor.start_child(
           "project-janitor-2",
-          "/tmp/project-janitor-2.db"
+          Path.join(tmp_root, "project-janitor-2.db")
         )
 
       janitor_children = BeadsOrphanJanitorSupervisor.which_children()
@@ -198,7 +203,9 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
   describe "Projector gating (flag-driven spawn/stop)" do
     alias ForemanServer.TaskProvider.ProjectProviderProjector
 
-    test "spawn is a no-op when supervisor flags are false (no :noproc raises)" do
+    test "spawn is a no-op when supervisor flags are false (no :noproc raises)", %{
+      tmp_root: tmp_root
+    } do
       Application.put_env(:foreman_server, :start_beads_watcher?, false)
       Application.put_env(:foreman_server, :start_beads_orphan_janitor?, false)
 
@@ -207,14 +214,14 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
 
       task_provider = %{
         provider: :configured_provider,
-        config: %{"database_path" => "/tmp/project-gated.db"}
+        config: %{"database_path" => Path.join(tmp_root, "project-gated.db")}
       }
 
       payload = %{
         event_type: "ProjectRegistered",
         payload: %{
           project_id: "project-gated",
-          path: "/tmp/project-gated",
+          path: Path.join(tmp_root, "project-gated"),
           task_provider: task_provider
         }
       }
@@ -222,7 +229,7 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
       assert :ok = ProjectProviderProjector.process_event(payload)
     end
 
-    test "stop is a no-op when supervisor flags are false" do
+    test "stop is a no-op when supervisor flags are false", %{tmp_root: tmp_root} do
       Application.put_env(:foreman_server, :start_beads_watcher?, false)
       Application.put_env(:foreman_server, :start_beads_orphan_janitor?, false)
 
@@ -230,10 +237,10 @@ defmodule ForemanServer.TaskProviders.BeadsSupervisorsTest do
         event_type: "ProjectRegistered",
         payload: %{
           project_id: "project-stop-only",
-          path: "/tmp/project-stop-only",
+          path: Path.join(tmp_root, "project-stop-only"),
           task_provider: %{
             provider: :switched_provider,
-            config: %{"database_path" => "/tmp/project-stop-only.db"}
+            config: %{"database_path" => Path.join(tmp_root, "project-stop-only.db")}
           }
         }
       }

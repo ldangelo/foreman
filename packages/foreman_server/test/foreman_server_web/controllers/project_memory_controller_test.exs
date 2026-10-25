@@ -48,8 +48,15 @@ defmodule ForemanServerWeb.ProjectMemoryControllerTest do
         "content" => "Use mix format. TOKEN=abc123secret"
       })
 
-    assert %{"entry" => %{"name" => "conventions", "sha256" => sha, "author_kind" => nil}} =
-             json_response(conn, 200)
+    assert %{
+             "entry" => %{
+               "name" => "conventions",
+               "sha256" => sha,
+               "author_kind" => "operator",
+               "author_ref" => "api",
+               "version" => 1
+             }
+           } = json_response(conn, 200)
 
     assert byte_size(sha) == 64
 

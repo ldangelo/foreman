@@ -13,6 +13,12 @@ defmodule ForemanServer.Overview.TabsTest do
     def rows(_project_id), do: raise("provider exploded")
   end
 
+  defmodule RaisingTab do
+    @behaviour ForemanServer.Overview.TabProvider
+    def tab, do: raise("tab exploded")
+    def rows(_project_id), do: []
+  end
+
   defmodule WorkingScheduled do
     @behaviour ForemanServer.Overview.TabProvider
     def tab, do: :scheduled
@@ -107,6 +113,17 @@ defmodule ForemanServer.Overview.TabsTest do
 
     assert log =~ "provider exploded"
     assert %{available: false, rows: [], error: "provider_failed"} = tabs.library
+    assert %{available: true, rows: [_]} = tabs.pull_requests
+  end
+
+  test "a provider whose tab/0 raises is isolated: the other tabs still build" do
+    Application.put_env(:foreman_server, :overview, tab_providers: [RaisingTab, WorkingScheduled])
+
+    log = capture_log(fn -> send(self(), {:tabs, Tabs.build("p")}) end)
+    assert_received {:tabs, tabs}
+
+    assert log =~ "tab/0 failed: tab exploded"
+    assert %{available: true, rows: [%{"name" => "nightly"}]} = tabs.scheduled
     assert %{available: true, rows: [_]} = tabs.pull_requests
   end
 

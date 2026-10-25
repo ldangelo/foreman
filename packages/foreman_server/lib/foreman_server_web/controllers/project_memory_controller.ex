@@ -21,9 +21,7 @@ defmodule ForemanServerWeb.ProjectMemoryController do
   use ForemanServerWeb, :controller
 
   alias ForemanServer.ProjectMemory
-  alias ForemanServer.ProjectMemory.{Error, SyncReport, Topic}
-
-  @max_description 200
+  alias ForemanServer.ProjectMemory.{Error, Store, SyncReport, Topic}
 
   def index(conn, %{"id" => project_id}) do
     with {:ok, topics} <- ProjectMemory.list(project_id),
@@ -86,13 +84,15 @@ defmodule ForemanServerWeb.ProjectMemoryController do
       not (is_nil(description) or is_binary(description)) ->
         {:error, :invalid_body, "description must be a string"}
 
-      is_binary(description) and String.length(description) > @max_description ->
-        {:error, :invalid_body, "description must be at most #{@max_description} characters"}
+      is_binary(description) and String.length(description) > max_description() ->
+        {:error, :invalid_body, "description must be at most #{max_description()} characters"}
 
       true ->
         {:ok, %{name: name, description: description, content: content}}
     end
   end
+
+  defp max_description, do: Store.config(:max_description_chars)
 
   defp author(conn) do
     ref =
@@ -129,18 +129,12 @@ defmodule ForemanServerWeb.ProjectMemoryController do
     |> json(%{error: Atom.to_string(code), message: message})
   end
 
-  defp status_for(code)
-       when code in [
-              :name_invalid,
-              :description_invalid,
-              :content_too_large,
-              :index_full,
-              :too_many_topics,
-              :content_not_durable
-            ],
-       do: :unprocessable_entity
-
-  defp status_for(code) when code in [:not_found, :project_not_found], do: :not_found
-  defp status_for(code) when code in [:project_archived, :project_path_unknown], do: :conflict
-  defp status_for(_code), do: :internal_server_error
+  defp status_for(code) do
+    case Error.category(code) do
+      :invalid_input -> :unprocessable_entity
+      :not_found -> :not_found
+      :conflict -> :conflict
+      :internal -> :internal_server_error
+    end
+  end
 end

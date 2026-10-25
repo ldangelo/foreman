@@ -76,14 +76,14 @@ Bold = created by this audit (labelled `claude-projects-parity`, none carries `f
 | ~~Invalid workflow manifest dropped silently~~ Fixed: typed load error shown in doctor, the coordinator prompt and the MCP/API list (#646) | C5 | foreman-gl3nu | closed |
 | ~~Agent tool children outlive cancel, `thread stop` and graceful shutdown~~ Fixed: cancel and thread stop (both doors) wait for the agent to exit then sweep the run worktree with `OrphanReaper`; graceful shutdown reaps every live harness agent tree. Live-verified with `failure_injection.sh cancel-strays shutdown-strays` (4 FAILs before, PASS after) | C7 | foreman-zmhzw | fixed in the working tree; bead open until merged |
 | ~~`undetermined` review verdict once under load~~ Reproduced, not root-caused: a provider 429 under a burst of concurrent reviewers yields the same failure signature; reasons are now kept, one backoff retry, analyses bounded to 3 (#652). That this caused the single original occurrence is not proven | R | foreman-uxfwb | closed |
-| Bundled `fix.yaml` depends on the external `ensemble-fix-issue` skill | C8 | foreman-nhe4v | open |
+| ~~Bundled `fix.yaml` depends on the external `ensemble-fix-issue` skill~~ Fixed: the `fix` phase runs the bundled `prompts/fix.md` (Foreman-owned worktree and branch, reproduce first, no branch or push); `prd.yaml`, `implement-trd*.yaml` still call unshipped Ensemble skills | C8 | foreman-nhe4v | fixed on branch; bead open until merged |
 | `/dashboard/runs` has no root layout (no title, no `lang`, inert) | UI | foreman-70eq6 | open |
 | Remote worker | C13 | foreman-zn7de | open, deferred by user |
-| Unresolved CodeRabbit findings on #573/#577/#579 and others: 26 still present (list in the bead) | C2, C6, C9 | foreman-3xrtg | open |
-| Spike S3/S4/S5 review items (3 script defects, 6 stale doc statements, 2 S5 design items) | C13 | foreman-i97tz | open |
-| Test-hygiene residual after #595 | all | **foreman-bsp5f** | new, P3 |
+| Unresolved CodeRabbit findings on #573/#577/#579 and others: triaged on branch, the real small ones fixed, the design-level ones and the findings from other PRs listed in the bead comments remain | C2, C6, C9 | foreman-3xrtg | partly fixed on branch; bead open until merged |
+| ~~Spike S3/S4/S5 review items (3 script defects, 6 stale doc statements, 2 S5 design items)~~ Fixed on branch: script defects fixed and the proof re-run, stale spike statements corrected; the 2 S5 design items remain explicit open design items | C13 | foreman-i97tz | fixed on branch; bead open until merged |
+| Test-hygiene residual after #595 | all | **foreman-bsp5f** | S1-S4 and S7 fixed on branch (negative-wait sleeps S5 and wildcard refutes S6 left, tolerable); bead open until merged |
 | Automated-test gaps listed in the Tests column above | C1-C12 | **foreman-q9zzo** | new, P4 |
-| Closed-bead discrepancies not covered above | all | **foreman-roeu9** | new, P4 |
+| Closed-bead discrepancies not covered above | all | **foreman-roeu9** | ledger written in `closed-bead-ledger.md`; bead open until merged |
 
 ## Closed-bead cross-check (S9-T2)
 

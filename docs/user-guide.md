@@ -1911,7 +1911,7 @@ Each project has durable memory that every agent thread can read and write, like
 - **Location.** `<project path>/.foreman/memory/`: `MEMORY.md` (a generated index, one `- [name](name.md) - description` line per topic, sorted) plus one `<name>.md` file per topic. A topic file may start with a `<!-- description: ... -->` line; that is the hook shown in the index. Names match `^[a-z0-9][a-z0-9_-]{0,63}$` (`memory` is reserved). `.foreman/.gitignore` gets a `memory/` line automatically; other `.foreman` files stay tracked.
 - **Caps.** 64 KiB per topic (after redaction), 200 topics, index at most 200 lines / 25 KiB. Violations are rejected with `content_too_large`, `too_many_topics` or `index_full` and leave disk untouched. Configurable under `config :foreman_server, :project_memory`.
 - **Redaction.** Bearer tokens, `api_key=`/`token=`/`password=`/`secret=` values, private-key blocks and the project's configured secret env values are replaced by `[REDACTED]` before anything is written. Content is never stored in events; the event log (`ProjectMemoryWritten` / `ProjectMemoryForgotten` on `project_memory:<id>`) keeps only name, description, sha256, size, redaction count and author.
-- **Durable facts only.** Log dumps (more than half identical lines) and secret-heavy pastes (more than half the bytes redacted, for content of 200 bytes or more) are rejected with `content_not_durable`.
+- **Durable facts only.** For content of 200 bytes or more (`min_guard_bytes`; shorter content skips both checks), log dumps (more than half identical lines) and secret-heavy pastes (more than half the bytes redacted) are rejected with `content_not_durable`.
 - **Agents** use the MCP tools `foreman_project_memory_list`, `foreman_project_memory_read`, `foreman_project_memory_write` and `foreman_project_memory_forget` (the last two need `allow_workflow_writes`). Their descriptions carry the guidance: save decisions, conventions, gotchas and project-wide preferences; never task progress, logs or secrets; list before writing and update instead of duplicating; forget facts that became false.
 - **Operators** can view, edit and delete through `GET|PUT|DELETE /api/projects/:id/memory[/:name]` and the CLI:
 
@@ -1964,7 +1964,7 @@ new schedule). Typed rejections such as `{:invalid_schedule_spec, :every,
 returned verbatim.
 
 **Syntax.** `every` is `<n>s|m|h|d` with a minimum of `min_interval_seconds`
-(default 300), aligned to an anchor (creation time unless given), so `every: 30m`
+(default 300) and a maximum of 366 days (`above_maximum`), aligned to an anchor (creation time unless given), so `every: 30m`
 fires at creation+30m, +60m, ... `cron` is the standard five fields (minute hour
 day-of-month month day-of-week) with `*`, lists, ranges and `*/n` / `a-b/n` steps,
 `JAN-DEC` and `SUN-SAT` names; when both day-of-month and day-of-week are restricted
@@ -2001,7 +2001,7 @@ ticks) without creating duplicate tasks.
 
 **Operations.** The ticker (`Schedule.Ticker`) is supervised and enabled by default
 (`config :foreman_server, :schedule, ticker_enabled:`; env
-`FOREMAN_SCHEDULE_TICKER_ENABLED=true|false`; tick every `tick_interval_ms`, default
+`FOREMAN_SCHEDULE_TICKER_ENABLED=true|false`, any other value aborts boot; tick every `tick_interval_ms`, default
 30 s). Other keys: `min_interval_seconds` (300), `max_per_project` (50 non-deleted
 schedules), `default_misfire_grace_seconds` (600). `schedule list` and the HTTP
 response report `ticker: running|disabled`; while it is `disabled`, schedules exist

@@ -15,20 +15,19 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
     end
   end
 
-  test "command-driven prd and fix phases are covered by the inbox progress sidecar" do
+  test "command-driven prd phases are covered by the inbox progress sidecar" do
     assert_covered_command_phases!(
       "prd.yaml",
       ~w(create-prd refine-prd create-trd refine-trd implement-trd)
     )
-
-    assert_covered_command_phases!("fix.yaml", ~w(fix))
   end
 
-  test "review prompt phases remain prompt-driven and keep inbox progress guidance" do
+  test "fix and review prompt phases are prompt-driven and keep inbox progress guidance" do
     for workflow_file <- ~w(prd.yaml fix.yaml) do
       workflow = load_workflow!(workflow_file)
+      prompt_phases = ~w(coderabbit-review repo-rules-review) ++ fix_phase_names(workflow_file)
 
-      for phase <- workflow["phases"], phase["name"] in ~w(coderabbit-review repo-rules-review) do
+      for phase <- workflow["phases"], phase["name"] in prompt_phases do
         phase_name = phase["name"]
         refute Map.has_key?(phase, "command")
         assert is_binary(phase["prompt"])
@@ -37,6 +36,9 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
       end
     end
   end
+
+  defp fix_phase_names("fix.yaml"), do: ~w(fix)
+  defp fix_phase_names(_workflow_file), do: []
 
   test "command phase sidecar matches prompt progress cadence, safety, and non-blocking terms" do
     body = RunExecutor.__command_phase_inbox_progress_system_prompt_for_test__()

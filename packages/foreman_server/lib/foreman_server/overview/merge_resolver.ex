@@ -32,7 +32,7 @@ defmodule ForemanServer.Overview.MergeResolver do
   use GenServer
   require Logger
 
-  alias ForemanServer.{CommandGateway, ProjectionStore, Threads}
+  alias ForemanServer.{Aggregate, CommandGateway, ProjectionStore, Threads}
   alias ForemanServer.Threads.Thread
 
   @default_catch_up_limit 1000
@@ -63,7 +63,7 @@ defmodule ForemanServer.Overview.MergeResolver do
 
   @impl true
   def handle_info({:projection_event, event}, state) when is_map(event) do
-    with type when type in @merge_events <- field(event, :event_type),
+    with type when type in @merge_events <- Aggregate.get(event, :event_type),
          run_id when is_binary(run_id) and run_id != "" <- run_id(event) do
       resolve_run(run_id)
     end
@@ -162,11 +162,9 @@ defmodule ForemanServer.Overview.MergeResolver do
   end
 
   defp run_id(event) do
-    case field(event, :data) || field(event, :payload) do
-      %{} = data -> field(data, :run_id)
+    case Aggregate.get(event, :data) || Aggregate.get(event, :payload) do
+      %{} = data -> Aggregate.get(data, :run_id)
       _ -> nil
     end
   end
-
-  defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

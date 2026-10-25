@@ -159,17 +159,34 @@ defmodule ForemanServer.OverviewTest do
   end
 
   test "cards are ordered by updated_at descending inside a group" do
-    :ok =
-      ProjectionStore.apply_events(
-        run("a") ++
-          run("b") ++ [ev("RunStarted", %{run_id: "c", task_id: "t-c", project_id: "p"})]
-      )
+    # Distinct clocks per run (the projection stamps events from the caller's
+    # `:projection_store_now_ms`), applied out of id order so neither insertion
+    # nor id order can produce the expected result.
+    for {id, at} <- [{"a", 2_000}, {"b", 1_000}, {"c", 3_000}] do
+      Process.put(:projection_store_now_ms, fn -> at end)
+      :ok = ProjectionStore.apply_events(run(id))
+    end
 
-    {:ok, overview} = Overview.build("p")
+    Process.delete(:projection_store_now_ms)
+
+    {:ok, overview} = Overview.build("p", now_fun: fn -> @now end)
     cards = overview.groups.working
 
-    assert Enum.map(cards, & &1.updated_at) ==
-             cards |> Enum.map(& &1.updated_at) |> Enum.sort(:desc)
+    assert Enum.map(cards, & &1.thread_id) == ["run:c", "run:a", "run:b"]
+    assert Enum.map(cards, & &1.updated_at) == [3_000, 2_000, 1_000]
+  end
+
+  test "an unknown configured attention group raises instead of silently never matching" do
+    previous = Application.get_env(:foreman_server, :overview)
+    Application.put_env(:foreman_server, :overview, attention_groups: [:waiting_on_yuo])
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :overview, previous),
+        else: Application.delete_env(:foreman_server, :overview)
+    end)
+
+    assert_raise ArgumentError, ~r/waiting_on_yuo/, fn -> Overview.attention_groups() end
   end
 
   test "a paused run that only holds a steer message is working, a plain pause waits on you" do

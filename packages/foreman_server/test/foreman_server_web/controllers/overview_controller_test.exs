@@ -34,6 +34,10 @@ defmodule ForemanServerWeb.OverviewControllerTest do
         },
         %{event_type: "RunStarted", payload: %{run_id: "r1", task_id: "t1", project_id: "p"}},
         %{event_type: "RunCompleted", payload: %{run_id: "r1", project_id: "p"}},
+        %{
+          event_type: "PrAssociated",
+          payload: %{run_id: "r1", pr_url: "https://g/p/1", pr_number: 1}
+        },
         %{event_type: "PrReady", payload: %{run_id: "r1", pr_url: "https://g/p/1"}},
         %{event_type: "RunStarted", payload: %{run_id: "r2", task_id: "t2", project_id: "p"}},
         %{event_type: "RunFailed", payload: %{run_id: "r2", project_id: "p", reason: "boom"}},
@@ -78,7 +82,7 @@ defmodule ForemanServerWeb.OverviewControllerTest do
     [card] = body["groups"]["ready_for_review"]
     assert card |> Map.keys() |> Enum.sort() == @card_keys
     assert card["thread_id"] == "run:r1"
-    assert card["pr_url"] == nil or is_binary(card["pr_url"])
+    assert card["pr_url"] == "https://g/p/1"
   end
 
   test "include_resolved and resolved_limit are honoured" do

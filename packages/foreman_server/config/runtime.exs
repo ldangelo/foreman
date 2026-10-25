@@ -74,7 +74,11 @@ if config_env() != :test do
   case System.get_env("FOREMAN_SCHEDULE_TICKER_ENABLED") do
     "true" -> config :foreman_server, :schedule, ticker_enabled: true
     "false" -> config :foreman_server, :schedule, ticker_enabled: false
-    _ -> :ok
+    nil ->
+      :ok
+
+    other ->
+      raise "FOREMAN_SCHEDULE_TICKER_ENABLED must be \"true\" or \"false\", got: #{inspect(other)}"
   end
 
   # Listen port override (acceptance runs and parallel dev servers). Only a

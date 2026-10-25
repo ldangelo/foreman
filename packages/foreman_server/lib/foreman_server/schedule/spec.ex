@@ -85,6 +85,7 @@ defmodule ForemanServer.Schedule.Spec do
           | :invalid_type
           | :invalid_format
           | :below_minimum
+          | :above_maximum
           | :wrong_field_count
           | :empty_field
           | :invalid_value
@@ -103,6 +104,9 @@ defmodule ForemanServer.Schedule.Spec do
   @search_days 9 * 366
   @latest_window_days 366
   @unit_seconds %{"s" => 1, "m" => 60, "h" => 3_600, "d" => 86_400}
+  # An interval longer than a leap year keeps `anchor + k * every` far below the
+  # year-9999 limit of `DateTime.from_unix!/1`.
+  @max_interval_seconds 366 * 86_400
   @months ~w(JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC)
   @weekdays ~w(SUN MON TUE WED THU FRI SAT)
   @cron_ranges [
@@ -225,6 +229,7 @@ defmodule ForemanServer.Schedule.Spec do
         cond do
           seconds <= 0 -> error(:every, :invalid_format)
           seconds < min_interval_seconds() -> error(:every, :below_minimum)
+          seconds > @max_interval_seconds -> error(:every, :above_maximum)
           true -> {:ok, seconds}
         end
 

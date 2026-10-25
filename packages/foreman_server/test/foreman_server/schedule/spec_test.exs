@@ -97,6 +97,16 @@ defmodule ForemanServer.Schedule.SpecTest do
       assert {:error, {:invalid_schedule_spec, :every, :below_minimum}} =
                Spec.parse(%{"every" => "30m"})
     end
+
+    test "an interval longer than 366 days is rejected" do
+      assert {:ok, %Spec{every_seconds: 31_622_400}} = Spec.parse(%{"every" => "366d"})
+
+      assert {:error, {:invalid_schedule_spec, :every, :above_maximum}} =
+               Spec.parse(%{"every" => "367d"})
+
+      assert {:error, {:invalid_schedule_spec, :every, :above_maximum}} =
+               Spec.parse(%{"every" => "3000000d"})
+    end
   end
 
   describe "parse/2 shape" do

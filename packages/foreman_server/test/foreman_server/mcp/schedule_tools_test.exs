@@ -47,7 +47,7 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   test "list is a read tool and equals the HTTP DTOs", %{id: id} do
     writes(true)
-    {:ok, %{"schedule_id" => sid}} = Tools.call_tool("foreman_schedule_create", args(id))
+    {:ok, %{schedule_id: sid}} = Tools.call_tool("foreman_schedule_create", args(id))
     writes(false)
 
     assert {:ok, %{ticker: "disabled", schedules: [dto]}} =
@@ -88,12 +88,12 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
     writes(true)
     call = args(id, %{request_id: "req-1"})
 
-    assert {:ok, %{"schedule_id" => sid}} = Tools.call_tool("foreman_schedule_create", call)
-    assert {:ok, %{"schedule_id" => ^sid}} = Tools.call_tool("foreman_schedule_create", call)
+    assert {:ok, %{schedule_id: sid}} = Tools.call_tool("foreman_schedule_create", call)
+    assert {:ok, %{schedule_id: ^sid}} = Tools.call_tool("foreman_schedule_create", call)
     assert [_one] = created_events(id, sid)
     assert [%{schedule_id: ^sid}] = ProjectionStore.schedules(id)
 
-    assert {:ok, %{"schedule_id" => other}} =
+    assert {:ok, %{schedule_id: other}} =
              Tools.call_tool("foreman_schedule_create", args(id, %{request_id: "req-2"}))
 
     assert other != sid
@@ -102,8 +102,8 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   test "without a request_id every call creates a new schedule", %{id: id} do
     writes(true)
-    assert {:ok, %{"schedule_id" => a}} = Tools.call_tool("foreman_schedule_create", args(id))
-    assert {:ok, %{"schedule_id" => b}} = Tools.call_tool("foreman_schedule_create", args(id))
+    assert {:ok, %{schedule_id: a}} = Tools.call_tool("foreman_schedule_create", args(id))
+    assert {:ok, %{schedule_id: b}} = Tools.call_tool("foreman_schedule_create", args(id))
     assert a != b
   end
 
@@ -126,7 +126,7 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   test "pause, resume and delete change the DTO status", %{id: id} do
     writes(true)
-    {:ok, %{"schedule_id" => sid}} = Tools.call_tool("foreman_schedule_create", args(id))
+    {:ok, %{schedule_id: sid}} = Tools.call_tool("foreman_schedule_create", args(id))
     ids = %{project_id: id, schedule_id: sid}
 
     status = fn ->

@@ -128,6 +128,24 @@ defmodule ForemanServer.Aggregates.ScheduleTest do
       assert {:error, {:missing_or_invalid, :at}} = run.(%{at: nil})
     end
 
+    test "a non-integer max_per_project config raises instead of disabling the cap" do
+      original = Application.get_env(:foreman_server, :schedule, [])
+      on_exit(fn -> Application.put_env(:foreman_server, :schedule, original) end)
+
+      Application.put_env(
+        :foreman_server,
+        :schedule,
+        Keyword.put(original, :max_per_project, "50")
+      )
+
+      assert_raise ArgumentError, ~r/max_per_project/, fn ->
+        Schedule.handle_command(
+          Schedule.initial_state(),
+          cmd("schedule.create", create_payload(%{schedule_id: "c"}))
+        )
+      end
+    end
+
     test "per-project active schedule cap" do
       original = Application.get_env(:foreman_server, :schedule, [])
       on_exit(fn -> Application.put_env(:foreman_server, :schedule, original) end)

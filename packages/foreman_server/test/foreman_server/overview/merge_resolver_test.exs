@@ -86,7 +86,7 @@ defmodule ForemanServer.Overview.MergeResolverTest do
     assert %{resolved: true, reason: "pr_merged", resolved_by: "system"} =
              ProjectionStore.thread_flags(thread_id)
 
-    # a duplicate merge signal is deduplicated by command_id
+    # a duplicate merge signal finds the thread already resolved and dispatches nothing
     :ok =
       ProjectionStore.apply_events([
         event("PrUpdated", %{run_id: run_id, pr_status: "merged", head_sha: "sha-" <> run_id})

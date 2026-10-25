@@ -10,6 +10,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     Supervisor
   }
 
+  alias ForemanServer.TestSupport.Eventually
   alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
   # --- Test Adapters ---
@@ -394,8 +395,22 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
   # --- Helpers ---
 
+  # Waits until the supervisor has restarted the killed child: a live process under `name`
+  # that is not `old_pid`.
+  defp await_restart(name, old_pid) do
+    Eventually.await(
+      fn ->
+        case Process.whereis(name) do
+          pid when is_pid(pid) and pid != old_pid -> pid
+          _ -> nil
+        end
+      end,
+      message: "#{inspect(name)} was not restarted"
+    )
+  end
+
   defp start_runtime(_opts) do
-    test_id = :rand.uniform(999_999)
+    test_id = System.unique_integer([:positive])
     sup_name = :"AgentRuntime.Test.#{test_id}"
     catalog_name = :"Catalog#{test_id}"
     invocation_name = :"InvocationSupervisor#{test_id}"
@@ -1136,10 +1151,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       Process.exit(catalog_pid, :kill)
 
-      Process.sleep(100)
-
-      new_catalog_pid = Process.whereis(catalog_name)
-      assert new_catalog_pid != nil
+      new_catalog_pid = await_restart(catalog_name, catalog_pid)
       assert new_catalog_pid != catalog_pid
 
       assert Process.whereis(inv_name) == inv_pid
@@ -1153,10 +1165,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       Process.exit(inv_pid, :kill)
 
-      Process.sleep(100)
-
-      new_inv_pid = Process.whereis(inv_name)
-      assert new_inv_pid != nil
+      new_inv_pid = await_restart(inv_name, inv_pid)
       assert new_inv_pid != inv_pid
 
       assert Process.whereis(catalog_name) == catalog_pid
@@ -1168,9 +1177,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       catalog_pid = Process.whereis(catalog_name)
       Process.exit(catalog_pid, :kill)
 
-      Process.sleep(100)
-
-      new_catalog_pid = Process.whereis(catalog_name)
+      new_catalog_pid = await_restart(catalog_name, catalog_pid)
       assert new_catalog_pid != catalog_pid
     end
   end

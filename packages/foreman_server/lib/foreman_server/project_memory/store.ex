@@ -99,10 +99,20 @@ defmodule ForemanServer.ProjectMemory.Store do
          {:ok, entry, _content} <- read(project_path, name),
          {:ok, previous} <- previous_raw(project_path, name),
          :ok <- remove(project_path, topic_file(name)),
-         {:ok, entries} <- list_entries(project_path),
+         listing = list_entries(project_path),
+         {:ok, entries} <- restore_on_error(listing, project_path, name, previous),
          :ok <- put_index_or_restore(project_path, name, previous, render_index!(entries)) do
       {:ok, entry}
     end
+  end
+
+  # A failure after the topic file was removed puts it back, so `forget/2`
+  # never loses a topic it did not report as forgotten.
+  defp restore_on_error({:ok, _} = ok, _project_path, _name, _previous), do: ok
+
+  defp restore_on_error({:error, %Error{}} = error, project_path, name, previous) do
+    _ = restore_file(project_path, name, previous)
+    error
   end
 
   defp previous_raw(project_path, name) do

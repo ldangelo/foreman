@@ -351,8 +351,9 @@ state. Production use requires it.
 
 **Why:** `main` has this. Without a scheduler, all runs must be triggered manually.
 
-**Gap:** `Scheduler` aggregate exists (with `tick/claim/skip` handlers) but is not
-started in the application. `scheduler_test.exs` is absent.
+**Gap:** none. `Schedule.Ticker` is started by the application when enabled
+(`Ticker.enabled?/0`); its tests are `schedule/ticker_test.exs`, `schedule_test.exs`
+and `schedule/planner_test.exs`. The earlier `Aggregates.Scheduler` was deleted.
 
 ---
 
@@ -504,7 +505,7 @@ replaced for the new architecture:
 | `integration_ingestion_test.exs` | 10 |
 | `attach_bridge_test.exs` | 10 |
 | `recovery_engine_test.exs` | 11 |
-| `scheduler_test.exs` | 12 |
+| `schedule/ticker_test.exs` | 12 |
 | `runtime_safety_test.exs` | 14 |
 | `runtime_info_test.exs` | 15 |
 | `provider_registry_test.exs` | 17 |

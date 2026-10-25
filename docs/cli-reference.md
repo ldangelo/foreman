@@ -289,6 +289,7 @@ Manage Elixir-registered projects.
 | `list` | List project projections |
 | `memory` | List, read, write, forget or sync the project's memory |
 | `chat <id> [message...]` | Chat with the project's coordinator |
+| `schedule list\|create\|pause\|resume\|delete` | Manage the project's scheduled tasks (see below) |
 
 ### `foreman project create`
 
@@ -428,7 +429,7 @@ foreman project repo remove --id api project-123
 
 ### `foreman project schedule list|create|pause|resume|delete`
 
-Manage a project's scheduled tasks. `list --project-id <id> [--json]` prints ID, NAME, SPEC, STATUS, NEXT FIRE and LAST OUTCOME plus a `ticker: running|disabled` line (schedules do not fire while the ticker is disabled). `create --project-id <id> --name <n> (--every <30m> | --cron "<expr>") [--timezone <tz>] (--prompt <text> | --prompt-file <path>) --workflow <w> [--auto-approve=false] [--overlap skip|allow] [--id <schedule-id>]` posts `schedule.create` (exactly one of `--every`/`--cron`; `--overlap` defaults to `skip`, `--auto-approve` to true). `pause|resume|delete --project-id <id> --id <schedule-id>` post `schedule.pause|resume|delete`. Server rejections (e.g. `{:invalid_schedule_spec, :every, :below_minimum}`) are printed verbatim with a non-zero exit.
+Manage a project's scheduled tasks. `list --project-id <id> [--json]` prints ID, NAME, SPEC, STATUS, NEXT FIRE and LAST OUTCOME plus a `ticker: running|disabled` line (schedules do not fire while the ticker is disabled). `create --project-id <id> --name <n> (--every <30m> | --cron "<expr>") [--timezone <tz>] (--prompt <text> | --prompt-file <path>) --workflow <w> [--auto-approve=false] [--overlap skip|allow] [--id <schedule-id>]` posts `schedule.create` (exactly one of `--every`/`--cron`; `--overlap` defaults to `skip`, `--auto-approve` to true). `pause|resume|delete --project-id <id> --id <schedule-id>` post `schedule.pause|resume|delete`. Server rejections (e.g. `{:invalid_schedule_spec, :every, :below_minimum}`) are printed verbatim with a non-zero exit. `--timezone` accepts only `UTC` or `Etc/UTC` (the server rejects any other zone). `create` carries no idempotency key: without `--id` the server generates the schedule id (and command id), so retrying a `create` makes a second schedule; with `--id <schedule-id>` a retry is refused with `already_exists` instead.
 
 ### `foreman project delete <id>`
 

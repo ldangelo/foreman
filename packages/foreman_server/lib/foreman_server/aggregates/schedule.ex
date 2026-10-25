@@ -408,7 +408,17 @@ defmodule ForemanServer.Aggregates.Schedule do
   end
 
   defp validate_limit(project_id) do
-    max = config(:max_per_project, @default_max_per_project)
+    max =
+      case config(:max_per_project, @default_max_per_project) do
+        max when is_integer(max) and max >= 0 ->
+          max
+
+        other ->
+          raise ArgumentError,
+                "config :foreman_server, :schedule, max_per_project must be a " <>
+                  "non-negative integer, got: #{inspect(other)}"
+      end
+
     count = project_id |> ProjectionStore.schedules() |> length()
 
     if count >= max, do: {:error, {:schedule_limit_reached, max}}, else: :ok

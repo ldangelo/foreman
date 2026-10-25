@@ -1980,23 +1980,16 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
-  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message})
-       when code in [:not_found, :project_not_found],
-       do: %ToolError{code: "NOT_FOUND", message: "#{code}: #{message}"}
+  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message}) do
+    tool_code =
+      case ProjectMemory.Error.category(code) do
+        :not_found -> "NOT_FOUND"
+        :invalid_input -> "INVALID_PARAMS"
+        _ -> "DOMAIN_ERROR"
+      end
 
-  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message})
-       when code in [
-              :name_invalid,
-              :description_invalid,
-              :content_too_large,
-              :index_full,
-              :too_many_topics,
-              :content_not_durable
-            ],
-       do: %ToolError{code: "INVALID_PARAMS", message: "#{code}: #{message}"}
-
-  defp project_memory_tool_error(%ProjectMemory.Error{code: code, message: message}),
-    do: %ToolError{code: "DOMAIN_ERROR", message: "#{code}: #{message}"}
+    %ToolError{code: tool_code, message: "#{code}: #{message}"}
+  end
 
   defp tool_foreman_project_library_list(args), do: ForemanServer.MCP.LibraryTools.list(args)
   defp tool_foreman_project_library_read(args), do: ForemanServer.MCP.LibraryTools.read(args)
@@ -2438,9 +2431,9 @@ defmodule ForemanServer.MCP.Tools do
     duration_us = System.monotonic_time(:microsecond) - start_us
 
     case result do
-      {:ok, event} ->
+      {:ok, _event} ->
         Telemetry.mcp_tool_call(duration_us, tool, :ok)
-        {:ok, schedule_result(event, schedule_id)}
+        {:ok, schedule_result(schedule_id)}
 
       {:error, reason} ->
         Telemetry.mcp_tool_call(duration_us, tool, :error)
@@ -2448,10 +2441,9 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
-  defp schedule_result(event, schedule_id) when is_map(event),
-    do: Map.put(event, "schedule_id", schedule_id)
-
-  defp schedule_result(_event, schedule_id), do: %{"schedule_id" => schedule_id}
+  # The tool contract is the schedule id alone: the accepted event carries the full
+  # payload (prompt included) and is internal.
+  defp schedule_result(schedule_id), do: %{schedule_id: schedule_id}
 
   defp authorize_write(tool) do
     if Policy.authorized?(tool) do

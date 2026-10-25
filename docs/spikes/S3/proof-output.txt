@@ -10,9 +10,9 @@
   ok   - FOREMAN_REPO_B_WORKTREE
   ok   - FOREMAN_REPOS lists 3 repos
   ok   - FOREMAN_REPOS.b.base_branch
-     FOREMAN_REPO_A_WORKTREE=/tmp/s3-proof.PjycNC/worktrees/proj/task-1/run-abc/workspace
-     FOREMAN_REPO_B_WORKTREE=/tmp/s3-proof.PjycNC/worktrees/proj/task-1/run-abc/repos/b
-     FOREMAN_REPO_C_WORKTREE=/tmp/s3-proof.PjycNC/worktrees/proj/task-1/run-abc/repos/c
+     FOREMAN_REPO_A_WORKTREE=/tmp/s3-proof.uUTGuM/worktrees/proj/task-1/run-abc/workspace
+     FOREMAN_REPO_B_WORKTREE=/tmp/s3-proof.uUTGuM/worktrees/proj/task-1/run-abc/repos/b
+     FOREMAN_REPO_C_WORKTREE=/tmp/s3-proof.uUTGuM/worktrees/proj/task-1/run-abc/repos/c
 == 3. the agent, cwd = primary worktree, edits siblings via env paths
   ok   - commits made in a and b; c untouched
 == 4. per-repo touched detection + diff capture (Review.Capture archive layout)
@@ -33,7 +33,7 @@
   ok   - retry for b pushed
   ok   - a untouched by b's retry
 == 7. cleanup removes every worktree and branch
-  ok   - all worktrees removed
+  ok   - all worktrees and branches removed
 == 8. rollback: second worktree creation fails (branch already exists in b)
      provisioning b failed -> {:multi_repo_worktree_failed, "b", reason}
   ok   - a compensated (no half-provisioned run)

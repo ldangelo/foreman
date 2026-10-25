@@ -126,11 +126,26 @@ defmodule ForemanServer.Overview do
     Map.new(Group.all(), fn g -> {g, by_group |> Map.get(g, []) |> length()} end)
   end
 
-  @doc "Groups that raise the attention flag."
+  @doc """
+  Groups that raise the attention flag. Raises `ArgumentError` when the
+  configured list names a group `Overview.Group` does not define: a typo would
+  otherwise silently report "no attention needed" for every project.
+  """
   @spec attention_groups() :: [Group.group()]
   def attention_groups do
-    Application.get_env(:foreman_server, :overview, [])
-    |> Keyword.get(:attention_groups, @default_attention_groups)
+    groups =
+      Application.get_env(:foreman_server, :overview, [])
+      |> Keyword.get(:attention_groups, @default_attention_groups)
+
+    case Enum.reject(groups, &(&1 in Group.all())) do
+      [] ->
+        groups
+
+      unknown ->
+        raise ArgumentError,
+              "config :foreman_server, :overview, attention_groups has unknown groups " <>
+                "#{inspect(unknown)}; valid groups: #{inspect(Group.all())}"
+    end
   end
 
   defp bound(:resolved, _cards, false, _limit), do: []

@@ -15,11 +15,6 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
   @identity "github:ldangelo"
 
   setup do
-    case GenServer.whereis(MergeGate) do
-      nil -> {:ok, _pid} = MergeGate.start_link()
-      _pid -> :ok
-    end
-
     MergeGate.clear()
     %{state: started()}
   end

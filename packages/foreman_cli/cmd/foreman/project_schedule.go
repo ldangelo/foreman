@@ -148,7 +148,7 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 	name := fs.String("name", "", "Schedule name")
 	every := fs.String("every", "", "Fixed interval, e.g. 30m or 1h (exclusive with --cron)")
 	cron := fs.String("cron", "", "Cron expression, e.g. \"0 9 * * 1-5\" (exclusive with --every)")
-	timezone := fs.String("timezone", "", "IANA timezone for the spec")
+	timezone := fs.String("timezone", "", "Timezone for the spec; the server accepts only UTC or Etc/UTC (default UTC)")
 	prompt := fs.String("prompt", "", "Prompt for the scheduled task (or --prompt-file)")
 	promptFile := fs.String("prompt-file", "", "Read the prompt from this file (or --prompt)")
 	workflow := fs.String("workflow", "", "Workflow to run")

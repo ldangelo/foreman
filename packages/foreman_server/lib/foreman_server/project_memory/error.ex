@@ -25,4 +25,24 @@ defmodule ForemanServer.ProjectMemory.Error do
   def new(code, message, details \\ %{})
       when is_atom(code) and is_binary(message) and is_map(details),
       do: %__MODULE__{code: code, message: message, details: details}
+
+  @invalid_input [
+    :name_invalid,
+    :description_invalid,
+    :content_too_large,
+    :index_full,
+    :too_many_topics,
+    :content_not_durable
+  ]
+
+  @doc """
+  Coarse class of an error code, shared by the HTTP and MCP surfaces so their
+  status/code mappings cannot drift: `:invalid_input`, `:not_found`,
+  `:conflict` (archived project / no path) or `:internal`.
+  """
+  @spec category(atom()) :: :invalid_input | :not_found | :conflict | :internal
+  def category(code) when code in @invalid_input, do: :invalid_input
+  def category(code) when code in [:not_found, :project_not_found], do: :not_found
+  def category(code) when code in [:project_archived, :project_path_unknown], do: :conflict
+  def category(code) when is_atom(code), do: :internal
 end
