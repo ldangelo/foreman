@@ -929,7 +929,8 @@ defmodule ForemanServer.ProjectionStore do
   `"in_progress"`, run id assigned) but whose run never started: run admission
   refused them (project paused, daily cap, run limit) or they wait for a slot.
   `Workflow.Dispatcher` re-admits these when the project resumes or its limits
-  change.
+  change, when a finished run frees its reservation, and when the UTC day rolls
+  over (the daily cap clears).
   """
   @spec deferred_task_ids(String.t()) :: [String.t()]
   def deferred_task_ids(project_id) when is_binary(project_id) do
@@ -3759,6 +3760,19 @@ defmodule ForemanServer.ProjectionStore do
       payload_event_at_ms(payload),
       fn jobsite ->
         Map.put(jobsite, :iteration_index, get(payload, :index))
+      end
+    )
+  end
+
+  # Bound while the iteration runs, so `GET /api/jobsites/:id` shows the session before any
+  # iteration completes (the aggregate, not this read model, is what a resume reads).
+  defp apply_event_by_type(state, "JobsiteSessionBound", payload) do
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :session_id, get(payload, :session_id))
       end
     )
   end

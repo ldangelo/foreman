@@ -55,6 +55,7 @@ defmodule ForemanServer.Jobsite.SteerTest do
       Agents.pi("x",
         binary: agent_bin,
         env: %{
+          "FAKE_AGENT_SESSION_FIRST" => "1",
           "FAKE_AGENT_SLEEP_ON_RUN" => "1",
           "FAKE_AGENT_SLEEP_SECS" => "30"
         }
@@ -81,6 +82,9 @@ defmodule ForemanServer.Jobsite.SteerTest do
       timeout: 30_000,
       message: "the agent process never started"
     )
+
+    # A pause-then-resume needs the provider session the agent reported (foreman-cm8nv).
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
 
     id
   end

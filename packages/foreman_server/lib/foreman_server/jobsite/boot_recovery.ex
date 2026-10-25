@@ -23,6 +23,11 @@ defmodule ForemanServer.Jobsite.BootRecovery do
     * no worktree was ever provisioned (`starting`) — there is nothing for
       `resume` to continue, so it is failed with `:executor_lost` rather than
       left permanently non-terminal.
+    * no provider session was ever recorded (its agent died before reporting
+      one; see `Executor.check_resumable/1`) — a resume would start a blank
+      agent and is refused (`:no_session`), so it is failed with
+      `:executor_lost` too instead of being paused as "resumable" and left
+      that way forever. Its worktree and branch stay on disk for inspection.
     * otherwise — `jobsite.pause` with `reason: "server_restart"`.
 
   Commands are system commands through `CommandGateway.dispatch_system/1`
@@ -194,21 +199,22 @@ defmodule ForemanServer.Jobsite.BootRecovery do
   end
 
   defp recover(jobsite_id, %{worktree_path: nil}, version, dispatch) do
-    error =
-      Error.new(
-        :executor_lost,
-        "executor lost at server restart before a worktree was provisioned; nothing to resume",
-        %{jobsite_id: jobsite_id}
-      )
+    executor_lost(
+      jobsite_id,
+      version,
+      dispatch,
+      "executor lost at server restart before a worktree was provisioned; nothing to resume"
+    )
+  end
 
-    "jobsite.fail"
-    |> command(jobsite_id, version, %{
-      code: Atom.to_string(error.code),
-      message: error.message,
-      details: error.details
-    })
-    |> dispatch.()
-    |> outcome(jobsite_id, :failed)
+  defp recover(jobsite_id, %{session_id: nil}, version, dispatch) do
+    executor_lost(
+      jobsite_id,
+      version,
+      dispatch,
+      "executor lost at server restart before its agent reported a provider session; " <>
+        "a resume would start a blank agent, so there is nothing to resume"
+    )
   end
 
   defp recover(jobsite_id, state, version, dispatch) do
@@ -219,6 +225,19 @@ defmodule ForemanServer.Jobsite.BootRecovery do
     })
     |> dispatch.()
     |> outcome(jobsite_id, :paused)
+  end
+
+  defp executor_lost(jobsite_id, version, dispatch, message) do
+    error = Error.new(:executor_lost, message, %{jobsite_id: jobsite_id})
+
+    "jobsite.fail"
+    |> command(jobsite_id, version, %{
+      code: Atom.to_string(error.code),
+      message: error.message,
+      details: error.details
+    })
+    |> dispatch.()
+    |> outcome(jobsite_id, :failed)
   end
 
   # Mirrors what `Executor` records on a pause: the last iteration that finished.

@@ -785,9 +785,12 @@ run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
 keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
 with `run.status` `deferred` and `run.reason` (or `queued` while admission is
 pending), never a 404. It is re-admitted when the project is resumed, when a
-`project update` changes its settings (a raised limit), and when a finished run
-frees its reservation; the global run slot is only taken once the project's own
-limits admit the run, so a deferred run never starves other projects.
+`project update` changes its settings (a raised limit), when a finished run
+frees its reservation, and when the UTC day rolls over (a task the daily thread
+cap refused is retried as soon as the cap resets, with no operator action; a
+timer in the Dispatcher fires at the next UTC midnight). The global run slot is
+only taken once the project's own limits admit the run, so a deferred run never
+starves other projects.
 
 ### Tasks
 
@@ -1817,11 +1820,20 @@ signal), `parallel` (fans out across worktrees, merges sequentially),
 (pulls a ready Beads issue and works it). Resume after a crash or an
 explicit pause with `ForemanServer.Jobsite.resume/1`, which rehydrates
 authoritative state from the event stream (never from the projection or
-process memory) and continues the same agent session. Recovery after a server
-restart is never automatic: at boot, `ForemanServer.Jobsite.BootRecovery`
-records every non-terminal jobsite that has no live executor as **paused with
-reason `server_restart`** (a jobsite that never got a worktree is failed with
-`executor_lost` instead), so it shows up as `paused` with a `paused_reason` in
+process memory) and continues the same agent session. That needs the agent's
+provider session: it is recorded (`JobsiteSessionBound`, command
+`jobsite.session.bind`) as soon as the agent reports it, while the first
+iteration is still running, so a crash mid-iteration is resumable. A jobsite
+whose agent never reported one (killed before its first event) is refused with
+`no_session` (`409` over HTTP) instead of sending `Continue.` to a blank agent,
+which would find nothing to continue and report an empty `completed`;
+`Jobsite.steer/3` refuses such a running jobsite before pausing it. Recovery
+after a server restart is never automatic: at boot,
+`ForemanServer.Jobsite.BootRecovery` records every non-terminal jobsite that
+has no live executor as **paused with reason `server_restart`** (a jobsite that
+never got a worktree, or whose agent never reported a provider session, is
+failed with `executor_lost` instead: there is nothing to resume), so it shows
+up as `paused` with a `paused_reason` in
 `GET /api/jobsites` and is resumed through the same explicit path. The scan
 finds candidates from the event store's `jobsite:` streams, not the projection,
 so a failed projection replay cannot make it report an empty success; if the
@@ -1866,7 +1878,7 @@ the script: the body is validated data, the repo is a **registered
 | `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}`. The `202` is held until the jobsite is recorded (this includes the project setup and network-policy work, which can take seconds), so the id is readable the moment you have it. Refusals the executor finds while building the spec (a project network policy the sandbox cannot enforce - `network_policy_unsupported`, an invalid project environment, a failed setup plan) are recorded before the `202`: `GET /api/jobsites/:id` already answers `status: "failed"` with the typed `last_error.code`, never `404`. The wait is bounded at 30 s; past that the id is returned while the executor is still building and the first `GET` can still `404`, so retry briefly. An executor that dies before recording anything is `500 jobsite_start_failed`, not an id |
 | `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`, and `paused_reason` while paused) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
-| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start). Optional JSON `prompt` (non-blank, at most 8000 chars; `422 spec_option_invalid` otherwise) replaces the default `Continue.` prompt of the resumed iteration - this is jobsite steering v1 (pause, then resume with the message; `Jobsite.steer/3` does both); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 already_running` if its executor is alive, `502` if the executor could not start |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start). Optional JSON `prompt` (non-blank, at most 8000 chars; `422 spec_option_invalid` otherwise) replaces the default `Continue.` prompt of the resumed iteration - this is jobsite steering v1 (pause, then resume with the message; `Jobsite.steer/3` does both); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 no_session` if its agent never reported a provider session (a resume would start a blank agent; nothing runs), `409 already_running` if its executor is alive, `502` if the executor could not start |
 | `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
 
 Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,

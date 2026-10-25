@@ -131,6 +131,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
         binary: @fake_agent,
         env: %{
           "FAKE_AGENT_TEXT" => "did some work",
+          "FAKE_AGENT_SESSION_FIRST" => "1",
           "FAKE_AGENT_SLEEP_ON_RUN" => "1",
           "FAKE_AGENT_SLEEP_SECS" => "5"
         }
@@ -148,6 +149,8 @@ defmodule ForemanServer.Jobsite.ResumeTest do
       )
 
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+    # A resume needs the provider session the agent reported (foreman-cm8nv).
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
 
     assert :ok = Jobsite.pause(id, "operator requested pause")
 
@@ -173,6 +176,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
         binary: @fake_agent,
         env: %{
           "FAKE_AGENT_TEXT" => "did some work",
+          "FAKE_AGENT_SESSION_FIRST" => "1",
           "FAKE_AGENT_SLEEP_ON_RUN" => "1",
           "FAKE_AGENT_SLEEP_SECS" => "5"
         }
@@ -189,6 +193,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
       )
 
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
     assert :ok = Jobsite.pause(id, "pause at the cap")
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
     wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
@@ -208,6 +213,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
         binary: @fake_agent,
         env: %{
           "FAKE_AGENT_TEXT" => "did some work",
+          "FAKE_AGENT_SESSION_FIRST" => "1",
           "FAKE_AGENT_SLEEP_ON_RUN" => "1",
           "FAKE_AGENT_SLEEP_SECS" => "5"
         }
@@ -225,6 +231,7 @@ defmodule ForemanServer.Jobsite.ResumeTest do
       )
 
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
     assert :ok = Jobsite.pause(id, "pause")
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
     wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)

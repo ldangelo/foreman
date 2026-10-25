@@ -28,6 +28,10 @@
 #                             group does not reach it: it outlives the agent, re-parented to pid 1.
 #   FAKE_AGENT_IGNORE_INT   - when set, ignore SIGINT: the agent only goes away on SIGTERM, so
 #                             a cancel takes the harness's escalation (INT, then TERM) to land.
+#   FAKE_AGENT_SESSION_FIRST - when set, print the `session` line BEFORE the sleep (and not again
+#                             after it), as pi and claude report their session as the first line
+#                             of output. Without it the session is reported only after the sleep,
+#                             so a test can interrupt an iteration whose agent has reported none.
 
 set -e
 
@@ -54,6 +58,12 @@ if [ -n "$FAKE_AGENT_STRAY_SECS" ]; then
   echo $! > stray.pid
 fi
 
+SESSION_ID="${FAKE_AGENT_SESSION_ID:-fake-session-stable-1}"
+
+if [ -n "$FAKE_AGENT_SESSION_FIRST" ]; then
+  printf '{"type":"session","id":"%s"}\n' "$SESSION_ID"
+fi
+
 if [ -n "$FAKE_AGENT_SLEEP_ON_RUN" ] && [ "$COUNT" = "$FAKE_AGENT_SLEEP_ON_RUN" ]; then
   sleep "${FAKE_AGENT_SLEEP_SECS:-10}"
 fi
@@ -63,13 +73,14 @@ if [ -n "$FAKE_AGENT_FAIL_WITH" ]; then
   exit 1
 fi
 
-SESSION_ID="${FAKE_AGENT_SESSION_ID:-fake-session-stable-1}"
 TEXT="${FAKE_AGENT_TEXT:-did some work}"
 if [ -n "$FAKE_AGENT_ECHO_ENV" ]; then
   TEXT="env:$FAKE_AGENT_ECHO_ENV=$(printenv "$FAKE_AGENT_ECHO_ENV" || true)"
 fi
 
-printf '{"type":"session","id":"%s"}\n' "$SESSION_ID"
+if [ -z "$FAKE_AGENT_SESSION_FIRST" ]; then
+  printf '{"type":"session","id":"%s"}\n' "$SESSION_ID"
+fi
 printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"%s"}}\n' "$TEXT"
 printf '{"type":"message_end","message":{"role":"assistant","content":"%s","usage":{"input_tokens":1,"output_tokens":1}}}\n' "$TEXT"
 

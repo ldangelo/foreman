@@ -2534,16 +2534,20 @@ defmodule ForemanServer.MCP.Tools do
     # validation, so a loaded manifest can ALSO have a pending refusal. That is
     # reported ALONGSIDE the snapshot (`refused_edit`), not instead of it: the
     # workflow still starts. A manifest that never loaded is `INVALID_MANIFEST`.
+    #
+    # `workflow` is the catalog's resolved, ATOM-keyed map (`name`, `description`,
+    # `phases`, `digest`, `manifest_path`); `description`/`digest` are `nil` when the
+    # manifest declares none, which this tool has always answered as `""`.
     case {Catalog.load(filename), Enum.find(Catalog.invalid(), &(&1.filename == filename))} do
-      {{:ok, manifest}, refusal} ->
+      {{:ok, workflow}, refusal} ->
         result =
           %{
             name: name,
-            description: Map.get(manifest, "description", ""),
-            digest: Map.get(manifest, "digest", ""),
-            phase_count: length(Map.get(manifest, "phases", [])),
+            description: workflow.description || "",
+            digest: workflow.digest || "",
+            phase_count: length(workflow.phases),
             manifest_path: "workflows/#{name}.yaml",
-            phases: Map.get(manifest, "phases", [])
+            phases: Enum.map(workflow.phases, &declared_phase/1)
           }
           |> put_refused_edit(refusal)
 
@@ -2567,6 +2571,12 @@ defmodule ForemanServer.MCP.Tools do
         {:error, %ToolError{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
     end
   end
+
+  # A resolved phase is the manifest's own string-keyed entry plus the atom-keyed fields the
+  # catalog derived from it (`:prompt_path`, `:action`, and nil-padded copies of `command`,
+  # `mail`, ...). The wire shape is what the manifest DECLARES: encoding the merge would emit
+  # duplicate JSON keys, nulls for every undeclared field, and the server's absolute prompt path.
+  defp declared_phase(phase), do: Map.filter(phase, fn {key, _value} -> is_binary(key) end)
 
   # Absent key, never `nil` (AGENTS.md 5.4b): a reader that tests for the key
   # must not have to also test for a null.

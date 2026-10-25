@@ -1520,6 +1520,8 @@ optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
 
 `foreman_workflow_list` returns `{workflows: [<manifest filename>...], invalid: [{filename, path, stage, reason, serving_previous}]}`: `invalid` lists manifests the catalog refused to load, each with the validation error; `foreman_workflow_get` on such a name answers `INVALID_MANIFEST` with the same reason (not `NOT_FOUND`). A loaded manifest whose latest edit was refused is still served: its `invalid` entry has `serving_previous: true` and `foreman_workflow_get` returns the served snapshot plus a `refused_edit` object (the doctor row is titled "the latest edit is invalid; its previous valid version is still served").
 
+`foreman_workflow_get` (`name`) returns `{name, description, digest, phase_count, manifest_path, phases}` for a loaded workflow: `description` and `digest` are `""` when the manifest declares none (a `digest` is only computed for a manifest with a `worktree:` block), and `phases` are the phases the manifest declares, as written (string keys), without the catalog's derived fields.
+
 Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
 `text`, optional `message_id`, `resume`).

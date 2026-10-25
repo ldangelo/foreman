@@ -217,7 +217,11 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
       agent =
         Agents.pi("x",
           binary: @fake_agent,
-          env: %{"FAKE_AGENT_SLEEP_ON_RUN" => "1", "FAKE_AGENT_SLEEP_SECS" => "5"}
+          env: %{
+            "FAKE_AGENT_SESSION_FIRST" => "1",
+            "FAKE_AGENT_SLEEP_ON_RUN" => "1",
+            "FAKE_AGENT_SLEEP_SECS" => "5"
+          }
         )
 
       {:ok, id} =
@@ -231,6 +235,7 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
         )
 
       wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+      ForemanServer.TestSupport.JobsiteSession.await!(id)
       assert :ok = Jobsite.pause(id, "pause before push")
       wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
       assert origin_branch(bare, "agent/resumed") == nil

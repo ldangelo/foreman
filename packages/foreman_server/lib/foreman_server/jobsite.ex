@@ -135,7 +135,8 @@ defmodule ForemanServer.Jobsite do
   resume has none, so the preconditions are checked here, via the same
   `Executor.check_resumable/1` the Executor itself uses: an unknown id is
   `:jobsite_not_found`, a terminal one or one that never provisioned a worktree
-  `:not_resumable`, one whose Executor is alive `:already_running`.
+  `:not_resumable`, one whose agent never reported a provider session
+  `:no_session`, one whose Executor is alive `:already_running`.
   """
   @spec resume_async(String.t(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def resume_async(jobsite_id, opts \\ []) do
@@ -191,11 +192,12 @@ defmodule ForemanServer.Jobsite do
     #{@default_steer_timeout_ms}), then `resume_async/2` with `prompt: text`. The
     message becomes the next iteration's prompt instead of `"Continue."`.
     `{:error, :steer_timeout}` if the executor has not exited in time; the pause
-    request is withdrawn so a late pause cannot surprise the operator.
+    request is withdrawn so a late pause cannot surprise the operator. A jobsite
+    that could not be resumed afterwards (`Executor.check_resumable/1`: e.g. its
+    agent has not reported a provider session yet, `:no_session`) is refused
+    BEFORE anything is paused, so a steer that was bound to fail never costs the
+    running agent; retry once the session is bound.
   * paused (or crashed, non-terminal): `resume_async/2` directly.
-  * terminal: `{:error, {:not_steerable, status}}`.
-  * unknown id: `:jobsite_not_found`; blank/oversize text: `:spec_option_invalid`
-    (validated before anything is paused).
 
   Returns `{:ok, jobsite_id}` once the resume has been accepted.
   """
@@ -209,8 +211,13 @@ defmodule ForemanServer.Jobsite do
       resume_opts = Keyword.take(opts, [:max_concurrent]) ++ [prompt: text]
 
       case ForemanServer.Jobsite.Executor.pid_for(jobsite_id) do
-        nil -> resume_async(jobsite_id, resume_opts)
-        pid -> pause_then_resume(jobsite_id, pid, resume_opts, timeout_ms)
+        nil ->
+          resume_async(jobsite_id, resume_opts)
+
+        pid ->
+          with {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id) do
+            pause_then_resume(jobsite_id, pid, resume_opts, timeout_ms)
+          end
       end
     end
   end

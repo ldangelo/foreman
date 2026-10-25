@@ -131,9 +131,9 @@ defmodule ForemanServer.LibraryDeliveryTest do
       [ -f agent-count ] && n=$(cat agent-count)
       n=$((n + 1))
       echo $n > agent-count
+      printf '{"type":"session","id":"s1"}\\n'
       [ "$n" = "1" ] && sleep 20
       T="lib=$(printenv FOREMAN_LIBRARY_PATH || true)"
-      printf '{"type":"session","id":"s1"}\\n'
       printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"%s"}}\\n' "$T"
       printf '{"type":"message_end","message":{"role":"assistant","content":"%s","usage":{"input_tokens":1,"output_tokens":1}}}\\n' "$T"
       """)
@@ -153,6 +153,8 @@ defmodule ForemanServer.LibraryDeliveryTest do
         )
 
       await_until(fn -> (Jobsite.get(id) || %{})[:status] == "running" end)
+      # A resume needs the provider session the agent reported (foreman-cm8nv).
+      ForemanServer.TestSupport.JobsiteSession.await!(id)
       assert :ok = Jobsite.pause(id, "for resume")
       await_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
       await_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)

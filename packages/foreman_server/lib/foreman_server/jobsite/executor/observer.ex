@@ -13,6 +13,8 @@ defmodule ForemanServer.Jobsite.Executor.Observer do
 
   @behaviour ForemanServer.Jobsite.Observer
 
+  require Logger
+
   alias ForemanServer.CommandGateway
   alias ForemanServer.Jobsite.{Error, IterationResult}
 
@@ -31,6 +33,32 @@ defmodule ForemanServer.Jobsite.Executor.Observer do
   end
 
   def step_started(_step, _ctx, state), do: {:ok, state}
+
+  # Records the provider session while the iteration is still running, so an executor that dies
+  # before `jobsite.iteration.complete` leaves a session for `Jobsite.resume/1`. The command id
+  # carries the session id: a second, different id for the same iteration is its own command, not
+  # a duplicate the router would drop. A rejection is logged and returned, never raised: the
+  # completed iteration records the session again, and a working agent must not be failed for it.
+  @impl true
+  def session_bound(step, _ctx, session_id, state) do
+    index = Map.fetch!(step.opts, :iteration_index)
+
+    case dispatch(state, "jobsite.session.bind", "iteration:#{index}:session:#{session_id}", %{
+           index: index,
+           session_id: session_id
+         }) do
+      {:ok, _} ->
+        :ok
+
+      {:error, %Error{} = error} ->
+        Logger.error(
+          "Jobsite #{state.jobsite_id} could not record provider session #{session_id} " <>
+            "for iteration #{index}: #{inspect(error)}"
+        )
+
+        {:error, error}
+    end
+  end
 
   @impl true
   def step_completed(%{kind: :worktree}, ctx, {:worktree, worktree, _}, state) do

@@ -25,7 +25,7 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
         name: "jobsite project-context recorder",
         executable: "stub",
         capabilities: %Capabilities{streaming?: true, resume?: true},
-        normalized_options: [:system_prompt, :model],
+        normalized_options: [:system_prompt, :model, :provider_session_id],
         provider_options: [:cli_path]
       }
     end
@@ -45,13 +45,27 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
     end
 
     @impl true
-    def run(request, _context) do
+    def run(request, context) do
       send(Application.fetch_env!(:jido_harness, :jobsite_context_test_pid), {:request, request})
 
       # A prompt of "hold" keeps the run open until the test releases it: the
       # stub reports its pid, then blocks on an explicit release message.
       if request.prompt == "hold" do
         send(Application.fetch_env!(:jido_harness, :jobsite_context_test_pid), {:held, self()})
+
+        # What a real agent does as its first event: report the provider session. A jobsite can
+        # only be resumed once that is on record (foreman-cm8nv); the harness folds a
+        # `run_started` carrying the id into the run's own state, where the executor reads it.
+        send(
+          context.run_owner,
+          {:adapter_event,
+           Event.new!(
+             provider: :pi,
+             type: :run_started,
+             provider_session_id: "context-test-session",
+             payload: %{}
+           )}
+        )
 
         receive do
           :release -> :ok
@@ -223,6 +237,7 @@ defmodule ForemanServer.Jobsite.ProjectContextTest do
 
     assert_receive {:request, %{system_prompt: first}}, 5_000
     assert_receive {:held, held_pid}, 5_000
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
     assert first =~ "Resume rules"
 
     assert :ok = Jobsite.pause(id, "pause for resume")
