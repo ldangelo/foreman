@@ -24,10 +24,10 @@ defmodule ForemanServerWeb.DoctorController do
   use ForemanServerWeb, :controller
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Projects.Recommendations
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.LoadError
   alias ForemanServerWeb.MCP.Tools.Doctor
-  alias ForemanServerWeb.RecommendationsController
 
   def show(conn, params) do
     project_check =
@@ -199,7 +199,7 @@ defmodule ForemanServerWeb.DoctorController do
     do: "Workflow #{filename} is invalid and was not loaded"
 
   defp project_check(id) do
-    case RecommendationsController.recommend(id) do
+    case Recommendations.recommend_bounded(id) do
       {:ok, recs} ->
         counts = Enum.frequencies_by(recs, & &1.severity)
         actions = Map.get(counts, :action, 0)

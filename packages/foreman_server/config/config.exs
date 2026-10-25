@@ -324,6 +324,9 @@ config :foreman_server, :coordinator,
   untrusted_sources: ["mcp"],
   report_turns_per_hour: 6,
   report_backfill_hours: 24,
+  # The first-turn setup proposal (Coordinator.SetupProposer): posted once when a project
+  # is registered and, at startup, for projects whose conversation has no message yet.
+  setup_proposals: true,
   mcp_messages_per_minute: 6,
   context: [max_total_tokens: 12_000]
 

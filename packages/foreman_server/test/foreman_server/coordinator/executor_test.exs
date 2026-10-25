@@ -76,11 +76,11 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
     test "the coordinator may dispatch only these command types; no merge, approve-merge, archive or retry" do
       assert Enum.sort(Dispatch.command_types()) ==
                Enum.sort(
-                 ~w(task.create task.approve project.update coordinator.append coordinator.action.record coordinator.turn.start coordinator.turn.complete coordinator.turn.fail)
+                 ~w(task.create task.approve project.update project.resume coordinator.append coordinator.action.record coordinator.turn.start coordinator.turn.complete coordinator.turn.fail)
                )
 
       for forbidden <-
-            ~w(merge_approve run.pr.merge project.archive project.register project.reactivate task.retry run.cancel run.reset run.remove thread.resolve inbox.send) do
+            ~w(merge_approve run.pr.merge project.archive project.register project.reactivate project.pause task.retry run.cancel run.reset run.remove thread.resolve inbox.send) do
         assert {:error, {:forbidden_command, ^forbidden}} =
                  Dispatch.system(SpyGateway, %{
                    type: forbidden,

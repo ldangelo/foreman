@@ -23,6 +23,7 @@ defmodule ForemanServer.Projects.RecommendationsTest do
           ci: [".github/workflows/ci.yml"],
           manifests: ["mix.exs"]
         },
+        checked_out_branch: "main",
         gh: :authenticated,
         git_remote: true,
         workflows_installed: true,
@@ -30,6 +31,7 @@ defmodule ForemanServer.Projects.RecommendationsTest do
         provider_rows: [claude: :installed],
         settings: %ProjectSettings{goal: "g", instructions: "i", coordinator_provider: "claude"},
         env_secret_keys: [],
+        env_names: ["NODE_ENV"],
         memory_count: 3
       },
       overrides
@@ -72,6 +74,8 @@ defmodule ForemanServer.Projects.RecommendationsTest do
          settings: %ProjectSettings{goal: "", instructions: "i", coordinator_provider: "claude"}
        )},
       {"settings.env_plain_secrets", healthy(env_secret_keys: ["API_TOKEN"])},
+      {"branch.default_unresolved", healthy(checked_out_branch: :detached)},
+      {"settings.env_empty", healthy(env_names: [])},
       {"memory.empty", healthy(memory_count: 0)},
       {"project.paused", healthy(project_status: "paused")},
       {"stack.test_hint",
@@ -125,6 +129,8 @@ defmodule ForemanServer.Projects.RecommendationsTest do
         unmapped_issue_types: :unavailable,
         provider_rows: :unavailable,
         settings: :unavailable,
+        checked_out_branch: :unavailable,
+        env_names: :unavailable,
         memory_count: :unavailable
       )
 
@@ -157,5 +163,41 @@ defmodule ForemanServer.Projects.RecommendationsTest do
   test "only command fixes are applicable" do
     recs = Recommendations.evaluate(healthy(project_status: "paused", git_remote: false))
     assert for(r <- recs, Recommendations.applicable?(r), do: r.id) == ["project.paused"]
+  end
+
+  test "a checked-out branch, or a HEAD that cannot be read, never reports the base branch" do
+    refute "branch.default_unresolved" in ids(healthy(checked_out_branch: "main"))
+    refute "branch.default_unresolved" in ids(healthy(checked_out_branch: :unavailable))
+
+    refute "branch.default_unresolved" in ids(
+             healthy(checked_out_branch: :detached, repo_path: nil)
+           )
+
+    [rec] = Recommendations.evaluate(healthy(checked_out_branch: :detached))
+    assert rec.severity == :warn
+    assert rec.detail =~ "detached HEAD"
+    assert rec.evidence == %{repo_path: "/r"}
+    assert rec.fix.kind == :manual
+  end
+
+  test "an empty environment is reported only when no variable and no secret exists" do
+    [rec] = Recommendations.evaluate(healthy(env_names: []))
+    assert rec.id == "settings.env_empty"
+    assert rec.severity == :info
+    assert rec.fix.text =~ "foreman project env set"
+    assert rec.fix.text =~ "foreman project secret set"
+
+    refute "settings.env_empty" in ids(healthy(env_names: ["DEPLOY_TOKEN"]))
+    refute "settings.env_empty" in ids(healthy(env_names: :unavailable))
+  end
+
+  test "plain secret-looking values are pointed at the secret store, not the server environment" do
+    [rec] = Recommendations.evaluate(healthy(env_secret_keys: ["API_TOKEN", "DB_PASSWORD"]))
+
+    assert rec.id == "settings.env_plain_secrets"
+    assert rec.evidence == %{keys: ["API_TOKEN", "DB_PASSWORD"]}
+    assert rec.fix.text =~ "foreman project secret set --from-env"
+    assert rec.fix.text =~ "foreman project env set --replace"
+    refute rec.fix.text =~ "server's environment"
   end
 end

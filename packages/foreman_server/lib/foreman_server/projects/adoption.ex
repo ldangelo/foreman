@@ -18,8 +18,9 @@ defmodule ForemanServer.Projects.Adoption do
     * `{:subject_not_found, kind, id}` - unknown task/run/jobsite.
     * `{:subject_bound_to_task_provider, "beads"}` - a `beads:<project>:<bead>`
       task belongs to its source project's beads DB (move only).
-    * `{:repo_not_in_project, repo_path}` - the subject's repo is not the
-      target project's path (move only).
+    * `{:repo_not_in_project, repo_path}` - the subject's repo is neither the
+      target project's own path nor one of its attached repositories (E12)
+      (move only).
 
   Archived/paused target and an active subject are decided by the aggregate
   from the enrichment (`subject_active`, `subject_status`).
@@ -200,12 +201,15 @@ defmodule ForemanServer.Projects.Adoption do
       else: :ok
   end
 
-  # A subject with no discoverable repo (a task that never ran) has nothing to
-  # mismatch.
+  # The subject's repo must be one of the target's repositories: its own path or an
+  # attached one (E12). A subject with no discoverable repo (a task that never ran)
+  # has nothing to mismatch.
   defp check_repo(nil, _target), do: :ok
 
-  defp check_repo(repo_path, target) do
-    if same_path?(repo_path, Map.get(target, :path)),
+  defp check_repo(repo_path, %{project_id: target_id}) do
+    repos = ProjectionStore.project_repositories(target_id) || []
+
+    if Enum.any?(repos, &same_path?(repo_path, &1.path)),
       do: :ok,
       else: {:error, {:repo_not_in_project, repo_path}}
   end

@@ -533,7 +533,8 @@ running (or paused) cannot be moved; use *Continue* instead, which starts a new
 task in the target project seeded from the session's archive and leaves the
 original running. *Mint* (`--new-project`) creates a project from the session's
 repo and goal and moves the session into it. Tasks imported from beads stay in
-their source project, and a session's repo must be the target project's path.
+their source project, and a session's repo must be the target project's path or one of
+its attached repositories (`foreman project repo add`).
 See `docs/cli-reference.md` (`foreman project adopt`).
 
 ### Setup recommendations
@@ -548,6 +549,23 @@ Foreman command computed from what was observed, or manual advice. Checks are
 read-only and bounded (5 s per external command); a check that cannot run
 produces no recommendation rather than a false alarm. `foreman doctor` reports
 server, provider and workflow readiness (`--project` adds this summary).
+
+Two further checks: `branch.default_unresolved` (the project's repository is on a
+detached HEAD, so Foreman cannot resolve the branch its pull requests target) and
+`settings.env_empty` (no plain variable and no stored secret name; names only,
+never values). `settings.env_plain_secrets` points at
+`foreman project secret set --from-env VAR <id> NAME`.
+
+A newly registered project's coordinator conversation opens with a **setup
+proposal**: the same recommendations (most severe first, at most ten, each with
+its fix) posted as one `setup_proposal` message; it needs no provider call. Send
+`/setup` in the conversation for a fresh one (it starts no model turn). Reply
+`apply N` to have the coordinator run the fix for item N. Only a Foreman-computed
+command fix is applicable (today: wiring the beads task provider through
+`project.update`, and `project.resume` for a paused project), never manual advice,
+and a turn with machine authority (a report or an MCP message) cannot apply one.
+See "Project coordinator" (chapter 14).
+
 ### Chat with the project coordinator
 
 ```
@@ -2053,9 +2071,11 @@ Every project has one durable **coordinator conversation**: paste a bug, a stack
 
 **Reports.** `ReviewRecorded` and failed/cancelled run and jobsite events append a report message per thread (`report_key` makes duplicates and the 24 h startup backfill harmless) and wake a machine-authority turn; at most `report_turns_per_hour` (default 6) report turns per project (the rest are listed `suppressed`, announced once), and reports about review-gap-bead threads never start a turn.
 
+**Setup proposal.** When a project is registered, the `SetupProposer` (a child of the coordinator supervisor; it needs no provider) appends one `setup_proposal` message to its conversation: the project's setup recommendations (the list `foreman project recommend` prints, collected with the same time bounds), most severe first, at most ten and 3 000 bytes, secrets redacted, each applicable item ending in a `Reply "apply N"` hint; no recommendations posts "Project looks ready". The message id and `report_key` derive from the project id, so a redelivered event or a restart never posts a second one, and a startup catch-up posts it for active projects whose conversation is still empty. An operator-authored `/setup` message (an MCP-source `/setup` is an ordinary message) posts a fresh proposal on demand and starts no model turn. `apply_recommendation` (`recommendation_id`) runs the fix of one recommendation: the server recomputes the recommendations, rejects an id it no longer produces or one whose fix is manual advice, accepts only a `project.*` command whose payload names this project, and dispatches it as the coordinator system actor (today wiring the beads task provider through `project.update`, and `project.resume` for a paused project, which is why `project.resume` joined the closed command list); the executor never takes a command from the model, only the id. Turns with machine authority (reports, MCP messages) cannot apply a recommendation. `setup_proposals: false` turns the proposer off; with `enabled: false` the coordinator runtime does not start, so nothing is posted until it is enabled.
+
 **Surfaces.** CLI `foreman project chat`; HTTP `POST /api/projects/:id/coordinator/messages`, `GET .../messages?after=&limit=&wait_ms=` (long-poll), `GET .../coordinator`, `POST .../coordinator/restart`; MCP `foreman_project_conversation` (read) and `foreman_project_message` (a write tool: hidden unless `allow_workflow_writes`, always stored with source `mcp`, rate limited by `mcp_messages_per_minute`). The LiveView workspace is `/dashboard/projects/:id` (section 14.1).
 
-**Config** (`config :foreman_server, :coordinator`): `enabled`, `agent`, `default_provider/model/effort`, `agent_timeout_ms`, `turn_timeout_ms`, `retry_backoff_ms`, `unhealthy_after`, `max_message_bytes`, `max_actions_per_turn`, `max_threads_per_turn`, `untrusted_sources` (default `["mcp"]`: MCP messages never carry operator authority), `report_turns_per_hour`, `report_backfill_hours`, `mcp_messages_per_minute`, `report_events`, `context: [max_total_tokens: ...]`.
+**Config** (`config :foreman_server, :coordinator`): `enabled`, `agent`, `default_provider/model/effort`, `agent_timeout_ms`, `turn_timeout_ms`, `retry_backoff_ms`, `unhealthy_after`, `max_message_bytes`, `max_actions_per_turn`, `max_threads_per_turn`, `untrusted_sources` (default `["mcp"]`: MCP messages never carry operator authority), `report_turns_per_hour`, `report_backfill_hours`, `mcp_messages_per_minute`, `report_events`, `setup_proposals` (default `true`), `context: [max_total_tokens: ...]`.
 
 ## 14.1 Project workspace (LiveView)
 

@@ -30,13 +30,14 @@ defmodule ForemanServer.Coordinator.Action do
           | :remember
           | :forget
           | :set_tuning
+          | :apply_recommendation
           | :add_repo
           | :schedule
   @type t :: %__MODULE__{id: String.t(), kind: kind(), params: %{String.t() => term()}}
   defstruct [:id, :kind, :params]
 
   @kinds ~w(answer ask start_thread propose_threads approve_proposed route_followup
-            remember forget set_tuning add_repo schedule)a
+            remember forget set_tuning apply_recommendation add_repo schedule)a
   @kind_names Map.new(@kinds, &{Atom.to_string(&1), &1})
 
   @tuning_keys ~w(propose_before_start max_active_threads reuse_threads)
@@ -80,6 +81,7 @@ defmodule ForemanServer.Coordinator.Action do
       "value" => {:tuning_value, :required},
       "quote" => {:text, @max_text, :optional}
     },
+    apply_recommendation: %{"recommendation_id" => {:text, @max_name, :required}},
     add_repo: %{
       "path" => {:text, 1_000, :required},
       "name" => {:text, @max_name, :optional},

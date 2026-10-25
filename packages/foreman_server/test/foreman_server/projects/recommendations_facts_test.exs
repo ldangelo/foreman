@@ -4,6 +4,7 @@ defmodule ForemanServer.Projects.RecommendationsFactsTest do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Projects.Recommendations.Facts
   alias ForemanServer.Projects.Recommendations.Facts.Probe
+  alias ForemanServer.TestSupport.RecommendationsProbe
 
   @moduletag :tmp_dir
 
@@ -18,10 +19,10 @@ defmodule ForemanServer.Projects.RecommendationsFactsTest do
     def call(_fun, _timeout), do: {:error, :failed}
   end
 
-  defp register!(id, path) do
+  defp register!(id, path, config \\ %{}) do
     :ok =
       ProjectionStore.apply_events([
-        %{event_type: "ProjectRegistered", payload: %{project_id: id, path: path}}
+        %{event_type: "ProjectRegistered", payload: %{project_id: id, path: path, config: config}}
       ])
   end
 
@@ -83,5 +84,117 @@ defmodule ForemanServer.Projects.RecommendationsFactsTest do
     assert {:error, :timeout} = Probe.System.call(fn -> Process.sleep(:infinity) end, 50)
     assert {:ok, 1} = Probe.System.call(fn -> 1 end, 1_000)
     assert {:error, :failed} = Probe.System.call(fn -> raise "boom" end, 1_000)
+  end
+
+  describe "checked_out_branch" do
+    setup %{tmp_dir: repo} do
+      File.mkdir_p!(Path.join(repo, ".git"))
+      id = "facts-#{System.unique_integer([:positive])}"
+      register!(id, repo)
+      %{id: id, head: Path.join([repo, ".git", "HEAD"])}
+    end
+
+    defp branch(id) do
+      assert {:ok, facts} = Facts.collect(id, probe: RecommendationsProbe)
+      facts.checked_out_branch
+    end
+
+    test "a branch is named, a bare commit is a detached HEAD", %{id: id, head: head} do
+      File.write!(head, "ref: refs/heads/feature/x\n")
+      assert branch(id) == "feature/x"
+
+      File.write!(head, "0123456789abcdef0123456789abcdef01234567\n")
+      assert branch(id) == :detached
+
+      File.write!(head, String.duplicate("ab", 32) <> "\n")
+      assert branch(id) == :detached
+    end
+
+    test "anything else cannot be observed, so no recommendation follows", %{id: id, head: head} do
+      File.write!(head, "ref: refs/remotes/origin/main\n")
+      assert branch(id) == :unavailable
+
+      File.write!(head, "not a commit id\n")
+      assert branch(id) == :unavailable
+
+      File.rm!(head)
+      assert branch(id) == :unavailable
+    end
+
+    test "a worktree's .git file and a missing repo are unavailable", %{tmp_dir: repo} do
+      linked = Path.join(repo, "linked")
+      File.mkdir_p!(linked)
+      File.write!(Path.join(linked, ".git"), "gitdir: /elsewhere\n")
+      linked_id = "facts-#{System.unique_integer([:positive])}"
+      register!(linked_id, linked)
+      assert branch(linked_id) == :unavailable
+
+      bare_id = "facts-#{System.unique_integer([:positive])}"
+      register!(bare_id, Path.join(repo, "does-not-exist"))
+      assert branch(bare_id) == :unavailable
+    end
+  end
+
+  describe "environment facts" do
+    defp collect(id, repo) do
+      register!(id, repo)
+      assert {:ok, facts} = Facts.collect(id, probe: RecommendationsProbe)
+      facts
+    end
+
+    defp fresh_id, do: "facts-#{System.unique_integer([:positive])}"
+
+    test "a legacy flat env is judged by the rule `project env set` enforces", %{tmp_dir: repo} do
+      id = fresh_id()
+
+      register!(id, repo, %{
+        env: %{
+          "API_TOKEN" => "tok",
+          "DB_PASSWORD" => "pw",
+          "EMPTY_SECRET" => "",
+          "NODE_ENV" => "t"
+        }
+      })
+
+      assert {:ok, facts} = Facts.collect(id, probe: RecommendationsProbe)
+      assert facts.env_secret_keys == ["API_TOKEN", "DB_PASSWORD"]
+      assert facts.env_names == ["API_TOKEN", "DB_PASSWORD", "EMPTY_SECRET", "NODE_ENV"]
+    end
+
+    test "once the environment record exists the legacy env is ignored, as agents ignore it",
+         %{tmp_dir: repo} do
+      id = fresh_id()
+
+      register!(id, repo, %{
+        environment: %{"vars" => %{"NPM_REGISTRY" => "https://r.example"}},
+        env: %{"API_TOKEN" => "tok"}
+      })
+
+      assert {:ok, facts} = Facts.collect(id, probe: RecommendationsProbe)
+      assert facts.env_secret_keys == []
+      assert facts.env_names == ["NPM_REGISTRY"]
+    end
+
+    test "stored secrets count as environment, by name only", %{tmp_dir: repo} do
+      id = fresh_id()
+      assert collect(id, repo).env_names == []
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectSecretSet",
+            payload: %{
+              project_id: id,
+              name: "DEPLOY_TOKEN",
+              version: 1,
+              at: "2026-10-25T00:00:00Z"
+            }
+          }
+        ])
+
+      assert {:ok, facts} = Facts.collect(id, probe: RecommendationsProbe)
+      assert facts.env_names == ["DEPLOY_TOKEN"]
+      assert facts.env_secret_keys == []
+    end
   end
 end

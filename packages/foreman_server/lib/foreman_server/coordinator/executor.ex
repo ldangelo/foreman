@@ -93,11 +93,17 @@ defmodule ForemanServer.Coordinator.Executor do
         %{status: "rejected", kind: kind, reason: reason} -> ["I did not run #{kind}: #{reason}"]
         %{status: "failed", kind: kind, reason: reason} -> ["#{kind} failed: #{reason}"]
         %{status: "proposed"} = o -> [proposal_text(o)]
+        %{status: "executed", kind: "apply_recommendation"} = o -> [applied_text(o)]
         _ -> []
       end)
 
     if lines == [], do: nil, else: Enum.join(lines, "\n")
   end
+
+  defp applied_text(%{result_ref: %{"recommendation_id" => id}}),
+    do: "Applied setup recommendation #{id}."
+
+  defp applied_text(_outcome), do: "Applied a setup recommendation."
 
   # ---------------------------------------------------------------- one action
 
@@ -229,6 +235,10 @@ defmodule ForemanServer.Coordinator.Executor do
 
   defp handle(%Action{kind: :remember, params: p}, ctx, _state), do: remember(ctx, p)
   defp handle(%Action{kind: :forget, params: p}, ctx, _state), do: forget(ctx, p)
+
+  defp handle(%Action{kind: :apply_recommendation} = a, ctx, _state),
+    do: ForemanServer.Coordinator.Actions.ApplyRecommendation.handle(a, ctx)
+
   defp handle(%Action{kind: :set_tuning} = a, ctx, _state), do: set_tuning(a, ctx)
 
   defp handle(%Action{kind: kind} = a, ctx, _state) when kind in [:add_repo, :schedule] do

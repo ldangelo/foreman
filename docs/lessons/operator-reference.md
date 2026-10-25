@@ -56,6 +56,16 @@ BeadsWatcher imports with `{:project_paused, id}` while in-flight work continues
 `project delete` archives (never purges). See `docs/user-guide.md` ("Project
 settings", "Pause, resume and reactivate") and `docs/decisions/project-delete.md`.
 
+`foreman project recommend <id>` lists what a project still needs; the same list is
+the first message of a new project's coordinator conversation (a `setup_proposal`),
+and `/setup` posts a fresh one. If no proposal appeared: the coordinator supervisor
+must be running (`config :foreman_server, :coordinator, enabled: true`, and
+`setup_proposals: true`; a startup catch-up posts it for any active project whose
+conversation is still empty), and the collection must have finished inside its time
+budget (a failed one is logged and posts nothing, so run `foreman project recommend
+<id>` to see why). `apply N` runs only a Foreman-computed command fix, never manual
+advice.
+
 ### Stopping the Server
 
 ```bash

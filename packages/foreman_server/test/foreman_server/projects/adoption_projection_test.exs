@@ -4,75 +4,13 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
+  import ForemanServer.TestSupport.AdoptionFixtures
 
   alias ForemanServer.{CommandGateway, ProjectionStore}
   alias ForemanServer.Projects.{AdoptionService, Continuation}
   alias ForemanServer.Review.Archive
 
   @moduletag :tmp_dir
-
-  defp uid, do: Elixir.EventStore.UUID.uuid4() |> String.slice(0, 8)
-
-  defp register!(id, path) do
-    assert {:ok, _} =
-             CommandGateway.dispatch_operator(%{
-               type: "project.register",
-               command_id: "reg-#{id}",
-               aggregate_id: "project:" <> id,
-               payload: %{project_id: id, path: path}
-             })
-
-    # apply_events for the read side too: the projection subscription is async.
-    :ok =
-      ProjectionStore.apply_events([
-        %{event_type: "ProjectRegistered", payload: %{project_id: id, path: path}}
-      ])
-  end
-
-  defp seed_run!(%{project: project, run: run, task: task, repo: repo, terminal?: terminal?}) do
-    events =
-      [
-        %{
-          event_type: "TaskCreated",
-          payload: %{
-            task_id: task,
-            project_id: project,
-            title: "Add healthz",
-            status: "in_progress",
-            task_type: "task",
-            prompt: "Add a /healthz route"
-          }
-        },
-        %{
-          event_type: "RunStarted",
-          payload: %{run_id: run, task_id: task, project_id: project, workflow_name: "implement"}
-        },
-        %{
-          event_type: "WorktreeCreated",
-          payload: %{
-            operation_id: "wt-#{run}-p1",
-            project_id: project,
-            run_id: run,
-            phase_id: "p1",
-            repo_path: repo,
-            worktree_path: repo <> "/wt",
-            branch: "agent/x",
-            base_ref: "abc"
-          }
-        }
-      ] ++
-        if(terminal?,
-          do: [
-            %{
-              event_type: "RunCompleted",
-              payload: %{run_id: run, project_id: project, sequence: 1}
-            }
-          ],
-          else: []
-        )
-
-    :ok = ProjectionStore.apply_events(events)
-  end
 
   defp await_adopted do
     ProjectionStore.subscribe(replay_existing: false)
@@ -96,24 +34,6 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     register!(b, repo)
 
     %{a: a, b: b, repo: repo, run: "run-#{id}", task: "task-#{id}", id: id}
-  end
-
-  defp archive!(repo, run, project) do
-    dir = Archive.dir(:run, run, repo)
-
-    :ok =
-      Archive.init(dir, %{
-        "kind" => "run",
-        "subject_id" => run,
-        "project_id" => project,
-        "repo_path" => repo,
-        "branch" => "agent/x",
-        "request" => %{"title" => "Add healthz", "prompt" => "Add a /healthz route"}
-      })
-
-    File.write!(Path.join(dir, "request.md"), "Add a /healthz route")
-    File.write!(Path.join(dir, "changed-files.txt"), "A\tlib/healthz.ex\n")
-    dir
   end
 
   test "adopting a terminal run re-homes it, its task, and its archive manifest", ctx do
@@ -308,10 +228,90 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     end
   end
 
-  test "mint is refused when a live project already owns the repo path", ctx do
-    seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: true})
-    assert {:error, {:path_in_use, owner}} = AdoptionService.mint("run", ctx.run, [])
-    assert owner in [ctx.a, ctx.b]
+  test "mint is refused, naming the owner, when a live project already owns the repo path", ctx do
+    solo = "solo-#{ctx.id}"
+    solo_repo = Path.join(Path.dirname(ctx.repo), solo)
+    File.mkdir_p!(Path.join(solo_repo, ".git"))
+    register!(solo, solo_repo)
+    seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: solo_repo, terminal?: true})
+
+    assert {:error, {:path_in_use, ^solo}} = AdoptionService.mint("run", ctx.run, [])
+  end
+
+  test "an archived project does not block a mint at its path", ctx do
+    old = "old-#{ctx.id}"
+    old_repo = Path.join(Path.dirname(ctx.repo), old)
+    File.mkdir_p!(Path.join(old_repo, ".git"))
+    register!(old, old_repo)
+
+    assert {:ok, _} =
+             CommandGateway.dispatch_operator(%{
+               command_id: "archive-#{old}",
+               aggregate_id: "project:" <> old,
+               type: "project.archive",
+               payload: %{project_id: old}
+             })
+
+    seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: old_repo, terminal?: true})
+
+    assert {:ok, %{mode: "mint", minted_project_id: minted}} =
+             AdoptionService.mint("run", ctx.run, [])
+
+    assert minted == old <> "-2"
+  end
+
+  describe "mint refusals" do
+    test "a path that is not a git working tree", ctx do
+      plain = Path.join(Path.dirname(ctx.repo), "plain-#{ctx.id}")
+      File.mkdir_p!(plain)
+      seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: plain, terminal?: true})
+
+      assert {:error, {:path_not_a_git_working_tree, ^plain}} =
+               AdoptionService.mint("run", ctx.run, [])
+
+      assert ProjectionStore.project(Path.basename(plain)) == nil
+      assert %{project_id: a} = ProjectionStore.run(ctx.run)
+      assert a == ctx.a
+    end
+
+    test "an explicit project id that already exists", ctx do
+      fresh = Path.join(Path.dirname(ctx.repo), "fresh3-#{ctx.id}")
+      File.mkdir_p!(Path.join(fresh, ".git"))
+      seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: fresh, terminal?: true})
+
+      assert {:error, {:already_exists, :project, existing}} =
+               AdoptionService.mint("run", ctx.run, project_id: ctx.b)
+
+      assert existing == ctx.b
+    end
+
+    test "a session with no repository and no path option", ctx do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "TaskCreated",
+            payload: %{
+              task_id: ctx.task,
+              project_id: ctx.a,
+              title: "never ran",
+              status: "open",
+              task_type: "task"
+            }
+          }
+        ])
+
+      assert {:error, {:missing_or_invalid, :path}} = AdoptionService.mint("task", ctx.task, [])
+    end
+
+    test "an unknown subject kind and an unknown subject", ctx do
+      assert {:error, {:invalid_subject_kind, "branch"}} =
+               AdoptionService.mint("branch", ctx.run, [])
+
+      missing = "missing-#{ctx.id}"
+
+      assert {:error, {:subject_not_found, "run", ^missing}} =
+               AdoptionService.mint("run", missing, [])
+    end
   end
 
   test "mint creates a project from the archive manifest and moves the session in", ctx do
@@ -345,5 +345,198 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
              AdoptionService.mint("run", ctx.run, path: other)
 
     assert ProjectionStore.project(Path.basename(other)) == nil
+  end
+
+  describe "repository compatibility (E12)" do
+    setup ctx do
+      other = "other-#{ctx.id}"
+      home = Path.join(Path.dirname(ctx.repo), "home-#{ctx.id}")
+      File.mkdir_p!(Path.join(home, ".git"))
+      register!(other, home)
+      Map.put(ctx, :other, other)
+    end
+
+    defp attach!(project, repo_id, path) do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRepositoryAdded",
+            payload: %{
+              project_id: project,
+              repo_id: repo_id,
+              path: path,
+              default_branch: nil,
+              added_by: "test",
+              at: "2026-10-25T00:00:00Z"
+            }
+          }
+        ])
+    end
+
+    test "a session in an attached repository of the target moves; an unattached one does not",
+         ctx do
+      seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: true})
+
+      assert {:error, {:repo_not_in_project, repo}} =
+               AdoptionService.adopt("run", ctx.run, ctx.other)
+
+      assert repo == ctx.repo
+
+      attach!(ctx.other, "api", ctx.repo)
+      await_adopted()
+
+      assert {:ok, %{adopted?: true, project_id: target}} =
+               AdoptionService.adopt("run", ctx.run, ctx.other)
+
+      assert target == ctx.other
+      assert_adopted(ctx.run)
+      assert %{project_id: moved_to} = ProjectionStore.run(ctx.run)
+      assert moved_to == ctx.other
+    end
+
+    test "membership is read live: a detached repository closes the door again", ctx do
+      seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: true})
+      attach!(ctx.other, "api", ctx.repo)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRepositoryRemoved",
+            payload: %{
+              project_id: ctx.other,
+              repo_id: "api",
+              removed_by: "test",
+              at: "2026-10-25T00:00:01Z"
+            }
+          }
+        ])
+
+      assert {:error, {:repo_not_in_project, _repo}} =
+               AdoptionService.adopt("run", ctx.run, ctx.other)
+    end
+  end
+
+  describe "a jobsite subject" do
+    setup do
+      # `continue` approves the new task; keep the app-level Dispatcher from starting a real run.
+      :ok =
+        Supervisor.terminate_child(ForemanServer.Application, ForemanServer.Workflow.Dispatcher)
+
+      on_exit(fn -> ForemanServer.TestSupport.DispatcherRestart.restart!() end)
+    end
+
+    test "a finished jobsite moves with its archive and keeps its source in adopted_from", ctx do
+      js = "js-#{ctx.id}"
+      seed_jobsite!(%{project: ctx.a, jobsite: js, repo: ctx.repo, terminal?: true})
+      dir = archive!(:jobsite, ctx.repo, js, ctx.a)
+      await_adopted()
+
+      assert {:ok, result} = AdoptionService.adopt("jobsite", js, ctx.b)
+      assert result.adopted?
+      assert result.moved == %{task_ids: [], run_ids: [], jobsite_ids: [js]}
+      assert [%{path: ^dir, status: :updated}] = result.archive_updates
+      assert_adopted(js)
+
+      assert %{project_id: moved_to, adopted_from: from} = ProjectionStore.jobsite(js)
+      assert {moved_to, from} == {ctx.b, ctx.a}
+
+      assert {:ok, %{"project_id" => ^moved_to, "adopted_from" => ^from}} =
+               Archive.read_manifest(dir)
+    end
+
+    test "a running jobsite cannot be moved", ctx do
+      js = "js-#{ctx.id}"
+      seed_jobsite!(%{project: ctx.a, jobsite: js, repo: ctx.repo, terminal?: false})
+
+      assert {:error, {:subject_active, _status}} = AdoptionService.adopt("jobsite", js, ctx.b)
+      assert %{project_id: still} = ProjectionStore.jobsite(js)
+      assert still == ctx.a
+    end
+
+    test "continuing from a running jobsite seeds a new thread and leaves the source alone",
+         ctx do
+      js = "js-#{ctx.id}"
+      seed_jobsite!(%{project: ctx.a, jobsite: js, repo: ctx.repo, terminal?: false})
+      dir = archive!(:jobsite, ctx.repo, js, ctx.a)
+      before = File.read!(Path.join(dir, "manifest.json"))
+
+      assert {:ok, %{mode: "continue", new_task_id: task, from_project_id: from}} =
+               AdoptionService.continue("jobsite", js, ctx.b, "also add /readyz")
+
+      assert from == ctx.a
+      assert File.read!(Path.join(dir, "manifest.json")) == before
+      assert %{project_id: still} = ProjectionStore.jobsite(js)
+      assert still == ctx.a
+
+      assert %{project_id: target, title: title, prompt: prompt} =
+               ProjectionStore.task_projection(task) || flunk("task missing")
+
+      assert target == ctx.b
+      assert title == "Continue: #{js}"
+      assert prompt =~ "also add /readyz" and prompt =~ "UNTRUSTED" and prompt =~ "lib/healthz.ex"
+    end
+  end
+
+  describe "continue refusals" do
+    setup ctx do
+      seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: true})
+      :ok
+    end
+
+    defp tasks_titled(project, prefix) do
+      ProjectionStore.list_tasks()
+      |> Enum.filter(&(&1.project_id == project and String.starts_with?(&1.title, prefix)))
+    end
+
+    test "a blank prompt creates no thread", ctx do
+      assert {:error, {:missing_or_invalid, :prompt}} =
+               AdoptionService.continue("run", ctx.run, ctx.b, "  \n ")
+
+      assert tasks_titled(ctx.b, "Continue:") == []
+    end
+
+    test "an unknown source or target creates no thread", ctx do
+      missing = "missing-#{ctx.id}"
+
+      assert {:error, {:subject_not_found, "run", ^missing}} =
+               AdoptionService.continue("run", missing, ctx.b, "go")
+
+      assert {:error, {:project_not_found, ^missing}} =
+               AdoptionService.continue("run", ctx.run, missing, "go")
+
+      assert tasks_titled(ctx.b, "Continue:") == []
+    end
+
+    test "a paused target creates no thread", ctx do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "pause-#{ctx.b}",
+                 aggregate_id: "project:" <> ctx.b,
+                 type: "project.pause",
+                 payload: %{project_id: ctx.b, reason: "freeze"}
+               })
+
+      assert {:error, {:project_paused, paused}} =
+               AdoptionService.continue("run", ctx.run, ctx.b, "go")
+
+      assert paused == ctx.b
+      assert tasks_titled(ctx.b, "Continue:") == []
+    end
+
+    test "an archived target creates no thread", ctx do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "archive-#{ctx.b}",
+                 aggregate_id: "project:" <> ctx.b,
+                 type: "project.archive",
+                 payload: %{project_id: ctx.b}
+               })
+
+      assert {:error, {:project_archived, archived}} =
+               AdoptionService.continue("run", ctx.run, ctx.b, "go")
+
+      assert archived == ctx.b
+      assert tasks_titled(ctx.b, "Continue:") == []
+    end
   end
 end

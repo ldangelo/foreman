@@ -10,12 +10,17 @@ defmodule ForemanServer.Coordinator.Dispatch do
   produce them: no action handler builds such a command and this function would
   refuse it if one did.
 
+  `project.resume` is the one pause-state command in the list: only
+  `Coordinator.Actions.ApplyRecommendation` builds it, from the fix Foreman
+  itself computed for the `project.paused` setup recommendation, and only for a
+  turn with operator authority.
+
   The coordinator acts as a system actor (`dispatch_system/2`); `task.approve`
   uses `dispatch_system_approval/2`, the same path `BeadsWatcher` uses.
   """
 
   @command_types ~w(
-    task.create task.approve project.update
+    task.create task.approve project.update project.resume
     coordinator.append coordinator.action.record
     coordinator.turn.start coordinator.turn.complete coordinator.turn.fail
   )

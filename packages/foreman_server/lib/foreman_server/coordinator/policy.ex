@@ -6,8 +6,8 @@ defmodule ForemanServer.Coordinator.Policy do
   action kind; a `:machine` turn (triggered only by reports, agent-authored or
   MCP-origin messages) may only `answer`, `ask`, `propose_threads`,
   `route_followup` and `remember`. It can neither start work, approve proposals,
-  forget memory, change tuning, add repositories nor schedule. This keeps
-  machine-originated input from expanding the work envelope.
+  forget memory, change tuning, apply a setup recommendation, add repositories nor
+  schedule. This keeps machine-originated input from expanding the work envelope.
 
   `quote_verified?/2` is the confirmation heuristic for actions that loosen or
   extend the project (`add_repo`, `schedule`, loosening `set_tuning`): the action

@@ -2170,7 +2170,7 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_project_recommendations(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)
-    result = ForemanServerWeb.RecommendationsController.recommend(project_id)
+    result = ForemanServer.Projects.Recommendations.recommend_bounded(project_id)
     duration_us = System.monotonic_time(:microsecond) - start_us
 
     case result do
