@@ -8,8 +8,10 @@ defmodule ForemanServer.Approvals.DTO do
   (`tool.approve`, `tool.deny`) and only while the call is `requested`;
   `command_hints` carries the payload skeleton for each so a UI can POST it to
   `/api/commands` unchanged. The merge gate is not an action of a tool call.
-  `approval_delivery` says how a decision reaches the agent: `live` or
-  `resume_with_override` (see `ForemanServer.Approvals.Capability`).
+  `approval_delivery` says how a decision reaches the agent: `live`, `inflight` or
+  `resume_with_override` (see `ForemanServer.Approvals.Capability`). `reason` says why a call
+  was denied or expired; `outcome` is how a finished call ended, `delivered` or
+  `delivery_failed: <why>` for an approval that never reached the agent.
   """
 
   alias ForemanServer.ProjectionStore
@@ -34,6 +36,7 @@ defmodule ForemanServer.Approvals.DTO do
           decided_at: String.t() | nil,
           decided_by: String.t() | nil,
           reason: String.t() | nil,
+          outcome: String.t() | nil,
           approval_delivery: String.t() | nil,
           actions: [String.t()],
           command_hints: %{String.t() => map()}
@@ -51,6 +54,7 @@ defmodule ForemanServer.Approvals.DTO do
     :decided_at,
     :decided_by,
     :reason,
+    :outcome,
     :approval_delivery,
     :actions,
     :command_hints
@@ -72,6 +76,7 @@ defmodule ForemanServer.Approvals.DTO do
       decided_at: call.decided_at,
       decided_by: call.decided_by,
       reason: call.reason,
+      outcome: call.outcome,
       approval_delivery: call.delivery,
       actions: if(pending?, do: ["tool.approve", "tool.deny"], else: []),
       command_hints: if(pending?, do: hints(call), else: %{})

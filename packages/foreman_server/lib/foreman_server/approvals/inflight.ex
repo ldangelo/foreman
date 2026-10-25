@@ -22,13 +22,25 @@ defmodule ForemanServer.Approvals.Inflight do
     * `claude_options/1`, the `mcp_config` + `cli_path` (wrapper script) pair the
       workflow door hands the claude adapter.
 
-  A terminal run event wakes that run's waiters with a denial
-  (`{:deny, "run_ended"}`), so no pending request outlives its agent.
+  No request outlives its agent (bead foreman-u0646). A request still `requested` whose
+  agent can no longer be answered is expired (`ForemanServer.Approvals.TimeoutPolicy.expire_tool_call/4`),
+  so the operator is never offered a decision that reaches nobody, and a late one is refused with
+  `{:tool_call_expired, reason}`:
+
+    * `"server_restart"` - when this process starts: the waiter registry is empty, so every
+      in-flight request in the projection is left over from a previous server run (post-hoc and
+      live requests are not in-flight and are left alone);
+    * `"run_ended"` - on a terminal run event, for every in-flight request of that run, whether or
+      not anyone still waits for it (its waiters are also woken with `{:deny, "run_ended"}`);
+    * `"client_gone"` - when a registered waiter dies without releasing its request (the
+      connection was killed).
   """
 
   use GenServer
 
-  alias ForemanServer.Approvals.Config
+  require Logger
+
+  alias ForemanServer.Approvals.{ClaudeCli, Config, TimeoutPolicy}
   alias ForemanServer.ProjectionStore
 
   @server_name "foreman_permission"
@@ -69,7 +81,9 @@ defmodule ForemanServer.Approvals.Inflight do
 
   @doc """
   `[mcp_config: map, provider_options: map]` that makes a claude run ask Foreman
-  for permission, or `nil` when the permission endpoint's URL is unknown.
+  for permission, or `nil`, which leaves the run on the post-hoc phase-pause path, when the
+  permission endpoint's URL is unknown or the claude CLI does not know `--permission-prompt-tool`
+  (`ForemanServer.Approvals.ClaudeCli`, bead foreman-dc618; logged as a warning).
   """
   @spec claude_options(String.t()) :: keyword() | nil
   def claude_options(run_id) when is_binary(run_id) and run_id != "" do
@@ -78,17 +92,46 @@ defmodule ForemanServer.Approvals.Inflight do
         nil
 
       base ->
-        [
-          mcp_config: %{
-            @server_name => %{
-              "type" => "http",
-              "url" =>
-                base <> "/agent-permission/" <> URI.encode(run_id, &URI.char_unreserved?/1),
-              "headers" => %{"Authorization" => "Bearer " <> token(run_id)}
-            }
-          },
-          provider_options: %{cli_path: wrapper_path()}
-        ]
+        if prompt_tool_supported?() do
+          [
+            mcp_config: %{
+              @server_name => %{
+                "type" => "http",
+                "url" =>
+                  base <> "/agent-permission/" <> URI.encode(run_id, &URI.char_unreserved?/1),
+                "headers" => %{"Authorization" => "Bearer " <> token(run_id)}
+              }
+            },
+            provider_options: %{cli_path: wrapper_path()}
+          ]
+        end
+    end
+  end
+
+  # The wrapper adds `--permission-prompt-tool`, and a CLI that rejects it fails the phase at launch
+  # with an opaque exit status. Only a CLI that says it does not know the flag is refused: when the
+  # probe cannot tell, asking in flight is what ran before the probe existed.
+  defp prompt_tool_supported? do
+    case ClaudeCli.permission_prompt_tool() do
+      :supported ->
+        true
+
+      {:unsupported, executable} ->
+        Logger.warning(
+          "approvals: #{executable} does not know --permission-prompt-tool, so tool approvals " <>
+            "of claude approval_mode: prompt phases pause and re-run the phase instead of asking " <>
+            "in flight; upgrade the claude CLI to ask in flight"
+        )
+
+        false
+
+      {:unknown, reason} ->
+        Logger.warning(
+          "approvals: could not tell whether the claude CLI knows --permission-prompt-tool " <>
+            "(#{inspect(reason)}); asking in flight"
+        )
+
+        true
     end
   end
 
@@ -142,9 +185,21 @@ defmodule ForemanServer.Approvals.Inflight do
   @impl true
   def init(:ok) do
     case ProjectionStore.subscribe(replay_existing: false) do
-      :ok -> {:ok, %{waiters: %{}}}
+      :ok -> {:ok, %{waiters: %{}}, {:continue, :expire_orphans}}
       {:error, reason} -> {:stop, {:projection_subscribe_failed, reason}}
     end
+  end
+
+  # The registry is empty at start, so every in-flight request still `requested` was left by a
+  # previous server run and its agent died with it. A new request registers its waiter before it is
+  # recorded and `register/3` is served only after this returns, so none of them is a live one.
+  @impl true
+  def handle_continue(:expire_orphans, state) do
+    for %{delivery: "inflight"} = call <- ProjectionStore.pending_needs_you().tool_calls do
+      expire(call.run_id, call.tool_call_id, "server_restart")
+    end
+
+    {:noreply, state}
   end
 
   @impl true
@@ -196,19 +251,43 @@ defmodule ForemanServer.Approvals.Inflight do
 
       run_id ->
         {:reply, _count, state} = handle_call({:cancel_run, run_id, "run_ended"}, nil, state)
+
+        # A woken waiter expires its own request the same way (the first expiry is recorded); this
+        # also expires the ones nobody waits for any more.
+        for %{delivery: "inflight"} = call <- ProjectionStore.run_approvals(run_id) do
+          expire(run_id, call.tool_call_id, "run_ended")
+        end
+
         {:noreply, state}
     end
   end
 
+  # A registered waiter that dies was released by neither `unregister/3` nor a decision (both
+  # demonitor it), so the agent's connection is gone and its request is orphaned.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    waiters = for {key, {_, r} = v} <- state.waiters, r != ref, into: %{}, do: {key, v}
-    {:noreply, %{state | waiters: waiters}}
+    {gone, waiters} = Enum.split_with(state.waiters, fn {_key, {_pid, r}} -> r == ref end)
+
+    for {{run_id, tool_call_id}, _waiter} <- gone, do: expire(run_id, tool_call_id, "client_gone")
+
+    {:noreply, %{state | waiters: Map.new(waiters)}}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
 
   defp run_id(data) when is_map(data), do: Map.get(data, :run_id) || Map.get(data, "run_id")
   defp run_id(_), do: nil
+
+  defp expire(run_id, tool_call_id, reason) do
+    case TimeoutPolicy.expire_tool_call(run_id, tool_call_id, reason) do
+      {:ok, _expired_or_already_decided} ->
+        :ok
+
+      {:error, why} ->
+        Logger.error(
+          "approvals: could not expire the orphaned request #{run_id}/#{tool_call_id} (#{reason}): #{inspect(why)}"
+        )
+    end
+  end
 
   defp secret do
     case Application.get_env(:foreman_server, ForemanServerWeb.Endpoint)[:secret_key_base] do

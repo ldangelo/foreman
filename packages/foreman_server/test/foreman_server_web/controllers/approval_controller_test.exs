@@ -50,7 +50,7 @@ defmodule ForemanServerWeb.ApprovalControllerTest do
     }
   end
 
-  @keys ~w(actions approval_delivery command_hints decided_at decided_by input_summary project_id reason requested_at run_id status tool_call_id tool_name)
+  @keys ~w(actions approval_delivery command_hints decided_at decided_by input_summary outcome project_id reason requested_at run_id status tool_call_id tool_name)
 
   test "project list returns only pending requests with the whitelisted fields and action hints" do
     conn = get(build_conn(), "/api/projects/ap/approvals")
@@ -73,6 +73,46 @@ defmodule ForemanServerWeb.ApprovalControllerTest do
     done = Enum.find(calls, &(&1["tool_call_id"] == "done"))
     assert done["status"] == "denied"
     assert done["actions"] == [] and done["command_hints"] == %{}
+  end
+
+  test "an expired call says why and a finished one says how it ended (foreman-u0646)" do
+    :ok =
+      ProjectionStore.apply_events([
+        req("gone", "2026-10-21T00:04:00Z"),
+        %{
+          event_type: "ToolCallExpired",
+          payload: %{
+            run_id: "ar1",
+            tool_call_id: "gone",
+            reason: "server_restart",
+            at: "2026-10-21T00:05:00Z"
+          }
+        },
+        req("lost", "2026-10-21T00:06:00Z"),
+        %{
+          event_type: "ToolCallApproved",
+          payload: %{run_id: "ar1", tool_call_id: "lost", decided_at: "2026-10-21T00:07:00Z"}
+        },
+        %{
+          event_type: "ToolCallFinished",
+          payload: %{
+            worker_id: "approvals",
+            run_id: "ar1",
+            tool_call_id: "lost",
+            outcome: "delivery_failed: :no_live_request"
+          }
+        }
+      ])
+
+    assert %{"approvals" => calls} =
+             build_conn() |> get("/api/runs/ar1/approvals?status=all") |> json_response(200)
+
+    gone = Enum.find(calls, &(&1["tool_call_id"] == "gone"))
+    assert %{"status" => "expired", "reason" => "server_restart", "outcome" => nil} = gone
+    assert gone["actions"] == []
+
+    lost = Enum.find(calls, &(&1["tool_call_id"] == "lost"))
+    assert %{"status" => "finished", "outcome" => "delivery_failed: :no_live_request"} = lost
   end
 
   test "run endpoint matches the project endpoint for the same call" do

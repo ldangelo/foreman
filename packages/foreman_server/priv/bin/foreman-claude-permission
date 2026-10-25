@@ -5,5 +5,6 @@
 # claude adapter as its `cli_path` provider option: the adapter Foreman runs has no
 # `--permission-prompt-tool` option of its own, and `cli_path` is the supported seam.
 # The adapter's own arguments (`--print ... --mcp-config <foreman endpoint> ... -- <prompt>`)
-# follow unchanged. FOREMAN_CLAUDE_CLI overrides which claude binary runs (default: PATH).
+# follow unchanged. FOREMAN_CLAUDE_CLI overrides which claude binary runs (default: PATH);
+# ForemanServer.Approvals.ClaudeCli probes that same binary for the flag before this script is used.
 exec "${FOREMAN_CLAUDE_CLI:-claude}" --permission-prompt-tool mcp__foreman_permission__approve "$@"

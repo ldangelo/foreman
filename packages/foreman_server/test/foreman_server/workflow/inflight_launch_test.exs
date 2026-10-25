@@ -8,7 +8,13 @@ defmodule ForemanServer.Workflow.InflightLaunchTest do
 
   use ExUnit.Case, async: false
 
+  alias ForemanServer.TestSupport.FakeClaudeCli
   alias ForemanServer.Workflow.RunExecutor
+
+  # Every prompt-mode launch probes the claude CLI for `--permission-prompt-tool`
+  # (`Approvals.ClaudeCli`); each test gets its own fake CLI, so the answer never depends on
+  # what is installed on the machine.
+  @moduletag :tmp_dir
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:telemetry)
@@ -38,7 +44,8 @@ defmodule ForemanServer.Workflow.InflightLaunchTest do
     :ok
   end
 
-  setup do
+  setup %{tmp_dir: dir} do
+    FakeClaudeCli.use!(FakeClaudeCli.write!(dir, "claude", :known))
     previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766")
 
@@ -124,6 +131,22 @@ defmodule ForemanServer.Workflow.InflightLaunchTest do
 
     {_run_id, driver_opts} = opts("claude", "prompt")
     refute Keyword.has_key?(driver_opts, :mcp_config)
+  end
+
+  test "a claude CLI without --permission-prompt-tool keeps prompt mode on the phase-pause path",
+       %{tmp_dir: dir} do
+    cli = FakeClaudeCli.write!(dir, "claude-old", :unknown)
+    FakeClaudeCli.use!(cli)
+
+    {_run_id, driver_opts} = opts("claude", "prompt")
+
+    # The permission wrapper, which would pass the flag to the old CLI and fail the phase at
+    # launch, is not handed out: headless claude denies the tool and `PhasePause` asks the
+    # operator afterwards.
+    assert driver_opts[:approval_mode] == :prompt
+    refute Keyword.has_key?(driver_opts, :mcp_config)
+    assert Map.drop(Keyword.get(driver_opts, :provider_options, %{}), [:live_input]) == %{}
+    assert FakeClaudeCli.calls(cli) == ["--permission-prompt-tool"]
   end
 
   defp ensure_started(child_spec, name) do

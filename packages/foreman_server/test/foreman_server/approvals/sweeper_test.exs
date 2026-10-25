@@ -76,7 +76,7 @@ defmodule ForemanServer.Approvals.SweeperTest do
     Sweeper.sweep(sweeper(call.requested_at_ms + @timeout))
     await_projection("ToolCallExpired", :tool_call_id, "c")
 
-    assert {:error, {:tool_call_terminal, "expired"}} =
+    assert {:error, {:tool_call_expired, "timeout"}} =
              CommandGateway.dispatch_operator(%{
                type: "tool.approve",
                command_id: "op-late-#{run_id}",

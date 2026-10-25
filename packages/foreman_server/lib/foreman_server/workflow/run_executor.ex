@@ -1455,8 +1455,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `approval_mode` is `:prompt` routes each permission prompt to Foreman's
   # permission tool instead of having headless claude deny it, so the operator can
   # answer while the call is blocked and the session carries on. Any other provider
-  # (pi has no per-call approvals) or mode, or an unknown endpoint URL, leaves the
-  # E8 phase-pause path untouched.
+  # (pi has no per-call approvals) or mode, an unknown endpoint URL, or a claude CLI that
+  # does not know the flag (`Inflight.claude_options/1` is `nil`) leaves the E8 phase-pause
+  # path untouched.
   defp maybe_put_inflight_permission(driver_opts, run_id, :claude) do
     with :prompt <- Keyword.get(driver_opts, :approval_mode),
          true <- ForemanServer.Approvals.Config.inflight?(),
