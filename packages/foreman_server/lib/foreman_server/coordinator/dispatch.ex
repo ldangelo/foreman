@@ -32,7 +32,7 @@ defmodule ForemanServer.Coordinator.Dispatch do
     project.repo.add schedule.create coordinator.usage.record
   )
 
-  @operator_grade ~w(project.repo.add schedule.create)
+  @operator_grade ~w(project.repo.add schedule.create project.resume)
 
   @type result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 

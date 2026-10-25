@@ -152,8 +152,12 @@ Details and bead ids are in [`parity-audit.md`](parity-audit.md).
   `live-claude-and-approvals.md`); the 30 min default timeout was not waited.
 - `scripts/e2e` has no schedule step.
 - Per-phase repo selection and multi-repo on real GitHub were not exercised (`foreman-he4yf`); multi-repo was proven with a fake `gh`.
-- Not built: the first-turn setup proposal and `apply_recommendation` (`foreman-4orxm`), library upload in the workspace
-  (`foreman-8ervf`), running a thread on the user's own machine (C13, `foreman-zn7de`, deferred by the user).
-- Fixed on a branch, not yet run against a live provider (beads open until merged): coordinator `add_repo` and `schedule`
-  actions (`foreman-tdjj8`) and coordinator usage recording (`foreman-ba4y4`).
+- Not built: running a thread on the user's own machine (C13, `foreman-zn7de`, deferred by the user); library folder upload/replace and
+  env-var value editing in the workspace (`foreman-8ervf`); forked-session continue (`foreman-kgqqz`, blocked in the harness).
+- Fixed on branch `foreman/parity-gaps`, tested but not run against a live provider: first-turn setup proposal and `apply_recommendation`
+  (`foreman-4orxm`), coordinator `add_repo` and `schedule` actions (`foreman-tdjj8`) and usage recording (`foreman-ba4y4`), PR-ready and
+  blocked/stuck notifications with webhook URL safety (`foreman-ehz7l`, `foreman-ireii`), expiry of orphaned in-flight approvals
+  (`foreman-u0646`), the claude permission-flag probe (`foreman-dc618`), session recording so a jobsite resume never runs blank
+  (`foreman-cm8nv`, open until a live resume proves it), UTC-rollover re-admission (`foreman-7wsyx`), the `/dashboard/runs` layout
+  (`foreman-70eq6`) and the bundled `fix` prompt (`foreman-nhe4v`).
 - LiteLLM is not used by any script and is not reachable from the acceptance host.

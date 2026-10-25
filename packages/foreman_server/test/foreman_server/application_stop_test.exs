@@ -6,7 +6,7 @@ defmodule ForemanServer.ApplicationStopTest do
   owned any more.
 
   A REAL harness run (pi adapter, `fake_agent.sh` under erlexec) with a real tool process. The test
-  calls the application's own `stop/1` callback, which kills every live agent in this VM: hence
+  calls the application's own `prep_stop/1` callback, which kills every live agent in this VM: hence
   `async: false`.
   """
   use ExUnit.Case, async: false
@@ -21,13 +21,13 @@ defmodule ForemanServer.ApplicationStopTest do
     assert StrayAgent.alive?(agent)
     assert StrayAgent.alive?(stray)
 
-    assert :ok = ForemanServer.Application.stop([])
+    assert [] = ForemanServer.Application.prep_stop([])
 
     refute StrayAgent.alive?(agent)
     refute StrayAgent.alive?(stray), "the tool process outlived the shutdown"
   end
 
   test "with no agent running it stops at once" do
-    assert :ok = ForemanServer.Application.stop([])
+    assert [] = ForemanServer.Application.prep_stop([])
   end
 end

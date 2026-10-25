@@ -191,14 +191,15 @@ defmodule ForemanServer.Application do
     {:ok, pid}
   end
 
-  # Runs once the supervision tree (every RunExecutor, worker and jobsite executor) has stopped,
-  # while the harness - a dependency, stopped after this application - still has the agents it
-  # started. It kills them as it stops, but only each agent's own process group: the tool
-  # processes an agent started (pi runs each in a session of its own) would outlive it,
-  # re-parented to pid 1, running in worktrees nobody owns any more. They are taken out here,
-  # together with the agents, while the process tree is still intact.
+  # Runs BEFORE the supervision tree is stopped, while every agent and the tool processes it
+  # started are still alive and parented to it. (`stop/1` runs after the tree is down: by then
+  # a RunExecutor or jobsite executor may already have stopped its agent, killing only the
+  # agent's own process group and leaving its tool processes re-parented to pid 1, where no
+  # sweep can find them by ancestry; seen as an intermittent `shutdown-strays` FAIL.) Each
+  # agent and everything it spawned is taken out here (foreman-zmhzw): pi runs each tool in a
+  # session of its own, so signalling the agent's group alone is not enough.
   @impl true
-  def stop(_state) do
+  def prep_stop(state) do
     alias ForemanServer.AgentRuntime.JidoHarness.Driver
     alias ForemanServer.Workflow.OrphanReaper
 
@@ -210,7 +211,7 @@ defmodule ForemanServer.Application do
         Logger.warning("could not stop the agents' processes at shutdown: #{inspect(reason)}")
     end
 
-    :ok
+    state
   end
 
   @doc """
