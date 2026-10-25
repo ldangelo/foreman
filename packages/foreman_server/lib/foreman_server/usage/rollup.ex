@@ -14,9 +14,14 @@ defmodule ForemanServer.Usage.Rollup do
     * A record without a model or provider lands in the reserved bucket
       `"unknown"` rather than being dropped.
 
-  A record is a map with `:thread_kind` (`"workflow" | "jobsite"`), `:thread_id`,
-  `:role` (`"thread" | "coordinator" | "review"`), `:model`, `:provider`, `:at`
-  (ISO-8601 UTC) and `:usage` (`%Usage{}`).
+  A record is a map with `:thread_kind` (`"workflow" | "jobsite" | "coordinator"`),
+  `:thread_id` (`nil` for a coordinator turn), `:role` (`"thread" | "coordinator" |
+  "review"`), `:model`, `:provider`, `:at` (ISO-8601 UTC) and `:usage` (`%Usage{}`).
+
+  A coordinator turn belongs to no thread, so a record with `thread_id: nil` is
+  folded into `total`, `by_day`, `by_model`, `by_provider` and `by_role` but NOT
+  into `by_thread`: the thread count, the thread rows and the cache hints stay
+  thread-only.
 
   Day buckets older than #{366} days before the newest day seen are pruned from
   `by_day` on `add/2` (they stay in `total` and the other breakdowns).
@@ -47,7 +52,7 @@ defmodule ForemanServer.Usage.Rollup do
 
   @type usage_record :: %{
           required(:thread_kind) => String.t(),
-          required(:thread_id) => String.t(),
+          required(:thread_id) => String.t() | nil,
           required(:role) => String.t(),
           required(:model) => String.t() | nil,
           required(:provider) => String.t() | nil,
@@ -112,6 +117,8 @@ defmodule ForemanServer.Usage.Rollup do
 
   defp bump(map, key, usage),
     do: Map.update(map, key, add_bucket(%Bucket{}, usage), &add_bucket(&1, usage))
+
+  defp add_thread(threads, %{thread_id: nil}), do: threads
 
   defp add_thread(threads, %{thread_id: id, usage: usage, at: at} = record) do
     recent = %{at: at, usage: usage}

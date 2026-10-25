@@ -17,13 +17,22 @@ defmodule ForemanServer.Coordinator.Dispatch do
 
   The coordinator acts as a system actor (`dispatch_system/2`); `task.approve`
   uses `dispatch_system_approval/2`, the same path `BeadsWatcher` uses.
+
+  `project.repo.add` and `schedule.create` are the two operator-grade commands on
+  the list: they run through `dispatch_operator/1`, i.e. the validation,
+  id generation and timestamping of the CLI/HTTP verbs (repository path checks,
+  `at` stamped by the gateway), never the unvalidated system path. The Executor
+  only issues them for an operator turn that carries the operator's own words.
   """
 
   @command_types ~w(
     task.create task.approve project.update project.resume
     coordinator.append coordinator.action.record
     coordinator.turn.start coordinator.turn.complete coordinator.turn.fail
+    project.repo.add schedule.create coordinator.usage.record
   )
+
+  @operator_grade ~w(project.repo.add schedule.create)
 
   @type result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -40,6 +49,9 @@ defmodule ForemanServer.Coordinator.Dispatch do
 
       type == "task.approve" ->
         gateway.dispatch_system_approval(command)
+
+      type in @operator_grade ->
+        gateway.dispatch_operator(command)
 
       true ->
         gateway.dispatch_system(command)

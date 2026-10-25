@@ -89,7 +89,10 @@ defmodule ForemanServer.Coordinator.Action do
     },
     schedule: %{
       "spec" => {:text, 500, :required},
-      "prompt" => {:text, @max_text, :optional},
+      "prompt" => {:text, @max_text, :required},
+      "name" => {:text, @max_name, :optional},
+      "workflow" => {:text, @max_name, :optional},
+      "task_type" => {:text, @max_name, :optional},
       "quote" => {:text, @max_text, :optional}
     }
   }

@@ -183,10 +183,19 @@ defmodule ForemanServer.MCP.ToolsCoordinatorTest do
              Tools.call_tool("foreman_project_conversation", %{project_id: p, limit: 2})
 
     assert result |> Map.from_struct() |> Map.keys() |> Enum.sort() ==
-             [:has_more, :messages, :next_cursor, :status, :truncated_before_seq]
+             [
+               :has_more,
+               :messages,
+               :next_cursor,
+               :pending_messages,
+               :status,
+               :truncated_before_seq
+             ]
 
     assert result.has_more
     assert result.status == "idle"
+    # no coordinator runs in this test: all three operator messages are still pending
+    assert result.pending_messages == 3
     assert Enum.map(result.messages, & &1["text"]) == ["t1", "t2"]
 
     assert result.messages |> hd() |> Map.keys() |> Enum.sort() ==

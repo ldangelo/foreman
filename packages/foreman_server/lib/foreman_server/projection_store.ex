@@ -32,7 +32,15 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
-  alias ForemanServer.Events.{UsageRecorded, WorkerSessionBound, WorkerStderr, WorkerStdout}
+
+  alias ForemanServer.Events.{
+    CoordinatorUsageRecorded,
+    UsageRecorded,
+    WorkerSessionBound,
+    WorkerStderr,
+    WorkerStdout
+  }
+
   alias ForemanServer.Usage
   alias ForemanServer.Usage.Ledger, as: UsageLedger
 
@@ -2867,6 +2875,40 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:usage, total)
         end)
         |> record_worker_usage(event, usage, payload)
+
+      :error ->
+        state
+    end
+  end
+
+  # A coordinator turn's provider usage. A turn is not a run, so this must never
+  # reach `update_run_projection/4` (it would plant a run that never finishes).
+  # The ledger key is the turn, so folding the same event twice (live, then
+  # replayed) replaces instead of double counting; `thread_id: nil` keeps it out
+  # of the thread rows (`Usage.Rollup`).
+  defp apply_event_by_type(state, "CoordinatorUsageRecorded", payload) do
+    case decode_or_skip("CoordinatorUsageRecorded", payload) do
+      {:ok, %CoordinatorUsageRecorded{} = event} ->
+        usage = Usage.from_fields(Map.from_struct(event))
+
+        if Usage.empty?(usage) do
+          state
+        else
+          record_usage(
+            state,
+            event.project_id,
+            {"coordinator", event.project_id, {:turn, event.turn_id}},
+            %{
+              thread_kind: "coordinator",
+              thread_id: nil,
+              role: "coordinator",
+              model: event.model,
+              provider: event.provider,
+              at: usage_at(event.at, payload),
+              usage: usage
+            }
+          )
+        end
 
       :error ->
         state

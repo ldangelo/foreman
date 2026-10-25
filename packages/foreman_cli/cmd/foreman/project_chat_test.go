@@ -179,6 +179,73 @@ func TestProjectChatPollsAgainWhenHasMore(t *testing.T) {
 	}
 }
 
+// chatPendingPageBody is chatPageBody plus the page's pending_messages count.
+func chatPendingPageBody(status string, pending, next int, msgs ...string) string {
+	return strings.TrimSuffix(chatPageBody(status, next, false, msgs...), "}") + `,"pending_messages":` + itoa(pending) + `}`
+}
+
+// Between two turns the coordinator is "idle" while the operator's message is
+// still pending: the CLI must keep waiting for the answer to that message.
+func TestProjectChatKeepsWaitingWhileMessagesPending(t *testing.T) {
+	setChatStdin(t, "", false)
+	c, cs := newChatServer(t, func(n int, call chatCall) (int, string) {
+		switch n {
+		case 1:
+			return 202, `{"message_id":"cli-1","seq":7}`
+		case 2:
+			return 200, chatPendingPageBody("idle", 1, 8, chatReply)
+		default:
+			return 200, chatPendingPageBody("idle", 0, 9, chatNote)
+		}
+	})
+	stdout, stderr, code := runChat(t, c, "p1", "go")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if stdout != "On it.\n[system notice] started thread th-1\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	calls := cs.snapshot()
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want POST + 2 polls: %+v", len(calls), calls)
+	}
+	if got := calls[2].query; got != "after=8&limit=200&wait_ms=20000" {
+		t.Fatalf("second poll query = %q", got)
+	}
+}
+
+// A server that does not send pending_messages decodes as 0: idle ends the wait.
+func TestProjectChatIdleWithoutPendingFieldReturnsImmediately(t *testing.T) {
+	setChatStdin(t, "", false)
+	c, cs := newChatServer(t, func(n int, call chatCall) (int, string) {
+		if n == 1 {
+			return 202, `{"message_id":"cli-1","seq":7}`
+		}
+		return 200, chatPageBody("idle", 8, false, chatReply)
+	})
+	stdout, stderr, code := runChat(t, c, "p1", "go")
+	if code != 0 || stdout != "On it.\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if n := len(cs.snapshot()); n != 2 {
+		t.Fatalf("calls = %d, want POST + 1 poll", n)
+	}
+}
+
+func TestProjectChatPendingForeverEndsWithTimeout(t *testing.T) {
+	setChatStdin(t, "", false)
+	c, _ := newChatServer(t, func(n int, call chatCall) (int, string) {
+		if n == 1 {
+			return 202, `{"message_id":"cli-1","seq":7}`
+		}
+		return 200, chatPendingPageBody("idle", 1, 7)
+	})
+	_, stderr, code := runChat(t, c, "--timeout", "100ms", "p1", "go")
+	if code == 0 || !strings.Contains(stderr, "timed out after 100ms waiting for the coordinator") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
 func TestProjectChatNoWait(t *testing.T) {
 	setChatStdin(t, "", false)
 	c, cs := newChatServer(t, func(int, chatCall) (int, string) {

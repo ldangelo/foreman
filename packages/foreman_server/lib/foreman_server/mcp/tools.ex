@@ -143,16 +143,31 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defmodule ProjectConversationResult do
-    @enforce_keys [:messages, :next_cursor, :has_more, :truncated_before_seq, :status]
+    @enforce_keys [
+      :messages,
+      :next_cursor,
+      :has_more,
+      :truncated_before_seq,
+      :status,
+      :pending_messages
+    ]
     @type t :: %__MODULE__{
             messages: [map()],
             next_cursor: non_neg_integer(),
             has_more: boolean(),
             truncated_before_seq: pos_integer() | nil,
-            status: String.t()
+            status: String.t(),
+            pending_messages: non_neg_integer()
           }
     @derive Jason.Encoder
-    defstruct [:messages, :next_cursor, :has_more, :truncated_before_seq, :status]
+    defstruct [
+      :messages,
+      :next_cursor,
+      :has_more,
+      :truncated_before_seq,
+      :status,
+      :pending_messages
+    ]
   end
 
   defmodule ProjectMessageResult do
@@ -1872,7 +1887,8 @@ defmodule ForemanServer.MCP.Tools do
            next_cursor: view["next_cursor"],
            has_more: view["has_more"],
            truncated_before_seq: view["truncated_before_seq"],
-           status: view["status"]
+           status: view["status"],
+           pending_messages: view["pending_messages"]
          }}
       end
 

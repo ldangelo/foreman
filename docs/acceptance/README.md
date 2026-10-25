@@ -152,7 +152,8 @@ Details and bead ids are in [`parity-audit.md`](parity-audit.md).
   `live-claude-and-approvals.md`); the 30 min default timeout was not waited.
 - `scripts/e2e` has no schedule step.
 - Per-phase repo selection and multi-repo on real GitHub were not exercised (`foreman-he4yf`); multi-repo was proven with a fake `gh`.
-- Not built: the first-turn setup proposal and `apply_recommendation` (`foreman-4orxm`), coordinator `add_repo` and `schedule`
-  actions (`foreman-tdjj8`), coordinator usage recording (`foreman-ba4y4`), library upload in the workspace (`foreman-8ervf`),
-  running a thread on the user's own machine (C13, `foreman-zn7de`, deferred by the user).
+- Not built: the first-turn setup proposal and `apply_recommendation` (`foreman-4orxm`), library upload in the workspace
+  (`foreman-8ervf`), running a thread on the user's own machine (C13, `foreman-zn7de`, deferred by the user).
+- Fixed on a branch, not yet run against a live provider (beads open until merged): coordinator `add_repo` and `schedule`
+  actions (`foreman-tdjj8`) and coordinator usage recording (`foreman-ba4y4`).
 - LiteLLM is not used by any script and is not reachable from the acceptance host.

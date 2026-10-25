@@ -460,7 +460,7 @@ foreman project list --include-archived
 
 ### `foreman project chat`
 
-Talk to a project's coordinator. A message (arguments, `-m`, or piped stdin) is POSTed to `/api/projects/:id/coordinator/messages`; the CLI then long-polls `GET .../messages?after=<seq>&wait_ms=20000` and prints coordinator/system/agent messages until the coordinator is idle again. With no message on a TTY it runs an interactive loop (`/restart` restarts the coordinator, `/quit` or EOF exits).
+Talk to a project's coordinator. A message (arguments, `-m`, or piped stdin) is POSTed to `/api/projects/:id/coordinator/messages`; the CLI then long-polls `GET .../messages?after=<seq>&wait_ms=20000` and prints coordinator/system/agent messages until the coordinator is idle again: no turn open and no message left pending (`status: idle` and `pending_messages: 0`), so a reply to an earlier report does not end the wait before your message was answered. With no message on a TTY it runs an interactive loop (`/restart` restarts the coordinator, `/quit` or EOF exits).
 
 ```
 foreman project chat project-123 "fix the login bug"

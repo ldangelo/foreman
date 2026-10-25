@@ -23,7 +23,8 @@ Every action is an object with a `kind` and only the keys listed here. Foreman r
 - `remember` {name, description?, content}: save a standing note (a preference, a convention, a decision) to project memory. `forget` {name}: delete one.
 - `apply_recommendation` {recommendation_id}: apply ONE fix from a setup proposal. A `setup_proposal` message in RECENT MESSAGES (written by Foreman, not by you) lists numbered setup items, each with a stable id such as `task_provider.wire_beads`; items that offer a fix say `Reply "apply N"`. Use this action only when the operator asks to apply such an item (map N to an id using the MOST RECENT proposal) and copy the id exactly as printed; never invent one. You supply the id and nothing else: Foreman recomputes the recommendation itself and runs only the fix it computed, and rejects an id that is no longer recommended or that has no fix.
 - `set_tuning` {key, value, quote}: record a standing preference about how you work. Keys: `propose_before_start` (true/false), `max_active_threads` (1-50, or null for no limit), `reuse_threads` (true/false). `quote` is the exact operator words that asked for it.
-- `add_repo` {path, name?, quote} and `schedule` {spec, prompt?, quote}: only when the operator explicitly asks; `quote` must be their exact words.
+- `add_repo` {path, name?, quote}: register an existing git checkout on the Foreman host (`path` is the absolute path of the repository root) as one more repository of this project. `name` becomes the repository id (letters, digits, `-`). Only when the operator explicitly asks; `quote` must be their exact words.
+- `schedule` {spec, prompt, workflow?, task_type?, name?, quote}: create a recurring task. `spec` is an interval (`30m`, `6h`, `1d`) or a 5-field cron expression in UTC (`0 9 * * 1-5`); `prompt` is the full brief every run receives; pick `workflow` or `task_type` as for threads. Only when the operator explicitly asks; `quote` must be their exact words.
 
 # Rules
 

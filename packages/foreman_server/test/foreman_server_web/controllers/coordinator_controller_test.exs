@@ -12,7 +12,7 @@ defmodule ForemanServerWeb.CoordinatorControllerTest do
   @token "coordinator-controller-test-token"
 
   @message_keys ~w(at kind message_id report_key role seq source suppressed text thread_ref turn_id)
-  @page_keys ~w(has_more messages next_cursor status truncated_before_seq)
+  @page_keys ~w(has_more messages next_cursor pending_messages status truncated_before_seq)
   @status_keys ~w(consecutive_failures last_activity_at last_error open_turn pending_messages status)
 
   setup %{tmp_dir: dir} do

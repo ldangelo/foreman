@@ -12,6 +12,9 @@ defmodule ForemanServer.Aggregates.Coordinator do
       nothing.
     * `coordinator.turn.start`, `coordinator.action.record`,
       `coordinator.turn.complete`, `coordinator.turn.fail` (system only).
+    * `coordinator.usage.record` (system only) -> `CoordinatorUsageRecorded`:
+      the provider usage of the open turn. It feeds the usage rollup and
+      changes no conversation state (`apply_event/2` ignores it).
 
   A duplicate `message_id` or `report_key` is a no-op (`{:ok, nil}`). At most
   one turn is open at a time. `turn.fail` counts consecutive failures and moves
@@ -31,6 +34,7 @@ defmodule ForemanServer.Aggregates.Coordinator do
   @default_max_message_bytes 16_000
   @default_unhealthy_after 3
   @seen_cap 1_000
+  @usage_counts ~w(input_tokens output_tokens cache_read_tokens cache_write_tokens total_tokens)a
 
   @doc "Stream id for a project's coordinator conversation."
   @spec stream_id(String.t()) :: String.t()
@@ -315,6 +319,30 @@ defmodule ForemanServer.Aggregates.Coordinator do
     end
   end
 
+  def handle_command(%State{} = state, %{type: "coordinator.usage.record", payload: payload}) do
+    with {:ok, project_id} <- project_id(payload),
+         {:ok, turn_id} <- Aggregate.required_binary(Aggregate.get(payload, :turn_id), :turn_id),
+         {:ok, provider} <-
+           Aggregate.required_binary(Aggregate.get(payload, :provider), :provider),
+         :ok <- optional_binary(payload, :model),
+         {:ok, usage} <- validate_usage(payload),
+         :ok <- ensure_turn_open(state, turn_id) do
+      {:ok,
+       %{
+         stream_id: stream_id(project_id),
+         event_type: "CoordinatorUsageRecorded",
+         payload:
+           Map.merge(usage, %{
+             project_id: project_id,
+             turn_id: turn_id,
+             provider: provider,
+             model: Aggregate.get(payload, :model),
+             at: now()
+           })
+       }}
+    end
+  end
+
   def handle_command(%State{}, %{type: "coordinator.restart", payload: payload}) do
     with {:ok, project_id} <- project_id(payload),
          :ok <- optional_binary(payload, :by) do
@@ -390,6 +418,34 @@ defmodule ForemanServer.Aggregates.Coordinator do
   defp validate_threshold(nil), do: {:ok, @default_unhealthy_after}
   defp validate_threshold(n) when is_integer(n) and n >= 1, do: {:ok, n}
   defp validate_threshold(_), do: {:error, {:missing_or_invalid, :unhealthy_after}}
+
+  # Token counts are non-negative integers and the cost a non-negative number;
+  # `nil` means the provider did not report it (never 0). A usage with nothing
+  # reported is refused: an all-nil event would read as "recorded, unknown".
+  defp validate_usage(payload) do
+    with {:ok, counts} <- validate_counts(payload),
+         {:ok, cost} <- validate_cost(Aggregate.get(payload, :cost_usd)) do
+      usage = Map.put(counts, :cost_usd, cost)
+
+      if Enum.all?(Map.values(usage), &is_nil/1),
+        do: {:error, {:missing_or_invalid, :usage}},
+        else: {:ok, usage}
+    end
+  end
+
+  defp validate_counts(payload) do
+    Enum.reduce_while(@usage_counts, {:ok, %{}}, fn key, {:ok, counts} ->
+      case Aggregate.get(payload, key) do
+        nil -> {:cont, {:ok, Map.put(counts, key, nil)}}
+        n when is_integer(n) and n >= 0 -> {:cont, {:ok, Map.put(counts, key, n)}}
+        _ -> {:halt, {:error, {:missing_or_invalid, key}}}
+      end
+    end)
+  end
+
+  defp validate_cost(nil), do: {:ok, nil}
+  defp validate_cost(cost) when is_number(cost) and cost >= 0, do: {:ok, cost * 1.0}
+  defp validate_cost(_), do: {:error, {:missing_or_invalid, :cost_usd}}
 
   defp validate_id_list(nil), do: {:ok, []}
 

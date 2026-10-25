@@ -22,9 +22,15 @@ defmodule ForemanServer.Coordinator.Executor do
   Enforcement, not advice: `propose_before_start` forces every thread this module
   creates to stay `open` (a proposal) whatever the model emitted; the active
   thread cap, per-turn caps and the project's daily thread cap reject visibly.
+
+  `add_repo` and `schedule` are operator-grade: they need an operator turn AND the
+  operator's own words (`quote`), and then run through the gateway's operator path,
+  so the validation and limits of the CLI verbs apply to them unchanged.
   """
 
   require Logger
+
+  alias ForemanServer.Aggregates.Schedule
 
   alias ForemanServer.Coordinator.{
     Action,
@@ -37,6 +43,7 @@ defmodule ForemanServer.Coordinator.Executor do
   }
 
   alias ForemanServer.{ProjectionStore, ProjectMemory}
+  alias ForemanServer.Projects.RepoValidation
 
   @terminal_thread_statuses ~w(completed failed cancelled)
 
@@ -241,15 +248,8 @@ defmodule ForemanServer.Coordinator.Executor do
 
   defp handle(%Action{kind: :set_tuning} = a, ctx, _state), do: set_tuning(a, ctx)
 
-  defp handle(%Action{kind: kind} = a, ctx, _state) when kind in [:add_repo, :schedule] do
-    handlers =
-      :foreman_server |> Application.get_env(:coordinator, []) |> Keyword.get(:handlers, %{})
-
-    case Map.get(handlers, kind) do
-      nil -> {"rejected", {:unsupported, kind}, nil, 0}
-      module -> module.handle(a, ctx)
-    end
-  end
+  defp handle(%Action{kind: :add_repo} = a, ctx, _state), do: add_repo(a, ctx)
+  defp handle(%Action{kind: :schedule} = a, ctx, _state), do: schedule(a, ctx)
 
   defp reply(ctx, message_id, text) do
     attrs = %{role: "coordinator", kind: "reply", text: text, turn_id: ctx.turn_id}
@@ -710,14 +710,145 @@ defmodule ForemanServer.Coordinator.Executor do
 
   defp stringify(map), do: Map.new(map, fn {k, v} -> {Atom.to_string(k), v} end)
 
+  # -------------------------------------------------------- repository, schedule
+
+  # Both are operator-grade: `Dispatch` runs them through the gateway's operator
+  # path, so the checks and limits are those of `foreman project repo add` and
+  # `foreman project schedule create` (a git work tree that is not yet a member;
+  # the interval floor, the per-project schedule cap, an installed workflow).
+  # Like loosening a limit, they also need the operator's own words (`quote`).
+
+  defp add_repo(%Action{params: %{"path" => path} = p} = a, ctx) do
+    with :ok <- check_quote(true, p, ctx),
+         {:ok, repo_id} <- repo_id(p) do
+      ref = %{"repo_id" => repo_id, "path" => path}
+
+      if added_by_coordinator?(ctx, repo_id, path) do
+        {"executed", nil, Map.put(ref, "already_registered", true), 0}
+      else
+        command = %{
+          command_id: "coord:repo.add:" <> a.id,
+          aggregate_id: "project:" <> ctx.project_id,
+          type: "project.repo.add",
+          payload: %{
+            project_id: ctx.project_id,
+            repo_id: repo_id,
+            path: path,
+            added_by: "coordinator:" <> ctx.project_id
+          }
+        }
+
+        dispatch_operator_grade(ctx, command, ref, :add_repo_refused)
+      end
+    else
+      {:error, reason} -> {"rejected", reason, nil, 0}
+    end
+  end
+
+  # The repository id is the `name` (else the directory name) reduced to the id
+  # syntax of `RepoValidation`, so the same action always yields the same id.
+  defp repo_id(%{"path" => path} = params) do
+    base = Map.get(params, "name", Path.basename(path))
+
+    id =
+      base
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+      |> String.trim("-")
+      |> String.slice(0, 32)
+      |> String.trim_trailing("-")
+
+    case RepoValidation.validate_id(id) do
+      :ok -> {:ok, id}
+      {:error, _} -> {:error, {:invalid_repo_name, base}}
+    end
+  end
+
+  # A re-run of this very action (the turn was interrupted after the command
+  # committed) finds its repository already registered; the gateway would refuse
+  # the path as a duplicate, which is not what happened.
+  defp added_by_coordinator?(ctx, repo_id, path) do
+    added_by = "coordinator:" <> ctx.project_id
+
+    with repos when is_list(repos) <- ProjectionStore.project_repositories(ctx.project_id),
+         %{path: registered} <- Enum.find(repos, &(&1.id == repo_id and &1.added_by == added_by)),
+         {:ok, canonical} <- RepoValidation.canonical_path(path) do
+      registered == canonical
+    else
+      _ -> false
+    end
+  end
+
+  defp schedule(%Action{params: %{"spec" => spec, "prompt" => prompt} = p} = a, ctx) do
+    with :ok <- check_quote(true, p, ctx),
+         {:ok, workflow} <- WorkflowSelector.select(p, ctx.workflows, ctx.invalid_workflows) do
+      schedule_id = schedule_id(ctx.project_id, a.id)
+      name = Redact.text(ctx.project_id, Map.get(p, "name", first_line(prompt)))
+
+      command = %{
+        command_id: "coord:schedule.create:" <> a.id,
+        aggregate_id: Schedule.stream_id(ctx.project_id, schedule_id),
+        type: "schedule.create",
+        payload: %{
+          project_id: ctx.project_id,
+          schedule_id: schedule_id,
+          name: name,
+          spec: schedule_spec(spec),
+          prompt: Redact.text(ctx.project_id, prompt),
+          workflow: workflow,
+          # A schedule never starts unattended what this project makes the coordinator propose.
+          auto_approve: not ctx.tuning.propose_before_start
+        }
+      }
+
+      ref = %{"schedule_id" => schedule_id, "name" => name, "workflow" => workflow}
+      dispatch_operator_grade(ctx, command, ref, :schedule_refused)
+    else
+      {:error, reason} -> {"rejected", reason, nil, 0}
+    end
+  end
+
+  # The MCP `foreman_schedule_create` derivation with the action id as the request
+  # id: a re-run targets the same stream and command id.
+  defp schedule_id(project_id, action_id) do
+    digest =
+      :crypto.hash(:sha256, "schedule.create\0" <> project_id <> "\0" <> action_id)
+      |> Base.encode16(case: :lower)
+
+    "sch-" <> binary_part(digest, 0, 12)
+  end
+
+  # One word is an interval (`30m`), anything else a cron expression: the
+  # aggregate's `Schedule.Spec` is the judge of both.
+  defp schedule_spec(text) do
+    case String.split(text) do
+      [interval] -> %{"every" => interval}
+      _fields -> %{"cron" => text}
+    end
+  end
+
+  defp first_line(text), do: text |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 80)
+
+  defp dispatch_operator_grade(ctx, command, ref, refused) do
+    case Dispatch.system(ctx.gateway, command) do
+      {:ok, _} -> {"executed", nil, ref, 0}
+      {:error, reason} -> {"rejected", {refused, reason}, nil, 0}
+      {:error, reason, detail} -> {"rejected", {refused, {reason, detail}}, nil, 0}
+    end
+  end
+
   # -------------------------------------------------------------------- reasons
 
-  defp reason_text({:unsupported, :add_repo}),
+  defp reason_text({:schedule_refused, {:invalid_schedule_spec, field, why}}),
     do:
-      "adding repositories is not available through the coordinator in this Foreman build; add it from the CLI"
+      "the schedule spec is not valid (#{field}: #{why}); use an interval such as 30m, 6h or 1d, " <>
+        "or a 5-field cron expression in UTC such as \"0 9 * * 1-5\""
 
-  defp reason_text({:unsupported, :schedule}),
-    do: "scheduling is not available through the coordinator in this Foreman build"
+  defp reason_text({refused, reason}) when refused in [:add_repo_refused, :schedule_refused],
+    do: reason_text(reason)
+
+  defp reason_text({:invalid_repo_name, name}),
+    do: "cannot make a repository id from #{inspect(name)}; give a name of letters and digits"
 
   defp reason_text({:not_permitted, kind, :machine_turn}),
     do:
