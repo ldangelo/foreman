@@ -11,6 +11,7 @@ defmodule ForemanServer.ProjectionStoreUnknownIdTest do
   import ExUnit.CaptureLog
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @at "2026-08-10T00:00:00Z"
@@ -153,5 +154,65 @@ defmodule ForemanServer.ProjectionStoreUnknownIdTest do
 
     assert %{"phase-real" => %{phase_id: "phase-real", status: "failed", artifact: %{path: "p"}}} =
              phases()
+  end
+
+  describe "[:foreman, :projection, :event_dropped] telemetry" do
+    @event_dropped [:foreman, :projection, :event_dropped]
+
+    setup do
+      {handler_id, ref} = Handler.attach_event_handlers(self(), [@event_dropped])
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+      %{ref: ref}
+    end
+
+    test "every dropped task event reports its type, the collection and the id", %{ref: ref} do
+      events = task_events("task-ghost", "run-ghost")
+      capture_log(fn -> for event <- events, do: apply!([event]) end)
+
+      for {type, _payload} <- events do
+        assert_receive {@event_dropped, ^ref, %{count: 1},
+                        %{event_type: ^type, collection: :tasks, id: "task-ghost"}}
+      end
+    end
+
+    test "every dropped phase event reports its type, the collection and the id", %{ref: ref} do
+      events = phase_events("phase-ghost", "run-ghost")
+      capture_log(fn -> for event <- events, do: apply!([event]) end)
+
+      for {type, _payload} <- events do
+        assert_receive {@event_dropped, ^ref, %{count: 1},
+                        %{event_type: ^type, collection: :phases, id: "phase-ghost"}}
+      end
+    end
+
+    test "a stall for an unknown task and phase reports one drop per collection", %{ref: ref} do
+      stall =
+        {"RunStallReported",
+         %{
+           run_id: "run-s",
+           phase_id: "phase-ghost",
+           task_id: "task-ghost",
+           reason: "no_output",
+           detected_at: @at
+         }}
+
+      capture_log(fn -> apply!([stall]) end)
+
+      assert_receive {@event_dropped, ^ref, %{count: 1},
+                      %{event_type: "RunStallReported", collection: :phases, id: "phase-ghost"}}
+
+      assert_receive {@event_dropped, ^ref, %{count: 1},
+                      %{event_type: "RunStallReported", collection: :tasks, id: "task-ghost"}}
+    end
+
+    test "events for ids the store knows drop nothing", %{ref: ref} do
+      apply!([
+        {"TaskCreated",
+         %{task_id: "task-real", project_id: "p-1", title: "t", status: "open", task_type: "task"}}
+        | task_events("task-real", "run-real")
+      ])
+
+      refute_receive {@event_dropped, ^ref, _measurements, %{id: "task-real"}}, 100
+    end
   end
 end

@@ -38,7 +38,7 @@
 # E2E_THREE_ONLY=1 runs only setup, step 1 and step 5b (the three-task paste and overlap assertion);
 # E2E_THREE_TASK_MAX_RUNS=1 forces the project to one run at a time for step 5b, so the overlap
 # assertion must FAIL (the evidence that it can). `bash claude_projects/overlap.sh` runs only the
-# stack-free self-test of the interval helpers.
+# stack-free self-test of the interval, paste and branch-read helpers.
 # E2E_GITHUB=1 is refused: the harness never creates a GitHub repository (use
 # FOREMAN_E2E_GITHUB_REPO with an existing scratch repo instead).
 
@@ -262,13 +262,14 @@ C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-
 
   : > "$WORK/three-task-intervals.txt"
   for tid in $(printf '%s\n' "$titles" | cut -f1); do
+    ttries=30
     if wait_thread "$tid" "completed|ready_for_review|resolved|done" "$E2E_RUN_TIMEOUT"; then
       pass "thread $tid reached terminal-success status '$THREAD_STATUS'"
     else
       fail "thread $tid ended as '$THREAD_STATUS' (expected completed)"
+      ttries=0
     fi
     trun=$(api_get "/api/threads/$tid" | jq -r '.thread.run_ids[0] // empty')
-    tbranch=$(api_get "/api/threads/$tid" | jq -r '.thread.branch // empty')
     ttitle=$(printf '%s\n' "$titles" | awk -F'\t' -v t="$tid" '$1 == t { print $2 }')
     case "$ttitle" in
       "$tag A") tfile=alpha-$SUFFIX.txt; tword=ALPHA-$SUFFIX ;;
@@ -276,12 +277,9 @@ C. Create a file charlie-$SUFFIX.txt containing exactly the single word CHARLIE-
       "$tag C") tfile=charlie-$SUFFIX.txt; tword=CHARLIE-$SUFFIX ;;
       *) fail "thread $tid has an unexpected title '$ttitle' (wanted '$tag A', '$tag B' or '$tag C')"; continue ;;
     esac
-    tgot=$(git -C "$REPO" show "$tbranch:$tfile" 2>/dev/null)
-    assert_content_exactly "thread '$ttitle': $tfile on its branch" "$tgot" "$tword"
-    if ! content_exactly "$tgot" "$tword"; then
-      note "diagnostics for $tid: branch='$tbranch' run='$trun' thread=$(api_get "/api/threads/$tid" | jq -c '.thread | {status, branch, run_ids, resolved}' 2>/dev/null)"
-      note "diagnostics: files on that branch: $(git -C "$REPO" ls-tree --name-only "$tbranch" 2>&1 | tr '\n' ' ' | cut -c1-300); branches: $(git -C "$REPO" branch --list 'foreman/*' 2>&1 | tr '\n' ' ' | cut -c1-600)"
-    fi
+    # The file is read from the branch the thread projection names, polling (30 x 1 s) while it is unreadable; a
+    # FAIL prints the diagnostics of foreman-2onq1 (claude_projects/overlap.sh: await_thread_file).
+    await_thread_file "$tid" "$tfile" "$tword" "thread '$ttitle': $tfile on its branch" "$ttries"
     [ -n "$trun" ] || { fail "thread $tid has no run"; continue; }
     run_interval "$trun" >> "$WORK/three-task-intervals.txt"
   done

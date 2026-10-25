@@ -4675,8 +4675,10 @@ defmodule ForemanServer.ProjectionStore do
 
   # Applies `updater` to an entity that already exists in `state[collection]`.
   #
-  # An event for an id the store has never seen is dropped with a warning
-  # rather than upserted: `Map.get(coll, id, %{}) |> Map.put(...)` used to mint
+  # An event for an id the store has never seen is dropped rather than upserted,
+  # with a warning and a `[:foreman, :projection, :event_dropped]` telemetry event
+  # (an ordering or replay bug must be visible outside the logs):
+  # `Map.get(coll, id, %{}) |> Map.put(...)` used to mint
   # a partial entry with no identity key (a `TaskRunTerminated` for an unknown
   # task produced a task with no `:task_id`), which every list/dump reader then
   # had to defend against. Absent is not malformed (AGENTS.md 5.3): the entity's
@@ -4694,6 +4696,8 @@ defmodule ForemanServer.ProjectionStore do
         Logger.warning(
           "ProjectionStore dropped #{event_type} for unknown #{collection} id #{inspect(id)}"
         )
+
+        ForemanServer.Telemetry.projection_event_dropped(event_type, collection, id)
 
         state
     end

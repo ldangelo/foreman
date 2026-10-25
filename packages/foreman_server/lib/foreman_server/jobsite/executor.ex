@@ -38,6 +38,8 @@ defmodule ForemanServer.Jobsite.Executor do
     Worktree
   }
 
+  alias ForemanServer.Workflow.OrphanReaper
+
   alias ForemanServer.Jobsite.Executor.Observer
 
   @default_completion_signal "<promise>COMPLETE</promise>"
@@ -583,6 +585,7 @@ defmodule ForemanServer.Jobsite.Executor do
   end
 
   defp handle_interrupt(jobsite_id, :cancel, reason, sandbox, worktree, _iterations) do
+    reap_cancelled_agents(jobsite_id, worktree)
     # Cancel discards the worktree, and cancelled work is never committed, so the
     # archive takes the working-tree diff now, before `cleanup/3` removes it.
     capture_diff(jobsite_id, worktree, :worktree)
@@ -590,6 +593,29 @@ defmodule ForemanServer.Jobsite.Executor do
     dispatch(jobsite_id, "jobsite.cancel", "terminal", %{reason: reason})
     Control.clear(jobsite_id)
     {:ok, :cancelled}
+  end
+
+  # The agent is gone by now (`AgentRunner` waits for it after a cancel); the tool processes it
+  # started are not: pi runs each in a session of its own, so the signal to the agent's group never
+  # reaches them, and once the agent exits they are re-parented to pid 1 and keep running in a
+  # worktree that is about to be captured and discarded. Swept before either.
+  #
+  # A `:head` jobsite works in the caller's own checkout, not a worktree of this server's:
+  # whatever else is orphaned in it (a developer's tmux server, a daemon) is not this jobsite's
+  # to kill, so it is never swept.
+  defp reap_cancelled_agents(_jobsite_id, nil), do: :ok
+  defp reap_cancelled_agents(_jobsite_id, %Worktree{strategy: :head}), do: :ok
+
+  defp reap_cancelled_agents(jobsite_id, %Worktree{path: path}) do
+    case OrphanReaper.reap(path) do
+      {:ok, _reaped} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Jobsite #{jobsite_id} could not reap agents orphaned by the cancelled jobsite in #{path}: #{inspect(reason)}"
+        )
+    end
   end
 
   # `iterate/11`/`do_iterate/11` below are kept solely for

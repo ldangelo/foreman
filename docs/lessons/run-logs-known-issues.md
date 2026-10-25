@@ -54,6 +54,30 @@ that investigation (shared singleton/projection state leaking across
 tests), that is grounds to prioritize fixing the isolation bug, not grounds
 to close the loop without a passing suite.
 
+### Shared `ProjectionStore` in tests (foreman-a4ec2, foreman-fhe9o, foreman-quki6)
+
+The store is one process for the whole VM, so what a test projects into it is visible to every
+later test. Rules that keep the suite order-independent:
+
+- `test_helper.exs` resets the event log, the aggregate actors **and** the in-memory projection. The projection replays
+  the previous run's log at boot, before the helper runs, so resetting only the log made a second
+  local `mix test` inherit the last run's runs and tasks (CI starts from a fresh DB and never saw it).
+  Aggregate actors hydrate from the log once, when they start; boot-time Dispatcher work starts some for the previous
+  run's projects, and they keep `exists?: true` after the log is emptied, so a test registering a project with a repeating
+  id (fixed `--seed`, `:rand`) got `{:already_exists, :project, id}` on every second run.
+  `ForemanServer.TestSupport.AggregateActorReset` removes every actor right after the log reset so the next command
+  rehydrates from the empty log. This does not contradict the 2026-09-02 note below: the log reset itself is sound;
+  the state held in memory is what survived it.
+- A run projected into the real store gets a unique id (`ForemanServer.TestSupport.UniqueIds.unique_run_id/1`),
+  not `"run-1"`: `Dispatcher.crash_resume_opts/2`, `PrWatcher`, `Overview` and `Messaging` read runs back by
+  id, and a live run left behind turns another test's fresh start into a resume (foreman-b8qjy).
+- `ForemanServer.TestSupport.ProjectionLeakGuard` fails the suite, naming the module and the files that
+  type the id, when an `async: false` module ends with a non-terminal run whose id is a literal under
+  `test/`. It reads the store from an ExUnit formatter and skips a boundary the runner has already left,
+  so it never blames the wrong module but can miss a polluter on one seed that another seed catches.
+- Wait for `{:projection_event, ...}` with the run, thread, subject or tool-call id in the pattern
+  (`data: %{run_id: ^run_id}`): the store broadcasts every test's events to every subscriber.
+
 ### Elixir Test Suite Non-Determinism (2026-09-02)
 
 `mix test` produces 38-43 failures on identical `--seed 1234` runs. **Hypothesis:**

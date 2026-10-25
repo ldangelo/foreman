@@ -151,8 +151,13 @@ defmodule ForemanServer.PrWatcherFixTest do
       start_watcher!(ctx, tc)
       pid = Process.whereis(PrWatcher)
 
+      run_id = ctx.run_id
       request_fix!(ctx)
-      assert_receive {:projection_event, %{event_type: "PrFixRequested"} = requested}, 10_000
+
+      assert_receive {:projection_event,
+                      %{event_type: "PrFixRequested", data: %{run_id: ^run_id}} = requested},
+                     10_000
+
       assert_started!()
       await_event("PrFixStarted", ctx.run_id)
       # the start has fully settled (no longer "starting"): only the aggregate's record
@@ -279,7 +284,12 @@ defmodule ForemanServer.PrWatcherFixTest do
       finish_jobsite!("JobsiteCompleted", "js-someone-else")
 
       await_idle()
-      refute_receive {:projection_event, %{event_type: "PrFixFinished"}}, 200
+      run_id = ctx.run_id
+
+      refute_receive {:projection_event,
+                      %{event_type: "PrFixFinished", data: %{run_id: ^run_id}}},
+                     200
+
       refute "PrFixFinished" in Support.run_event_types(ctx.run_id)
     end
   end

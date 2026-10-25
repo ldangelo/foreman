@@ -127,4 +127,61 @@ defmodule ForemanServer.Workflow.OrphanReaperTest do
   test "reports a worktree with nothing running in it", %{tmp_dir: dir} do
     assert {:ok, []} = OrphanReaper.reap(dir)
   end
+
+  describe "reap_trees/1" do
+    # A live agent (`sh`, still parented to this test's port) whose tool process (`sleep`, cwd
+    # elsewhere) runs in a session of its own, as pi's bash tool does: a signal to the agent's group
+    # does not reach it, a cwd match would not find it, and the agent is no orphan.
+    defp spawn_agent_with_detached_tool(marker) do
+      port =
+        Port.open({:spawn_executable, "/bin/sh"}, [
+          :binary,
+          args: [
+            "-c",
+            "cd /; perl -MPOSIX -e 'POSIX::setsid(); exec q(sleep), q(3#{marker})' " <>
+              "</dev/null >/dev/null 2>&1 & wait"
+          ]
+        ])
+
+      {:os_pid, agent} = Port.info(port, :os_pid)
+      tool = await_pid("sleep 3#{marker}")
+
+      on_exit(fn ->
+        for pid <- [agent, tool],
+            do: System.cmd("kill", ["-9", Integer.to_string(pid)], stderr_to_stdout: true)
+
+        if Port.info(port), do: Port.close(port)
+      end)
+
+      {agent, tool}
+    end
+
+    test "terminates the agents and every process they started, whatever their cwd or parent" do
+      {agent, tool} = spawn_agent_with_detached_tool(System.unique_integer([:positive]))
+      assert alive?(agent) and alive?(tool)
+
+      assert {:ok, reaped} = OrphanReaper.reap_trees([agent])
+
+      assert Enum.sort(Enum.map(reaped, & &1.pid)) == Enum.sort([agent, tool])
+      refute alive?(agent)
+      refute alive?(tool)
+    end
+
+    test "leaves a process that is not under the given agents alone" do
+      {agent, tool} = spawn_agent_with_detached_tool(System.unique_integer([:positive]))
+
+      {other_agent, other_tool} =
+        spawn_agent_with_detached_tool(System.unique_integer([:positive]))
+
+      assert {:ok, _} = OrphanReaper.reap_trees([agent])
+
+      refute alive?(agent) or alive?(tool)
+      assert alive?(other_agent) and alive?(other_tool)
+    end
+
+    test "skips a pid that is not running, and an empty list" do
+      assert {:ok, []} = OrphanReaper.reap_trees([2_000_000_000])
+      assert {:ok, []} = OrphanReaper.reap_trees([])
+    end
+  end
 end

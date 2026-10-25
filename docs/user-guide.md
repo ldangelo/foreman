@@ -188,7 +188,7 @@ Two scripts prove the Claude Projects flow against a **real, throwaway** server,
 devbox run -- bash scripts/e2e/claude_projects_flow.sh        # ~2 min: project, memory, library, bead -> thread,
                                                               # steer/stop/resolve, Overview, chat, three tasks in parallel, webhook, review archive
 devbox run -- bash scripts/e2e/failure_injection.sh           # ~4 min: provider-down agent-crash coordinator-crash
-devbox run -- bash scripts/e2e/failure_injection.sh server-crash   # server-crash port-closed project-paused: run one scenario
+devbox run -- bash scripts/e2e/failure_injection.sh server-crash   # server-crash port-closed cancel-strays shutdown-strays project-paused: run one scenario
 ```
 
 Prerequisites: `pi` (authenticated for the model), `br`, `git`, `jq`, `curl`, `python3`, `psql` on `PATH` (use

@@ -191,6 +191,28 @@ defmodule ForemanServer.Application do
     {:ok, pid}
   end
 
+  # Runs once the supervision tree (every RunExecutor, worker and jobsite executor) has stopped,
+  # while the harness - a dependency, stopped after this application - still has the agents it
+  # started. It kills them as it stops, but only each agent's own process group: the tool
+  # processes an agent started (pi runs each in a session of its own) would outlive it,
+  # re-parented to pid 1, running in worktrees nobody owns any more. They are taken out here,
+  # together with the agents, while the process tree is still intact.
+  @impl true
+  def stop(_state) do
+    alias ForemanServer.AgentRuntime.JidoHarness.Driver
+    alias ForemanServer.Workflow.OrphanReaper
+
+    case OrphanReaper.reap_trees(Driver.agent_os_pids()) do
+      {:ok, _reaped} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("could not stop the agents' processes at shutdown: #{inspect(reason)}")
+    end
+
+    :ok
+  end
+
   @doc """
   TRD-004 — Registers `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
   with the supervised `ForemanServer.AgentRuntime.AdapterCatalog`.

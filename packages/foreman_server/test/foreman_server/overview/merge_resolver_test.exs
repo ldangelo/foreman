@@ -68,16 +68,12 @@ defmodule ForemanServer.Overview.MergeResolverTest do
     end
   end
 
+  # The projection is shared and broadcasts every test's events: wait for THIS thread's.
   defp await_resolved(thread_id) do
-    assert_receive {:projection_event, %{event_type: "ThreadResolved", data: data}}, 5_000
-
-    case field(data, :thread_id) do
-      ^thread_id -> :ok
-      _other -> await_resolved(thread_id)
-    end
+    assert_receive {:projection_event,
+                    %{event_type: "ThreadResolved", data: %{thread_id: ^thread_id}}},
+                   5_000
   end
-
-  defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
   test "merging a PR resolves its thread exactly once, with reason pr_merged", %{project: p} do
     start_resolver()

@@ -71,10 +71,16 @@ Step 5b is the parallelism proof: one coordinator message pastes a to-do list of
 coordinator started exactly three threads (distinct titles), each delivered its file on its branch, and then reads `RunStarted` and the
 first terminal event of each thread's run from the event store (`claude_projects/run_interval.exs`, via the server node) and asserts
 that at least two intervals overlap (`start_i < finish_j and start_j < finish_i`) and that the project cap was respected. It prints the
-intervals. Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
+intervals. Each file is read from the branch the thread projection names (`await_thread_file` in `claude_projects/overlap.sh`): while
+it is unreadable the read is repeated for up to 30 s, a file that only appears after waiting is recorded UNVERIFIED (a commit landing
+after `completed` is a server defect the wait must not hide), and an unconfirmed file prints the `foreman-2onq1` diagnostics: git's own
+error, the thread projection, the branch tip, its commits ahead of the main checkout and its files, the foreman branches, the main
+checkout's status, where the file is on disk, the task prompt, what the agent said and the run's commit lines of the server log.
+Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
 the project to 3 in step 1; the global default is 3) and no `coordinator_max_active_threads` below 3 (unset). The assertion can fail:
 `bash scripts/e2e/claude_projects/overlap.sh` runs its stack-free self-test (serial, touching, overlapping and unfinished intervals, the
-exact-file-content comparison, and the paste/nudge branch against a stubbed coordinator; `sh scripts/e2e/exact_content.sh` runs the
+exact-file-content comparison, the paste/nudge branch against a stubbed coordinator, and the branch read against a throwaway repository
+and a stubbed thread projection: exact, wrong, missing, no branch, late; `sh scripts/e2e/exact_content.sh` runs the
 comparison probes alone),
 `E2E_THREE_ONLY=1` runs only setup, step 1 and step 5b, and `E2E_THREE_TASK_MAX_RUNS=1` forces one run at a time for that step,
 which must (and does) make the overlap assertion FAIL.
@@ -127,9 +133,11 @@ database.
 
 Details and bead ids are in [`parity-audit.md`](parity-audit.md).
 
+- The merged flow and failure-injection scripts, including the `cancel-strays` and `shutdown-strays` scenarios, ran green once on the
+  fix for `foreman-zmhzw`: see [`p2m2t-live-run.md`](p2m2t-live-run.md) (`foreman-p2m2t`).
 - The combined flow (three tasks, three PRs, CI failure and fix, merge, usage, failure injection) was run once in one stack: see
   [`combined-flow-live-run.md`](combined-flow-live-run.md). It found that no `PR ready for review` notification reaches the sink when a run opens
-  its PR itself (`foreman-ehz7l`); the `port-closed` and `server-crash` orphan assertions are unchanged (`foreman-e01a1`) and `br-down`
+  its PR itself (`foreman-ehz7l`); the `port-closed` orphan assertion is now conditional like `server-crash` (an agent that dies with its exec-port leaves nothing to reap, reported UNVERIFIED; `foreman-e01a1`); `cancel-strays` and `shutdown-strays` cover the `OrphanReaper` sweep after cancel, thread stop and graceful shutdown (`foreman-zmhzw`) and `br-down`
   failed once and passed on re-run (`foreman-3ll3t`).
 - pi on MiniMax carries almost all of the evidence; `claude` is proven only for short haiku sessions (coordinator, thread, reviewer,
   in-flight approvals, steering). Claude paths beyond that (for example fix-thread resume) are tracked in `foreman-nufr9`.

@@ -68,7 +68,13 @@ defmodule ForemanServerWeb.AgentPermissionListenerTest do
     # The stream is open and alive: headers plus a first progress event.
     acc = read_until(socket, "notifications/progress", "")
     assert acc =~ "HTTP/1.1 200"
-    assert_receive {:projection_event, %{event_type: "ToolCallRequested"}}, 15_000
+
+    assert_receive {:projection_event,
+                    %{
+                      event_type: "ToolCallRequested",
+                      data: %{run_id: ^run_id, tool_call_id: "inflight-toolu_idle"}
+                    }},
+                   15_000
 
     # Idle for three times the listener's idle timeout. The client sends nothing; the server
     # keeps sending progress events, which Cowboy does not count as activity.

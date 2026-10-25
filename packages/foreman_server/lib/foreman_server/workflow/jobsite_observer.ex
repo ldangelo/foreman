@@ -23,7 +23,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   | `step_started` on `:agent` (iteration 1) | asserts the plan subject and builds the `launch` the Overwatch runner dispatches |
   | `step_completed` on `:agent` | `ArtifactTemplate.write/4`; sets `ctx.artifact_path` |
   | `step_completed` on `:gate` | `enforce_required_file/4`; a captured planning document is written back into the run's plan context |
-  | `step_completed` on `:commit` | phase PR record when `stack_pr: true`, then `phase.complete` |
+  | `step_completed` on `:commit` | logs the commit outcome (`committed`, `nothing to commit`, `deferring`), then the phase PR record when `stack_pr: true`, then `phase.complete` |
   | `step_failed` | `phase.fail`, or — for a failure inside the phase body while the operator has asked to pause or cancel — the pause/cancel handling below |
 
   **Pause and cancel.** A request landing between phases is the engine's own
@@ -108,11 +108,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   def step_completed(%Step{kind: :commit}, ctx, {:commit, outcome}, state) do
     %{phase: phase, executor: executor} = state
 
-    if outcome == :deferred and phase.record != nil do
-      Logger.info(
-        "RunExecutor #{executor.run_id} phase #{phase.number} declares commit: false, deferring"
-      )
-    end
+    log_commit_outcome(executor, phase, outcome)
 
     case RunExecutor.phase_finish(
            executor,
@@ -144,6 +140,36 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
       start_failure(state, phase, reason)
     end
   end
+
+  # ---------------------------------------------------------------------
+  # Commit outcome
+  # ---------------------------------------------------------------------
+
+  # The engine's `:commit` step reports `:committed`, `:nothing_to_commit`,
+  # `:deferred` or `:no_worktree`. A clean tree is not a failure
+  # (`Jobsite.Git.commit_all/3`: AutoPR proposes commits only), so a run whose
+  # agent changed nothing in its worktree still completes. These lines are what
+  # tell that run apart from one that committed: without them the server log
+  # says the same thing about both (foreman-2onq1). They mirror what
+  # `RunExecutor.commit_dirty_worktree/3` logs for the same outcomes.
+  defp log_commit_outcome(executor, phase, :committed) do
+    Logger.info("RunExecutor #{executor.run_id} phase #{phase.number} committed the worktree")
+  end
+
+  defp log_commit_outcome(executor, phase, :nothing_to_commit) do
+    Logger.info(
+      "RunExecutor #{executor.run_id} phase #{phase.number} worktree clean, nothing to commit"
+    )
+  end
+
+  defp log_commit_outcome(executor, %{record: record} = phase, :deferred) when record != nil do
+    Logger.info(
+      "RunExecutor #{executor.run_id} phase #{phase.number} declares commit: false, deferring"
+    )
+  end
+
+  defp log_commit_outcome(_executor, _phase, :deferred), do: :ok
+  defp log_commit_outcome(_executor, _phase, :no_worktree), do: :ok
 
   # ---------------------------------------------------------------------
   # Phase entry

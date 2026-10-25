@@ -1,7 +1,8 @@
 defmodule ForemanServer.Workflow.OrphanReaper do
   @moduledoc """
-  Terminates agent OS processes that outlived the server that started them,
-  before their worktree is reused.
+  Terminates agent OS processes that outlived what started them: the server that started them
+  (before their worktree is reused), or the agent they are the tool processes of (when a run is
+  cancelled or the server shuts down).
 
   ## Why this exists
 
@@ -25,12 +26,26 @@ defmodule ForemanServer.Workflow.OrphanReaper do
   Processes that still have a live parent are never touched, whatever their cwd.
   On hosts where orphans are re-parented to a subreaper other than pid 1 no
   orphan is recognised; nothing is killed in that case.
+
+  ## Tool processes outlive their agent
+
+  The agent's tool processes (pi's `bash` tool starts each command detached, in a session and
+  process group of its own) are not reached by a signal to the agent's group, so stopping the
+  agent - `run.cancel`, `thread stop`, a graceful shutdown - leaves them running, re-parented to
+  pid 1, in a worktree nobody owns any more. The same cwd + pid-1 match finds them, but only once
+  the agent is gone: callers that stop an agent themselves wait for its exit first
+  (`ForemanServer.AgentRuntime.JidoHarness.Driver.await_exit/2`) and then call `reap/1`. A server
+  that is shutting down does not wait for its agents to die first (the harness kills them as it
+  stops), so it takes them out together with every descendant while the tree is still intact:
+  `reap_trees/1`.
   """
 
   require Logger
 
   @term_wait_ms 5_000
   @poll_ms 100
+  # An agent's command line carries its whole prompt.
+  @logged_command_chars 160
 
   @type reaped :: %{pid: pos_integer(), pgid: pos_integer(), command: String.t()}
   @type reason ::
@@ -60,18 +75,43 @@ defmodule ForemanServer.Workflow.OrphanReaper do
             %{ppid: 1} = info <- [Map.get(table, pid)],
             do: info
 
-      case targets(roots_found, table) do
-        [] ->
-          {:ok, []}
+      kill_roots(roots_found, table, "orphaned process(es) in #{worktree_path}")
+    end
+  end
 
-        targets ->
-          Logger.warning(
-            "OrphanReaper: terminating #{length(targets)} orphaned process(es) in #{worktree_path}: " <>
-              inspect(Enum.map(targets, &{&1.pid, &1.command}))
-          )
+  @doc """
+  Terminates the processes `os_pids` and every descendant of them (`SIGTERM`, then `SIGKILL`),
+  whatever their cwd and parent.
 
-          terminate(targets)
-      end
+  For agents that are still alive, the one case `reap/1` cannot see: their tool processes still
+  have the agent as parent. Same return values as `reap/1`; a pid that is no longer running is
+  skipped.
+  """
+  @spec reap_trees([pos_integer()]) :: {:ok, [reaped()]} | {:error, reason()}
+  def reap_trees([]), do: {:ok, []}
+
+  def reap_trees(os_pids) when is_list(os_pids) do
+    with {:ok, table} <- process_table() do
+      roots = for pid <- os_pids, info = Map.get(table, pid), do: info
+      kill_roots(roots, table, "process(es) of agents still running")
+    end
+  end
+
+  # The orphans plus everything they spawned, logged and terminated.
+  defp kill_roots(roots, table, what) do
+    case targets(roots, table) do
+      [] ->
+        {:ok, []}
+
+      targets ->
+        Logger.warning(
+          "OrphanReaper: terminating #{length(targets)} #{what}: " <>
+            inspect(
+              Enum.map(targets, &{&1.pid, String.slice(&1.command, 0, @logged_command_chars)})
+            )
+        )
+
+        terminate(targets)
     end
   end
 

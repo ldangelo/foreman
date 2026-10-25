@@ -17,6 +17,7 @@ defmodule ForemanServer.Jobsite.AgentRunner do
 
   require Logger
 
+  alias ForemanServer.AgentRuntime.JidoHarness.Driver
   alias ForemanServer.Jobsite.{Error, IterationResult, Sandbox}
   alias Jido.Harness.{Run, RunRequest, RunResult}
 
@@ -348,10 +349,30 @@ defmodule ForemanServer.Jobsite.AgentRunner do
             Run.cancel(run_id)
             {:ok, hanging_result(index, latest_text, matched_signal)}
 
-          {_signal, _intent} ->
+          {_signal, {:cancel, _reason}} ->
+            Run.cancel(run_id)
+            await_cancelled_agent(run_id)
+            {:ok, cancelled_result(index, latest_text, matched_signal)}
+
+          {_signal, _pause} ->
             Run.cancel(run_id)
             {:ok, cancelled_result(index, latest_text, matched_signal)}
         end
+    end
+  end
+
+  # `Run.cancel/1` reports the run cancelled as soon as it has signalled the agent, which the
+  # harness then takes its time to stop. The executor sweeps the worktree for the agent's tool
+  # processes next, and they are orphans (what `OrphanReaper` matches) only once the agent is gone.
+  defp await_cancelled_agent(run_id) do
+    case Driver.await_exit(run_id) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        Logger.warning(
+          "agent run #{run_id} was still running when the cancel wait ran out; its tool processes may outlive the jobsite"
+        )
     end
   end
 

@@ -218,6 +218,9 @@ defmodule ForemanServer.Projects.AdoptionService do
         prompt: prompt,
         workflow_type: fallback.workflow_type,
         source: "adoption",
+        # Explicit operator command: dispatch the new thread in one round
+        # trip, like `run submit` / the MCP task tool. Not an agent approval path.
+        auto_approve: true,
         provider_tracked: false
       }
     })

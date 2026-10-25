@@ -21,6 +21,13 @@
 #                             what environment was delivered.
 #   FAKE_AGENT_FAIL_WITH    - when set, print it to stderr and exit 1 without emitting
 #                             any events (an agent that dies, e.g. bad credentials).
+#   FAKE_AGENT_STRAY_SECS   - when the agent starts, start `sleep N` in a session of its own,
+#                             the way pi's bash tool starts its commands (detached), and
+#                             record its pid in `stray.pid` in cwd. It is in neither the
+#                             agent's process group nor its session, so signalling the agent's
+#                             group does not reach it: it outlives the agent, re-parented to pid 1.
+#   FAKE_AGENT_IGNORE_INT   - when set, ignore SIGINT: the agent only goes away on SIGTERM, so
+#                             a cancel takes the harness's escalation (INT, then TERM) to land.
 
 set -e
 
@@ -37,6 +44,15 @@ if { [ -n "$FAKE_AGENT_SPAWN_FAIL_FIRST" ] && [ "$COUNT" -le "$FAKE_AGENT_SPAWN_
 fi
 
 echo "fake agent ran (invocation $COUNT)" >> agent-log.txt
+
+if [ -n "$FAKE_AGENT_IGNORE_INT" ]; then
+  trap '' INT
+fi
+
+if [ -n "$FAKE_AGENT_STRAY_SECS" ]; then
+  perl -MPOSIX -e 'POSIX::setsid(); exec "sleep", $ARGV[0]' "$FAKE_AGENT_STRAY_SECS" >/dev/null 2>&1 </dev/null &
+  echo $! > stray.pid
+fi
 
 if [ -n "$FAKE_AGENT_SLEEP_ON_RUN" ] && [ "$COUNT" = "$FAKE_AGENT_SLEEP_ON_RUN" ]; then
   sleep "${FAKE_AGENT_SLEEP_SECS:-10}"

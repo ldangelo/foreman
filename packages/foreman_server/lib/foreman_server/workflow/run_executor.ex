@@ -581,7 +581,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # An interruption reports as a stop with that status and never finalizes. One
   # that arrives with no phase in flight was the engine's own between-phases
   # check; one that arrives mid-phase was already logged (and, for a pause,
-  # committed) by `handle_phase_body_error/6`.
+  # committed) by `handle_phase_body_error/6`. A cancel also sweeps the run's worktrees for the
+  # tool processes the cancelled agent left behind (`reap_cancelled_run_agents/1`).
   defp stop_interrupted(kind, %{executor: executor, phase: phase}) do
     {status, verb} =
       case kind do
@@ -602,6 +603,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         operation: "run_executor.#{if kind == :pause, do: "pause", else: "cancel"}"
       )
     end
+
+    if kind == :cancel, do: reap_cancelled_run_agents(executor)
 
     {:stop, :normal, %{executor | status: status}}
   end
@@ -638,6 +641,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
           phase_index: last_index,
           operation: "run_executor.cancel"
         )
+
+        reap_cancelled_run_agents(state)
 
         {:stop, :normal, %{state | status: :cancelled}}
 
@@ -3659,7 +3664,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     # keeps editing a worktree no run owns. Reaped here, before cleanup
     # reclaims the checkout, by the same cwd-inside-worktree + ppid-1 match
     # the resume path uses.
-    if outcome == :failure, do: reap_failed_run_agents(state)
+    if outcome == :failure, do: reap_run_agents(state, "failed")
 
     warn_uncommitted_work(state)
 
@@ -3685,7 +3690,39 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp reap_failed_run_agents(state) do
+  # `run.cancel` stops the agent through the harness (`RunControl.cancel_agent/1`), which signals
+  # it and reports the run cancelled at once. The tool processes the agent started (pi runs each
+  # in a session of its own, so the signal to the agent's group never reaches them) are orphans -
+  # ppid 1, what `OrphanReaper` matches - only once the agent is gone: wait for that, then sweep
+  # the run's worktrees. Without the wait the sweep finds them still parented to a live agent
+  # and they outlive the run, running in a worktree nobody owns.
+  defp reap_cancelled_run_agents(state) do
+    await_agent_exit(state)
+    reap_run_agents(state, "cancelled")
+  end
+
+  defp await_agent_exit(state) do
+    case RunControl.agent_run_id(state.run_id) do
+      {:error, :no_agent} ->
+        :ok
+
+      {:ok, harness_run_id} ->
+        case JidoHarness.Driver.await_exit(harness_run_id) do
+          :ok ->
+            :ok
+
+          {:error, :timeout} ->
+            Logger.warning(
+              "RunExecutor #{state.run_id} agent #{harness_run_id} was still running when the cancel wait ran out; sweeping its worktrees anyway",
+              run_id: state.run_id,
+              operation: "run_executor.reap_cancelled"
+            )
+        end
+    end
+  end
+
+  # `ended` names how the run ended, for the log line.
+  defp reap_run_agents(state, ended) when ended in ["failed", "cancelled"] do
     case Map.get(state, :run_worktree) do
       nil ->
         :ok
@@ -3699,9 +3736,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
             {:error, reason} ->
               Logger.warning(
-                "RunExecutor #{state.run_id} could not reap agents orphaned by the failed run in #{path}: #{inspect(reason)}",
+                "RunExecutor #{state.run_id} could not reap agents orphaned by the #{ended} run in #{path}: #{inspect(reason)}",
                 run_id: state.run_id,
-                operation: "run_executor.reap_failed"
+                operation: "run_executor.reap_#{ended}"
               )
           end
         end

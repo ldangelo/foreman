@@ -136,7 +136,13 @@ defmodule ForemanServer.MixProject do
         "dialyzer",
         "doctor --raise"
       ],
-      test: ["test --cover --color"]
+      # ProjectionLeakGuard rides along as a formatter (see its moduledoc). It has to be a task
+      # option: `mix test --formatter X` replaces whatever test_helper.exs configured, and
+      # options given twice add up. Naming ExUnit.CLIFormatter keeps the default output.
+      test: [
+        "test --cover --color --formatter ExUnit.CLIFormatter " <>
+          "--formatter ForemanServer.TestSupport.ProjectionLeakGuard"
+      ]
     ]
   end
 

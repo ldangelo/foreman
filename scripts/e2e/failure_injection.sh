@@ -18,6 +18,12 @@
 #   port-closed        kill -9 of ONLY the agent's exec-port (server stays up) -> run fails
 #                      `:port_closed` and the orphaned agent is reaped by the live failure path
 #                      (foreman-zmhzw), not left running in the failed run's worktree
+#   cancel-strays      `run cancel` and `thread stop` of a run whose agent is blocked in a `sleep 300`
+#                      tool -> the agent AND the tool process (which runs in a session of its own)
+#                      are gone: nothing is left running, re-parented to pid 1, in the run's worktree
+#                      (foreman-zmhzw)
+#   shutdown-strays    SIGTERM (graceful shutdown) of the server with such a run in flight -> the
+#                      same: no agent and no tool process outlives the server (foreman-zmhzw)
 #   br-down            br's WRITE verbs (comments, create) fail for the SERVER (a stub earlier on
 #                      its PATH; reads still work or BeadsWatcher could not import) -> the thread
 #                      still completes, the review verdict is still recorded, and the bead sink
@@ -43,9 +49,9 @@ E2E_HOOK_PORT=${E2E_HOOK_PORT:-4930}
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
 
-SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed project-paused br-down"}
+SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed cancel-strays shutdown-strays project-paused br-down"}
 for s in $SCENARIOS; do
-  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|project-paused|br-down) ;; *) die "unknown scenario '$s'" 1 ;; esac
+  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|cancel-strays|shutdown-strays|project-paused|br-down) ;; *) die "unknown scenario '$s'" 1 ;; esac
 done
 
 check_environment
@@ -108,6 +114,37 @@ wait_tool() {
 }
 
 LONG="Run the shell command 'sleep 300' and wait for it to finish. Then create a file named done.txt containing the word DONE."
+
+# run_strays <run_id>: every process on the host - whatever its parent, so also the ones re-parented to
+# pid 1 - whose cwd is inside that run's worktree (HOME is redirected, so they live under
+# $WORK/home/.foreman/worktrees/<project>/<task>/<run>)
+run_strays() {
+  lsof -d cwd -Fpn 2>/dev/null | awk -v r="$1" '/^p/ { pid = substr($0, 2) } /^n/ { p = substr($0, 2); if (index(p, "/.foreman/worktrees/") && index(p, r)) print pid }' | sort -u
+}
+
+# show_run_strays <label> <run_id>: the evidence, one `ps` row per process
+show_run_strays() {
+  note "$1:"
+  for sp in $(run_strays "$2"); do note "  $(ps -o pid=,ppid=,pgid=,stat=,command= -p "$sp" 2>/dev/null | cut -c1-150)"; done
+}
+
+# no_run_strays <what> <run_id>: nothing may be left running in the run's worktree (waits for the
+# agent's own exit and the sweep that follows it)
+no_run_strays() {
+  ns_n=0; ns_left=""
+  while [ "$ns_n" -lt 60 ]; do
+    ns_left=$(run_strays "$2" | tr '\n' ' ')
+    [ -z "$ns_left" ] && break
+    sleep 2; ns_n=$((ns_n + 2))
+  done
+  if [ -z "$ns_left" ]; then
+    pass "$1: nothing is left running in the run's worktree"
+  else
+    fail "$1: still running in the run's worktree:$ns_left"
+    show_run_strays "left behind" "$2"
+    for sp in $ns_left; do kill -9 "$sp" 2>/dev/null; done
+  fi
+}
 
 # ---------------------------------------------------------------- scenario: provider-down
 
@@ -297,13 +334,70 @@ scenario_port_closed() {
   note "exec-port pids:$ports"
   # shellcheck disable=SC2086
   kill -9 $ports 2>/dev/null
+  # which agents outlived the exec-port: only those are orphans for the reaper to log
+  sleep 2; orphans=""; for p in $AGENT_PIDS; do alive "$p" && orphans="$orphans $p"; done
   wait_run_status "$RUN" "failed|cancelled|completed" 120
-  note "ACTUAL run status: $RUN_STATUS; reason: $(failure_reason "$RUN")"
+  note "ACTUAL run status: $RUN_STATUS; reason: $(failure_reason "$RUN"); agents alive after the exec-port kill:${orphans:- none}"
   assert_has "the run failed because its exec-port closed" "$(failure_reason "$RUN")" "port_closed"
   n=0; left=""
   while [ "$n" -lt 30 ]; do left=""; for p in $AGENT_PIDS; do alive "$p" && left="$left $p"; done; [ -z "$left" ] && break; sleep 2; n=$((n + 2)); done
   if [ -z "$left" ]; then pass "no agent process of the failed run is left running"; else fail "agent(s) still alive after the run failed:$left"; for p in $left; do kill -9 "$p" 2>/dev/null; done; fi
-  assert_has "server log records the reap" "$(cat "$SERVER_LOG")" "OrphanReaper: terminating"
+  if [ -n "$orphans" ]; then
+    assert_has "server log records the reap" "$(cat "$SERVER_LOG")" "OrphanReaper: terminating"
+  else
+    unverified "OrphanReaper on a real orphan" "the agent died with its exec-port on this host, so no orphan existed to reap (foreman-e01a1)"
+  fi
+}
+
+# ---------------------------------------------------------------- scenario: cancel-strays
+
+# start_busy_run <what> -> RUN, THREAD, AGENT_PIDS: a run whose agent is blocked in its `sleep 300` tool
+start_busy_run() {
+  new_bead "e2e-$SUFFIX $1" "$LONG"
+  bead_run "$BEAD_ID" 180
+  [ -n "$RUN" ] || { fail "no run appeared for the $1 bead"; return 1; }
+  wait_agent "$RUN" "$SERVER_PID" 180
+  if [ -z "$AGENT_PIDS" ]; then fail "no agent process found for run $RUN"; return 1; fi
+  for ap in $AGENT_PIDS; do wait_tool "$ap" 120 && break; done
+  show_run_strays "in the run's worktree before the $1" "$RUN"
+}
+
+scenario_cancel_strays() {
+  say "scenario cancel-strays"
+  note "EXPECTED: after run cancel and after thread stop the agent AND the tool process it started (sleep 300, in a session of its own) are gone; before foreman-zmhzw the tool process outlived the cancelled run, re-parented to pid 1, in its worktree"
+  start_busy_run "run cancel" || return 0
+  if fm run cancel --id "$RUN" --reason "e2e cancel" >"$WORK/cancel.out" 2>&1; then pass "run cancel accepted"; else fail "run cancel: $(cut -c1-200 "$WORK/cancel.out")"; fi
+  wait_run_status "$RUN" "cancelled" 60 && pass "run cancelled" || fail "run not cancelled (status '$RUN_STATUS')"
+  no_run_strays "after run cancel" "$RUN"
+  start_busy_run "thread stop" || return 0
+  if fm thread stop --reason "e2e stop" "$THREAD" >"$WORK/stop.out" 2>&1; then pass "thread stop accepted"; else fail "thread stop: $(cut -c1-200 "$WORK/stop.out")"; fi
+  wait_run_status "$RUN" "cancelled" 60 && pass "thread stopped (run cancelled)" || fail "thread not stopped (run status '$RUN_STATUS')"
+  no_run_strays "after thread stop" "$RUN"
+}
+
+# ---------------------------------------------------------------- scenario: shutdown-strays
+
+scenario_shutdown_strays() {
+  say "scenario shutdown-strays"
+  note "EXPECTED: SIGTERM of the server with a run in flight leaves no agent and no tool process of that run running; before foreman-zmhzw the tool process outlived the server, re-parented to pid 1, in the run's worktree"
+  start_busy_run "graceful shutdown" || return 0
+  old_server=$SERVER_PID
+  kill -TERM "$old_server"
+  sn=0
+  while alive "$old_server" && [ "$sn" -lt 90 ]; do sleep 1; sn=$((sn + 1)); done
+  if alive "$old_server"; then
+    fail "the server was still running ${sn}s after SIGTERM"
+    kill -9 "$old_server" 2>/dev/null
+  else
+    pass "the server stopped ${sn}s after SIGTERM"
+  fi
+  SERVER_PID=""
+  no_run_strays "after the graceful shutdown" "$RUN"
+  assert_has "server log records the sweep at shutdown" "$(cat "$SERVER_LOG")" "process(es) of agents still running"
+  # the interrupted run is resumed at boot: leave nothing running for the next scenario
+  start_server
+  fm run cancel --id "$RUN" --reason "e2e cleanup" >/dev/null 2>&1
+  no_run_strays "after the resumed run was cancelled" "$RUN"
 }
 
 # ---------------------------------------------------------------- scenario: project-paused
@@ -403,6 +497,8 @@ for s in $SCENARIOS; do
     coordinator-crash) scenario_coordinator_crash ;;
     server-crash) scenario_server_crash ;;
     port-closed) scenario_port_closed ;;
+    cancel-strays) scenario_cancel_strays ;;
+    shutdown-strays) scenario_shutdown_strays ;;
     project-paused) scenario_project_paused ;;
     br-down) scenario_br_down ;;
   esac

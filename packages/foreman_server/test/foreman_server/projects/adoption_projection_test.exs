@@ -78,6 +78,13 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     ProjectionStore.subscribe(replay_existing: false)
   end
 
+  # The projection is shared and broadcasts every test's events: wait for THIS subject's.
+  defp assert_adopted(subject_id) do
+    assert_receive {:projection_event,
+                    %{event_type: "ProjectSubjectAdopted", data: %{subject_id: ^subject_id}}},
+                   2_000
+  end
+
   setup %{tmp_dir: tmp} do
     id = uid()
     repo = Path.join(tmp, "repo")
@@ -121,7 +128,7 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     assert result.moved.task_ids == [ctx.task]
     assert [%{path: ^dir, status: :updated}] = result.archive_updates
 
-    assert_receive {:projection_event, %{event_type: "ProjectSubjectAdopted"}}, 2_000
+    assert_adopted(ctx.run)
 
     assert %{project_id: b, adopted_from: a} = ProjectionStore.run(ctx.run)
     assert {b, a} == {ctx.b, ctx.a}
@@ -136,7 +143,7 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: true})
     await_adopted()
     assert {:ok, _} = AdoptionService.adopt("run", ctx.run, ctx.b)
-    assert_receive {:projection_event, %{event_type: "ProjectSubjectAdopted"}}, 2_000
+    assert_adopted(ctx.run)
 
     :ok = ProjectionStore.rebuild_project(ctx.a, [])
     :ok = ProjectionStore.rebuild_project(ctx.b, [])
@@ -150,7 +157,7 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     dir = archive!(ctx.repo, ctx.run, ctx.a)
     await_adopted()
     assert {:ok, %{adopted?: true}} = AdoptionService.adopt("run", ctx.run, ctx.b)
-    assert_receive {:projection_event, %{event_type: "ProjectSubjectAdopted"}}, 2_000
+    assert_adopted(ctx.run)
 
     # Simulate a crash between dispatch and manifest sync.
     :ok = Archive.merge_manifest(dir, %{"project_id" => ctx.a, "adopted_from" => nil})
@@ -161,7 +168,11 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     assert from == ctx.a
     assert {:ok, %{"project_id" => b, "adopted_from" => a}} = Archive.read_manifest(dir)
     assert {b, a} == {ctx.b, ctx.a}
-    refute_receive {:projection_event, %{event_type: "ProjectSubjectAdopted"}}, 200
+    run = ctx.run
+
+    refute_receive {:projection_event,
+                    %{event_type: "ProjectSubjectAdopted", data: %{subject_id: ^run}}},
+                   200
   end
 
   test "refusals: active run, unknown subject, unknown target, beads-bound task, wrong repo",
@@ -262,6 +273,11 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     assert prompt =~ "also add /readyz"
     assert prompt =~ "UNTRUSTED"
     assert prompt =~ "lib/healthz.ex"
+
+    # The operator-initiated continue dispatches the thread: it is approved,
+    # not left as an open proposal (foreman-7nvf8).
+    assert %{approval_id: approval_id, run_id: run_id} = ProjectionStore.task_projection(new_task)
+    assert is_binary(approval_id) and is_binary(run_id)
   end
 
   describe "Continuation.build/3" do
@@ -310,7 +326,7 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
 
     assert minted == "fresh-#{ctx.id}"
     assert [%{path: ^dir, status: :updated}] = result.archive_updates
-    assert_receive {:projection_event, %{event_type: "ProjectSubjectAdopted"}}, 2_000
+    assert_adopted(ctx.run)
 
     assert %{project_id: ^minted} = ProjectionStore.run(ctx.run)
     assert %{config: %{goal: "Add healthz"}} = ProjectionStore.project(minted)
