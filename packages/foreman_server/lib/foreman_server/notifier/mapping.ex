@@ -11,14 +11,29 @@ defmodule ForemanServer.Notifier.Mapping do
   Classes of event covered:
 
     * run / jobsite failure -> `:failure` (`:blocked`)
-    * run stall -> `:stall` (`:blocked`)
-    * run completed -> `:run_update` (`:progress`)
+    * run stall (`RunStallReported`, `RunFlaggedStuck`) -> `:stall` (`:blocked`)
+    * run blocked terminally (`RunBlocked`, the crash-loop detector's verdict)
+      -> `:action_needed` (`:blocked`)
+    * run or jobsite completed -> `:run_update` (`:progress`)
     * review verdict: `not_met` -> `:action_needed` (`:blocked`), any other
       verdict -> `:run_update` (`:progress`)
     * agent needs input (`QuestionOpened`, `QuestionExpired`) and approval
       requested (`ToolCallRequested`, `ToolCallExpired`) -> `:action_needed`
-    * PR created -> `:run_update`; CI failing -> `:failure`; changes requested
-      or exhausted PR fix attempts -> `:action_needed`
+    * PR ready for review (`PrReady`) -> `:run_update`; CI failing -> `:failure`;
+      changes requested or exhausted PR fix attempts -> `:action_needed`
+
+  `PrReady`, not `PrCreated`, is the PR row: every PR a run opens records
+  `PrReady` (AutoPR, a stacked phase PR, another repository's PR and the
+  operator's Create PR alike), while `PrCreated` is only the audit fact of the
+  operator path, which records `PrReady` first. Mapping both would deliver two
+  notifications for one PR; mapping only `PrCreated` delivered none for a run
+  that opened its own PR (foreman-ehz7l).
+
+  Deliberately unmapped: `RunCancelled` and `JobsiteCancelled` (always an
+  explicit stop by an operator or the coordinator, who already knows). A
+  deployment that wants them adds a configured rule. `JobsiteCompleted` is
+  mapped, but `ForemanServer.Notifier` skips it for the jobsite of a PR fix
+  thread (the PR's own events report that fix).
 
   The needs-input, approval and PR rows name events defined by the approvals
   and PR-watch epics. The mapping is by event NAME only: where Foreman does not
@@ -57,6 +72,24 @@ defmodule ForemanServer.Notifier.Mapping do
       key_fields: ~w(idempotency_key)
     },
     %{
+      event_type: "RunFlaggedStuck",
+      class: :stall,
+      severity: :warning,
+      level: :blocked,
+      subject: "Run flagged stuck",
+      body_fields: ~w(run_id),
+      key_fields: ~w(run_id flagged_at)
+    },
+    %{
+      event_type: "RunBlocked",
+      class: :action_needed,
+      severity: :critical,
+      level: :blocked,
+      subject: "Run blocked",
+      body_fields: ~w(run_id reason worker_id),
+      key_fields: ~w(run_id)
+    },
+    %{
       event_type: "RunCompleted",
       class: :run_update,
       severity: :info,
@@ -64,6 +97,15 @@ defmodule ForemanServer.Notifier.Mapping do
       subject: "Run completed",
       body_fields: ~w(run_id status),
       key_fields: ~w(run_id)
+    },
+    %{
+      event_type: "JobsiteCompleted",
+      class: :run_update,
+      severity: :info,
+      level: :progress,
+      subject: "Jobsite completed",
+      body_fields: ~w(jobsite_id iterations_run branch),
+      key_fields: ~w(jobsite_id)
     },
     %{
       event_type: "ReviewRecorded",
@@ -121,12 +163,12 @@ defmodule ForemanServer.Notifier.Mapping do
       key_fields: ~w(tool_call_id)
     },
     %{
-      event_type: "PrCreated",
+      event_type: "PrReady",
       class: :run_update,
       severity: :info,
       level: :progress,
       subject: "PR ready for review",
-      body_fields: ~w(run_id pr_url head_branch base_branch),
+      body_fields: ~w(run_id pr_url branch_name base_branch),
       key_fields: ~w(pr_url),
       url_field: "pr_url"
     },

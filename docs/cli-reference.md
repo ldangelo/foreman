@@ -1086,7 +1086,7 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 
 ### `foreman doctor`
 
-Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
+Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), a `notifier` row (`ok` when outbound notifications are off or on and running, with the counts since the server started; `warn` when they are enabled but the messaging config is invalid, the notifier or the dispatcher process is stopped, or events were refused; the detail never names a destination URL), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
 
 ```bash
 foreman doctor                       # Run the checks
@@ -2042,7 +2042,7 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 
 ## Messaging CLI status
 
-No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. `foreman project update --notification-preference every_turn|blocked_only|off <id>` sets a project's notification preference (see the user guide's Outbound messaging delivery section). Outbound Telegram/Slack/webhook delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
+No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. `foreman project update --notification-preference every_turn|blocked_only|off <id>` sets a project's notification preference (see the user guide's Outbound messaging delivery section). Outbound Telegram/Slack/webhook delivery is configured on the server via `config :foreman_server, :messaging` (the webhook also from `FOREMAN_NOTIFY_WEBHOOK_URL`, with `FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true` / `FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true` for an http or private-network receiver); run/detail surfaces may show projected notification lifecycle state when notification events exist, and `foreman doctor` reports whether notifications are off, on and able to deliver, or on but not able to (the `notifier` row).
 
 ### `foreman approvals`
 

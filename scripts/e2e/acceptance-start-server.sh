@@ -6,6 +6,7 @@ export FOREMAN_START_BEADS_WATCHER=false
 export FOREMAN_PR_FIX_SANDBOX=host FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true
 export FOREMAN_PR_MONITOR_ENABLED=true
 export FOREMAN_NOTIFY_WEBHOOK_URL=http://127.0.0.1:47662/hook
+export FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true
 export FOREMAN_REVIEW_PROVIDER=pi FOREMAN_REVIEW_MODEL=minimax/MiniMax-M2.7-highspeed
 export MIX_HOME=/Users/ldangelo/.mix HEX_HOME=/Users/ldangelo/.hex
 export HOME=/Users/ldangelo/Development/Fortium/foreman-wt/accept-scratch/home

@@ -10,6 +10,10 @@ defmodule ForemanServerWeb.DoctorController do
     * `workflows` - the workflow catalog has manifests installed;
     * `workflow.<file>` - one `warn` row per manifest the catalog REFUSED to
       load (`Catalog.invalid/0`), carrying the file's validation error;
+    * `notifier` - outbound notifications: `ok` when they are off or on and able
+      to deliver, `warn` when messaging is enabled but its config is invalid, the
+      notifier or the dispatcher process is down, or events were refused
+      (`Notifier.status/0`; it never names a destination);
     * `project.recommendations` - with `?project=`, counts of setup
       recommendations by severity (`Projects.Recommendations`).
 
@@ -34,7 +38,8 @@ defmodule ForemanServerWeb.DoctorController do
 
     checks =
       [check("server", :ok, "Server reachable", "The server answered this request.")] ++
-        [event_store_check()] ++ provider_checks() ++ workflow_checks() ++ project_check
+        [event_store_check()] ++
+        provider_checks() ++ workflow_checks() ++ [notifier_check()] ++ project_check
 
     case Enum.find(project_check, &(&1["status"] == "not_found")) do
       nil -> conn |> put_status(:ok) |> json(%{checks: checks})
@@ -48,6 +53,80 @@ defmodule ForemanServerWeb.DoctorController do
   catch
     :exit, reason ->
       check("event_store", :fail, "Read model unreachable", inspect(reason))
+  end
+
+  # Notifications are optional, so "off" is a healthy answer. What must not look healthy is the
+  # silent kind of off: enabled, yet unable to deliver (bad config, the notifier or the
+  # dispatcher down) or refusing events. The detail never holds a destination: the config error
+  # is redacted and names no URL, and the provider is named, not its endpoint.
+  defp notifier_check do
+    case safely(&ForemanServer.Notifier.status/0) do
+      {:ok, status} ->
+        notifier_row(status)
+
+      :error ->
+        check("notifier", :warn, "Notifier status unknown", "The notifier did not answer.")
+    end
+  end
+
+  defp notifier_row(%{messaging: :disabled}) do
+    check(
+      "notifier",
+      :ok,
+      "Notifications are off",
+      "Outbound notifications are disabled (`config :foreman_server, :messaging, enabled: true` turns them on)."
+    )
+  end
+
+  defp notifier_row(%{messaging: {:invalid, reason}}) do
+    check(
+      "notifier",
+      :warn,
+      "Notification config is invalid",
+      "Nothing can be delivered until it is fixed: #{inspect(reason, limit: 20)}"
+    )
+  end
+
+  defp notifier_row(%{notifier: :stopped, messaging: {:enabled, provider}}) do
+    check(
+      "notifier",
+      :warn,
+      "Notifier is not running",
+      "Messaging is on (#{provider}) but ForemanServer.Notifier is stopped, so no event becomes a notification."
+    )
+  end
+
+  defp notifier_row(%{dispatcher: :stopped, messaging: {:enabled, provider}}) do
+    check(
+      "notifier",
+      :warn,
+      "Messaging dispatcher is not running",
+      "Messaging is on (#{provider}) but ForemanServer.Messaging.Dispatcher is stopped, so enqueued notifications are never sent."
+    )
+  end
+
+  defp notifier_row(%{messaging: {:enabled, provider}, stats: %{errors: errors} = stats})
+       when errors > 0 do
+    check(
+      "notifier",
+      :warn,
+      "Notifications were refused",
+      "#{errors} event(s) could not be turned into a notification since the server started " <>
+        "(provider #{provider}); last: #{inspect(stats.last_error, limit: 20)}"
+    )
+  end
+
+  defp notifier_row(%{messaging: {:enabled, provider}, stats: stats}) do
+    check("notifier", :ok, "Notifications are on (#{provider})", stats_detail(stats))
+  end
+
+  defp stats_detail(nil), do: "The notifier and the dispatcher are running."
+
+  defp stats_detail(%{notified: notified, skipped: skipped}) do
+    skips = Enum.map_join(skipped, ", ", fn {reason, count} -> "#{reason} #{count}" end)
+
+    "#{notified} enqueued since the server started" <>
+      if(skips == "", do: ".", else: "; skipped by #{skips}.")
   end
 
   defp provider_checks do

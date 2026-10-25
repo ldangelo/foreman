@@ -4,6 +4,8 @@ defmodule ForemanServerWeb.DoctorControllerTest do
   import Plug.Conn
   import Phoenix.ConnTest
 
+  alias ForemanServer.Messaging.Dispatcher
+  alias ForemanServer.Notifier
   alias ForemanServer.ProjectionStore
 
   @endpoint ForemanServerWeb.Endpoint
@@ -126,6 +128,114 @@ defmodule ForemanServerWeb.DoctorControllerTest do
                Enum.find(checks, &(&1["id"] == "workflow.lvclaude.yaml"))
 
       assert never_title =~ "is invalid and was not loaded"
+    end
+  end
+
+  # foreman-ireii: "no notifier status surface". Off is healthy; the silent kinds of off are not.
+  describe "the notifier row" do
+    setup do
+      original = Application.get_env(:foreman_server, :messaging)
+
+      on_exit(fn ->
+        if original,
+          do: Application.put_env(:foreman_server, :messaging, original),
+          else: Application.delete_env(:foreman_server, :messaging)
+      end)
+    end
+
+    defp notifier_row do
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+      Enum.find(checks, &(&1["id"] == "notifier"))
+    end
+
+    defp configure_webhook(webhook) do
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :webhook,
+        webhook: webhook
+      )
+    end
+
+    defp start_pipeline do
+      start_supervised!({Dispatcher, catch_up?: false, subscribe?: false})
+      start_supervised!({Notifier, subscribe?: false})
+    end
+
+    test "notifications off is a healthy answer, said plainly" do
+      Application.put_env(:foreman_server, :messaging, enabled: false)
+
+      assert %{"status" => "ok", "title" => "Notifications are off"} = notifier_row()
+    end
+
+    test "enabled with the notifier down is a warning that names the provider, not its URL" do
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :slack,
+        slack: [webhook_url: "https://hooks.slack.com/services/T0/B0/SECRETDOCTOR"]
+      )
+
+      assert %{"status" => "warn", "title" => "Notifier is not running", "detail" => detail} =
+               notifier_row()
+
+      assert detail =~ "slack"
+      refute detail =~ "SECRETDOCTOR"
+    end
+
+    test "a config that cannot deliver is a warning with the reason, never the URL" do
+      configure_webhook(url: "https://bot:hunter2@example.test/hook")
+
+      assert %{
+               "status" => "warn",
+               "title" => "Notification config is invalid",
+               "detail" => detail
+             } = notifier_row()
+
+      assert detail =~ "unsafe_url"
+      assert detail =~ "userinfo"
+      refute detail =~ "hunter2"
+    end
+
+    test "the dispatcher down is its own warning" do
+      configure_webhook(url: "https://example.test/hook")
+      start_supervised!({Notifier, subscribe?: false})
+
+      assert %{"status" => "warn", "title" => "Messaging dispatcher is not running"} =
+               notifier_row()
+    end
+
+    test "on and running is ok, with what the notifier has done since it started" do
+      configure_webhook(url: "https://example.test/hook")
+      start_pipeline()
+
+      assert %{
+               "status" => "ok",
+               "title" => "Notifications are on (webhook)",
+               "detail" => detail
+             } = notifier_row()
+
+      assert detail =~ "0 enqueued"
+    end
+
+    test "events refused since boot keep the row a warning after the config is fixed" do
+      configure_webhook([])
+      start_pipeline()
+      run_id = "run-doctor-#{System.unique_integer([:positive])}"
+
+      send(
+        Notifier,
+        {:projection_event,
+         %{event_type: "RunFailed", data: %{run_id: run_id, project_id: "doctor-p", reason: "x"}}}
+      )
+
+      # The call is answered after the event above was handled.
+      assert %{errors: 1} = Notifier.stats()
+      configure_webhook(url: "https://example.test/hook")
+
+      assert %{"status" => "warn", "title" => "Notifications were refused", "detail" => detail} =
+               notifier_row()
+
+      assert detail =~ "1 event(s)"
+      assert detail =~ "missing_field"
     end
   end
 end

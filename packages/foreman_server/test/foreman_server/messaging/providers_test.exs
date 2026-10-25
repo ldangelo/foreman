@@ -3,6 +3,7 @@ defmodule ForemanServer.Messaging.ProvidersTest do
 
   alias ForemanServer.Messaging.{HttpResponse, Notification}
   alias ForemanServer.Messaging.Providers.{Slack, Telegram, Webhook}
+  alias ForemanServer.TestSupport.StaticHostResolver
 
   defmodule FakeHttpClient do
     def post_json(url, body, headers, timeout) do
@@ -26,7 +27,11 @@ defmodule ForemanServer.Messaging.ProvidersTest do
 
   setup do
     original = Application.get_env(:foreman_server, :messaging)
-    Application.put_env(:foreman_server, :messaging, http_client: FakeHttpClient)
+
+    Application.put_env(:foreman_server, :messaging,
+      http_client: FakeHttpClient,
+      host_resolver: StaticHostResolver
+    )
 
     on_exit(fn ->
       Process.delete(:fake_http_response)
@@ -116,7 +121,9 @@ defmodule ForemanServer.Messaging.ProvidersTest do
       assert {:ok, %{status: :succeeded, provider: :webhook}} =
                Webhook.send(notification, %{url: "https://example.test/hook", secret: nil})
 
-      assert_received {:provider_request, "https://example.test/hook", body, [], 5_000}
+      assert_received {:provider_request, "https://example.test/hook", body,
+                       [{"x-foreman-delivery", "n-1"}], 5_000}
+
       assert body.schema == "foreman.notification.v1"
       assert body.notification_id == "n-1"
       assert body.event_class == :test
@@ -131,7 +138,8 @@ defmodule ForemanServer.Messaging.ProvidersTest do
       assert {:ok, _} =
                Webhook.send(notification, %{url: "https://example.test/hook", secret: "s3cret"})
 
-      assert_received {:provider_request, _url, body, [{"x-foreman-signature", "sha256=" <> hex}],
+      assert_received {:provider_request, _url, body,
+                       [{"x-foreman-delivery", "n-1"}, {"x-foreman-signature", "sha256=" <> hex}],
                        _}
 
       expected =
@@ -195,6 +203,94 @@ defmodule ForemanServer.Messaging.ProvidersTest do
                })
 
       assert_received {:provider_request, "https://example.test/hook", _, _, _}
+    end
+
+    # foreman-ireii (E10-S4): the URL is judged again right before each send.
+    test "an unsafe URL is refused terminally before anything is sent, and the reason holds no URL",
+         %{notification: notification} do
+      for {url, reason} <- [
+            {"http://example.test/hook/LEAKTOKEN", :insecure_http},
+            {"https://bot:LEAKTOKEN@example.test/hook", :userinfo},
+            {"https://127.0.0.1/hook/LEAKTOKEN", :private_host},
+            {"https://[::1]/hook/LEAKTOKEN", :private_host},
+            {"https://localhost/hook/LEAKTOKEN", :private_host},
+            {"https://internal.test/hook/LEAKTOKEN", :private_host},
+            {"https://metadata.test/hook/LEAKTOKEN", :private_host}
+          ] do
+        assert {:error, failed} = Webhook.send(notification, %{url: url, secret: "s3cret"})
+        assert failed.retryable? == false
+        assert failed.reason == inspect({:unsafe_url, :webhook_destination, reason})
+        refute inspect(failed) =~ "LEAKTOKEN"
+        refute_received {:provider_request, _, _, _, _}
+      end
+    end
+
+    test "the opt-outs in the destination let an http or private-network receiver through", %{
+      notification: notification
+    } do
+      local = "http://127.0.0.1:4000/hook"
+
+      assert {:ok, %{status: :succeeded}} =
+               Webhook.send(notification, %{
+                 url: local,
+                 allow_insecure_http: true,
+                 allow_private_hosts: true
+               })
+
+      assert_received {:provider_request, ^local, _, _, _}
+
+      # One opt-out is not the other, and string keys (a destination that went through JSON) count.
+      assert {:error, failed} =
+               Webhook.send(notification, %{url: local, allow_insecure_http: true})
+
+      assert failed.reason =~ "private_host"
+      refute_received {:provider_request, _, _, _, _}
+
+      assert {:ok, _} =
+               Webhook.send(notification, %{
+                 "url" => "https://internal.test/hook",
+                 "allow_private_hosts" => true
+               })
+
+      assert_received {:provider_request, "https://internal.test/hook", _, _, _}
+    end
+
+    test "a flag that is not a boolean fails the delivery without echoing it", %{
+      notification: notification
+    } do
+      assert {:error, failed} =
+               Webhook.send(notification, %{
+                 url: "https://example.test/hook",
+                 allow_private_hosts: "LEAKFLAG"
+               })
+
+      assert failed.retryable? == false
+      assert failed.reason =~ "invalid_field"
+      refute inspect(failed) =~ "LEAKFLAG"
+      refute_received {:provider_request, _, _, _, _}
+    end
+
+    test "a {:system, env} URL is judged when it is read, at send time", %{
+      notification: notification
+    } do
+      var = "FOREMAN_E10_WEBHOOK_URL_#{System.unique_integer([:positive])}"
+      on_exit(fn -> System.delete_env(var) end)
+
+      System.put_env(var, "http://example.test/hook")
+      assert {:error, failed} = Webhook.send(notification, %{url: {:system, var}})
+      assert failed.reason =~ "insecure_http"
+      refute_received {:provider_request, _, _, _, _}
+
+      System.put_env(var, "https://example.test/hook")
+      assert {:ok, _} = Webhook.send(notification, %{url: {:system, var}})
+      assert_received {:provider_request, "https://example.test/hook", _, _, _}
+    end
+
+    test "a host name whose lookup fails is retried, not refused", %{notification: notification} do
+      assert {:error, failed} = Webhook.send(notification, %{url: "https://down.test/hook"})
+      assert failed.retryable? == true
+      assert failed.reason =~ "unresolvable_host"
+      refute_received {:provider_request, _, _, _, _}
     end
   end
 end

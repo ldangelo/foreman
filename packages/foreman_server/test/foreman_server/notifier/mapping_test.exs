@@ -27,7 +27,31 @@ defmodule ForemanServer.Notifier.MappingTest do
     assert {:run_update, :progress} = class_level("RunCompleted", %{run_id: "r"})
     assert {:action_needed, :blocked} = class_level("QuestionOpened", %{question_id: "q"})
     assert {:action_needed, :blocked} = class_level("ToolCallRequested", %{tool_call_id: "t"})
-    assert {:run_update, :progress} = class_level("PrCreated", %{pr_url: "u"})
+    assert {:run_update, :progress} = class_level("PrReady", %{pr_url: "u"})
+  end
+
+  # foreman-ireii: the crash-loop detector blocks a run and the stuck detector flags one; both
+  # put the thread in "Waiting on you", so both must reach the operator. A finished jobsite is the
+  # jobsite door's RunCompleted.
+  test "a blocked or stuck run needs you, a finished jobsite is a routine update" do
+    assert {:action_needed, :blocked} = class_level("RunBlocked", %{run_id: "r"})
+    assert {:stall, :blocked} = class_level("RunFlaggedStuck", %{run_id: "r"})
+    assert {:run_update, :progress} = class_level("JobsiteCompleted", %{jobsite_id: "j"})
+  end
+
+  # foreman-ehz7l: AutoPR, a stacked phase PR, another repository's PR and the Create PR button
+  # all record `PrReady`; the button then also records `PrCreated`. One PR, one notification.
+  test "a PR is announced by PrReady only, never also by PrCreated" do
+    assert {:ok, %Rule{subject: "PR ready for review", url_field: "pr_url"}} =
+             lookup("PrReady", %{pr_url: "https://github.com/acme/repo/pull/1"})
+
+    assert :ignore = lookup("PrCreated", %{pr_url: "https://github.com/acme/repo/pull/1"})
+  end
+
+  # Cancelling is always an explicit stop by an operator or the coordinator, who already knows.
+  test "an explicit cancel is not announced back" do
+    assert :ignore = lookup("RunCancelled", %{run_id: "r"})
+    assert :ignore = lookup("JobsiteCancelled", %{jobsite_id: "j"})
   end
 
   test "review verdict not_met needs you; every other verdict is a routine update" do
