@@ -76,6 +76,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman thread resolve    --reason
 > foreman thread reopen     (no flags)
 > foreman thread steer      --message --message-id --no-resume
+> foreman thread rereview   (no flags)
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
@@ -806,7 +807,7 @@ Re-opens the PR of one repository of a multi-repository run whose PR could not b
 | `<run-id>` / `--id <run-id>` | Run ID (required). |
 | `--repo-id <repo-id>` | Repository to open the PR for (required). |
 
-### `foreman thread list|get|stop|steer|resolve|reopen`
+### `foreman thread list|get|stop|steer|resolve|reopen|rereview`
 
 A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a jobsite (`jobsite:<id>`). All verbs print the server's JSON.
 
@@ -818,6 +819,7 @@ A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a j
 | `foreman thread resolve [--reason <r>] <thread-id>` | Reads the thread's project, then sends the `thread.resolve` operator command (aggregate `thread:<thread-id>`). A disposition flag only; it never stops a run. |
 | `foreman thread reopen <thread-id>` | Sends `thread.reopen`; a thread that is not resolved is rejected. |
 | `foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>` | `POST /api/threads/:id/steer`: queues an operator message (`run.steer` for a workflow thread, `Jobsite.steer` for a jobsite thread); the work is paused then resumed with the message in its next prompt. 202 `{thread_id, message_id, mode}`; a terminal thread exits 3 (409 `not_steerable`); blank or oversize (>8000) text is 400. `--no-resume` keeps a paused run paused (workflow door). |
+| `foreman thread rereview <thread-id>` | `POST /api/threads/:id/rereview` (no body): re-runs the review of the thread's run or jobsite, only when the recorded review is `undetermined` (the reviewer failed; a real verdict is final). 202 `{thread_id, requested: "rereview"}` (it runs or queues for a slot; the new verdict supersedes the undetermined one); an unknown thread is 404 `thread_not_found`; 409 `not_reviewed` (no review recorded), `not_rerunnable` (naming `verdict`) or `already_running` exit 3; an unreadable archive is 422 `archive_unusable`; analysis switched off is 503 `analysis_disabled`. |
 
 Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and thread lookup.
 

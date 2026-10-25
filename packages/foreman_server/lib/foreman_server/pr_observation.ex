@@ -63,9 +63,20 @@ defmodule ForemanServer.PrObservation do
     )
   end
 
-  @doc "The sorted ids of the PR's conversation comments."
+  @doc """
+  The sorted ids of the PR's conversation comments that a person wrote.
+
+  A comment GitHub reports as written by a Bot (`bot: true`: a review bot's walkthrough, a
+  coverage report) is not feedback anyone can address, and counting it would enable "Address
+  comments" on every PR of an account that has a review bot (foreman-v9y3x). A comment whose
+  author type is unknown (`bot: nil`: the fetch did not read it) counts, as every comment did
+  before.
+  """
   @spec comment_ids(PrStatus.t()) :: [String.t()]
-  def comment_ids(%PrStatus{comments: comments}), do: comments |> Enum.map(& &1.id) |> Enum.sort()
+  def comment_ids(%PrStatus{comments: comments}) do
+    for(%{id: id} = comment <- comments, not match?(%{bot: true}, comment), do: id)
+    |> Enum.sort()
+  end
 
   @doc "The sorted ids of the PR's unresolved review threads (`[]` when threads were not read)."
   @spec thread_ids(PrStatus.t()) :: [String.t()]

@@ -19,6 +19,10 @@ defmodule ForemanServer.GitHub.PrStatus do
     * `reviews` and `comments` - conversation comments and review summaries,
       bounded (`@max_list` each, newest kept) with a `*_truncated` flag; comment
       bodies are cut at `@max_body` characters. Minimised comments are dropped.
+      A comment's `bot` is `nil` until `fetch/2` ran with `threads: true`, which asks GraphQL who
+      wrote each conversation comment (`gh pr view` gives a login only, and a GraphQL login carries
+      no `[bot]` marker): `true` when GitHub says the author is a Bot actor (a review bot's
+      walkthrough), `false` for every other actor.
     * `merge_state_status` - the documented `mergeStateStatus` values plus
       `:unknown` (GitHub computes it lazily; `UNKNOWN` is not an error).
     * `threads` - `nil` until `fetch_threads/2` (or `fetch/2` with
@@ -77,6 +81,15 @@ defmodule ForemanServer.GitHub.PrStatus do
   @type comment :: %{
           id: String.t(),
           author: String.t() | nil,
+          bot: boolean() | nil,
+          body: String.t(),
+          url: String.t() | nil,
+          created_at: String.t() | nil
+        }
+
+  @type thread_comment :: %{
+          id: String.t(),
+          author: String.t() | nil,
           body: String.t(),
           url: String.t() | nil,
           created_at: String.t() | nil
@@ -88,7 +101,7 @@ defmodule ForemanServer.GitHub.PrStatus do
           outdated: boolean(),
           path: String.t() | nil,
           line: non_neg_integer() | nil,
-          comments: [comment()]
+          comments: [thread_comment()]
         }
 
   @type t :: %__MODULE__{
@@ -122,6 +135,11 @@ defmodule ForemanServer.GitHub.PrStatus do
 
   @threads_query "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine comments(first:20){nodes{databaseId author{login} body createdAt url}}}}}}}"
 
+  # Who wrote each conversation comment. `gh pr view` has only the login, and a GraphQL login
+  # carries no `[bot]` marker (a review bot's is `coderabbitai`), so the actor type is read by
+  # the comments' node ids (the `id` `gh pr view` already reports).
+  @authors_query "query($ids:[ID!]!){nodes(ids:$ids){... on IssueComment{id author{__typename}}}}"
+
   @fail_conclusions ~w(FAILURE TIMED_OUT CANCELLED ACTION_REQUIRED STARTUP_FAILURE STALE)
   @pass_conclusions ~w(SUCCESS NEUTRAL SKIPPED)
   @pending_check_status ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED)
@@ -148,17 +166,20 @@ defmodule ForemanServer.GitHub.PrStatus do
 
   `opts[:command_runner]` is a 3-arity `(cmd, args, opts)` returning
   `{output, exit_code}`; it defaults to `System.cmd/3` and exists so tests can
-  drive the parser without the network. `threads: true` additionally reads the
-  review threads (`fetch_threads/2`), but only when the PR has at least one
-  review (a PR without reviews cannot have inline review threads), so the
-  common poll stays one call.
+  drive the parser without the network. `threads: true` additionally reads what
+  `gh pr view` cannot give, each with one GraphQL call and only when there is
+  something to read, so the common poll stays one call: the review threads
+  (`fetch_threads/2`, only when the PR has at least one review: a PR without
+  reviews cannot have inline review threads) and who wrote each conversation
+  comment (`comments[].bot`, only when the PR has a comment).
   """
   @spec fetch(String.t(), keyword()) :: {:ok, t()} | {:error, error()}
   def fetch(pr_url, opts \\ []) when is_binary(pr_url) do
     with {:ok, runner} <- runner(opts),
          {:ok, status} <- run_view(runner, pr_url) do
-      if Keyword.get(opts, :threads, false) and status.reviews != [] do
-        with_threads(status, pr_url, runner)
+      if Keyword.get(opts, :threads, false) do
+        with {:ok, status} <- with_threads(status, pr_url, runner),
+             do: with_comment_authors(status, runner)
       else
         {:ok, status}
       end
@@ -189,6 +210,8 @@ defmodule ForemanServer.GitHub.PrStatus do
     end
   end
 
+  defp with_threads(%__MODULE__{reviews: []} = status, _pr_url, _runner), do: {:ok, status}
+
   defp with_threads(status, pr_url, runner) do
     case run_threads(runner, pr_url) do
       {:ok, {threads, truncated}} ->
@@ -198,6 +221,55 @@ defmodule ForemanServer.GitHub.PrStatus do
         error
     end
   end
+
+  defp with_comment_authors(%__MODULE__{comments: []} = status, _runner), do: {:ok, status}
+
+  defp with_comment_authors(%__MODULE__{comments: comments} = status, runner) do
+    with {:ok, bots} <- run_authors(runner, Enum.map(comments, & &1.id)) do
+      comments = Enum.map(comments, fn comment -> %{comment | bot: Map.get(bots, comment.id)} end)
+      {:ok, %{status | comments: comments}}
+    end
+  end
+
+  defp run_authors(runner, ids) do
+    args =
+      ["api", "graphql", "-f", "query=" <> @authors_query] ++
+        Enum.flat_map(ids, &["-f", "ids[]=" <> &1])
+
+    case runner.("gh", args, stderr_to_stdout: true) do
+      {output, 0} -> parse_authors(output)
+      {output, code} -> {:error, {:gh_failed, code, String.trim(output)}}
+    end
+  end
+
+  # `%{comment id => bot?}`. A comment deleted since `gh pr view` listed it comes back `null`
+  # and stays unknown (`bot: nil`); a deleted author account is not a bot.
+  defp parse_authors(output) do
+    case Jason.decode(output) do
+      {:ok, %{"data" => %{"nodes" => nodes}}} when is_list(nodes) ->
+        with {:ok, kinds} <- collect(nodes, &author_node/1) do
+          {:ok, for({id, bot} <- kinds, into: %{}, do: {id, bot})}
+        end
+
+      {:ok, other} ->
+        {:error, {:gh_unexpected_payload, other}}
+
+      {:error, _} ->
+        {:error, {:gh_unparsable, String.slice(output, 0, 200)}}
+    end
+  end
+
+  defp author_node(nil), do: {:ok, nil}
+
+  defp author_node(%{"id" => id, "author" => author}) when is_binary(id) do
+    case author do
+      %{"__typename" => type} when is_binary(type) -> {:ok, {id, type == "Bot"}}
+      nil -> {:ok, {id, false}}
+      _other -> :error
+    end
+  end
+
+  defp author_node(_other), do: :error
 
   defp run_view(runner, pr_url) do
     case runner.("gh", ["pr", "view", pr_url, "--json", @json_fields], stderr_to_stdout: true) do
@@ -424,6 +496,7 @@ defmodule ForemanServer.GitHub.PrStatus do
          %{
            id: id,
            author: login(Map.get(item, "author")),
+           bot: nil,
            body: item |> Map.get("body", "") |> truncate_body(),
            url: blank_to_nil(Map.get(item, "url")),
            created_at: blank_to_nil(Map.get(item, "createdAt"))

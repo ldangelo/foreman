@@ -43,6 +43,8 @@ defmodule ForemanServer.Usage do
   contract and `Jido.AI.Usage` stays out of the boundary.
   """
 
+  alias Jido.Harness.{Event, RunResult}
+
   @derive Jason.Encoder
   defstruct input_tokens: nil,
             output_tokens: nil,
@@ -112,6 +114,39 @@ defmodule ForemanServer.Usage do
 
   def from_run(provider, raw_usage, _usage_events, events_cost_usd),
     do: normalize(provider, raw_usage, events_cost_usd)
+
+  @doc """
+  Normalise a finished `Jido.Harness.RunResult`: `from_run/4` over its merged `usage`, the
+  payloads of its `:usage` events and the cost its terminal event reports. This is the one
+  place a run's usage is read, for the worker door and for the reviewer alike: reading only
+  `RunResult.usage` counts a pi run's last message and nothing before it.
+  """
+  @spec from_run_result(atom(), RunResult.t()) :: t()
+  def from_run_result(provider, %RunResult{usage: usage, events: events}) when is_atom(provider),
+    do: from_run(provider, usage, usage_events(events), events_cost_usd(events))
+
+  @doc "The payloads of the `:usage` events of a run, in order (what `from_run/4` sums for pi)."
+  @spec usage_events([Event.t()]) :: [map()]
+  def usage_events(events) do
+    for %Event{type: :usage, payload: payload} <- events,
+        is_map(payload),
+        do: payload
+  end
+
+  @doc """
+  Claude reports the dollar cost only on the terminal `:run_completed` event
+  (`claude_stream.ex:71`), never in `RunResult.usage`. Last one wins; `nil` when absent.
+  """
+  @spec events_cost_usd([Event.t()]) :: number() | nil
+  def events_cost_usd(events) do
+    events
+    |> Enum.filter(&match?(%Event{type: :run_completed}, &1))
+    |> List.last()
+    |> case do
+      %Event{payload: %{"cost_usd" => cost}} when is_number(cost) -> cost
+      _ -> nil
+    end
+  end
 
   @doc """
   Build a usage from already-normalised fields (an event payload or projection

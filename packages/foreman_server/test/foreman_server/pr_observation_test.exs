@@ -70,6 +70,24 @@ defmodule ForemanServer.PrObservationTest do
 
       refute PrObservation.review_digest(none) == PrObservation.review_digest(one)
     end
+
+    # foreman-v9y3x: a comment GitHub says a Bot wrote (a review bot's walkthrough) is not
+    # feedback to address. A comment whose author type is unknown (`bot: nil`) still counts.
+    test "a bot's comment is not counted: not in the ids, not in the review digest" do
+      c = fn id, bot ->
+        %{id: id, author: "x", bot: bot, body: "hi", url: nil, created_at: nil}
+      end
+
+      with_bot = Support.status(comments: [c.("IC_bot", true)])
+
+      assert PrObservation.comment_ids(with_bot) == []
+
+      assert PrObservation.review_digest(with_bot) ==
+               PrObservation.review_digest(Support.status())
+
+      mixed = Support.status(comments: [c.("IC_b", true), c.("IC_p", false), c.("IC_u", nil)])
+      assert PrObservation.comment_ids(mixed) == ["IC_p", "IC_u"]
+    end
   end
 
   describe "commands/4" do
@@ -78,6 +96,25 @@ defmodule ForemanServer.PrObservationTest do
       pr_url: pr_url
     } do
       assert {:ok, commands} = PrObservation.commands(run_id, pr_url, Support.status(), nil)
+      assert types(commands) == ["run.pr.update"]
+    end
+
+    test "a first sighting whose only comment is a bot's is just the run.pr.update", %{
+      run_id: run_id,
+      pr_url: pr_url
+    } do
+      walkthrough = %{
+        id: "IC_1",
+        author: "coderabbitai",
+        bot: true,
+        body: "w",
+        url: nil,
+        created_at: nil
+      }
+
+      status = Support.status(comments: [walkthrough])
+
+      assert {:ok, commands} = PrObservation.commands(run_id, pr_url, status, nil)
       assert types(commands) == ["run.pr.update"]
     end
 

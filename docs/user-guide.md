@@ -1000,7 +1000,10 @@ Read endpoints are projection-only:
   until `thread.reopen`.
 - Thread actions: `POST /api/threads/{id}/stop` (`run.cancel` / jobsite
   cancel), `POST /api/threads/{id}/steer` (`text`, optional `message_id`,
-  `resume`; 202, 409 `not_steerable` for a terminal thread). Operator commands
+  `resume`; 202, 409 `not_steerable` for a terminal thread),
+  `POST /api/threads/{id}/rereview` (re-run an `undetermined` review; 202, 409
+  `not_reviewed|not_rerunnable|already_running`, 422 `archive_unusable`, 503
+  `analysis_disabled`; CLI `foreman thread rereview`). Operator commands
   `thread.resolve` / `thread.reopen` (events `ThreadResolved` /
   `ThreadReopened`) are sent through `POST /api/commands` or
   `foreman thread resolve|reopen`; resolving is a disposition flag and never
@@ -2391,22 +2394,33 @@ succeeded. Two controls follow from that:
   further terminal runs wait in a first-in-first-out queue. The queue is in memory
   and is not replayed after a restart.
 - A reviewer that failed on a rate limit (HTTP 429 or `rate limit` in the failure
-  text; no other failure) is retried once after `evaluator_retry_backoff_ms`
-  (default 60000). The retry is written into the verdict's `notes` (`analysis.json`,
-  `analysis.md`, the bead comment and the recorded summary), and the token spend of
-  both attempts is recorded.
+  text) is retried once after `evaluator_retry_backoff_ms` (default 60000). The retry
+  is written into the verdict's `notes` (`analysis.json`, `analysis.md`, the bead
+  comment and the recorded summary), and the token spend of both attempts is recorded.
+
+The same single retry covers a reviewer that completed but whose last turn wrote no
+text: with `pi` on MiniMax the model sometimes ends its final turn on a thinking block,
+so the only reply on record is an earlier turn's words (`I will read the archived
+files.`) and the review would be `undetermined` although nothing is wrong with the
+work. The recorded error and the retry note then say `its final turn wrote no text`.
+No other failure is retried, and a final turn that wrote text but no valid verdict is
+the reviewer's own output and is final (`evaluator_malformed_output`, quoting the end of
+the reply). The reviewer's token spend is the sum of every message of its run, and its
+scratch working directory (`<tmp>/foreman-review/<kind>/<id>`) is removed when the
+review ends, whatever the outcome.
 
 A review recorded `undetermined` can be run again from its archive. The new verdict
 supersedes it: a second `ReviewRecorded` is appended (the first stays in the event
 log) and the verdict's `notes` says it is a re-run of the earlier failure. A review
-holding any other verdict is final. There is no CLI or HTTP verb for this yet: call
-`ForemanServer.Review.Analyzer.rerun/2` in the running server's VM (an attached IEx
-session, or `rpc` against a release node), for example
-`ForemanServer.Review.Analyzer.rerun(:run, "<run_id>")` (`:jobsite` for a jobsite).
-It returns `:ok` once the re-run is accepted, or `{:error, reason}` with `:not_reviewed`,
-`{:not_rerunnable, verdict}`, `:already_running`, `{:archive_unusable, error}` or
-`:analysis_disabled`. The re-run reads the archive on disk, so the run or jobsite need
-not still be projected.
+holding any other verdict is final. Run `foreman thread rereview <thread-id>`
+(`run:<run_id>` or `jobsite:<jobsite_id>`), i.e. `POST /api/threads/{id}/rereview`
+with no body; the server calls `ForemanServer.Review.Analyzer.rerun/2`. It answers
+202 once the re-run is accepted (it runs, or queues for a slot, like any analysis);
+404 `thread_not_found` for an unknown thread; 409 `not_reviewed` (no review recorded),
+`not_rerunnable` (naming the `verdict`: a real verdict is final) or `already_running`
+(an analysis of the subject is running or queued); 422 `archive_unusable` (the
+archive cannot be read); and 503 `analysis_disabled`. The re-run reads the archive on
+disk, so the run or jobsite need not still be projected.
 
 Add `.foreman/sessions/` to the `.gitignore` of every repo Foreman reviews:
 untracked files there can be swept into an agent's `git add -A`.
@@ -2460,7 +2474,15 @@ fresh operator approval of the new head.
 (`config :foreman_server, :pr_watcher, enabled:`; `FOREMAN_PR_WATCHER_ENABLED=false`
 stops it). It reads each PR (checks, review decision, comments, unresolved
 threads, merge conflicts) and folds changes into the run's PR projection as
-`PrChecksChanged` / `PrReviewChanged` events. Two things trigger a read:
+`PrChecksChanged` / `PrReviewChanged` events. A conversation comment written by a
+bot (a GitHub Bot actor: a review bot's walkthrough, a coverage report) is not
+counted as a comment: it is not in the review event's `comment_ids`, does not enable
+Address comments and does not raise the comment count. `gh pr view` names an author by
+login only, so for a PR with conversation comments each read adds one `gh api graphql`
+call that asks GitHub which authors are Bots. A third-party commit status (a review
+bot's `CodeRabbit` status) is still part of the checks roll-up exactly as GitHub reports
+it: while it is pending the PR's checks state is `pending` (which only shortens the poll
+interval below), and a failed one is a failed check. Two things trigger a read:
 
 - a polling monitor, `ForemanServer.PrMonitor`, **opt-in** with
   `FOREMAN_PR_MONITOR_ENABLED=true`. It needs the `gh` CLI installed and
@@ -2487,7 +2509,8 @@ worktree, never another repository's.
 `foreman_pr_status`) returns one record per PR: URL, status, head SHA (as the watch last
 recorded it: the commit you review and name in `approve-merge --head-sha`; the server
 checks it against GitHub, which is the authority), checks state, failing
-checks, review decision, comment count, whether it is still watched, fix counters
+checks, review decision, comment count (conversation comments written by people),
+whether it is still watched, fix counters
 (`ci`, `comments`, `conflicts` attempts and what is in flight) and the merge gate.
 
 **Fix threads.** `foreman run fix-ci|address-comments|resolve-conflicts <run-id>

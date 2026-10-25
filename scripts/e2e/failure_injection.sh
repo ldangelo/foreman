@@ -48,6 +48,8 @@ E2E_PORT=${E2E_PORT:-4830}
 E2E_HOOK_PORT=${E2E_HOOK_PORT:-4930}
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
+# shellcheck source=claude_projects/bead_thread.sh
+. "$HERE/claude_projects/bead_thread.sh"
 
 SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed cancel-strays shutdown-strays project-paused br-down"}
 for s in $SCENARIOS; do
@@ -444,13 +446,13 @@ scenario_br_down() {
   note "EXPECTED: with br writes (comments/create) failing for the server the thread still completes and its review verdict is still recorded; the bead-sink failure is visible in the recorded summary; no comment lands on the bead"
   mkdir -p "$WORK/nobr"
   real_br=$(command -v br)
-  printf '#!/bin/sh\ncase "$1" in comments|create) echo "br: simulated outage (e2e br-down)" >&2; exit 1 ;; esac\nexec %s "$@"\n' "$real_br" > "$WORK/nobr/br"
+  printf '#!/bin/sh\ncase "$1" in comments|create) echo "$(date +%%s) $* intercepted" >> %s; echo "br: simulated outage (e2e br-down)" >&2; exit 1 ;; esac\necho "$(date +%%s) $* forwarded" >> %s\nexec %s "$@"\n' "$WORK/nobr/br.log" "$WORK/nobr/br.log" "$real_br" > "$WORK/nobr/br"
   chmod +x "$WORK/nobr/br"
+  quiesce
   stop_server
   E2E_PATH_PREFIX="$WORK/nobr" start_server
   new_bead "e2e-$SUFFIX br down" "Create a file named brdown.txt containing the word UP."
-  thread_for_bead "$BEAD_ID" 180
-  [ -n "$THREAD" ] || { fail "no thread appeared for the br-down bead"; return 0; }
+  await_bead_thread "$BEAD_ID" "the br-down bead" || return 0
   wait_run_status "${THREAD#run:}" "completed|failed" "$E2E_RUN_TIMEOUT"
   assert_eq "thread completed while br was down" "$RUN_STATUS" "completed"
   vn=0; verdict=""; summary=""

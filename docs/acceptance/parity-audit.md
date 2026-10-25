@@ -64,7 +64,7 @@ Bold = created by this audit (labelled `claude-projects-parity`, none carries `f
 | Daily-cap deferrals not re-admitted at the UTC rollover | C11 | **foreman-7wsyx** | new, P3 |
 | Notifier mapping rows, webhook URL safety, status surface, HTTPS client untested | C12 | **foreman-ireii** | new, P3 |
 | No `PR ready for review` notification when a run opens its own PR (auto-PR emits `PrReady`; the mapping row is keyed on `PrCreated`); found by the combined live run | C12 | **foreman-ehz7l** | new, P2 |
-| Failure injection `br-down` failed once (no thread appeared) and passed on re-run; not root-caused | R | **foreman-3ll3t** | new, P3 |
+| ~~Failure injection `br-down` failed once (no thread appeared) and passed on re-run~~ Hardened, root cause still unknown: the scenario quiesces leftover threads before its restart and waits for the thread with `await_bead_thread` (a thread later than 60 s, or one that needs a second `br sync --flush-only`, is recorded UNVERIFIED, none after the nudge window is a FAIL) and prints diagnostics that separate BeadsWatcher import from Dispatcher admission and held run slots; covered by a stub-driven selftest, scenario not re-run live | R | **foreman-3ll3t** | hardened on branch; not root-caused; bead open until merged |
 | Telegram/Slack never run live | C12 | foreman-mivo7 | open, deferred by user |
 | Library upload/remove, proposal decline, settings editors absent from the workspace UI | C3 | **foreman-8ervf** | new, P3 |
 | In-container network blocking and the Scheduled tab not seen live | C4, C9 | foreman-8vf0s | open |

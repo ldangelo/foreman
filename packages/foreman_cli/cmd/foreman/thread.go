@@ -15,13 +15,14 @@ const threadUsage = `Usage:
   foreman thread stop [--reason <reason>] <thread-id>
   foreman thread resolve [--reason <reason>] <thread-id>
   foreman thread reopen <thread-id>
-  foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>`
+  foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>
+  foreman thread rereview <thread-id>`
 
-var threadVerbs = []string{"list", "get", "stop", "resolve", "reopen", "steer"}
+var threadVerbs = []string{"list", "get", "stop", "resolve", "reopen", "steer", "rereview"}
 
 func runThread(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		return usageTextError("foreman thread: missing subcommand (list, get, stop, resolve, reopen, steer)", threadUsage)
+		return usageTextError("foreman thread: missing subcommand (list, get, stop, resolve, reopen, steer, rereview)", threadUsage)
 	}
 
 	switch args[0] {
@@ -37,6 +38,8 @@ func runThread(c *client.Client, args []string) error {
 		return threadReopen(c, args[1:])
 	case "steer":
 		return threadSteer(c, args[1:])
+	case "rereview":
+		return threadRereview(c, args[1:])
 	default:
 		return usageTextError(fmt.Sprintf("foreman thread: unknown subcommand %q", args[0]), threadUsage)
 	}
@@ -213,6 +216,23 @@ func threadSteer(c *client.Client, args []string) error {
 
 	var out map[string]any
 	if err := c.PostJSON(client.JoinPath("/api/threads", fs.Arg(0), "steer"), body, &out); err != nil {
+		return err
+	}
+
+	return printJSON(out)
+}
+
+func threadRereview(c *client.Client, args []string) error {
+	fs := newFlagSet("thread rereview")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman thread rereview: expected one argument: <thread-id>")
+	}
+
+	var out map[string]any
+	if err := c.PostJSON(client.JoinPath("/api/threads", fs.Arg(0), "rereview"), map[string]any{}, &out); err != nil {
 		return err
 	}
 

@@ -13,10 +13,14 @@ defmodule ForemanServer.Threads.Actions do
       `jobsite.cancel` command is dispatched directly.
     * `steer/3` - workflow door: operator `run.steer` (queue, pause, resume with
       the message in the next prompt). Jobsite door: `Jobsite.steer/3`.
+    * `rereview/1` - re-run an `undetermined` review of the thread's run or jobsite
+      through `ForemanServer.Review.Analyzer.rerun/2`; the verdict it records
+      supersedes the undetermined one.
   """
 
   alias ForemanServer.CommandGateway
   alias ForemanServer.Jobsite
+  alias ForemanServer.Review.Analyzer
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Thread
 
@@ -229,4 +233,24 @@ defmodule ForemanServer.Threads.Actions do
   defp normalize_reason(_), do: @default_stop_reason
 
   defp fresh_command_id, do: "thread-stop:" <> Elixir.EventStore.UUID.uuid4()
+
+  @type rereview_error :: :thread_not_found | Analyzer.rerun_error()
+
+  @doc """
+  Re-run the review of the thread's run or jobsite when its recorded review is
+  `undetermined`. Returns `:ok` once the re-run is accepted, `{:error, :thread_not_found}`
+  for an unknown thread, or the `Analyzer.rerun/2` reason unchanged.
+  """
+  @spec rereview(String.t()) :: :ok | {:error, rereview_error()}
+  def rereview(thread_id) when is_binary(thread_id) do
+    with {:ok, thread} <- Threads.get(thread_id) do
+      {kind, subject_id} = review_subject(thread)
+      Analyzer.rerun(kind, subject_id)
+    end
+  end
+
+  defp review_subject(%Thread{door: :workflow, id: "run:" <> run_id}), do: {:run, run_id}
+
+  defp review_subject(%Thread{door: :jobsite, id: "jobsite:" <> jobsite_id}),
+    do: {:jobsite, jobsite_id}
 end

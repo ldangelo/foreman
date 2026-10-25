@@ -13,10 +13,13 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   line and bounded: the message is what the review records, so a bare "reviewer
   run ended failed" would leave the cause of an `undetermined` verdict unknowable.
 
-  A run that fails on a provider rate limit is retried once after
-  `config :foreman_server, :review, evaluator_retry_backoff_ms:` (default 60 s).
-  No other failure is retried. The retry is recorded in the outcome's `notes`
-  and the first attempt's token spend is added to the second's.
+  Two failures are retried, once, after
+  `config :foreman_server, :review, evaluator_retry_backoff_ms:` (default 60 s): a run that
+  fails on a provider rate limit, and a run that completes although its last turn wrote no
+  text (a model that ends on its thinking leaves nothing to parse: foreman-lze33). A reply
+  that holds text but no valid verdict is the reviewer's own output and is never retried,
+  and neither is any other failure. The retry is recorded in the outcome's `notes` and the
+  first attempt's token spend is added to the second's.
   """
   @behaviour ForemanServer.Review.Evaluator
 
@@ -45,7 +48,8 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   # A provider rate limit is the one failure this module has evidence clears on its own
   # (foreman-uxfwb: HTTP 429 `rate_limit_error` under a burst of reviewers; a later
   # attempt succeeded). The harness gives no structured HTTP status, so pi and claude
-  # report it only in the failure text. Nothing else is marked retryable.
+  # report it only in the failure text. The only other retryable outcome is a completed run
+  # whose last turn wrote no text (`silent_final_turn?/1`).
   @rate_limited ~r/\b429\b|rate[_ -]?limit/i
 
   @impl true
@@ -57,13 +61,23 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     with {:ok, manifest} <- Archive.read_manifest(dir),
          {:ok, prompt} <- render(subject, manifest),
          {:ok, request} <- build_request(prompt, subject, cfg) do
-      case attempt(dir, request, cfg) do
-        {:error, %Error{} = first} = failure ->
-          if Error.retryable?(first), do: retry(dir, request, cfg, first), else: failure
-
-        outcome ->
-          outcome
+      try do
+        review(dir, request, cfg)
+      after
+        # Whatever the reviewer did, nothing in its scratch directory outlives the review.
+        remove_scratch(request.cwd)
       end
+    end
+  end
+
+  # One attempt, and the one retry a retryable failure gets.
+  defp review(dir, request, cfg) do
+    case attempt(dir, request, cfg) do
+      {:error, %Error{} = first} = failure ->
+        if Error.retryable?(first), do: retry(dir, request, cfg, first), else: failure
+
+      outcome ->
+        outcome
     end
   end
 
@@ -75,9 +89,11 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   end
 
   # The one retry. A burst of reviewers is what trips a provider's rate limit, and the
-  # limit clears within a minute (foreman-uxfwb), so the second attempt waits first.
-  # Both attempts spent tokens whether or not they produced a verdict: the spend is
-  # summed, and the retry is written into the outcome so a reader sees it.
+  # limit clears within a minute (foreman-uxfwb), so the second attempt waits first. A
+  # reviewer whose last turn wrote nothing (foreman-lze33) gets this same retry, wait
+  # included, rather than a second policy. Both attempts spent tokens whether or not they
+  # produced a verdict: the spend is summed, and the retry is written into the outcome so
+  # a reader sees it.
   defp retry(dir, request, cfg, %Error{} = first) do
     note = "reviewer retried once after #{cfg.retry_backoff_ms} ms: #{first.message}"
     Logger.warning("review evaluator: #{note}")
@@ -164,12 +180,35 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     end
   end
 
+  # The scratch directory is only the reviewer's working directory: nothing in it is read back,
+  # so it goes when the review ends (foreman-5k19m: one directory per reviewed run or jobsite
+  # piled up under the temp dir). A failed removal is logged, never a reason to lose the verdict.
+  defp remove_scratch(dir) do
+    case File.rm_rf(dir) do
+      {:ok, _removed} ->
+        :ok
+
+      {:error, reason, path} ->
+        Logger.warning(
+          "review evaluator: could not remove scratch directory #{path}: #{inspect(reason)}"
+        )
+    end
+  end
+
   @doc false
   @spec build_request(String.t(), Subject.t(), map()) ::
           {:ok, RunRequest.t()} | {:error, Error.t()}
   def build_request(prompt, subject, cfg) do
     with {:ok, cwd} <- scratch_dir(subject) do
-      new_request(prompt, cwd, cfg)
+      case new_request(prompt, cwd, cfg) do
+        {:ok, _request} = built ->
+          built
+
+        {:error, %Error{}} = error ->
+          # `evaluate/1` removes the directory once a request exists; without one nothing would.
+          remove_scratch(cwd)
+          error
+      end
     end
   end
 
@@ -253,7 +292,7 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   # The reviewer spent tokens whether or not its reply parsed, so usage rides
   # on the verdict AND on the error details (read by the analyzer).
   defp finish(%RunResult{} = result, cfg) do
-    usage = Usage.normalize(cfg.provider, result.usage, nil)
+    usage = Usage.from_run_result(cfg.provider, result)
     provider = to_string(cfg.provider)
 
     case finish(result) do
@@ -266,10 +305,10 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     end
   end
 
-  defp finish(%RunResult{status: :completed, text: text}) do
+  defp finish(%RunResult{status: :completed, text: text} = result) do
     case parse_verdict(text) do
       {:error, %Error{code: :evaluator_malformed_output} = error} ->
-        {:error, with_reply(error, text)}
+        {:error, with_reply(error, text, silent_final_turn?(result))}
 
       other ->
         other
@@ -323,21 +362,46 @@ defmodule ForemanServer.Review.Evaluator.Agent do
 
   # What the reviewer actually said is the first thing to look at when its reply held
   # no verdict (a reply that ended in its thinking, with the answer never written, is
-  # a failure mode of the provider's model, not of the parser).
-  defp with_reply(%Error{} = error, text) do
+  # a failure mode of the provider's model, not of the parser). `silent?` marks the one
+  # such shape worth a second attempt: the final turn wrote nothing (`silent_final_turn?/1`).
+  defp with_reply(%Error{} = error, text, silent?) do
     excerpt = text |> String.trim() |> tail(@reply_tail_chars)
     shown = if excerpt == "", do: "empty", else: "ended #{inspect(excerpt)}"
+    silent = if silent?, do: "; its final turn wrote no text", else: ""
 
     %Error{
       error
       | message:
           FailureCause.sanitize(
-            "#{error.message} (the reviewer's reply #{shown})",
+            "#{error.message} (the reviewer's reply #{shown}#{silent})",
             Archive.env_secrets()
           ),
-        details: Map.put(error.details, :reply, excerpt)
+        details: error.details |> Map.put(:reply, excerpt) |> retryable_when(silent?)
     }
   end
+
+  defp retryable_when(details, true), do: Map.put(details, :retryable, true)
+  defp retryable_when(details, false), do: details
+
+  # `RunResult.text` is the last text ANY turn wrote. A provider that reports its turns (pi: one
+  # per model call) and ends the last one on a thinking block, the answer never written, leaves
+  # an earlier turn's words there ("I will read the archived files."): the reply then says
+  # nothing about the reviewer's judgement, and a second attempt usually answers (foreman-lze33:
+  # 2 of about 21 runs). The final turn is what follows the last `turn_started`; a provider
+  # that reports no turns has its whole run as one turn, so an empty reply is silent in either
+  # shape. A final turn that wrote text but no verdict is real malformed output: not silent.
+  defp silent_final_turn?(%RunResult{events: events}) do
+    events
+    |> Enum.reverse()
+    |> Enum.take_while(&(&1.type != :turn_started))
+    |> Enum.all?(&(not wrote_text?(&1)))
+  end
+
+  defp wrote_text?(%{type: type, payload: %{"text" => text}})
+       when type in [:output_text_delta, :output_text_final] and is_binary(text),
+       do: String.trim(text) != ""
+
+  defp wrote_text?(_event), do: false
 
   defp tail(text, chars), do: String.slice(text, -chars, chars)
 
