@@ -29,22 +29,30 @@ defmodule ForemanServer.Aggregator do
     )
   end
 
-  @doc "Start (or look up) a supervised aggregate actor for aggregate_id."
-  @spec start_aggregate(module, aggregate_id :: String.t()) :: {:ok, pid()} | {:error, term()}
-  def start_aggregate(aggregate_module, aggregate_id) do
+  @doc """
+  Start (or look up) a supervised aggregate actor for aggregate_id.
+
+  `opts` go to `ForemanServer.Aggregate.Actor.start_link/3` (`:router`). A running actor cannot
+  take them: asked for with options, it is `{:error, {:already_started, pid}}` rather than a
+  silently different actor.
+  """
+  @spec start_aggregate(module, aggregate_id :: String.t(), keyword()) ::
+          {:ok, pid()} | {:error, term()}
+  def start_aggregate(aggregate_module, aggregate_id, opts \\ []) do
     # Check if already running first (avoids Supervisor.start_child overhead for the common case).
     case Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> start_aggregate_child(aggregate_module, aggregate_id)
+      [{pid, _}] when opts == [] -> {:ok, pid}
+      [{pid, _}] -> {:error, {:already_started, pid}}
+      [] -> start_aggregate_child(aggregate_module, aggregate_id, opts)
     end
   end
 
   # Start the Actor as a dynamic child of this supervisor.
   # The Aggregator's restart strategy (:permanent) applies to all children.
-  defp start_aggregate_child(aggregate_module, aggregate_id) do
+  defp start_aggregate_child(aggregate_module, aggregate_id, opts) do
     child_spec = %{
       id: aggregate_id,
-      start: {ForemanServer.Aggregate.Actor, :start_link, [aggregate_module, aggregate_id]},
+      start: {ForemanServer.Aggregate.Actor, :start_link, [aggregate_module, aggregate_id, opts]},
       restart: :permanent,
       type: :worker
     }

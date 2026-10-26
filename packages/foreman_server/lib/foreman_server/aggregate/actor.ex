@@ -45,9 +45,21 @@ defmodule ForemanServer.Aggregate.Actor do
   # Client
   # -------------------------------------------------------------------------
 
-  @spec start_link(module, aggregate_id :: String.t()) :: GenServer.on_start()
-  def start_link(aggregate_module, aggregate_id) do
-    GenServer.start_link(__MODULE__, {aggregate_module, aggregate_id}, name: via(aggregate_id))
+  @doc """
+  Start the actor of `aggregate_id`.
+
+  Options:
+
+    * `:router` - where the actor sends `{:append, ...}`: a pid or registered name, default
+      `ForemanServer.CommandRouter`. A test that needs scripted append results hands ONE actor
+      its own fake this way; replacing the `ForemanServer.CommandRouter` singleton instead would
+      hand the fake the appends of every other actor in the VM while it is installed.
+  """
+  @spec start_link(module, aggregate_id :: String.t(), keyword()) :: GenServer.on_start()
+  def start_link(aggregate_module, aggregate_id, opts \\ []) do
+    GenServer.start_link(__MODULE__, {aggregate_module, aggregate_id, opts},
+      name: via(aggregate_id)
+    )
   end
 
   @doc "Return the aggregate module's current in-memory state."
@@ -64,7 +76,7 @@ defmodule ForemanServer.Aggregate.Actor do
   # -------------------------------------------------------------------------
 
   @impl true
-  def init({aggregate_module, aggregate_id}) do
+  def init({aggregate_module, aggregate_id, opts}) do
     # Aggregate may implement load/1; if not, use the default Aggregate.load/2
     # (replays stream_forward through apply_event).
     {module_state, version} =
@@ -89,6 +101,7 @@ defmodule ForemanServer.Aggregate.Actor do
       aggregate_id: aggregate_id,
       module_state: module_state,
       version: version,
+      router: Keyword.get(opts, :router, CommandRouter),
       # CLOSE-ONLY-ONCE guarantee: the cache is consulted before any
       # `BeadsAdapter.complete/3` call; once cleared, no subsequent close
       # is issued for the same logical `command_id`. The cache is
@@ -465,7 +478,7 @@ defmodule ForemanServer.Aggregate.Actor do
     ref = make_ref()
 
     send(
-      CommandRouter,
+      state.router,
       {:append, aggregate_id, [event_data], expected_version, ref, self()}
     )
 

@@ -89,10 +89,7 @@ defmodule ForemanServer.ActorCompensationTest do
       # StubProvider.create returns a hardcoded %Issue{} — it does NOT
       # route through BrRunnerMock. The fake CommandRouter script
       # supplies the conflict + the eventual success.
-      install_fake_command_router([
-        {:conflict, 1},
-        {:ok, 1}
-      ])
+      router = start_fake_command_router([{:conflict, 1}, {:ok, 1}])
 
       attach_telemetry_handler([:foreman_server, :task_provider, :beads, :create, :compensated])
 
@@ -104,7 +101,7 @@ defmodule ForemanServer.ActorCompensationTest do
           %EventData{event_type: "UnrecognizedNoise", data: %{}, metadata: %{}}
         ])
 
-      pid = start_actor(TaskAggregate, stream_id)
+      pid = start_actor(TaskAggregate, stream_id, router)
       # Lie about the actor's local version so the next append conflicts.
       force_actor_version(pid, 0)
 
@@ -144,11 +141,12 @@ defmodule ForemanServer.ActorCompensationTest do
 
       # 4 conflicts: actor starts with retries_left=3, decremented per
       # retry, exhausted at 0 (actor.ex lines 471-507).
-      install_fake_command_router(
-        Enum.map(1..(@max_conflict_retries + 1), fn _ -> {:conflict, 1} end)
-      )
+      router =
+        start_fake_command_router(
+          Enum.map(1..(@max_conflict_retries + 1), fn _ -> {:conflict, 1} end)
+        )
 
-      pid = start_actor(TaskAggregate, stream_id)
+      pid = start_actor(TaskAggregate, stream_id, router)
       # The stream is empty, so the actor's rehydrated version is 0.
       # An empty stream is canonical for this scenario — every
       # reload-after-conflict returns exists?=false, so each re-decide
@@ -197,14 +195,14 @@ defmodule ForemanServer.ActorCompensationTest do
       attach_telemetry_handler([:foreman_server, :task_provider, :beads, :create, :compensated])
 
       # 1 conflict is enough: after reload, re-decide rejects.
-      install_fake_command_router([{:conflict, 1}])
+      router = start_fake_command_router([{:conflict, 1}])
 
       # Per the user's CLOSE-ONLY-ONCE advisory: start the actor while
       # the stream is empty (exists?=false), then externally append
       # TaskCreated. Appending TaskCreated before actor startup would
       # rehydrate exists?=true, and the initial task.create would be
       # rejected at retries_left=3 (no compensation).
-      pid = start_actor(TaskAggregate, stream_id)
+      pid = start_actor(TaskAggregate, stream_id, router)
 
       # Externally append TaskCreated to simulate a concurrent writer.
       payload = %{
@@ -263,9 +261,9 @@ defmodule ForemanServer.ActorCompensationTest do
 
       attach_telemetry_handler([:foreman_server, :task_provider, :beads, :create, :compensated])
 
-      install_fake_command_router([{:conflict, 1}])
+      router = start_fake_command_router([{:conflict, 1}])
 
-      pid = start_actor(TaskAggregate, stream_id)
+      pid = start_actor(TaskAggregate, stream_id, router)
 
       payload = %{
         task_id: ids.task_id,
@@ -312,7 +310,7 @@ defmodule ForemanServer.ActorCompensationTest do
       attach_telemetry_handler([:foreman_server, :task_provider, :beads, :create, :compensated])
 
       # 1 conflict is enough: after reload, re-decide hits reject_terminal.
-      install_fake_command_router([{:conflict, 1}])
+      router = start_fake_command_router([{:conflict, 1}])
 
       # Per the user's scenario-5 advisory: PhaseStarted first, then
       # start the actor (so the actor's stale state is
@@ -341,7 +339,7 @@ defmodule ForemanServer.ActorCompensationTest do
           %EventData{event_type: "PhaseStarted", data: started_event, metadata: %{}}
         ])
 
-      pid = start_actor(PhaseAggregate, stream_id)
+      pid = start_actor(PhaseAggregate, stream_id, router)
 
       # Append PhaseCompleted externally — the actor's stale state
       # does not know about it yet.
@@ -406,8 +404,18 @@ defmodule ForemanServer.ActorCompensationTest do
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
-  defp start_actor(aggregate_module, aggregate_id) do
-    {:ok, pid} = ForemanServer.Aggregator.start_aggregate(aggregate_module, aggregate_id)
+  # The actor is started with `router` as its append sink. It stays registered under the
+  # Aggregator (permanent child) after the test, holding a pointer to a fake that is gone by
+  # then, so it is removed again in `on_exit`.
+  defp start_actor(aggregate_module, aggregate_id, router) do
+    {:ok, pid} =
+      ForemanServer.Aggregator.start_aggregate(aggregate_module, aggregate_id, router: router)
+
+    on_exit(fn ->
+      :ok = Supervisor.terminate_child(ForemanServer.Aggregator, aggregate_id)
+      :ok = Supervisor.delete_child(ForemanServer.Aggregator, aggregate_id)
+    end)
+
     pid
   end
 
@@ -554,78 +562,27 @@ defmodule ForemanServer.ActorCompensationTest do
   defp schema_document("commands"), do: %{"type" => "object"}
 
   # ---------------------------------------------------------------------------
-  # Fake CommandRouter — replaces the supervised CommandRouter for the
-  # duration of a single test. Stops the supervised child via
-  # `Supervisor.terminate_child/2`, registers as `ForemanServer.CommandRouter`,
-  # and restores the original via `Supervisor.restart_child/2` in cleanup.
+  # Fake CommandRouter — the append sink of ONE actor.
+  #
+  # Every aggregate actor in the VM sends `{:append, ...}` to the `ForemanServer.CommandRouter`
+  # singleton, so replacing the singleton by a scripted fake (as this file used to, via
+  # `Supervisor.terminate_child/2`) hands the fake the appends of every other actor that writes
+  # while it is installed: such an append consumes a scripted conflict, the test's own append
+  # then gets the default `append_ok`, and `phase.complete` succeeds instead of re-deciding
+  # against the PhaseCompleted that was appended behind the actor's back. The fake is started
+  # unnamed and given to the actor under test (`start_actor/3`), the only process that knows it.
   # ---------------------------------------------------------------------------
 
-  defp install_fake_command_router(scripted_replies) do
-    :ok = Supervisor.terminate_child(ForemanServer.Application, ForemanServer.CommandRouter)
-    wait_for_name_unregistered(ForemanServer.CommandRouter, 1_000)
-
-    {:ok, fake_pid} =
-      ForemanServer.ActorCompensationTest.FakeCommandRouter.start_link(
-        scripted_replies: scripted_replies,
-        name: ForemanServer.CommandRouter
-      )
-
-    on_exit(fn -> cleanup_fake_command_router(fake_pid) end)
-    fake_pid
-  end
-
-  defp wait_for_name_unregistered(name, timeout_ms) do
-    Enum.reduce_while(1..max(1, div(timeout_ms, 10)), nil, fn _, _ ->
-      if Process.whereis(name) == nil do
-        {:halt, :ok}
-      else
-        Process.sleep(10)
-        {:cont, nil}
-      end
-    end)
-
-    if Process.whereis(name) != nil do
-      flunk("name #{inspect(name)} still registered after terminate")
-    end
-
-    :ok
-  end
-
-  defp cleanup_fake_command_router(fake_pid) do
-    try do
-      if Process.alive?(fake_pid) do
-        ref = Process.monitor(fake_pid)
-        GenServer.stop(fake_pid, :normal, 5_000)
-
-        receive do
-          {:DOWN, ^ref, :process, ^fake_pid, _} -> :ok
-        after
-          5_000 -> :ok
-        end
-      end
-    catch
-      _kind, _reason -> :ok
-    end
-
-    case Supervisor.restart_child(ForemanServer.Application, ForemanServer.CommandRouter) do
-      {:ok, _pid} ->
-        :ok
-
-      {:error, {:already_started, _pid}} ->
-        :ok
-
-      {:error, reason} ->
-        IO.puts(
-          :stderr,
-          "[actor_compensation_test] could not restart CommandRouter: #{inspect(reason)}"
-        )
-    end
+  defp start_fake_command_router(scripted_replies) do
+    start_supervised!(
+      {ForemanServer.ActorCompensationTest.FakeCommandRouter, scripted_replies: scripted_replies}
+    )
   end
 end
 
 # ---------------------------------------------------------------------------
-# FakeCommandRouter — test double that replaces the supervised
-# ForemanServer.CommandRouter for the duration of a single test.
+# FakeCommandRouter — scripted append sink handed to a single actor
+# (`router:` option of `ForemanServer.Aggregate.Actor.start_link/3`).
 # ---------------------------------------------------------------------------
 
 defmodule ForemanServer.ActorCompensationTest.FakeCommandRouter do
@@ -666,8 +623,7 @@ defmodule ForemanServer.ActorCompensationTest.FakeCommandRouter do
   end
 
   def start_link(opts) do
-    name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    GenServer.start_link(__MODULE__, opts)
   end
 end
 

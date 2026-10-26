@@ -39,6 +39,14 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
   defp find_reopen_calls(file) do
     source = File.read!(file)
 
+    # A `receiver.reopen(...)` call can only live in a file that spells `reopen`; tokenizing and
+    # walking the ~99% of lib/ that does not is seconds of CPU (async, next to every other test
+    # queued on the one file server) for nothing. The positive control below proves the scan
+    # still finds the real call.
+    if String.contains?(source, "reopen"), do: scan_reopen_calls(file, source), else: []
+  end
+
+  defp scan_reopen_calls(file, source) do
     {_ast, hits} =
       source
       |> Code.string_to_quoted!(lines: true, columns: true)

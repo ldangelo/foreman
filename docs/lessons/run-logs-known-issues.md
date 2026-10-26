@@ -81,6 +81,43 @@ later test. Rules that keep the suite order-independent:
 - Wait for `{:projection_event, ...}` with the run, thread, subject or tool-call id in the pattern
   (`data: %{run_id: ^run_id}`): the store broadcasts every test's events to every subscriber.
 
+### State a test did not create (foreman-jertm, gcee, pn0d, n1iw2, w770m)
+
+Each rule names the failure it removed and how it was reproduced, so it can be told apart from load noise:
+
+- **Scripted append results go to ONE actor, never to the `ForemanServer.CommandRouter` singleton.** Every aggregate
+  actor in the VM sends `{:append, ...}` to that name, so a fake registered in its place (`Supervisor.terminate_child/2`
+  plus a named fake) receives the append of whichever other actor writes while it is installed. One such append
+  consumes a scripted `{:conflict, 1}`, the test's own append then gets the default `append_ok`, and `phase.complete`
+  succeeds instead of being re-decided against the externally appended `PhaseCompleted` (`ActorCompensationTest`, CI
+  seed 317650). Start the fake unnamed and give it to the actor under test with
+  `Aggregator.start_aggregate(module, id, router: fake)` (`Aggregate.Actor.start_link/3`, default
+  `ForemanServer.CommandRouter`); stop the actor in `on_exit`. Sending one foreign `{:append, ...}` to the swapped
+  router reproduces the CI failure exactly; the same message is harmless to the isolated fake.
+- **A test that asserts a dedupe outcome owns the cache and the window.** `Inbox.DedupeTable` is one ETS table for the
+  VM and an entry lives for the app-env `:inbox_dedupe_window_seconds`. A test that left the window at `0` expires every
+  entry as it is written, so the second `SharedInbox.ingest/2` is `:started` instead of `:deduped`: after a test that
+  leaves the zero window behind, `PollerTest` and `OperatorQuestionDispatcherTest` fail with exactly the two failures
+  reported for seed 217527. Clear the table and set the window in `setup`, restore it in `on_exit`.
+- **Ids written to the event log are unique per test.** `{:already_exists, :project, id}` for all five literal project
+  ids of `TaskStateTransitionsTest` is what a second run on the same database produces when it registered them first
+  (two overlapping `mix test` runs on one database: 5 of 5). Sequential runs do not reproduce it, before or after the
+  pre-boot reset. One database per concurrent run stays the rule; unique ids (project id, beads db path, which is part
+  of the lease stream id) keep a module independent of whatever else wrote to the log.
+- **A project id that repeats across runs breaks `rebuild([])` equality.** Before the pre-boot reset the in-memory
+  projection kept the previous run's conversation for a repeating `co-<n>` id while the rebuild was folded from the
+  reset log, so `ProjectionStore.coordinator_state(p) == before` failed after `rebuild([])`
+  (`ConversationStoreTest`, foreman-n1iw2). With a fixed project id the second and third run failed on that old flow
+  and none on the pre-boot reset; 40 random-seed runs of the coordinator tests on the current flow all passed.
+- **Wait for host-dependent work on its event, not on a budget.** A fake executor that runs git subprocesses
+  (`Capture.close_run/2`) or an Analyzer capturing an archive takes as long as the host lets it. Receive the DOWN or
+  completion message and `Task.await(task, :infinity)`; the ExUnit test timeout is the hang detector. A budget (1 s,
+  then 10 s) only moves the load at which the test fails: with a `git` shim that sleeps 6 s per call the 10 s version
+  fails and the event-driven one passes (foreman-w770m).
+- **A LiveView page held stale on purpose must not refresh.** Removing an entry "elsewhere" and then clicking its row
+  races the page's own refresh (`coalesce_ms`, 20 ms in tests, 250 ms by default): set `coalesce_ms: 60_000` for the
+  test, or send the event with `render_click(view, event, params)`.
+
 ### Elixir Test Suite Non-Determinism (2026-09-02)
 
 `mix test` produces 38-43 failures on identical `--seed 1234` runs. **Hypothesis:**

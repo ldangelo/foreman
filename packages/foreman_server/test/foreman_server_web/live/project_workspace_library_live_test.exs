@@ -407,6 +407,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLibraryLiveTest do
     end
 
     test "an entry that is already gone is reported, not crashed on", %{id: id, dir: dir} do
+      # The page has to still show the entry when it is clicked below. The removal broadcasts a
+      # projection event and the page refreshes `coalesce_ms` later (20 ms in `setup`), which on
+      # a loaded host is over before the first click: no refresh in between, as for a resent
+      # removal in `ProjectSettingsLiveTest`.
+      Application.put_env(:foreman_server, :workspace, coalesce_ms: 60_000)
       entry = seed_entry(id, dir, "old", "content")
       {view, _} = mount_view(id)
 

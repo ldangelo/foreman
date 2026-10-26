@@ -86,6 +86,19 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     end
   end
 
+  # The store broadcasts every test's events to every subscriber: match the run id.
+  defp subscribe_projection!, do: :ok = ProjectionStore.subscribe(replay_existing: false)
+
+  defp await_projected(type, run_id) do
+    receive do
+      {:projection_event, %{event_type: ^type, data: data}} ->
+        if payload_run_id(data) == run_id, do: :ok, else: await_projected(type, run_id)
+    end
+  end
+
+  defp payload_run_id(data) when is_map(data),
+    do: Map.get(data, :run_id) || Map.get(data, "run_id")
+
   describe "AC-001-2 / AC-001-5: heartbeat timeout → WorkerUnresponsive + recovery.require" do
     test "after timeout the worker stream has exactly one WorkerUnresponsive and the recovery stream has exactly one WorkerRecoveryRequired" do
       tracker = start_tracker(heartbeat_timeout_ms: 50)
@@ -93,16 +106,17 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       run_id = uuid()
       worker_pid = spawn_worker()
 
+      subscribe_projection!()
       :ok = Tracker.register(tracker, worker_id, run_id, worker_pid)
 
       # The Tracker must reach 60s-of-no-heartbeat (here 50ms) and:
       #   1) dispatch WorkerUnresponsive to the Worker aggregate stream
       #   2) dispatch recovery.require to the Recovery aggregate stream
       #   3) advance the sequence mirror
-      # Both appends are synchronous (CommandRouter → EventStore). Wait
-      # long enough for the timer to fire and the cross-stream fan-out
-      # to round-trip.
-      Process.sleep(250)
+      # Both appends are synchronous (CommandRouter → EventStore) and the recovery one is last:
+      # wait for the projection to apply it, not for a guess of how long the timer and the
+      # cross-stream fan-out take on this host.
+      await_projected("WorkerRecoveryRequired", run_id)
 
       worker_events = read_worker_events(worker_id, run_id)
 
@@ -134,8 +148,9 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       run_id = uuid()
       worker_pid = spawn_worker()
 
+      subscribe_projection!()
       :ok = Tracker.register(tracker, worker_id, run_id, worker_pid)
-      Process.sleep(250)
+      await_projected("WorkerRecoveryRequired", run_id)
 
       run = ProjectionStore.run(run_id)
       assert is_map(run), "run projection should exist after WorkerUnresponsive"
