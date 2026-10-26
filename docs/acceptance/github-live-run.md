@@ -274,9 +274,12 @@ claude provider paths (unchanged, out of scope); pi still has no approval/ask me
 > **Update 2026-10-23:** the PR action buttons, the automatic `pr_auto_fix` policy and a push after merge approval were exercised against real
 > GitHub afterward and are no longer unverified; see `live-github-protection-ui-autofix.md`. Branch protection remains unverified (the reason,
 > a failed pre-flip content scan for the temporary public window, is documented there). The table rows above are the historical state of 2026-10-22.
+>
+> **Update 2026-10-26:** branch protection was exercised afterward too (a temporary public window of a new scratch repository, after a whole-history content scan that now allows the
+> account's own public profile identity): refusal text verbatim under unmet rules, then the merge once every rule was met; see `live-github-branch-protection.md`.
 
 ## Bead status
 
-`foreman-ksy0q`: every named path exercised except branch protection; left open for that. `foreman-nb8w2.9.1`: GitHub stage and
+`foreman-ksy0q`: every named path exercised except branch protection; left open for that (closed 2026-10-26 after `live-github-branch-protection.md`). `foreman-nb8w2.9.1`: GitHub stage and
 deterministic failure injector delivered (existing scratch repo via `FOREMAN_E2E_GITHUB_REPO` instead of `gh repo create`, by the
 user's one-repo rule). `.9.3`/`.9`: transcripts committed here; `foreman-axmni` (P1) is fixed in this PR and must merge before sign-off.
