@@ -204,6 +204,23 @@ time for that step; its overlap assertion must then FAIL).
 `E2E_GITHUB=1` is refused (the harness never creates a repository). The scripts use their own workflows pinned to
 pi/minimax, not the bundled defaults.
 
+**Failure evidence.** The scripts remove their work dir and drop their database when they exit, so a run that exits non-zero
+or fails an assertion first keeps what a post-mortem needs, while its server is still up, in
+`<checkout>/tmp/e2e-evidence/<name>-<UTC start time>-<pid>/` (`E2E_EVIDENCE_DIR`; outside the work dir and git-ignored):
+`summary.txt` (exit status, the failed assertions, every run that did not complete with its `failure_reason`, the failure
+events and the server log's errors and warnings), `server.log`, `notifications.jsonl`, `api/` (what the API answered for the
+project, its threads, the Overview, the runs and each thread's projection, transcript and task), `events.jsonl` (every event
+of the event store, decoded: the run, worktree, phase and worker stdout/stderr streams), `agent-sessions/` (pi's own session
+files), `run-artifacts/`, `worktrees/` and `worktrees.txt`, `repo-beads/`, `environment.txt` (load, disk, memory, the other
+harness stacks alive, the database's connections and what `pi --list-models` answers then), `processes.txt` and `database.dump`
+(`pg_dump -Fc`, `pg_restore` it into any Postgres). A passing run keeps nothing; `E2E_EVIDENCE=always` keeps it for a passing
+run too (to compare it with a failing one) and `E2E_EVIDENCE=0` switches it off. `claude_projects_flow.sh` also stops waiting
+for a thread that has sat in `failed` or `cancelled` for `E2E_FAILED_GRACE` seconds (default 20) instead of waiting out
+`E2E_RUN_TIMEOUT`, and `E2E_FIRST_THREAD_ONLY=1` runs only setup and steps 1-3 (about 30 s): the loop for hunting an
+intermittent failure of the first thread is
+`for i in $(seq 20); do E2E_FIRST_THREAD_ONLY=1 devbox run -- bash scripts/e2e/claude_projects_flow.sh || break; done`
+(one stack at a time; it stops at the first failing iteration and that iteration's evidence stays in `tmp/e2e-evidence/`).
+
 **Real GitHub stage (opt-in).** `claude_projects_flow.sh` ends with stage 8, which drives a real PR when
 `FOREMAN_E2E_GITHUB_REPO=<owner>/foreman-scratch-<suffix>` names an existing **private, non-archived** scratch
 repository (the name pattern is enforced; seed it from `scripts/e2e/claude_projects/github-fixture/`, which has a tiny
