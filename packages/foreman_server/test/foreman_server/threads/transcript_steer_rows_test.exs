@@ -9,7 +9,7 @@ defmodule ForemanServer.Threads.TranscriptSteerRowsTest do
   The events are produced by the real gateway and aggregate. The run is paused first (operator
   pause), so the `Dispatcher` has no running agent to steer and adds nothing of its own; the
   delivery commands are the ones `Workflow.LiveSteer` sends, and the undelivered one is recorded
-  by the `Dispatcher` when the run is cancelled.
+  by `LiveSteer.undeliver_pending/2` (the `Dispatcher` calls it when the run is cancelled).
   """
 
   use ExUnit.Case, async: false
@@ -87,6 +87,10 @@ defmodule ForemanServer.Threads.TranscriptSteerRowsTest do
         payload: %{run_id: run_id}
       })
 
+    # The call the shared Dispatcher makes on RunCancelled (same command id, so the second
+    # one is a no-op). Made here as well so this test does not depend on that global process
+    # being up and idle: in the full suite another test may have it restarting.
+    :ok = ForemanServer.Workflow.LiveSteer.undeliver_pending(run_id, "run_cancelled")
     await("RunSteerUndelivered", run_id)
 
     assert steering_rows(run_id) == [
