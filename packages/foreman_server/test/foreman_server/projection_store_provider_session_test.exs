@@ -77,6 +77,43 @@ defmodule ForemanServer.ProjectionStoreProviderSessionTest do
              ProjectionStore.run("run-c")
   end
 
+  test "the approval mode the phase ran with is kept on the session entry, and only when it set one" do
+    start_run("run-e")
+
+    :ok =
+      ProjectionStore.apply_events([
+        bound("run-e", "w1", "sess-1", %{model: "haiku", approval_mode: "auto_approve"}),
+        bound("run-e", "w2", "sess-2")
+      ])
+
+    assert %{provider_sessions: [with_mode, without_mode]} = ProjectionStore.run("run-e")
+
+    assert with_mode == %{
+             worker_id: "w1",
+             provider: "claude",
+             model: "haiku",
+             provider_session_id: "sess-1",
+             approval_mode: "auto_approve"
+           }
+
+    # an entry that never had one keeps the shape every earlier event folded to
+    assert without_mode == %{
+             worker_id: "w2",
+             provider: "claude",
+             model: nil,
+             provider_session_id: "sess-2"
+           }
+  end
+
+  test "replaying an event with an approval mode leaves one entry" do
+    start_run("run-f")
+    event = bound("run-f", "w1", "sess-1", %{approval_mode: "auto_edit"})
+
+    :ok = ProjectionStore.apply_events([event, event])
+
+    assert %{provider_sessions: [%{approval_mode: "auto_edit"}]} = ProjectionStore.run("run-f")
+  end
+
   test "a malformed payload leaves the projection untouched and does not raise" do
     start_run("run-d")
     before = ProjectionStore.run("run-d")

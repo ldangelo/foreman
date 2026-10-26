@@ -369,9 +369,10 @@ register_project() { # registers $PROJECT over the scratch repo with the br prov
     --task-provider-database-path "$REPO/.beads/beads.db" >"$WORK/project-create.out" 2>&1
 }
 
-# new_bead <title> <description> -> BEAD_ID (labelled foreman-exec so BeadsWatcher dispatches it)
+# new_bead <title> <description> [issue type, default task] -> BEAD_ID (labelled foreman-exec so BeadsWatcher dispatches it).
+# The issue type picks the workflow: `task` is the pi `edit` workflow, `claude-e2e` the real-claude `claudeedit` one.
 new_bead() {
-  BEAD_ID=$(cd "$REPO" && br create "$1" -t task -p 2 -l foreman-exec -d "$2" --silent 2>/dev/null)
+  BEAD_ID=$(cd "$REPO" && br create "$1" -t "${3:-task}" -p 2 -l foreman-exec -d "$2" --silent 2>/dev/null)
   (cd "$REPO" && br sync --flush-only >/dev/null 2>&1)
 }
 

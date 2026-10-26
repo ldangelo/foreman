@@ -338,6 +338,82 @@ defmodule ForemanServer.PrFixTest do
     end
   end
 
+  # The permission mode a resumed headless Claude runs in. Left unset, Claude is interactive: the
+  # live fix thread of a claude run (docs/acceptance/live-claude-prfix-resume.md) was refused its
+  # first Edit and Bash call ("you haven't granted it yet") and ended `no_change`.
+  describe "the approval mode the run's agent ran with" do
+    # A claude run whose worktree was cleaned up: the fix recreates it at the same path and resumes.
+    defp claude_run!(session_extra) do
+      ctx = Fix.watched!()
+      original = Path.join(Path.dirname(ctx.repo), "wt-gone-#{Path.basename(ctx.repo)}")
+      Fix.worktree_created!(ctx, original, ctx.status.head_branch)
+      Fix.session_bound!(ctx, "claude", "haiku", "sess-1", session_extra)
+      {ctx, original}
+    end
+
+    for {name, mode} <- [auto_approve: :auto_approve, auto_edit: :auto_edit, default: :default] do
+      test "#{name} is carried to the fix thread's agent along with the resumed session" do
+        {ctx, _original} = claude_run!(%{approval_mode: unquote(Atom.to_string(name))})
+
+        plan = plan!("ci", ctx)
+
+        assert plan.resumed_session
+        assert plan.jobsite_opts[:resume_session] == "sess-1"
+        assert plan.jobsite_opts[:agent].provider == :claude
+        assert plan.jobsite_opts[:agent].model == "haiku"
+        assert plan.jobsite_opts[:agent].approval_mode == unquote(mode)
+      end
+    end
+
+    test "a phase that set no mode leaves the harness default" do
+      {ctx, _original} = claude_run!(%{})
+
+      plan = plan!("ci", ctx)
+
+      assert plan.resumed_session
+      assert plan.jobsite_opts[:agent].approval_mode == nil
+    end
+
+    test "prompt is not carried: a jobsite has nobody to answer a per-call approval" do
+      {ctx, _original} = claude_run!(%{approval_mode: "prompt"})
+
+      plan = plan!("ci", ctx)
+
+      assert plan.resumed_session
+      assert plan.jobsite_opts[:agent].approval_mode == nil
+    end
+
+    test "the mode of the LAST session is the one the fix thread uses" do
+      {ctx, _original} = claude_run!(%{approval_mode: "auto_approve"})
+      Fix.session_bound!(ctx, "claude", "haiku", "sess-2", %{approval_mode: "auto_edit"})
+
+      plan = plan!("ci", ctx)
+
+      assert plan.jobsite_opts[:resume_session] == "sess-2"
+      assert plan.jobsite_opts[:agent].approval_mode == :auto_edit
+    end
+
+    test "the mode follows the agent even when the session cannot be resumed" do
+      {ctx, original} = claude_run!(%{approval_mode: "auto_approve"})
+      File.mkdir_p!(original)
+      on_exit(fn -> File.rm_rf(original) end)
+
+      plan = plan!("ci", ctx)
+
+      refute plan.resumed_session
+      refute Keyword.has_key?(plan.jobsite_opts, :resume_session)
+      assert plan.jobsite_opts[:agent].approval_mode == :auto_approve
+    end
+
+    test "every kind of fix carries it" do
+      {ctx, _original} = claude_run!(%{approval_mode: "auto_approve"})
+
+      for kind <- ["ci", "comments", "conflicts"] do
+        assert plan!(kind, ctx).jobsite_opts[:agent].approval_mode == :auto_approve
+      end
+    end
+  end
+
   describe "without a persisted provider session" do
     test "the configured agent is used and a fresh session starts" do
       ctx = Fix.watched!()
@@ -359,6 +435,8 @@ defmodule ForemanServer.PrFixTest do
       refute Keyword.has_key?(plan.jobsite_opts, :resume_session)
       # the fresh session still starts at the original path (nothing else holds it)
       assert plan.jobsite_opts[:path] == original
+      # the configured agent names no approval mode
+      assert plan.jobsite_opts[:agent].approval_mode == nil
     end
   end
 end

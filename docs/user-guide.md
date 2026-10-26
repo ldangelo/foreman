@@ -224,7 +224,11 @@ real browser (Playwright, `scripts/e2e/ui-a11y/pr_actions_live.mjs`; use `http:/
 `pr_auto_fix` policy off / on / bounded, what a push after `approve-merge` does, GitHub's refusal text for an operator merge, and (only with
 `E2E_GH_ALLOW_PUBLIC=1`, after a whole-history content scan, because branch protection needs a public repository on a free plan) merge under
 branch protection. The fixture carries `.coderabbit.yaml` and bead titles start with `e2e-skip` so an account-wide CodeRabbit stays silent.
-Evidence: `docs/acceptance/live-github-protection-ui-autofix.md`.
+Stage `claude_fix_ci` is the one stage that runs a REAL claude (haiku, workflow `claudeedit`, bead type `claude-e2e`, through a private
+`HOME` that keeps only the operator's login): a failing check on the run's real PR, the Fix CI button, and then the fix thread must resume
+THAT run's claude session (`PrFixStarted.resumed_session`, `JobsiteIterationStarted.resumed_session_id`, claude's own transcript grows,
+the head moves and CI turns green); without a logged-in claude it is `UNVERIFIED`.
+Evidence: `docs/acceptance/live-github-protection-ui-autofix.md`, `docs/acceptance/live-claude-prfix-resume.md`.
 
 Known limitations: pi has no tool-permission or ask mechanism, so approve/deny and question/answer are reported
 `UNVERIFIED` (only the empty list surfaces are checked); PR/CI/merge behaviour is exercised against real GitHub only when
@@ -2639,8 +2643,15 @@ problem and pushes to that same branch. A head branch that is checked out in the
 repository's main worktree, or in a worktree with uncommitted changes, is refused
 (`worktree_create_failed`) before anything is moved or committed. PR comments, review text and CI logs are
 untrusted and are passed to the agent inside a fence it cannot close. The agent is
-the one the run used (its provider session is resumed only when the original
-worktree path still exists), else `config :foreman_server, :pr_fix, agent:`.
+the one the run used: its provider, model, harness approval mode (`WorkerSessionBound` records
+all three with the session id) and, when the fix runs at the same working-directory path as the
+run (a cleaned-up worktree is recreated there), its provider session, which the fix resumes
+(`PrFixStarted.resumed_session`, the jobsite's `JobsiteIterationStarted.resumed_session_id`).
+Without the approval mode a resumed headless Claude runs in its interactive permission mode and
+cannot edit a file or run a command, so the fix would end `no_change`; a phase that set none, or
+`prompt` (a fix thread has nobody to answer a per-call approval), leaves the harness default. A
+run with no recorded provider session uses `config :foreman_server, :pr_fix, agent:` (no approval
+mode). Verified live with a real claude on a real PR: `docs/acceptance/live-claude-prfix-resume.md`.
 `foreman run create-pr <run-id>` (or the workspace Create PR button) opens the PR when the run has none and puts it
 in the merge gate like a run's own PR (`run.pr.ready`): approve it with `approve-merge` and merge it with `merge`;
 `foreman run watch-stop|watch-start <run-id> [--pr <url>]` pauses or resumes

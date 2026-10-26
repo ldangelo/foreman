@@ -103,8 +103,8 @@ completes after such a resume keeps `last_error: agent_interrupted` from iterati
 
 ### foreman-nufr9 / foreman-8vf0s / foreman-he4yf: what is still open
 
-- nufr9: the resume across a crash now passes (above); every other listed Claude path already passed. Left: PrFix claude `resume_session`, which needs a
-  watched PR and `gh` (real GitHub). Claude is not cwd-bound for resume or fork (measurement above), which removes the doubt E9-SP2 carried.
+- nufr9: the resume across a crash now passes (above); every other listed Claude path already passed. PrFix claude `resume_session` was run on a real GitHub PR on 2026-10-26
+  (`live-claude-prfix-resume.md`). Claude is not cwd-bound for resume or fork (measurement above), which removes the doubt E9-SP2 carried.
 - he4yf: NOT run live: per-phase repo selection and an agent-driven `foreman_task_fanout`. Blocker found live: `/mcp` answers HTTP 500 on a server booted
   by the harness (`anubis_mcp` `:persistent_term.get({Anubis.Server.Supervisor, ForemanServer.MCP, :session_config})` missing), so no agent could call a
   Foreman MCP tool; `scripts/e2e/multi_repo_agent.sh` and `multi_repo/agent_probe.exs` hold the attempt (not green). Multi-repo on real GitHub stays out of scope.
@@ -131,4 +131,4 @@ completes after such a resume keeps `last_error: agent_interrupted` from iterati
 - `jido_harness`: 128 passed. `go test ./...` green. `mix format`, `credo --min-priority higher`, `--warnings-as-errors` clean.
 - `claude_projects_flow.sh`: passed=125 failed=0 unverified=2 (twice). One earlier run on the same tree failed at step 3 (the first thread ended `failed`); its stack was not kept, so its cause is unknown. The next two runs did not reproduce it.
 - `failure_injection.sh` (all scenarios incl. `jobsite-resume`): passed=62 failed=0 unverified=2.
-- Open and not buildable here: `foreman-ksy0q` (real GitHub), `foreman-nufr9` (PrFix resume on a real PR), `foreman-2onq1` (not reproduced), plus the deferred C13 `foreman-zn7de` and `foreman-mivo7`.
+- Open and not buildable here: `foreman-ksy0q` (real GitHub), `foreman-2onq1` (not reproduced), plus the deferred C13 `foreman-zn7de` and `foreman-mivo7`. (`foreman-nufr9`, PrFix resume on a real PR, was run on 2026-10-26: `live-claude-prfix-resume.md`.)

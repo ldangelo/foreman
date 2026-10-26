@@ -42,7 +42,7 @@ E2E_APPROVAL_TIMEOUT_MS=30000 stack.sh restart        E2E_EXTRA_ENV=FOREMAN_CLAU
 | Workflow thread running when the server dies (TERM and kill -9) | PASS (re-run, new session) | run re-driven ~15 s after restart with a new claude process; `provider_sessions` is `[]` while a worker runs (the id is bound when the worker run ends), so a crash loses it and the phase re-runs from its prompt |
 | Claude `--resume` inside a jobsite (`max_iterations 2`) | PASS | `js-cf03cf67...`: both iterations carry session `3579fa6f`; one Claude session file holds both prompts |
 | Jobsite crashed mid-FIRST-iteration, then `resume` | FAIL on 2026-10-23 (no session recorded; `Continue.` went to a blank claude: `UNKNOWN` for the code word, `js-3706471c...`, `js-ee21a4cc...`, bead foreman-cm8nv); **PASS after the fix** (2026-10-25, `failure_injection.sh jobsite-resume`, passed=17 failed=0 twice) | session bound 0.77 s into the iteration (`JobsiteSessionBound`), `kill -9`, restart pauses the jobsite as resumable (not `executor_lost`), resume with a prompt lacking the word: `answer.txt` holds the recall word, same claude session before and after (transcript 27 -> 61 lines); with the watcher disabled the same scenario FAILs (passed=2 failed=4). See `p2m2t-live-run.md` |
-| PrFix claude `resume_session` (fix threads) | UNVERIFIED | GitHub/PR path, owned by the LiveGithub slice; the jobsite-door `--resume` above is the same harness mechanism |
+| PrFix claude `resume_session` (fix threads) | PASS on 2026-10-26 (was UNVERIFIED), after one defect fixed | real PR, real failing check, real claude: `PrFixStarted.resumed_session true`, the fix jobsite's `resumed_session_id` is the run's claude session, its transcript grew 36 -> 77 lines, head moved and CI green (31 PASS, twice). The first run resumed but the fix agent had no `approval_mode` and was refused its first `Edit`/`Bash` (`no_change`); fixed and re-run. See `live-claude-prfix-resume.md` |
 
 ## foreman-exofh: in-flight approvals (`claudeprompt`, Write call)
 | Case | Result | Evidence |
@@ -90,8 +90,7 @@ Observations, not filed: run logs join claude stream deltas with newlines (trans
 the failure text is a raw Elixir term (`{:permission_denied, ["Write"]}: ...`).
 
 ## Not done / UNVERIFIED
-PrFix claude resume (GitHub); the 30 min default approval timeout (a 30 s one was used); other providers; real GitHub;
-the `approval_mode` default on hosts without `defaultMode: auto`.
+The 30 min default approval timeout (a 30 s one was used); other providers; the `approval_mode` default on hosts without `defaultMode: auto`. (The PrFix claude resume on real GitHub was run on 2026-10-26: `live-claude-prfix-resume.md`.)
 
 ## Cleanup
 Server and notification sink stopped by recorded PID, database dropped, scratch removed, worktree removed after the PR was pushed.

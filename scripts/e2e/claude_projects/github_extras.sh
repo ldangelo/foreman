@@ -12,13 +12,16 @@
 #   createpr  the Create PR button after the run's own PR creation failed
 #   postapproval  what a push AFTER merge approval does to the gate and the PR (observation only;
 #       the fix is foreman-ehxy6)
+#   claude_fix_ci  the fix thread of a run done by a REAL claude (haiku, workflow claudeedit) resumes THAT
+#       run's claude session (foreman-nufr9): PrFixStarted.resumed_session, the fix jobsite's
+#       JobsiteIterationStarted.resumed_session_id, the PR head and CI, and claude's own session file
 #   protection  operator merge under GitHub branch protection (required status checks, a required
 #       review, linear history). Branch protection does not exist on private repositories of a free
 #       plan (HTTP 403), so this stage makes THE SCRATCH REPOSITORY public for its duration, after a
 #       content safety scan, and restores it to private. It runs only with E2E_GH_ALLOW_PUBLIC=1.
 #
-# Every PR below is created by a real Foreman run (pi) from a bead; the harness only injects the
-# GitHub-side events a real project meets (a failing commit, a review, a conflicting main).
+# Every PR below is created by a real Foreman run (pi; claude in claude_fix_ci) from a bead; the harness only
+# injects the GitHub-side events a real project meets (a failing commit, a review, a conflicting main).
 
 GH_SHOTS=""
 EVID=""
@@ -68,11 +71,12 @@ gh_pr_use() {
   return 0
 }
 
-# gh_new_pr <tag> <prefix>: a bead whose run adds note_<tag>.txt and (AutoPR) opens a PR; the PR is
-# saved as <prefix> and left current. The `e2e-skip` marker in the title keeps CodeRabbit silent.
+# gh_new_pr <tag> <prefix> [bead issue type, default task]: a bead whose run adds note_<tag>.txt and (AutoPR) opens a PR; the
+# PR is saved as <prefix> and left current. The `e2e-skip` marker in the title keeps CodeRabbit silent. The issue type picks
+# the workflow (task: the pi `edit` one; claude-e2e: the real-claude `claudeedit` one).
 gh_new_pr() {
   np_tag=$1
-  new_bead "e2e-skip gh-$SUFFIX note $np_tag" "Create a new file named note_$np_tag.txt in the repository root whose only content is the single line: note $np_tag. Do not modify any other file."
+  new_bead "e2e-skip gh-$SUFFIX note $np_tag" "Create a new file named note_$np_tag.txt in the repository root whose only content is the single line: note $np_tag. Do not modify any other file." "${3:-task}"
   [ -n "${BEAD_ID:-}" ] || { fail "br create produced no bead id for note $np_tag"; return 1; }
   thread_for_bead "$BEAD_ID" 240
   [ -n "$THREAD" ] || { fail "no thread appeared for bead $BEAD_ID"; return 1; }
@@ -178,6 +182,16 @@ gh_inject_failure() {
   gh_clone_sync || return 1
   printf '\n\nclass InjectedFailure%s(unittest.TestCase):\n    def test_injected_failure(self):\n        self.assertEqual(1, 2, "injected by the e2e harness (%s)")\n' "$1" "$1" >> "$GH_OP/test_app.py"
   gh_push_as_operator commit -q -am "ci: inject a failing test ($1)" && gh_push_as_operator push -q origin "$GH_BRANCH" || return 1
+  BROKEN=$(git -C "$GH_OP" rev-parse HEAD)
+}
+
+# gh_inject_code_bug: push a regression to the current PR branch as the operator (app.add subtracts) -> BROKEN. Unlike the
+# test gh_inject_failure adds, only a change to the CODE clears it: the fix prompt forbids deleting or weakening a test.
+gh_inject_code_bug() {
+  gh_clone_sync || return 1
+  grep -q 'return a + b' "$GH_OP/app.py" || return 1
+  sed -i.bak 's/return a + b/return a - b/' "$GH_OP/app.py" && rm -f "$GH_OP/app.py.bak" || return 1
+  gh_push_as_operator commit -q -am "ci: inject a regression in app.add" && gh_push_as_operator push -q origin "$GH_BRANCH" || return 1
   BROKEN=$(git -C "$GH_OP" rev-parse HEAD)
 }
 
@@ -502,6 +516,158 @@ gh_x_postapproval() {
   return 0
 }
 gh_pr_head_recorded() { [ "$(gh_pr_field '.head_sha')" = "$1" ]; }
+
+# ---------------------------------------------------------------- 9k: a fix thread resumes the claude session of a REAL claude run
+#
+# foreman-nufr9. ForemanServer.PrFix builds `resume_session` from the run's last bound provider session, but only when the fix runs
+# at the same working-directory path as the run (a claude session is found by its id, yet its transcript is appended to wherever
+# the original lives). Everything here is real: a bead of type claude-e2e makes the `claudeedit` workflow (one claude phase, haiku)
+# do the run through the private HOME of claude_home.sh, AutoPR opens the PR, a regression pushed to the PR branch fails the real
+# check, Fix CI starts the fix jobsite. The assertions read the event store (PrFixStarted, the fix jobsite's own stream) and
+# claude's own transcript of the session, never Foreman's log.
+
+GH_CLAUDE_BEAD_TYPE=claude-e2e
+
+# gh_claude_workflow: `claudeedit` (the real-claude workflow, issue type claude-e2e) is in the RUNNING server's catalog. The catalog
+# polls its directory every 2 s, so there is no restart: one from a `stage` process would lose the environment github_prepare gave
+# the server (webhook secret, PR monitor, fix sandbox).
+gh_claude_workflow() {
+  install_claude_workflow
+  cw_start=$(date +%s)
+  while :; do
+    cw_out=$(rpc "IO.puts(\"CATALOG \" <> inspect(ForemanServer.Workflow.Catalog.type_to_workflow(\"$GH_CLAUDE_BEAD_TYPE\")))" 2>/dev/null | grep '^CATALOG ')
+    case "$cw_out" in
+      *'{:ok, "claudeedit"}'*) pass "the running server's workflow catalog maps issue type $GH_CLAUDE_BEAD_TYPE to claudeedit"; return 0 ;;
+    esac
+    [ "$(elapsed "$cw_start")" -lt 60 ] || { fail "the workflow catalog never mapped $GH_CLAUDE_BEAD_TYPE to claudeedit: ${cw_out:-no answer from the server node}"; return 1; }
+    gh_server_alive || return 1
+    sleep 3
+  done
+}
+
+# gh_run_session <run id> -> "<provider> <model> <provider session id>" of the run's LAST bound provider session (empty: none)
+gh_run_session() {
+  api_get "/api/runs/$1" | jq -r '[.run.provider_sessions // [] | .[] | select(.provider_session_id != null)] | last // empty | [.provider, (.model // "-"), .provider_session_id] | join(" ")' 2>/dev/null
+}
+
+# claude's OWN transcripts live under the redirected HOME (claude_private_home): <HOME>/.claude/projects/<working directory>/<session id>.jsonl
+gh_claude_session_file() { find "$WORK/home/.claude/projects" -name "$1.jsonl" 2>/dev/null | head -n 1; }
+gh_claude_sessions() { find "$WORK/home/.claude/projects" -name '*.jsonl' ! -name 'agent-*' 2>/dev/null | sort; }
+
+# gh_prfix_evidence <run id>: the run's PrFix* events, its worktree events and the events of the fix jobsites they started, one JSON
+# object per line in $EVID/prfix-evidence-<run id>.jsonl (pr_fix_evidence.exs, read from the event store on the server node)
+gh_prfix_evidence() {
+  pe_code=$(cat "$ASSETS/pr_fix_evidence.exs")
+  rpc "run_id = \"$1\"
+$pe_code" 2>/dev/null | grep '^EVIDENCE ' | cut -c10- > "$EVID/prfix-evidence-$1.jsonl"
+}
+# gh_prfix_field <event type> <jq expression over that event: .data.x, .at, .stream> -> its value on the FIRST such event of the
+# current run's evidence file, compact on one line (empty when there is none yet)
+gh_prfix_field() { jq -rc --arg t "$1" "select(.type == \$t) | $2" "$EVID/prfix-evidence-$GH_RUN.jsonl" 2>/dev/null | head -n 1; }
+# gh_prfix_has <event type>: refresh the evidence, then true once such an event exists
+gh_prfix_has() { gh_prfix_evidence "$GH_RUN"; [ -n "$(gh_prfix_field "$1" .type)" ]; }
+
+# gh_trigger_fix_ci <label>: the operator's Fix CI on the current PR: the workspace button when the browser driver is installed
+# (the way an operator does it), else the CLI verb that dispatches the same command (run.pr.fix_ci).
+gh_trigger_fix_ci() {
+  if [ -d "$ROOT/scripts/e2e/ui-a11y/node_modules/playwright" ]; then
+    if ! gh_ui "$GH_THREAD" --click fix_ci --shot "$GH_SHOTS/$1"; then fail "UI click failed: $(gh_ui_get .error) $(cut -c1-300 "$WORK/ui-driver.err")"; return 1; fi
+    note "the workspace Fix CI button was clicked; notice: $(gh_ui_get .notice)"
+    assert_has "the UI notice names the dispatched command" "$(gh_ui_get .notice)" "run.pr.fix_ci"
+    assert_eq "the notice is not an error" "$(gh_ui_get .notice_is_error)" "false"
+  else
+    gh_fm "$1" run fix-ci "$GH_RUN" --pr "$GH_PR_URL"
+    note "no browser driver (scripts/e2e/ui-a11y/node_modules): foreman run fix-ci instead, rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-200)"
+    [ "$GH_RC" = 0 ] && pass "foreman run fix-ci accepted (the command the button dispatches)" || { fail "foreman run fix-ci refused: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-300)"; return 1; }
+  fi
+  return 0
+}
+
+gh_x_claude_fix_ci() {
+  say "9k. the PR fix thread of a REAL claude run resumes THAT run's claude session (foreman-nufr9)"
+  note "EXPECTED: (a) the run bound a claude provider session; (b) PrFixStarted.resumed_session is true; (c) the fix jobsite's first JobsiteIterationStarted.resumed_session_id is that session; (d) the PR head moved with the fix commit and CI is green; (e) claude's transcript of THAT session grew (same id, more lines) and no new session appeared"
+  if ! claude_private_home || ! claude_ready; then
+    unverified "the PR fix thread of a real claude run resumes its claude session" "${CLAUDE_UNAVAILABLE:-claude is not usable}"
+    return 0
+  fi
+  note "claude $(claude_env claude --version 2>&1 | head -n 1) answers through the private HOME $WORK/home (stock settings, its own session store, only the operator's login)"
+  gh_claude_workflow || return 1
+  assert_eq "the project has no pr_auto_fix policy (the fix is the operator's request)" "$(api_get "/api/projects/$PROJECT/settings" | jq -c '.settings.pr_auto_fix // null')" "null"
+
+  # the run: a real claude does the work, AutoPR opens a real PR
+  gh_new_pr claude1 PRC "$GH_CLAUDE_BEAD_TYPE" || return 1
+  gc_session=$(gh_run_session "$GH_RUN")
+  note "the run's last bound provider session: ${gc_session:-none}"
+  gc_provider=${gc_session%% *}
+  gc_sid=${gc_session##* }
+  assert_eq "(a) the run's provider session is a claude session" "${gc_provider:-none}" "claude"
+  case "$gc_sid" in
+    ????????-????-????-????-????????????) pass "(a) the session id is claude's own (a UUID): $gc_sid" ;;
+    *) fail "(a) the run recorded no claude session id (got '${gc_sid:-}')"; return 1 ;;
+  esac
+  gc_file=$(gh_claude_session_file "$gc_sid")
+  [ -n "$gc_file" ] || { fail "(a) claude's own transcript of session $gc_sid is not under $WORK/home/.claude/projects"; return 1; }
+  assert_has "(a) claude's transcript of that session holds the run's task (it is this run's session)" "$(cat "$gc_file")" "$GH_PR_FILE"
+  gc_lines_before=$(wc -l < "$gc_file" | tr -d ' ')
+  gc_sha_before=$(shasum -a 256 "$gc_file" | cut -d' ' -f1)
+  gc_sessions_before=$(gh_claude_sessions)
+  note "claude's transcript before the fix: $gc_file ($gc_lines_before lines, sha256 ${gc_sha_before:0:16}); $(printf '%s\n' "$gc_sessions_before" | grep -c .) top-level session transcript(s) under the private HOME"
+
+  # a real failing check: a regression only a change to the code can clear
+  gh_x_ready || return 1
+  gh_inject_code_bug || { fail "could not push the regression to $GH_BRANCH"; return 1; }
+  note "pushed the regression $BROKEN (app.add subtracts)"
+  if gh_wait 300 "ci failure" gh_ci_head_is failure; then pass "GitHub Actions reports the check FAILED on $BROKEN"; else fail "the regression never showed as failed ($(gh_ci_state "$BROKEN"))"; return 1; fi
+  if gh_wait_card "$GH_THREAD" '.reason == "ci_failing"' 420; then pass "Foreman observed it: $(gh_card_line "$GH_CARD")"; else fail "Foreman never showed the failing check: $(gh_card_line "$GH_CARD")"; return 1; fi
+
+  # Fix CI
+  gc_mark=$(gh_events_mark "$GH_RUN")
+  gh_trigger_fix_ci claude-fix-ci || return 1
+  if gh_wait 300 "PrFixStarted" gh_prfix_has PrFixStarted; then pass "the fix thread started: PrFixStarted is recorded"; else fail "no PrFixStarted within 300s of Fix CI"; gh_events_note "$GH_RUN" "$gc_mark"; note "PR record: $(gh_pr_record)"; return 1; fi
+  gc_started=$(gh_prfix_field PrFixStarted .data)
+  note "PrFixStarted data: $gc_started"
+  assert_eq "(b) PrFixStarted.resumed_session" "$(printf '%s' "$gc_started" | jq -r '.resumed_session')" "true"
+  gc_jobsite=$(printf '%s' "$gc_started" | jq -r '.jobsite_id')
+  gc_orig_path=$(gh_prfix_field WorktreeCreated .data.worktree_path)
+  note "the run's worktree (WorktreeCreated): $gc_orig_path; WorktreeCleaned: $(gh_prfix_field WorktreeCleaned .at | grep . || echo never)"
+
+  # the fix jobsite's own events: the session it was started on
+  if gh_wait 300 "fix jobsite iteration" gh_prfix_has JobsiteIterationStarted; then pass "the fix jobsite $gc_jobsite started its first iteration"; else fail "the fix jobsite $gc_jobsite never started an iteration within 300s"; gh_events_note "$GH_RUN" "$gc_mark"; return 1; fi
+  note "fix jobsite agent: $(gh_prfix_field JobsiteStarted '.data.agent | tojson')"
+  assert_eq "the fix jobsite runs claude" "$(gh_prfix_field JobsiteStarted '.data.agent.provider')" "claude"
+  gc_fix_path=$(gh_prfix_field JobsiteWorktreeProvisioned .data.path)
+  note "the fix jobsite's worktree (JobsiteWorktreeProvisioned): $gc_fix_path (reused: $(gh_prfix_field JobsiteWorktreeProvisioned '.data["reused?"]'))"
+  assert_eq "the fix jobsite works at the SAME path the run did (the working directory a claude session is tied to)" "$gc_fix_path" "$gc_orig_path"
+  gc_resumed=$(gh_prfix_field JobsiteIterationStarted 'select(.data.index == 1) | .data.resumed_session_id')
+  assert_eq "(c) the fix jobsite's first JobsiteIterationStarted.resumed_session_id is the run's claude session" "$gc_resumed" "$gc_sid"
+
+  # the fix lands
+  if gh_wait 900 "fix commit" gh_head_moved_from "$BROKEN"; then pass "(d) the fix thread pushed a commit: $BROKEN -> $(gh_head)"; else fail "(d) no fix commit within 900s of the click"; gh_events_note "$GH_RUN" "$gc_mark"; gh_prfix_evidence "$GH_RUN"; note "PR record: $(gh_pr_record)"; return 1; fi
+  gc_fixed=$(gh_head)
+  if gh_wait 300 "ci green" gh_ci_head_is success; then pass "(d) CI is green again on the fixed head $gc_fixed"; else fail "(d) CI not green after the fix ($(gh_ci_state "$gc_fixed"))"; fi
+  gh_clone_sync
+  if git -C "$GH_OP" merge-base --is-ancestor "$BROKEN" "$gc_fixed"; then pass "(d) the fix is a new commit on top of the regression (no force push)"; else fail "(d) the new head $gc_fixed does not descend from the regression $BROKEN"; fi
+  note "the fix commit: $(git -C "$GH_OP" log -1 --format='%h %an <%ae> %s' "$gc_fixed")"
+  assert_has "(d) the fix repaired the code (app.add adds again)" "$(git -C "$GH_OP" show "$gc_fixed:app.py" 2>/dev/null)" "return a + b"
+  if gh_wait 300 "PrFixFinished" gh_prfix_has PrFixFinished; then pass "the fix was recorded as finished"; else fail "no PrFixFinished within 300s"; fi
+  assert_eq "the fix finished as pushed" "$(gh_prfix_field PrFixFinished .data.outcome)" "pushed"
+  if gh_wait_card "$GH_THREAD" '.group == "ready_for_review"' 420; then pass "Overview: back in Ready for review: $(gh_card_line "$GH_CARD")"; else fail "not back in Ready for review: $(gh_card_line "$GH_CARD")"; fi
+  gh_wait 300 "jobsite iteration completed" gh_prfix_has JobsiteIterationCompleted || true
+  assert_eq "(c) the fix iteration ended on the SAME claude session id" "$(gh_prfix_field JobsiteIterationCompleted .data.session_id)" "$gc_sid"
+
+  # claude's own record: the transcript of that session grew, no other session appeared
+  gc_lines_after=$(wc -l < "$gc_file" | tr -d ' ')
+  if [ "$gc_lines_after" -gt "$gc_lines_before" ]; then pass "(e) claude's transcript of session $gc_sid grew: $gc_lines_before -> $gc_lines_after lines"; else fail "(e) claude's transcript of session $gc_sid did not grow ($gc_lines_before -> $gc_lines_after lines)"; fi
+  assert_eq "(e) the first $gc_lines_before lines of the transcript are byte-identical (the resume appended to it)" "$(head -n "$gc_lines_before" "$gc_file" | shasum -a 256 | cut -d' ' -f1)" "$gc_sha_before"
+  assert_eq "(e) the fix created no new claude session: the same transcripts exist as before it" "$(gh_claude_sessions)" "$gc_sessions_before"
+  assert_has "(e) the appended turns hold the fix prompt (it names the pull request)" "$(tail -n +"$((gc_lines_before + 1))" "$gc_file")" "$GH_PR_URL"
+  cp "$gc_file" "$EVID/claude-session-$gc_sid.jsonl"
+  gh_prfix_evidence "$GH_RUN"
+  gh_events_note "$GH_RUN" "$gc_mark"
+  note "PR record: $(gh_pr_record)"
+  note "kept in $EVID: prfix-evidence-$GH_RUN.jsonl (the event payloads), events-$GH_RUN.txt, claude-session-$gc_sid.jsonl (claude's transcript, never commit it)"
+  return 0
+}
 
 # ---------------------------------------------------------------- 9i: branch protection
 

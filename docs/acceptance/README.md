@@ -16,6 +16,7 @@ that CI cannot give.
 | `github-live-run.md` | Stage 8 on a real private GitHub repo: PR created by a run, checks, a real webhook through a `cloudflared` tunnel, Fix CI, Address comments, Resolve conflicts, force-push, check re-run, operator merge (36 PASS). Branch protection UNVERIFIED (HTTP 403 on that plan). |
 | `combined-flow-live-run.md` | The whole flow in one stack with the GitHub stage on (`E2E_GH_THREE_PRS=1`): three tasks in one coordinator message, three overlapping runs, each opening its own real PR, a failing check on one, Waiting on you, Fix CI, Ready for review, operator `approve-merge` + `merge` to Resolved, usage per thread, then the failure-injection pass. One FAIL: no `PR ready for review` notification on the auto-PR path (`foreman-ehz7l`). |
 | `live-github-protection-ui-autofix.md` + `live-github-ui-*.png` | The workspace Fix CI, Address comments, Resolve conflicts and Create PR buttons clicked on real PRs, `pr_auto_fix` off, on and bounded, a push after merge approval (observed on the build before #650), GitHub's refusal text for an operator merge, and the Create PR merge-gate defect found and fixed there (`foreman-ksy0q`). Merge under branch protection UNVERIFIED. |
+| `live-claude-prfix-resume.md` | The PR fix thread of a REAL claude run resumes that run's claude session, on a real private GitHub PR (`github_live_extras.sh stage claude_fix_ci`, `foreman-nufr9`): `PrFixStarted.resumed_session`, the fix jobsite's `resumed_session_id`, the head moved and CI green, claude's own transcript of the session grew with no new session. The first run resumed but could not fix anything (the fix agent had no approval mode, so the resumed claude was refused its first `Edit`/`Bash`); root cause, fix with tests, then 31 PASS twice. |
 | `parity-gaps-live-run.md` | Live proof of the parity-gap beads with real `claude` (haiku) and pi: claude coordinator and thread, project env and secrets on both doors, setup script, docker network shim, schedules, adopt (move, mint, continue), recommend, per-thread usage, multi-repo self-add and fanout. |
 | `multi-repo-agent-live-run.md` | A real claude (haiku) and a real pi calling Foreman's own `/mcp` on a harness-booted server: per-phase repository selection, an agent adding a registered and an unregistered repository to its own run (`foreman_run_request_repo`), `FOREMAN_REPOS` as each phase's agent saw it, agent-driven `foreman_task_fanout` and its approved single-repository runs, and the typed refusal of a multi-repo jobsite (`multi_repo_agent.sh`, passed=52 failed=0 on each). Root cause and fix of `foreman-cnn1l` (`/mcp` answered HTTP 500 off `mix phx.server`). |
 | `live-steering-live-run.md` | Live in-session steering for claude and pi, the pause/resume fallback, `RunSteerUndelivered` on cancel. |
@@ -112,6 +113,12 @@ The review analyzer runs as usual and is not asserted here.
 - `scripts/e2e/multi_repo_agent.sh` (bash): the same multi-repository paths with a REAL agent reaching Foreman through `/mcp`, stages
   `phases fanout jobsite`, `E2E_PROVIDER=claude` (default, haiku) or `pi`, own database `foreman_e2e_multi_repo_agent`. Run it as
   `devbox run -- bash scripts/e2e/multi_repo_agent.sh`. Write-up: `multi-repo-agent-live-run.md`.
+- `scripts/e2e/github_live_extras.sh` (bash): the real-GitHub stages beyond stage 8 of the flow, over an existing PRIVATE
+  `<owner>/foreman-scratch-<suffix>` repository (`FOREMAN_E2E_GITHUB_REPO`), modes `all | serve | stage <name>... | stop`; stages
+  `pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts claude_fix_ci autofix createpr postapproval merge_refusal prot_prepare
+  protection` (plus the read-only `safety`). `claude_fix_ci` runs a REAL claude (haiku, through a private `HOME`; `UNVERIFIED` without a
+  logged-in claude): `serve` once, then `stage claude_fix_ci` (about 2 minutes). Write-ups: `live-github-protection-ui-autofix.md`,
+  `live-claude-prfix-resume.md`.
 - `scripts/e2e/ui-a11y/ui_a11y.mjs`: axe-core and keyboard-order checks of the workspace and settings pages plus idle LiveView traffic
   (needs the packages in `scripts/e2e/ui-a11y/package.json` installed and a browser for Playwright). Flags `--base`, `--token`,
   `--project`, `--idle-seconds`, `--max-idle-frames`, `--report`; environment `FOREMAN_UI_BASE`, `FOREMAN_API_TOKEN`,
@@ -143,8 +150,8 @@ Details and bead ids are in [`parity-audit.md`](parity-audit.md).
   [`combined-flow-live-run.md`](combined-flow-live-run.md). It found that no `PR ready for review` notification reaches the sink when a run opens
   its PR itself (`foreman-ehz7l`); the `port-closed` orphan assertion is now conditional like `server-crash` (an agent that dies with its exec-port leaves nothing to reap, reported UNVERIFIED; `foreman-e01a1`); `cancel-strays` and `shutdown-strays` cover the `OrphanReaper` sweep after cancel, thread stop and graceful shutdown (`foreman-zmhzw`) and `br-down`
   failed once and passed on re-run (`foreman-3ll3t`, root cause and fix: `foreman-w29up`, below).
-- pi on MiniMax carries almost all of the evidence; `claude` is proven only for short haiku sessions (coordinator, thread, reviewer,
-  in-flight approvals, steering). Claude paths beyond that (for example fix-thread resume) are tracked in `foreman-nufr9`.
+- pi on MiniMax carries almost all of the evidence; `claude` is proven for short haiku sessions (coordinator, thread, reviewer,
+  in-flight approvals, steering, a PR fix thread resuming its run's session, `live-claude-prfix-resume.md`). A fix thread of a `prompt`-mode claude phase, a docker-sandbox fix thread and models other than haiku stay unrun.
 - GitHub is proven on a real private repo except merge under branch protection (HTTP 403 on a private repo of that plan; the temporary public
   window was not taken because the pre-flip content scan found a real identity in the history, see `live-github-protection-ui-autofix.md`,
   `foreman-ksy0q`). A push after merge approval stranded the PR on the build before #650 (observed live); #650 now voids the approval and holds the gate again (`foreman-ehxy6`), covered by tests and not re-run live.

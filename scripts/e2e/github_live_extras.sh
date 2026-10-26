@@ -3,12 +3,16 @@
 #
 # Live acceptance of the GitHub paths that stage 8 of claude_projects_flow.sh (claude_projects/github.sh)
 # leaves open (bead foreman-ksy0q), against a REAL private scratch repository and a real, throwaway
-# Foreman server (own port, own Postgres database, real pi agent on minimax/MiniMax-M2.7-highspeed):
+# Foreman server (own port, own Postgres database, real pi agent on minimax/MiniMax-M2.7-highspeed; a real
+# claude, haiku, only in claude_fix_ci):
 #
 #   ui           the workspace UI buttons Fix CI / Address comments / Resolve conflicts / Create PR clicked in a
 #                real browser (Playwright) on real PRs; no merge or approve control exists anywhere
 #   autofix      the pr_auto_fix policy off (observed, not fixed), on (fixed automatically), and bounded
 #   postapproval what a push after merge approval does to the gate and the PR (observation only)
+#   claude_fix_ci the fix thread of a run done by a REAL claude (haiku, workflow claudeedit) resumes THAT run's
+#                claude session: PrFixStarted.resumed_session, the fix jobsite's resumed_session_id, the PR head and
+#                CI, claude's own transcript of the session (foreman-nufr9). UNVERIFIED without a logged-in claude
 #   protection   operator merge under GitHub branch protection (required checks, a required review,
 #                linear history): the refusal text and the merge once every rule is met
 #
@@ -41,13 +45,15 @@ E2E_NAME=${E2E_NAME:-gx}
 . "$HERE/claude_projects/github.sh"
 # shellcheck source=claude_projects/github_extras.sh
 . "$HERE/claude_projects/github_extras.sh"
+# shellcheck source=claude_projects/claude_home.sh
+. "$HERE/claude_projects/claude_home.sh"
 
 MODE=${1:-all}
 export E2E_REVIEW_ANALYSIS=0
 E2E_EVIDENCE_DIR=${E2E_EVIDENCE_DIR:-$ROOT/tmp/gx-evidence}
 E2E_TRANSCRIPT=${E2E_TRANSCRIPT:-$E2E_EVIDENCE_DIR/transcript-$MODE.txt}
 
-STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts autofix createpr postapproval merge_refusal prot_prepare protection"
+STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts claude_fix_ci autofix createpr postapproval merge_refusal prot_prepare protection"
 STATE_FILE="$WORK/state.env"
 STATE_VARS="WORK ROOT SUFFIX NODE COOKIE API E2E_PORT E2E_HOOK_PORT E2E_DB_NAME DATABASE_URL E2E_API_TOKEN E2E_MODEL
   SERVER_PID HOOK_PID SERVER_LOG HOOK_CAPTURE FOREMAN PROJECT REPO DB_CREATED GH_REPO GH_CLONE GH_OP GH_PROJECT

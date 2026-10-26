@@ -10,9 +10,15 @@ defmodule ForemanServer.PrFix do
   (publishing exactly that branch to `origin`), carries the originating bead id, and
   uses the agent the run used:
 
-    * provider and model: the run's last persisted provider session
-      (`WorkerSessionBound`, E0-S1), else `config :foreman_server, :pr_fix, agent:`;
-      the model falls back to the project's `thread_model` (via `Jobsite.Spec`);
+    * provider, model and approval mode: the run's last persisted provider session
+      (`WorkerSessionBound`, E0-S1), else `config :foreman_server, :pr_fix, agent:` (which names no
+      approval mode); the model falls back to the project's `thread_model` (via `Jobsite.Spec`).
+      The approval mode is the harness mode the run's agent ran with, because a resumed headless
+      Claude otherwise runs in its default, interactive permission mode and cannot edit a file or run
+      a command (the fix ends `no_change`, live: `docs/acceptance/live-claude-prfix-resume.md`). A
+      session whose phase set none, or `prompt` (a jobsite has nobody to answer a per-call approval,
+      and `--permission-mode default` would override what the host's own Claude settings allow),
+      leaves the harness default;
     * `resume_session`: that session's id, only when the fix will run at the SAME
       working-directory path as the original run (provider sessions are cwd-bound; spike
       E9-SP2 proved pi refuses to resume from another directory). The original worktree is
@@ -196,9 +202,14 @@ defmodule ForemanServer.PrFix do
       provider: provider,
       model: (session && session[:model]) || default["model"],
       effort: default["effort"],
+      approval_mode: session && unattended_mode(session[:approval_mode]),
       session_id: if(resume? and session, do: session.provider_session_id)
     }
   end
+
+  defp unattended_mode("prompt"), do: nil
+  defp unattended_mode(mode) when is_binary(mode) and mode != "", do: mode
+  defp unattended_mode(_none), do: nil
 
   # -- prompt ------------------------------------------------------------------
 
@@ -373,6 +384,7 @@ defmodule ForemanServer.PrFix do
     %{"provider" => agent.provider}
     |> put_if("model", agent.model)
     |> put_if("effort", agent.effort)
+    |> put_if("approval_mode", agent.approval_mode)
   end
 
   defp bead_id(run) do

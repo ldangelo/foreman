@@ -691,3 +691,18 @@ the id is a non-empty binary. `ProjectionStore` folds it onto the run as `provid
 and `Review.Capture.close_run/2` copies the de-duplicated ids into the archive manifest.
 Historical runs project `nil` / `[]`. The worker result message shape
 `{:worker_result, {:ok, text} | {:error, code}}` is unchanged.
+
+**The session record also carries the phase's `approval_mode` (2026-10, live finding).** A session id
+alone is not enough to continue an agent: `PrFix` resumed a claude session with the right provider,
+model and id, but the fix jobsite's agent had no `approval_mode`, so the resumed headless claude ran
+in its default, interactive permission mode and was refused its first `Edit` and `Bash` call
+(`Claude requested permissions to write to ..., but you haven't granted it yet`): the fix ended
+`PrFixFinished no_change` ten seconds after it started. Earlier live fix threads had used pi (no
+permission prompts at all) or a host whose own claude settings allowed everything, which hid it. The
+worker now records the effective mode of its driver options (`RunExecutor.maybe_put_approval_mode/3`:
+the phase's `approval_mode:` or an approved tool call's override) on `WorkerSessionBound.approval_mode`
+(omitted when none was set), `ProjectionStore` keeps it on the `provider_sessions` entry, and
+`PrFix.agent/2` passes it to the fix agent. `prompt` is not passed: a jobsite has no per-call
+approval endpoint, and `--permission-mode default` would override what the host's settings allow.
+An event written with the field is rejected by an older server's strict `EventCodec` (unknown keys
+raise), so that server would not bind the session.
