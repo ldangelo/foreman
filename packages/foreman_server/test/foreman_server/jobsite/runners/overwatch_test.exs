@@ -48,12 +48,18 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
     run_id = "run-overwatch-timeout-#{System.unique_integer([:positive])}"
     agent = %Agent{provider: :claude, model: "test-model"}
 
+    # The idle budget also caps worker admission (`min(activation_timeout_ms, remaining_ms)` in
+    # `Runners.Overwatch.dispatch/1`). It must leave room for the hanging worker to be admitted
+    # and activated on a loaded machine, or a slow admission surfaces as `:agent_start_failed`
+    # and the worker-is-alive-at-the-deadline arm this test names is never reached.
+    idle_timeout_ms = 1_000
+
     assert {:error, %Error{code: :agent_idle_timeout} = error} =
              Runners.Overwatch.run(agent, "do the thing", nil,
                run_id: run_id,
-               idle_timeout_ms: 50
+               idle_timeout_ms: idle_timeout_ms
              )
 
-    assert error.details.timeout_ms == 50
+    assert error.details.timeout_ms == idle_timeout_ms
   end
 end
