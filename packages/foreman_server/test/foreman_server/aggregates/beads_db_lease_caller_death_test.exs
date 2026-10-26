@@ -259,6 +259,39 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
     end
   end
 
+  describe "a holder that is alive" do
+    # Longer than the waiter's poll interval (100ms) and than the keeper's retry interval (1s), and
+    # inside the waiter's own budget (50 polls, about 5s): a timer that gave up a live hold would
+    # fire within it. There is no TTL by design: a `br` call may legitimately run long.
+    @live_window_ms 2_000
+
+    test "keeps its lease for as long as it runs: nothing gives it up on a timer",
+         %{db_path: db_path} = ctx do
+      holder = start_holder(ctx, "run-long")
+      assert [keeper] = keepers_for(holder)
+      keeper_ref = Process.monitor(keeper)
+      start_waiter(ctx, "run-patient")
+
+      # Through the whole window the waiter stays queued and the keeper stays armed.
+      refute_receive {:finished, "run-patient", _}, @live_window_ms
+      refute_receive {:DOWN, ^keeper_ref, :process, ^keeper, _}, 0
+
+      # The holder still holds, and the stream records neither a release nor a transfer.
+      assert %BeadsDbLease.Holder{run_id: "run-long"} = lease_state(db_path).holder
+      assert waiter_ids(db_path) == ["run-patient"]
+      assert event_types(ctx) == ["BeadsDbLeaseAcquired", "BeadsDbLeaseWaiterRegistered"]
+
+      # It finishes on its own, and only then does the waiter get the lease.
+      send(holder, :release)
+      assert_receive {:finished, "run-long", {:ok, :released_by_test}}, 5_000
+      assert_receive {:finished, "run-patient", {:ok, :ran}}, 10_000
+
+      assert_free(db_path)
+
+      refute Enum.any?(events(ctx), fn {_type, data} -> Map.get(data, :reason) == :caller_down end)
+    end
+  end
+
   describe "the normal path" do
     test "keeps one keeper for the call and leaves none behind", %{db_path: db_path} = ctx do
       assert {:ok, :done} =
