@@ -51,10 +51,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
           payload: %{run_id: "r-pr2", pr_url: "https://github.com/a/b/pull/9"}
         },
         task("t-failed", id, "Broken thing"),
-        run("r-failed", "t-failed", id),
+        run("r-failed-#{id}", "t-failed", id),
         %{
           event_type: "RunFailed",
-          payload: %{run_id: "r-failed", project_id: id, reason: "boom"}
+          payload: %{run_id: "r-failed-#{id}", project_id: id, reason: "boom"}
         },
         task("t-work", id, "In flight"),
         run("r-work", "t-work", id),
@@ -346,14 +346,17 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     } do
       {view, _} = mount_view(id)
 
-      view |> element("#thread-run\\:r-failed button[phx-value-action=resolve]") |> render_click()
-      await_element(view, "#group-resolved #thread-run\\:r-failed")
+      view
+      |> element("#thread-run\\:r-failed-#{id} button[phx-value-action=resolve]")
+      |> render_click()
 
-      assert {:ok, %{resolved: true}} = Threads.get("run:r-failed")
+      await_element(view, "#group-resolved #thread-run\\:r-failed-#{id}")
 
-      view |> element("#thread-run\\:r-failed button", "Reopen") |> render_click()
-      await_element(view, "#group-waiting_on_you #thread-run\\:r-failed")
-      refute has_element?(view, "#group-resolved #thread-run\\:r-failed")
+      assert {:ok, %{resolved: true}} = Threads.get("run:r-failed-#{id}")
+
+      view |> element("#thread-run\\:r-failed-#{id} button", "Reopen") |> render_click()
+      await_element(view, "#group-waiting_on_you #thread-run\\:r-failed-#{id}")
+      refute has_element?(view, "#group-resolved #thread-run\\:r-failed-#{id}")
     end
 
     test "a thread of another project is refused and nothing is dispatched", %{id: id} do
@@ -383,7 +386,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       {view, _} = mount_view(id)
 
       refute render(view) =~ "Confirm stop"
-      html = render_click(view, "stop", %{"thread-id" => "run:r-failed"})
+      html = render_click(view, "stop", %{"thread-id" => "run:r-failed-#{id}"})
       assert html =~ "not_stoppable"
     end
   end
@@ -703,12 +706,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
   describe "idempotent actions" do
     test "the same intent dedupes a repeated action; a new intent is a new action", %{id: id} do
-      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :resolve, "i-1")
-      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :reopen, "i-2")
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed-#{id}", :resolve, "i-1")
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed-#{id}", :reopen, "i-2")
       # a double click: same intent, same command id, deduplicated by the router
-      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :reopen, "i-2")
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed-#{id}", :reopen, "i-2")
       # a genuinely new reopen of a thread that is not resolved is rejected
-      assert {:error, message} = Actions.set_resolved(id, "run:r-failed", :reopen, "i-3")
+      assert {:error, message} = Actions.set_resolved(id, "run:r-failed-#{id}", :reopen, "i-3")
       assert message =~ "thread_not_resolved"
     end
 
@@ -733,12 +736,16 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
          %{id: id} do
       # session 1 resolves the thread ...
       {view, _} = mount_view(id)
-      view |> element("#thread-run\\:r-failed button[phx-value-action=resolve]") |> render_click()
-      await_element(view, "#group-resolved #thread-run\\:r-failed")
+
+      view
+      |> element("#thread-run\\:r-failed-#{id} button[phx-value-action=resolve]")
+      |> render_click()
+
+      await_element(view, "#group-resolved #thread-run\\:r-failed-#{id}")
 
       # ... someone else reopens it ...
-      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :reopen, "elsewhere")
-      assert {:ok, %{resolved: false}} = Threads.get("run:r-failed")
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed-#{id}", :reopen, "elsewhere")
+      assert {:ok, %{resolved: false}} = Threads.get("run:r-failed-#{id}")
 
       # ... and after a restart a view's counters start from zero again, only its random
       # session nonce is new. Its resolve is a new command and must append a new event; a
@@ -746,11 +753,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       {restarted, _} = mount_view(id)
 
       restarted
-      |> element("#thread-run\\:r-failed button[phx-value-action=resolve]")
+      |> element("#thread-run\\:r-failed-#{id} button[phx-value-action=resolve]")
       |> render_click()
 
-      await_element(restarted, "#group-resolved #thread-run\\:r-failed")
-      assert {:ok, %{resolved: true}} = Threads.get("run:r-failed")
+      await_element(restarted, "#group-resolved #thread-run\\:r-failed-#{id}")
+      assert {:ok, %{resolved: true}} = Threads.get("run:r-failed-#{id}")
     end
   end
 
