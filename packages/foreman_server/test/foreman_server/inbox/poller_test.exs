@@ -1,7 +1,7 @@
 defmodule ForemanServer.Inbox.PollerTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Inbox.{Poller, SharedInbox, InboxItemStarted, InboxItemDeduped}
+  alias ForemanServer.Inbox.{DedupeTable, Poller, SharedInbox, InboxItemStarted, InboxItemDeduped}
 
   defmodule TestSource do
     @behaviour ForemanServer.Inbox.InboxItemCorrelationId
@@ -25,7 +25,12 @@ defmodule ForemanServer.Inbox.PollerTest do
       end
     end)
 
-    # Clear stats from any previous test.
+    # Clear the cache and the stats left by any previous test. `ingest/2` casts to the Poller,
+    # so a cast from the previous test may still be queued: flush it first, or it lands after
+    # the reset and counts into this test's stats.
+    Poller.synchronize()
+    DedupeTable.clear()
+
     try do
       :ets.delete_all_objects(:foreman_inbox_poller_stats)
     catch

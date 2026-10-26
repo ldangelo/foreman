@@ -14,7 +14,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
 
   alias ForemanServer.Agents.OperatorQuestionDispatcher
   alias ForemanServer.Agents.OperatorQuestionSource
-  alias ForemanServer.Inbox.InboxItemStarted
+  alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted}
   alias ForemanServer.Agents.OperatorTimeout
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.EventStore, as: Store
@@ -37,6 +37,20 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
     {:ok, _} = Application.ensure_all_started(:meck)
     # DedupeTable, Poller and OperatorTimeout are in the application tree
     # (config/test.exs enables :operator_timeout); nothing to start here.
+    :ok
+  end
+
+  # `SharedInbox` dedupes through one ETS table for the whole VM, and an entry lives for the
+  # app-env `:inbox_dedupe_window_seconds` (300 s unset). Both are left behind by whichever test
+  # ran before: a zero window (set by a test that does not restore it) expires every entry as it
+  # is written, so the second `dispatch/1` of a question is `:started` instead of `:deduped`,
+  # and an entry for a literal id such as "q-43" turns a first dispatch into `:deduped`. Every
+  # test therefore starts from an empty cache and its own window.
+  setup do
+    DedupeTable.clear()
+    previous_window = Application.get_env(:foreman_server, :inbox_dedupe_window_seconds)
+    Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 60)
+    on_exit(fn -> restore_env(:inbox_dedupe_window_seconds, previous_window) end)
     :ok
   end
 
