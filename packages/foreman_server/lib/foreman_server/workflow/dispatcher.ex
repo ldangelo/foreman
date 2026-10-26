@@ -32,6 +32,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
       starts the run supervisor if the lease decision is now
       `:proceed`. Together with the queued-return contract, this
       is what drains the wait queue after a holder releases.
+    * `{:utc_rollover, day}` — a timer armed for the next UTC midnight (`:now_fun` injects the
+      clock) re-admits every project's deferred tasks: the daily thread cap clears then, and
+      no event announces it. `ProjectResumed`, `ProjectUpdated` and a capacity-freeing
+      `ProjectRunReservationReleased` re-admit them per project for the other refusals.
   The dispatcher is the bridge between the operator-facing task
   lifecycle and the supervised executor. Subscriptions are
   per-process and unlink automatically when the subscriber exits.
@@ -59,17 +63,22 @@ defmodule ForemanServer.Workflow.Dispatcher do
     GenServer.start_link(__MODULE__, init_arg, name: __MODULE__)
   end
 
+  # `:now_fun` (`(-> DateTime.t())`, default `DateTime.utc_now/0`) is the clock the UTC-rollover
+  # timer reads (`schedule_rollover/2`); a test injects one instead of waiting for midnight.
   @impl true
-  def init(_init_arg) do
+  def init(init_arg) do
+    now_fun = Keyword.get(init_arg, :now_fun, &DateTime.utc_now/0)
+    state = schedule_rollover(%{now_fun: now_fun}, now_fun.())
+
     case safe_subscribe() do
       :ok ->
         rebuild_steering_mailbox()
-        {:ok, %{}}
+        {:ok, state}
 
       _other ->
         # ProjectionStore may not be up yet. Retry until it answers.
         Process.send_after(self(), :retry_subscribe, 50)
-        {:ok, %{subscriber: :retrying}}
+        {:ok, Map.put(state, :subscriber, :retrying)}
     end
   end
 
@@ -226,6 +235,23 @@ defmodule ForemanServer.Workflow.Dispatcher do
     {:noreply, state}
   end
 
+  # The daily thread cap clears at the UTC day boundary, and nothing else happens then: no event,
+  # no setting change. A task refused for it (`daily_thread_cap_exceeded`) would stay deferred until
+  # an operator resumed the project, edited a setting or another run freed its reservation, though
+  # E1-S4 promises it is retried after the cap resets. So a timer armed for the next UTC midnight
+  # (`schedule_rollover/2`) re-admits every project's deferred tasks, exactly as the events above
+  # do. The message carries the day it was armed on: a timer that fires before the clock has
+  # actually moved on (a stepped system clock) re-arms instead of re-admitting into a cap that has
+  # not reset yet. Re-admitting a task that is still refused is harmless: it is refused again.
+  def handle_info({:utc_rollover, armed_day}, %{now_fun: now_fun} = state) do
+    now = now_fun.()
+    state = schedule_rollover(state, now)
+
+    if ForemanServer.ProjectLimits.day(now) == armed_day,
+      do: {:noreply, state},
+      else: readmit_all_deferred(state)
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{steer_waits: waits} = state)
       when is_map_key(waits, ref) do
     {run_id, waits} = Map.pop(waits, ref)
@@ -264,10 +290,47 @@ defmodule ForemanServer.Workflow.Dispatcher do
       true ->
         project_id
         |> ProjectionStore.deferred_task_ids()
-        |> Enum.reduce({:noreply, state}, fn task_id, _acc ->
-          dispatch_task_projection(task_id, state)
-        end)
+        |> readmit_tasks(state)
     end
+  end
+
+  defp readmit_tasks(task_ids, state) do
+    Enum.reduce(task_ids, {:noreply, state}, fn task_id, _acc ->
+      dispatch_task_projection(task_id, state)
+    end)
+  end
+
+  # Every project's deferred tasks, whatever refused them: the same set the events above re-admit
+  # per project. An exit from the projection (it is mid-restart) is logged, never raised: this
+  # timer re-arms itself first, and a crash here would drop the Dispatcher's subscription.
+  defp readmit_all_deferred(state) do
+    ProjectionStore.list_projects()
+    |> Enum.flat_map(&ProjectionStore.deferred_task_ids(&1.project_id))
+    |> readmit_tasks(state)
+  catch
+    :exit, exit_reason ->
+      Logger.warning(
+        "ForemanServer.Workflow.Dispatcher: UTC rollover re-admission exited: #{inspect(exit_reason)}"
+      )
+
+      {:noreply, state}
+  end
+
+  # Arms the one timer that fires at the next UTC midnight after `now` (the instant
+  # `ProjectLimits.resets_at/1` reports as the cap's reset). A timer still pending from an earlier
+  # call is cancelled, so there is only ever one chain.
+  defp schedule_rollover(state, now) do
+    case Map.get(state, :rollover_timer) do
+      nil -> :ok
+      pending -> Process.cancel_timer(pending)
+    end
+
+    delay_ms =
+      max(DateTime.diff(ForemanServer.ProjectLimits.resets_at(now), now, :millisecond), 1)
+
+    message = {:utc_rollover, ForemanServer.ProjectLimits.day(now)}
+
+    Map.put(state, :rollover_timer, Process.send_after(self(), message, delay_ms))
   end
 
   defp apply_task_dispatch_handler(event_type, envelope, state) do

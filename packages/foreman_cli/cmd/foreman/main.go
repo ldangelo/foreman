@@ -28,7 +28,7 @@
 //	run resume          Resume a paused run
 //	run remove          Remove a run and clean worktree/branch
 //	run reset           Reset a failed or stuck run projection
-//	thread list|get|stop|resolve|reopen|steer  Inspect and act on threads
+//	thread list|get|stop|resolve|reopen|steer|rereview  Inspect and act on threads
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
 //	doctor              GET /api/doctor
@@ -68,7 +68,7 @@ Commands:
   project setup-script <id> show|set|clear the project setup script
   project network <id> show|set the project network policy (--mode --allow)
   project recommend <id> Setup recommendations (--format json, --fail-on warn|action)
-  project adopt       Move/continue/mint a project from a session (--kind --id --into|--new-project)
+  project adopt       Move/continue/mint a project from a session (--kind --id --into|--new-project; --continue --prompt [--fork] [--from-source-branch]; --into [--add-repo])
   project pause <id>  Pause a project (--reason text)
   project resume <id> Resume a paused project
   project reactivate <id> Reactivate an archived project
@@ -107,6 +107,7 @@ Commands:
   thread resolve <id> Mark a thread resolved
   thread reopen <id>  Reopen a resolved thread
   thread steer <id>   Send an operator message to a thread (--message)
+  thread rereview <id> Re-run an undetermined review (workflow run or jobsite)
   workflow install    Install workflow assets
   workflow remove     Remove installed workflow assets (--all)
   init --force        Refresh the installed runtime copy of bundled prompts/workflows

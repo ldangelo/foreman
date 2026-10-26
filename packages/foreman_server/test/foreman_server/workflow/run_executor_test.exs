@@ -1641,7 +1641,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     register_project!(project_id, database_path)
     claim_and_complete_expectations!(task_id)
 
-    start_run_executor!(run_id, task_id)
+    executor = start_run_executor!(run_id, task_id)
 
     assert {:adapter_execute, _prompt, _ctx} = receive_message(@poll_timeout_ms)
     assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
@@ -1649,11 +1649,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     worktree_path = env["FOREMAN_WORKTREE_PATH"]
     assert File.dir?(worktree_path), "worktree exists during phase"
 
-    poll_run_completion!(run_id)
+    assert "completed" = poll_run_completion!(run_id)
 
     # Default: preserve the worktree after completion so AutoPR can inspect it.
-    # A short bounded wait observes the disk is still there.
-    Process.sleep(200)
+    # Nothing to wait out: `finalize_run/1` reclaims a worktree (when the manifest asks
+    # for it) BEFORE it dispatches run.complete, so the terminal status above already
+    # follows the cleanup decision. The flush additionally waits for the executor's
+    # finalize callback to return, so nothing it does there can still be pending.
+    _ = :sys.get_state(executor)
 
     assert File.dir?(worktree_path),
            "default cleanup must preserve worktree at #{worktree_path}"
@@ -1747,16 +1750,18 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     register_project!(project_id, database_path)
     claim_and_complete_expectations!(task_id)
 
-    start_run_executor!(run_id, task_id)
+    executor = start_run_executor!(run_id, task_id)
 
     assert {:adapter_execute, _prompt, _ctx} = receive_message(@poll_timeout_ms)
     assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
     worktree_path = env["FOREMAN_WORKTREE_PATH"]
 
-    poll_run_completion!(run_id)
+    assert "completed" = poll_run_completion!(run_id)
 
-    # Give the test a short window in which cleanup could have run.
-    Process.sleep(200)
+    # Same ordering as above: `finalize_run/1` runs its cleanup decision before it
+    # dispatches run.complete, so by the terminal status "never" has already declined to
+    # reclaim; the flush waits out the rest of the finalize callback.
+    _ = :sys.get_state(executor)
 
     assert File.dir?(worktree_path),
            "cleanup: never must preserve worktree at #{worktree_path}"
@@ -1886,6 +1891,143 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     # committed on the agent's behalf.
     tracked = run_git!(["-C", repo_path, "ls-tree", "-r", "--name-only", run_branch])
     assert String.contains?(tracked, prd)
+  end
+
+  # --------------------------------------------------------------------
+  # The project's setup script (E4-S4) runs ONCE per fresh run worktree.
+  # Phase 1 creates the worktree (`create_run_worktree/2`: the script runs, fatal on
+  # failure, before any agent starts); every later phase gets the remembered record back
+  # from `ensure_run_worktree/2` and must never run it again.
+  # --------------------------------------------------------------------
+
+  test "the project setup script runs once, inside the fresh worktree, and not for a reused one" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-setup-once")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    key1 = unique_id("setup-once-1")
+    key2 = unique_id("setup-once-2")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+    workspace = default_worktree_path(project_id, task_id, run_id)
+    runs_log = Path.join(artifact_dir, "setup-runs.log")
+
+    # Each phase reports what the script has recorded by the time its agent is done.
+    for {key, phase} <- [{key1, 1}, {key2, 2}] do
+      LifecycleStore.put(key, %{
+        test_pid: test_pid,
+        after_execute: [
+          fn ->
+            send(test_pid, {:setup_runs, phase, setup_runs(runs_log)})
+            :ok
+          end
+        ]
+      })
+    end
+
+    workflow_snapshot = %{
+      phases: [
+        default_worktree_phase("create-prd", key1, artifact_dir),
+        default_worktree_phase("create-trd", key2, artifact_dir)
+      ]
+    }
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path),
+      nil,
+      repo_path,
+      %{provider_tracked: false}
+    )
+
+    set_setup_script!(
+      project_id,
+      ~s(printf '%s|%s|%s|%s|%s\\n' "$PWD" "$FOREMAN_WORKTREE_PATH" "$FOREMAN_RUN_ID" "$FOREMAN_PROJECT_ID" "$SETUP_FLAVOR" >> '#{runs_log}'),
+      %{"SETUP_FLAVOR" => "blue"}
+    )
+
+    register_project!(project_id, database_path)
+    start_run_executor!(run_id, task_id)
+
+    assert "completed" = poll_run_completion!(run_id)
+
+    # Both phases ran in the one worktree: the second one reused the first one's.
+    assert_received {:adapter_env, %{"FOREMAN_WORKTREE_PATH" => ^workspace}}
+    assert_received {:adapter_env, %{"FOREMAN_WORKTREE_PATH" => ^workspace}}
+
+    # The script ran exactly once: before phase 1's agent finished it had run in the fresh
+    # worktree with the project's env and the FOREMAN_* ids, and phase 2 added nothing.
+    expected = "#{workspace}|#{workspace}|#{run_id}|#{project_id}|blue"
+    assert_received {:setup_runs, 1, [^expected]}
+    assert_received {:setup_runs, 2, [^expected]}
+    assert setup_runs(runs_log) == [expected]
+  end
+
+  test "a failing project setup script fails the phase before any agent starts, with its output" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-setup-fail")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    key = unique_id("setup-fail")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+    LifecycleStore.put(key, %{test_pid: test_pid})
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      %{phases: [default_worktree_phase("create-prd", key, artifact_dir)]},
+      project_task_provider(database_path),
+      nil,
+      repo_path,
+      %{provider_tracked: false}
+    )
+
+    set_setup_script!(project_id, ~s(echo "installing deps"; echo "no registry" >&2; exit 7), %{})
+    register_project!(project_id, database_path)
+    start_run_executor!(run_id, task_id)
+
+    assert "failed" = poll_run_completion!(run_id)
+
+    assert %{status: "failed", failure_reason: reason} =
+             ProjectionStore.phase_projection(Identity.phase_id(run_id, 1))
+
+    assert reason =~ "setup_script_failed"
+    assert reason =~ "7"
+    assert reason =~ "no registry"
+
+    refute_received {:adapter_execute, _, _}
+    refute_received {:adapter_env, _}
+  end
+
+  defp set_setup_script!(project_id, script, vars) do
+    dispatch_system!("project.environment.set", "project:#{project_id}", %{
+      project_id: project_id,
+      setup_script: script,
+      vars: vars
+    })
+  end
+
+  # One line per run of the setup script (it appends to `path`).
+  defp setup_runs(path) do
+    case File.read(path) do
+      {:ok, text} -> String.split(text, "\n", trim: true)
+      {:error, :enoent} -> []
+    end
   end
 
   # --------------------------------------------------------------------
@@ -3211,11 +3353,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     # Assert the runner receives the EXTERNAL ID, not the Foreman task_id.
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      # Reported before it is checked, so a call that carried the Foreman task_id would
+      # also be observable as a message (see the refutes below), not only as a crashed
+      # caller.
+      send(test_pid, {:claim_cmd, request, runner_project_config})
+
       assert request == {:update, %{flags: ["--claim", external_id]}}
       assert runner_project_config["database_path"] == database_path
       assert opts == [timeout_ms: 30_000]
-
-      send(test_pid, {:claim_cmd, request, runner_project_config})
 
       {:ok,
        %{
@@ -3233,10 +3378,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     # And that close uses the external_id as well.
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      send(test_pid, {:close_cmd, request, runner_project_config})
+
       assert request == {:close, %{id: external_id}}
       assert_database_path(runner_project_config, database_path)
       assert opts == [timeout_ms: 30_000]
-      send(test_pid, {:close_cmd, request, runner_project_config})
 
       {:ok,
        %{
@@ -3287,9 +3433,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert File.read!(artifact_path) == "ok"
 
-    # Pinning the boundary: the provider never sees the Foreman task_id.
-    refute_receive {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}, _}, 100
-    refute_receive {:close_cmd, {:close, %{id: ^task_id}}, _}, 100
+    # Pinning the boundary: the provider never sees the Foreman task_id. Both lifecycle
+    # calls (claim before the phase, close after it) happened before the task reached
+    # `closed` above and each reports itself before checking its request, so anything the
+    # provider was ever called with is already queued: no wait.
+    refute_received {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}, _}
+    refute_received {:close_cmd, {:close, %{id: ^task_id}}, _}
   end
 
   test "phase timeout flips the run terminal (run.fail dispatched before task.fail)" do
@@ -3691,6 +3840,98 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       assert_receive {:adapter_execute, ^configured_command, _context}, 1_000
     end
+  end
+
+  # Memory is project state, not run state: every phase launch re-reads the index, so what phase 1
+  # recorded (through the memory facade, as an agent's MCP call does) is what phase 2 of the SAME
+  # run is told. Driven through the real executor so state the executor process keeps between
+  # phases would show up here too.
+  test "a memory topic written during phase 1 is in phase 2's system_prompt of the same run" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-memory")
+    task_id = unique_id("task")
+    external_id = unique_id("foreman")
+    run_id = unique_id("run")
+    key1 = unique_id("mem-1")
+    key2 = unique_id("mem-2")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+
+    write_topic = fn name ->
+      assert {:ok, _} =
+               ForemanServer.ProjectMemory.write(
+                 project_id,
+                 %{name: name, description: "about #{name}", content: "body of #{name}"},
+                 %{kind: :agent, ref: run_id}
+               )
+    end
+
+    LifecycleStore.put(key1, %{
+      test_pid: test_pid,
+      probe_driver_opts: true,
+      after_execute: [
+        fn ->
+          write_topic.("phase-one-finding")
+          :ok
+        end
+      ]
+    })
+
+    LifecycleStore.put(key2, %{test_pid: test_pid, probe_driver_opts: true})
+
+    workflow_snapshot = %{
+      phases: [
+        default_worktree_phase("create-prd", key1, artifact_dir),
+        default_worktree_phase("create-trd", key2, artifact_dir)
+      ]
+    }
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path),
+      external_id,
+      repo_path
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(external_id)
+
+    dispatch_system!("project.update", "project:#{project_id}", %{
+      project_id: project_id,
+      instructions: "Always use tabs"
+    })
+
+    write_topic.("preexisting-note")
+    start_run_executor!(run_id, task_id)
+
+    assert {:adapter_execute, "Run phase create-prd", _} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, _env1} = receive_message(@poll_timeout_ms)
+    assert {:adapter_driver_opts, opts1} = receive_message(@poll_timeout_ms)
+
+    first = Keyword.fetch!(opts1, :system_prompt)
+    assert first =~ "Always use tabs"
+    assert first =~ "about preexisting-note"
+    refute first =~ "phase-one-finding"
+
+    assert {:adapter_execute, "Run phase create-trd", _} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, _env2} = receive_message(@poll_timeout_ms)
+    assert {:adapter_driver_opts, opts2} = receive_message(@poll_timeout_ms)
+
+    second = Keyword.fetch!(opts2, :system_prompt)
+    assert second =~ "Always use tabs"
+    assert second =~ "about preexisting-note"
+    assert second =~ "about phase-one-finding"
+    refute second =~ "body of phase-one-finding"
+
+    poll_run_completion!(run_id)
   end
 
   describe "prompt_template_assigns/4 — input.prompt keys" do

@@ -44,11 +44,16 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
 
   describe "foreman_workflow_get" do
     test "returns workflow details when found" do
+      # The shape `Catalog.load/1` really returns (`Workflow.Catalog.resolve_workflow/3`):
+      # an atom-keyed workflow whose phases still carry the manifest's string keys. A
+      # string-keyed top level hid the foreman-qimsa reader bug here; the real-catalog
+      # proof is `ToolsWorkflowGetCatalogTest`.
       manifest = %{
-        "name" => "workflow-a",
-        "description" => "Description A",
-        "digest" => "abc123",
-        "phases" => [%{"name" => "phase-1", "command" => "echo hello"}]
+        name: "workflow-a",
+        description: "Description A",
+        digest: "abc123",
+        manifest_path: "/runtime/workflows/workflow-a.yaml",
+        phases: [%{"name" => "phase-1", "command" => "echo hello"}]
       }
 
       :meck.new(ForemanServer.Workflow.Catalog, [:non_strict])

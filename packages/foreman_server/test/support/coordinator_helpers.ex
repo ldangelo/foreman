@@ -98,6 +98,11 @@ defmodule ForemanServer.TestSupport.CoordinatorHelpers do
       CommandGateway.dispatch_system_approval(command)
     end
 
+    def dispatch_operator(command) do
+      note(command)
+      CommandGateway.dispatch_operator(command)
+    end
+
     defp note(command) do
       case :persistent_term.get({__MODULE__, :pid}, nil) do
         nil -> :ok

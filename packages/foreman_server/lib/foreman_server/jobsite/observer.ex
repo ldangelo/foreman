@@ -25,6 +25,14 @@ defmodule ForemanServer.Jobsite.Observer do
   own or an observer rejection from `step_completed/4`. It can keep the
   failure (`{:ok, state}`), replace the error, or report that the failure
   is really an interruption (`{:interrupted, kind, reason, state}`).
+
+  `session_bound/4` is optional and is told, while an `:agent` step's iteration
+  is still running, the provider session id its run was given (the `step` is
+  that iteration's, with `iteration_index`). It is how an observer records the
+  session durably BEFORE the iteration finishes, so a crash mid-iteration still
+  leaves a session to resume. It is a notification: its return value does not
+  stop the program, and an observer that cannot record the id reports that
+  itself.
   """
 
   alias ForemanServer.Jobsite.{Context, Error, Step}
@@ -37,6 +45,8 @@ defmodule ForemanServer.Jobsite.Observer do
               {:ok, term()}
               | {:error, Error.t(), term()}
               | {:interrupted, atom(), String.t(), term()}
+  @callback session_bound(Step.t(), Context.t(), session_id :: String.t(), state :: term()) ::
+              :ok | {:error, Error.t()}
 
-  @optional_callbacks step_failed: 4
+  @optional_callbacks step_failed: 4, session_bound: 4
 end

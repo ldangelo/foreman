@@ -15,6 +15,12 @@ defmodule ForemanServer.Coordinator.TurnRunner do
 
   `run/2` returns `:idle` (nothing pending, or unhealthy), `:ok` (a turn
   completed) or `{:failed, code}`.
+
+  The provider usage an agent reports is recorded (`coordinator.usage.record`)
+  right after the agent returns, whether the turn then completes or fails;
+  recording it is bookkeeping and never fails a turn. A turn logs one line when
+  it starts, one when it completes and a warning when it fails: ids, kinds,
+  statuses and counts only, never the text of a message or a reply.
   """
 
   require Logger
@@ -35,6 +41,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
 
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Usage
 
   @spec run(String.t(), Runtime.t()) :: :idle | :ok | {:failed, atom()}
   def run(project_id, %Runtime{} = rt) do
@@ -90,6 +97,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
 
     case Commands.turn_start(rt.gateway, project_id, turn_id, attempt, trigger_ids) do
       {:ok, _} ->
+        log_turn_started(project_id, turn_id, attempt, pending)
         execute(project_id, rt, conv, pending, turn_id, attempt)
 
       {:error, :coordinator_unhealthy} ->
@@ -109,7 +117,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
 
   defp execute(project_id, rt, conv, [first | _] = pending, turn_id, attempt) do
     with {:ok, context} <- build_context(project_id, rt, pending),
-         {:ok, %Turn{} = turn} <- call_agent(project_id, rt, context) do
+         {:ok, %Turn{} = turn} <- run_agent(project_id, rt, turn_id, context) do
       complete(project_id, rt, conv, pending, first, turn_id, turn, context)
     else
       {:error, %Error{} = error} ->
@@ -122,9 +130,15 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     Context.build(project_id, sources: rt.sources, trigger_messages: pending)
   end
 
-  defp call_agent(project_id, rt, context) do
+  # The agent call, then the bookkeeping of what it cost (success or failure).
+  defp run_agent(project_id, rt, turn_id, context) do
     opts = Keyword.merge(agent_settings(project_id, rt), rt.agent_opts)
+    result = call_agent(rt, context, opts)
+    :ok = record_usage(project_id, rt, turn_id, opts, result)
+    result
+  end
 
+  defp call_agent(rt, context, opts) do
     try do
       case rt.agent.turn(context, opts) do
         {:ok, %Turn{}} = ok -> ok
@@ -137,6 +151,44 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     catch
       kind, reason ->
         {:error, Error.new(:agent_failed, "agent #{kind}: #{inspect(reason, limit: 5)}")}
+    end
+  end
+
+  # The provider spent these tokens whether or not the turn then succeeds, so
+  # they are recorded before it completes or fails. Nothing is recorded when the
+  # agent reported no usage (`nil`) or the provider reported nothing (all-nil); a
+  # usage of the wrong shape is ignored with a warning. This is bookkeeping:
+  # whatever goes wrong here is logged and the turn carries on.
+  defp record_usage(project_id, rt, turn_id, opts, result) do
+    case reported_usage(result) do
+      nil ->
+        :ok
+
+      %Usage{} = usage ->
+        if Usage.empty?(usage), do: :ok, else: store_usage(project_id, rt, turn_id, opts, usage)
+
+      other ->
+        Logger.warning(
+          "coordinator #{project_id}: turn #{turn_id}: ignored usage #{inspect(other, limit: 5)}"
+        )
+    end
+  end
+
+  defp reported_usage({:ok, %Turn{usage: usage}}), do: usage
+  defp reported_usage({:error, %Error{details: %{} = details}}), do: Map.get(details, :usage)
+  defp reported_usage({:error, %Error{}}), do: nil
+
+  defp store_usage(project_id, rt, turn_id, opts, usage) do
+    provider = to_string(opts[:provider])
+
+    case Commands.record_usage(rt.gateway, project_id, turn_id, provider, opts[:model], usage) do
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.warning(
+          "coordinator #{project_id}: turn #{turn_id}: usage not recorded: #{inspect(other)}"
+        )
     end
   end
 
@@ -203,7 +255,15 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     end
 
     cursor = pending |> List.last() |> Map.fetch!(:message_id)
-    Commands.turn_complete(rt.gateway, project_id, turn_id, cursor, summarize(outcomes))
+
+    case Commands.turn_complete(rt.gateway, project_id, turn_id, cursor, summarize(outcomes)) do
+      {:ok, _} ->
+        log_turn_completed(project_id, turn_id, authority, turn.reply, outcomes)
+
+      other ->
+        Logger.warning("coordinator #{project_id}: turn.complete failed: #{inspect(other)}")
+    end
+
     :ok
   end
 
@@ -222,6 +282,8 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   end
 
   defp fail_turn(project_id, rt, turn_id, attempt, code, message) do
+    log_turn_failed(project_id, turn_id, attempt, code, message)
+
     Commands.turn_fail(
       rt.gateway,
       project_id,
@@ -245,5 +307,51 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     end
 
     :ok
+  end
+
+  # -- diagnostics (foreman-ig27o) ---------------------------------------------
+  # One line per turn boundary: ids, kinds, statuses and counts, never the text
+  # of a message or a reply.
+
+  defp log_turn_started(project_id, turn_id, attempt, pending) do
+    triggers = Enum.map_join(pending, ", ", &trigger_label/1)
+
+    Logger.info(
+      "coordinator #{project_id}: turn #{turn_id} started attempt=#{attempt} " <>
+        "triggers: #{triggers}"
+    )
+  end
+
+  defp trigger_label(%{message_id: id, role: role, kind: kind, source: source}),
+    do: "#{id} (#{role}/#{kind}/#{source || "-"})"
+
+  defp log_turn_completed(project_id, turn_id, authority, reply, outcomes) do
+    Logger.info(
+      "coordinator #{project_id}: turn #{turn_id} completed authority=#{authority} " <>
+        "reply_bytes=#{byte_size(reply)} #{outcome_summary(outcomes)}"
+    )
+  end
+
+  defp outcome_summary([]), do: "actions: none"
+
+  defp outcome_summary(outcomes),
+    do: "actions: " <> Enum.map_join(outcomes, ", ", &outcome_label/1)
+
+  defp outcome_label(%{kind: kind, status: "executed"}), do: "#{kind}=executed"
+
+  defp outcome_label(%{kind: kind, status: status, reason: reason}) when is_binary(reason),
+    do: "#{kind}=#{status} (#{one_line(reason, 120)})"
+
+  defp outcome_label(%{kind: kind, status: status}), do: "#{kind}=#{status}"
+
+  defp log_turn_failed(project_id, turn_id, attempt, code, message) do
+    Logger.warning(
+      "coordinator #{project_id}: turn #{turn_id} failed attempt=#{attempt} " <>
+        "code=#{code}: #{one_line(message, 200)}"
+    )
+  end
+
+  defp one_line(text, max) do
+    text |> to_string() |> String.replace(~r/\s+/, " ") |> String.slice(0, max)
   end
 end

@@ -15,6 +15,12 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   alias ForemanServer.Agents.OperatorQuestionDispatcher
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Inbox.InboxItemStarted
+  alias ForemanServer.Agents.OperatorTimeout
+  alias ForemanServer.Aggregates.OperatorQuestion
+  alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.TestSupport.{Eventually, UniqueIds}
+  alias ForemanServer.Workflow.{AssetCatalog, Catalog}
+  alias ForemanServer.{Overview, ProjectionStore}
 
   # Meck helper — calls :meck.new/2 before :meck.expect so passthrough stubs
   # are established for all three modules before the test runs.
@@ -148,6 +154,182 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
                      "OperatorTimeout.schedule/3 was not called with the manifest's operator_timeout_ms"
     end
   end
+
+  # E8: a started question becomes first-class state (`question.open`): pending in the API and
+  # the Overview, answerable, and expired from the timeout it was asked with.
+  describe "dispatch/1 opens the question (question.open)" do
+    setup do
+      n = System.unique_integer([:positive])
+      question_id = "q-open-#{n}"
+      agent_id = "agent-open-#{n}"
+
+      # dispatch/1 arms a real OperatorTimeout timer (five minutes by default): disarm it.
+      on_exit(fn -> OperatorTimeout.cancel(question_id, agent_id) end)
+
+      {:ok, n: n, question_id: question_id, agent_id: agent_id}
+    end
+
+    test "a question from an agent with no task opens under the global run, with the default timeout",
+         %{question_id: question_id, agent_id: agent_id} do
+      assert {:ok, :started, _item} =
+               OperatorQuestionDispatcher.dispatch(
+                 question_signal(question_id, agent_id, "which database should I use?")
+               )
+
+      assert [%{event_type: "QuestionOpened", data: data}] =
+               question_events(OperatorQuestion.global_run(), question_id)
+
+      assert %{
+               run_id: "global",
+               question_id: ^question_id,
+               agent_id: ^agent_id,
+               project_id: nil,
+               text: "which database should I use?",
+               timeout_ms: 300_000
+             } = atomized(data)
+
+      assert %{status: "open", text: "which database should I use?", timeout_ms: 300_000} =
+               Eventually.await(fn -> ProjectionStore.question("global", question_id) end)
+    end
+
+    test "a question from an agent whose task has a run opens under that run and project, and its thread waits on the operator",
+         %{n: n, question_id: question_id, agent_id: agent_id} do
+      run_id = UniqueIds.unique_run_id("qopen")
+      project_id = "p-qopen-#{n}"
+      seed_task!(agent_id, project_id, run_id, %{})
+
+      assert {:ok, :started, _item} =
+               OperatorQuestionDispatcher.dispatch(
+                 question_signal(question_id, agent_id, "may I rewrite the schema?")
+               )
+
+      assert [%{event_type: "QuestionOpened", data: data}] = question_events(run_id, question_id)
+
+      assert %{
+               run_id: ^run_id,
+               question_id: ^question_id,
+               agent_id: ^agent_id,
+               project_id: ^project_id,
+               text: "may I rewrite the schema?",
+               timeout_ms: 300_000
+             } = atomized(data)
+
+      assert {:error, :stream_not_found} =
+               Store.read_stream_forward(OperatorQuestion.stream_id("global", question_id), 0, 10)
+
+      assert [%{question_id: ^question_id, run_id: ^run_id}] =
+               Eventually.await(fn ->
+                 case ProjectionStore.project_questions(project_id) do
+                   [] -> nil
+                   questions -> questions
+                 end
+               end)
+
+      {:ok, overview} = Overview.build(project_id)
+      expected_thread = "run:" <> run_id
+      assert [%{thread_id: ^expected_thread, reason: :question}] = overview.groups.waiting_on_you
+    end
+
+    @tag :tmp_dir
+    test "the workflow manifest's operator timeout is the timeout the question records",
+         %{tmp_dir: tmp, n: n, question_id: question_id, agent_id: agent_id} do
+      File.mkdir_p!(Path.join(tmp, "prompts"))
+
+      File.write!(
+        Path.join(tmp, "opq.yaml"),
+        "name: opq\noperator_timeout_ms: 123456\nphases:\n  - name: p1\n    command: /skill:x\n"
+      )
+
+      use_isolated_catalog!(tmp, :"operator_question_catalog_#{n}")
+      run_id = UniqueIds.unique_run_id("qtimeout")
+      seed_task!(agent_id, "p-qtimeout-#{n}", run_id, %{"workflow_name" => "opq"})
+
+      assert {:ok, :started, _item} =
+               OperatorQuestionDispatcher.dispatch(
+                 question_signal(question_id, agent_id, "how long may I wait?")
+               )
+
+      assert [%{event_type: "QuestionOpened", data: data}] = question_events(run_id, question_id)
+      assert %{timeout_ms: 123_456} = atomized(data)
+
+      assert %{timeout_ms: 123_456} =
+               Eventually.await(fn -> ProjectionStore.question(run_id, question_id) end)
+    end
+  end
+
+  defp question_signal(question_id, agent_id, text) do
+    Jido.Signal.new!(%{
+      id: "evt-" <> question_id,
+      source: "operator.ui",
+      type: "com.foreman.operator.question",
+      specversion: "1.0.2",
+      data: %{"question_id" => question_id, "question" => text, "agent_id" => agent_id}
+    })
+  end
+
+  # The agent id the dispatcher is handed is the id of the task that is asking.
+  defp seed_task!(task_id, project_id, run_id, workflow_snapshot) do
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "TaskCreated",
+          payload: %{
+            task_id: task_id,
+            project_id: project_id,
+            title: "asks a question",
+            status: "open",
+            task_type: "task"
+          }
+        },
+        %{
+          event_type: "TaskApproved",
+          payload: %{
+            task_id: task_id,
+            approval_id: "approval-" <> task_id,
+            approved_by: "operator",
+            approved_at: "2026-10-21T00:00:00Z",
+            run_id: run_id,
+            workflow_snapshot: workflow_snapshot
+          }
+        },
+        %{
+          event_type: "RunStarted",
+          payload: %{run_id: run_id, task_id: task_id, project_id: project_id}
+        }
+      ])
+  end
+
+  defp use_isolated_catalog!(root, server_name) do
+    previous_server = Application.get_env(:foreman_server, :workflow_catalog)
+    previous_poll = Application.get_env(:foreman_server, :workflow_catalog_poll_ms)
+    Application.put_env(:foreman_server, :workflow_catalog, server_name)
+    Application.put_env(:foreman_server, :workflow_catalog_poll_ms, 600_000)
+
+    on_exit(fn ->
+      restore_env(:workflow_catalog, previous_server)
+      restore_env(:workflow_catalog_poll_ms, previous_poll)
+    end)
+
+    start_supervised!({Catalog, name: server_name, catalog: AssetCatalog.new(root)},
+      id: server_name
+    )
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:foreman_server, key)
+  defp restore_env(key, value), do: Application.put_env(:foreman_server, key, value)
+
+  defp question_events(run_id, question_id) do
+    case Store.read_stream_forward(OperatorQuestion.stream_id(run_id, question_id), 0, 100) do
+      {:ok, events} -> events
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp atomized(data) when is_struct(data), do: Map.from_struct(data)
+  defp atomized(data), do: Map.new(data, fn {key, value} -> {to_atom_key(key), value} end)
+
+  defp to_atom_key(key) when is_atom(key), do: key
+  defp to_atom_key(key) when is_binary(key), do: String.to_existing_atom(key)
 
   describe "OperatorQuestionSource.correlation_id/1" do
     test "extracts question_id from the signal data" do

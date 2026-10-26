@@ -5,6 +5,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   alias EventStore.RecordedEvent
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.{ProjectionStore, Telemetry}
+  alias ForemanServer.TestSupport.Eventually
   alias ForemanServer.Workflow.BootReconciliation
   @run_slots_stream "run_slots:global"
 
@@ -225,11 +226,23 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
           1_000 -> :ok
         end
 
+        # The registry drops a dead process's entry from its own partition process,
+        # asynchronously to the DOWN above (and the Aggregator then restarts the actor
+        # under the same id). The next dispatch must not be handed the dead pid, so wait
+        # until the stream no longer maps to it.
+        Eventually.await(
+          fn ->
+            ForemanServer.AggregateRegistry
+            |> Registry.lookup(@run_slots_stream)
+            |> Enum.all?(fn {registered, _value} -> registered != pid end)
+          end,
+          message: "registry to drop the killed #{@run_slots_stream} actor #{inspect(pid)}"
+        )
+
       _ ->
         :ok
     end
 
-    Process.sleep(20)
     :ok
   end
 

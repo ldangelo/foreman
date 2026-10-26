@@ -56,6 +56,7 @@ defmodule ForemanServer.MCP.OverviewToolTest do
     busy = Enum.find(lines, &(&1["project_id"] == "busy"))
     assert busy["attention"] == %{"needed" => true, "count" => 1, "reasons" => ["failed"]}
     assert busy["counts"]["waiting_on_you"] == 1
+    assert busy["truncated"] == false
 
     calm = Enum.find(lines, &(&1["project_id"] == "calm"))
     assert calm["attention"]["needed"] == false

@@ -32,7 +32,15 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
-  alias ForemanServer.Events.{UsageRecorded, WorkerSessionBound, WorkerStderr, WorkerStdout}
+
+  alias ForemanServer.Events.{
+    CoordinatorUsageRecorded,
+    UsageRecorded,
+    WorkerSessionBound,
+    WorkerStderr,
+    WorkerStdout
+  }
+
   alias ForemanServer.Usage
   alias ForemanServer.Usage.Ledger, as: UsageLedger
 
@@ -443,18 +451,30 @@ defmodule ForemanServer.ProjectionStore do
   def tool_call(run_id, tool_call_id) when is_binary(run_id) and is_binary(tool_call_id),
     do: GenServer.call(__MODULE__, {:tool_call, run_id, tool_call_id})
 
-  @doc """
-  `%{pending: n, expired: n, failed_deliveries: n}` tool-call counts over `run_ids`
-  (a thread's runs, or its jobsite id): what `Overview.Signals` reads.
-  `failed_deliveries` counts approved calls whose decision never reached the agent.
-  """
-  @spec approval_counts([String.t()]) :: %{
+  @typedoc "Tool-call counts of one subject (`needs_you_counts/1`)."
+  @type approval_counts :: %{
           pending: non_neg_integer(),
           expired: non_neg_integer(),
           failed_deliveries: non_neg_integer()
         }
-  def approval_counts(run_ids) when is_list(run_ids),
-    do: GenServer.call(__MODULE__, {:approval_counts, run_ids})
+
+  @typedoc "Operator-question counts of one subject (`needs_you_counts/1`)."
+  @type question_counts :: %{open: non_neg_integer(), expired: non_neg_integer()}
+
+  @doc """
+  Tool-call and question counts for each of `subject_ids` (the run ids of a thread, or
+  the jobsite id of a jobsite thread): `%{approvals: %{subject_id => counts}, questions:
+  %{subject_id => counts}}`, what `Overview.Signals` reads for a whole project's threads.
+  ONE scan of the tool calls and one of the questions serves any number of subjects
+  (membership is a `MapSet` lookup); a subject with nothing to count is absent from the
+  map. `failed_deliveries` counts approved calls whose decision never reached the agent.
+  """
+  @spec needs_you_counts([String.t()]) :: %{
+          approvals: %{String.t() => approval_counts()},
+          questions: %{String.t() => question_counts()}
+        }
+  def needs_you_counts(subject_ids) when is_list(subject_ids),
+    do: GenServer.call(__MODULE__, {:needs_you_counts, subject_ids})
 
   defp read_tool_calls(scope, opts) do
     statuses =
@@ -470,6 +490,17 @@ defmodule ForemanServer.ProjectionStore do
   defp delivery_failed?(%{status: "approved"}), do: true
   defp delivery_failed?(%{status: "finished", outcome: "delivery_failed" <> _}), do: true
   defp delivery_failed?(_call), do: false
+
+  # One pass over `entries` (keyed `{subject_id, item_id}`) counting only the `wanted`
+  # subjects. `bucket` names the counter an entry feeds in `zero`, or nil when it feeds none.
+  defp count_by_subject(entries, wanted, zero, bucket) do
+    Enum.reduce(entries, %{}, fn {{subject_id, _item_id}, entry}, acc ->
+      key = if MapSet.member?(wanted, subject_id), do: bucket.(entry)
+      if key, do: Map.update(acc, subject_id, bump(zero, key), &bump(&1, key)), else: acc
+    end)
+  end
+
+  defp bump(counts, key), do: Map.update!(counts, key, &(&1 + 1))
 
   @typedoc """
   One projected operator question. `status` is `open`, `answered` or `expired`.
@@ -519,11 +550,6 @@ defmodule ForemanServer.ProjectionStore do
   @spec question(String.t(), String.t()) :: question() | nil
   def question(run_id, question_id) when is_binary(run_id) and is_binary(question_id),
     do: GenServer.call(__MODULE__, {:question, run_id, question_id})
-
-  @doc "`%{open: n, expired: n}` question counts over `run_ids` (what `Overview.Signals` reads)."
-  @spec question_counts([String.t()]) :: %{open: non_neg_integer(), expired: non_neg_integer()}
-  def question_counts(run_ids) when is_list(run_ids),
-    do: GenServer.call(__MODULE__, {:question_counts, run_ids})
 
   @doc """
   Tool calls whose decision may not have reached the agent: `approved` ones (no
@@ -929,7 +955,8 @@ defmodule ForemanServer.ProjectionStore do
   `"in_progress"`, run id assigned) but whose run never started: run admission
   refused them (project paused, daily cap, run limit) or they wait for a slot.
   `Workflow.Dispatcher` re-admits these when the project resumes or its limits
-  change.
+  change, when a finished run frees its reservation, and when the UTC day rolls
+  over (the daily cap clears).
   """
   @spec deferred_task_ids(String.t()) :: [String.t()]
   def deferred_task_ids(project_id) when is_binary(project_id) do
@@ -1248,23 +1275,29 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call({:approval_counts, run_ids}, _from, state) do
-    counts =
-      Enum.reduce(
-        state.tool_calls,
-        %{pending: 0, expired: 0, failed_deliveries: 0},
-        fn {{run_id, _}, call}, acc ->
-          cond do
-            run_id not in run_ids -> acc
-            call.status == "requested" -> Map.update!(acc, :pending, &(&1 + 1))
-            call.status == "expired" -> Map.update!(acc, :expired, &(&1 + 1))
-            delivery_failed?(call) -> Map.update!(acc, :failed_deliveries, &(&1 + 1))
-            true -> acc
-          end
-        end
-      )
+  def handle_call({:needs_you_counts, subject_ids}, _from, state) do
+    wanted = MapSet.new(subject_ids)
+    no_approvals = %{pending: 0, expired: 0, failed_deliveries: 0}
+    no_questions = %{open: 0, expired: 0}
 
-    {:reply, counts, state}
+    approvals =
+      count_by_subject(state.tool_calls, wanted, no_approvals, fn call ->
+        cond do
+          call.status == "requested" -> :pending
+          call.status == "expired" -> :expired
+          delivery_failed?(call) -> :failed_deliveries
+          true -> nil
+        end
+      end)
+
+    questions =
+      count_by_subject(state.questions, wanted, no_questions, fn
+        %{status: "open"} -> :open
+        %{status: "expired"} -> :expired
+        _answered -> nil
+      end)
+
+    {:reply, %{approvals: approvals, questions: questions}, state}
   end
 
   @impl true
@@ -1317,21 +1350,6 @@ defmodule ForemanServer.ProjectionStore do
     }
 
     {:reply, reply, state}
-  end
-
-  @impl true
-  def handle_call({:question_counts, run_ids}, _from, state) do
-    counts =
-      Enum.reduce(state.questions, %{open: 0, expired: 0}, fn {{run_id, _}, question}, acc ->
-        cond do
-          run_id not in run_ids -> acc
-          question.status == "open" -> Map.update!(acc, :open, &(&1 + 1))
-          question.status == "expired" -> Map.update!(acc, :expired, &(&1 + 1))
-          true -> acc
-        end
-      end)
-
-    {:reply, counts, state}
   end
 
   @impl true
@@ -2690,6 +2708,9 @@ defmodule ForemanServer.ProjectionStore do
           }
           |> maybe_put(:repo_id, event.repo_id)
           |> maybe_put(:repo_ids, event.repo_ids)
+          |> maybe_put(:fork_provider, event.fork_provider)
+          |> maybe_put(:fork_session_id, event.fork_session_id)
+          |> maybe_put(:source_branch, event.source_branch)
 
         %{state | tasks: Map.put(state.tasks, task_id, task)}
     end
@@ -2866,6 +2887,40 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:usage, total)
         end)
         |> record_worker_usage(event, usage, payload)
+
+      :error ->
+        state
+    end
+  end
+
+  # A coordinator turn's provider usage. A turn is not a run, so this must never
+  # reach `update_run_projection/4` (it would plant a run that never finishes).
+  # The ledger key is the turn, so folding the same event twice (live, then
+  # replayed) replaces instead of double counting; `thread_id: nil` keeps it out
+  # of the thread rows (`Usage.Rollup`).
+  defp apply_event_by_type(state, "CoordinatorUsageRecorded", payload) do
+    case decode_or_skip("CoordinatorUsageRecorded", payload) do
+      {:ok, %CoordinatorUsageRecorded{} = event} ->
+        usage = Usage.from_fields(Map.from_struct(event))
+
+        if Usage.empty?(usage) do
+          state
+        else
+          record_usage(
+            state,
+            event.project_id,
+            {"coordinator", event.project_id, {:turn, event.turn_id}},
+            %{
+              thread_kind: "coordinator",
+              thread_id: nil,
+              role: "coordinator",
+              model: event.model,
+              provider: event.provider,
+              at: usage_at(event.at, payload),
+              usage: usage
+            }
+          )
+        end
 
       :error ->
         state
@@ -3511,7 +3566,11 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
-  # Malformed library events are logged and skipped, like memory events.
+  # A malformed library event is NOT skipped (AGENTS.md 5.2, like `PrAssociated`):
+  # `Aggregates.ProjectLibrary` validates every field read here on the write path, so
+  # reaching a malformed one means the aggregate was bypassed or the log was edited.
+  # Skipping it would leave `project_library/1` silently disagreeing with the audit
+  # trail, also after replay.
   defp apply_event_by_type(state, "ProjectLibraryAdded", payload),
     do: apply_library_upsert(state, "ProjectLibraryAdded", payload)
 
@@ -3519,14 +3578,15 @@ defmodule ForemanServer.ProjectionStore do
     do: apply_library_upsert(state, "ProjectLibraryReplaced", payload)
 
   defp apply_event_by_type(state, "ProjectLibraryRemoved", payload) do
-    case decode_or_skip("ProjectLibraryRemoved", payload) do
-      {:ok, %ForemanServer.Events.ProjectLibraryRemoved{project_id: pid, entry_id: entry_id}}
+    case decode_for_projection("ProjectLibraryRemoved", payload) do
+      %ForemanServer.Events.ProjectLibraryRemoved{project_id: pid, entry_id: entry_id}
       when is_binary(pid) and pid != "" and is_binary(entry_id) and entry_id != "" ->
         put_project_library(state, pid, &Map.delete(&1, entry_id))
 
-      _ ->
-        skip_malformed_library("ProjectLibraryRemoved", payload)
-        state
+      %ForemanServer.Events.ProjectLibraryRemoved{} = event ->
+        raise ArgumentError,
+              "ProjectionStore: ProjectLibraryRemoved with unusable project_id/entry_id: " <>
+                inspect(event)
     end
   end
 
@@ -3759,6 +3819,19 @@ defmodule ForemanServer.ProjectionStore do
       payload_event_at_ms(payload),
       fn jobsite ->
         Map.put(jobsite, :iteration_index, get(payload, :index))
+      end
+    )
+  end
+
+  # Bound while the iteration runs, so `GET /api/jobsites/:id` shows the session before any
+  # iteration completes (the aggregate, not this read model, is what a resume reads).
+  defp apply_event_by_type(state, "JobsiteSessionBound", payload) do
+    update_jobsite_projection(
+      state,
+      get(payload, :jobsite_id),
+      payload_event_at_ms(payload),
+      fn jobsite ->
+        Map.put(jobsite, :session_id, get(payload, :session_id))
       end
     )
   end
@@ -4204,6 +4277,23 @@ defmodule ForemanServer.ProjectionStore do
           other
       end)
 
+    # Tool calls and questions are keyed `{subject_id, item_id}` (the subject is a run or a
+    # jobsite) and carry the project they were asked under, which the project-scoped lists
+    # read: they move with their subject, or the target's lists lose what its counts keep.
+    moved_subjects = MapSet.new(run_ids ++ adopted_ids(moved, :jobsite_ids))
+
+    rehome_subject_entries = fn entries ->
+      Map.new(entries, fn
+        {{subject_id, _item_id} = key, %{project_id: current} = entry} when current != target ->
+          if MapSet.member?(moved_subjects, subject_id),
+            do: {key, %{entry | project_id: target}},
+            else: {key, entry}
+
+        other ->
+          other
+      end)
+    end
+
     record = %{
       mode: "move",
       project_id: target,
@@ -4217,6 +4307,8 @@ defmodule ForemanServer.ProjectionStore do
         runs: rehome.(state.runs, run_ids),
         jobsites: rehome.(state.jobsites, adopted_ids(moved, :jobsite_ids)),
         worktrees: worktrees,
+        tool_calls: rehome_subject_entries.(state.tool_calls),
+        questions: rehome_subject_entries.(state.questions),
         adoptions: Map.put(state.adoptions, {kind, id}, record)
     }
   end
@@ -4675,8 +4767,10 @@ defmodule ForemanServer.ProjectionStore do
 
   # Applies `updater` to an entity that already exists in `state[collection]`.
   #
-  # An event for an id the store has never seen is dropped with a warning
-  # rather than upserted: `Map.get(coll, id, %{}) |> Map.put(...)` used to mint
+  # An event for an id the store has never seen is dropped rather than upserted,
+  # with a warning and a `[:foreman, :projection, :event_dropped]` telemetry event
+  # (an ordering or replay bug must be visible outside the logs):
+  # `Map.get(coll, id, %{}) |> Map.put(...)` used to mint
   # a partial entry with no identity key (a `TaskRunTerminated` for an unknown
   # task produced a task with no `:task_id`), which every list/dump reader then
   # had to defend against. Absent is not malformed (AGENTS.md 5.3): the entity's
@@ -4694,6 +4788,8 @@ defmodule ForemanServer.ProjectionStore do
         Logger.warning(
           "ProjectionStore dropped #{event_type} for unknown #{collection} id #{inspect(id)}"
         )
+
+        ForemanServer.Telemetry.projection_event_dropped(event_type, collection, id)
 
         state
     end
@@ -5009,8 +5105,8 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_library_upsert(state, type, payload) do
-    case decode_or_skip(type, payload) do
-      {:ok, %{project_id: pid, entry_id: entry_id, name: name, manifest_sha256: sha} = e}
+    case decode_for_projection(type, payload) do
+      %{project_id: pid, entry_id: entry_id, name: name, manifest_sha256: sha} = e
       when is_binary(pid) and pid != "" and is_binary(entry_id) and entry_id != "" and
              is_binary(name) and is_binary(sha) ->
         entry = %{
@@ -5029,9 +5125,10 @@ defmodule ForemanServer.ProjectionStore do
 
         put_project_library(state, pid, &Map.put(&1, entry_id, entry))
 
-      _ ->
-        skip_malformed_library(type, payload)
-        state
+      event ->
+        raise ArgumentError,
+              "ProjectionStore: #{type} with unusable project_id/entry_id/name/manifest_sha256: " <>
+                inspect(event)
     end
   end
 
@@ -5042,21 +5139,6 @@ defmodule ForemanServer.ProjectionStore do
 
   defp skip_malformed(event_type),
     do: Logger.warning("ProjectionStore skipped malformed #{event_type}")
-
-  # A malformed library event means the audit index silently disagrees with the
-  # disk, so it is logged at :error (with the payload's keys) rather than as a
-  # routine warning. Replay still continues: `init/1` must not crash on one bad event.
-  defp skip_malformed_library(event_type, payload) do
-    keys =
-      if is_map(payload),
-        do: payload |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort(),
-        else: []
-
-    Logger.error(
-      "ProjectionStore skipped malformed #{event_type}: library index is missing this event " <>
-        "(payload keys: #{inspect(keys)})"
-    )
-  end
 
   defp decode_for_projection(event_type, payload)
        when is_binary(event_type) and is_map(payload) do

@@ -14,7 +14,8 @@ defmodule ForemanServer.ProjectLimits do
   (`TaskDispatched`: status `"in_progress"`, run id assigned) but whose run
   never started because run admission refused them (paused, daily cap, run
   limit) or queued them for a slot. `Workflow.Dispatcher` re-admits them when the
-  project resumes or its settings change.
+  project resumes, its settings change, a finished run frees its reservation, or
+  the UTC day rolls over (`resets_at/1`: the daily cap clears then).
   """
 
   alias ForemanServer.ProjectSettings
@@ -58,7 +59,7 @@ defmodule ForemanServer.ProjectLimits do
       threads_started_today: started,
       remaining_today: cap && max(cap - started, 0),
       cap_reached?: is_integer(cap) and started >= cap,
-      resets_at: next_utc_midnight(now),
+      resets_at: now |> resets_at() |> DateTime.to_iso8601(),
       deferred_tasks: usage.deferred_tasks,
       deferred_today: usage.deferred_by_reason |> Map.values() |> Enum.sum(),
       deferred_by_reason: usage.deferred_by_reason
@@ -69,11 +70,15 @@ defmodule ForemanServer.ProjectLimits do
   @spec day(DateTime.t()) :: String.t()
   def day(%DateTime{} = now), do: now |> DateTime.to_date() |> Date.to_iso8601()
 
-  defp next_utc_midnight(now) do
+  @doc """
+  The instant the daily counters reset: the next UTC midnight after `now`. Reported as
+  `resets_at` and the moment `Workflow.Dispatcher` re-admits the tasks the cap deferred.
+  """
+  @spec resets_at(DateTime.t()) :: DateTime.t()
+  def resets_at(%DateTime{} = now) do
     now
     |> DateTime.to_date()
     |> Date.add(1)
     |> DateTime.new!(~T[00:00:00], "Etc/UTC")
-    |> DateTime.to_iso8601()
   end
 end

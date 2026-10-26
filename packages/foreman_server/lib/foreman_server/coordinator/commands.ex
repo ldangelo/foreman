@@ -1,13 +1,14 @@
 defmodule ForemanServer.Coordinator.Commands do
   @moduledoc """
   Builders and dispatchers for the coordinator's own stream commands
-  (`coordinator.append`, `.turn.*`, `.action.record`). Every command id is a pure
-  function of its inputs, so repeating a step after a crash appends nothing
-  twice (`CommandRouter` derives the event id from the command id).
+  (`coordinator.append`, `.turn.*`, `.action.record`, `.usage.record`). Every command
+  id is a pure function of its inputs, so repeating a step after a crash appends
+  nothing twice (`CommandRouter` derives the event id from the command id).
   """
 
   alias ForemanServer.Aggregates.Coordinator, as: Aggregate
   alias ForemanServer.Coordinator.{Dispatch, Redact}
+  alias ForemanServer.Usage
 
   @doc "Append a coordinator/system message. `message_id` MUST be deterministic."
   @spec append(module(), String.t(), String.t(), map()) :: Dispatch.result()
@@ -101,6 +102,30 @@ defmodule ForemanServer.Coordinator.Commands do
       project_id,
       "coordinator.action.record",
       "coordinator:action:#{project_id}:#{action_id}:#{status}",
+      payload
+    )
+  end
+
+  @doc """
+  Record the provider usage of the open turn (`coordinator.usage.record`).
+
+  The command id comes from the turn id alone, so replaying a turn appends
+  nothing twice. `provider` is the provider's name (`"pi"`), `model` may be
+  `nil` (the project pins none). The aggregate refuses an all-nil usage.
+  """
+  @spec record_usage(module(), String.t(), String.t(), String.t(), String.t() | nil, Usage.t()) ::
+          Dispatch.result()
+  def record_usage(gateway, project_id, turn_id, provider, model, %Usage{} = usage) do
+    payload =
+      usage
+      |> Usage.to_event_fields()
+      |> Map.merge(%{project_id: project_id, turn_id: turn_id, provider: provider, model: model})
+
+    send_command(
+      gateway,
+      project_id,
+      "coordinator.usage.record",
+      "coordinator:usage:#{project_id}:#{turn_id}",
       payload
     )
   end

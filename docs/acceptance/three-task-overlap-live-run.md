@@ -18,7 +18,9 @@ no GitHub (stage 8 prints `SKIP`, counted as UNVERIFIED).
    coordinator's answer to an earlier system report (a finished review), before the turn for this message, so the step polls the project's
    threads (up to 240 s) instead of trusting the chat output; if none appeared it sends the same paste once more and records an UNVERIFIED line.
 4. Asserts: exactly three threads with three distinct titles; each reaches `completed`; each branch file equals its word exactly (one trailing
-   newline allowed; the self-test probes `ALPHA-7` and `ALPHA-7\n` pass, `ALPHA -7`, `ALPHA-7\n\n extra`, `ALPHA-7 \n` and empty fail); a
+   newline allowed; the self-test probes `ALPHA-7` and `ALPHA-7\n` pass, `ALPHA -7`, `ALPHA-7\n\n extra`, `ALPHA-7 \n` and empty fail). The file is
+   read from the branch the thread projection names and polled for up to 30 s while unreadable (`await_thread_file`; a file that only appears
+   after waiting is recorded UNVERIFIED, a failed check prints the diagnostics described under `foreman-2onq1` below); a
    re-count after the runs still finds exactly three threads (the self-test stubs a fourth matching thread and checks it is counted).
 5. Reads `RunStarted` and the first terminal event of each thread's run from the event store (`claude_projects/run_interval.exs`, evaluated
    on the server node; the run projection only keeps `started_at_ms` and a `last_event_at_ms` that any later event moves), prints the
@@ -151,8 +153,45 @@ Script version: `origin/main` `8ea50a1e` (#658) plus this change (`scripts/e2e/e
   The one FAIL is `port-closed`: `server log records the reap: 'OrphanReaper: terminating' not found`, reproduced 3 of 3 (once in this run,
   twice alone). The run does fail with `port_closed` and no agent is left running, but the agent exits together with its exec-port, so the
   reaper has nothing to log; the scenario asserts the log line unconditionally. The same host fact is why `server-crash` finds no orphan.
-  Not caused by this change (different scenario); filed as `foreman-e01a1`, not fixed here. Consequence: the OrphanReaper path of
-  `foreman-zmhzw` is currently not exercised live by either scenario.
+  Not caused by this change (different scenario); filed as `foreman-e01a1`; the assertion has since been made conditional (UNVERIFIED when no orphan
+  exists). The OrphanReaper path of `foreman-zmhzw` is now exercised live by the `cancel-strays` and `shutdown-strays` scenarios.
+
+## foreman-2onq1: no file on any of the three branches, once (investigation)
+
+The cause of the one occurrence is not determinable: the harness had cleaned up, and the step read the file with `git show ... 2>/dev/null`,
+so git's own error was discarded too. What the code and a local reproduction establish:
+
+- A `completed` thread cannot precede its commit. The thread status is the run's status (`Thread.from_run`), and `completed` comes only from
+  `RunCompleted` (`ProjectionStore`), which `RunExecutor.finalize_run/1` dispatches last: after the engine's `:commit` step (a synchronous
+  `git add -A` + `git commit`, `Jobsite.Git.commit_all/3`), `phase.complete`, AutoPR and the worktree cleanup. `CommandRouter` applies
+  events to the projection synchronously, so there is no catch-up window. `run_executor_test.exs` ("every phase of a run executes in the same
+  worktree and Foreman commits each phase") pins the file on the branch once the run is complete.
+- A clean worktree is not a failure: `commit_all/3` answers `:nothing_to_commit`, makes no commit, and the run still completes
+  (`run_executor_run_worktree_test.exs`, "a clean tree produces no commit"). A completed thread whose branch lacks the file therefore means
+  the agent changed nothing in its worktree (it wrote the file elsewhere, or not at all). The engine path logged nothing about it;
+  `JobsiteObserver` now logs `phase N worktree clean, nothing to commit` or `phase N committed the worktree`. Every thread agent's system
+  prompt names the primary checkout (`## Repositories`, `- primary: <absolute path of the scratch repo>`, `ProjectContext`; seen in the argv of a
+  run), so an agent writing outside its worktree is a reachable cause. It was not observed.
+- The old read could also mislead about the branch: with an empty branch name (the projection has no worktree when worktree creation failed)
+  `git show ":<file>"` reads the INDEX of the main checkout. An empty branch is now never handed to git.
+
+Local reproduction: a fake `pi` speaking pi's rpc live-input protocol, driven through the real step 5b on a private stack (no model is
+involved, so this exercises the server's commit, projection and cleanup path with real git and real concurrency, not the agent). Warm
+repository, 30 iterations of three concurrent runs (90 runs): `passed=1205 failed=0 unverified=0`; every file was readable at the first read and
+no poll was needed. That is not a reproduction of the incident.
+
+The same experiment found a different defect. In a repository that has never had a Foreman worktree, three concurrent runs can fail at
+worktree creation (2 of 6 cold batches): the first `git sparse-checkout init` upgrades the shared config (`extensions.worktreeConfig`) under
+`.git/config.lock`, a concurrent init fails (`could not lock config file ... failed to initialize worktree config`), `exclude_dotbeads`
+(`VcsAdapter.Default`) returns `{:worktree_beads_exclusion_failed, ...}`, the run fails, its thread reports `branch: null`, and the branch that
+`git worktree add -b` created is left behind. These are failed runs, not completed ones, so it is not this bead's symptom. The full flow is warm
+by step 5b (steps 3 and 4 create worktrees first); `E2E_THREE_ONLY=1` is cold. Not fixed here; it needs its own bead.
+
+What the step does now when a file cannot be confirmed (after the poll): git's own error, the thread projection, the branch tip, its commits
+ahead of the main checkout and its files (recursively), the foreman branches, the main checkout's HEAD and status, where the file is on
+disk anywhere under the work dir, the task prompt, what the agent said, and the run's commit/worktree lines of the server log. Together they
+separate: no branch in the projection, nothing committed (0 commits ahead, `nothing to commit`), work landed elsewhere (stray file in the main
+checkout or another branch), and a bad coordinator prompt.
 
 ## Not exercised
 

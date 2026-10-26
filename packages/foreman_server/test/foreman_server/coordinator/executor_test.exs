@@ -76,11 +76,11 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
     test "the coordinator may dispatch only these command types; no merge, approve-merge, archive or retry" do
       assert Enum.sort(Dispatch.command_types()) ==
                Enum.sort(
-                 ~w(task.create task.approve project.update coordinator.append coordinator.action.record coordinator.turn.start coordinator.turn.complete coordinator.turn.fail)
+                 ~w(task.create task.approve project.update project.resume coordinator.append coordinator.action.record coordinator.turn.start coordinator.turn.complete coordinator.turn.fail project.repo.add schedule.create coordinator.usage.record)
                )
 
       for forbidden <-
-            ~w(merge_approve run.pr.merge project.archive project.register project.reactivate task.retry run.cancel run.reset run.remove thread.resolve inbox.send) do
+            ~w(merge_approve run.pr.merge project.archive project.register project.reactivate project.pause task.retry run.cancel run.reset run.remove thread.resolve inbox.send) do
         assert {:error, {:forbidden_command, ^forbidden}} =
                  Dispatch.system(SpyGateway, %{
                    type: forbidden,
@@ -347,8 +347,14 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
         %{"kind" => "approve_proposed", "task_ids" => ["x"]},
         %{"kind" => "forget", "name" => "n"},
         %{"kind" => "set_tuning", "key" => "max_active_threads", "value" => 50, "quote" => "x"},
-        %{"kind" => "add_repo", "path" => "/etc", "quote" => "x"},
-        %{"kind" => "schedule", "spec" => "every minute", "quote" => "x"},
+        %{"kind" => "add_repo", "path" => "/etc", "quote" => "please fix the login bug"},
+        %{
+          "kind" => "schedule",
+          "spec" => "30m",
+          "prompt" => "p",
+          "workflow" => "implement",
+          "quote" => "please fix the login bug"
+        },
         %{"kind" => "answer", "text" => "noted"},
         %{
           "kind" => "propose_threads",
@@ -364,6 +370,8 @@ defmodule ForemanServer.Coordinator.ExecutorTest do
       types = sent_types()
       refute "task.approve" in types
       refute "project.update" in types
+      refute "project.repo.add" in types
+      refute "schedule.create" in types
     end
   end
 

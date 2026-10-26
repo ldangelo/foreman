@@ -7,14 +7,16 @@ defmodule ForemanServerWeb.ApprovalController do
     * `GET /api/runs/:run_id/approvals` - one run's (or jobsite's) requests, same
       option.
 
-  Deciding is a command (`tool.approve` / `tool.deny` on `POST /api/commands`),
-  never a GET. 404 `project_not_found` / `run_not_found` for unknown ids; 400
-  `invalid_params` for a bad `status`.
+  The body is a `ForemanServer.Approvals.Listing`, the payload the
+  `foreman_approvals_list` MCP tool returns too. Deciding is a command
+  (`tool.approve` / `tool.deny` on `POST /api/commands`), never a GET. 404
+  `project_not_found` / `run_not_found` for unknown ids; 400 `invalid_params` for a bad
+  `status`.
   """
 
   use ForemanServerWeb, :controller
 
-  alias ForemanServer.Approvals.DTO
+  alias ForemanServer.Approvals.Listing
   alias ForemanServer.{ProjectStore, ProjectionStore}
 
   def index_for_project(conn, %{"id" => project_id} = params) do
@@ -50,7 +52,7 @@ defmodule ForemanServerWeb.ApprovalController do
   end
 
   defp render_list(conn, calls) do
-    conn |> put_status(:ok) |> json(%{"approvals" => DTO.list(calls)})
+    conn |> put_status(:ok) |> json(Listing.build(calls))
   end
 
   defp not_found(conn, error, id) do

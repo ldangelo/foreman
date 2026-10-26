@@ -179,6 +179,25 @@ silently discards arguments; `Anubis.Server.Response` ≠ `Anubis.MCP.Response`;
 `frame.transport_context`). Read `deps/<lib>/lib/**` and confirm before coding,
 then add a test asserting the invariant so an upgrade cannot silently break it.
 
+**Two more, found by booting it (`foreman-cnn1l`, 2026-10-25).** (1) `Anubis.Server.Supervisor`
+silently returns `:ignore` for an HTTP transport without a `start:` option unless it guesses an
+HTTP server is running (`PHX_SERVER`, `ANUBIS_MCP_SERVER`, or Phoenix's `:serve_endpoints` env,
+which Phoenix defaults to `false` and only `mix phx.server` sets). A release (`prod.exs` has
+`server: true`) and every live harness (`mix run --no-start --no-halt boot.exs`) serve HTTP
+without that, so the MCP child was "started", wrote no `:session_config` persistent_term and
+`/mcp` answered HTTP 500 to every request: no agent could call a Foreman tool. `ForemanServer.MCP`
+now passes `{:streamable_http, start: true}` (Foreman's own `:mcp, enabled` already decided).
+An OTP supervisor treats `:ignore` as success, so nothing in the boot log said so. (2) The shared
+`Dispatch.transport_opts/2` passed `authorization: [validator: {Auth, []}]` whenever
+`allow_insecure_local` was off. Anubis parses that as an OAuth 2.1 resource server (Peri requires
+`resource` and `authorization_servers`) and then calls `validate_token/2` on the validator, so a
+token-protected MCP could not even boot; it is never passed now (Foreman's own Plug and
+`Dispatch.call/4` authenticate). Both are pinned by `test/foreman_server/mcp/http_boot_test.exs`,
+which starts the child `ForemanServer.Application.children/0` builds under the Phoenix state of
+such a boot and calls `/mcp` through the real endpoint. The unit suites missed it because the test
+environment disables MCP and `MCPRouterTest` writes the persistent_term by hand: **a test that
+seeds the state the production code is supposed to create proves nothing about that code.**
+
 ### 5.7 Never duplicate a boundary across transports or adapters
 
 `ForemanServer.MCP` and `ForemanServer.MCP.Stdio` were ~85% byte-identical, so

@@ -13,7 +13,10 @@ defmodule ForemanServer.Workflow.TaskFanout do
   Payload: `%{project_id, title, prompt, workflow_name, repo_ids: [id] | "all",
   fanout_id?}`. Task ids are `<fanout_id>-<repo_id>` and command ids
   `fanout:<fanout_id>:<repo_id>`, so retrying the same fan-out (same
-  `fanout_id`) creates no duplicates: an existing task is reported `exists`.
+  `fanout_id`) creates no duplicates: a replayed command id has a deterministic
+  event id, appends nothing and is acknowledged, so the repeat reports each task
+  `created` again (seen live, from an agent's retry); only a task that exists
+  under another command id is reported `exists`.
   `fanout_id` is minted when omitted and linked to every task as
   `source: "fanout:<fanout_id>"`.
 

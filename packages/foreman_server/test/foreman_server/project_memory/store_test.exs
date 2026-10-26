@@ -154,4 +154,22 @@ defmodule ForemanServer.ProjectMemory.StoreTest do
     assert {:error, %Error{code: :write_failed}} = Store.forget(dir, "a")
     assert File.read!(Path.join(mem(dir), "a.md")) == before
   end
+
+  test "forget fails before touching disk when a sibling topic cannot be listed", %{tmp_dir: dir} do
+    {:ok, _} = write(dir, "a", "keep me")
+    topic = Path.join(mem(dir), "a.md")
+    index = Path.join(mem(dir), "MEMORY.md")
+    {topic_before, index_before} = {File.read!(topic), File.read!(index)}
+    # A restore would rewrite the file (temp file + rename), giving it a new inode:
+    # an untouched file keeps its inode.
+    inode = File.stat!(topic).inode
+    # A directory named like a topic file makes reading that sibling fail with :eisdir.
+    File.mkdir_p!(Path.join(mem(dir), "bad.md"))
+
+    assert {:error, %Error{code: :write_failed}} = Store.forget(dir, "a")
+
+    assert File.read!(topic) == topic_before
+    assert File.stat!(topic).inode == inode
+    assert File.read!(index) == index_before
+  end
 end

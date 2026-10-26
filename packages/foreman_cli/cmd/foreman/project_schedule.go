@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -12,7 +13,7 @@ import (
 
 const projectScheduleUsageText = "Usage:\n" +
 	"  foreman project schedule list --project-id <id> [--json]\n" +
-	"  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone <tz>] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--id <schedule-id>]\n" +
+	"  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--id <schedule-id>] [--idempotency-key <key>]\n" +
 	"  foreman project schedule pause --project-id <id> --id <schedule-id>\n" +
 	"  foreman project schedule resume --project-id <id> --id <schedule-id>\n" +
 	"  foreman project schedule delete --project-id <id> --id <schedule-id>"
@@ -148,15 +149,16 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 	name := fs.String("name", "", "Schedule name")
 	every := fs.String("every", "", "Fixed interval, e.g. 30m or 1h (exclusive with --cron)")
 	cron := fs.String("cron", "", "Cron expression, e.g. \"0 9 * * 1-5\" (exclusive with --every)")
-	timezone := fs.String("timezone", "", "IANA timezone for the spec")
+	timezone := fs.String("timezone", "", "Timezone for the spec; the server accepts only UTC or Etc/UTC (default UTC)")
 	prompt := fs.String("prompt", "", "Prompt for the scheduled task (or --prompt-file)")
 	promptFile := fs.String("prompt-file", "", "Read the prompt from this file (or --prompt)")
 	workflow := fs.String("workflow", "", "Workflow to run")
 	autoApprove := fs.Bool("auto-approve", true, "Auto-approve created tasks (use --auto-approve=false to disable)")
 	overlap := fs.String("overlap", "skip", "Overlap policy: skip|allow")
-	scheduleID := fs.String("id", "", "Schedule ID (server-generated when omitted)")
+	scheduleID := fs.String("id", "", "Schedule ID (derived from the idempotency key or the request payload when omitted)")
+	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key: a retry with the same key returns the same schedule instead of creating a second one")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage of project schedule create:\n  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone <tz>] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--id <schedule-id>]\n\nCreate a schedule that submits a task on a recurring spec.\n\nFlags:\n")
+		fmt.Fprint(fs.Output(), "Usage of project schedule create:\n  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--id <schedule-id>] [--idempotency-key <key>]\n\nCreate a schedule that submits a task on a recurring spec.\nThe command id (and, without --id, the schedule id) is derived from --idempotency-key, or from the request\npayload when no key is given, so retrying an identical create never produces a second schedule. To create\ntwo otherwise identical schedules pass different --idempotency-key values (or different --id values).\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.parse(args); err != nil {
@@ -216,7 +218,15 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 		payload["schedule_id"] = *scheduleID
 	}
 
-	out, err := postCommandWithResponse(c, commandEnvelope{Type: "schedule.create", Payload: payload})
+	commandID, derivedScheduleID := scheduleCreateIdentity(*projectID, *idempotencyKey, payload)
+	if *scheduleID == "" {
+		// The server would otherwise generate a random id, so a retried create after a timeout
+		// would make a second schedule. Sending the derived id makes the retry hit the same stream.
+		payload["schedule_id"] = derivedScheduleID
+		*scheduleID = derivedScheduleID
+	}
+
+	out, err := postCommandWithResponse(c, commandEnvelope{Type: "schedule.create", CommandID: commandID, Payload: payload})
 	if err != nil {
 		return err
 	}
@@ -230,6 +240,26 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 
 	_, err = fmt.Fprintf(os.Stdout, "created schedule %s in project %s\n", createdID, *projectID)
 	return err
+}
+
+// scheduleCreateIdentity derives the deterministic command id and schedule id of a
+// `schedule.create` so that a retry (same flags, or same --idempotency-key) is the same
+// command on the same schedule stream, exactly like the other `project` commands. With a
+// key the seed is the project and the key; without one it is the JSON-encoded payload
+// (json.Marshal sorts map keys, so the encoding is deterministic) as sent before any
+// schedule id is derived. The schedule id has the shape the MCP tool derives from its
+// `request_id` (`sch-` + 12 hex characters).
+func scheduleCreateIdentity(projectID, idempotencyKey string, payload map[string]any) (commandID, scheduleID string) {
+	seed := projectID + "\x00" + idempotencyKey
+	if idempotencyKey == "" {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			panic(fmt.Sprintf("schedule.create payload is not JSON-encodable: %v", err))
+		}
+		seed = string(encoded)
+	}
+
+	return sha256Hex("schedule.create." + seed), "sch-" + sha256Hex("schedule.create.id." + seed)[:12]
 }
 
 func projectScheduleLifecycle(c *client.Client, verb, done string, args []string) error {

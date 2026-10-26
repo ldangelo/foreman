@@ -99,8 +99,29 @@ defmodule ForemanServer.Aggregates.ToolCallTest do
 
     expired = state_after(["tool.request", "tool.expire"])
 
-    assert {:error, {:tool_call_terminal, "expired"}} =
+    assert {:error, {:tool_call_expired, nil}} =
              ToolCall.handle_command(expired, command("tool.approve"))
+
+    # Expiring it again is the ordinary terminal refusal: that call is already over.
+    assert {:error, {:tool_call_terminal, "expired"}} =
+             ToolCall.handle_command(expired, command("tool.expire"))
+  end
+
+  test "an operator decision on an expired call is refused with the reason it expired" do
+    for reason <- ["timeout", "run_ended", "client_gone", "server_restart"] do
+      requested = state_after(["tool.request"])
+
+      {:ok, spec} =
+        ToolCall.handle_command(requested, command("tool.expire", %{reason: reason}))
+
+      expired =
+        ToolCall.apply_event(requested, %{event_type: spec.event_type, payload: spec.payload})
+
+      for type <- ["tool.approve", "tool.deny"] do
+        assert {:error, {:tool_call_expired, ^reason}} =
+                 ToolCall.handle_command(expired, command(type))
+      end
+    end
   end
 
   test "finish only from requested or approved" do

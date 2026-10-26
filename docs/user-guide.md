@@ -188,7 +188,7 @@ Two scripts prove the Claude Projects flow against a **real, throwaway** server,
 devbox run -- bash scripts/e2e/claude_projects_flow.sh        # ~2 min: project, memory, library, bead -> thread,
                                                               # steer/stop/resolve, Overview, chat, three tasks in parallel, webhook, review archive
 devbox run -- bash scripts/e2e/failure_injection.sh           # ~4 min: provider-down agent-crash coordinator-crash
-devbox run -- bash scripts/e2e/failure_injection.sh server-crash   # server-crash port-closed project-paused: run one scenario
+devbox run -- bash scripts/e2e/failure_injection.sh server-crash   # server-crash port-closed cancel-strays shutdown-strays project-paused: run one scenario
 ```
 
 Prerequisites: `pi` (authenticated for the model), `br`, `git`, `jq`, `curl`, `python3`, `psql` on `PATH` (use
@@ -349,8 +349,9 @@ foreman project chat project-123 "triage the failing nightly build"
 It acts through a closed command set and can never merge, approve, archive or
 retry. Tuning (`coordinator_propose_before_start`,
 `coordinator_max_active_threads`, `coordinator_reuse_threads`) is enforced by the
-server, not by the prompt. Its `schedule` and `add_repo` actions are rejected as
-unsupported in this revision. Thread counts in its replies are not the model's
+server, not by the prompt. It can register a repository (`add_repo`) or create a schedule
+(`schedule`) only when you ask for it in your own words, with the checks of
+`foreman project repo add` and `foreman project schedule create`. Thread counts in its replies are not the model's
 arithmetic: the context carries the Overview's counts per group (a `STATUS`
 section) and a reply that talks about thread status gets a
 `Status (computed by Foreman from the Overview): ready for review 2 · ...` line
@@ -368,7 +369,13 @@ foreman questions list --project project-123
 foreman questions answer --run <run-id> --question <id> --text "yes, use postgres"
 ```
 
-Unanswered requests expire (default 30 minutes). Approving one tool relaxes the
+The project workspace does the same without the CLI: a thread waiting on a tool call shows
+`Approve` / `Deny` on its card, and a **Questions for you** pane above the Overview lists every
+open question of the project with an answer box (the operator commands `tool.approve|deny` and
+`question.answer`, the ones the CLI sends).
+
+Unanswered tool requests expire (default 30 minutes), unanswered questions after their own
+timeout (5 minutes by default). Approving one tool relaxes the
 approval mode for the next phase as a whole ([Approval scope](#needs-you-approvals-and-questions)).
 There is no MCP tool to approve, deny or answer.
 
@@ -399,9 +406,16 @@ per PR and a hard cap of 5 attempts per kind
 ### Notifications
 
 `ForemanServer.Notifier` maps run, review, approval and PR events to outbound
-Telegram/Slack messages through `ForemanServer.Messaging`. A project chooses how
-much it hears with `foreman project update --notification-preference
-every_turn|blocked_only|off project-123` ([Outbound messaging delivery](#outbound-messaging-delivery)).
+Telegram, Slack or webhook messages through `ForemanServer.Messaging`: failures,
+stalls, a run the crash-loop detector blocked or the stuck detector flagged,
+questions, approvals and CI failures always (unless a project says `off`), and,
+with `every_turn`, also completed runs and jobsites, review verdicts and a PR
+that is ready for review. A project chooses how much it hears with
+`foreman project update --notification-preference every_turn|blocked_only|off
+project-123` ([Outbound messaging delivery](#outbound-messaging-delivery)).
+`foreman doctor` has a `notifier` row that says whether notifications are off,
+on and able to deliver, or on but not able to (invalid config, notifier or
+dispatcher stopped, events refused).
 
 ### Schedules
 
@@ -524,9 +538,17 @@ updates its archive manifest; the original events keep their project, and
 `ReviewRecorded` keeps pointing at the original project. A session that is still
 running (or paused) cannot be moved; use *Continue* instead, which starts a new
 task in the target project seeded from the session's archive and leaves the
-original running. *Mint* (`--new-project`) creates a project from the session's
+original running (add `--fork` and the new thread forks the session's provider
+session instead, so the agent remembers the conversation; it is refused, never
+degraded, when there is no session to fork; add `--from-source-branch` to either
+and the new thread's worktree is cut from the session's own branch instead of the
+project's current branch, so the earlier changes are in it; it is refused, never
+degraded, when the session recorded no branch or the project's repository lacks
+it). *Mint* (`--new-project`) creates a project from the session's
 repo and goal and moves the session into it. Tasks imported from beads stay in
-their source project, and a session's repo must be the target project's path.
+their source project, and a session's repo must be the target project's path or one of
+its attached repositories (`foreman project repo add`; `--add-repo` attaches the
+session's repository to the target first when it is not one of them).
 See `docs/cli-reference.md` (`foreman project adopt`).
 
 ### Setup recommendations
@@ -541,6 +563,23 @@ Foreman command computed from what was observed, or manual advice. Checks are
 read-only and bounded (5 s per external command); a check that cannot run
 produces no recommendation rather than a false alarm. `foreman doctor` reports
 server, provider and workflow readiness (`--project` adds this summary).
+
+Two further checks: `branch.default_unresolved` (the project's repository is on a
+detached HEAD, so Foreman cannot resolve the branch its pull requests target) and
+`settings.env_empty` (no plain variable and no stored secret name; names only,
+never values). `settings.env_plain_secrets` points at
+`foreman project secret set --from-env VAR <id> NAME`.
+
+A newly registered project's coordinator conversation opens with a **setup
+proposal**: the same recommendations (most severe first, at most ten, each with
+its fix) posted as one `setup_proposal` message; it needs no provider call. Send
+`/setup` in the conversation for a fresh one (it starts no model turn). Reply
+`apply N` to have the coordinator run the fix for item N. Only a Foreman-computed
+command fix is applicable (today: wiring the beads task provider through
+`project.update`, and `project.resume` for a paused project), never manual advice,
+and a turn with machine authority (a report or an MCP message) cannot apply one.
+See "Project coordinator" (chapter 14).
+
 ### Chat with the project coordinator
 
 ```
@@ -699,7 +738,11 @@ The same data is `GET /api/projects/<id>/usage?from=&to=&group_by=&limit=` (422 
 no configured cache TTL; the TTLs are `config :foreman_server, :usage, cache_ttl_seconds:`, claude 300 by
 default, an assumption to tune per provider). Usage covers the last 366 days per project. Jobsite iteration
 usage and reviewer-agent usage (role `review`, attributed to the reviewed run or jobsite) are included; a
-jobsite that reports through worker events is not counted twice.
+jobsite that reports through worker events is not counted twice. Coordinator turns are recorded too (role
+`coordinator`: one `CoordinatorUsageRecorded` event per turn whose provider run reported usage, the repair
+retry of a malformed reply summed into the same turn, a turn that then fails still counted): they are part of
+the totals and of the day, model, provider and role breakdowns, but have no `thread` row and no cache hint
+because a coordinator turn belongs to no thread. Their cost is `-` unless the provider reported one.
 
 ### Environment, secrets, setup script and network policy
 
@@ -727,7 +770,7 @@ foreman project network set --mode allowlist --allow pypi.org project-123
 | Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and session archives (transcript, `diff.patch`, `changed-files.txt`, `request.md`, analysis files): only values present in the server environment are recognised, so a value an agent reads from a committed `.env` file or fetches at runtime is not caught (see [Session archive](#session-archive-and-automated-review)). A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
 | Delivery | Both doors: workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace); jobsites get the same as a base that the spec's own allowlisted `agent.env` overrides. |
 | Setup script | Runs once, right after a fresh run worktree (or jobsite worktree) is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase / jobsite (`setup_script_failed`, `setup_script_timeout`; jobsites: `hook_failed`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. Remote jobsite specs still cannot supply `hooks.host.*`; the script only comes from this record. |
-| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and workflow runs (agents on the server host) do not enforce it. Networks and sidecars are removed when the jobsite ends and swept at boot. |
+| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and workflow runs (agents on the server host) do not enforce it. Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
 
 `GET /api/projects/<id>/environment` returns the record (variable values only for
 the record form; a project still on legacy flat `config.env` shows `[redacted]`
@@ -737,7 +780,10 @@ values and `legacy_env: true`), `network_enforced_on` and secret names/versions.
 with every variable (the old values are hidden), after which the record is used
 and legacy `config.env` is ignored. The MCP tool `foreman_project_environment_get`
 is read-only and returns variable and secret *names* only; there is deliberately no
-MCP write tool for the environment or secrets.
+MCP write tool for the environment or secrets. The settings page (section 14.1) sets and
+removes variables and sets, rotates and removes secrets through the same command and the
+same `ProjectSecrets` path as the CLI and HTTP; for a legacy project it merges the hidden
+values on the server, so it needs no `--replace`.
 
 ### Pause, resume and reactivate
 
@@ -760,9 +806,12 @@ run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
 keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
 with `run.status` `deferred` and `run.reason` (or `queued` while admission is
 pending), never a 404. It is re-admitted when the project is resumed, when a
-`project update` changes its settings (a raised limit), and when a finished run
-frees its reservation; the global run slot is only taken once the project's own
-limits admit the run, so a deferred run never starves other projects.
+`project update` changes its settings (a raised limit), when a finished run
+frees its reservation, and when the UTC day rolls over (a task the daily thread
+cap refused is retried as soon as the cap resets, with no operator action; a
+timer in the Dispatcher fires at the next UTC midnight). The global run slot is
+only taken once the project's own limits admit the run, so a deferred run never
+starves other projects.
 
 ### Tasks
 
@@ -887,8 +936,10 @@ A phase can set `approval_mode:` (`default`, `prompt`, `auto_edit`,
 cannot write files headlessly; the phase then fails with
 `{:permission_denied, [tools]}` rather than completing with no changes. A Claude
 phase with `approval_mode: prompt` instead asks the operator per tool call while
-it is running (in-flight approvals, below); pi has no per-call approvals and keeps
-the pause-and-re-run path. Report
+it is running (in-flight approvals, below). pi has no per-tool permission prompts at all: its
+adapter accepts only `default` and `auto_approve`, so a phase that asks pi for `prompt` or
+`auto_edit` is refused before pi starts, and a pi run never raises an approval (see
+[Needs you](#needs-you-approvals-and-questions)). Report
 paths using `{task.projectReportsDir}` resolve under the run's worktree (or the
 task/project directory), not the server's working directory.
 
@@ -927,15 +978,17 @@ Support states:
 [Remote Jobsite API](#remote-jobsite-api).)
 
 All external domain mutations go through `POST /api/commands`. The
-operator allowlist (`ForemanServer.CommandGateway.@allowed_operator_types`)
-is exactly:
+operator allowlist is a single list, `ForemanServer.CommandGateway.operator_types/0`
+(`POST /api/commands` accepts every type on it except `inbox.send`, which is
+gateway-only: it is sent by the MCP tool `foreman_inbox_send` and has no HTTP
+route). The list is exactly:
 
 - Projects: `project.register`, `project.update`, `project.environment.set`,
   `project.archive`, `project.reactivate`, `project.pause`, `project.resume`,
   `project.adopt`, `project.repo.add`, `project.repo.remove`
 - Tasks: `task.create`, `task.approve`, `task.retry`, `task.update`
 - Runs: `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
-  `run.steer`, `inbox.send`
+  `run.steer`, `inbox.send` (MCP `foreman_inbox_send` only)
 - Merge gate (operator-only): `merge_approve`, `run.pr.merge`, `run.pr.retry`. (Voiding a
   stale approval, `run.pr.rehold`, is a system command sent by the server itself: it is on
   no allowlist, and it can only ever make the gate stricter.)
@@ -989,6 +1042,10 @@ Read endpoints are projection-only:
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
   and `GET /api/queue` expose corresponding projections.
+- Schedules: `GET /api/projects/{project_id}/schedules` returns
+  `{ticker: "running"|"disabled", schedules: [...]}` (the Scheduled tab's data;
+  MCP `foreman_schedule_list`; CLI `foreman project schedule list`). Schedules
+  are written with the `schedule.*` commands above.
 - Threads: `GET /api/projects/{project_id}/threads` (filters `status`,
   `door=workflow|jobsite`, `limit` 1..500, default 100) and
   `GET /api/threads/{id}` (`run:<run_id>` or `jobsite:<jobsite_id>`) unify
@@ -1000,7 +1057,10 @@ Read endpoints are projection-only:
   until `thread.reopen`.
 - Thread actions: `POST /api/threads/{id}/stop` (`run.cancel` / jobsite
   cancel), `POST /api/threads/{id}/steer` (`text`, optional `message_id`,
-  `resume`; 202, 409 `not_steerable` for a terminal thread). Operator commands
+  `resume`; 202, 409 `not_steerable` for a terminal thread),
+  `POST /api/threads/{id}/rereview` (re-run an `undetermined` review; 202, 409
+  `not_reviewed|not_rerunnable|already_running`, 422 `archive_unusable`, 503
+  `analysis_disabled`; CLI `foreman thread rereview`). Operator commands
   `thread.resolve` / `thread.reopen` (events `ThreadResolved` /
   `ThreadReopened`) are sent through `POST /api/commands` or
   `foreman thread resolve|reopen`; resolving is a disposition flag and never
@@ -1053,7 +1113,7 @@ config :foreman_server, :threads,
 
 `GET /api/projects/{project_id}/overview` (query `include_resolved=true|false`,
 default false; `resolved_limit` 0..200, default 20) answers "what needs me?".
-The body has `project_id`, `groups`, `counts`, `attention`, `tabs` and
+The body has `project_id`, `groups`, `counts`, `attention`, `truncated`, `tabs` and
 `generated_at`. `groups` has six string keys, each a list of thread cards
 (newest first): `ready_for_review` (PR open and merge gate pending, or a
 completed thread with a `met`/`partially_met` review and an open PR),
@@ -1062,17 +1122,21 @@ conflict, plain pause, review `not_met` on an open PR, or failing CI on an open 
 (merge approved, PR still open), `idle` and `resolved` (flag, PR merged or
 closed, cancelled). `attention` is `{needed, count, reasons}`: needed when
 `waiting_on_you` or `ready_for_review` is non-empty. An unknown project is
-`404 project_not_found`.
+`404 project_not_found`. Only the newest 500 threads of a project are
+classified; `truncated` is `true` when the project has more, and `counts`,
+`attention` and `groups` then leave out the older (least recently updated)
+threads. The `attention` on project payloads covers the same 500-thread window.
 
-`tabs` carries `pull_requests` (live), and `library` / `scheduled`, which read
-`{"available": false, "rows": []}` until those features register a tab provider.
+`tabs` carries `pull_requests` and `library` (live), and `scheduled`, which reads
+`{"available": false, "rows": []}` until that feature registers a tab provider.
 `GET /api/projects` and `GET /api/projects/{id}` gain `attention` and
 `attention_count`; the MCP read tool `foreman_overview` returns the same
-overview for one project, or one attention line per active project without
+overview for one project, or one attention line per active project (with
+`counts` and the same `truncated` flag) without
 `project_id`. Pending approvals and open questions feed `waiting_on_you` (see
 [Needs you: approvals and questions](#needs-you-approvals-and-questions)). When a PR merges, `Overview.MergeResolver` resolves its thread
 automatically (reason `pr_merged`; a thread you reopened after the merge stays
-open). **Merging remains an operator action** (`merge_approve`, then
+open, also when a late PR update re-reports the merge). **Merging remains an operator action** (`merge_approve`, then
 `run.pr.merge`): no overview or MCP surface can merge or approve; cards only
 carry the text hint `operator: foreman run approve-merge/merge`.
 
@@ -1575,6 +1639,13 @@ The server exposes an MCP endpoint at `/mcp` (HTTP, recommended) and via
 Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets
 and behavior cannot diverge.
 
+The HTTP endpoint is up whenever `config :foreman_server, :mcp, enabled: true` (the dev
+config sets it), however the server was started (`mix phx.server`, `mix run --no-halt`, a
+release); it does not depend on `PHX_SERVER` (`foreman-cnn1l`). Agents reach it with
+`Authorization: Bearer <FOREMAN_API_TOKEN>` (optional only under `allow_insecure_local: true`);
+`scripts/e2e/multi_repo_agent.sh` drives it from a real `claude` (see
+[the live run](acceptance/multi-repo-agent-live-run.md)).
+
 **Read tools** are always advertised: `foreman_doctor`,
 `foreman_queue_status`, `foreman_project_list`, `foreman_project_get`,
 `foreman_workflow_list`, `foreman_workflow_get`,
@@ -1613,7 +1684,9 @@ The write-gated thread tools are `foreman_thread_stop` and
 **Coordinator conversation tools.** `foreman_project_conversation` (read-only:
 `project_id`, `after?`, `limit?` 1..200) returns the same page as
 `GET /api/projects/<id>/coordinator/messages` (`messages`, `next_cursor`,
-`has_more`, `truncated_before_seq`, `status`). `foreman_project_message`
+`has_more`, `truncated_before_seq`, `status`, `pending_messages`: the trigger
+messages no completed turn has consumed yet; `status` is `idle` between two turns even
+while one is pending, so a client has caught up only when `idle` AND `pending_messages: 0`). `foreman_project_message`
 (`project_id`, `text`, `message_id?`) sends an operator message to the
 coordinator; it is write-gated like the tools above, its source is always
 `mcp` (the caller cannot choose it), and it is rate limited per project by
@@ -1789,11 +1862,20 @@ signal), `parallel` (fans out across worktrees, merges sequentially),
 (pulls a ready Beads issue and works it). Resume after a crash or an
 explicit pause with `ForemanServer.Jobsite.resume/1`, which rehydrates
 authoritative state from the event stream (never from the projection or
-process memory) and continues the same agent session. Recovery after a server
-restart is never automatic: at boot, `ForemanServer.Jobsite.BootRecovery`
-records every non-terminal jobsite that has no live executor as **paused with
-reason `server_restart`** (a jobsite that never got a worktree is failed with
-`executor_lost` instead), so it shows up as `paused` with a `paused_reason` in
+process memory) and continues the same agent session. That needs the agent's
+provider session: it is recorded (`JobsiteSessionBound`, command
+`jobsite.session.bind`) as soon as the agent reports it, while the first
+iteration is still running, so a crash mid-iteration is resumable. A jobsite
+whose agent never reported one (killed before its first event) is refused with
+`no_session` (`409` over HTTP) instead of sending `Continue.` to a blank agent,
+which would find nothing to continue and report an empty `completed`;
+`Jobsite.steer/3` refuses such a running jobsite before pausing it. Recovery
+after a server restart is never automatic: at boot,
+`ForemanServer.Jobsite.BootRecovery` records every non-terminal jobsite that
+has no live executor as **paused with reason `server_restart`** (a jobsite that
+never got a worktree, or whose agent never reported a provider session, is
+failed with `executor_lost` instead: there is nothing to resume), so it shows
+up as `paused` with a `paused_reason` in
 `GET /api/jobsites` and is resumed through the same explicit path. The scan
 finds candidates from the event store's `jobsite:` streams, not the projection,
 so a failed projection replay cannot make it report an empty success; if the
@@ -1801,6 +1883,11 @@ streams cannot be listed it logs an error (`could not list jobsites`) instead.
 It never starts an agent: `agent.env` values are not persisted, so an unattended
 resume would run without them. Disable the scan with
 `config :foreman_server, start_jobsite_boot_recovery?: false`.
+Before the scan the same boot step sweeps what the dead server's network-policy
+jobsites left on the docker host (the policy's network, its sidecar and the
+sandbox containers; see "Network policy" above), so a resume can create its
+network again under the same name; `config :foreman_server, :network_policy,
+sweep_on_boot: false` skips that sweep.
 
 **Unattended Claude runs need `approval_mode`.** The agent constructors take
 `approval_mode:` (`:default | :prompt | :auto_edit | :auto_approve`, default
@@ -1838,7 +1925,7 @@ the script: the body is validated data, the repo is a **registered
 | `POST /api/jobsites` | Start a jobsite; `202` with `{"id": ...}`. The `202` is held until the jobsite is recorded (this includes the project setup and network-policy work, which can take seconds), so the id is readable the moment you have it. Refusals the executor finds while building the spec (a project network policy the sandbox cannot enforce - `network_policy_unsupported`, an invalid project environment, a failed setup plan) are recorded before the `202`: `GET /api/jobsites/:id` already answers `status: "failed"` with the typed `last_error.code`, never `404`. The wait is bounded at 30 s; past that the id is returned while the executor is still building and the first `GET` can still `404`, so retry briefly. An executor that dies before recording anything is `500 jobsite_start_failed`, not an id |
 | `GET /api/jobsites`, `GET /api/jobsites/:id` | List / read the projected state (`status`, `branch`, `commits`, `iterations`, and `paused_reason` while paused) |
 | `POST /api/jobsites/:id/pause`, `/cancel` | Body `{"reason": "..."}`; `409` if there is no running executor |
-| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start). Optional JSON `prompt` (non-blank, at most 8000 chars; `422 spec_option_invalid` otherwise) replaces the default `Continue.` prompt of the resumed iteration - this is jobsite steering v1 (pause, then resume with the message; `Jobsite.steer/3` does both); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 already_running` if its executor is alive, `502` if the executor could not start |
+| `POST /api/jobsites/:id/resume` | Resume a paused or crashed jobsite (including one paused with `paused_reason: "server_restart"`) in the background (same flag and cap as start). Optional JSON `prompt` (non-blank, at most 8000 chars; `422 spec_option_invalid` otherwise) replaces the default `Continue.` prompt of the resumed iteration - this is jobsite steering v1 (pause, then resume with the message; `Jobsite.steer/3` does both); `404` unknown id, `409 not_resumable` if it already finished or never provisioned a worktree (status `starting`, nothing to continue), `409 no_session` if its agent never reported a provider session (a resume would start a blank agent; nothing runs), `409 already_running` if its executor is alive, `502` if the executor could not start |
 | `POST /api/jobsites/:id/merge` | Body `{"into": "<branch>"}`; merges a completed jobsite's branch, only into the branch checked out in the server's repo (`409` otherwise) |
 
 Spec keys: `project_id`, `prompt`, `agent` (`provider`, `model`, `effort`,
@@ -1883,7 +1970,8 @@ and releases, not to `mix test`):
 | `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX` | `allow_host_sandbox` (only the exact value `true` enables it) |
 | `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST` | `agent_env_allowlist` (comma-separated names, e.g. `ANTHROPIC_BASE_URL,ANTHROPIC_API_KEY`; blank entries are dropped) |
 | `FOREMAN_HTTP_PORT` | `ForemanServerWeb.Endpoint` http port (a valid port number; `127.0.0.1` only; lets a second server run beside the dev one) |
-| `FOREMAN_NOTIFY_WEBHOOK_URL` | `:messaging` (provider `webhook`, delivery enabled for every event class, no run-update rate limit, `webhook.url` from the variable) |
+| `FOREMAN_NOTIFY_WEBHOOK_URL` | `:messaging` (provider `webhook`, delivery enabled for every event class, no run-update rate limit, `webhook.url` from the variable). The URL must be https and name a public host unless the next row's variables are `true` |
+| `FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP` / `FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS` | `webhook.allow_insecure_http` / `webhook.allow_private_hosts` (only the exact value `true` enables them; a local `http://127.0.0.1` sink needs both) |
 | `FOREMAN_REVIEW_PROVIDER` / `FOREMAN_REVIEW_MODEL` | `:review, agent:` (the fixed reviewer; `claude` or `pi`, optional model; unset keeps `claude`) |
 | `FOREMAN_PR_FIX_SANDBOX` | `:pr_fix, sandbox:` (`docker` or `host`; unset keeps the jobsite default, docker, which needs a built `foreman-jobsite:<project>` image; `host` also needs `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true`) |
 | `FOREMAN_START_BEADS_WATCHER` | `start_beads_watcher?` (`true` starts it, any other value stops it; `dev.exs` defaults to on) |
@@ -1911,7 +1999,7 @@ Each project has durable memory that every agent thread can read and write, like
 - **Location.** `<project path>/.foreman/memory/`: `MEMORY.md` (a generated index, one `- [name](name.md) - description` line per topic, sorted) plus one `<name>.md` file per topic. A topic file may start with a `<!-- description: ... -->` line; that is the hook shown in the index. Names match `^[a-z0-9][a-z0-9_-]{0,63}$` (`memory` is reserved). `.foreman/.gitignore` gets a `memory/` line automatically; other `.foreman` files stay tracked.
 - **Caps.** 64 KiB per topic (after redaction), 200 topics, index at most 200 lines / 25 KiB. Violations are rejected with `content_too_large`, `too_many_topics` or `index_full` and leave disk untouched. Configurable under `config :foreman_server, :project_memory`.
 - **Redaction.** Bearer tokens, `api_key=`/`token=`/`password=`/`secret=` values, private-key blocks and the project's configured secret env values are replaced by `[REDACTED]` before anything is written. Content is never stored in events; the event log (`ProjectMemoryWritten` / `ProjectMemoryForgotten` on `project_memory:<id>`) keeps only name, description, sha256, size, redaction count and author.
-- **Durable facts only.** Log dumps (more than half identical lines) and secret-heavy pastes (more than half the bytes redacted, for content of 200 bytes or more) are rejected with `content_not_durable`.
+- **Durable facts only.** For content of 200 bytes or more (`min_guard_bytes`; shorter content skips both checks), log dumps (more than half of the non-empty lines identical, checked only when there are at least 4 non-empty lines) and secret-heavy pastes (more than half the bytes redacted) are rejected with `content_not_durable`.
 - **Agents** use the MCP tools `foreman_project_memory_list`, `foreman_project_memory_read`, `foreman_project_memory_write` and `foreman_project_memory_forget` (the last two need `allow_workflow_writes`). Their descriptions carry the guidance: save decisions, conventions, gotchas and project-wide preferences; never task progress, logs or secrets; list before writing and update instead of duplicating; forget facts that became false.
 - **Operators** can view, edit and delete through `GET|PUT|DELETE /api/projects/:id/memory[/:name]` and the CLI:
 
@@ -1930,7 +2018,7 @@ foreman project memory sync <project-id>
 Each project can hold a **library**: files and folders that every agent thread can read, like Claude's project knowledge. Agents never write to it directly.
 
 - **Location.** `<project path>/.foreman/library/<entry_id>/files/...` plus an `entry.json` per entry. Only `.foreman/library/` is gitignored (added to `.foreman/.gitignore` on first use); `.foreman/Dockerfile`, `.foreman/bead.exs` and `.foreman/pi-models.json` stay tracked. The bytes never enter the event log: `ProjectLibraryAdded` / `ProjectLibraryReplaced` / `ProjectLibraryRemoved` carry metadata only.
-- **Limits (mirroring Claude).** At most 100 files per add and 480 MB per file. A folder add takes the first 100 eligible files (sorted path order) up to 200 MB total, skipping hidden files and directories, `node_modules`, symlinks and files over 30 MB; at most 10 folders per project. Every skipped file is reported back with a reason (`hidden`, `node_modules`, `symlink`, `not_regular`, `over_30mb`, `folder_file_cap`, `folder_byte_budget`), never silently dropped. All limits are under `config :foreman_server, :library`.
+- **Limits (mirroring Claude).** At most 100 files per add and 480 MB per file, and at most 512 MiB in total per add (one request: `upload_max_bytes`; the CLI refuses a larger plan before uploading and the HTTP route answers a body over the cap with 413 `upload_too_large`; the workspace upload form enforces the same cap). A folder add takes the first 100 eligible files (sorted path order) up to 200 MB total, skipping hidden files and directories, `node_modules`, symlinks and files over 30 MB; at most 10 folders per project. Every skipped file is reported back with a reason (`hidden`, `node_modules`, `symlink`, `not_regular`, `over_30mb`, `folder_file_cap`, `folder_byte_budget`), never silently dropped. All limits are under `config :foreman_server, :library` and `GET /api/projects/:id/library` reports them in `limits`.
 - **Read-only delivery.** Agents on both doors get `FOREMAN_LIBRARY_PATH` when the library is non-empty: the absolute host directory for workflow runs and host-sandbox jobsites, and a read-only bind mount at `/library` for docker jobsites. Nothing is copied or linked into the worktree (Foreman commits the whole worktree). On the host, files are `chmod` read-only, which is advisory because agents run as the same user; the docker mount is the real guarantee.
 - **Standing context.** The library index (entry names, kinds and file lists) is a "Project library" section of the standing context (see [Standing context](#13-standing-context)); file contents are never inlined.
 - **Thread-produced files (opt-in).** With `foreman project update --library-collect-produced <project-id>`, each completed phase's artifact and the run's session-archive `analysis.md` / `diff.patch` are registered into one `produced-<run_id>` entry, idempotently per path and content, within `produced_max_files_per_run` (100) and `produced_max_bytes_per_run` (50 MB), and only from the run's own directories. Off by default because registering every run's output clutters the library. Copied files are not redacted: they are agent output with the same exposure as the run's git branch.
@@ -1959,12 +2047,19 @@ read is `GET /api/projects/<id>/schedules` (`{ticker, schedules: [...]}`; this i
 the data behind the Scheduled tab). MCP: `foreman_schedule_list` plus the four write
 tools (`foreman_schedule_create` takes an optional `request_id`: repeating it returns
 the same schedule instead of creating a second one; without it every call creates a
-new schedule). Typed rejections such as `{:invalid_schedule_spec, :every,
+new schedule). The write tools return `{project_id, schedule_id, status}` with
+`status` one of `created|paused|resumed|deleted` (never the event or the prompt);
+`foreman_schedule_list` returns `{project_id, ticker, schedules: [...]}` with the same
+DTOs as the HTTP read. The CLI's `schedule create` is idempotent in the same way: its
+command id (and, without `--id`, the schedule id) is derived from `--idempotency-key`
+or, with no key, from the request payload, so a retry after a timeout returns the
+first schedule; pass different keys to create identical schedules on purpose. Typed
+rejections such as `{:invalid_schedule_spec, :every,
 :below_minimum}`, `{:schedule_limit_reached, 50}` or `{:unknown_workflow, name}` are
 returned verbatim.
 
 **Syntax.** `every` is `<n>s|m|h|d` with a minimum of `min_interval_seconds`
-(default 300), aligned to an anchor (creation time unless given), so `every: 30m`
+(default 300) and a maximum of 366 days (`above_maximum`), aligned to an anchor (creation time unless given), so `every: 30m`
 fires at creation+30m, +60m, ... `cron` is the standard five fields (minute hour
 day-of-month month day-of-week) with `*`, lists, ranges and `*/n` / `a-b/n` steps,
 `JAN-DEC` and `SUN-SAT` names; when both day-of-month and day-of-week are restricted
@@ -1995,13 +2090,25 @@ how you see why a fire did not happen. `auto_approve: false` leaves each created
 
 **Exactly once.** Each fire is `scheduler_intent.record` -> `task.create` ->
 (`task.approve`) -> `schedule.mark_fired` -> `scheduler_intent.confirm`, every step
-with a deterministic command id. After a crash, `Schedule.Ticker` redoes intents that
-were recorded but not confirmed within `recovery_grace_ms` (on boot and every 20
-ticks) without creating duplicate tasks.
+with a deterministic command id. A slot whose task exists is never recorded as
+skipped: it ends up `fired` and linked from `last_task_id`, whether the approval
+succeeded, was refused, or could not be completed before the slot ran out of grace
+(then the task is left un-approved). A slot is skipped only when no task was created.
+A refused `task.approve` (a workflow that cannot be loaded, a task that is no longer
+`open`) is logged by the server, the fire is recorded at once and the task stays
+`open` as a proposal. Any error the ticker does not recognise (a timeout, a router
+that is down) keeps the intent recorded and is retried on the next tick; nothing is
+skipped on it. After a
+crash, `Schedule.Ticker` redoes intents that were recorded but not confirmed within
+`recovery_grace_ms` (on boot and every 20 ticks) under the same rules as a live tick
+and without creating duplicate tasks: an interrupted slot already past
+`misfire_grace_seconds` is recorded as skipped `missed` instead of firing late; a slot
+that a later fire or skip, a resume or a spec change already accounts for creates no
+task; a task that already exists is recorded as fired and is not approved late.
 
 **Operations.** The ticker (`Schedule.Ticker`) is supervised and enabled by default
 (`config :foreman_server, :schedule, ticker_enabled:`; env
-`FOREMAN_SCHEDULE_TICKER_ENABLED=true|false`; tick every `tick_interval_ms`, default
+`FOREMAN_SCHEDULE_TICKER_ENABLED=true|false`, any other value aborts boot; tick every `tick_interval_ms`, default
 30 s). Other keys: `min_interval_seconds` (300), `max_per_project` (50 non-deleted
 schedules), `default_misfire_grace_seconds` (600). `schedule list` and the HTTP
 response report `ticker: running|disabled`; while it is `disabled`, schedules exist
@@ -2022,7 +2129,7 @@ Empty parts are omitted entirely: a project with no instructions and no memory g
 
 **Delivery.** The workflow door sets the harness `system_prompt` for every agent phase; for covered `command:` phases the inbox-progress prompt is appended after the context, separated by a blank line (merged, never overwritten). The jobsite door builds the context once per jobsite start and sends the same `system_prompt` on every iteration. A provider that does not declare `system_prompt` support (amp, kimi, opencode) gets the text prefixed to the prompt instead. Workflow prompt templates can place the text themselves with `{{project_context}}`, `{{project_instructions}}` and `{{project_memory}}` (each is the empty string when there is nothing; shipped templates do not use them).
 
-**Budget and truncation.** Defaults: 24 000 bytes total, instructions 16 000, repositories 1 000, memory 6 000, library 3 000 (`config :foreman_server, :project_context, max_bytes:, section_caps:`). Over-cap content is cut at a line boundary (never inside a UTF-8 character) and the injected text says so: `[truncated: N lines omitted from <section>; <how to fetch the rest>]`. If the total is still over budget, Library shrinks first, then Memory, then Repositories; instructions last.
+**Budget and truncation.** Defaults: 24 000 characters total, instructions 16 000, repositories 1 000, memory 6 000, library 3 000 (`config :foreman_server, :project_context, max_chars:, section_caps:`). Every cap and the total count characters (`String.length/1`), the same unit as the 16000-character instructions limit, so instructions that `project update` accepted reach the agent whole even when they are multibyte (the manifest and `GET /api/projects/:id/context` still report `bytes`, and `omitted_bytes` of a cut, in bytes). Over-cap content is cut at a line boundary (never inside a character) and the injected text says so: `[truncated: N lines omitted from <section>; <how to fetch the rest>]`. If the total is still over budget, Library shrinks first, then Memory, then Repositories; instructions last.
 
 **Inspecting what an agent received.** `foreman project context <project-id>` (or `GET /api/projects/:id/context`) shows what a launch would receive now. With session capture on, the text each run/jobsite actually launched with is archived as `project-context.md` beside `request.md` (workflow runs: first agent launch; jobsite: its single build) and the manifest carries a `project_context` block (`sha256`, `bytes`, `truncated`, `redactions`). There is no CLI write surface: edit instructions with `project update`, memory with `project memory`.
 
@@ -2030,33 +2137,35 @@ Empty parts are omitted entirely: a project with no instructions and no memory g
 
 Every project has one durable **coordinator conversation**: paste a bug, a stack trace or a task list, ask a quick question, or say "go ahead". A coordinator agent triages it, answers in place, and asks Foreman to start, propose or steer **threads** (workers, each with its own session, branch and PR). It hears back when threads report (review verdicts, failures).
 
-**How it works.** The conversation is event-sourced on the `coordinator:<project>` stream (`CoordinatorMessageAppended`, `CoordinatorTurnStarted/Completed/Failed`, `CoordinatorActionRecorded`, `CoordinatorRestarted`). `ForemanServer.Coordinator.Runner` wakes one `ProjectWorker` per project; turns run strictly one at a time per project (a worker crash also ends its in-flight turn; a replacement worker never starts a second concurrent turn) (messages that arrive mid-turn are coalesced into the next turn) and different projects run in parallel. Each turn renders a bounded prompt (about 12k tokens: instructions, memory index, thread cards, recent messages, limits, workflow list, never the full history; cuts are announced in the text), runs a provider agent through the harness (default `pi` + `minimax/MiniMax-M2.7-highspeed`; per project `coordinator_provider`, `coordinator_model`, `coordinator_effort`), and parses ONE fenced JSON block `{"reply": ..., "actions": [...]}`. The agent has no Foreman tools and no MCP: its only effect is that block, which Foreman validates and executes (spike S1, docs/spikes/S1.md).
+**How it works.** The conversation is event-sourced on the `coordinator:<project>` stream (`CoordinatorMessageAppended`, `CoordinatorTurnStarted/Completed/Failed`, `CoordinatorActionRecorded`, `CoordinatorUsageRecorded`, `CoordinatorRestarted`). `ForemanServer.Coordinator.Runner` wakes one `ProjectWorker` per project; turns run strictly one at a time per project (a worker crash also ends its in-flight turn; a replacement worker never starts a second concurrent turn) (messages that arrive mid-turn are coalesced into the next turn: when a report and a pasted message are pending together, ONE turn answers both) and different projects run in parallel. Each turn renders a bounded prompt (about 12k tokens: instructions, memory index, thread cards, recent messages, limits, workflow list, never the full history; cuts are announced in the text), runs a provider agent through the harness (default `pi` + `minimax/MiniMax-M2.7-highspeed`; per project `coordinator_provider`, `coordinator_model`, `coordinator_effort`), and parses ONE fenced JSON block `{"reply": ..., "actions": [...]}`. The agent has no Foreman tools and no MCP: its only effect is that block, which Foreman validates and executes (spike S1, docs/spikes/S1.md). The provider usage of each turn is recorded under role `coordinator` (see "Usage and cost"), and the server log carries one line when a turn starts (its trigger message ids) and one when it completes (reply size and each action's kind and status), so a turn that produced no threads can be told apart from one that was never run or that failed.
 
-**Actions** (closed set): `answer`, `ask`, `start_thread`, `propose_threads`, `approve_proposed`, `route_followup`, `remember`, `forget`, `set_tuning`, `add_repo`, `schedule`. `start_thread`/`propose_threads` create tasks with `task.create` (`propose_threads`, or `propose_before_start`, leaves them `open`: that is the proposal gate; say "go ahead" and `approve_proposed` runs `task.approve`). The workflow is chosen by Foreman, never by free text: an explicit `workflow` must be installed (else the rejection lists the valid ones), otherwise `task_type` maps through the workflow catalog, otherwise the coordinator is told to ask. `add_repo` (E12) and `schedule` (E11) are recorded as rejected with a clear reason until those features exist. Every action's outcome (`executed`, `proposed`, `rejected`, `failed`) is recorded and shown to the next turn; a rejection never aborts a turn, and the operator sees a notice for anything that did not run.
+**Actions** (closed set): `answer`, `ask`, `start_thread`, `propose_threads`, `approve_proposed`, `route_followup`, `remember`, `forget`, `set_tuning`, `add_repo`, `schedule`. `start_thread`/`propose_threads` create tasks with `task.create` (`propose_threads`, or `propose_before_start`, leaves them `open`: that is the proposal gate; say "go ahead" and `approve_proposed` runs `task.approve`). The workflow is chosen by Foreman, never by free text: an explicit `workflow` must be installed (else the rejection lists the valid ones), otherwise `task_type` maps through the workflow catalog, otherwise the coordinator is told to ask. `add_repo` (`path`, `name`?, `quote`) registers an existing git checkout (the absolute path of its root) as one more repository of the project; `name`, else the directory name, reduced to letters, digits and `-`, becomes the repository id. `schedule` (`spec`, `prompt`, `workflow` or `task_type`, `name`?, `quote`) creates a recurring task; `spec` is an interval such as `30m`, `6h` or `1d`, or a 5-field cron expression in UTC, and a schedule created while `propose_before_start` is on does not auto-approve its tasks. Both are operator-grade: they run only for an operator message and only when the action's `quote` is part of the operator's own words (the check that loosening a limit needs; it cannot tell your words from text you pasted), and then go through the same validation and limits as `foreman project repo add` and `foreman project schedule create` (a git work tree that is not already a member; the interval floor, the per-project schedule cap and an installed workflow), so the coordinator can never do more than those verbs. Asking twice is harmless: the repository is reported as already registered and a schedule has a deterministic id. Every action's outcome (`executed`, `proposed`, `rejected`, `failed`) is recorded and shown to the next turn; a rejection never aborts a turn, and the operator sees a notice for anything that did not run.
 
 **Tuning is enforced, not advisory** (settings `coordinator_propose_before_start`, `coordinator_max_active_threads` 1..50, `coordinator_reuse_threads`; also set by `set_tuning`, which stores a memory note too): `propose_before_start` forces every thread the coordinator creates to stay a proposal; `max_active_threads` rejects a start beyond the cap (`cap_exceeded: active_threads N`) and "max N at a time" also tightens `max_concurrent_runs` (it never raises a project cap); `reuse_threads` turns a start into a follow-up when a live thread has the same `bead_id` or the model names one (otherwise advisory, because "same area" is semantic). Loosening a limit needs the operator's exact words (`quote`) to appear in their message.
 
-**Security model.** Capability, not prompt: the coordinator is a system actor that can dispatch only `task.create`, `task.approve` (for tasks it created or proposed), `project.update` (tuning keys only) and its own `coordinator.*` commands (`Coordinator.Dispatch.command_types/0`); it cannot call `merge_approve`, `run.pr.merge`, `project.archive`, `task.retry` or any other operator gate, and no handler builds such a command. Turns triggered by reports, agent-authored text or MCP messages have `:machine` authority and may only answer, ask, propose, route a follow-up or remember; they cannot start or approve work, forget, change tuning, add repositories or schedule. Every thread/task/memory id is checked against the turn's project (`out_of_project`). Pasted text is rendered inside `<untrusted_input>` blocks whose delimiters are neutralised, and conversation text is redacted of project secrets before it is stored. Notes that read as merge/approve automation are refused. Prompt framing is best-effort; the boundary is the closed allowlist plus Policy, and the adversarial tests keep it honest even when the model obeys an injection.
+**Security model.** Capability, not prompt: the coordinator is a system actor that can dispatch only `task.create`, `task.approve` (for tasks it created or proposed), `project.update` (tuning keys only) and its own `coordinator.*` commands (`Coordinator.Dispatch.command_types/0`), plus `project.repo.add` and `schedule.create`, which it sends through the operator path (the validation of the CLI verbs, never the unvalidated system path) and only for an operator turn carrying the operator's own words; it cannot call `merge_approve`, `run.pr.merge`, `project.archive`, `task.retry` or any other operator gate, and no handler builds such a command. Turns triggered by reports, agent-authored text or MCP messages have `:machine` authority and may only answer, ask, propose, route a follow-up or remember; they cannot start or approve work, forget, change tuning, add repositories or schedule. Every thread/task/memory id is checked against the turn's project (`out_of_project`). Pasted text is rendered inside `<untrusted_input>` blocks whose delimiters are neutralised, and conversation text is redacted of project secrets before it is stored. Notes that read as merge/approve automation are refused. Prompt framing is best-effort; the boundary is the closed allowlist plus Policy, and the adversarial tests keep it honest even when the model obeys an injection.
 
 **Health and restart.** A failed turn (provider error, malformed output, timeout, interrupted by a server stop) is recorded and retried; three consecutive failures mark the coordinator `unhealthy`, post one visible system notice ("the coordinator has not responded - last error ...") and stop automatic turns until `foreman project chat <id> --restart` (`POST /api/projects/:id/coordinator/restart`, command `coordinator.restart`). A turn found open at startup is closed as `interrupted` and re-run; the reply id and every command id derive from the triggering message, so a restart never duplicates a reply or a thread and a message appended while the server was down is processed after startup.
 
 **Reports.** `ReviewRecorded` and failed/cancelled run and jobsite events append a report message per thread (`report_key` makes duplicates and the 24 h startup backfill harmless) and wake a machine-authority turn; at most `report_turns_per_hour` (default 6) report turns per project (the rest are listed `suppressed`, announced once), and reports about review-gap-bead threads never start a turn.
 
+**Setup proposal.** When a project is registered, the `SetupProposer` (a child of the coordinator supervisor; it needs no provider) appends one `setup_proposal` message to its conversation: the project's setup recommendations (the list `foreman project recommend` prints, collected with the same time bounds), most severe first, at most ten and 3 000 bytes, secrets redacted, each applicable item ending in a `Reply "apply N"` hint; no recommendations posts "Project looks ready". The message id and `report_key` derive from the project id, so a redelivered event or a restart never posts a second one, and a startup catch-up posts it for active projects whose conversation is still empty. An operator-authored `/setup` message (an MCP-source `/setup` is an ordinary message) posts a fresh proposal on demand and starts no model turn. `apply_recommendation` (`recommendation_id`) runs the fix of one recommendation: the server recomputes the recommendations, rejects an id it no longer produces or one whose fix is manual advice, accepts only a `project.*` command whose payload names this project, and dispatches it as the coordinator system actor (today wiring the beads task provider through `project.update`, and `project.resume` for a paused project, which is why `project.resume` joined the closed command list); the executor never takes a command from the model, only the id. Turns with machine authority (reports, MCP messages) cannot apply a recommendation. `setup_proposals: false` turns the proposer off; with `enabled: false` the coordinator runtime does not start, so nothing is posted until it is enabled.
+
 **Surfaces.** CLI `foreman project chat`; HTTP `POST /api/projects/:id/coordinator/messages`, `GET .../messages?after=&limit=&wait_ms=` (long-poll), `GET .../coordinator`, `POST .../coordinator/restart`; MCP `foreman_project_conversation` (read) and `foreman_project_message` (a write tool: hidden unless `allow_workflow_writes`, always stored with source `mcp`, rate limited by `mcp_messages_per_minute`). The LiveView workspace is `/dashboard/projects/:id` (section 14.1).
 
-**Config** (`config :foreman_server, :coordinator`): `enabled`, `agent`, `default_provider/model/effort`, `agent_timeout_ms`, `turn_timeout_ms`, `retry_backoff_ms`, `unhealthy_after`, `max_message_bytes`, `max_actions_per_turn`, `max_threads_per_turn`, `untrusted_sources` (default `["mcp"]`: MCP messages never carry operator authority), `report_turns_per_hour`, `report_backfill_hours`, `mcp_messages_per_minute`, `report_events`, `context: [max_total_tokens: ...]`.
+**Config** (`config :foreman_server, :coordinator`): `enabled`, `agent`, `default_provider/model/effort`, `agent_timeout_ms`, `turn_timeout_ms`, `retry_backoff_ms`, `unhealthy_after`, `max_message_bytes`, `max_actions_per_turn`, `max_threads_per_turn`, `untrusted_sources` (default `["mcp"]`: MCP messages never carry operator authority), `report_turns_per_hour`, `report_backfill_hours`, `mcp_messages_per_minute`, `report_events`, `setup_proposals` (default `true`), `context: [max_total_tokens: ...]`.
 
 ## 14.1 Project workspace (LiveView)
 
 `GET /dashboard/projects/:id` is the browser view of one project; `/dashboard/projects/:id/settings` is its settings page. Both sit behind the same browser token guard as `/dashboard/runs`: open them with `?token=<FOREMAN_API_TOKEN>` (or an `Authorization: Bearer` header); without it the answer is `401`, and an unknown project is `404`. Moving between the two pages inside the app reuses the authenticated socket.
 
-**Workspace.** Left: the coordinator conversation (`CoordinatorAPI`, the same entry as `POST /api/projects/:id/coordinator/messages`; `Load earlier messages` pages backwards by cursor), coordinator health with a `Restart coordinator` button when it is `unhealthy`, proposals with a `Start` button (`task.approve`, only for open tasks the coordinator proposed for this project) and the message box. Right: the Overview (`ForemanServer.Overview`) grouped as Ready for review / Waiting on you / Working / Landing / Idle / Resolved with an attention dot, and one card per thread. Card actions are exactly the existing operator ones: `Pause`/`Resume` (`run.pause`/`run.resume`), `Stop` (two clicks: `Stop`, then `Confirm stop`; `Threads.Actions.stop`), `Resolve`/`Reopen` (`thread.resolve`/`thread.reopen`) and a steer box (`Threads.Actions.steer`). Workflow cards also carry four PR buttons in a labelled group: `Fix CI`, `Address comments`, `Resolve conflicts` (the E9 fix threads: `run.pr.fix_ci` / `run.pr.address_comments` / `run.pr.resolve_conflicts`) and `Create PR` (`run.pr.create`), the same commands as `foreman run fix-ci|address-comments|resolve-conflicts|create-pr` and MCP `foreman_pr_fix`. A button that does not apply is disabled with its reason shown beside it (CI is not failing, no unresolved review comments, no merge conflicts, a fix is already running, no PR watched, a PR already exists, the run has not completed); the Run aggregate stays the authority and refuses what the watch state cannot support. There is **no merge or PR-approval control**: merging stays operator-only (`foreman run approve-merge`). Tabs below the Overview: *Library* and *Pull requests* come from the Overview tab providers (a tab without a registered provider says "Not available yet."), *Scheduled* lists the project's schedules with `Pause`/`Resume` (`schedule.pause`/`schedule.resume`).
+**Workspace.** Left: the coordinator conversation (`CoordinatorAPI`, the same entry as `POST /api/projects/:id/coordinator/messages`; `Load earlier messages` pages backwards by cursor), coordinator health with a `Restart coordinator` button when it is `unhealthy`, proposals with `Start` (`task.approve`) and `Decline` buttons (only for open tasks the coordinator proposed for this project; `Decline` is the operator's `task.update` to `closed`, the command `POST /api/commands` and MCP `foreman_task_update` carry, and a closed task can no longer be approved) and the message box. Right: the Overview (`ForemanServer.Overview`) grouped as Ready for review / Waiting on you / Working / Landing / Idle / Resolved with an attention dot, and one card per thread. Card actions are exactly the existing operator ones: `Pause`/`Resume` (`run.pause`/`run.resume`), `Stop` (two clicks: `Stop`, then `Confirm stop`; `Threads.Actions.stop`), `Resolve`/`Reopen` (`thread.resolve`/`thread.reopen`) and a steer box (`Threads.Actions.steer`). Workflow cards also carry four PR buttons in a labelled group: `Fix CI`, `Address comments`, `Resolve conflicts` (the E9 fix threads: `run.pr.fix_ci` / `run.pr.address_comments` / `run.pr.resolve_conflicts`) and `Create PR` (`run.pr.create`), the same commands as `foreman run fix-ci|address-comments|resolve-conflicts|create-pr` and MCP `foreman_pr_fix`. A button that does not apply is disabled with its reason shown beside it (CI is not failing, no unresolved review comments, no merge conflicts, a fix is already running, no PR watched, a PR already exists, the run has not completed); the Run aggregate stays the authority and refuses what the watch state cannot support. There is **no merge or PR-approval control**: merging stays operator-only (`foreman run approve-merge`). Tabs below the Overview: *Library* and *Pull requests* come from the Overview tab providers (a tab without a registered provider says "Not available yet."), *Scheduled* lists the project's schedules with `Pause`/`Resume` (`schedule.pause`/`schedule.resume`). The *Library* tab lists each entry (name, kind, file count, size; never file content) with three buttons: `Files of <name>` toggles the entry's file list, whose `Download <path>` buttons save a file (at most 1 MiB, the read limit of `GET /api/projects/:id/library/:entry_id/files/*path`; a larger file is listed with its size only; the bytes travel over the authenticated LiveView socket, because a plain link to the API cannot send the token); `Replace <name>` opens a form that swaps the files of a `file` or `folder` entry in place (the entry keeps its id, name and kind; a file entry takes files, a folder entry a folder; entries produced by runs are not offered it; `Cancel replacing <name>` drops the selection); and `Remove <name>` then `Confirm remove <name>`. Two forms add entries: *Add files* (several files become ONE entry) and *Add a folder* (pick a directory: the browser's relative paths are kept inside the entry, the folder's own name becomes the entry name unless a name is typed, and hidden files, `node_modules` and files over 30 MB are skipped and counted in the notice, for example `Added kit to the library (2 files; 1 skipped: hidden).`). Files travel over the LiveView socket with the library's own limits (at most 100 files and 480 MB per file; a folder of more than 100 files, hidden ones included, is refused with a pointer to `foreman project library add`, which filters before uploading) and are added or replaced through `Library.add` / `Library.replace`, the calls behind `POST` / `PUT /api/projects/:id/library` and `foreman project library add|replace`, so entry names, relative paths, counts and sizes follow exactly the same rules. LiveView bounds each file and the number of files but not their sum, so the page enforces the whole-add cap `upload_max_bytes` (default 512 MiB, the number the HTTP routes enforce on the request body) itself: a selection whose sizes add up to more shows an alert naming both sizes and disables the button, a single file is also limited to that cap, and the bytes that really arrived are checked again at submit, before the library sees anything. A refused add or replace (a taken name, say) keeps the uploaded files for another try.
 
-**Settings.** One form for goal, instructions (live counter against the 16000-character limit), thread and coordinator model/effort/provider, `max_concurrent_runs`, `daily_thread_cap` and the coordinator tuning keys, written through `project.update`; a blank field clears the setting and the aggregate's own error is shown next to the field. Pause/Resume/Archive/Reactivate (each with a confirm step), the project memory (list, edit, forget; the same `ProjectMemory` functions as the HTTP API, author `dashboard`), limits and the usage rollup. Save writes only the fields you changed since the page loaded (a setting changed elsewhere in the meantime is left alone), and a failed usage or limits read shows an error instead of an empty pane. Environment variables are shown by NAME only; values and secrets are never rendered, and they are still edited with `project.environment.set`.
+**Settings.** One form for goal, instructions (live counter against the 16000-character limit), thread and coordinator model/effort/provider, `max_concurrent_runs`, `daily_thread_cap`, the coordinator tuning keys, the notification preference (`every_turn` / `blocked_only` / `off`; blank is the default `blocked_only`), the repository allowlist (one absolute path prefix per line; empty means agents cannot attach repositories; shown with an operator-only warning) and `max_repos_per_run`, written through `project.update`; a blank field clears the setting and the aggregate's own error is shown next to the field. A *Repositories* section lists the project's repositories (primary first) and attaches or detaches extra ones with `project.repo.add` / `project.repo.remove`, the commands behind `foreman project repo add|remove` (an absolute path of a git checkout on the server host, typed errors shown at the id or path field, `Remove` behind a confirm step, the primary cannot be removed). A *Setup script* section edits the script through `project.environment.set`, the command behind `foreman project setup-script`, with a warning that it is arbitrary shell code run on the server host in every new run worktree before any agent starts; saving it changes only the script, never the variables or the network policy, and an empty box removes it. Browsers submit textarea line breaks as CRLF, so the page normalises them to LF before it compares with what was loaded: an untouched multi-line field never counts as changed and a saved script contains no `\r`. Pause/Resume/Archive/Reactivate (each with a confirm step), the project memory (list, edit, forget; the same `ProjectMemory` functions as the HTTP API, author `dashboard`), limits and the usage rollup. Save writes only the fields you changed since the page loaded (a setting changed elsewhere in the meantime is left alone), and a failed usage or limits read shows an error instead of an empty pane. An *Environment* section lists the plain variables with their values and sets, changes or removes one at a time (`Save <name>`, `Set variable`, `Remove <name>` behind a confirm step) through `project.environment.set`, the command behind `foreman project env set|unset`. That command replaces the whole variable set, so the page sends what the server stores at that moment plus your one change: a variable changed elsewhere in the meantime survives, and the setup script and the network policy are not in the payload. A name that looks like a secret (`*_API_KEY`, `*_TOKEN`, `*_PASSWORD`, ...) or starts with `FOREMAN_` is refused at the name field by the same aggregate rule as `foreman project env set` (the first with a pointer to Secrets); the refused value is never stored, logged or written to an event, and the name stays typed while the value box is emptied. A project that still keeps its variables in the legacy flat `config.env` lists the names with the values hidden, as `GET /api/projects/:id/environment` does; setting or removing any variable moves all of them into the environment record, which then shows its values, and a stored variable that looks like a secret refuses that move and is named in the message (remove it, then set it as a secret). A *Secrets* section lists each project secret by name, version and time and sets or rotates one through `ProjectSecrets`, the path behind `foreman project secret set` and `PUT /api/projects/:id/secrets/:name`: the box is write-only (a password input, emptied after every submit, no live sync of what is typed), the value goes straight to the secret store on the server host and is never rendered, kept by the page, logged or written to an event (only name, version and the author `dashboard` are recorded), and `Remove secret <name>` is behind a confirm step.
 
 **Updates, not polling.** A connected page subscribes once to `ProjectionStore` and coalesces bursts: the first relevant event arms one timer (`config :foreman_server, :workspace, coalesce_ms:`, default 250) and everything that arrives inside the window is folded into a single refresh; an idle project does no work and worker-output events never refresh the page. All thread titles, reports, conversation text and memory content are escaped; only `http(s)` PR URLs become links.
 
-**Accessibility baseline.** Both pages have a `main` landmark with a skip link, labelled form controls, a visible keyboard focus ring, `aria-live` regions for save results and the instructions counter, and `role="alert"` field errors; secrets are shown as reference names only. A browser check (axe-core, tab order, idle WebSocket traffic) lives in `scripts/e2e/ui-a11y/`: seed a project with at least one thread, then `cd scripts/e2e/ui-a11y && npm install && npx playwright install chromium && node ui_a11y.mjs --base http://localhost:<port> --token <FOREMAN_API_TOKEN> --project <id> --report ../../../docs/lessons/ui-a11y-report-<date>.md`. Use `localhost`, not `127.0.0.1`: the dev endpoint's origin check rejects the LiveView WebSocket for the latter. The check exits non-zero on any serious/critical axe violation, wrong focus order, or more than `--max-idle-frames` (default 2) non-heartbeat frames in `--idle-seconds` (default 10). Details and the latest result: `docs/spikes/E16-SP1.md`, `docs/lessons/ui-a11y-report-2026-10-22.md`.
+**Accessibility baseline.** The workspace, settings and run-dashboard pages (`/dashboard/runs` shares the workspace root layout: page title, `lang`, a skip link to `#main` and the LiveSocket bootstrap) have a `main` landmark with a skip link, labelled form controls, a visible keyboard focus ring, `aria-live` regions for save results and the instructions counter, and `role="alert"` field errors; secrets are shown as reference names only. A browser check (axe-core, tab order, idle WebSocket traffic) lives in `scripts/e2e/ui-a11y/`: seed a project with at least one thread, then `cd scripts/e2e/ui-a11y && npm install && npx playwright install chromium && node ui_a11y.mjs --base http://localhost:<port> --token <FOREMAN_API_TOKEN> --project <id> --report ../../../docs/lessons/ui-a11y-report-<date>.md`. Use `localhost`, not `127.0.0.1`: the dev endpoint's origin check rejects the LiveView WebSocket for the latter. The check exits non-zero on any serious/critical axe violation (on all three pages), wrong focus order, or more than `--max-idle-frames` (default 2) non-heartbeat frames in `--idle-seconds` (default 10) on the workspace and settings pages (the run dashboard refreshes itself every 2 s by design, so it is outside the idle check). Details and the latest result: `docs/spikes/E16-SP1.md`, `docs/lessons/ui-a11y-report-2026-10-22.md`.
 
 ## Day-to-day workflow
 
@@ -2141,7 +2250,7 @@ run signals `run.pr.ready`, which puts the PR into the merge gate: Foreman will
 not merge it until an operator runs `foreman run approve-merge ... --head-sha <sha>`
 (the commit they reviewed) and then `foreman run merge` (see the run commands above). The server can also follow
 the PR's state on GitHub in two opt-in ways, each appending a `PrUpdated`
-event to the run (neither changes task status or the PR fields `foreman run
+event to the run when the PR's status or head SHA changes (neither changes task status or the PR fields `foreman run
 get` shows; the richer PR record is `foreman run prs`, see "PR watching and auto-fix"): `POST /webhooks/github`, which needs
 `FOREMAN_GITHUB_WEBHOOK_SECRET` — every delivery must carry a valid
 `X-Hub-Signature-256`, a missing or wrong signature gets `401`, and with no
@@ -2391,22 +2500,33 @@ succeeded. Two controls follow from that:
   further terminal runs wait in a first-in-first-out queue. The queue is in memory
   and is not replayed after a restart.
 - A reviewer that failed on a rate limit (HTTP 429 or `rate limit` in the failure
-  text; no other failure) is retried once after `evaluator_retry_backoff_ms`
-  (default 60000). The retry is written into the verdict's `notes` (`analysis.json`,
-  `analysis.md`, the bead comment and the recorded summary), and the token spend of
-  both attempts is recorded.
+  text) is retried once after `evaluator_retry_backoff_ms` (default 60000). The retry
+  is written into the verdict's `notes` (`analysis.json`, `analysis.md`, the bead
+  comment and the recorded summary), and the token spend of both attempts is recorded.
+
+The same single retry covers a reviewer that completed but whose last turn wrote no
+text: with `pi` on MiniMax the model sometimes ends its final turn on a thinking block,
+so the only reply on record is an earlier turn's words (`I will read the archived
+files.`) and the review would be `undetermined` although nothing is wrong with the
+work. The recorded error and the retry note then say `its final turn wrote no text`.
+No other failure is retried, and a final turn that wrote text but no valid verdict is
+the reviewer's own output and is final (`evaluator_malformed_output`, quoting the end of
+the reply). The reviewer's token spend is the sum of every message of its run, and its
+scratch working directory (`<tmp>/foreman-review/<kind>/<id>`) is removed when the
+review ends, whatever the outcome.
 
 A review recorded `undetermined` can be run again from its archive. The new verdict
 supersedes it: a second `ReviewRecorded` is appended (the first stays in the event
 log) and the verdict's `notes` says it is a re-run of the earlier failure. A review
-holding any other verdict is final. There is no CLI or HTTP verb for this yet: call
-`ForemanServer.Review.Analyzer.rerun/2` in the running server's VM (an attached IEx
-session, or `rpc` against a release node), for example
-`ForemanServer.Review.Analyzer.rerun(:run, "<run_id>")` (`:jobsite` for a jobsite).
-It returns `:ok` once the re-run is accepted, or `{:error, reason}` with `:not_reviewed`,
-`{:not_rerunnable, verdict}`, `:already_running`, `{:archive_unusable, error}` or
-`:analysis_disabled`. The re-run reads the archive on disk, so the run or jobsite need
-not still be projected.
+holding any other verdict is final. Run `foreman thread rereview <thread-id>`
+(`run:<run_id>` or `jobsite:<jobsite_id>`), i.e. `POST /api/threads/{id}/rereview`
+with no body; the server calls `ForemanServer.Review.Analyzer.rerun/2`. It answers
+202 once the re-run is accepted (it runs, or queues for a slot, like any analysis);
+404 `thread_not_found` for an unknown thread; 409 `not_reviewed` (no review recorded),
+`not_rerunnable` (naming the `verdict`: a real verdict is final) or `already_running`
+(an analysis of the subject is running or queued); 422 `archive_unusable` (the
+archive cannot be read); and 503 `analysis_disabled`. The re-run reads the archive on
+disk, so the run or jobsite need not still be projected.
 
 Add `.foreman/sessions/` to the `.gitignore` of every repo Foreman reviews:
 untracked files there can be swept into an agent's `git add -A`.
@@ -2441,9 +2561,13 @@ Defaults: agent no-output = 900000 ms; messaging no-progress = 1800000 ms. Disab
 
 ## Outbound messaging delivery
 
-`ForemanServer.Notifier` (supervised, started by default; `config :foreman_server, :start_notifier?, false` stops it) is the production producer of `Messaging.notify/2`. It subscribes to projection events (no replay) and maps them through the table in `ForemanServer.Notifier.Mapping`: run/jobsite failure and CI failing -> `failure`; run stall -> `stall`; a not-met review verdict, an agent question, an approval request/expiry, PR changes requested and exhausted PR fix attempts -> `action_needed`; run completed, PR created and any other review verdict -> `run_update`. Rows match by event name only (`RunFailed`, `JobsiteFailed`, `RunStallReported`, `RunCompleted`, `ReviewRecorded`, `QuestionOpened`, `QuestionExpired`, `ToolCallRequested`, `ToolCallExpired`, `PrCreated`, `PrChecksChanged`, `PrReviewChanged`, `PrFixExhausted`); an event Foreman does not produce simply never matches. Extend or override rows with `config :foreman_server, :notifier, rules: [%{event_type:, class:, severity:, level: :blocked | :progress, subject:, key_fields: [...], body_fields: [...], match: %{field => [values]}, url_field:}]` (configured rules win; a malformed rule raises at startup). Per project, the `notification_preference` setting (`every_turn`, `blocked_only` (default) or `off`) filters by level: `blocked_only` delivers only failures, stalls, needs-input, approvals, CI failing and review not met; `every_turn` also delivers progress rows and enables the `run_update` class for that notification; `off` delivers nothing. `run_update_rate_limit_ms` is enforced by the Notifier: at most one `run_update` per run per window. Replays collapse through the `dedupe_window_ms` check because the correlation id is a digest of the event type and the rule's `key_fields`. Notification events never carry a secret: the recipient is the label `default` and Slack/webhook destinations are resolved from config by the dispatcher (a Slack or webhook recipient is never used as the URL). A third provider, `webhook: [url:, secret:]` (`url` literal http(s) or `{:system, "ENV"}`; optional `secret` signs the body with HMAC-SHA256 in `x-foreman-signature`), POSTs a `foreman.notification.v1` JSON document. There is no desktop-push provider.
+`ForemanServer.Notifier` (supervised, started by default; `config :foreman_server, :start_notifier?, false` stops it) is the production producer of `Messaging.notify/2`. It subscribes to projection events (no replay) and maps them through the table in `ForemanServer.Notifier.Mapping`: run/jobsite failure and CI failing -> `failure`; run stall (`RunStallReported`, `RunFlaggedStuck`) -> `stall`; a blocked run (`RunBlocked`, the crash-loop detector's verdict), a not-met review verdict, an agent question, an approval request/expiry, PR changes requested and exhausted PR fix attempts -> `action_needed`; run or jobsite completed, PR ready for review and any other review verdict -> `run_update`. Rows match by event name only (`RunFailed`, `JobsiteFailed`, `RunStallReported`, `RunFlaggedStuck`, `RunBlocked`, `RunCompleted`, `JobsiteCompleted`, `ReviewRecorded`, `QuestionOpened`, `QuestionExpired`, `ToolCallRequested`, `ToolCallExpired`, `PrReady`, `PrChecksChanged`, `PrReviewChanged`, `PrFixExhausted`); an event Foreman does not produce simply never matches. A PR is announced by `PrReady`, which every PR a run opens records (AutoPR, a stacked phase PR, another repository's PR, the Create PR button); `PrCreated` is only the button's audit fact and is deliberately unmapped, so one PR is announced once. Cancelling a run or jobsite (`RunCancelled`, `JobsiteCancelled`) is not announced back, and neither is the completion of the jobsite a PR fix thread runs in (the PR's own events report the fix). Extend or override rows with `config :foreman_server, :notifier, rules: [%{event_type:, class:, severity:, level: :blocked | :progress, subject:, key_fields: [...], body_fields: [...], match: %{field => [values]}, url_field:}]` (configured rules win; a malformed rule raises at startup). Per project, the `notification_preference` setting (`every_turn`, `blocked_only` (default) or `off`) filters by level: `blocked_only` delivers only failures, stalls, blocked runs, needs-input, approvals, CI failing and review not met; `every_turn` also delivers progress rows and enables the `run_update` class for that notification; `off` delivers nothing. `run_update_rate_limit_ms` is enforced by the Notifier: at most one `run_update` per run per window, so a run's "PR ready for review" and its "Run completed" share one window. Replays collapse through the `dedupe_window_ms` check because the correlation id is a digest of the event type and the rule's `key_fields`. Notification events never carry a secret: the recipient is the label `default` and Slack/webhook destinations are resolved from config by the dispatcher (a Slack or webhook recipient is never used as the URL). There is no desktop-push provider.
 
-Enable outbound Telegram/Slack delivery with `config :foreman_server, :messaging`. Runtime config keys: `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, `telegram: [token:, chat_id:]`, and `slack: [webhook_url:]`. `ForemanServer.Messaging.notify/2` never calls provider HTTP directly; it persists notification lifecycle state. The supervised dispatcher starts after `CommandRouter`, performs restart catch-up from the event log, subscribes to projection events, redelivers notifications with no durable terminal outcome (an in-flight attempt or a retryable failure is retried; only a recorded success or a non-retryable failure is skipped), guarantees at most one delivery per notification within one dispatcher process lifetime even if both catch-up and a live projection event observe it, and records redacted success/failure state. A catch-up or subscribe failure crashes the dispatcher under supervision rather than silently dropping live/replay delivery. Delivery failure is notification state only; it must not turn a healthy run into failed.
+Enable outbound Telegram/Slack/webhook delivery with `config :foreman_server, :messaging`. Runtime config keys: `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, `telegram: [token:, chat_id:]`, `slack: [webhook_url:]` and `webhook: [url:, secret:, allow_insecure_http:, allow_private_hosts:]`. `ForemanServer.Messaging.notify/2` never calls provider HTTP directly; it persists notification lifecycle state. The supervised dispatcher starts after `CommandRouter`, performs restart catch-up from the event log, subscribes to projection events, redelivers notifications with no durable terminal outcome (an in-flight attempt or a retryable failure is retried; only a recorded success or a non-retryable failure is skipped), guarantees at most one delivery per notification within one dispatcher process lifetime even if both catch-up and a live projection event observe it, and records redacted success/failure state. A catch-up or subscribe failure crashes the dispatcher under supervision rather than silently dropping live/replay delivery. Delivery failure is notification state only; it must not turn a healthy run into failed.
+
+**The webhook provider.** `webhook: [url:, secret:]` POSTs one `foreman.notification.v1` JSON document per notification to `url` (a literal URL or `{:system, "ENV"}`). When `secret` is set the request carries `x-foreman-signature: sha256=<hex>`, the HMAC-SHA256 of the exact body bytes keyed by the secret. Every request carries `x-foreman-delivery: <notification id>`, which a receiver can dedupe a redelivery on. A 2xx answer is delivered; 429, 5xx and transport errors are retried (by the dispatcher's restart catch-up); other statuses are final. The URL is checked, never trusted: it must be `https`, carry no userinfo (`https://user:pass@host`) and name a public host, not loopback, link-local (`169.254.169.254`, the cloud metadata address, included), RFC 1918, carrier-grade NAT or `localhost`. A receiver on plain http or on your own network needs the explicit opt-out, `webhook: [url: "http://10.0.0.5/hook", allow_insecure_http: true, allow_private_hosts: true]` (`FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true` / `FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true` when the URL comes from `FOREMAN_NOTIFY_WEBHOOK_URL`; a local `http://127.0.0.1` sink needs both). The rules run when the config resolves (no network: the URL as written, numeric spellings such as `127.1` included) and again right before each send, because a `{:system, "ENV"}` URL is only known then and DNS can change: every address a host name resolves to must be public. An unsafe URL fails the delivery without sending anything (`{:unsafe_url, :webhook_destination, :insecure_http | :userinfo | :private_host}`; the refusal never echoes the URL, which may hold a token); a host name that cannot be looked up fails it retryably. A resolver that answers differently to the HTTP client's own lookup (DNS rebinding) is not defended against: the URL is operator-configured, so these rules harden a deliberate setting rather than guard an injection boundary. The default HTTP client verifies the receiver's certificate and host name against the system CA store (exercised against a real TLS endpoint in `http_client_test.exs`); a receiver with a private CA needs that CA in the system store.
+
+**Is it working?** `foreman doctor` (`GET /api/doctor`) has a `notifier` row: `ok` when notifications are off ("Notifications are off") or on and running (with the counts since the server started: enqueued, and skipped by reason: `preference`, `messaging_disabled`, `pr_fix_jobsite`, `rate_limited`), `warn` when messaging is enabled but its config is invalid (the reason, redacted, never the URL), the notifier or the dispatcher process is stopped, or events were refused since the server started. A notification is "enqueued" when the Notifier hands it to the dispatcher; whether it was delivered is the `NotificationDeliverySucceeded` / `NotificationDeliveryFailed` events on its stream (and the run detail's notification list).
 
 ## PR watching and auto-fix
 
@@ -2460,7 +2584,15 @@ fresh operator approval of the new head.
 (`config :foreman_server, :pr_watcher, enabled:`; `FOREMAN_PR_WATCHER_ENABLED=false`
 stops it). It reads each PR (checks, review decision, comments, unresolved
 threads, merge conflicts) and folds changes into the run's PR projection as
-`PrChecksChanged` / `PrReviewChanged` events. Two things trigger a read:
+`PrChecksChanged` / `PrReviewChanged` events. A conversation comment written by a
+bot (a GitHub Bot actor: a review bot's walkthrough, a coverage report) is not
+counted as a comment: it is not in the review event's `comment_ids`, does not enable
+Address comments and does not raise the comment count. `gh pr view` names an author by
+login only, so for a PR with conversation comments each read adds one `gh api graphql`
+call that asks GitHub which authors are Bots. A third-party commit status (a review
+bot's `CodeRabbit` status) is still part of the checks roll-up exactly as GitHub reports
+it: while it is pending the PR's checks state is `pending` (which only shortens the poll
+interval below), and a failed one is a failed check. Two things trigger a read:
 
 - a polling monitor, `ForemanServer.PrMonitor`, **opt-in** with
   `FOREMAN_PR_MONITOR_ENABLED=true`. It needs the `gh` CLI installed and
@@ -2472,8 +2604,12 @@ threads, merge conflicts) and folds changes into the run's PR projection as
 - `POST /webhooks/github` (needs `FOREMAN_GITHUB_WEBHOOK_SECRET`). Subscribe the
   webhook to `check_run`, `check_suite`, `pull_request`, `pull_request_review`,
   `pull_request_review_comment`, `pull_request_review_thread` and `issue_comment`.
-  A delivery only refreshes the PR sooner; the signature is still mandatory and
-  unknown PRs are ignored.
+  A delivery only makes the record current sooner. A check, review, review-comment,
+  review-thread or PR `issue_comment` delivery, and a `pull_request` `synchronize`,
+  `ready_for_review` or `converted_to_draft` one, only asks the watcher to read the
+  PR: the observation a poll runs records what changed. A `pull_request` `closed` or
+  `reopened` delivery, or any other action on a conflicted PR, appends `PrUpdated`
+  itself. The signature is still mandatory and unknown PRs are ignored.
 
 **Multi-repository runs.** A run that touched several repositories has one PR per
 repository, and every PR is watched, polled and fixed on its own, addressed as
@@ -2487,13 +2623,16 @@ worktree, never another repository's.
 `foreman_pr_status`) returns one record per PR: URL, status, head SHA (as the watch last
 recorded it: the commit you review and name in `approve-merge --head-sha`; the server
 checks it against GitHub, which is the authority), checks state, failing
-checks, review decision, comment count, whether it is still watched, fix counters
+checks, review decision, comment count (conversation comments written by people),
+whether it is still watched, fix counters
 (`ci`, `comments`, `conflicts` attempts and what is in flight) and the merge gate.
 
 **Fix threads.** `foreman run fix-ci|address-comments|resolve-conflicts <run-id>
 [--pr <url>] [--note <text>]` starts a jobsite that checks out the PR head
 branch, fast-forwards it to the remote (never force), lets the agent fix the
-problem and pushes to that same branch. PR comments, review text and CI logs are
+problem and pushes to that same branch. A head branch that is checked out in the
+repository's main worktree, or in a worktree with uncommitted changes, is refused
+(`worktree_create_failed`) before anything is moved or committed. PR comments, review text and CI logs are
 untrusted and are passed to the agent inside a fence it cannot close. The agent is
 the one the run used (its provider session is resumed only when the original
 worktree path still exists), else `config :foreman_server, :pr_fix, agent:`.
@@ -2505,7 +2644,10 @@ watching one PR (a merged or closed PR is dropped automatically).
 **Loop guard.** Per PR there is at most one fix in flight (of any kind), and a hard cap of
 5 attempts per kind (operators included), and a fix that left the PR head unchanged is
 recorded as `PrFixExhausted` (`no_progress`) instead of being retried. Exhaustion
-is an event (`run.pr.fix_exhausted`), visible in `foreman run prs`.
+is an event (`run.pr.fix_exhausted`), visible in `foreman run prs`. A fix that cannot
+start, or whose start task crashes (the server logs the crash), ends as `failed` (the
+`error_code` of its `PrFixFinished` is the typed start error, or `start_crashed`), so it
+never keeps the PR in flight and the next request is accepted.
 
 **Auto-fix is opt-in per project.** Set the `pr_auto_fix` project setting, e.g.
 `foreman project update <project> --pr-auto-fix '{"kinds":["ci"],"max_attempts":2,"cooldown_seconds":300}'`
@@ -2525,14 +2667,17 @@ directory is still unverified; pi sessions are bound to their working directory.
 
 Agents can need an operator decision. Both show up as `waiting_on_you` in the project Overview.
 
-- **In-flight tool approvals (Claude, `approval_mode: prompt`).** The claude CLI is started with `--permission-prompt-tool`, pointing at Foreman's per-run permission endpoint (`POST /agent-permission/:run_id`, authenticated by a per-run token, not the operator token). Each tool call that would prompt is recorded as a request (`approval_delivery: inflight`) and the call BLOCKS inside the live session until the operator decides: approve lets that one call run (no phase re-run, same provider session), deny tells the agent it was refused, and after `approval_timeout_ms` (default 30 minutes) nobody answering denies it (`decided_by: system`, reason `timeout`). Decide with `foreman approvals approve|deny`, `tool.approve` / `tool.deny` on `POST /api/commands`, or the Approve / Deny buttons on the thread card in the project workspace. A run that ends while a call is blocked expires the request and denies the call; a server restart kills the agent and its requests expire through the sweeper. A tool refused in flight is not re-requested by the post-hoc pause; the phase then fails as `permission_denied`. Set `config :foreman_server, :approvals, inflight: false` to keep Claude on the pause-and-re-run path; `inflight_base_url` overrides the URL claude uses to reach the endpoint (default `http://127.0.0.1:<port>`). The agent can only create requests: deciding is the operator-only `tool.approve` / `tool.deny` (never an MCP tool).
-- **Blocked call: Stop, long waits, restarts.** While a call is blocked the thread card offers `Stop` (`run.cancel`: the request expires with reason `run_ended`, the agent is told "The run ended before the tool was approved") next to `Approve` / `Deny`. A call can stay blocked up to `approval_timeout_ms`: the permission stream carries its own idle timeout, so Cowboy's 60 s default no longer drops it (live: approved at 173 s). After a server restart the agent is re-driven and asks again; the pre-restart request stays `requested` until `Approvals.Sweeper` expires it (30 min; approving it is a no-op that the event log records as `delivery_failed`, bead foreman-u0646). A claude CLI that does not know `--permission-prompt-tool` fails the phase (bead foreman-dc618): set `inflight: false` there.
+- **In-flight tool approvals (Claude, `approval_mode: prompt`).** The claude CLI is started with `--permission-prompt-tool`, pointing at Foreman's per-run permission endpoint (`POST /agent-permission/:run_id`, authenticated by a per-run token, not the operator token). Each tool call that would prompt is recorded as a request (`approval_delivery: inflight`) and the call BLOCKS inside the live session until the operator decides: approve lets that one call run (no phase re-run, same provider session), deny tells the agent it was refused, and after `approval_timeout_ms` (default 30 minutes) nobody answering denies it (`decided_by: system`, reason `timeout`). Decide with `foreman approvals approve|deny`, `tool.approve` / `tool.deny` on `POST /api/commands`, or the Approve / Deny buttons on the thread card in the project workspace. A run that ends while a call is blocked expires the request and denies the call; a server restart kills the agent, and the requests it left are expired when the server starts (see the next bullet). A tool refused in flight is not re-requested by the post-hoc pause; the phase then fails as `permission_denied`. Set `config :foreman_server, :approvals, inflight: false` to keep Claude on the pause-and-re-run path; Foreman also falls back to it by itself for a claude CLI that does not know `--permission-prompt-tool` (see the next bullet); `inflight_base_url` overrides the URL claude uses to reach the endpoint (default `http://127.0.0.1:<port>`). The agent can only create requests: deciding is the operator-only `tool.approve` / `tool.deny` (never an MCP tool).
+- **Blocked call: Stop, long waits, restarts, old CLIs.** While a call is blocked the thread card offers `Stop` (`run.cancel`: the request expires with reason `run_ended`, the agent is told "The run ended before the tool was approved") next to `Approve` / `Deny`. A call can stay blocked up to `approval_timeout_ms`: the permission stream carries its own idle timeout, so Cowboy's 60 s default no longer drops it (live: approved at 173 s). No request outlives its agent. After a server restart the agent is re-driven and asks again, and the request it left is expired at startup (reason `server_restart`); a request whose connection is killed is expired (`client_gone`); when a run ends, every in-flight request it still has is expired (`run_ended`), whether or not anything was waiting. Only the new request is actionable, and a late `tool.approve` / `tool.deny` of an expired one is refused with `{:tool_call_expired, <reason>}` (HTTP 422 on `/api/commands`) instead of finishing as `delivery_failed`. An approval that still reaches nobody (the agent died between the decision and its delivery) finishes with `outcome` `delivery_failed: <why>`; `GET .../approvals` and `foreman approvals list --format json` show it, and the expiry `reason`, on each request. A claude CLI that does not know `--permission-prompt-tool` is found out at launch: Foreman starts the CLI the phase will run (`FOREMAN_CLAUDE_CLI`, else `claude` on the PATH) with that flag and no value and reads its parse error (`claude --help` cannot tell: the flag is hidden from it). On `unknown option` it logs a warning and runs the phase on the pause-and-re-run path instead of failing it; when it cannot tell (no such CLI, no answer in 10 s, any other output) the phase asks in flight as before. The answer is not cached, so a CLI upgrade is picked up by the next launch.
 - **Tool approvals.** When a phase's agent is denied tools (`permission_denied`), the run pauses with reason `awaiting_approval` and one request per tool is recorded (`pause_on_permission_denied`, default on; set `config :foreman_server, :approvals, pause_on_permission_denied: false` to fail the phase as before). List them with `GET /api/projects/:id/approvals` (`?status=all` for history), `GET /api/runs/:run_id/approvals` or the read-only MCP tool `foreman_approvals_list`. Decide with `POST /api/commands` `tool.approve` / `tool.deny` (payload `run_id`, `tool_call_id`). Each request reports `approval_delivery`: `resume_with_override` (pi, claude: the run is resumed with a one-phase `approval_mode` override per spike S2) or `live` (ACP providers; no production caller opens such sessions yet). `tool.approve` is unrelated to the merge gate (`merge_approve`, `run.pr.merge`), which stays operator-only.
-- **Questions.** `GET /api/projects/:id/questions`, MCP `foreman_questions_list`, answer with `question.answer` (payload `run_id`, `question_id`, `text`). The answer reaches a run's agent as an E6 steering message, or is published on `com.foreman.reply.operator` for unscoped questions.
-- **Timeouts.** Unanswered requests expire durably (`ToolCallExpired`, `QuestionExpired`) via `Approvals.Sweeper` (`:approvals` config: `tool_call_timeout_ms` default 30 min, `sweep_interval_ms`, `on_timeout: :surface | :deny`). Expired items show as `approval_expired` / `question_expired`. There is no MCP tool to approve, deny or answer.
+- **Questions.** `GET /api/projects/:id/questions`, MCP `foreman_questions_list`, answer with `question.answer` (payload `run_id`, `question_id`, `text`), `foreman questions answer`, or in the project workspace: the **Questions for you** pane above the Overview lists the project's open questions, oldest first, each with who asked, the run and an answer box with an `Answer` button. The button sends the same operator command (`answered_by` is `dashboard`). A blank answer is refused (`Write an answer first.`) and nothing is sent; a question that was answered elsewhere or has expired is refused with that reason; a question answered or expired from anywhere else (the CLI, HTTP, the timeout) leaves an open page at its next refresh, and what you typed in an answer box stays there while the page refreshes. The answer reaches a run's agent as an E6 steering message (`message_id` `question:<question_id>`; written into the running session for claude), or is published on `com.foreman.reply.operator` for unscoped questions. An answer to a question whose run has already ended is recorded but cannot be delivered (the server logs `questions: answer to <id> was not delivered`) and the pane does not warn about it. A question nobody answers expires after its own timeout (the workflow's `operator_timeout_ms`, 5 minutes by default).
+- **pi never asks.** pi has no per-tool permission prompts (its `--approve` flag only trusts project-local files), so it has nothing to approve: the harness's pi adapter accepts only `approval_mode` `default` and `auto_approve` and refuses `prompt` and `auto_edit` (`provider does not support normalized option value`), and Foreman reads a permission denial only from Claude's result record (`permission_denials`), so no request is ever recorded for a pi run, in flight or afterwards (`resume_with_override` above only ever applies to claude). Gating pi would take a pi extension (a `tool_call` handler); Foreman ships none, and the workspace shows no Approve / Deny for pi rather than pretend. Questions are independent of the provider: they come from agents that publish them (`POST /webhooks/operator/ingest`, the `com.foreman.operator.*` signal topic), and an answer is delivered to whichever run asked.
+- **Timeouts.** Unanswered requests expire durably (`ToolCallExpired`, `QuestionExpired`) via `Approvals.Sweeper` (`:approvals` config: `tool_call_timeout_ms` default 30 min, `sweep_interval_ms`, `on_timeout: :surface | :deny`). Expired items show as `approval_expired` / `question_expired`. An in-flight request whose agent is gone does not wait for the sweeper: it expires at once with reason `run_ended`, `client_gone` or `server_restart`. There is no MCP tool to approve, deny or answer.
 
 **Approval scope.** An approval resumes the run with an `approval_mode_override` on the `run.steer` message (`auto_edit` for edit tools such as Write/Edit, `auto_approve` otherwise). The override applies to the next phase only (including command phases), but within that phase it is phase-wide: pi and claude have no per-tool grant, so approving one tool relaxes the approval mode for that whole phase. The post-hoc claude path was exercised live only for `approval_mode: prompt` (see the in-flight bullet above for the per-call path); the harness does declare `allowed_tools` for claude, which Foreman does not pass yet. Only the names `Jobsite.Agent` knows (`default`, `prompt`, `auto_edit`, `auto_approve`) are accepted as an override.
 
-**Recovery.** On startup the deliverers re-deliver approvals that were committed while the server was down (approved and never settled calls, denied calls whose run is still paused, answers to paused runs); the commands are idempotent, so an already-delivered decision is a no-op. An approved call whose decision never settled shows in the Overview as `approval_delivery_failed` while its run is paused.
+**Why the post-hoc grant is phase-wide.** This is a decision, not an omission. Approving always decides ONE request, but on the post-hoc path (`approval_delivery: resume_with_override`) Foreman maps the approval to an approval MODE, so the next phase may use every tool that mode allows. A per-tool grant is not available there: the override is shared by every provider, Claude's `bypassPermissions` skips all permission checks so an `allowed_tools` list cannot narrow it (pinned in `test/foreman_server/approvals/capability_test.exs`), and a per-tool field would have to travel through `run.steer`, `RunSteerQueued`, the pending-steering projection, `RunExecutor` and the jobsite launch and be proven against a live Claude. The per-call control for Claude is the in-flight path (`approval_mode: prompt`), which answers the one blocked call. The override is the optional `approval_mode_override` field of the `run.steer` payload: only `Approvals.Deliverer` sets it, the Run aggregate refuses any name outside `default`, `prompt`, `auto_edit` and `auto_approve` with `{:invalid_approval_mode_override, name}`, it is stored on `RunSteerQueued`, and the next launch applies it and consumes the message.
+
+**Recovery.** On startup the deliverers re-deliver what may have been lost while the server was down or while a delivery died half way: approved calls that were never settled and denied calls whose run is still paused (all three delivery modes), and the answers to questions of runs that have not ended (running or paused). The commands are idempotent (deterministic ids), so an already-delivered decision is a no-op, and a run is resumed only while it still holds that decision's steer message, so an old decision never resumes a run that is paused for another reason. A live or in-flight decision is never answered twice; one whose delivery cannot be confirmed after a restart settles as `delivery_failed: :no_live_request`. An answer to a run that ended is not retried, and a question of no run is not republished (the bus reply has no durable delivery marker, so a replay would re-publish history). An approved call whose decision never settled shows in the Overview as `approval_delivery_failed` while its run is paused. The exception is an in-flight request still `requested` at startup: its agent died with the server, so it is expired (`server_restart`) instead of being left to ask nobody.
 
 **MCP read tools.** `foreman_approvals_list` (`project_id` or `run_id`, optional `status`) and `foreman_questions_list` (`project_id`, optional `status`) return the same fields as the HTTP endpoints. They are read-only; there is deliberately no MCP tool to approve, deny or answer.

@@ -4,17 +4,21 @@ defmodule ForemanServerWeb.Plugs.LibraryUploadParser do
   body limit than the endpoint-wide `Plug.Parsers` default (8 MB).
 
   Only `POST`/`PUT /api/projects/<id>/library[/<entry_id>]` get the raised limit
-  (`config :foreman_server, :library, upload_max_bytes`, default 512 MiB; a whole request, so a
-  single add of many large files may need it raised, and an overrun is a JSON 413 `upload_too_large`); every
-  other path keeps the default, so the larger limit cannot be used to push big
-  bodies at unrelated routes. Uploaded parts are streamed to temp files by
-  `Plug.Parsers` (`Plug.Upload`), never held in memory. The endpoint's regular
-  `Plug.Parsers` runs after this plug and leaves already-parsed bodies alone.
+  (`config :foreman_server, :library, upload_max_bytes`, default 512 MiB, read through
+  `ForemanServer.Library.Ingest.limits/0` like every other library limit; a whole
+  request, so a single add of many large files may need it raised, and an overrun is a
+  JSON 413 `upload_too_large`); every other path keeps the default, so the larger
+  limit cannot be used to push big bodies at unrelated routes. Uploaded parts are
+  streamed to temp files by `Plug.Parsers` (`Plug.Upload`), never held in memory. The
+  endpoint's regular `Plug.Parsers` runs after this plug and leaves already-parsed
+  bodies alone. The workspace's socket uploads never pass through this plug; the
+  workspace enforces the same cap itself (`ForemanServerWeb.Workspace.LibraryUpload`).
   """
 
   @behaviour Plug
 
-  @default_max 512 * 1024 * 1024
+  alias ForemanServer.Library.Ingest
+
   @path ~r{\A/api/projects/[^/]+/library(/[^/]+)?\z}
 
   @impl true
@@ -40,7 +44,7 @@ defmodule ForemanServerWeb.Plugs.LibraryUploadParser do
   def call(conn, _opts), do: conn
 
   defp parse(conn) do
-    max = Application.get_env(:foreman_server, :library, [])[:upload_max_bytes] || @default_max
+    max = Ingest.limits().upload_max_bytes
 
     Plug.Parsers.call(
       conn,

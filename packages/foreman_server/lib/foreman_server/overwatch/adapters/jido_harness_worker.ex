@@ -248,31 +248,13 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       provider_session_id: non_empty_binary(run_result.provider_session_id),
       run_status: run_result.status,
       usage: run_result.usage,
-      usage_events: usage_events(run_result.events),
-      events_cost_usd: events_cost_usd(run_result.events)
+      usage_events: Usage.usage_events(run_result.events),
+      events_cost_usd: Usage.events_cost_usd(run_result.events)
     }
   end
 
   defp non_empty_binary(value) when is_binary(value) and value != "", do: value
   defp non_empty_binary(_value), do: nil
-
-  defp usage_events(events) do
-    for %Jido.Harness.Event{type: :usage, payload: payload} <- events,
-        is_map(payload),
-        do: payload
-  end
-
-  # Claude reports the dollar cost only on the terminal `:run_completed` event
-  # (`claude_stream.ex:71`), never in `RunResult.usage`. Last one wins.
-  defp events_cost_usd(events) do
-    events
-    |> Enum.filter(&match?(%Jido.Harness.Event{type: :run_completed}, &1))
-    |> List.last()
-    |> case do
-      %Jido.Harness.Event{payload: %{"cost_usd" => cost}} when is_number(cost) -> cost
-      _ -> nil
-    end
-  end
 
   defp emit_session_bound(_state, nil), do: :ok
   defp emit_session_bound(_state, %RunMeta{provider_session_id: nil}), do: :ok

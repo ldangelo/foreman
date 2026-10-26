@@ -87,7 +87,34 @@ func TestProjectAdoptBodies(t *testing.T) {
 	}{
 		{[]string{"--kind", "run", "--id", "r1", "--into", "b"}, []string{`"mode":"move"`, `"target_project_id":"b"`}},
 		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--continue", "--prompt", "go"}, []string{`"mode":"continue"`, `"prompt":"go"`}},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--continue", "--prompt", "go", "--fork"}, []string{`"mode":"continue"`, `"prompt":"go"`, `"fork":true`}},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--continue", "--prompt", "go", "--fork", "--from-source-branch"}, []string{`"mode":"continue"`, `"fork":true`, `"from_source_branch":true`}},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--continue", "--prompt", "go", "--from-source-branch"}, []string{`"mode":"continue"`, `"from_source_branch":true`}},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--add-repo"}, []string{`"mode":"move"`, `"target_project_id":"b"`, `"add_repo":true`}},
 		{[]string{"--kind", "jobsite", "--id", "j1", "--new-project", "--project-id", "x", "--path", "/r"}, []string{`"mode":"mint"`, `"new_project":{"id":"x","path":"/r"}`}},
+	}
+	absent := map[string][]string{
+		"move":     {`"add_repo"`, `"from_source_branch"`, `"fork"`},
+		"continue": {`"add_repo"`, `"from_source_branch"`},
+	}
+	for _, tc := range []struct {
+		args []string
+		mode string
+	}{
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b"}, "move"},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--continue", "--prompt", "go"}, "continue"},
+	} {
+		c, rec := recordingServer(t, 201, resp)
+		captureStdout(t, func() {
+			if err := projectAdopt(c, tc.args); err != nil {
+				t.Fatalf("%v: %v", tc.args, err)
+			}
+		})
+		for _, k := range absent[tc.mode] {
+			if strings.Contains(string(rec.body), k) {
+				t.Errorf("%v: body %s must not contain %s", tc.args, rec.body, k)
+			}
+		}
 	}
 	for _, tc := range cases {
 		c, rec := recordingServer(t, 201, resp)
@@ -112,9 +139,34 @@ func TestProjectAdoptBodies(t *testing.T) {
 		{"--kind", "run", "--id", "r1"},
 		{"--kind", "run", "--id", "r1", "--into", "b", "--new-project"},
 		{"--kind", "run", "--id", "r1", "--into", "b", "--continue"},
+		{"--kind", "run", "--id", "r1", "--into", "b", "--fork"},
+		{"--kind", "run", "--id", "r1", "--new-project", "--fork"},
 	} {
 		if err := projectAdopt(c, bad); err == nil {
 			t.Errorf("args %v accepted", bad)
+		}
+	}
+	if rec.calls != 0 {
+		t.Errorf("invalid usage reached server")
+	}
+}
+
+func TestProjectAdoptRefusesInvalidNewFlags(t *testing.T) {
+	resp := `{"adoption":{}}`
+	c, rec := recordingServer(t, 201, resp)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--from-source-branch"}, "--from-source-branch requires --continue"},
+		{[]string{"--kind", "run", "--id", "r1", "--new-project", "--from-source-branch"}, "--from-source-branch requires --continue"},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--continue", "--prompt", "go", "--add-repo"}, "--add-repo applies only to a move (--into without --continue)"},
+		{[]string{"--kind", "run", "--id", "r1", "--new-project", "--add-repo"}, "--add-repo applies only to a move (--into without --continue)"},
+		{[]string{"--kind", "run", "--id", "r1", "--into", "b", "--new-project", "--add-repo"}, "--new-project cannot be combined"},
+	} {
+		err := projectAdopt(c, tc.args)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("args %v: err = %v, want containing %q", tc.args, err, tc.want)
 		}
 	}
 	if rec.calls != 0 {

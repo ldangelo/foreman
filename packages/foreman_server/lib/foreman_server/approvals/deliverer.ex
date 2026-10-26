@@ -16,16 +16,29 @@ defmodule ForemanServer.Approvals.Deliverer do
       call proceeds (or is refused) inside the same session. No waiter is a failed
       delivery.
     * `"resume_with_override"` - the decision is queued as an E6 steering message
-      on the paused run (`run.steer`): an approval carries the one-phase
-      `approval_mode_override` for the approved tool (`Capability.override_for/1`)
-      and tells the agent to retry; a denial tells it not to use the tool. The run
-      is then resumed if it is still paused.
+      on the paused run (`run.steer`): an approval carries the next phase's
+      `approval_mode_override` (`Capability.override_for/1`: a mode for that phase as
+      a whole, not a grant for the approved tool alone) and tells the agent to retry;
+      a denial tells it not to use the tool. The run is then resumed if it is still
+      paused AND still holds this decision's message, so a recovery pass over an old
+      decision never resumes a run that is paused for another reason.
 
   After an approval is delivered the call is finished (`tool.finish`,
   `outcome: "delivered"`); if delivery failed it is finished with
   `outcome: "delivery_failed: <reason>"`, so a call never sticks in `approved`
   forever and the Overview shows `:approval_delivery_failed`. A denied call is
   already terminal: a failed denial delivery is logged at `:error`.
+
+  Startup recovery (`recover/1`, run by `init/1`; the subscription itself stays
+  non-replaying): every `approved` call that was never settled, and every `denied`
+  call whose run is still paused, is delivered again. That covers a decision
+  committed while the deliverer was down and one whose `deliver/4` died before
+  `settle/4`, in all three modes. The steer, resume and finish commands have
+  deterministic ids, so a decision that did arrive is a no-op, and the registry entry
+  (live) or waiter (in-flight) is taken by the first answer, so a session is never
+  answered twice. After a crash between the answer and the finish, the live and
+  in-flight delivery cannot be told from one that never arrived: the call settles as
+  `delivery_failed: :no_live_request`.
 
   Every command goes through `ForemanServer.Approvals.Dispatch`, a closed list.
   """
@@ -157,7 +170,7 @@ defmodule ForemanServer.Approvals.Deliverer do
     payload =
       %{
         run_id: call.run_id,
-        message_id: "approval:" <> call.tool_call_id,
+        message_id: steer_message_id(call),
         text: steer_text(decision, call),
         steered_by: "approvals",
         resume: true
@@ -177,22 +190,36 @@ defmodule ForemanServer.Approvals.Deliverer do
   end
 
   # The dispatcher resumes a run it paused itself for a steer; a run already paused
-  # (awaiting this very decision) is left paused by it, so resume it here.
+  # (awaiting this very decision) is left paused by it, so resume it here. Only while this
+  # decision's own steer message still waits for the run: once the run took it (a recovery
+  # pass over an old decision) the pause is for some other reason (an operator's, another
+  # request's) and is not this decision's to undo.
   defp resume_if_paused(call, gateway) do
     case ProjectionStore.run(call.run_id) do
       %{status: "paused"} ->
-        resume = %{
-          type: "run.resume",
-          command_id: "approval-resume:#{call.run_id}:#{call.tool_call_id}",
-          aggregate_id: "run:" <> call.run_id,
-          payload: %{run_id: call.run_id, reason: "approval_decided"}
-        }
-
-        with {:ok, _} <- unwrap(Dispatch.system(resume, gateway)), do: :ok
+        if steer_pending?(call), do: resume(call, gateway), else: :ok
 
       _running_or_gone ->
         :ok
     end
+  end
+
+  defp resume(call, gateway) do
+    resume = %{
+      type: "run.resume",
+      command_id: "approval-resume:#{call.run_id}:#{call.tool_call_id}",
+      aggregate_id: "run:" <> call.run_id,
+      payload: %{run_id: call.run_id, reason: "approval_decided"}
+    }
+
+    with {:ok, _} <- unwrap(Dispatch.system(resume, gateway)), do: :ok
+  end
+
+  defp steer_message_id(call), do: "approval:" <> call.tool_call_id
+
+  defp steer_pending?(call) do
+    message_id = steer_message_id(call)
+    Enum.any?(ProjectionStore.pending_steering(call.run_id), &(&1.message_id == message_id))
   end
 
   defp put_override(payload, :approve, tool_name),

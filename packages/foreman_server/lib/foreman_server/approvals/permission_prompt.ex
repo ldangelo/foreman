@@ -23,8 +23,7 @@ defmodule ForemanServer.Approvals.PermissionPrompt do
   produces an `approve` decision.
   """
 
-  alias ForemanServer.Aggregates.ToolCall
-  alias ForemanServer.Approvals.{Config, Dispatch, Inflight, Requester, TimeoutPolicy}
+  alias ForemanServer.Approvals.{Config, Inflight, Requester, TimeoutPolicy}
   alias ForemanServer.ProjectionStore
 
   @grace_ms 5_000
@@ -149,14 +148,9 @@ defmodule ForemanServer.Approvals.PermissionPrompt do
 
   # The agent is gone, so its still-open request can no longer be answered.
   defp expire({run_id, tool_call_id}, opts, reason) do
-    command = %{
-      type: "tool.expire",
-      command_id: "expire:tool_call:#{run_id}:#{tool_call_id}",
-      aggregate_id: ToolCall.stream_id(run_id, tool_call_id),
-      payload: %{run_id: run_id, tool_call_id: tool_call_id, reason: reason}
-    }
+    _ =
+      TimeoutPolicy.expire_tool_call(run_id, tool_call_id, reason, Keyword.take(opts, [:gateway]))
 
-    _ = Dispatch.system(command, Keyword.get(opts, :gateway, ForemanServer.CommandGateway))
     :ok
   end
 

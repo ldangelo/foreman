@@ -8,7 +8,10 @@ defmodule ForemanServer.CoordinatorAPI do
     `message_id`).
   * `read_page/3` and `wait_page/3` return a whitelisted, STRING-keyed page of
     the conversation. No projection map is serialised as-is: every key that
-    leaves the server is listed here.
+    leaves the server is listed here. The page carries the coordinator `"status"`
+    and `"pending_messages"` from one status snapshot: `"idle"` alone does not
+    mean the posted message was answered, since between two turns the status is
+    `"idle"` while a message is still pending.
   * `status_view/1` and `restart/1` expose the coordinator's health.
   """
 
@@ -241,7 +244,8 @@ defmodule ForemanServer.CoordinatorAPI do
       "next_cursor" => page.next_cursor,
       "has_more" => page.has_more,
       "truncated_before_seq" => page.truncated_before_seq,
-      "status" => Atom.to_string(status.status)
+      "status" => Atom.to_string(status.status),
+      "pending_messages" => status.pending_messages
     }
   end
 

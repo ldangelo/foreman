@@ -51,6 +51,17 @@ defmodule ForemanServerWeb.AgentPermissionControllerTest do
     |> post("/agent-permission/#{run_id}", Map.put(body, "jsonrpc", "2.0"))
   end
 
+  # The projection is shared and broadcasts every test's events: wait for THIS run's request,
+  # not the first `ToolCallRequested` that any other test happens to project.
+  defp assert_requested(run_id, tool_call_id) do
+    assert_receive {:projection_event,
+                    %{
+                      event_type: "ToolCallRequested",
+                      data: %{run_id: ^run_id, tool_call_id: ^tool_call_id}
+                    }},
+                   15_000
+  end
+
   # `tools/call` replies as a server-sent-event stream: one `data:` JSON message per event.
   defp sse_messages(conn) do
     assert [content_type] = get_resp_header(conn, "content-type")
@@ -122,7 +133,7 @@ defmodule ForemanServerWeb.AgentPermissionControllerTest do
     }
 
     task = Task.async(fn -> rpc(run_id, call) end)
-    assert_receive {:projection_event, %{event_type: "ToolCallRequested"}}, 15_000
+    assert_requested(run_id, "inflight-toolu_http")
     assert Task.yield(task, 100) == nil
 
     {:ok, _} =
@@ -158,7 +169,7 @@ defmodule ForemanServerWeb.AgentPermissionControllerTest do
     end
 
     first = Task.async(fn -> rpc(run_id, call.()) end)
-    assert_receive {:projection_event, %{event_type: "ToolCallRequested"}}, 15_000
+    assert_requested(run_id, "inflight-toolu_self")
 
     unknown =
       rpc(run_id, %{
@@ -176,8 +187,14 @@ defmodule ForemanServerWeb.AgentPermissionControllerTest do
 
   test "a blocked call emits progress events for its token, then the result (claude drops a silent reply after ~60s)",
        %{run_id: run_id} do
+    previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_progress_ms: 30)
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     call = %{
       "id" => 9,
@@ -190,7 +207,7 @@ defmodule ForemanServerWeb.AgentPermissionControllerTest do
     }
 
     task = Task.async(fn -> rpc(run_id, call) end)
-    assert_receive {:projection_event, %{event_type: "ToolCallRequested"}}, 15_000
+    assert_requested(run_id, "inflight-toolu_prog")
     Process.sleep(200)
 
     {:ok, _} =

@@ -46,6 +46,7 @@ defmodule ForemanServer.Telemetry do
   @signal_command [:foreman, :signal, :command]
   @signoz_log_export_failure [:foreman_server, :observability, :signoz_logs, :export_failure]
   @signoz_log_export_overload [:foreman_server, :observability, :signoz_logs, :export_overload]
+  @projection_event_dropped [:foreman, :projection, :event_dropped]
   @all_events [
     @command_dispatch,
     @aggregate_rehydrated,
@@ -79,7 +80,8 @@ defmodule ForemanServer.Telemetry do
     @run_slots_waiter_removed,
     @run_slots_reconciled,
     @signoz_log_export_failure,
-    @signoz_log_export_overload
+    @signoz_log_export_overload,
+    @projection_event_dropped
   ]
 
   def all_events, do: @all_events
@@ -480,5 +482,22 @@ defmodule ForemanServer.Telemetry do
       %{holders_dropped: holders_dropped, waiters_dropped: waiters_dropped},
       %{phase: phase}
     )
+  end
+
+  @doc """
+  Emits `[:foreman, :projection, :event_dropped]` when `ProjectionStore` drops an event for a
+  task/phase id it has never seen (the entity's creation event is the only thing allowed to
+  create it), so an ordering or replay bug is visible outside the logs.
+  Measurements: `count`.
+  Metadata: `event_type`, `collection` (`:tasks | :phases`), `id`.
+  """
+  @spec projection_event_dropped(String.t(), :tasks | :phases, term()) :: :ok
+  def projection_event_dropped(event_type, collection, id)
+      when is_binary(event_type) and collection in [:tasks, :phases] do
+    execute(@projection_event_dropped, %{count: 1}, %{
+      event_type: event_type,
+      collection: collection,
+      id: id
+    })
   end
 end

@@ -22,7 +22,8 @@ defmodule ForemanServer.Schedule.Spec do
   ## Interval grammar
 
   `\\A(\\d+)([smhd])\\z`, positive, at least
-  `config :foreman_server, :schedule, min_interval_seconds:` (default 300).
+  `config :foreman_server, :schedule, min_interval_seconds:` (default 300) and at most
+  366 days (`:above_maximum`).
   Slots are `anchor + k * every` (`k >= 0`) and are computed arithmetically,
   never by iteration. Without an anchor, slots align to the Unix epoch; the
   `Schedule` aggregate always stores creation time as the anchor.
@@ -85,6 +86,7 @@ defmodule ForemanServer.Schedule.Spec do
           | :invalid_type
           | :invalid_format
           | :below_minimum
+          | :above_maximum
           | :wrong_field_count
           | :empty_field
           | :invalid_value
@@ -103,6 +105,9 @@ defmodule ForemanServer.Schedule.Spec do
   @search_days 9 * 366
   @latest_window_days 366
   @unit_seconds %{"s" => 1, "m" => 60, "h" => 3_600, "d" => 86_400}
+  # Bounds `every` so `anchor + k * every` stays an ordinary instant for any
+  # realistic anchor; `next_after/2` is total for the rest.
+  @max_interval_seconds 366 * 86_400
   @months ~w(JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC)
   @weekdays ~w(SUN MON TUE WED THU FRI SAT)
   @cron_ranges [
@@ -225,6 +230,7 @@ defmodule ForemanServer.Schedule.Spec do
         cond do
           seconds <= 0 -> error(:every, :invalid_format)
           seconds < min_interval_seconds() -> error(:every, :below_minimum)
+          seconds > @max_interval_seconds -> error(:every, :above_maximum)
           true -> {:ok, seconds}
         end
 
@@ -466,9 +472,12 @@ defmodule ForemanServer.Schedule.Spec do
   @doc """
   First slot strictly after `from`.
 
-  `{:error, :no_next_slot}` only for a cron expression with no match inside the
-  search horizon (about nine years); `parse/2` rejects expressions that can
-  never fire, so this is not expected for stored specs.
+  `{:error, :no_next_slot}` when no representable next slot exists: a cron
+  expression with no match inside the search horizon (about nine years;
+  `parse/2` rejects expressions that can never fire, so this is not expected
+  for stored specs), or a next instant past the last `DateTime` (year 9999).
+  Total: it never raises for a spec, whatever its interval or anchor, nor for
+  any `from`.
   """
   @spec next_after(t(), DateTime.t()) :: {:ok, DateTime.t()} | {:error, :no_next_slot}
   def next_after(%__MODULE__{kind: :interval} = spec, %DateTime{} = from) do
@@ -477,25 +486,36 @@ defmodule ForemanServer.Schedule.Spec do
     every = spec.every_seconds
 
     k = if from_unix < anchor, do: 0, else: div(from_unix - anchor, every) + 1
-    {:ok, DateTime.from_unix!(anchor + k * every)}
+    unix_to_slot(anchor + k * every)
   end
 
   def next_after(%__MODULE__{kind: :cron} = spec, %DateTime{} = from) do
     start = div(DateTime.to_unix(from), 60) * 60 + 60
-    first_day = start |> DateTime.from_unix!() |> DateTime.to_date()
-    start_minute = rem(div(start, 60), 1440)
 
-    Enum.find_value(0..@search_days, {:error, :no_next_slot}, fn offset ->
-      date = Date.add(first_day, offset)
-      from_minute = if offset == 0, do: start_minute, else: 0
+    with {:ok, first} <- unix_to_slot(start) do
+      first_day = DateTime.to_date(first)
+      start_minute = rem(div(start, 60), 1440)
 
-      with true <- day_matches?(spec.cron_fields, date),
-           {:ok, minute_of_day} <- first_minute_at_or_after(spec.cron_fields, from_minute) do
-        {:ok, slot_datetime(date, minute_of_day)}
-      else
-        _ -> nil
-      end
-    end)
+      Enum.find_value(0..@search_days, {:error, :no_next_slot}, fn offset ->
+        date = Date.add(first_day, offset)
+        from_minute = if offset == 0, do: start_minute, else: 0
+
+        with true <- day_matches?(spec.cron_fields, date),
+             {:ok, minute_of_day} <- first_minute_at_or_after(spec.cron_fields, from_minute) do
+          {:ok, slot_datetime(date, minute_of_day)}
+        else
+          _ -> nil
+        end
+      end)
+    end
+  end
+
+  # `DateTime.from_unix!/1` raises past year 9999: no slot exists there.
+  defp unix_to_slot(unix) do
+    case DateTime.from_unix(unix) do
+      {:ok, datetime} -> {:ok, datetime}
+      {:error, :invalid_unix_time} -> {:error, :no_next_slot}
+    end
   end
 
   @doc """

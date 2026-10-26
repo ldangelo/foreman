@@ -18,6 +18,12 @@
 #   port-closed        kill -9 of ONLY the agent's exec-port (server stays up) -> run fails
 #                      `:port_closed` and the orphaned agent is reaped by the live failure path
 #                      (foreman-zmhzw), not left running in the failed run's worktree
+#   cancel-strays      `run cancel` and `thread stop` of a run whose agent is blocked in a `sleep 300`
+#                      tool -> the agent AND the tool process (which runs in a session of its own)
+#                      are gone: nothing is left running, re-parented to pid 1, in the run's worktree
+#                      (foreman-zmhzw)
+#   shutdown-strays    SIGTERM (graceful shutdown) of the server with such a run in flight -> the
+#                      same: no agent and no tool process outlives the server (foreman-zmhzw)
 #   br-down            br's WRITE verbs (comments, create) fail for the SERVER (a stub earlier on
 #                      its PATH; reads still work or BeadsWatcher could not import) -> the thread
 #                      still completes, the review verdict is still recorded, and the bead sink
@@ -25,6 +31,14 @@
 #   project-paused     `project pause` -> no new thread starts while paused (typed rejection),
 #                      a thread already running at pause time still completes while paused
 #                      (asserted), resume restores admissions
+#   jobsite-resume     a REAL claude jobsite (`POST /api/jobsites`) whose agent is blocked in a 90 s tool call
+#                      in its FIRST iteration is killed with `kill -9` of the server AND its exec-port, then
+#                      resumed (`POST /api/jobsites/:id/resume`): its provider session id is already on the
+#                      jobsite (read model and event stream) before any iteration completed, boot recovery
+#                      pauses it as resumable (not failed `executor_lost`), the stale agent/tool processes are
+#                      gone once it is resumed, and the resumed agent still knows a recall word it was given
+#                      before the crash, in the SAME claude session (foreman-cm8nv). Needs a logged-in claude
+#                      (UNVERIFIED without one) and `python3` for the 90 s tool call
 #
 # Each scenario prints EXPECTED vs ACTUAL via PASS/FAIL lines; any FAIL makes the exit non-zero.
 # Exit: 0 all passed, 1 environment problem, 2 setup failed, 3 one or more assertions failed.
@@ -42,10 +56,12 @@ E2E_PORT=${E2E_PORT:-4830}
 E2E_HOOK_PORT=${E2E_HOOK_PORT:-4930}
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
+# shellcheck source=claude_projects/bead_thread.sh
+. "$HERE/claude_projects/bead_thread.sh"
 
-SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed project-paused br-down"}
+SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed cancel-strays shutdown-strays project-paused br-down jobsite-resume"}
 for s in $SCENARIOS; do
-  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|project-paused|br-down) ;; *) die "unknown scenario '$s'" 1 ;; esac
+  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|cancel-strays|shutdown-strays|project-paused|br-down|jobsite-resume) ;; *) die "unknown scenario '$s'" 1 ;; esac
 done
 
 check_environment
@@ -94,13 +110,14 @@ wait_agent() {
 
 failure_reason() { api_get "/api/runs/$1" | jq -c '.run.failure_reason // .run.error // null'; }
 
-# wait_tool <agent pid> [timeout]: until the agent is blocked in its `sleep 300` tool (so it is idle and not
-# writing to the pipe that dies with exec-port, which would kill it with the server)
+# wait_tool <agent pid> [timeout] [needle]: until the agent is blocked in its `sleep 300` tool (or in the tool whose
+# command line contains <needle>), so it is idle and not writing to the pipe that dies with exec-port, which would
+# kill it with the server
 wait_tool() {
   wt_n=0
   while [ "$wt_n" -lt "${2:-120}" ]; do
     for wd in $(descendants "$1"); do
-      case "$(ps -o command= -p "$wd" 2>/dev/null)" in *"sleep 300"*) return 0 ;; esac
+      case "$(ps -o command= -p "$wd" 2>/dev/null)" in *"${3:-sleep 300}"*) return 0 ;; esac
     done
     sleep 2; wt_n=$((wt_n + 2))
   done
@@ -108,6 +125,37 @@ wait_tool() {
 }
 
 LONG="Run the shell command 'sleep 300' and wait for it to finish. Then create a file named done.txt containing the word DONE."
+
+# run_strays <run_id>: every process on the host - whatever its parent, so also the ones re-parented to
+# pid 1 - whose cwd is inside that run's worktree (HOME is redirected, so they live under
+# $WORK/home/.foreman/worktrees/<project>/<task>/<run>)
+run_strays() {
+  lsof -d cwd -Fpn 2>/dev/null | awk -v r="$1" '/^p/ { pid = substr($0, 2) } /^n/ { p = substr($0, 2); if (index(p, "/.foreman/worktrees/") && index(p, r)) print pid }' | sort -u
+}
+
+# show_run_strays <label> <run_id>: the evidence, one `ps` row per process
+show_run_strays() {
+  note "$1:"
+  for sp in $(run_strays "$2"); do note "  $(ps -o pid=,ppid=,pgid=,stat=,command= -p "$sp" 2>/dev/null | cut -c1-150)"; done
+}
+
+# no_run_strays <what> <run_id>: nothing may be left running in the run's worktree (waits for the
+# agent's own exit and the sweep that follows it)
+no_run_strays() {
+  ns_n=0; ns_left=""
+  while [ "$ns_n" -lt 60 ]; do
+    ns_left=$(run_strays "$2" | tr '\n' ' ')
+    [ -z "$ns_left" ] && break
+    sleep 2; ns_n=$((ns_n + 2))
+  done
+  if [ -z "$ns_left" ]; then
+    pass "$1: nothing is left running in the run's worktree"
+  else
+    fail "$1: still running in the run's worktree:$ns_left"
+    show_run_strays "left behind" "$2"
+    for sp in $ns_left; do kill -9 "$sp" 2>/dev/null; done
+  fi
+}
 
 # ---------------------------------------------------------------- scenario: provider-down
 
@@ -297,13 +345,70 @@ scenario_port_closed() {
   note "exec-port pids:$ports"
   # shellcheck disable=SC2086
   kill -9 $ports 2>/dev/null
+  # which agents outlived the exec-port: only those are orphans for the reaper to log
+  sleep 2; orphans=""; for p in $AGENT_PIDS; do alive "$p" && orphans="$orphans $p"; done
   wait_run_status "$RUN" "failed|cancelled|completed" 120
-  note "ACTUAL run status: $RUN_STATUS; reason: $(failure_reason "$RUN")"
+  note "ACTUAL run status: $RUN_STATUS; reason: $(failure_reason "$RUN"); agents alive after the exec-port kill:${orphans:- none}"
   assert_has "the run failed because its exec-port closed" "$(failure_reason "$RUN")" "port_closed"
   n=0; left=""
   while [ "$n" -lt 30 ]; do left=""; for p in $AGENT_PIDS; do alive "$p" && left="$left $p"; done; [ -z "$left" ] && break; sleep 2; n=$((n + 2)); done
   if [ -z "$left" ]; then pass "no agent process of the failed run is left running"; else fail "agent(s) still alive after the run failed:$left"; for p in $left; do kill -9 "$p" 2>/dev/null; done; fi
-  assert_has "server log records the reap" "$(cat "$SERVER_LOG")" "OrphanReaper: terminating"
+  if [ -n "$orphans" ]; then
+    assert_has "server log records the reap" "$(cat "$SERVER_LOG")" "OrphanReaper: terminating"
+  else
+    unverified "OrphanReaper on a real orphan" "the agent died with its exec-port on this host, so no orphan existed to reap (foreman-e01a1)"
+  fi
+}
+
+# ---------------------------------------------------------------- scenario: cancel-strays
+
+# start_busy_run <what> -> RUN, THREAD, AGENT_PIDS: a run whose agent is blocked in its `sleep 300` tool
+start_busy_run() {
+  new_bead "e2e-$SUFFIX $1" "$LONG"
+  bead_run "$BEAD_ID" 180
+  [ -n "$RUN" ] || { fail "no run appeared for the $1 bead"; return 1; }
+  wait_agent "$RUN" "$SERVER_PID" 180
+  if [ -z "$AGENT_PIDS" ]; then fail "no agent process found for run $RUN"; return 1; fi
+  for ap in $AGENT_PIDS; do wait_tool "$ap" 120 && break; done
+  show_run_strays "in the run's worktree before the $1" "$RUN"
+}
+
+scenario_cancel_strays() {
+  say "scenario cancel-strays"
+  note "EXPECTED: after run cancel and after thread stop the agent AND the tool process it started (sleep 300, in a session of its own) are gone; before foreman-zmhzw the tool process outlived the cancelled run, re-parented to pid 1, in its worktree"
+  start_busy_run "run cancel" || return 0
+  if fm run cancel --id "$RUN" --reason "e2e cancel" >"$WORK/cancel.out" 2>&1; then pass "run cancel accepted"; else fail "run cancel: $(cut -c1-200 "$WORK/cancel.out")"; fi
+  wait_run_status "$RUN" "cancelled" 60 && pass "run cancelled" || fail "run not cancelled (status '$RUN_STATUS')"
+  no_run_strays "after run cancel" "$RUN"
+  start_busy_run "thread stop" || return 0
+  if fm thread stop --reason "e2e stop" "$THREAD" >"$WORK/stop.out" 2>&1; then pass "thread stop accepted"; else fail "thread stop: $(cut -c1-200 "$WORK/stop.out")"; fi
+  wait_run_status "$RUN" "cancelled" 60 && pass "thread stopped (run cancelled)" || fail "thread not stopped (run status '$RUN_STATUS')"
+  no_run_strays "after thread stop" "$RUN"
+}
+
+# ---------------------------------------------------------------- scenario: shutdown-strays
+
+scenario_shutdown_strays() {
+  say "scenario shutdown-strays"
+  note "EXPECTED: SIGTERM of the server with a run in flight leaves no agent and no tool process of that run running; before foreman-zmhzw the tool process outlived the server, re-parented to pid 1, in the run's worktree"
+  start_busy_run "graceful shutdown" || return 0
+  old_server=$SERVER_PID
+  kill -TERM "$old_server"
+  sn=0
+  while alive "$old_server" && [ "$sn" -lt 90 ]; do sleep 1; sn=$((sn + 1)); done
+  if alive "$old_server"; then
+    fail "the server was still running ${sn}s after SIGTERM"
+    kill -9 "$old_server" 2>/dev/null
+  else
+    pass "the server stopped ${sn}s after SIGTERM"
+  fi
+  SERVER_PID=""
+  no_run_strays "after the graceful shutdown" "$RUN"
+  assert_has "server log records the sweep at shutdown" "$(cat "$SERVER_LOG")" "process(es) of agents still running"
+  # the interrupted run is resumed at boot: leave nothing running for the next scenario
+  start_server
+  fm run cancel --id "$RUN" --reason "e2e cleanup" >/dev/null 2>&1
+  no_run_strays "after the resumed run was cancelled" "$RUN"
 }
 
 # ---------------------------------------------------------------- scenario: project-paused
@@ -350,13 +455,13 @@ scenario_br_down() {
   note "EXPECTED: with br writes (comments/create) failing for the server the thread still completes and its review verdict is still recorded; the bead-sink failure is visible in the recorded summary; no comment lands on the bead"
   mkdir -p "$WORK/nobr"
   real_br=$(command -v br)
-  printf '#!/bin/sh\ncase "$1" in comments|create) echo "br: simulated outage (e2e br-down)" >&2; exit 1 ;; esac\nexec %s "$@"\n' "$real_br" > "$WORK/nobr/br"
+  printf '#!/bin/sh\ncase "$1" in comments|create) echo "$(date +%%s) $* intercepted" >> %s; echo "br: simulated outage (e2e br-down)" >&2; exit 1 ;; esac\necho "$(date +%%s) $* forwarded" >> %s\nexec %s "$@"\n' "$WORK/nobr/br.log" "$WORK/nobr/br.log" "$real_br" > "$WORK/nobr/br"
   chmod +x "$WORK/nobr/br"
+  quiesce
   stop_server
   E2E_PATH_PREFIX="$WORK/nobr" start_server
   new_bead "e2e-$SUFFIX br down" "Create a file named brdown.txt containing the word UP."
-  thread_for_bead "$BEAD_ID" 180
-  [ -n "$THREAD" ] || { fail "no thread appeared for the br-down bead"; return 0; }
+  await_bead_thread "$BEAD_ID" "the br-down bead" || return 0
   wait_run_status "${THREAD#run:}" "completed|failed" "$E2E_RUN_TIMEOUT"
   assert_eq "thread completed while br was down" "$RUN_STATUS" "completed"
   vn=0; verdict=""; summary=""
@@ -376,6 +481,238 @@ scenario_br_down() {
   fi
   assert_has "the bead-sink failure is visible in the recorded summary" "$summary" "bead sink failed"
   assert_not_has "no review comment landed on the bead" "$(cd "$REPO" && br comments list "$BEAD_ID" 2>/dev/null)" "erdict"
+}
+
+# ---------------------------------------------------------------- scenario: jobsite-resume
+
+# api_post <path> <json body> -> HTTP status on stdout; the response body is left in $WORK/api-post.out
+api_post() {
+  curl -sS -o "$WORK/api-post.out" -w '%{http_code}' --max-time 120 -X POST \
+    -H "authorization: Bearer $E2E_API_TOKEN" -H 'content-type: application/json' \
+    --data "$2" "$API$1" 2>/dev/null
+}
+
+# wait_jobsite <jobsite id> <jq predicate> <timeout s> -> JOBSITE (the last projection read); 0 once the predicate held
+wait_jobsite() {
+  wj_start=$(date +%s); JOBSITE=""
+  while :; do
+    JOBSITE=$(api_get "/api/jobsites/$1")
+    if [ -n "$JOBSITE" ] && printf '%s' "$JOBSITE" | jq -e "$2" >/dev/null 2>&1; then return 0; fi
+    [ "$(elapsed "$wj_start")" -lt "$3" ] || return 1
+    sleep 1
+  done
+}
+
+# read_jobsite_events <jobsite id> -> EVENTS: the jobsite's own event stream (the aggregate a resume reads, not the read
+# model), one "<version> <event type> <UTC time>" row per event. Retried, because the shared Postgres can answer "too many
+# clients" for a moment; returns 0 only once rows were read: an unreadable stream is a failure, never an empty one that
+# every "has no event X" assertion would pass on.
+read_jobsite_events() {
+  re_n=0; EVENTS=""
+  while [ "$re_n" -lt 30 ]; do
+    if EVENTS=$(psql -X -q -At -F ' ' -h "$E2E_PG_HOST" -p "$E2E_PG_PORT" -U "$E2E_PG_USER" -d "$E2E_DB_NAME" -c \
+      "select se.stream_version, e.event_type, to_char(e.created_at at time zone 'UTC', 'HH24:MI:SS.MS') from streams s join stream_events se on se.stream_id = s.stream_id join events e on e.event_id = se.event_id where s.stream_uuid = 'jobsite:$1' order by se.stream_version" 2>"$WORK/psql.err") \
+      && [ -n "$EVENTS" ]; then
+      return 0
+    fi
+    sleep 1; re_n=$((re_n + 1))
+  done
+  return 1
+}
+
+# claude_session_file <session id> -> Claude Code's own transcript of that session. The redirected HOME's ~/.claude is a
+# symlink to the real one (link_claude_auth), so the file lives under the real ~/.claude/projects/<cwd>/.
+claude_session_file() {
+  for csf in "$REAL_HOME"/.claude/projects/*/"$1.jsonl"; do
+    if [ -f "$csf" ]; then echo "$csf"; return 0; fi
+  done
+  return 1
+}
+
+# note_session_file <label> <session id>: the transcript's path and line count (the record of what the agent saw)
+note_session_file() {
+  nsf=$(claude_session_file "$2")
+  if [ -n "$nsf" ]; then
+    note "$1: claude session file $nsf ($(wc -l < "$nsf" | tr -d ' ') lines)"
+  else
+    note "$1: no claude session file for session $2 under $REAL_HOME/.claude/projects"
+  fi
+}
+
+# tree_rows <root pid>: one "pid<TAB>command" row per descendant, to tell the processes of a dead server from new ones
+tree_rows() {
+  for tr_pid in $(descendants "$1"); do
+    printf '%s\t%s\n' "$tr_pid" "$(ps -o command= -p "$tr_pid" 2>/dev/null | cut -c1-100)"
+  done
+}
+
+# still_running <rows from tree_rows>: the rows whose pid is alive AND still runs the recorded command (a reused pid is no match)
+still_running() {
+  printf '%s\n' "$1" | while IFS="$(printf '\t')" read -r sr_pid sr_cmd; do
+    [ -n "$sr_pid" ] || continue
+    if alive "$sr_pid" && [ "$(ps -o command= -p "$sr_pid" 2>/dev/null | cut -c1-100)" = "$sr_cmd" ]; then
+      printf '%s\t%s\n' "$sr_pid" "$sr_cmd"
+    fi
+  done
+}
+
+# show_rows <label> <rows from still_running>: the evidence, one `ps` row per process
+show_rows() {
+  note "$1:"
+  printf '%s\n' "$2" | while IFS="$(printf '\t')" read -r sw_pid sw_cmd; do
+    [ -n "$sw_pid" ] && note "  $(ps -o pid=,ppid=,pgid=,stat=,command= -p "$sw_pid" 2>/dev/null | cut -c1-150)"
+  done
+}
+
+# jobsite_resume_steps: the body of the scenario (a `return` ends it early; the caller restores the environment)
+jobsite_resume_steps() {
+  quiesce
+  stop_server
+  start_server
+  jr_word="RECALL-$$-$(date +%s)"
+  jr_leaf="jobsite-e2e-$SUFFIX-resume"
+  jr_first="Your recall word for this task is $jr_word. Remember it exactly: you will be asked for it later. Do not create or edit any file. Now run this one shell command with the Bash tool, in the foreground (not in the background), and wait until it has finished; it takes about 90 seconds: python3 -c 'import time; time.sleep(90)'  When it has finished, reply with the single word done."
+  jr_spec=$(jq -n --arg project "$PROJECT" --arg prompt "$jr_first" --arg branch "jobsite/e2e-$SUFFIX-resume" \
+    '{project_id: $project, prompt: $prompt, agent: {provider: "claude", model: "haiku", approval_mode: "auto_approve"}, strategy: {branch: $branch}, sandbox: "host"}')
+  jr_code=$(api_post "/api/jobsites" "$jr_spec")
+  if [ "$jr_code" != 202 ]; then
+    fail "POST /api/jobsites: expected HTTP 202, got $jr_code: $(cut -c1-300 "$WORK/api-post.out")"
+    return 0
+  fi
+  jr_id=$(jq -r '.id // empty' "$WORK/api-post.out")
+  if [ -z "$jr_id" ]; then fail "POST /api/jobsites answered 202 without an id: $(cut -c1-200 "$WORK/api-post.out")"; return 0; fi
+  pass "claude jobsite $jr_id started (HTTP 202); recall word given in its first prompt: $jr_word"
+  if ! wait_jobsite "$jr_id" '.status == "running" and .worktree_path != null' 120; then
+    fail "jobsite $jr_id is not running in a worktree 120s after its start: $(printf '%s' "$JOBSITE" | jq -c '{status, last_error}')"
+    return 0
+  fi
+  jr_wt=$(printf '%s' "$JOBSITE" | jq -r '.worktree_path')
+  jr_branch=$(printf '%s' "$JOBSITE" | jq -r '.branch')
+  note "worktree $jr_wt, branch $jr_branch"
+  wait_agent "$jr_wt" "$SERVER_PID" 180
+  if [ -z "$AGENT_PIDS" ]; then fail "no process runs in the jobsite's worktree 180s after its start"; return 0; fi
+  note "claude process(es) in the worktree: $AGENT_PIDS"
+  jr_tool=0
+  for ap in $AGENT_PIDS; do
+    if wait_tool "$ap" 150 "time.sleep(90)"; then jr_tool=1; break; fi
+  done
+  if [ "$jr_tool" != 1 ]; then
+    fail "the agent did not open its 90 s tool call (python3 time.sleep(90)) within 150s"
+    api_post "/api/jobsites/$jr_id/cancel" '{"reason":"e2e cleanup"}' >/dev/null
+    return 0
+  fi
+  note "the agent is blocked in its 90 s tool call: the first iteration is running"
+
+  # 1. the session is on record while the first iteration is still running (foreman-cm8nv)
+  if wait_jobsite "$jr_id" '.session_id != null' 30; then
+    jr_sid=$(printf '%s' "$JOBSITE" | jq -r '.session_id')
+    jr_iters=$(printf '%s' "$JOBSITE" | jq -r '(.iterations // []) | length')
+    jr_st=$(printf '%s' "$JOBSITE" | jq -r '.status')
+    if [ "$jr_iters" = 0 ] && [ "$jr_st" = running ]; then
+      pass "provider session $jr_sid is on the jobsite mid-iteration (status running, 0 iterations completed, tool call open)"
+    else
+      fail "provider session $jr_sid was recorded only with status '$jr_st' and $jr_iters completed iteration(s)"
+    fi
+  else
+    jr_sid=""
+    fail "no provider session id on the jobsite while its first iteration is running (projection: $(printf '%s' "$JOBSITE" | jq -c '{status, session_id, iterations: ((.iterations // []) | length)}')): a crash now could not be resumed"
+  fi
+  if read_jobsite_events "$jr_id"; then
+    note "event stream of jobsite:$jr_id before the crash (version type UTC-time):"
+    printf '%s\n' "$EVENTS" | while IFS= read -r l; do note "  $l"; done
+    assert_has "event stream (what a resume reads) holds JobsiteSessionBound while the iteration runs" "$EVENTS" "JobsiteSessionBound"
+    assert_not_has "event stream holds no completed iteration yet" "$EVENTS" "JobsiteIterationCompleted"
+  else
+    fail "cannot read the event stream of jobsite:$jr_id from database $E2E_DB_NAME: $(tr '\n' ' ' < "$WORK/psql.err" | cut -c1-200)"
+  fi
+  [ -n "$jr_sid" ] && note_session_file "before the crash" "$jr_sid"
+
+  # 2. kill -9 of exec-port and the server (what server-crash does): the agent is orphaned to pid 1
+  jr_rows=$(tree_rows "$SERVER_PID")
+  note "process tree under the server before the crash:"
+  printf '%s\n' "$jr_rows" | while IFS= read -r l; do note "  $l"; done
+  jr_ports=""
+  for d in $(descendants "$SERVER_PID"); do
+    case "$(ps -o comm= -p "$d")" in *exec-port) jr_ports="$jr_ports $d" ;; esac
+  done
+  note "crash: kill -9 of exec-port pid(s)${jr_ports:- (none found)} and then the server pid $SERVER_PID"
+  cp "$SERVER_LOG" "$WORK/server.before-crash.log" 2>/dev/null
+  # shellcheck disable=SC2086
+  kill -9 $jr_ports "$SERVER_PID" 2>/dev/null
+  SERVER_PID=""
+  sleep 2
+  jr_orphans=$(still_running "$jr_rows")
+  if [ -n "$jr_orphans" ]; then show_rows "processes of the dead server still running after the crash" "$jr_orphans"; else note "no process of the dead server survived the crash (the agent died with exec-port)"; fi
+  start_server
+
+  # 3. boot recovery leaves it resumable
+  if ! wait_jobsite "$jr_id" '.status != "running"' 120; then
+    fail "boot recovery did not touch the crashed jobsite within 120s of the restart (projection: $(printf '%s' "$JOBSITE" | jq -c '{status, session_id}'))"
+    return 0
+  fi
+  jr_after=$(printf '%s' "$JOBSITE" | jq -c '{status, paused_reason, session_id, last_error}')
+  note "ACTUAL jobsite after the restart: $jr_after"
+  assert_eq "boot recovery paused the crashed jobsite as resumable (status/paused_reason)" "$(printf '%s' "$JOBSITE" | jq -r '"\(.status)/\(.paused_reason)"')" "paused/server_restart"
+  assert_not_has "boot recovery did not fail it as executor_lost" "$jr_after" "executor_lost"
+  [ "$(printf '%s' "$JOBSITE" | jq -r '.status')" = paused ] || return 0
+  assert_eq "the session id survived the restart on the jobsite" "$(printf '%s' "$JOBSITE" | jq -r '.session_id')" "$jr_sid"
+  assert_has "server log records the paused (resumable) jobsite" "$(cat "$SERVER_LOG")" "paused (resumable): [\"$jr_id\"]"
+
+  # 4. resume with a prompt that does not contain the recall word
+  jr_orphans=$(still_running "$jr_rows")
+  if [ -n "$jr_orphans" ]; then show_rows "processes of the dead server still running when the resume is requested" "$jr_orphans"; fi
+  jr_resume="Earlier in this conversation I gave you a recall word. Write exactly that word, and nothing else (no quotes, no punctuation, no other text), into a file named answer.txt in the current directory. Do not run any shell command and do not repeat the earlier command. Then reply with the single word done."
+  assert_not_has "the resume prompt does not contain the recall word" "$jr_resume" "$jr_word"
+  jr_code=$(api_post "/api/jobsites/$jr_id/resume" "$(jq -n --arg p "$jr_resume" '{prompt: $p}')")
+  assert_eq "POST /api/jobsites/$jr_id/resume accepted (HTTP status)" "$jr_code" 202
+  if [ "$jr_code" != 202 ]; then note "resume answered: $(cut -c1-300 "$WORK/api-post.out")"; return 0; fi
+  if ! wait_jobsite "$jr_id" '.status != "paused"' 180; then
+    fail "the jobsite is still paused 180s after the resume was accepted (projection: $(printf '%s' "$JOBSITE" | jq -c '{status, paused_reason, last_error}'))"
+    return 0
+  fi
+  jr_n=0; jr_stale=$(still_running "$jr_rows")
+  while [ -n "$jr_stale" ] && [ "$jr_n" -lt 30 ]; do sleep 2; jr_n=$((jr_n + 2)); jr_stale=$(still_running "$jr_rows"); done
+  if [ -z "$jr_stale" ]; then
+    pass "no stale agent/tool process of the crashed server is running once the jobsite is resumed"
+  else
+    fail "stale process(es) of the crashed server still running 30s after the resume started:"
+    show_rows "left behind" "$jr_stale"
+    printf '%s\n' "$jr_stale" | while IFS="$(printf '\t')" read -r sk_pid sk_cmd; do [ -n "$sk_pid" ] && kill -9 "$sk_pid" 2>/dev/null; done
+  fi
+  if [ -n "$jr_orphans" ]; then
+    assert_has "server log records the reap of the orphaned agent in the worktree" "$(cat "$SERVER_LOG")" "OrphanReaper: terminating"
+  fi
+
+  # 5. the resumed agent knows the word, in the same session
+  if ! wait_jobsite "$jr_id" '.status | test("^(completed|failed|cancelled)$")' "$E2E_RUN_TIMEOUT"; then
+    fail "the resumed jobsite did not finish within ${E2E_RUN_TIMEOUT}s (projection: $(printf '%s' "$JOBSITE" | jq -c '{status, last_error}'))"
+    api_post "/api/jobsites/$jr_id/cancel" '{"reason":"e2e cleanup"}' >/dev/null
+    return 0
+  fi
+  jr_final=$(printf '%s' "$JOBSITE" | jq -c '{status, session_id, branch, last_error, iterations: [.iterations[] | {index, status, session_id, code}]}')
+  note "ACTUAL jobsite after the resume: $jr_final"
+  assert_eq "the resumed jobsite completed" "$(printf '%s' "$JOBSITE" | jq -r '.status')" completed
+  jr_answer=$(git -C "$REPO" show "$jr_branch:answer.txt" 2>/dev/null)
+  note "EXPECTED answer.txt = '$jr_word'; ACTUAL (branch $jr_branch) = '$(printf '%s' "$jr_answer" | head -c 200 | tr '\n' ' ')'"
+  assert_content_exactly "the resumed agent wrote the recall word it was given before the crash (answer.txt)" "$jr_answer" "$jr_word"
+  assert_eq "one provider session across the crash (jobsite session id after = before)" "$(printf '%s' "$JOBSITE" | jq -r '.session_id')" "$jr_sid"
+  assert_eq "the resumed iteration ran in that session" "$(printf '%s' "$JOBSITE" | jq -r '[.iterations[] | select(.status == "completed")] | last | .session_id')" "$jr_sid"
+  [ -n "$jr_sid" ] && note_session_file "after the resume" "$jr_sid"
+  no_run_strays "after the resumed jobsite finished" "$jr_leaf"
+}
+
+scenario_jobsite_resume() {
+  say "scenario jobsite-resume"
+  note "EXPECTED: a REAL claude jobsite has its provider session on record while its first iteration is still running; after kill -9 of the server and its exec-port boot recovery pauses it as resumable (not failed executor_lost); POST /api/jobsites/:id/resume reaps the stale agent/tool processes and continues the SAME claude session, so the agent still knows a recall word given before the crash (before foreman-cm8nv no session was recorded: the resume went to a blank agent and the jobsite 'completed' with no work)"
+  if ! claude_ready; then
+    unverified "jobsite session resume with real claude" "$CLAUDE_UNAVAILABLE"
+    return 0
+  fi
+  # POST /api/jobsites and /resume are refused unless the operator enabled remote start; every restart of this scenario keeps it on
+  jr_extra=${E2E_EXTRA_ENV:-}
+  E2E_EXTRA_ENV="${jr_extra:+$jr_extra }FOREMAN_JOBSITES_ALLOW_REMOTE_START=true"
+  jobsite_resume_steps
+  E2E_EXTRA_ENV=$jr_extra
 }
 
 # quiesce: cancel every running thread so the next scenario starts with free capacity
@@ -403,8 +740,11 @@ for s in $SCENARIOS; do
     coordinator-crash) scenario_coordinator_crash ;;
     server-crash) scenario_server_crash ;;
     port-closed) scenario_port_closed ;;
+    cancel-strays) scenario_cancel_strays ;;
+    shutdown-strays) scenario_shutdown_strays ;;
     project-paused) scenario_project_paused ;;
     br-down) scenario_br_down ;;
+    jobsite-resume) scenario_jobsite_resume ;;
   esac
 done
 summary

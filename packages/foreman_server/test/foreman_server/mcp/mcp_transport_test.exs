@@ -244,15 +244,18 @@ defmodule ForemanServer.MCP.TransportTest do
       assert is_tuple(spec[:start])
     end
 
-    test "MCP uses :streamable_http transport in its child_spec" do
+    test "MCP uses the :streamable_http transport with start: true in its child_spec" do
       spec = MCP.child_spec([])
       # start_args is [ServerModule, opts]
       start_args = elem(spec[:start], 2)
       opts = start_args |> tl() |> hd()
       transport = Keyword.get(opts, :transport)
 
-      assert transport == :streamable_http,
-             "MCP transport must use :streamable_http, got: #{inspect(transport)}"
+      # Without `start: true` Anubis decides for itself whether an HTTP server is running and
+      # skips the whole supervisor on every boot that is not `mix phx.server` (foreman-cnn1l;
+      # the booted endpoint is covered by ForemanServer.MCP.HttpBootTest).
+      assert transport == {:streamable_http, start: true},
+             "MCP transport must be {:streamable_http, start: true}, got: #{inspect(transport)}"
     end
   end
 end

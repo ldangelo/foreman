@@ -18,14 +18,16 @@ defmodule ForemanServer.Projects.Adoption do
     * `{:subject_not_found, kind, id}` - unknown task/run/jobsite.
     * `{:subject_bound_to_task_provider, "beads"}` - a `beads:<project>:<bead>`
       task belongs to its source project's beads DB (move only).
-    * `{:repo_not_in_project, repo_path}` - the subject's repo is not the
-      target project's path (move only).
+    * `{:repo_not_in_project, repo_path}` - the subject's repo is neither the
+      target project's own path nor one of its attached repositories (E12)
+      (move only).
 
   Archived/paused target and an active subject are decided by the aggregate
   from the enrichment (`subject_active`, `subject_status`).
   """
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.Review.Archive
 
   @type subject_kind :: String.t()
@@ -200,18 +202,30 @@ defmodule ForemanServer.Projects.Adoption do
       else: :ok
   end
 
-  # A subject with no discoverable repo (a task that never ran) has nothing to
-  # mismatch.
+  # The subject's repo must be one of the target's repositories: its own path or an
+  # attached one (E12). A subject with no discoverable repo (a task that never ran)
+  # has nothing to mismatch. Paths are compared canonically (symlinks resolved): an
+  # attached repository is stored under its canonical path (`project.repo.add`), so a
+  # session recorded under a symlinked path of the same checkout still belongs to it.
   defp check_repo(nil, _target), do: :ok
 
-  defp check_repo(repo_path, target) do
-    if same_path?(repo_path, Map.get(target, :path)),
+  defp check_repo(repo_path, %{project_id: target_id}) do
+    repos = ProjectionStore.project_repositories(target_id) || []
+
+    if Enum.any?(repos, &same_path?(repo_path, &1.path)),
       do: :ok,
       else: {:error, {:repo_not_in_project, repo_path}}
   end
 
-  defp same_path?(a, b) when is_binary(a) and is_binary(b), do: Path.expand(a) == Path.expand(b)
+  defp same_path?(a, b) when is_binary(a) and is_binary(b), do: canonical(a) == canonical(b)
   defp same_path?(_a, _b), do: false
+
+  defp canonical(path) do
+    case RepoValidation.canonical_path(path) do
+      {:ok, real} -> real
+      {:error, _not_found} -> Path.expand(path)
+    end
+  end
 
   defp fetch(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

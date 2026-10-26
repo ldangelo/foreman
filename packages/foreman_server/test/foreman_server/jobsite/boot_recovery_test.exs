@@ -72,8 +72,9 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     wait_until(fn -> Jobsite.get(id) != nil end)
   end
 
-  # Worktree provisioned, sandbox up, iteration 1 open: what a restart mid-agent leaves.
-  defp seed_running!(id) do
+  # Worktree provisioned, sandbox up, iteration 1 open: what a restart mid-agent leaves, up to
+  # the point where the agent reports its provider session.
+  defp seed_iteration_open!(id) do
     seed_started!(id)
 
     dispatch!(id, "jobsite.worktree.provision", "wt", %{
@@ -85,6 +86,14 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     provision_sandbox!(id, "sb1")
     dispatch!(id, "jobsite.iteration.start", "it1", %{index: 1})
     wait_until(fn -> Jobsite.get(id)[:iteration_index] == 1 end)
+  end
+
+  # The same, after the agent reported its session and the executor recorded it
+  # (`jobsite.session.bind`, while the iteration runs): an orphan a resume can continue.
+  defp seed_running!(id) do
+    seed_iteration_open!(id)
+    dispatch!(id, "jobsite.session.bind", "s1", %{index: 1, session_id: "boot-recovery-session"})
+    wait_until(fn -> Jobsite.get(id)[:session_id] == "boot-recovery-session" end)
   end
 
   defp provision_sandbox!(id, suffix) do
@@ -277,6 +286,29 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     assert failed.terminal? == true
     assert failed.last_error.code == "executor_lost"
     refute "JobsitePaused" in event_types(id)
+  end
+
+  # foreman-cm8nv: the aggregate has a worktree and an open iteration, but no provider session, so
+  # `Jobsite.resume/1` refuses it (`:no_session`: it would start a blank agent). Pausing it as
+  # "resumable" would leave it paused forever with a resume that can never be accepted.
+  test "a jobsite whose agent never reported a provider session is failed, not paused as resumable" do
+    id = unique_id("js-no-session")
+    seed_iteration_open!(id)
+    assert Jobsite.get(id).status == "running"
+    assert Jobsite.get(id)[:session_id] == nil
+
+    assert {:failed, ^id} = outcome_for(scan_outcomes!(), id)
+    wait_until(fn -> Jobsite.get(id).status == "failed" end)
+
+    failed = Jobsite.get(id)
+    assert failed.terminal? == true
+    assert failed.last_error.code == "executor_lost"
+    assert failed.last_error.message =~ "provider session"
+    refute "JobsitePaused" in event_types(id)
+
+    # Nothing is left to resume: the jobsite is terminal now, not paused-and-unresumable.
+    assert {:error, %ForemanServer.Jobsite.Error{code: :not_resumable}} =
+             Executor.check_resumable(id)
   end
 
   test "one jobsite failing to reconcile is logged with its id and does not stop the others" do

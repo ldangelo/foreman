@@ -6,9 +6,10 @@ defmodule ForemanServer.Projects.Recommendations do
   `evaluate/1` is PURE over `Recommendations.Facts`: no I/O, deterministic,
   stable ids, ordered `action` > `warn` > `info`, then by id. A fact that could
   not be observed (`:unavailable`, `:timeout` where not itself the finding)
-  produces no recommendation, never a false alarm. `recommend/2` is the one
-  entry point with I/O (`Facts.collect/2` then `evaluate/1`); GET, the MCP tool
-  and the CLI all go through it and `View.serialise/1`.
+  produces no recommendation, never a false alarm. `recommend_bounded/1` is the
+  one entry point with I/O (`Facts.collect/2` then `evaluate/1`, under a time
+  budget): GET, the MCP tool, `foreman doctor`, the CLI, the coordinator's
+  setup proposal and its `apply_recommendation` action all go through it.
 
   A `fix` is either `%{kind: :command, type, payload}` - a Foreman command
   computed from observed data that an operator may dispatch - or
@@ -17,10 +18,11 @@ defmodule ForemanServer.Projects.Recommendations do
   ## Detector ids
 
   `task_provider.wire_beads`, `task_provider.br_missing`,
-  `repo.agents_md_missing`, `ci.none_detected`, `gh.unauthenticated`,
-  `gh.check_timeout`, `git.no_remote`, `workflows.not_installed`,
-  `workflows.unmapped_types`, `provider.coordinator_unavailable`,
-  `provider.none_installed`, `settings.instructions_empty`, `settings.goal_empty`,
+  `repo.agents_md_missing`, `branch.default_unresolved`, `ci.none_detected`,
+  `gh.unauthenticated`, `gh.check_timeout`, `git.no_remote`,
+  `workflows.not_installed`, `workflows.unmapped_types`,
+  `provider.coordinator_unavailable`, `provider.none_installed`,
+  `settings.instructions_empty`, `settings.goal_empty`, `settings.env_empty`,
   `settings.env_plain_secrets`, `memory.empty`, `project.paused`,
   `stack.test_hint`.
   """
@@ -65,6 +67,36 @@ defmodule ForemanServer.Projects.Recommendations do
     with {:ok, facts} <- Facts.collect(project_id, opts), do: {:ok, evaluate(facts)}
   end
 
+  @doc """
+  `recommend/2` under the configured budget: the entry point every surface uses,
+  so HTTP, MCP, `foreman doctor`, the coordinator's setup proposal and
+  `apply_recommendation` see the same recommendations.
+
+  `config :foreman_server, :recommendations, probe:, probe_timeout_ms:,
+  total_timeout_ms:` overrides the probe and the budgets (test seam). Per-probe
+  bounds hold the collection to about `total_timeout_ms`; the outer bound is the
+  guarantee, with one probe's worth of slack so a late last probe still counts.
+  """
+  @spec recommend_bounded(String.t()) ::
+          {:ok, [Recommendation.t()]} | {:error, :project_not_found | :timeout}
+  def recommend_bounded(project_id) when is_binary(project_id) do
+    config = Application.get_env(:foreman_server, :recommendations, [])
+    total = Keyword.get(config, :total_timeout_ms, Facts.total_timeout_ms())
+
+    opts =
+      config
+      |> Keyword.take([:probe, :probe_timeout_ms])
+      |> Keyword.put(:deadline_ms, System.monotonic_time(:millisecond) + total)
+
+    outer = total + Keyword.get(opts, :probe_timeout_ms, Facts.probe_timeout_ms())
+
+    case Facts.Probe.System.call(fn -> recommend(project_id, opts) end, outer) do
+      {:ok, result} -> result
+      {:error, :timeout} -> {:error, :timeout}
+      {:error, :failed} -> raise "project recommendations failed for #{project_id}"
+    end
+  end
+
   @doc "Pure evaluation of `facts`; see the moduledoc."
   @spec evaluate(Facts.t()) :: [Recommendation.t()]
   def evaluate(%Facts{} = facts) do
@@ -72,6 +104,7 @@ defmodule ForemanServer.Projects.Recommendations do
       wire_beads(facts),
       br_missing(facts),
       agents_md_missing(facts),
+      branch_unresolved(facts),
       ci_none(facts),
       gh(facts),
       no_remote(facts),
@@ -80,6 +113,7 @@ defmodule ForemanServer.Projects.Recommendations do
       coordinator_provider(facts),
       instructions_empty(facts),
       goal_empty(facts),
+      env_empty(facts),
       env_secrets(facts),
       memory_empty(facts),
       paused(facts),
@@ -153,6 +187,28 @@ defmodule ForemanServer.Projects.Recommendations do
   end
 
   defp agents_md_missing(_), do: []
+
+  # A run starts from the branch checked out in the repo and its pull request
+  # targets it; on a detached HEAD there is none to name
+  # (`auto_pr_base_branch_unresolved`).
+  defp branch_unresolved(%Facts{checked_out_branch: :detached, repo_path: repo})
+       when is_binary(repo) do
+    [
+      rec(
+        "branch.default_unresolved",
+        :warn,
+        "Base branch cannot be determined",
+        "#{repo} is on a detached HEAD, so Foreman cannot tell which branch runs start from " <>
+          "or which branch their pull requests should target.",
+        %{repo_path: repo},
+        manual(
+          "Check out the branch pull requests should target (for example `git switch main`) in that repository."
+        )
+      )
+    ]
+  end
+
+  defp branch_unresolved(_), do: []
 
   defp ci_none(%Facts{repo_path: repo, files: %{ci: []}}) when is_binary(repo) do
     [
@@ -316,15 +372,38 @@ defmodule ForemanServer.Projects.Recommendations do
 
   defp goal_empty(_), do: []
 
+  defp env_empty(%Facts{env_names: []}) do
+    [
+      rec(
+        "settings.env_empty",
+        :info,
+        "No project environment or secrets",
+        "No variables or secrets are configured for this project, so its agents receive no project-specific environment.",
+        %{},
+        manual(
+          "Add what builds and tests need: `foreman project env set <id> NAME=value`, " <>
+            "and credentials with `foreman project secret set --from-env VAR <id> NAME`."
+        )
+      )
+    ]
+  end
+
+  defp env_empty(_), do: []
+
   defp env_secrets(%Facts{env_secret_keys: [_ | _] = keys}) do
     [
       rec(
         "settings.env_plain_secrets",
         :warn,
-        "Secret-looking values in project config",
-        "Plain values for #{Enum.join(keys, ", ")} are stored in project config, which is visible through the API.",
+        "Secret-looking values in plain project environment",
+        "Plain values for #{Enum.join(keys, ", ")} are stored in the project's legacy environment " <>
+          "config, in clear text in project events; `project env set` rejects secret-looking names.",
         %{keys: keys},
-        manual("Export secrets in the Foreman server's environment instead of project config.")
+        manual(
+          "Store each one in the project secret store (`foreman project secret set --from-env VAR <id> NAME`), " <>
+            "then re-save the remaining variables with `foreman project env set --replace <id> NAME=value ...` " <>
+            "so the legacy plain config is ignored."
+        )
       )
     ]
   end

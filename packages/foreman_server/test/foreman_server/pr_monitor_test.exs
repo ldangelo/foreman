@@ -4,6 +4,7 @@ defmodule ForemanServer.PrMonitorTest do
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.PrAssociate
   alias ForemanServer.PrMonitor
+  alias ForemanServer.TestSupport.Eventually
 
   setup do
     :persistent_term.erase({PrMonitor, :fetch_fun})
@@ -21,34 +22,22 @@ defmodule ForemanServer.PrMonitorTest do
     :ok
   end
 
-  # `put_env(key, nil)` would leave a nil that shadows the default for every later test.
-  defp restore_env(key, nil), do: Application.delete_env(:foreman_server, key)
-  defp restore_env(key, value), do: Application.put_env(:foreman_server, key, value)
-
   describe "interval and enabled helpers" do
     test "interval_ms/0 returns env override when set" do
-      original = Application.get_env(:foreman_server, :pr_monitor_interval_ms)
-
-      Application.put_env(:foreman_server, :pr_monitor_interval_ms, 60_000)
+      Eventually.put_env_for_test(:foreman_server, :pr_monitor_interval_ms, 60_000)
       assert PrMonitor.interval_ms() == 60_000
-
-      restore_env(:pr_monitor_interval_ms, original)
     end
 
     test "interval_ms/0 returns default 5 minutes when unset" do
-      original = Application.get_env(:foreman_server, :pr_monitor_interval_ms)
-      Application.delete_env(:foreman_server, :pr_monitor_interval_ms)
+      Eventually.put_env_for_test(:foreman_server, :pr_monitor_interval_ms, nil)
       assert PrMonitor.interval_ms() == 300_000
-      restore_env(:pr_monitor_interval_ms, original)
     end
 
     test "enabled?/0 reflects env" do
-      original = Application.get_env(:foreman_server, :pr_monitor_enabled)
-      Application.put_env(:foreman_server, :pr_monitor_enabled, true)
+      Eventually.put_env_for_test(:foreman_server, :pr_monitor_enabled, true)
       assert PrMonitor.enabled?() == true
       Application.put_env(:foreman_server, :pr_monitor_enabled, false)
       refute PrMonitor.enabled?() == true
-      restore_env(:pr_monitor_enabled, original)
     end
   end
 
@@ -317,6 +306,20 @@ defmodule ForemanServer.PrMonitorTest do
       assert [_one] = fetched_urls()
     end
 
+    test "an HTTP 429 pauses polling for the Retry-After seconds gh printed" do
+      PrMonitor.set_fetch_fun(fn _url ->
+        {:error, {:gh_failed, 1, "HTTP 429: Too Many Requests\nRetry-After: 120"}}
+      end)
+
+      before = System.system_time(:millisecond)
+      PrMonitor.poll_now()
+      later = System.system_time(:millisecond)
+
+      # the pause starts when the sweep read the clock, somewhere between the two readings
+      assert %{paused_until: until} = PrMonitor.stats()
+      assert is_integer(until) and until in (before + 120_000)..(later + 120_000)
+    end
+
     test "entries of PRs that are no longer watched are pruned from the schedule", %{
       runs: [run | rest]
     } do
@@ -341,6 +344,67 @@ defmodule ForemanServer.PrMonitorTest do
       assert %{due: due} = PrMonitor.stats()
       refute Map.has_key?(due, run.pr_url)
       assert Enum.all?(rest, &Map.has_key?(due, &1.pr_url))
+    end
+
+    test "a watched PR that no run owns any more is rescheduled, never left stale", %{
+      runs: [run | _]
+    } do
+      PrMonitor.set_fetch_fun(fn _url -> {:ok, open_status()} end)
+      PrMonitor.poll_now()
+      assert %{due: due} = PrMonitor.stats()
+      assert Map.has_key?(due, run.pr_url)
+
+      # The run is re-associated with another PR. Projection only, like the merge in the
+      # test above: the event store outlives the VM and must not keep an unowned PR for
+      # every later run of the suite. Nothing stops the first PR's watch record, so it stays
+      # in `watched_prs/0`, but no run owns it: observing it is `:not_watched`, which never
+      # touches the record, so the pruning (it is still watched) never removes its entry.
+      other = String.replace(run.pr_url, "/pull/1", "/pull/2")
+
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "PrAssociated",
+          payload: %{
+            run_id: run.run_id,
+            pr_url: other,
+            pr_number: 2,
+            associated_at: System.system_time(:millisecond)
+          }
+        }
+      ])
+
+      on_exit(fn ->
+        ForemanServer.ProjectionStore.apply_events([
+          %{
+            event_type: "PrMerged",
+            payload: %{
+              run_id: run.run_id,
+              pr_url: run.pr_url,
+              project_id: run.project_id,
+              task_id: run.task_id
+            }
+          }
+        ])
+      end)
+
+      assert Enum.any?(ForemanServer.ProjectionStore.watched_prs(), &(&1.pr_url == run.pr_url))
+      assert ForemanServer.ProjectionStore.run_ids_for_pr_url(run.pr_url) == []
+
+      # Time passes: the entry the last observation left is long past.
+      :sys.replace_state(PrMonitor, fn state ->
+        %{state | due: Map.put(state.due, run.pr_url, 1)}
+      end)
+
+      # Nothing is fetched for the unowned PR; the other PRs fail without appending events.
+      PrMonitor.set_fetch_fun(fn _url -> {:error, :stub} end)
+      PrMonitor.poll_now()
+      assert %{due: due} = PrMonitor.stats()
+
+      # A past entry is what pins the next tick to its 1 s floor, tick after tick.
+      case Map.fetch(due, run.pr_url) do
+        :error -> :ok
+        {:ok, due_at} -> assert due_at > System.system_time(:millisecond)
+      end
     end
 
     test "PRs the per-tick cap left over are polled on the next second, not a full interval later",

@@ -182,4 +182,6 @@ config :foreman_server, :network_policy, sweep_on_boot: false
 config :foreman_server, :coordinator,
   enabled: false,
   agent: ForemanServer.Coordinator.Agent.Stub,
-  retry_backoff_ms: 0
+  retry_backoff_ms: 0,
+  # Only the proposer's own tests run it (they start a runtime with setup_proposals: true).
+  setup_proposals: false

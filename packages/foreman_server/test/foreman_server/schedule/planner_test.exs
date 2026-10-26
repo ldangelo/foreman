@@ -140,4 +140,54 @@ defmodule ForemanServer.Schedule.PlannerTest do
     assert {:error, {:invalid_schedule_spec, :every, :invalid_format}} =
              plan("2026-01-01T01:00:05Z", schedule(%{spec: %{"every" => "nonsense"}}))
   end
+
+  test "a stored interval beyond today's cap is an explicit error, not a crash" do
+    spec = %{"every" => "3000000d", "timezone" => "UTC", "anchor" => "2026-01-01T00:00:00Z"}
+
+    assert {:error, {:invalid_schedule_spec, :every, :above_maximum}} =
+             plan("2026-01-01T01:00:05Z", schedule(%{spec: spec}))
+  end
+
+  test "misfired?/3 is rule 2 of plan/3: late means strictly more than the grace" do
+    on_time = "2026-01-01T01:10:00Z"
+    late = "2026-01-01T01:10:01Z"
+    slot = unix("2026-01-01T01:00:00Z")
+
+    refute Planner.misfired?(schedule(), slot, dt(on_time))
+    assert Planner.misfired?(schedule(), slot, dt(late))
+
+    # plan/3 and the shared predicate agree on both sides of the boundary.
+    assert {:fire, ^slot} = plan(on_time)
+    assert {:skip, ^slot, :missed, _count} = plan(late)
+
+    # A schedule with no recorded grace has none.
+    no_grace = schedule(%{misfire_grace_seconds: nil})
+    refute Planner.misfired?(no_grace, slot, dt("2026-01-01T01:00:00Z"))
+    assert Planner.misfired?(no_grace, slot, dt("2026-01-01T01:00:01Z"))
+  end
+
+  test "accounted_for?/2: slots at or before max(last_slot, active_since) never produce a task" do
+    fired =
+      schedule(%{
+        last_slot: unix("2026-01-01T05:00:00Z"),
+        active_since: unix("2026-01-01T03:30:00Z")
+      })
+
+    assert Planner.accounted_for?(fired, unix("2026-01-01T05:00:00Z"))
+    assert Planner.accounted_for?(fired, unix("2026-01-01T04:00:00Z"))
+    refute Planner.accounted_for?(fired, unix("2026-01-01T06:00:00Z"))
+
+    # A baseline later than the last fire (a resume or a spec change) decides instead.
+    resumed =
+      schedule(%{
+        last_slot: unix("2026-01-01T00:00:00Z"),
+        active_since: unix("2026-01-03T10:30:00Z")
+      })
+
+    assert Planner.accounted_for?(resumed, unix("2026-01-03T10:00:00Z"))
+    refute Planner.accounted_for?(resumed, unix("2026-01-03T11:00:00Z"))
+
+    # Nothing recorded yet: nothing is accounted for.
+    refute Planner.accounted_for?(schedule(%{last_slot: nil, active_since: nil}), 0)
+  end
 end

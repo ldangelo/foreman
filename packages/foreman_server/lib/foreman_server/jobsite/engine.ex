@@ -549,6 +549,7 @@ defmodule ForemanServer.Jobsite.Engine do
       ]
       |> put_launch(step.opts)
       |> put_system_prompt(step.opts)
+      |> put_on_session(observer, step, ctx, observer_state)
 
     case runner.run(agent, prompt, ctx.sandbox, runner_opts) do
       {:ok, %IterationResult{status: :cancelled} = result} ->
@@ -622,6 +623,20 @@ defmodule ForemanServer.Jobsite.Engine do
     case Map.fetch(step_opts, :launch) do
       {:ok, launch} -> Keyword.put(runner_opts, :launch, launch)
       :error -> runner_opts
+    end
+  end
+
+  # `session_bound/4` is optional, like `step_failed/4`: only an observer that records the
+  # provider session while the iteration is still running (`Jobsite.Executor`'s) implements it, so
+  # the runner is handed `:on_session` for that observer and no other. The closure holds the
+  # observer state as of the iteration's start, which is all an iteration-scoped record needs.
+  defp put_on_session(runner_opts, observer, step, ctx, observer_state) do
+    if Code.ensure_loaded?(observer) and function_exported?(observer, :session_bound, 4) do
+      Keyword.put(runner_opts, :on_session, fn session_id ->
+        observer.session_bound(step, ctx, session_id, observer_state)
+      end)
+    else
+      runner_opts
     end
   end
 

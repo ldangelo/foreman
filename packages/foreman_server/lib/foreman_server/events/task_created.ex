@@ -3,6 +3,15 @@ defmodule ForemanServer.Events.TaskCreated do
   # `repo_id` / `repo_ids` (E12): the run's primary repo when it is not the
   # project primary, and initial extra repos. Optional and NOT enforced so old
   # streams replay; neither is written for single-repo tasks.
+  #
+  # `fork_provider` / `fork_session_id` (`adopt --continue --fork`): the provider
+  # session the run of this task forks at its first launch. Both or neither;
+  # optional so old streams replay. See `Workflow.RunExecutor` (`fork_for_launch/4`).
+  #
+  # `source_branch` (`adopt --continue --from-source-branch`): the branch of the
+  # session this task continues. The run's worktree is cut from it and it is the
+  # run's PR base. Optional so old streams replay. See `Workflow.RunExecutor`
+  # (`apply_source_branch/4`, `remember_run_base_branch/1`).
   @enforce_keys [:task_id, :project_id, :title, :status, :task_type]
   @type t :: %__MODULE__{
           task_id: String.t(),
@@ -28,7 +37,10 @@ defmodule ForemanServer.Events.TaskCreated do
           prompt: String.t() | nil,
           provider_tracked: boolean(),
           repo_id: String.t() | nil,
-          repo_ids: [String.t()] | nil
+          repo_ids: [String.t()] | nil,
+          fork_provider: String.t() | nil,
+          fork_session_id: String.t() | nil,
+          source_branch: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -55,6 +67,9 @@ defmodule ForemanServer.Events.TaskCreated do
     :prompt,
     :repo_id,
     :repo_ids,
+    :fork_provider,
+    :fork_session_id,
+    :source_branch,
     provider_tracked: true
   ]
 end

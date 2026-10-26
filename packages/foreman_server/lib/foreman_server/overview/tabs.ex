@@ -35,9 +35,14 @@ defmodule ForemanServer.Overview.Tabs do
     [PullRequests, Library | List.wrap(configured)]
   end
 
+  @doc """
+  Builds every tab for a project. Raises `ArgumentError` when two providers
+  (built-in or configured) name the same tab: a silent override would hide one
+  of them.
+  """
   @spec build(String.t()) :: t()
   def build(project_id) when is_binary(project_id) do
-    registered = Map.new(providers(), fn module -> {module.tab(), module} end)
+    registered = providers() |> Enum.flat_map(&register/1) |> unique_by_tab()
     extra = Map.keys(registered) -- @tab_names
 
     Map.new(@tab_names ++ extra, fn name ->
@@ -46,6 +51,33 @@ defmodule ForemanServer.Overview.Tabs do
         :error -> {name, %{available: false, rows: []}}
       end
     end)
+  end
+
+  defp unique_by_tab(entries) do
+    Enum.reduce(entries, %{}, fn {name, module}, acc ->
+      case acc do
+        %{^name => existing} ->
+          raise ArgumentError,
+                "Overview tab #{inspect(name)} is provided by both #{inspect(existing)} " <>
+                  "and #{inspect(module)}; each tab needs exactly one provider"
+
+        _ ->
+          Map.put(acc, name, module)
+      end
+    end)
+  end
+
+  # A provider whose `tab/0` raises has no tab name to report a failure under:
+  # it is dropped (logged) so the other tabs still build.
+  defp register(module) do
+    [{module.tab(), module}]
+  rescue
+    error ->
+      Logger.warning(
+        "Overview tab provider #{inspect(module)} tab/0 failed: #{Exception.message(error)}"
+      )
+
+      []
   end
 
   defp rows(module, name, project_id) do

@@ -551,6 +551,15 @@ defmodule ForemanServer.Workflow.Catalog do
           task_types -> Map.put(base, :task_types, task_types)
         end
 
+      # `operator_timeout_ms:` is read back by `Agents.OperatorQuestionDispatcher`
+      # (the per-workflow operator timeout); a key this map drops is a manifest
+      # knob that parses, validates and then controls nothing.
+      base =
+        case workflow["operator_timeout_ms"] do
+          nil -> base
+          operator_timeout_ms -> Map.put(base, :operator_timeout_ms, operator_timeout_ms)
+        end
+
       # The `worktree:` block is carried VERBATIM at the workflow level.
       #
       # The catalog used to re-key and default it per phase in its own

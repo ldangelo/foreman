@@ -12,14 +12,21 @@ defmodule ForemanServer.Notifier do
        only `:blocked` rows (failures, stalls, needs-input, approvals, CI
        failing, review not met); `every_turn` also delivers `:progress` rows
        (completions, PR ready, review recorded) and enables the `:run_update`
-       class for that notification even if the global config leaves it out.
+       class for that notification even if the global config leaves it out. An
+       event that names no project at all (a standalone jobsite) uses the
+       default; one that names a project the projection does not know is
+       skipped as `project_unresolved` and logged at warning.
     2. **Messaging config**: no enabled provider or an event class the config
        does not enable means nothing is enqueued (and no suppression event is
        written for every ignored event).
-    3. **`run_update` rate limit**: at most one `:run_update` notification per
+    3. **Subject**: the completion of a PR fix thread's jobsite is never
+       notified (`JobsiteCompleted` of the jobsite a watched PR has in flight):
+       its outcome reaches the operator through the PR's own events, and a row
+       for it would announce every fix attempt. Its failure still is.
+    4. **`run_update` rate limit**: at most one `:run_update` notification per
        run within `run_update_rate_limit_ms`; later ones in the window are
        dropped (this is the enforcement of that config value).
-    4. **Dedupe**: the correlation id is a digest of the event type and the
+    5. **Dedupe**: the correlation id is a digest of the event type and the
        rule's `key_fields`, so a replay of the same event collapses in
        `Messaging.notify/2`'s `dedupe_window_ms` check and keeps the same
        notification id (which the dispatcher delivers at most once).
@@ -27,6 +34,10 @@ defmodule ForemanServer.Notifier do
   No secret is ever put in an event. The recipient is the label `"default"`
   (the destination is resolved from config by the dispatcher), and the body is
   passed through `Messaging.Redactor`.
+
+  `stats/1` (counters since boot) and `status/0` (are the notifier and the
+  dispatcher up, is messaging enabled and its config valid) are what
+  `GET /api/doctor` reports, so "enabled but nothing arrives" is visible.
   """
 
   use GenServer
@@ -34,7 +45,7 @@ defmodule ForemanServer.Notifier do
   require Logger
 
   alias ForemanServer.Messaging
-  alias ForemanServer.Messaging.{ConfigResolver, Config, Redactor}
+  alias ForemanServer.Messaging.{ConfigResolver, Config, Dispatcher, Redactor}
   alias ForemanServer.Notifier.{Mapping, Rule}
   alias ForemanServer.{ProjectionStore, ProjectSettings}
 
@@ -42,16 +53,37 @@ defmodule ForemanServer.Notifier do
   @default_preference "blocked_only"
   @max_field_chars 500
 
+  @type stats :: %{
+          notified: non_neg_integer(),
+          errors: non_neg_integer(),
+          skipped: %{optional(atom()) => non_neg_integer()},
+          last_error: term()
+        }
+
   @type state :: %{
           rules: [Rule.t()],
           clock: (-> integer()),
-          last_run_update: %{String.t() => integer()}
+          last_run_update: %{String.t() => integer()},
+          stats: stats()
         }
 
   @type outcome ::
           {:notified, String.t()}
-          | {:skipped, :unmapped | :preference | :messaging_disabled | :rate_limited}
+          | {:skipped,
+             :unmapped
+             | :preference
+             | :project_unresolved
+             | :messaging_disabled
+             | :pr_fix_jobsite
+             | :rate_limited}
           | {:error, term()}
+
+  @type status :: %{
+          notifier: :running | :stopped,
+          dispatcher: :running | :stopped,
+          messaging: :disabled | {:enabled, atom()} | {:invalid, term()},
+          stats: stats() | nil
+        }
 
   @doc "Starts the notifier (registered as `ForemanServer.Notifier`; options as `new_state/1` plus `:name`, `:subscribe?`)."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -83,9 +115,57 @@ defmodule ForemanServer.Notifier do
     %{
       rules: Keyword.get_lazy(opts, :rules, &Mapping.rules/0),
       clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
-      last_run_update: %{}
+      last_run_update: %{},
+      stats: %{notified: 0, errors: 0, skipped: %{}, last_error: nil}
     }
   end
+
+  @doc """
+  Counters since boot: events turned into a notification (`notified`: enqueued,
+  not yet delivered), refused by `Messaging.notify/2` or an invalid config
+  (`errors`, with the redacted `last_error`), and mapped events skipped, by
+  reason (`preference`, `project_unresolved`, `messaging_disabled`,
+  `pr_fix_jobsite`, `rate_limited`). Unmapped events are not counted: that is
+  nearly every event.
+  """
+  @spec stats(GenServer.server()) :: stats()
+  def stats(server \\ __MODULE__), do: GenServer.call(server, :stats)
+
+  @doc """
+  What an operator needs to tell "nothing to notify" from "notifications are
+  broken": whether the notifier and the dispatcher processes are up, whether
+  messaging is enabled and its config valid (the reason is redacted and never
+  holds a destination), and the notifier's counters while it runs.
+  """
+  @spec status() :: status()
+  def status do
+    %{
+      notifier: process_state(__MODULE__),
+      dispatcher: process_state(Dispatcher),
+      messaging: messaging_status(),
+      stats: current_stats()
+    }
+  end
+
+  defp process_state(name), do: if(Process.whereis(name), do: :running, else: :stopped)
+
+  defp messaging_status do
+    case ConfigResolver.resolve() do
+      {:ok, %Config{enabled?: false}} -> :disabled
+      {:ok, %Config{provider: provider}} -> {:enabled, provider}
+      {:error, reason} -> {:invalid, Redactor.redact(reason)}
+    end
+  end
+
+  # The notifier can stop between `whereis` and the call; that is "stopped", not a crash here.
+  defp current_stats do
+    stats()
+  catch
+    :exit, _reason -> nil
+  end
+
+  @impl true
+  def handle_call(:stats, _from, state), do: {:reply, state.stats, state}
 
   @impl true
   def handle_info({:projection_event, event}, state) when is_map(event) do
@@ -104,17 +184,31 @@ defmodule ForemanServer.Notifier do
 
   @doc """
   Handles one projected event: returns the new state and what happened. Public
-  so the decision logic is testable without a subscription.
+  so the decision logic is testable without a subscription. This is where the
+  payload's keys are normalised, once (`Rule.normalize_payload!/1`) and only for
+  an event type the table maps (nearly every event is not: those are never
+  touched): everything below reads strings only. `payload` may be a map or a
+  typed event struct.
   """
   @spec process(state(), String.t(), map()) :: {state(), outcome()}
   def process(state, type, payload) when is_binary(type) and is_map(payload) do
+    {state, outcome} =
+      if Mapping.mapped?(state.rules, type),
+        do: decide(state, type, Rule.normalize_payload!(payload)),
+        else: {state, {:skipped, :unmapped}}
+
+    {count(state, outcome), outcome}
+  end
+
+  defp decide(state, type, payload) do
     with {:ok, rule} <- lookup(state, type, payload),
          project_id = project_id(payload),
-         preference = preference(project_id),
+         {:ok, preference} <- preference(project_id),
          :ok <- check_preference(preference, rule.level),
          opts = messaging_opts(preference),
          {:ok, config} <- resolve_config(opts),
          :ok <- check_enabled(config, rule.class),
+         :ok <- check_subject(type, payload),
          {:ok, state} <- check_rate_limit(state, rule, config, payload, project_id) do
       {state, notify(rule, type, payload, project_id, config, opts)}
     else
@@ -122,6 +216,17 @@ defmodule ForemanServer.Notifier do
       {:error, reason} -> {state, {:error, reason}}
     end
   end
+
+  defp count(state, {:skipped, :unmapped}), do: state
+
+  defp count(%{stats: stats} = state, {:notified, _id}),
+    do: %{state | stats: %{stats | notified: stats.notified + 1}}
+
+  defp count(%{stats: stats} = state, {:skipped, reason}),
+    do: %{state | stats: %{stats | skipped: Map.update(stats.skipped, reason, 1, &(&1 + 1))}}
+
+  defp count(%{stats: stats} = state, {:error, reason}),
+    do: %{state | stats: %{stats | errors: stats.errors + 1, last_error: reason}}
 
   defp lookup(state, type, payload) do
     case Mapping.lookup(state.rules, type, payload) do
@@ -132,12 +237,24 @@ defmodule ForemanServer.Notifier do
 
   # -- preference ------------------------------------------------------------
 
-  defp preference(nil), do: @default_preference
+  # An event that names no project at all (a standalone jobsite: `JobsiteStarted.project_id` is
+  # nullable) has nothing to resolve, so the default applies. An event that names a project the
+  # projection does not know is a dangling reference: that project can neither have opted out nor
+  # be asked, so the event is skipped and counted, never delivered under the default that exists
+  # for "no preference set" (AGENTS.md 5.3, absent is not malformed).
+  defp preference(nil), do: {:ok, @default_preference}
 
   defp preference(project_id) do
     case ProjectionStore.project_settings(project_id) do
-      %ProjectSettings{notification_preference: pref} when is_binary(pref) -> pref
-      _ -> @default_preference
+      %ProjectSettings{notification_preference: pref} when is_binary(pref) ->
+        {:ok, pref}
+
+      %ProjectSettings{notification_preference: nil} ->
+        {:ok, @default_preference}
+
+      nil ->
+        Logger.warning("notifier: event names project #{project_id}, which is not known; skipped")
+        {:skip, :project_unresolved}
     end
   end
 
@@ -168,6 +285,28 @@ defmodule ForemanServer.Notifier do
 
   defp check_enabled(%Config{} = config, class) do
     if ConfigResolver.enabled_for?(config, class), do: :ok, else: {:skip, :messaging_disabled}
+  end
+
+  # -- subject ---------------------------------------------------------------
+
+  # A PR fix thread's jobsite finishing is not a thread finishing: the fix's
+  # outcome reaches the operator through the PR's own events (`PrChecksChanged`,
+  # `PrFixExhausted`), and a row for it would announce every fix attempt. The
+  # watched PR records the jobsite it has in flight, which is what identifies
+  # one; a completion that beats that record (a jobsite that ends before
+  # `PrFixStarted` lands) is announced, never silently dropped.
+  defp check_subject("JobsiteCompleted", payload) do
+    if pr_fix_jobsite?(string_field(payload, "jobsite_id")),
+      do: {:skip, :pr_fix_jobsite},
+      else: :ok
+  end
+
+  defp check_subject(_type, _payload), do: :ok
+
+  defp pr_fix_jobsite?(nil), do: false
+
+  defp pr_fix_jobsite?(jobsite_id) do
+    Enum.any?(ProjectionStore.watched_prs(), &(get_in(&1, [:fix, :in_flight]) == jobsite_id))
   end
 
   # -- rate limit ------------------------------------------------------------

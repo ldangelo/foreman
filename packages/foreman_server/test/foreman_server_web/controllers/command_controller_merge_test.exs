@@ -18,11 +18,6 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
   @sha "approvedsha777"
 
   setup do
-    case GenServer.whereis(MergeGate) do
-      nil -> {:ok, _pid} = MergeGate.start_link()
-      _pid -> :ok
-    end
-
     MergeGate.clear()
 
     run_id = "run-http-merge-#{System.unique_integer([:positive])}"

@@ -150,6 +150,8 @@ defmodule ForemanServerWeb.ProjectController do
       total_count = length(projects)
       visible_projects = Enum.take(projects, limit)
       truncated? = total_count > length(visible_projects)
+      views = Enum.map(visible_projects, &ProjectSettings.public_view/1)
+      attention_fields = Overview.project_fields_many(views)
 
       Telemetry.project_list(duration_ms_since(started_at), total_count, %{outcome: :ok})
 
@@ -158,14 +160,13 @@ defmodule ForemanServerWeb.ProjectController do
       |> put_status(:ok)
       |> json(%{
         projects:
-          Enum.map(
-            visible_projects,
-            &(&1
-              |> ProjectSettings.public_view()
-              |> with_attention()
-              |> with_repositories(Map.get(&1, :project_id) || Map.get(&1, :id))
-              |> stringify_keys())
-          ),
+          [visible_projects, views, attention_fields]
+          |> Enum.zip_with(fn [projection, view, attention] ->
+            view
+            |> Map.merge(attention)
+            |> with_repositories(Map.get(projection, :project_id) || Map.get(projection, :id))
+            |> stringify_keys()
+          end),
         meta: %{truncated: truncated?}
       })
     else

@@ -30,7 +30,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project secret    list --format | set --from-env | unset
 > foreman project setup-script show | set --file | clear
 > foreman project network   show | set --mode --allow
-> foreman project adopt     --kind --id --into --new-project --format
+> foreman project adopt     --kind --id --into --new-project --continue --prompt --fork --from-source-branch --add-repo --format
 > foreman project recommend --format --fail-on
 > foreman project memory    list|read|write|forget|sync
 > foreman project schedule  list|create|pause|resume|delete --project-id
@@ -76,6 +76,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman thread resolve    --reason
 > foreman thread reopen     (no flags)
 > foreman thread steer      --message --message-id --no-resume
+> foreman thread rereview   (no flags)
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
@@ -288,7 +289,9 @@ Manage Elixir-registered projects.
 | `delete <id>` | Soft-delete (archive) a project |
 | `list` | List project projections |
 | `memory` | List, read, write, forget or sync the project's memory |
+| `library list\|add\|replace\|remove` | Manage the project's library files (see `foreman project library` below) |
 | `chat <id> [message...]` | Chat with the project's coordinator |
+| `schedule list\|create\|pause\|resume\|delete` | Manage the project's scheduled tasks (see below) |
 
 ### `foreman project create`
 
@@ -350,7 +353,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 
 ### `foreman project recommend <id>`
 
-Read-only `GET /api/projects/:id/recommendations`: setup recommendations for a project, each with a stable id, a severity (`action` > `warn` > `info`) and an optional fix (a Foreman command, or manual advice). Detector ids: `task_provider.wire_beads`, `task_provider.br_missing`, `repo.agents_md_missing`, `ci.none_detected`, `gh.unauthenticated`, `gh.check_timeout`, `git.no_remote`, `workflows.not_installed`, `workflows.unmapped_types`, `provider.coordinator_unavailable`, `provider.none_installed`, `settings.instructions_empty`, `settings.goal_empty`, `settings.env_plain_secrets`, `memory.empty` (only when project memory exists), `project.paused`, `stack.test_hint`. A fact that cannot be observed produces no recommendation. Probes check only fixed file names and run external commands (`gh auth status`) by absolute path from the server's `PATH` with a 5 s bound each (15 s total, then HTTP 504); nothing from the repository is executed.
+Read-only `GET /api/projects/:id/recommendations`: setup recommendations for a project, each with a stable id, a severity (`action` > `warn` > `info`) and an optional fix (a Foreman command, or manual advice). Detector ids: `task_provider.wire_beads`, `task_provider.br_missing`, `repo.agents_md_missing`, `ci.none_detected`, `gh.unauthenticated`, `gh.check_timeout`, `git.no_remote`, `branch.default_unresolved` (detached HEAD in the project's repository), `workflows.not_installed`, `workflows.unmapped_types`, `provider.coordinator_unavailable`, `provider.none_installed`, `settings.instructions_empty`, `settings.goal_empty`, `settings.env_plain_secrets`, `settings.env_empty` (no plain variable and no stored secret name), `memory.empty` (only when project memory exists), `project.paused`, `stack.test_hint`. A fact that cannot be observed produces no recommendation. Probes check only fixed file names and run external commands (`gh auth status`) by absolute path from the server's `PATH` with a 5 s bound each (15 s total, then HTTP 504); nothing from the repository is executed. The same list opens a new project's coordinator conversation as a setup proposal; `/setup` requests a fresh one and `apply N` runs a command fix (`docs/user-guide.md`, chapter 14).
 
 ```bash
 foreman project recommend my-project
@@ -367,11 +370,15 @@ Brings a session into a project via `POST /api/project-adoptions` (not an MCP to
 ```bash
 foreman project adopt --kind run --id RUN --into other-project            # move
 foreman project adopt --kind run --id RUN --into other-project --continue --prompt "also add /readyz"
+foreman project adopt --kind run --id RUN --into other-project --continue --fork --prompt "what was the recall word?"   # forked: the agent remembers the session
+foreman project adopt --kind run --id RUN --into other-project --continue --fork --from-source-branch --prompt "..."   # worktree cut from the run's branch
+foreman project adopt --kind run --id RUN --into other-project --add-repo   # move, attaching the run's repository to the target first
 foreman project adopt --kind run --id RUN --new-project --project-id my-app --path /repo --goal "..."
 ```
 
-- **Move** re-homes the task, all runs of that task (or the jobsite) and the archive manifest (`.foreman/sessions/<kind>/<id>/manifest.json` gains `project_id`, `adopted_from`, `adopted_at`). Event history is immutable: events keep their original `project_id`, the read model and the manifest change, and `ReviewRecorded` keeps the original project. Refusals: `subject_active` (any non-terminal run/jobsite, including paused ones: they hold a run reservation), `subject_not_found`, `project_not_found`, `project_archived`, `project_paused`, `subject_bound_to_task_provider` (a `beads:<project>:<bead>` task belongs to its source project's beads DB), `repo_not_in_project` (the session's repo must be the target project's path). Re-issuing is a no-op that still repairs a stale manifest.
-- **Continue** (`--continue --prompt`) creates a NEW task in the target project whose prompt is built from the archive (`request.md`, branch, `changed-files.txt`, a bounded tail of `transcript.jsonl`, wrapped as untrusted data) plus your text; the source is untouched and may still be running. The provider session is not forked (no run-start path carries a session id): the new thread always starts context-seeded.
+- **Move** re-homes the task, all runs of that task (or the jobsite) and the archive manifest (`.foreman/sessions/<kind>/<id>/manifest.json` gains `project_id`, `adopted_from`, `adopted_at`). Event history is immutable: events keep their original `project_id`, the read model and the manifest change, and `ReviewRecorded` keeps the original project. Refusals: `subject_active` (any non-terminal run/jobsite, including paused ones: they hold a run reservation), `subject_not_found`, `project_not_found`, `project_archived`, `project_paused`, `subject_bound_to_task_provider` (a `beads:<project>:<bead>` task belongs to its source project's beads DB), `repo_not_in_project` (the session's repo must be the target project's path or one of its attached repositories, `foreman project repo add`; `--add-repo` attaches it first). `--add-repo` (HTTP `add_repo: true`; a move only, not with `--continue` or `--new-project`) attaches the session's repository to the target through the same operator command as `foreman project repo add` (id derived from the directory name and made unique among the target's repositories, `added_by` recorded as `adoption:<kind>:<id>`; the realpath, git work-tree and remote-identity checks apply, so a repository that is not a git work tree or whose origin duplicates another repository of the target is refused with that command's typed error and the move is not attempted), and then the move proceeds. A repository that already belongs to the target is not added twice (the option is then a no-op), and when the move is refused for another reason (active session, paused target) nothing is attached. Membership compares canonical paths (symlinks resolved). Re-issuing is a no-op that still repairs a stale manifest.
+- **Continue** (`--continue --prompt`) creates a NEW task in the target project whose prompt is built from the archive (`request.md`, branch, `changed-files.txt`, a bounded tail of `transcript.jsonl`, wrapped as untrusted data) plus your text; the source is untouched and may still be running. The new task is created with `auto_approve` (the adopt command is itself the operator's approval), so the thread is dispatched immediately; no separate `task.approve` is needed. The response `mode` says how the thread was started: `context_seeded` (the default: a fresh provider session whose prompt is built from the archive as above) or `forked` (`--fork`, next bullet). Both accept `--from-source-branch` (HTTP `from_source_branch: true`): the new thread's worktree is cut from the branch of the session being continued (a run's primary worktree branch, a task's latest run, a jobsite's branch) instead of the project's current branch, so the earlier changes are in the new worktree, and the new thread's PR base is that branch; the response's `source_branch` names it (`null` without the flag). Without it the worktree is cut from the project's current branch. Refused with a typed 422 and nothing created: `source_branch_unknown` (the session recorded no branch: a task that never ran, a jobsite on the head strategy), `source_branch_not_found` (the branch is not a local branch of the target project's repository: deleted after a merge/cleanup, or the session ran in another repository), `source_branch_needs_worktree` (the new thread's workflow runs without a worktree, so there is nothing to cut); it never falls back to the current branch.
+- **Fork** (`--continue --prompt --fork`; HTTP `mode: "continue"` with `fork: true`) starts the new thread's FIRST phase from a fork of the source's provider session (claude: `--resume <id> --fork-session`; pi: `--fork <id>`), so the agent remembers the earlier conversation. The prompt is your text plus a note naming the earlier branch; nothing is replayed from the archive. The source session is never written to (it may still be running: a fork copies it as of now). A fork finds its session by id from any working directory, also after the source's worktree was removed (measured against claude 2.1.308 and pi), unlike a resume. It is refused with a typed 422, never degraded to a context-seeded thread: `fork_no_session` (no provider session is recorded for the subject: a workflow run records one when its worker ends, so a run still on its first phase has none; a jobsite records it while its first iteration runs), `fork_provider_unsupported` (only claude and pi sessions fork), `fork_provider_mismatch` (the new thread's first phase names another provider than the session; the launch refuses it too). By default the new worktree is cut from the project's current branch and the prompt names the earlier branch; `--from-source-branch` cuts it from the source's branch instead (see Continue).
 - **Mint** (`--new-project`) registers a project from the session's manifest (id = repo directory slug, goal = request title) and moves the session into it. Refused with `path_in_use` when a live project already owns that repo path, and with `repo_not_in_project` when `--path` is not the session's repo.
 
 ### `foreman project settings <id>`
@@ -428,7 +435,7 @@ foreman project repo remove --id api project-123
 
 ### `foreman project schedule list|create|pause|resume|delete`
 
-Manage a project's scheduled tasks. `list --project-id <id> [--json]` prints ID, NAME, SPEC, STATUS, NEXT FIRE and LAST OUTCOME plus a `ticker: running|disabled` line (schedules do not fire while the ticker is disabled). `create --project-id <id> --name <n> (--every <30m> | --cron "<expr>") [--timezone <tz>] (--prompt <text> | --prompt-file <path>) --workflow <w> [--auto-approve=false] [--overlap skip|allow] [--id <schedule-id>]` posts `schedule.create` (exactly one of `--every`/`--cron`; `--overlap` defaults to `skip`, `--auto-approve` to true). `pause|resume|delete --project-id <id> --id <schedule-id>` post `schedule.pause|resume|delete`. Server rejections (e.g. `{:invalid_schedule_spec, :every, :below_minimum}`) are printed verbatim with a non-zero exit.
+Manage a project's scheduled tasks. `list --project-id <id> [--json]` prints ID, NAME, SPEC, STATUS, NEXT FIRE and LAST OUTCOME plus a `ticker: running|disabled` line (schedules do not fire while the ticker is disabled). `create --project-id <id> --name <n> (--every <30m> | --cron "<expr>") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <w> [--auto-approve=false] [--overlap skip|allow] [--id <schedule-id>] [--idempotency-key <key>]` posts `schedule.create` (exactly one of `--every`/`--cron`; `--overlap` defaults to `skip`, `--auto-approve` to true). `pause|resume|delete --project-id <id> --id <schedule-id>` post `schedule.pause|resume|delete`. Server rejections (e.g. `{:invalid_schedule_spec, :every, :below_minimum}`) are printed verbatim with a non-zero exit. `--timezone` accepts only `UTC` or `Etc/UTC` (the server rejects any other zone). `create` is idempotent like the other `project` commands: the command id is a SHA-256 of `--idempotency-key` (scoped by project) or, without a key, of the whole request payload, and without `--id` the schedule id (`sch-` + 12 hex characters) is derived from the same seed, so retrying a `create` after a timeout returns the first schedule instead of making a second one. To create two otherwise identical schedules pass different `--idempotency-key` (or `--id`) values; the same key with changed flags is still the first schedule.
 
 ### `foreman project delete <id>`
 
@@ -458,7 +465,7 @@ foreman project list --include-archived
 
 ### `foreman project chat`
 
-Talk to a project's coordinator. A message (arguments, `-m`, or piped stdin) is POSTed to `/api/projects/:id/coordinator/messages`; the CLI then long-polls `GET .../messages?after=<seq>&wait_ms=20000` and prints coordinator/system/agent messages until the coordinator is idle again. With no message on a TTY it runs an interactive loop (`/restart` restarts the coordinator, `/quit` or EOF exits).
+Talk to a project's coordinator. A message (arguments, `-m`, or piped stdin) is POSTed to `/api/projects/:id/coordinator/messages`; the CLI then long-polls `GET .../messages?after=<seq>&wait_ms=20000` and prints coordinator/system/agent messages until the coordinator is idle again: no turn open and no message left pending (`status: idle` and `pending_messages: 0`), so a reply to an earlier report does not end the wait before your message was answered. With no message on a TTY it runs an interactive loop (`/restart` restarts the coordinator, `/quit` or EOF exits).
 
 ```
 foreman project chat project-123 "fix the login bug"
@@ -511,8 +518,8 @@ foreman project library remove <project-id> <entry-id>
 
 | Verb | HTTP | Notes |
 |------|------|-------|
-| `list` | `GET /api/projects/:id/library` | entries, the markdown index and the effective limits |
-| `add` | `POST /api/projects/:id/library` | one folder (walked locally with the server's rules) or up to 100 files (480 MB each); every skipped file is printed with its reason |
+| `list` | `GET /api/projects/:id/library` | entries, the markdown index and the effective limits (`limits`: `max_files_per_add`, `max_file_bytes`, `upload_max_bytes`, the folder rules, `max_folders`, `read_max_bytes`) |
+| `add` | `POST /api/projects/:id/library` | one folder (walked locally with the server's rules) or up to 100 files (480 MB each), and at most 512 MiB in total per request (`upload_max_bytes`; the CLI refuses a larger plan before uploading, the server answers a body over the cap with 413 `upload_too_large`); every skipped file is printed with its reason |
 | `replace` | `PUT /api/projects/:id/library/:entry_id` | keeps the entry id, name and kind unless `--name` is given |
 | `remove` | `DELETE /api/projects/:id/library/:entry_id` | deletes the files and the entry |
 
@@ -805,7 +812,7 @@ Re-opens the PR of one repository of a multi-repository run whose PR could not b
 | `<run-id>` / `--id <run-id>` | Run ID (required). |
 | `--repo-id <repo-id>` | Repository to open the PR for (required). |
 
-### `foreman thread list|get|stop|steer|resolve|reopen`
+### `foreman thread list|get|stop|steer|resolve|reopen|rereview`
 
 A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a jobsite (`jobsite:<id>`). All verbs print the server's JSON.
 
@@ -817,6 +824,7 @@ A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a j
 | `foreman thread resolve [--reason <r>] <thread-id>` | Reads the thread's project, then sends the `thread.resolve` operator command (aggregate `thread:<thread-id>`). A disposition flag only; it never stops a run. |
 | `foreman thread reopen <thread-id>` | Sends `thread.reopen`; a thread that is not resolved is rejected. |
 | `foreman thread steer --message <text> [--message-id <id>] [--no-resume] <thread-id>` | `POST /api/threads/:id/steer`: queues an operator message (`run.steer` for a workflow thread, `Jobsite.steer` for a jobsite thread); the work is paused then resumed with the message in its next prompt. 202 `{thread_id, message_id, mode}`; a terminal thread exits 3 (409 `not_steerable`); blank or oversize (>8000) text is 400. `--no-resume` keeps a paused run paused (workflow door). |
+| `foreman thread rereview <thread-id>` | `POST /api/threads/:id/rereview` (no body): re-runs the review of the thread's run or jobsite, only when the recorded review is `undetermined` (the reviewer failed; a real verdict is final). 202 `{thread_id, requested: "rereview"}` (it runs or queues for a slot; the new verdict supersedes the undetermined one); an unknown thread is 404 `thread_not_found`; 409 `not_reviewed` (no review recorded), `not_rerunnable` (naming `verdict`) or `already_running` exit 3; an unreadable archive is 422 `archive_unusable`; analysis switched off is 503 `analysis_disabled`. |
 
 Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and thread lookup.
 
@@ -830,7 +838,7 @@ Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and
 
 **Resolve / reopen.** `thread.resolve` and `thread.reopen` append `ThreadResolved` / `ThreadReopened` on `thread:<thread-id>`. Resolved threads are excluded from text lookup. Terminal threads without a PR are idle-resolved by `IdleResolver`, configured under `config :foreman_server, :threads` (`idle_resolver`, `idle_resolve_after_days`, `sweep_interval_ms`; see the user guide).
 
-**Overview.** There is no `foreman overview` CLI verb. `GET /api/projects/:project_id/overview[?include_resolved=true|false&resolved_limit=0..200]` (and the MCP read tool `foreman_overview`) groups threads into `ready_for_review`, `waiting_on_you`, `working`, `landing`, `idle`, `resolved` with `counts`, `attention` (`needed`, `count`, `reasons`) and `tabs` (`pull_requests` live; `library`/`scheduled` `available: false` until registered). Read-only: merging is still `merge_approve` then `run.pr.merge`, operator only.
+**Overview.** There is no `foreman overview` CLI verb. `GET /api/projects/:project_id/overview[?include_resolved=true|false&resolved_limit=0..200]` (and the MCP read tool `foreman_overview`) groups threads into `ready_for_review`, `waiting_on_you`, `working`, `landing`, `idle`, `resolved` with `counts`, `attention` (`needed`, `count`, `reasons`), `truncated` (`true` when the project has more than 500 threads and the older ones are left out) and `tabs` (`pull_requests` and `library` live; `scheduled` `available: false` until registered). Read-only: merging is still `merge_approve` then `run.pr.merge`, operator only.
 
 **Transcript caveats.** The workflow transcript is built from `run_logs`, which keep a bounded tail: when entries were dropped `omitted_entries` > 0 and `truncated` is true. Jobsite turns carry no timestamps (`at: null`, ordered by iteration) and jobsite threads have no operator turns, because jobsite resume prompts are not persisted as events.
 
@@ -1083,7 +1091,7 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 
 ### `foreman doctor`
 
-Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
+Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), a `notifier` row (`ok` when outbound notifications are off or on and running, with the counts since the server started; `warn` when they are enabled but the messaging config is invalid, the notifier or the dispatcher process is stopped, or events were refused; the detail never names a destination URL), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
 
 ```bash
 foreman doctor                       # Run the checks
@@ -1134,7 +1142,7 @@ foreman server stop               # Stop server started by Foreman
 
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns aggregate-validated commands/events/projections/recovery/security/overwatch and all database access, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases, stream worker events, emit authoritative terminal run/task events, stream Pi SDK tool calls/assistant messages as ordered worker events, expose typed Foreman tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`), and ask Elixir overwatch to approve/deny tool calls before execution. Node workers and CLI clients do not connect directly to the database; they use Elixir HTTP commands/projections and do not drain DB-backed merge queues from inside the worker. Raw log files are compatibility/debug projections of the worker event stream. The launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; that fallback may parse the final worker output to avoid stale phase attribution, but authoritative worker terminal events remain preferred. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
-The Elixir server can follow a run's PR on GitHub in two opt-in ways; both append a `PrUpdated` event to the run's stream for a PR state change (status or head SHA), and neither changes task status or adds merge metadata to `foreman run get` (`foreman run prs` shows the richer PR watch record). A PR monitor (`FOREMAN_PR_MONITOR_ENABLED=true`; off by default) reads the PR of every run with a recorded association using `gh pr view`, so the `gh` CLI must be installed and authenticated on the server host; an unchanged PR adds nothing on later polls. `POST /webhooks/github` is the real-time path: a `pull_request` delivery (`closed`, `reopened`, or any action on a conflicted PR) appends `PrUpdated` through `run.pr.update`, while `check_run`/`check_suite` (completed), `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment` and `pull_request` `synchronize`/`ready_for_review`/`converted_to_draft` deliveries only request an early refresh: `PrWatcher` re-reads the PR and emits `PrChecksChanged`/`PrReviewChanged` when the content digest changed, so a webhook and a poll converge on one event. Every delivery must carry a valid `X-Hub-Signature-256` HMAC-SHA256 of the raw body, keyed by `FOREMAN_GITHUB_WEBHOOK_SECRET`. It fails closed: with no secret configured every delivery gets `503`, and a missing, malformed or wrong signature gets `401`. Deliveries are attributed to runs by PR URL; a PR no run owns is accepted and ignored. There is no `foreman server doctor` check for the secret (`server` is not a routed command).
+The Elixir server can follow a run's PR on GitHub in two opt-in ways; both append a `PrUpdated` event to the run's stream for a PR state change (status or head SHA), and neither changes task status or adds merge metadata to `foreman run get` (`foreman run prs` shows the richer PR watch record). A PR monitor (`FOREMAN_PR_MONITOR_ENABLED=true`; off by default) reads the PR of every run with a recorded association using `gh pr view`, so the `gh` CLI must be installed and authenticated on the server host; an unchanged PR adds nothing on later polls. `POST /webhooks/github` is the real-time path: a `pull_request` delivery (`closed`, `reopened`, or any other action on a conflicted PR) appends `PrUpdated` through `run.pr.update`, while `check_run`/`check_suite` (`completed`, `rerequested`), `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment` and `pull_request` `synchronize`/`ready_for_review`/`converted_to_draft` deliveries only request an early refresh: `PrWatcher` re-reads the PR and the observation a poll runs appends what changed (`PrUpdated` for a status or head change, `PrChecksChanged`/`PrReviewChanged` when the content digest changed), so a webhook and a poll converge on one event. Every delivery must carry a valid `X-Hub-Signature-256` HMAC-SHA256 of the raw body, keyed by `FOREMAN_GITHUB_WEBHOOK_SECRET`. It fails closed: with no secret configured every delivery gets `503`, and a missing, malformed or wrong signature gets `401`. Deliveries are attributed to runs by PR URL; a PR no run owns is accepted and ignored. There is no `foreman server doctor` check for the secret (`server` is not a routed command).
 
 
 ### `foreman run prs <run-id>`
@@ -1143,7 +1151,7 @@ Lists the pull requests a run is watching (`GET /api/runs/<id>/prs`): PR URL, st
 
 ### `foreman run fix-ci|address-comments|resolve-conflicts <run-id> [--pr <url>] [--note <text>]`
 
-Operator commands `run.pr.fix_ci`, `run.pr.address_comments`, `run.pr.resolve_conflicts`. Each starts one fix thread (a jobsite that checks out the PR head branch, fast-forwards it to the remote, never force-pushes, and pushes the fix to that branch). `--pr` selects the PR when the run has several; `--note` (at most 2000 characters) is operator guidance. Refused with a typed error (`pr_fix_in_flight`) when any fix, of whatever kind, is already in flight for the PR (the guard is one fix per PR), when the per-PR, per-kind cap of 5 attempts is used up, or when the PR is closed/merged. These commands never merge. The MCP write tool `foreman_pr_fix` is the same operation with trigger `coordinator`.
+Operator commands `run.pr.fix_ci`, `run.pr.address_comments`, `run.pr.resolve_conflicts`. Each starts one fix thread (a jobsite that checks out the PR head branch, fast-forwards it to the remote, never force-pushes, and pushes the fix to that branch). A head branch that is checked out in the repository's main worktree, or in a worktree with uncommitted changes, is refused (`worktree_create_failed`) before anything is moved or committed. `--pr` selects the PR when the run has several; `--note` (at most 2000 characters) is operator guidance. Refused with a typed error (`pr_fix_in_flight`) when any fix, of whatever kind, is already in flight for the PR (the guard is one fix per PR), when the per-PR, per-kind cap of 5 attempts is used up, or when the PR is closed/merged. These commands never merge. The MCP write tool `foreman_pr_fix` is the same operation with trigger `coordinator`.
 
 ### `foreman run create-pr <run-id>` / `foreman run watch-stop|watch-start <run-id> [--pr <url>]`
 
@@ -1475,6 +1483,11 @@ config :foreman_server, :mcp,
 With `allow_insecure_local: false`, requests must send
 `Authorization: Bearer <token>` matching `:foreman_server, :api_bearer_token`.
 
+The HTTP transport starts whenever `enabled: true`, however the server was booted
+(`mix phx.server`, `mix run --no-halt`, a release); it does not need `PHX_SERVER`.
+Before `foreman-cnn1l` only a `mix phx.server` boot answered `/mcp` (any other boot
+answered HTTP 500), and `allow_insecure_local: false` could not boot at all.
+
 Client config for a Streamable HTTP MCP client (Oh My Pi shown; see
 `docs/mcp-config.md` upstream for the schema):
 
@@ -1508,7 +1521,7 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,
 `foreman_run_get_logs`, `foreman_run_get_events`, `foreman_run_get_activity`,
-`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_repo_list` (repositories, primary first), `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only),
+`foreman_inbox_get`, `foreman_task_list`, `foreman_task_get`, `foreman_project_settings_get`, `foreman_project_repo_list` (repositories, primary first), `foreman_project_recommendations`, `foreman_project_environment_get` (variable/secret names only), `foreman_project_library_list` (`project_id`; entries plus the markdown index) and `foreman_project_library_read` (`project_id`, `entry_id`, `path`; one file of an entry, at most 1 MiB, text as UTF-8 and anything else as base64; there is no agent write tool for the library),
 `foreman_usage_get` (same payload as `GET /api/projects/<id>/usage`; arguments `project_id`, `from`, `to`, `group_by`, `limit`; `cost_usd: null` means unknown, `cost_unknown_events` counts unpriced events),
 `foreman_thread_list` (`project_id`, optional `status`, `door`, `limit`),
 `foreman_thread_get` (`thread_id`), `foreman_thread_transcript` (`thread_id`,
@@ -1516,6 +1529,8 @@ optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
 `external_id`, `branch`, `pr`, `limit`; at least one criterion).
 
 `foreman_workflow_list` returns `{workflows: [<manifest filename>...], invalid: [{filename, path, stage, reason, serving_previous}]}`: `invalid` lists manifests the catalog refused to load, each with the validation error; `foreman_workflow_get` on such a name answers `INVALID_MANIFEST` with the same reason (not `NOT_FOUND`). A loaded manifest whose latest edit was refused is still served: its `invalid` entry has `serving_previous: true` and `foreman_workflow_get` returns the served snapshot plus a `refused_edit` object (the doctor row is titled "the latest edit is invalid; its previous valid version is still served").
+
+`foreman_workflow_get` (`name`) returns `{name, description, digest, phase_count, manifest_path, phases}` for a loaded workflow: `description` and `digest` are `""` when the manifest declares none (a `digest` is only computed for a manifest with a `worktree:` block), and `phases` are the phases the manifest declares, as written (string keys), without the catalog's derived fields.
 
 Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
@@ -2039,7 +2054,7 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 
 ## Messaging CLI status
 
-No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. `foreman project update --notification-preference every_turn|blocked_only|off <id>` sets a project's notification preference (see the user guide's Outbound messaging delivery section). Outbound Telegram/Slack/webhook delivery is configured on the server via `config :foreman_server, :messaging`; run/detail surfaces may show projected notification lifecycle state when notification events exist.
+No standalone `foreman messaging` or notification test-delivery CLI command exists in this revision. `foreman project update --notification-preference every_turn|blocked_only|off <id>` sets a project's notification preference (see the user guide's Outbound messaging delivery section). Outbound Telegram/Slack/webhook delivery is configured on the server via `config :foreman_server, :messaging` (the webhook also from `FOREMAN_NOTIFY_WEBHOOK_URL`, with `FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true` / `FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true` for an http or private-network receiver); run/detail surfaces may show projected notification lifecycle state when notification events exist, and `foreman doctor` reports whether notifications are off, on and able to deliver, or on but not able to (the `notifier` row).
 
 ### `foreman approvals`
 
@@ -2049,7 +2064,9 @@ foreman approvals approve --run <id> --call <tool_call_id> [--by <name>] [--reas
 foreman approvals deny    --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
 ```
 
-Agent tool-permission requests (`GET /api/projects/:id/approvals`, `GET /api/runs/:run_id/approvals`). `approve`/`deny` post `tool.approve` / `tool.deny` to `/api/commands` for ONE tool call; they never touch the run's merge gate (`foreman run approve-merge` / `merge` stay the only way to merge). `--all` includes decided, expired and finished requests. An approval relaxes the approval mode for the NEXT PHASE ONLY, but phase-wide: pi/claude have no per-tool grant (this is the post-hoc path). The `approval_delivery` column is `inflight` (a Claude phase in `approval_mode: prompt`: the agent's call is blocked and proceeds in the same session when you approve; no re-run; nobody answering within `approval_timeout_ms` denies it), `resume_with_override` (the run is resumed with a one-phase approval-mode override) or `live`.
+Agent tool-permission requests (`GET /api/projects/:id/approvals`, `GET /api/runs/:run_id/approvals`). `approve`/`deny` post `tool.approve` / `tool.deny` to `/api/commands` for ONE tool call; they never touch the run's merge gate (`foreman run approve-merge` / `merge` stay the only way to merge). `--all` includes decided, expired and finished requests; `--format json` also shows each request's `reason` (why it was denied or expired: `timeout`, `run_ended`, `client_gone`, `server_restart`) and, for a finished one, its `outcome` (`delivered`, or `delivery_failed: <why>` for an approval that reached nobody). Approving or denying a request that already expired is refused with `{:tool_call_expired, <reason>}`. An approval relaxes the approval mode for the NEXT PHASE ONLY, but phase-wide: pi/claude have no per-tool grant (this is the post-hoc path). The `approval_delivery` column is `inflight` (a Claude phase in `approval_mode: prompt`: the agent's call is blocked and proceeds in the same session when you approve; no re-run; nobody answering within `approval_timeout_ms` denies it; a claude CLI that does not know `--permission-prompt-tool` is detected at launch and its phases use the post-hoc path instead), `resume_with_override` (the run is resumed with a one-phase approval-mode override) or `live`.
+
+Scope: `approve`/`deny` decide ONE request. For `approval_delivery: inflight` that is one blocked call; for `resume_with_override` the approval relaxes the approval mode of the run's NEXT PHASE as a whole (`auto_edit` for edit tools, `auto_approve` otherwise), so every tool of that phase is allowed, not only the approved one: Foreman has no per-tool grant on that path. The read-only MCP tool `foreman_approvals_list` (`project_id` or `run_id`, optional `status`) returns the same fields as the two list endpoints; there is no MCP tool to decide.
 
 ### `foreman questions`
 
@@ -2059,3 +2076,5 @@ foreman questions answer --run <id|global> --question <id> --text <answer> [--by
 ```
 
 Questions agents asked the operator (`GET /api/projects/:id/questions`); `answer` posts `question.answer`. Unanswered requests expire after the configured timeout and then show as `approval_expired` / `question_expired` in the Overview.
+
+The read-only MCP tool `foreman_questions_list` (`project_id`, optional `status`) returns the same fields as the list endpoint; there is no MCP tool to answer.

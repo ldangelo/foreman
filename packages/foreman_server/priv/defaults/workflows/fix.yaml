@@ -1,5 +1,5 @@
 name: fix
-description: Fix an issue via the ensemble fix workflow.
+description: Fix an issue with a Foreman-native prompt, then review it.
 task_types: [bug]
 # Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
 # `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
@@ -26,7 +26,8 @@ worktree:
 # propose nothing either way, since it gates on commits.
 phases:
   - name: fix
-    command: "/skill:ensemble-fix-issue {{input.prompt}} --foreman"
+    prompt: fix.md
+    artifact: "{task.projectReportsDir}/FIX_REPORT.md"
     commit: true
   - name: coderabbit-review
     prompt: review-coderabbit.md

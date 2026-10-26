@@ -346,6 +346,20 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
                })
     end
 
+    test "auto with a cooldown and a non-integer requested_at is refused, not silently un-cooled" do
+      state = run_fix(watched(), "pushed", "s2", 1_000_000)
+
+      for bad <- ["1100000", 1.5, false] do
+        assert {:error, {:invalid_integer, :requested_at, ^bad}} =
+                 reject(state, "run.pr.fix_ci", %{
+                   trigger: "auto",
+                   max_attempts: 5,
+                   cooldown_seconds: 300,
+                   requested_at: bad
+                 })
+      end
+    end
+
     test "fix_exhausted is recorded once per head and blocks that kind until the head moves" do
       {state, spec} =
         accept(watched(), "run.pr.fix_exhausted", %{

@@ -557,6 +557,38 @@ defmodule ForemanServerWeb.JobsiteControllerTest do
       assert Jobsite.Executor.pid_for(id) == nil
     end
 
+    # foreman-cm8nv: a worktree and an open iteration, but no provider session on record (the agent
+    # was cut off before it reported one). A resume would start a blank agent and end `completed`.
+    test "resume of a jobsite whose agent never reported a provider session => 409 no_session" do
+      id = "js-no-session-#{System.unique_integer([:positive])}"
+
+      for {type, suffix, payload} <- [
+            {"jobsite.start", "start",
+             %{repo_path: "/tmp/jobsite-ctl-no-such-repo", strategy: "head", max_iterations: 1}},
+            {"jobsite.worktree.provision", "wt",
+             %{path: "/tmp/jobsite-ctl-no-such-wt", branch: "jobsite/#{id}", base_sha: "abc123"}},
+            {"jobsite.iteration.start", "it1", %{index: 1}}
+          ] do
+        assert {:ok, _} =
+                 ForemanServer.CommandGateway.dispatch_system(%{
+                   type: type,
+                   command_id: "jobsite-controller-test:#{id}:#{suffix}",
+                   aggregate_id: "jobsite:#{id}",
+                   payload: Map.put(payload, :jobsite_id, id)
+                 })
+      end
+
+      conn = post_json(authed(), "/api/jobsites/#{id}/resume", %{})
+      assert %{"error" => "no_session", "message" => message} = json_response(conn, 409)
+      assert message =~ "no provider session"
+      assert Jobsite.Executor.pid_for(id) == nil
+
+      assert Enum.any?(
+               audit_events(),
+               &(&1["jobsite_id"] == id and &1["error_code"] == "no_session")
+             )
+    end
+
     test "resume is held to the remote-start flag, audited" do
       Application.put_env(:foreman_server, :jobsites, [])
       conn = post_json(authed(), "/api/jobsites/js-any/resume", %{})

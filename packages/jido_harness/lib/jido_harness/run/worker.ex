@@ -9,6 +9,13 @@ defmodule Jido.Harness.RunWorker do
   # unconsumed and the caller sees it as undelivered).
   @live_input_grace_ms 10_000
 
+  # A live run closes its CLI's stdin when the run is over (the provider went idle, or recorded a
+  # terminal event) and expects the CLI to exit on the EOF. One that stays alive anyway (a persistent
+  # rpc process wedged in its own shutdown) is stopped after this long and the run finishes from what
+  # it recorded, so a finished run can never stay open for as long as its CLI chooses to live.
+  # Overridable per provider with `live_exit_grace_ms` in `:provider_config`.
+  @live_exit_grace_ms 10_000
+
   def start_link({id, provider, request, adapter, config}) do
     GenServer.start_link(
       __MODULE__,
@@ -59,7 +66,7 @@ defmodule Jido.Harness.RunWorker do
       error: nil,
       result: nil,
       waiters: %{},
-      live: init_live(request, adapter)
+      live: init_live(request, adapter, config)
     }
 
     {:ok, state, {:continue, :start}}
@@ -188,8 +195,30 @@ defmodule Jido.Harness.RunWorker do
     {:noreply, %{state | waiters: Waiters.drop_monitor(state.waiters, monitor)}}
   end
 
-  def handle_info({:live_input_grace, token}, %{live: %{idle_token: token}} = state) when not is_nil(token),
-    do: {:noreply, close_live_input(state)}
+  def handle_info({:live_input_grace, token}, %{live: %{idle_token: token}, result: nil} = state)
+      when not is_nil(token),
+      do: {:noreply, close_live_input(state)}
+
+  # The CLI outlived its closed stdin. It is stopped and the run finishes from what it recorded: the
+  # terminal event if there is one, otherwise the idle turn it ended on is a completion. A CLI that
+  # did exit has already finished the run (`result` is set), so a late timer never touches one.
+  def handle_info({:live_exit_grace, token}, %{live: %{exit_token: token}, result: nil} = state)
+      when not is_nil(token) do
+    state =
+      state
+      |> append(
+        Event.new!(%{
+          type: :provider_event,
+          provider: state.provider,
+          provider_session_id: state.provider_session_id,
+          payload: %{"kind" => "live_exit_grace_expired", "grace_ms" => state.live.exit_grace_ms}
+        })
+      )
+      |> stop_adapter()
+      |> finish_success()
+
+    {:noreply, state}
+  end
 
   def handle_info({:run_timeout, :runtime, token}, %{runtime_token: token, status: status} = state)
       when status in [:starting, :running] do
@@ -257,13 +286,41 @@ defmodule Jido.Harness.RunWorker do
   # is open and keeps it open until the provider consumes it, or it is refused
   # with `:input_closed`. Nothing is written into a closed pipe and nothing is
   # lost silently.
+  #
+  # Such a CLI never exits by itself: closing its stdin is the ONLY way the run ends, so
+  # every way a run can end has to close it (`live_after_event/2`): the provider going
+  # idle with nothing pending (`:input_idle`), a written message the provider never took
+  # (the grace timer), and a TERMINAL event. The last is the easy one to miss: a provider
+  # that fails its turn (pi `agent_end` with `stopReason: "error"`, claude `result` with
+  # `is_error`) records the terminal event FIRST, and every event after it, `agent_settled`
+  # (`:input_idle`) included, is dropped, so the CLI sat idle on an open stdin for ever and
+  # `Run.await/2` never returned (a 429 at the end of an otherwise finished phase held a
+  # Foreman run `in_progress` until its deadline, with nothing wrong in the worktree).
+  # A CLI that outlives its closed stdin is stopped after `@live_exit_grace_ms`.
   # ---------------------------------------------------------------------
-  defp init_live(request, adapter) do
+  defp init_live(request, adapter, config) do
     options = Helpers.provider_options(request.provider_options, [:live_input])
 
     if options[:live_input] == true and function_exported?(adapter, :live_input_line, 2),
-      do: %{pending: [], closed?: false, idle_token: nil, idle_payload: nil},
+      do: %{
+        pending: [],
+        closed?: false,
+        idle_token: nil,
+        idle_payload: nil,
+        exit_token: nil,
+        exit_grace_ms: exit_grace_ms!(config)
+      },
       else: nil
+  end
+
+  defp exit_grace_ms!(config) do
+    case Map.get(config, :live_exit_grace_ms, @live_exit_grace_ms) do
+      ms when is_integer(ms) and ms > 0 ->
+        ms
+
+      other ->
+        raise ArgumentError, "provider_config live_exit_grace_ms must be a positive integer, got: #{inspect(other)}"
+    end
   end
 
   defp send_live_input(%{live: nil}, _input_id, _text), do: {:error, :not_live}
@@ -329,7 +386,12 @@ defmodule Jido.Harness.RunWorker do
        when type in [:turn_started, :tool_call, :output_text_delta, :thinking_delta],
        do: put_in_live(state, :idle_token, nil)
 
-  defp live_after_event(state, _event), do: state
+  # A terminal event ends the run whatever the provider does next, and `:input_idle`, the usual
+  # trigger, is never delivered after one (`handle_info/2` drops everything past it): the CLI is told
+  # to go now, or an rpc process that failed its turn would idle on its open stdin for ever.
+  defp live_after_event(state, %Event{} = event) do
+    if Event.terminal?(event), do: close_live_input(state), else: state
+  end
 
   # Consumption is matched by input id (resolved from the echoed text first, see
   # `resolve_live_input/2`). An echo that matches nothing (the initial prompt)
@@ -341,6 +403,8 @@ defmodule Jido.Harness.RunWorker do
 
   defp close_live_input(%{live: %{closed?: true}} = state), do: state
 
+  # Closing is the only thing that ends a live CLI, so it also starts the clock on the CLI actually
+  # going (`{:live_exit_grace, token}` in `handle_info/2`).
   defp close_live_input(state) do
     manager = state.context.process_manager
 
@@ -348,7 +412,12 @@ defmodule Jido.Harness.RunWorker do
       _ = manager.close_input(process_id)
     end
 
-    put_in_live(state, :closed?, true)
+    token = make_ref()
+    Process.send_after(self(), {:live_exit_grace, token}, state.live.exit_grace_ms)
+
+    state
+    |> put_in_live(:closed?, true)
+    |> put_in_live(:exit_token, token)
   end
 
   defp put_in_live(%{live: live} = state, key, value), do: %{state | live: Map.put(live, key, value)}

@@ -98,9 +98,11 @@ defmodule ForemanServer.ProjectMemory.Store do
     with :ok <- validate_name(name),
          {:ok, entry, _content} <- read(project_path, name),
          {:ok, previous} <- previous_raw(project_path, name),
-         :ok <- remove(project_path, topic_file(name)),
+         # Everything that can fail without touching disk runs before `remove/2`.
          {:ok, entries} <- list_entries(project_path),
-         :ok <- put_index_or_restore(project_path, name, previous, render_index!(entries)) do
+         remaining = Enum.reject(entries, &(&1.name == name)),
+         :ok <- remove(project_path, topic_file(name)),
+         :ok <- put_index_or_restore(project_path, name, previous, render_index!(remaining)) do
       {:ok, entry}
     end
   end

@@ -16,7 +16,11 @@ defmodule ForemanServer.Aggregates.ToolCall do
     * `tool.approve` / `tool.deny` (operator) - payload `run_id`, `tool_call_id`,
       optional `decided_by`, `reason` (<= 500 chars).
     * `tool.finish` (system) - the decision was delivered; optional `outcome`.
-    * `tool.expire` (system) - the request timed out undecided.
+    * `tool.expire` (system) - the request ended undecided; `reason` says why:
+      `timeout` (nobody answered), `run_ended` (the run reached a terminal state),
+      `client_gone` (the agent's connection closed) or `server_restart` (Foreman
+      restarted while the agent waited). An operator decision on an expired call
+      is refused with `{:tool_call_expired, reason}`.
 
   This aggregate decides an AGENT TOOL CALL only. It is not the run's merge gate
   (`merge_approve`, `run.pr.merge`), which lives on the `run:` stream and stays
@@ -33,8 +37,8 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
   defmodule State do
     @moduledoc "Lifecycle state of one tool call."
-    @enforce_keys [:exists?, :tool_call_id, :status, :terminal?]
-    defstruct [:exists?, :tool_call_id, :status, :terminal?]
+    @enforce_keys [:exists?, :tool_call_id, :status, :terminal?, :reason]
+    defstruct [:exists?, :tool_call_id, :status, :terminal?, :reason]
   end
 
   @doc "Stream id for a tool call; `:` in either id is escaped so ids stay unambiguous."
@@ -44,7 +48,7 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
   @impl true
   def initial_state do
-    %State{exists?: false, tool_call_id: nil, status: nil, terminal?: false}
+    %State{exists?: false, tool_call_id: nil, status: nil, terminal?: false, reason: nil}
   end
 
   @impl true
@@ -56,14 +60,21 @@ defmodule ForemanServer.Aggregates.ToolCall do
       "ToolCallRequested" -> transition(state, id, "requested", false)
       "ToolCallApproved" -> transition(state, id, "approved", false)
       "ToolCallDenied" -> transition(state, id, "denied", true)
-      "ToolCallExpired" -> transition(state, id, "expired", true)
+      "ToolCallExpired" -> transition(state, id, "expired", true, Aggregate.get(payload, :reason))
       "ToolCallFinished" -> transition(state, id, "finished", true)
       _ -> state
     end
   end
 
-  defp transition(%State{} = state, id, status, terminal?),
-    do: %State{state | exists?: true, tool_call_id: id, status: status, terminal?: terminal?}
+  defp transition(%State{} = state, id, status, terminal?, reason \\ nil),
+    do: %State{
+      state
+      | exists?: true,
+        tool_call_id: id,
+        status: status,
+        terminal?: terminal?,
+        reason: reason
+    }
 
   @impl true
   def handle_command(state, %{type: "tool.request", payload: payload}) do
@@ -95,7 +106,7 @@ defmodule ForemanServer.Aggregates.ToolCall do
     with {:ok, run_id, tool_call_id} <- ids(payload),
          {:ok, reason} <- validate_reason(get(payload, :reason)),
          :ok <- optional(payload, [:decided_by]),
-         :ok <- require_status(state, ["requested"]) do
+         :ok <- require_decidable(state) do
       event_type = if type == "tool.approve", do: "ToolCallApproved", else: "ToolCallDenied"
 
       {:ok,
@@ -200,6 +211,12 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
   defp require_absent(%State{exists?: true}), do: {:error, :tool_call_already_requested}
   defp require_absent(_state), do: :ok
+
+  # An operator decision on a request that expired says why it did.
+  defp require_decidable(%State{status: "expired", reason: reason}),
+    do: {:error, {:tool_call_expired, reason}}
+
+  defp require_decidable(state), do: require_status(state, ["requested"])
 
   defp require_status(%State{terminal?: true, status: status}, _allowed),
     do: {:error, {:tool_call_terminal, status}}

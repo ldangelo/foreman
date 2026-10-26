@@ -206,8 +206,14 @@ defmodule ForemanServer.GitHub.PrStatusChecksTest do
         send(test_pid, {:gh, hd(args)})
 
         case args do
-          ["pr" | _] -> {view("pr565-view.json"), 0}
-          ["api" | _] -> {fixture("pr565-review-threads.json"), 0}
+          ["pr" | _] ->
+            {view("pr565-view.json"), 0}
+
+          ["api", "graphql", "-f", "query=query($ids" <> _ | _] ->
+            {fixture("pr565-comment-authors.json"), 0}
+
+          ["api" | _] ->
+            {fixture("pr565-review-threads.json"), 0}
         end
       end
 
@@ -228,6 +234,35 @@ defmodule ForemanServer.GitHub.PrStatusChecksTest do
 
       assert_received {:gh2, "pr"}
       refute_received {:gh2, "api"}
+    end
+
+    # foreman-v9y3x: the recorded GraphQL answer for PR #565's five conversation comments
+    # (CodeRabbit's walkthrough and two later summaries, and the owner's two replies).
+    test "recorded PR #565: CodeRabbit's three comments are Bots, the owner's two are not" do
+      runner = fn "gh", args, _opts ->
+        case args do
+          ["pr" | _] ->
+            {view("pr565-view.json"), 0}
+
+          ["api", "graphql", "-f", "query=query($ids" <> _ | ids] ->
+            assert Enum.count(ids, &String.starts_with?(&1, "ids[]=IC_")) == 5
+            {fixture("pr565-comment-authors.json"), 0}
+
+          ["api" | _] ->
+            {fixture("pr565-review-threads.json"), 0}
+        end
+      end
+
+      assert {:ok, %{comments: comments}} =
+               PrStatus.fetch(@url, command_runner: runner, threads: true)
+
+      assert Enum.map(comments, &{&1.author, &1.bot}) == [
+               {"coderabbitai", true},
+               {"ldangelo", false},
+               {"coderabbitai", true},
+               {"ldangelo", false},
+               {"coderabbitai", true}
+             ]
     end
 
     test "a non-PR url is a typed error" do

@@ -13,8 +13,11 @@ defmodule ForemanServer.Jobsite.Sandboxes do
   Options: `:image` (default `"foreman-jobsite:" <> basename(repo_path)`),
   `:sandbox_path` (default `"/workspace"`), `:uid`/`:gid` (default the host
   user), `:mounts` (default `[]`, each `%{host_path:, sandbox_path:,
-  readonly?: false}`), `:network` (default none), `:env` (default `%{}`),
-  `:binary` (default `"docker"`).
+  readonly?: false}`), `:network` (default none), `:env` (default `%{}`: the
+  container's own environment, so hooks, `Sandbox.exec/3` and the agent all run
+  under it; it is persisted with the config, so never put a secret in it),
+  `:labels` (default `%{}`: docker labels of the container) and `:binary`
+  (default `"docker"`).
   """
   @spec docker(keyword()) :: {module(), map()}
   def docker(opts \\ []), do: {Docker, Map.new(opts)}

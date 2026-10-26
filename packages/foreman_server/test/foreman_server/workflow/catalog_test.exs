@@ -154,8 +154,12 @@ defmodule ForemanServer.Workflow.CatalogTest do
       [fix_phase, coderabbit_phase, repo_rules_phase] = wf.phases
 
       assert fix_phase["name"] == "fix"
-      assert fix_phase.action == :command
-      assert fix_phase.command == "/skill:ensemble-fix-issue {{input.prompt}} --foreman"
+      # The fix phase is a bundled Foreman prompt, not the external `ensemble-fix-issue`
+      # skill (which is not shipped and was never verified to respect the run's worktree).
+      assert fix_phase.action == :prompt
+      assert fix_phase.command in [nil, ""]
+      assert Path.basename(fix_phase.prompt_path) == "fix.md"
+      assert File.exists?(fix_phase.prompt_path)
       # The fix phase itself declares no routing requirement.
       assert fix_phase.required_file in [nil, ""]
 

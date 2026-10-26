@@ -463,6 +463,9 @@ func runRetryPr(c *client.Client, args []string) error {
 	if err := fs.parse(rest); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "foreman run retry-pr: unexpected argument %q (select the repository with --repo-id <id>)", fs.Arg(0))
+	}
 	if positional != "" {
 		*runID = positional
 	}

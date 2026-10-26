@@ -41,7 +41,7 @@ E2E_APPROVAL_TIMEOUT_MS=30000 stack.sh restart        E2E_EXTRA_ENV=FOREMAN_CLAU
 | Coordinator turn interrupted by a server crash | PASS | `TurnStarted a1` 13:04:49.95, `kill -9` 13:04:51, after restart `TurnFailed error_code interrupted` 13:04:56.3, `TurnStarted a2`, reply 13:05:01.157, `TurnCompleted`; no duplicate reply |
 | Workflow thread running when the server dies (TERM and kill -9) | PASS (re-run, new session) | run re-driven ~15 s after restart with a new claude process; `provider_sessions` is `[]` while a worker runs (the id is bound when the worker run ends), so a crash loses it and the phase re-runs from its prompt |
 | Claude `--resume` inside a jobsite (`max_iterations 2`) | PASS | `js-cf03cf67...`: both iterations carry session `3579fa6f`; one Claude session file holds both prompts |
-| Jobsite crashed mid-FIRST-iteration, then `resume` | FAIL | no session id recorded; resume sends `Continue.` (or the custom prompt) to a fresh claude: `UNKNOWN` for a code word asked about earlier; default prompt: "I don't see any work in progress", jobsite `completed`, worktree untouched (`js-3706471c...`, `js-ee21a4cc...`). Bead foreman-cm8nv |
+| Jobsite crashed mid-FIRST-iteration, then `resume` | FAIL on 2026-10-23 (no session recorded; `Continue.` went to a blank claude: `UNKNOWN` for the code word, `js-3706471c...`, `js-ee21a4cc...`, bead foreman-cm8nv); **PASS after the fix** (2026-10-25, `failure_injection.sh jobsite-resume`, passed=17 failed=0 twice) | session bound 0.77 s into the iteration (`JobsiteSessionBound`), `kill -9`, restart pauses the jobsite as resumable (not `executor_lost`), resume with a prompt lacking the word: `answer.txt` holds the recall word, same claude session before and after (transcript 27 -> 61 lines); with the watcher disabled the same scenario FAILs (passed=2 failed=4). See `p2m2t-live-run.md` |
 | PrFix claude `resume_session` (fix threads) | UNVERIFIED | GitHub/PR path, owned by the LiveGithub slice; the jobsite-door `--resume` above is the same harness mechanism |
 
 ## foreman-exofh: in-flight approvals (`claudeprompt`, Write call)
@@ -56,6 +56,28 @@ E2E_APPROVAL_TIMEOUT_MS=30000 stack.sh restart        E2E_EXTRA_ENV=FOREMAN_CLAU
 | Unanswered past `approval_timeout_ms` | PASS | `E2E_APPROVAL_TIMEOUT_MS=30000`: requested 12:52:40.267, `ToolCallDenied decided_by system reason timeout` 12:53:10.281 (30.01 s); agent saw `Nobody answered the request to use the `Write` tool in time, so it was denied. Do not use it; continue without it, or say plainly what you cannot do.`; run failed `permission_denied`. The 30 min default is UNVERIFIED (not waited) |
 | Server restart (TERM and kill -9) while blocked | PARTIAL | the agent dies and the run is re-driven within ~15 s, asking again (new `tool_use_id`). The pre-restart request stays `requested`: two actionable rows; approving the stale one is `Done` in the UI/CLI but the log says `delivery_failed: :no_live_request`; after the run completes the stale request keeps the thread in "Waiting on you" until the sweeper: `run-91a7...` request 12:54:30.49 -> `ToolCallExpired reason timeout` 13:25:29.70 (30 min + one sweep), after which the thread became `idle`. Bead foreman-u0646 |
 | Older claude CLI without `--permission-prompt-tool` | SIMULATED, fails loudly | `fake-old-claude.sh` (commander-style `error: unknown option`, exit 1) via `FOREMAN_CLAUDE_CLI`: run `failed` in seconds with `{:other, :execution}: execution: claude: %{"exit_status" => 1, ...}`; the flag name is only in the transcript; no fallback to the pause path. Bead foreman-dc618 |
+
+## foreman-exofh: operator questions in the workspace (2026-10-26, UTC)
+Private stack (`stack.sh up`, port 4841, database `foreman_e2e_wsq`, real claude `haiku`), UI driven with
+`scripts/e2e/live_claude/questions_ui.mjs` (Playwright, headless Chromium on `http://localhost:4841`). A question is raised the way an agent
+does it: `curl -X POST $API/webhooks/operator/ingest -d '{"question_id":..., "question":..., "agent_id":"<task id>"}'` (202), which
+opens it under the task's live run and project. Commands: `questions_ui.mjs watch|answer|blank|keep|gone|state --base http://localhost:4841
+--token <api token> --project lc [--question <id>] [--text <answer>]`; events read with `rpc.sh` (`EventStore.read_stream_forward`).
+| Case | Result | Evidence |
+|---|---|---|
+| Open question shown | PASS | `Questions for you (1)`: text, `asked by <task>`, run id, time, labelled answer box; the thread card sits in "Waiting on you" |
+| Answer typed in the browser reaches the running agent | PASS | `run-6022...` (claude, a 120 s tool call in flight); question `q-live-answer-5` answered 01:36:10.12: notice `Done: question.answer run-6022.../q-live-answer-5.`, card gone at once; `QuestionAnswered` text `Use postgres, version 16.`, `answered_by dashboard`; run stream `RunSteerQueued` (`message_id question:q-live-answer-5`, text `Answer to your question q-live-answer-5: Use postgres, version 16.`) then `RunSteerDelivered mode live`; the agent wrote `answer2.txt` = `Use postgres, version 16.` and committed it (branch `foreman/adhoc-36ea78ac5f608c04/run-6022...`) |
+| Blank answer | PASS | whitespace through the real form (the browser's `required` lets it pass): notice `Write an answer first.` (error style), card stays, `status open`, no command sent |
+| Typed answer kept while the page re-renders | FAIL, fixed in this change | `keep` probe: the textarea was `""` right after the focus moved (LiveView rewrites an unfocused input from the server markup). With `phx-update="ignore"` on the textarea: kept after the re-render and after a refresh caused by a new question |
+| Answered over the CLI while the page is open | PASS | `foreman questions answer` at 01:40:11.115, card gone from the open page at 01:40:11.378 (the 250 ms refresh window) |
+| Expired while the page is open | PASS | `question.expire` at 01:40:24.9, card gone at 01:40:25.2 |
+| Unanswered question | PASS | three questions became `expired`, reason `timeout`, about 5 minutes after they were asked (`Approvals.Sweeper`; the question's own `timeout_ms`, default 5 min) and left the pane |
+| Answer after the asking run ended | OBSERVED, not changed | the UI says `Done`, `QuestionAnswered` is recorded, the deliverer logs `questions: answer to q-a11y-1 was not delivered: {:run_terminal, "completed"}`; nothing warns the operator (the CLI and HTTP behave the same) |
+| Accessibility | PASS | `ui_a11y.mjs` with open questions: axe 0 violations on the workspace (39 rules), the answer box is reached after 5 stops then the `Answer` button, idle 0 frames |
+| pi | cannot ask | `Jido.Harness.RequestResolver.resolve(:pi, ...)`: `default`, `auto_approve` accepted; `prompt` and `auto_edit` -> `provider does not support normalized option value` (`field: :approval_mode`); `claude` `prompt` accepted. `pi --help` has no permission flag (`--approve` only trusts project-local files) |
+UNVERIFIED: a pi run (it has nothing to raise), the delivery of a question outside any run (the deliverer publishes on
+`com.foreman.reply.operator`; no subscriber in this stack), and the stale-submit race (a click in the 250 ms before the refresh removes the
+card) is covered by the LiveView tests only.
 
 ## Defects
 Fixed in this PR (failing test first): (1) 60 s Cowboy idle timeout kills a blocked prompt:

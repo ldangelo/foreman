@@ -71,6 +71,50 @@ defmodule ForemanServerWeb.ProjectLibraryControllerTest do
     assert build_conn() |> get(base(p)) |> json_response(401)
   end
 
+  # The API has one shared bearer token, so there is no per-operator principal: a header the
+  # caller can set to anything must never become the author of an append-only audit event.
+  test "the x-foreman-operator header is not an identity: every audit event names `api`",
+       %{project_id: p} do
+    spoofed = fn -> authed() |> put_req_header("x-foreman-operator", "mallory") end
+
+    assert %{"entry" => %{"entry_id" => id}} =
+             spoofed.()
+             |> upload(:post, base(p), [{"a.txt", "a"}], %{"name" => "audited"})
+             |> json_response(201)
+
+    assert spoofed.() |> upload(:put, base(p) <> "/#{id}", [{"a.txt", "b"}]) |> json_response(200)
+    assert spoofed.() |> delete(base(p) <> "/#{id}") |> json_response(200)
+
+    assert {:ok, events} =
+             ForemanServer.EventStore.read_stream_forward("project_library:#{p}", 0, 100)
+
+    assert Enum.map(events, & &1.event_type) ==
+             ["ProjectLibraryAdded", "ProjectLibraryReplaced", "ProjectLibraryRemoved"]
+
+    assert events
+           |> Enum.map(&ForemanServer.EventCodec.decode_recorded!/1)
+           |> Enum.map(&{&1.author_kind, &1.author_ref}) ==
+             [{"operator", "api"}, {"operator", "api"}, {"operator", "api"}]
+  end
+
+  # A client cannot honour a per-request cap it is never told about: the cap that
+  # `LibraryUploadParser` enforces is reported next to the other library limits.
+  test "the list response reports the per-request upload cap, as configured", %{project_id: p} do
+    assert %{"limits" => %{"upload_max_bytes" => 536_870_912}} =
+             authed() |> get(base(p)) |> json_response(200)
+
+    library = Application.get_env(:foreman_server, :library, [])
+
+    Application.put_env(
+      :foreman_server,
+      :library,
+      Keyword.put(library, :upload_max_bytes, 1_000_000)
+    )
+
+    assert %{"limits" => %{"upload_max_bytes" => 1_000_000}} =
+             authed() |> get(base(p)) |> json_response(200)
+  end
+
   test "upload, list, read, replace, remove round trip", %{project_id: p} do
     conn =
       upload(authed(), :post, base(p), [{"docs/guide.md", "# Guide"}, {"data.csv", "a,b"}], %{

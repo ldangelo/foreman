@@ -3,12 +3,20 @@ defmodule ForemanServer.Projects.AdoptionService do
   Facade over the three ways a session enters a project:
 
     * `adopt/4` - MOVE a task/run/jobsite (and its session archive) from its
-      project into another one (`project.adopt`, mode `move`).
+      project into another one (`project.adopt`, mode `move`). With
+      `add_repo: true` a session whose repository the target does not have yet
+      gets it attached first (`project.repo.add`, the command behind
+      `foreman project repo add`).
     * `continue/5` - start a NEW thread in a project that continues a session,
       leaving the original untouched (`task.create` + `project.adopt`, mode
-      `continue`). The new thread's prompt is seeded from the session archive;
-      the provider session itself is NOT forked (no run-start path carries a
-      fork id), so the result is always context-seeded.
+      `continue`). Two strategies, recorded as the result's `mode`:
+      `"context_seeded"` (default: the new thread's prompt is built from the
+      session archive and it starts a fresh provider session) and `"forked"`
+      (`fork: true`: the first phase of the new thread starts from a FORK of the
+      source's provider session, so the agent remembers the conversation; see
+      `ForemanServer.Projects.ForkSource`). With `from_source_branch: true` (either
+      strategy) the new thread's worktree is cut from the BRANCH of the session
+      instead of the project's current branch (`ForemanServer.Projects.SourceBranch`).
     * `mint/3` - create a NEW project from the session's archive manifest and
       move the session into it.
 
@@ -24,22 +32,42 @@ defmodule ForemanServer.Projects.AdoptionService do
   require Logger
 
   alias ForemanServer.{CommandGateway, ProjectionStore}
-  alias ForemanServer.Projects.{Adoption, AdoptionResult, Continuation}
+
+  alias ForemanServer.Projects.{
+    Adoption,
+    AdoptionResult,
+    Continuation,
+    ForkSource,
+    RepoValidation,
+    SourceBranch
+  }
+
   alias ForemanServer.Review.Archive
+  alias ForemanServer.Workflow.{Catalog, PhaseSpec, WorktreeSpec}
 
   @kinds ~w(task run jobsite)
   @goal_chars 200
 
   @type error :: {:error, term()} | {:error, term(), term()}
 
-  @doc "Move `kind`/`subject_id` into `target`. See `ForemanServer.Projects.Adoption` for refusals."
+  @doc """
+  Move `kind`/`subject_id` into `target`. See `ForemanServer.Projects.Adoption` for refusals.
+
+  Options: `:add_repo` (boolean, default `false`). A session whose repository is not one of
+  the target's repositories is refused `{:repo_not_in_project, repo_path}`; with
+  `add_repo: true` that repository is attached to the target first, through the operator
+  command `project.repo.add` (so its realpath, git work tree and remote-identity checks and
+  typed errors apply, and the move is then not attempted when it is refused). A repository
+  the target already has is not added again, and a move refused for another reason that is
+  known before the attach (an active session, a paused target) attaches nothing.
+  """
   @spec adopt(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, AdoptionResult.t()} | error()
-  def adopt(kind, subject_id, target, _opts \\ [])
-      when is_binary(kind) and is_binary(subject_id) and is_binary(target) do
+  def adopt(kind, subject_id, target, opts \\ [])
+      when is_binary(kind) and is_binary(subject_id) and is_binary(target) and is_list(opts) do
     payload = %{project_id: target, subject_kind: kind, subject_id: subject_id, mode: "move"}
 
-    with {:ok, facts} <- Adoption.resolve(payload),
+    with {:ok, facts} <- resolve_move(payload, flag!(opts, :add_repo, "adopt/4")),
          {:ok, event} <- dispatch_adopt(payload) do
       from = source_project(kind, subject_id, facts.from_project_id)
 
@@ -58,12 +86,27 @@ defmodule ForemanServer.Projects.AdoptionService do
   end
 
   @doc """
-  Continue `kind`/`subject_id` as a new thread in `target`, seeded from the
-  session archive plus the operator's `text`. Allowed while the source runs.
+  Continue `kind`/`subject_id` as a new thread in `target`, with the operator's
+  `text`. Allowed while the source runs; the source is never written to.
+
+  Options: `:fork` (boolean, default `false`). With `fork: true` the thread
+  forks the source's provider session (`ForkSource`) instead of being seeded
+  from the archive, and the call is refused rather than degraded when it cannot
+  be honoured: `{:fork_no_session, kind, id}`, `{:fork_provider_unsupported, p}`,
+  `{:fork_provider_mismatch, session_provider, first_phase_provider}`.
+
+  `:from_source_branch` (boolean, default `false`). With `from_source_branch: true`
+  the thread's worktree is cut from the branch of the session being continued
+  (`SourceBranch`; a run's primary worktree branch, a task's latest run, a
+  jobsite's branch) and that branch is the thread's PR base, instead of the
+  project's current branch. Refused, never degraded to the current branch:
+  `{:source_branch_unknown, kind, id}`, `{:source_branch_not_found, branch,
+  repo_path}` (not a local branch of the target's repository),
+  `{:source_branch_needs_worktree, branch}` (the workflow runs without a worktree).
   """
   @spec continue(String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, AdoptionResult.t()} | error()
-  def continue(kind, subject_id, target, text, _opts \\ [])
+  def continue(kind, subject_id, target, text, opts \\ [])
       when is_binary(kind) and is_binary(subject_id) and is_binary(target) and is_binary(text) do
     new_task_id = "continue-" <> Ecto.UUID.generate()
 
@@ -77,17 +120,27 @@ defmodule ForemanServer.Projects.AdoptionService do
 
     with {:ok, facts} <- Adoption.resolve(payload),
          {:ok, _} <- require_text(text),
-         {:ok, _event} <- create_thread(target, new_task_id, kind, subject_id, facts, text),
+         {:ok, fork} <- resolve_fork(flag!(opts, :fork, "continue/5"), kind, subject_id),
+         {:ok, source_branch} <-
+           resolve_source_branch(
+             flag!(opts, :from_source_branch, "continue/5"),
+             kind,
+             subject_id,
+             target
+           ),
+         {:ok, _event} <-
+           create_thread(target, new_task_id, kind, subject_id, facts, text, fork, source_branch),
          {:ok, event} <- dispatch_adopt(payload) do
       {:ok,
        %AdoptionResult{
-         mode: "continue",
+         mode: if(fork, do: "forked", else: "context_seeded"),
          subject_kind: kind,
          subject_id: subject_id,
          project_id: target,
          from_project_id: facts.from_project_id,
          adopted?: not is_nil(event),
          new_task_id: new_task_id,
+         source_branch: source_branch,
          moved: %{task_ids: [new_task_id], run_ids: [], jobsite_ids: []}
        }}
     end
@@ -142,6 +195,81 @@ defmodule ForemanServer.Projects.AdoptionService do
   defp normalize_dispatch({:ok, event}), do: {:ok, event}
   defp normalize_dispatch({:error, _} = error), do: error
   defp normalize_dispatch({:error, _, _} = error), do: error
+
+  # `add_repo: true`: the session's repository, when the target does not have it yet, is attached to
+  # the target first and the move is then resolved again. Only that one refusal turns into an attach;
+  # every other refusal stands. The option is deliberately NOT part of the `project.adopt` command
+  # (a caller of `POST /api/commands` cannot skip the repository check by claiming it): the check
+  # in `Adoption.resolve/1` stays strict.
+  defp resolve_move(payload, false), do: Adoption.resolve(payload)
+
+  defp resolve_move(%{project_id: target, subject_kind: kind, subject_id: id} = payload, true) do
+    case Adoption.resolve(payload) do
+      {:error, {:repo_not_in_project, repo_path}} ->
+        with :ok <- check_attachable(kind, id, target),
+             {:ok, _event} <- attach_repo(target, repo_path, kind, id) do
+          Adoption.resolve(payload)
+        end
+
+      resolved ->
+        resolved
+    end
+  end
+
+  # Attaching a repository changes the target's configuration, so it must not be left behind by a
+  # move refused for a reason already known here. The aggregate stays the authority and re-checks both.
+  defp check_attachable(kind, id, target) do
+    with {:ok, %{active?: active?, status: status}} <- Adoption.facts(kind, id) do
+      cond do
+        active? ->
+          {:error, {:subject_active, status}}
+
+        match?(%{status: "paused"}, ProjectionStore.project(target)) ->
+          {:error, {:project_paused, target}}
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  # The operator command behind `foreman project repo add`: `CommandGateway` canonicalises the path
+  # and checks it is a git work tree whose origin is not another repository's, and the aggregate
+  # checks the id and uniqueness. The id is the directory name (`RepoValidation.id_from_name/1`),
+  # made unique among the target's repositories, so the operator never has to name one.
+  defp attach_repo(target, repo_path, kind, subject_id) do
+    with {:ok, repo_id} <- repo_id_for(target, repo_path) do
+      CommandGateway.dispatch_operator(%{
+        command_id: "adopt-add-repo:#{target}:" <> Ecto.UUID.generate(),
+        aggregate_id: "project:" <> target,
+        type: "project.repo.add",
+        payload: %{
+          project_id: target,
+          repo_id: repo_id,
+          path: repo_path,
+          added_by: "adoption:#{kind}:#{subject_id}"
+        }
+      })
+      |> normalize_dispatch()
+    end
+  end
+
+  defp repo_id_for(target, repo_path) do
+    with {:ok, base} <- RepoValidation.id_from_name(Path.basename(repo_path)) do
+      taken = Enum.map(ProjectionStore.project_repositories(target) || [], & &1.id)
+      candidates = [base | Enum.map(2..99, &suffixed_repo_id(base, &1))]
+
+      case Enum.find(candidates, &(&1 not in taken)) do
+        nil -> {:error, {:invalid_repo_name, Path.basename(repo_path)}}
+        id -> {:ok, id}
+      end
+    end
+  end
+
+  defp suffixed_repo_id(base, n) do
+    suffix = "-#{n}"
+    String.slice(base, 0, 32 - String.length(suffix)) <> suffix
+  end
 
   # After a move the entity carries `adopted_from`; on an idempotent replay the
   # facts already name the target, so the entity is the better source of truth.
@@ -201,25 +329,116 @@ defmodule ForemanServer.Projects.AdoptionService do
     if String.trim(text) == "", do: {:error, {:missing_or_invalid, :prompt}}, else: {:ok, text}
   end
 
-  defp create_thread(target, new_task_id, kind, subject_id, facts, text) do
+  # A boolean option of `adopt/4` / `continue/5`: absent is `false`, anything else that is not a
+  # boolean is a programming error, not a "maybe".
+  defp flag!(opts, key, function) do
+    case Keyword.get(opts, key, false) do
+      flag when is_boolean(flag) ->
+        flag
+
+      other ->
+        raise ArgumentError,
+              "#{function} option #{inspect(key)} must be a boolean, got: #{inspect(other)}"
+    end
+  end
+
+  defp resolve_fork(false, _kind, _subject_id), do: {:ok, nil}
+
+  defp resolve_fork(true, kind, subject_id) do
+    with {:ok, source} <- ForkSource.resolve(kind, subject_id),
+         :ok <- check_workflow_provider(source, fallback_request(kind, subject_id).workflow_type) do
+      {:ok, source}
+    end
+  end
+
+  # A fork continues the source's conversation in the FIRST phase of the new thread, which must run on
+  # the session's provider. Refused here, while the operator is still looking at the answer, when the
+  # workflow is known and that phase names its provider; `RunExecutor` refuses the launch anyway
+  # (`{:fork_provider_mismatch, ..}`). An unresolvable workflow or a phase that leaves its provider to
+  # the default is not a refusal here: it is the launch's to decide.
+  defp check_workflow_provider(%ForkSource{provider: provider}, workflow_type)
+       when is_binary(workflow_type) do
+    with {:ok, %{phases: [first | _]}} <- Catalog.load(workflow_type <> ".yaml"),
+         declared when is_binary(declared) <- PhaseSpec.fetch(first, :provider),
+         true <- declared != provider do
+      {:error, {:fork_provider_mismatch, provider, declared}}
+    else
+      _unresolved_or_matching -> :ok
+    end
+  end
+
+  defp check_workflow_provider(_source, _workflow_type), do: :ok
+
+  # `from_source_branch`: the branch must be known (`SourceBranch.resolve/2`) and be a local branch of
+  # the repository the new worktree is cut in, the target project's own checkout, which is where
+  # `RunExecutor` cuts it. Refused here, while the operator is still looking at the answer, never
+  # degraded to the project's current branch.
+  defp resolve_source_branch(false, _kind, _subject_id, _target), do: {:ok, nil}
+
+  defp resolve_source_branch(true, kind, subject_id, target) do
+    with {:ok, branch} <- SourceBranch.resolve(kind, subject_id),
+         :ok <- SourceBranch.ensure_exists(branch, project_path(target)),
+         :ok <- check_workflow_worktree(branch, fallback_request(kind, subject_id).workflow_type) do
+      {:ok, branch}
+    end
+  end
+
+  defp project_path(project_id) do
+    case ProjectionStore.project(project_id) do
+      %{path: path} when is_binary(path) -> path
+      _no_path -> nil
+    end
+  end
+
+  # A workflow that declares `worktree: enabled: false` runs in the project's own checkout: there is no
+  # worktree to cut from the branch. `RunExecutor` refuses the launch anyway
+  # (`{:source_branch_needs_worktree, branch}`); an unresolvable workflow is the launch's to decide.
+  defp check_workflow_worktree(branch, workflow_type) when is_binary(workflow_type) do
+    with {:ok, workflow} <- Catalog.load(workflow_type <> ".yaml"),
+         %{enabled: false} <- WorktreeSpec.normalize(Map.get(workflow, :worktree)) do
+      {:error, {:source_branch_needs_worktree, branch}}
+    else
+      _unresolved_or_enabled -> :ok
+    end
+  end
+
+  defp check_workflow_worktree(_branch, _workflow_type), do: :ok
+
+  defp create_thread(target, new_task_id, kind, subject_id, facts, text, fork, source_branch) do
     fallback = fallback_request(kind, subject_id)
     archive_dir = Enum.find(facts.archive_paths, &String.contains?(&1, "/#{kind}/#{subject_id}"))
     archive_dir = archive_dir || List.first(facts.archive_paths)
-    %{prompt: prompt} = Continuation.build(archive_dir, text, fallback)
+
+    {prompt, fork_fields} =
+      case fork do
+        nil ->
+          {Continuation.build(archive_dir, text, fallback, source_branch).prompt, %{}}
+
+        %ForkSource{provider: provider, session_id: session_id} ->
+          {Continuation.build_fork(archive_dir, text, source_branch),
+           %{fork_provider: provider, fork_session_id: session_id}}
+      end
 
     CommandGateway.dispatch_operator(%{
       command_id: "adopt-continue-task:#{new_task_id}",
       aggregate_id: "task:" <> new_task_id,
       type: "task.create",
-      payload: %{
-        task_id: new_task_id,
-        project_id: target,
-        title: "Continue: " <> (fallback.title || subject_id),
-        prompt: prompt,
-        workflow_type: fallback.workflow_type,
-        source: "adoption",
-        provider_tracked: false
-      }
+      payload:
+        Map.merge(
+          %{
+            task_id: new_task_id,
+            project_id: target,
+            title: "Continue: " <> (fallback.title || subject_id),
+            prompt: prompt,
+            workflow_type: fallback.workflow_type,
+            source: "adoption",
+            # Explicit operator command: dispatch the new thread in one round
+            # trip, like `run submit` / the MCP task tool. Not an agent approval path.
+            auto_approve: true,
+            provider_tracked: false
+          },
+          put_present(fork_fields, :source_branch, source_branch)
+        )
     })
     |> normalize_dispatch()
   end

@@ -40,7 +40,11 @@ defmodule ForemanServer.MCP.ToolsTest do
       thread_flags: %{}
     }
 
-    :sys.replace_state(ProjectionStore, fn _ -> Map.merge(base, overrides) end)
+    :sys.replace_state(ProjectionStore, fn _ ->
+      # Keys this fixture does not name (tool_calls, questions, ...) come from the real initial state,
+      # so a read that needs one never meets a hand-made map without it.
+      ProjectionStore.initial_state() |> Map.merge(base) |> Map.merge(overrides)
+    end)
   end
 
   describe "tools/list" do

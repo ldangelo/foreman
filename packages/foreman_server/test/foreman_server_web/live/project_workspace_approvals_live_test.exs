@@ -64,9 +64,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
       "tool_use_id" => use_id
     }
 
-    task = Task.async(fn -> PermissionPrompt.decide(run.run_id, args, timeout_ms: 30_000) end)
-    assert_receive {:projection_event, %{event_type: "ToolCallRequested"}}, 15_000
+    run_id = run.run_id
+    task = Task.async(fn -> PermissionPrompt.decide(run_id, args, timeout_ms: 30_000) end)
+    assert_call_event("ToolCallRequested", run_id, "inflight-" <> use_id)
     task
+  end
+
+  # The projection is shared and broadcasts every test's events: wait for THIS run's call.
+  defp assert_call_event(event_type, run_id, tool_call_id) do
+    assert_receive {:projection_event,
+                    %{
+                      event_type: ^event_type,
+                      data: %{run_id: ^run_id, tool_call_id: ^tool_call_id}
+                    }},
+                   15_000
   end
 
   defp mount_view(id) do
@@ -96,7 +107,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
     view |> element(control(run, "toolu_ui1") <> " button", "Approve") |> render_click()
 
     assert %{"behavior" => "allow"} = Task.await(task)
-    assert_receive {:projection_event, %{event_type: "ToolCallFinished"}}, 15_000
+    assert_call_event("ToolCallFinished", run.run_id, "inflight-toolu_ui1")
     assert %{status: "finished"} = ProjectionStore.tool_call(run.run_id, "inflight-toolu_ui1")
   end
 

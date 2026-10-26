@@ -51,6 +51,7 @@ type chatPage struct {
 	HasMore            bool              `json:"has_more"`
 	TruncatedBeforeSeq *int              `json:"truncated_before_seq"`
 	Status             string            `json:"status"`
+	PendingMessages    int               `json:"pending_messages"`
 }
 
 type chatPostResponse struct {
@@ -276,7 +277,7 @@ func (s *chatSession) stream(cursor int) error {
 			}
 			return s.unhealthyError()
 		case page.HasMore:
-		case page.Status == "idle" && (sawReply || len(page.Messages) == 0):
+		case page.Status == "idle" && page.PendingMessages == 0 && (sawReply || len(page.Messages) == 0):
 			return s.flush()
 		}
 	}

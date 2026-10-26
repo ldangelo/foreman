@@ -109,3 +109,20 @@ func TestListCellsCannotForgeRowsOrEscapeSequences(t *testing.T) {
 		t.Fatalf("escape char leaked: %q", out)
 	}
 }
+
+// A null `input_summary` (the projection stores nil when the agent sent no input) and a
+// key the server did not send are both empty cells, never Go's `<nil>`.
+func TestListCellsRenderNullAndMissingValuesAsEmpty(t *testing.T) {
+	c, _, _ := needsYouServer(t, `{"approvals":[{"tool_call_id":"c1","run_id":"r1","tool_name":"Bash","status":"requested","input_summary":null}]}`)
+	out := captureStdout(t, func() {
+		if err := runApprovals(c, []string{"list", "--project", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "<nil>") {
+		t.Fatalf("null or missing value printed as <nil>: %q", out)
+	}
+	if !strings.Contains(out, "c1") || !strings.Contains(out, "Bash") {
+		t.Fatalf("the present cells must still print: %q", out)
+	}
+}

@@ -43,8 +43,15 @@ defmodule ForemanServerWeb.AgentPermissionListenerTest do
         approval_id: "approval-#{run_id}"
       })
 
+    previous = Application.get_env(:foreman_server, :approvals)
+
     Application.put_env(:foreman_server, :approvals, inflight_progress_ms: 40)
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     ref = :"agent_permission_listener_#{System.unique_integer([:positive])}"
 
@@ -68,7 +75,13 @@ defmodule ForemanServerWeb.AgentPermissionListenerTest do
     # The stream is open and alive: headers plus a first progress event.
     acc = read_until(socket, "notifications/progress", "")
     assert acc =~ "HTTP/1.1 200"
-    assert_receive {:projection_event, %{event_type: "ToolCallRequested"}}, 15_000
+
+    assert_receive {:projection_event,
+                    %{
+                      event_type: "ToolCallRequested",
+                      data: %{run_id: ^run_id, tool_call_id: "inflight-toolu_idle"}
+                    }},
+                   15_000
 
     # Idle for three times the listener's idle timeout. The client sends nothing; the server
     # keeps sending progress events, which Cowboy does not count as activity.

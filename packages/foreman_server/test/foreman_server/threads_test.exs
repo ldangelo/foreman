@@ -251,6 +251,33 @@ defmodule ForemanServer.ThreadsTest do
       assert hd(run_ids) == String.replace_prefix(id, "run:", "")
     end
 
+    test "by_project/0 groups every thread by project, newest first, with no limit" do
+      apply!([task("t1"), run_started("r1", "t1"), run_started("rq", "tq", "q"), jobsite("j1")])
+
+      by_project = Threads.by_project()
+      assert Map.keys(by_project) |> Enum.sort() == ["p", "q"]
+      assert by_project["p"] |> Enum.map(& &1.id) |> Enum.sort() == ["jobsite:j1", "run:r1"]
+      assert Enum.map(by_project["p"], & &1.id) == Enum.map(Threads.list("p"), & &1.id)
+      assert [%Thread{id: "run:rq"}] = by_project["q"]
+
+      many = for i <- 1..(Threads.max_limit() + 1), do: run_started("m#{i}", "tm#{i}", "many")
+      apply!(many)
+      assert length(Threads.by_project()["many"]) == Threads.max_limit() + 1
+      assert length(Threads.list("many", limit: Threads.max_limit())) == Threads.max_limit()
+    end
+
+    test "by_run_ids/1 finds the owning thread of any run, beyond the list window" do
+      apply!([task("t1"), run_started("r1", "t1")])
+      apply!([run_started("r2", "t1")])
+      apply!(for i <- 1..Threads.max_limit(), do: run_started("n#{i}", "tn#{i}"))
+
+      found = Threads.by_run_ids(["r1", "r2", "nope"])
+      assert Map.keys(found) |> Enum.sort() == ["r1", "r2"]
+      assert found["r1"].id == found["r2"].id
+      assert Enum.sort(found["r1"].run_ids) == ["r1", "r2"]
+      assert Threads.by_run_ids([]) == %{}
+    end
+
     test "unknown or malformed id is :thread_not_found" do
       assert {:error, :thread_not_found} = Threads.get("run:nope")
       assert {:error, :thread_not_found} = Threads.get("garbage")

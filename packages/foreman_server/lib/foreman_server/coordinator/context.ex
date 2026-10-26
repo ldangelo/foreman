@@ -297,12 +297,22 @@ defmodule ForemanServer.Coordinator.Context do
 
         workflows ->
           Enum.map_join(workflows, "\n", fn w ->
-            "- #{w.name}: #{one_line(w.description)}#{previous_version_note(w.name, stale_names)}"
+            "- #{w.name}: " <>
+              Enum.join(Enum.reject([one_line(w.description), served_types(w)], &(&1 == "")), " ") <>
+              previous_version_note(w.name, stale_names)
           end)
       end
 
     "# WORKFLOWS\n" <> listed <> refused_edits(stale) <> invalid_lines(blocked)
   end
+
+  # Which `task_type` selects this workflow. A thread that names neither a `workflow` nor a
+  # `task_type` a workflow serves is rejected (`WorkflowSelector`), so the model is shown, per
+  # workflow, exactly the types that resolve to it (foreman-ig27o).
+  defp served_types(%{task_types: []}), do: "[no task_type selects it: name it as `workflow`]"
+
+  defp served_types(%{task_types: types}),
+    do: "[task_type: #{Enum.map_join(types, ", ", &one_line/1)}]"
 
   defp previous_version_note(name, stale_names) do
     if MapSet.member?(stale_names, name),

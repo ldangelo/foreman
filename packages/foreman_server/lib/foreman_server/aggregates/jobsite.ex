@@ -16,6 +16,7 @@ defmodule ForemanServer.Aggregates.Jobsite do
     JobsiteWorktreeProvisioned,
     JobsiteSandboxProvisioned,
     JobsiteIterationStarted,
+    JobsiteSessionBound,
     JobsiteIterationCompleted,
     JobsiteIterationFailed,
     JobsiteCommitsRecorded,
@@ -86,6 +87,7 @@ defmodule ForemanServer.Aggregates.Jobsite do
   def apply_event(state, %JobsiteWorktreeProvisioned{} = e), do: apply_typed(state, e)
   def apply_event(state, %JobsiteSandboxProvisioned{} = e), do: apply_typed(state, e)
   def apply_event(state, %JobsiteIterationStarted{} = e), do: apply_typed(state, e)
+  def apply_event(state, %JobsiteSessionBound{} = e), do: apply_typed(state, e)
   def apply_event(state, %JobsiteIterationCompleted{} = e), do: apply_typed(state, e)
   def apply_event(state, %JobsiteIterationFailed{} = e), do: apply_typed(state, e)
   def apply_event(state, %JobsiteCommitsRecorded{} = e), do: apply_typed(state, e)
@@ -172,6 +174,12 @@ defmodule ForemanServer.Aggregates.Jobsite do
         iteration_open?: true,
         session_id: e.resumed_session_id || state.session_id
     }
+  end
+
+  # Recorded while the iteration is still running (see `JobsiteSessionBound`): the latest id wins,
+  # exactly as `JobsiteIterationCompleted` lets the id it carries replace this one.
+  defp apply_typed(%State{} = state, %JobsiteSessionBound{} = e) do
+    %State{state | session_id: e.session_id}
   end
 
   defp apply_typed(%State{} = state, %JobsiteIterationCompleted{} = e) do
@@ -333,6 +341,23 @@ defmodule ForemanServer.Aggregates.Jobsite do
          stream_id: "jobsite:#{jobsite_id}",
          event_type: "JobsiteIterationStarted",
          payload: Map.merge(payload, %{jobsite_id: jobsite_id, index: index})
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "jobsite.session.bind", payload: payload}) do
+    with {:ok, jobsite_id} <- required_binary(Aggregate.get(payload, :jobsite_id), :jobsite_id),
+         {:ok, index} <- required_integer(Aggregate.get(payload, :index), :index),
+         {:ok, session_id} <- required_binary(Aggregate.get(payload, :session_id), :session_id),
+         :ok <- require_exists(state, jobsite_id),
+         :ok <- reject_terminal(state),
+         :ok <- require_iteration_open(state, index) do
+      {:ok,
+       %{
+         stream_id: "jobsite:#{jobsite_id}",
+         event_type: "JobsiteSessionBound",
+         payload:
+           Map.merge(payload, %{jobsite_id: jobsite_id, index: index, session_id: session_id})
        }}
     end
   end

@@ -330,6 +330,7 @@ defmodule ForemanServerWeb.JobsiteController do
   defp status_for(code)
        when code in [
               :not_resumable,
+              :no_session,
               :already_running,
               :not_running,
               :not_completed,

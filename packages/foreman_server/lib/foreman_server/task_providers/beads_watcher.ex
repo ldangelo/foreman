@@ -1314,7 +1314,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         # (`{{input.prompt}}` in the manifest's `command:` string — see
         # `RunExecutor.input_prompt/1`). Without this, every bead
         # auto-dispatched by BeadsWatcher to a command-phase workflow
-        # (e.g. `fix.yaml`'s `/skill:ensemble-fix-issue {{input.prompt}}
+        # (e.g. `prd.yaml`'s `/skill:ensemble-create-prd {{input.prompt}}
         # --foreman`) renders with an EMPTY argument — the agent has no
         # subject and immediately asks for one instead of doing any work.
         # Falls back to the title alone when there's no description.

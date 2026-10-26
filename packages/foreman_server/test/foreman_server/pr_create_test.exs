@@ -7,7 +7,16 @@ defmodule ForemanServer.PrCreateTest do
   """
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{Aggregate, CommandGateway, PrCreate, ProjectionStore, RunPrMerge}
+  alias ForemanServer.{
+    Aggregate,
+    CommandGateway,
+    CommandRouter,
+    PrCreate,
+    PrObservation,
+    ProjectionStore,
+    RunPrMerge
+  }
+
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
@@ -140,6 +149,21 @@ defmodule ForemanServer.PrCreateTest do
       aggregate_id: "run:#{run_id}",
       payload: Map.merge(%{run_id: run_id}, payload)
     }
+  end
+
+  # Every append to `stream` is refused by the real `CommandRouter` from now on: it answers an
+  # append to a quarantined aggregate with an error, and the actor hands that error to the
+  # caller like any other failed append. `release!/1` lifts it again.
+  defp quarantine!(stream) do
+    :sys.replace_state(CommandRouter, fn state ->
+      update_in(state.quarantined_aggregates, &MapSet.put(&1, stream))
+    end)
+  end
+
+  defp release!(stream) do
+    :sys.replace_state(CommandRouter, fn state ->
+      update_in(state.quarantined_aggregates, &MapSet.delete(&1, stream))
+    end)
   end
 
   describe "PrCreate.execute/1" do
@@ -340,6 +364,67 @@ defmodule ForemanServer.PrCreateTest do
 
       assert {:error, {:pr_already_associated, ^pr_url}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
+    end
+
+    test "a PrCreated append that fails is retryable: the open PR is resumed, never refused",
+         %{pr_url: pr_url} do
+      t = thread!()
+      stream = "run:#{t.run_id}"
+
+      # the first click got as far as opening, associating and gating the PR ...
+      assert {:ok, _} = PrCreate.execute(t.run_id)
+      _ = {ran("gh"), ran("git")}
+
+      # ... and then the append of its PrCreated fails inside the real router
+      on_exit(fn -> release!(stream) end)
+      quarantine!(stream)
+
+      assert {:error, :projection_recovery_failed} =
+               CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      refute "PrCreated" in Support.run_event_types(t.run_id)
+      assert {:ok, %{pr_url: ^pr_url}} = ProjectionStore.pr_association(t.run_id)
+
+      release!(stream)
+      assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      assert [%{data: %{pr_url: ^pr_url}}] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrCreated"))
+
+      # the retry reused the open PR: no second push or PR
+      assert ran("gh") == []
+      assert ran("git", &(hd(&1) == "push")) == []
+
+      assert {:error, {:pr_already_associated, ^pr_url}} =
+               CommandGateway.dispatch_operator(create_command(t.run_id))
+    end
+
+    test "the PrCreated command id is derived from the run and the PR, so a replay appends nothing",
+         %{pr_url: pr_url} do
+      t = thread!()
+      assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      assert [%{data: data}] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrCreated"))
+
+      # what a retry (or a concurrent second click) resolves to for this PR: the same command
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "run.pr.create",
+                 command_id: "pr_create:#{t.run_id}:#{PrObservation.url_hash(pr_url)}",
+                 aggregate_id: "run:#{t.run_id}",
+                 payload:
+                   Map.take(data, [
+                     :run_id,
+                     :project_id,
+                     :task_id,
+                     :pr_url,
+                     :head_branch,
+                     :base_branch
+                   ])
+               })
+
+      assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrCreated")) == 1
     end
 
     test "typed errors reach the caller and append nothing", %{script: script} do

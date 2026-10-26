@@ -26,7 +26,12 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         `BeadsDbLeaseWaiterRegistered` when held by a different
         `run_id`. The caller NEVER has to issue a follow-up command
         to enqueue itself, so there is no lost-wakeup window
-        between the busy rejection and the enqueue.
+        between the busy rejection and the enqueue. A caller that
+        names its `incarnation` (see below) takes the lease over from
+        a holder that names a different one, emitting
+        `BeadsDbLeaseAcquired` with
+        `provenance: {:reclaimed_stale_holder, run_id}`, instead of
+        queueing behind it.
 
       * `lease.release`  — emits `BeadsDbLeaseReleased` when no
         waiters are queued, or `BeadsDbLeaseTransferred` when a
@@ -48,6 +53,25 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   carrying the promoted `acquired_run_id`; the Dispatcher
   subscribes to that event and re-triggers the run.
 
+  ## Process-bound holds and server incarnations
+
+  `with_lease/4` holds the lease for the duration of one callback in
+  one calling process and tags the hold with the
+  `ForemanServer.Incarnation` of the server it runs in (`incarnation`
+  in the `lease.acquire` payload, kept on the `Holder` and `Waiter`
+  and replayed from the events). The hold is durable but its owner is
+  not: a server that dies while a call is in flight (`kill -9`, an
+  OOM kill, a shutdown that cuts the `try/after` short) leaves a
+  `BeadsDbLeaseAcquired` with no release behind it. Every later
+  incarnation knows that hold is dead, because the process that took
+  it ended with its VM, so a `with_lease/4` caller takes it over at
+  once instead of queueing behind it until `:lease_timeout`, and
+  `BootReconciliation.scan_lease_orphans/0` releases it. A hold with
+  no `incarnation` (`RunAdmission`'s whole-run hold of an
+  `implement-trd-beads` run) belongs to a run, not to a process: it
+  survives restarts and is reclaimed only through the run's own
+  liveness.
+
   ## Replay contract
 
   `apply_event/2` accepts both the live `EventStore.RecordedEvent`
@@ -57,6 +81,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   """
   alias ForemanServer.Aggregate
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Incarnation
+
+  require Logger
 
   alias ForemanServer.Events.{
     BeadsDbLeaseAcquired,
@@ -90,25 +117,34 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   end
 
   defmodule Holder do
-    @moduledoc "Single lease holder. At most one per lease stream."
+    @moduledoc """
+    Single lease holder. At most one per lease stream. `incarnation` is
+    the server incarnation whose process holds the lease for one call,
+    or `nil` for a hold that belongs to a run.
+    """
     @enforce_keys [:run_id, :task_id, :acquired_at_ms]
     @type t :: %__MODULE__{
             run_id: String.t(),
             task_id: String.t(),
-            acquired_at_ms: integer()
+            acquired_at_ms: integer(),
+            incarnation: String.t() | nil
           }
-    defstruct [:run_id, :task_id, :acquired_at_ms]
+    defstruct [:run_id, :task_id, :acquired_at_ms, :incarnation]
   end
 
   defmodule Waiter do
-    @moduledoc "Durable waiter entry. FIFO order is preserved by `enqueued_at_ms`."
+    @moduledoc """
+    Durable waiter entry. FIFO order is preserved by `enqueued_at_ms`.
+    `incarnation` is as on `Holder`.
+    """
     @enforce_keys [:run_id, :task_id, :enqueued_at_ms]
     @type t :: %__MODULE__{
             run_id: String.t(),
             task_id: String.t(),
-            enqueued_at_ms: integer()
+            enqueued_at_ms: integer(),
+            incarnation: String.t() | nil
           }
-    defstruct [:run_id, :task_id, :enqueued_at_ms]
+    defstruct [:run_id, :task_id, :enqueued_at_ms, :incarnation]
   end
 
   defmodule State do
@@ -134,9 +170,17 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     with {:ok, db_path} <- Aggregate.required_binary(Aggregate.get(payload, :db_path), :db_path),
          {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- Aggregate.optional_binary(Aggregate.get(payload, :task_id), :task_id),
+         :ok <- Aggregate.optional_binary(Aggregate.get(payload, :incarnation), :incarnation),
          {:ok, acquired_at_ms} <-
            positive_integer(Aggregate.get(payload, :acquired_at_ms), :acquired_at_ms) do
-      acquire_event(state, db_path, run_id, Aggregate.get(payload, :task_id), acquired_at_ms)
+      acquire_event(
+        state,
+        db_path,
+        run_id,
+        Aggregate.get(payload, :task_id),
+        acquired_at_ms,
+        Aggregate.get(payload, :incarnation)
+      )
     else
       {:error, _} = err -> err
     end
@@ -192,7 +236,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         holder: %Holder{
           run_id: Aggregate.get(payload, :run_id),
           task_id: Aggregate.get(payload, :task_id),
-          acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+          acquired_at_ms: Aggregate.get(payload, :acquired_at_ms),
+          incarnation: Aggregate.get(payload, :incarnation)
         }
     }
   end
@@ -214,7 +259,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     new_waiter = %Waiter{
       run_id: Aggregate.get(payload, :run_id),
       task_id: Aggregate.get(payload, :task_id),
-      enqueued_at_ms: Aggregate.get(payload, :enqueued_at_ms)
+      enqueued_at_ms: Aggregate.get(payload, :enqueued_at_ms),
+      incarnation: Aggregate.get(payload, :incarnation)
     }
 
     %State{
@@ -242,7 +288,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     new_holder = %Holder{
       run_id: Aggregate.get(payload, :acquired_run_id),
       task_id: Aggregate.get(payload, :acquired_task_id),
-      acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+      acquired_at_ms: Aggregate.get(payload, :acquired_at_ms),
+      incarnation: Aggregate.get(payload, :acquired_incarnation)
     }
 
     %State{
@@ -266,7 +313,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
             holder: %Holder{
               run_id: Aggregate.get(payload, :run_id),
               task_id: Aggregate.get(payload, :task_id),
-              acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+              acquired_at_ms: Aggregate.get(payload, :acquired_at_ms),
+              incarnation: Aggregate.get(payload, :incarnation)
             }
         }
 
@@ -282,7 +330,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         new_waiter = %Waiter{
           run_id: Aggregate.get(payload, :run_id),
           task_id: Aggregate.get(payload, :task_id),
-          enqueued_at_ms: Aggregate.get(payload, :enqueued_at_ms)
+          enqueued_at_ms: Aggregate.get(payload, :enqueued_at_ms),
+          incarnation: Aggregate.get(payload, :incarnation)
         }
 
         %State{
@@ -304,7 +353,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         new_holder = %Holder{
           run_id: Aggregate.get(payload, :acquired_run_id),
           task_id: Aggregate.get(payload, :acquired_task_id),
-          acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+          acquired_at_ms: Aggregate.get(payload, :acquired_at_ms),
+          incarnation: Aggregate.get(payload, :acquired_incarnation)
         }
 
         %State{
@@ -344,6 +394,10 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
   Use this around every `br` call in BeadsAdapter to serialize
   concurrent writes against the same DB file.
+
+  The hold is tagged with this server's `ForemanServer.Incarnation`, so a
+  hold left behind by a server that died mid-call (see the moduledoc) is
+  taken over at once instead of being waited for until `:lease_timeout`.
   """
   @spec with_lease(String.t(), String.t(), String.t(), (-> {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()} | no_return()
@@ -368,7 +422,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         lease_release(stream_id, db_path, run_id, release_ms)
       end
     else
-      {:error, _reason} = err ->
+      {:error, reason} = err ->
+        if reason == :lease_timeout, do: log_lease_timeout(stream_id, run_id)
         # Remove timed-out waiter so they don't block future writers.
         _ = lease_remove_waiter(stream_id, db_path, run_id)
         err
@@ -384,7 +439,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
              db_path: db_path,
              run_id: run_id,
              task_id: task_id,
-             acquired_at_ms: ms
+             acquired_at_ms: ms,
+             incarnation: Incarnation.id()
            }
          }) do
       :ok -> :ok
@@ -440,6 +496,31 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     end
   end
 
+  # Names the holder a timed-out acquire queued behind. Without it a
+  # `:lease_timeout` cannot be told from plain contention, which is what
+  # made a hold stranded by a killed server (foreman-w29up) so hard to see.
+  # The stream id is left out: it embeds the absolute DB path.
+  defp log_lease_timeout(stream_id, run_id) do
+    case Registry.lookup(ForemanServer.AggregateRegistry, stream_id) do
+      [{pid, _}] ->
+        case ForemanServer.Aggregate.Actor.get_state(pid) do
+          %State{holder: %Holder{} = holder} ->
+            Logger.warning(
+              "BeadsDbLease acquire by run_id=#{run_id} timed out behind holder " <>
+                "run_id=#{holder.run_id} task_id=#{holder.task_id} " <>
+                "acquired_at_ms=#{holder.acquired_at_ms} incarnation=#{inspect(holder.incarnation)} " <>
+                "(this server: #{Incarnation.id()})"
+            )
+
+          %State{holder: nil} ->
+            :ok
+        end
+
+      [] ->
+        :ok
+    end
+  end
+
   defp poll_until_holder(_stream_id, _run_id, 0, _interval_ms) do
     {:error, :lease_timeout}
   end
@@ -491,59 +572,104 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   # Acquire decision — atomic acquire-or-enqueue
   # ---------------------------------------------------------------------------
 
-  defp acquire_event(%State{holder: nil}, db_path, run_id, task_id, acquired_at_ms) do
+  defp acquire_event(%State{holder: nil}, db_path, run_id, task_id, acquired_at_ms, incarnation) do
+    acquired_event(db_path, run_id, task_id, acquired_at_ms, incarnation, {:direct, run_id})
+  end
+
+  defp acquire_event(
+         %State{holder: %Holder{} = holder} = state,
+         db_path,
+         run_id,
+         task_id,
+         acquired_at_ms,
+         incarnation
+       ) do
+    cond do
+      # Idempotent: same run_id already holds the lease, under the same incarnation.
+      holder.run_id == run_id and holder.incarnation == incarnation ->
+        {:ok, nil}
+
+      # The run's own hold was written under another incarnation (or as a
+      # run-scoped hold). Claim it under this one, or the next acquirer would
+      # reclaim it from under the call that is about to run.
+      holder.run_id == run_id ->
+        acquired_event(db_path, run_id, task_id, acquired_at_ms, incarnation, {:direct, run_id})
+
+      # The holder's server incarnation has ended: nothing of it can still run,
+      # so the hold is dead. Take it over instead of queueing behind it.
+      stale_incarnation?(holder.incarnation, incarnation) ->
+        acquired_event(
+          db_path,
+          run_id,
+          task_id,
+          acquired_at_ms,
+          incarnation,
+          {:reclaimed_stale_holder, holder.run_id}
+        )
+
+      # Held by a different run — atomically enqueue as a waiter.
+      true ->
+        enqueue_event(state, db_path, run_id, task_id, acquired_at_ms, incarnation)
+    end
+  end
+
+  defp acquired_event(db_path, run_id, task_id, acquired_at_ms, incarnation, provenance) do
     {:ok,
      %{
        stream_id: stream_id(db_path),
        event_type: "BeadsDbLeaseAcquired",
-       payload: %{
-         db_path: db_path,
-         run_id: run_id,
-         task_id: task_id,
-         acquired_at_ms: acquired_at_ms,
-         provenance: {:direct, run_id}
-       }
+       payload:
+         Aggregate.put_if(
+           %{
+             db_path: db_path,
+             run_id: run_id,
+             task_id: task_id,
+             acquired_at_ms: acquired_at_ms,
+             provenance: provenance
+           },
+           :incarnation,
+           incarnation
+         )
      }}
   end
 
-  defp acquire_event(
-         %State{holder: %Holder{run_id: holder_run_id}},
-         _db_path,
-         run_id,
-         _task_id,
-         _acquired_at_ms
-       )
-       when holder_run_id == run_id do
-    # Idempotent: same run_id already holds the lease.
-    {:ok, nil}
-  end
-
-  defp acquire_event(
-         %State{holder: %Holder{run_id: holder_run_id}} = state,
+  defp enqueue_event(
+         %State{waiters: waiters},
          db_path,
          run_id,
          task_id,
-         acquired_at_ms
+         enqueued_at_ms,
+         incarnation
        ) do
-    # Held by a different run — atomically enqueue as a waiter.
-    _ = holder_run_id
-
-    if already_waiting?(state.waiters, run_id) do
+    if already_waiting?(waiters, run_id, incarnation) do
       {:ok, nil}
     else
       {:ok,
        %{
          stream_id: stream_id(db_path),
          event_type: "BeadsDbLeaseWaiterRegistered",
-         payload: %{
-           db_path: db_path,
-           run_id: run_id,
-           task_id: task_id,
-           enqueued_at_ms: acquired_at_ms
-         }
+         payload:
+           Aggregate.put_if(
+             %{
+               db_path: db_path,
+               run_id: run_id,
+               task_id: task_id,
+               enqueued_at_ms: enqueued_at_ms
+             },
+             :incarnation,
+             incarnation
+           )
        }}
     end
   end
+
+  # A hold is dead only when both sides name an incarnation and they differ. A
+  # hold without one belongs to a run (`RunAdmission`) and outlives restarts; a
+  # caller without one (also `RunAdmission`) cannot say what is dead.
+  defp stale_incarnation?(held, current) when is_binary(held) and is_binary(current),
+    do: held != current
+
+  defp stale_incarnation?(_held, _current), do: false
 
   # ---------------------------------------------------------------------------
   # Release decision (single-event transfer when waiters are present)
@@ -595,16 +721,21 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
      %{
        stream_id: stream_id(db_path),
        event_type: "BeadsDbLeaseTransferred",
-       payload: %{
-         db_path: db_path,
-         released_run_id: run_id,
-         released_at_ms: released_at_ms,
-         reason: reason,
-         acquired_run_id: next.run_id,
-         acquired_task_id: next.task_id,
-         acquired_at_ms: next.enqueued_at_ms,
-         enqueued_at_ms: next.enqueued_at_ms
-       }
+       payload:
+         Aggregate.put_if(
+           %{
+             db_path: db_path,
+             released_run_id: run_id,
+             released_at_ms: released_at_ms,
+             reason: reason,
+             acquired_run_id: next.run_id,
+             acquired_task_id: next.task_id,
+             acquired_at_ms: next.enqueued_at_ms,
+             enqueued_at_ms: next.enqueued_at_ms
+           },
+           :acquired_incarnation,
+           next.incarnation
+         )
      }}
   end
 
@@ -642,6 +773,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       run_id: e.run_id,
       task_id: e.task_id,
       acquired_at_ms: e.acquired_at_ms,
+      incarnation: e.incarnation,
       provenance: e.provenance
     }
 
@@ -658,7 +790,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       db_path: e.db_path,
       run_id: e.run_id,
       task_id: e.task_id,
-      enqueued_at_ms: e.enqueued_at_ms
+      enqueued_at_ms: e.enqueued_at_ms,
+      incarnation: e.incarnation
     }
 
   defp event_data_to_map(%BeadsDbLeaseWaiterRemoved{} = e),
@@ -678,7 +811,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
       acquired_run_id: e.acquired_run_id,
       acquired_task_id: e.acquired_task_id,
       acquired_at_ms: e.acquired_at_ms,
-      enqueued_at_ms: e.enqueued_at_ms
+      enqueued_at_ms: e.enqueued_at_ms,
+      acquired_incarnation: e.acquired_incarnation
     }
 
   defp positive_integer(value, _key) when is_integer(value) and value > 0, do: {:ok, value}
@@ -690,11 +824,25 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     Enum.any?(waiters, fn %Waiter{run_id: r} -> r == run_id end)
   end
 
-  defp already_waiting?(waiters, run_id), do: has_waiter?(waiters, run_id)
+  # A waiter queued under the same incarnation (not merely the same run_id): a
+  # run queued before a restart that queues again after it must be re-tagged.
+  defp already_waiting?(waiters, run_id, incarnation) do
+    Enum.any?(waiters, fn %Waiter{run_id: r, incarnation: i} ->
+      r == run_id and i == incarnation
+    end)
+  end
 
+  # A waiter is keyed by run_id. Registering it again under another
+  # incarnation re-tags the queued entry in place, keeping its FIFO slot.
   defp append_waiter(waiters, %Waiter{} = waiter) do
-    if already_waiting?(waiters, waiter.run_id) do
-      waiters
+    if has_waiter?(waiters, waiter.run_id) do
+      Enum.map(waiters, fn
+        %Waiter{run_id: run_id} = queued when run_id == waiter.run_id ->
+          %Waiter{queued | incarnation: waiter.incarnation}
+
+        queued ->
+          queued
+      end)
     else
       waiters ++ [waiter]
     end

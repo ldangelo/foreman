@@ -3,6 +3,8 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   alias ForemanServer.{EventStore, ProjectionStore, ProjectStore}
   alias ForemanServer.MCP.{Policy, ToolError, Tools}
+  alias ForemanServer.MCP.Tools.{ScheduleCommandResult, ScheduleListResult}
+  alias ForemanServer.Schedule.DTO
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   setup do
@@ -45,21 +47,54 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   @write_tools ~w(foreman_schedule_create foreman_schedule_pause foreman_schedule_resume foreman_schedule_delete)
 
-  test "list is a read tool and equals the HTTP DTOs", %{id: id} do
+  test "list is a read tool and returns the HTTP DTOs in a ScheduleListResult", %{id: id} do
     writes(true)
-    {:ok, %{"schedule_id" => sid}} = Tools.call_tool("foreman_schedule_create", args(id))
+
+    {:ok, %ScheduleCommandResult{schedule_id: sid}} =
+      Tools.call_tool("foreman_schedule_create", args(id))
+
     writes(false)
 
-    assert {:ok, %{ticker: "disabled", schedules: [dto]}} =
+    assert {:ok,
+            %ScheduleListResult{project_id: ^id, ticker: "disabled", schedules: [%DTO{} = dto]}} =
              Tools.call_tool("foreman_schedule_list", %{project_id: id})
 
     assert dto.schedule_id == sid
 
-    assert %{name: "daily", status: "active", spec: %{"every" => "1h"}} = dto
+    assert %DTO{name: "daily", status: "active", spec: %{"every" => "1h"}} = dto
     assert is_binary(dto.next_fire_at)
 
     assert {:error, %ToolError{code: "NOT_FOUND"}} =
              Tools.call_tool("foreman_schedule_list", %{project_id: "nope"})
+  end
+
+  test "write tools return exactly project_id, schedule_id and status, never the event or prompt",
+       %{
+         id: id
+       } do
+    writes(true)
+    secret = "PROMPT-BODY-#{System.unique_integer([:positive])}"
+
+    assert {:ok,
+            %ScheduleCommandResult{project_id: ^id, schedule_id: sid, status: "created"} = created} =
+             Tools.call_tool("foreman_schedule_create", args(id, %{prompt: secret}))
+
+    ids = %{project_id: id, schedule_id: sid}
+
+    assert {:ok, %ScheduleCommandResult{status: "paused"}} =
+             Tools.call_tool("foreman_schedule_pause", ids)
+
+    assert {:ok, %ScheduleCommandResult{status: "resumed"}} =
+             Tools.call_tool("foreman_schedule_resume", ids)
+
+    assert {:ok, %ScheduleCommandResult{project_id: ^id, schedule_id: ^sid, status: "deleted"}} =
+             Tools.call_tool("foreman_schedule_delete", ids)
+
+    # the wire shape: exactly these three snake_case keys, and no prompt payload
+    assert created |> Jason.encode!() |> Jason.decode!() ==
+             %{"project_id" => id, "schedule_id" => sid, "status" => "created"}
+
+    refute Jason.encode!(created) =~ secret
   end
 
   test "write tools are hidden and refused unless writes are allowed", %{id: id} do
@@ -88,12 +123,16 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
     writes(true)
     call = args(id, %{request_id: "req-1"})
 
-    assert {:ok, %{"schedule_id" => sid}} = Tools.call_tool("foreman_schedule_create", call)
-    assert {:ok, %{"schedule_id" => ^sid}} = Tools.call_tool("foreman_schedule_create", call)
+    assert {:ok, %ScheduleCommandResult{schedule_id: sid}} =
+             Tools.call_tool("foreman_schedule_create", call)
+
+    assert {:ok, %ScheduleCommandResult{schedule_id: ^sid}} =
+             Tools.call_tool("foreman_schedule_create", call)
+
     assert [_one] = created_events(id, sid)
     assert [%{schedule_id: ^sid}] = ProjectionStore.schedules(id)
 
-    assert {:ok, %{"schedule_id" => other}} =
+    assert {:ok, %ScheduleCommandResult{schedule_id: other}} =
              Tools.call_tool("foreman_schedule_create", args(id, %{request_id: "req-2"}))
 
     assert other != sid
@@ -102,8 +141,13 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   test "without a request_id every call creates a new schedule", %{id: id} do
     writes(true)
-    assert {:ok, %{"schedule_id" => a}} = Tools.call_tool("foreman_schedule_create", args(id))
-    assert {:ok, %{"schedule_id" => b}} = Tools.call_tool("foreman_schedule_create", args(id))
+
+    assert {:ok, %ScheduleCommandResult{schedule_id: a}} =
+             Tools.call_tool("foreman_schedule_create", args(id))
+
+    assert {:ok, %ScheduleCommandResult{schedule_id: b}} =
+             Tools.call_tool("foreman_schedule_create", args(id))
+
     assert a != b
   end
 
@@ -126,24 +170,37 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
   test "pause, resume and delete change the DTO status", %{id: id} do
     writes(true)
-    {:ok, %{"schedule_id" => sid}} = Tools.call_tool("foreman_schedule_create", args(id))
+
+    {:ok, %ScheduleCommandResult{schedule_id: sid}} =
+      Tools.call_tool("foreman_schedule_create", args(id))
+
     ids = %{project_id: id, schedule_id: sid}
 
     status = fn ->
-      {:ok, %{schedules: schedules}} = Tools.call_tool("foreman_schedule_list", %{project_id: id})
+      {:ok, %ScheduleListResult{schedules: schedules}} =
+        Tools.call_tool("foreman_schedule_list", %{project_id: id})
+
       Enum.map(schedules, &{&1.schedule_id, &1.status})
     end
 
     assert [{^sid, "active"}] = status.()
-    assert {:ok, _} = Tools.call_tool("foreman_schedule_pause", ids)
+
+    assert {:ok, %ScheduleCommandResult{status: "paused"}} =
+             Tools.call_tool("foreman_schedule_pause", ids)
+
     assert [{^sid, "paused"}] = status.()
 
     assert {:error, %ToolError{code: "schedule_already_paused"}} =
              Tools.call_tool("foreman_schedule_pause", ids)
 
-    assert {:ok, _} = Tools.call_tool("foreman_schedule_resume", ids)
+    assert {:ok, %ScheduleCommandResult{status: "resumed"}} =
+             Tools.call_tool("foreman_schedule_resume", ids)
+
     assert [{^sid, "active"}] = status.()
-    assert {:ok, _} = Tools.call_tool("foreman_schedule_delete", ids)
+
+    assert {:ok, %ScheduleCommandResult{status: "deleted"}} =
+             Tools.call_tool("foreman_schedule_delete", ids)
+
     assert [] = status.()
 
     assert {:error, %ToolError{code: "schedule_deleted"}} =

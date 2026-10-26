@@ -8,160 +8,175 @@ defmodule ForemanServer.Application do
   bus + adapter, jido_ecto checkpoint repo, Overwatch, MCP) gated
   on configuration keys.
 
-  See `start/2` for the children list and the gating config keys.
+  See `children/0` for the children list and the gating config keys.
   """
 
   use Application
 
   require Logger
 
+  @doc """
+  The child specs `start/2` hands to the application supervisor, in start order.
+
+  A pure function of the application environment: every opt-in child is gated on
+  the config key its `maybe_*` builder reads, and nothing is started here. It is
+  public so a test can prove which children a given configuration boots and in
+  which order (the ProjectionStore, CommandRouter and Jobsite children that the
+  subscribers and pollers dispatch into come first).
+  """
+  @spec children() :: [Supervisor.child_spec() | Supervisor.module_spec()]
+  def children do
+    [
+      # Bounds concurrent SigNoz log-export tasks (OtelLogBridge) so a slow
+      # or unreachable collector cannot accumulate unbounded off-process
+      # work; start_child/2 returns {:error, :max_children} once full and
+      # the caller drops the record with an overload telemetry event
+      # instead of queuing indefinitely (CodeRabbit review).
+      {Task.Supervisor,
+       name: ForemanServer.Observability.OtelLogExportSupervisor, max_children: 50},
+      # PubSub backs LiveView debug subscriptions.
+      {Phoenix.PubSub, name: ForemanServer.PubSub},
+      # Phoenix Presence tracks live aggregate actors for debug pages.
+      ForemanServerWeb.Presence,
+      # EventStore must be started first (ProjectionStore subscribes to it).
+      ForemanServer.EventStore,
+      # ProjectionStore subscribes to EventStore and maintains read model.
+      ForemanServer.ProjectionStore,
+      # DedupeTable owns the dedupe ETS table; started before Inbox.Poller
+      # so the long-lived owner outlives any transient caller that may have
+      # lazily created the table before Poller subscribed.
+      ForemanServer.Inbox.DedupeTable,
+      # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
+      ForemanServer.Inbox.Poller,
+      # Aggregator starts the Registry and supervises Actor children.
+      ForemanServer.Aggregator,
+      # Idempotency store — durable idempotency key records (TRD-075) and
+      # heartbeat lease with expiry detection (TRD-076). ETS fallback when
+      # JidoCheckpointStore.Repo is unavailable so it starts regardless of
+      # repo configuration.
+      ForemanServer.Idempotency.KeyStore,
+      ForemanServer.Idempotency.HeartbeatLease,
+      # Foreman Actions Registry — the tool-catalog layer that
+      # RunExecutor, the agent runtime toolset sync, and the prompt
+      # template loader all consult to find available Jido.Actions.
+      # Started here (in the unconditional block, alongside the
+      # Aggregator) so the catalog is ready when the first
+      # RunExecutor looks up its agent's tools. The default action
+      # set is [GitStatusAction, DiffReadAction, TaskGetAction,
+      # ReadPromptAction]; operators add more via config
+      # :foreman_server, ForemanServer.Actions.Registry, :actions.
+      {ForemanServer.Actions.Registry,
+       actions:
+         Application.get_env(:foreman_server, ForemanServer.Actions.Registry, [])
+         |> Keyword.get(:actions, [
+           ForemanServer.Actions.GitStatusAction,
+           ForemanServer.Actions.DiffReadAction,
+           ForemanServer.Actions.TaskGetAction,
+           ForemanServer.Actions.ReadPromptAction
+         ])}
+    ] ++
+      maybe_json_schema_cache_child() ++
+      [
+        # JsonSchemaCache owns the cached `br schema ... --json` payload
+        # schemas used by every BeadsAdapter parser (claim, list_ready,
+        # complete, fail, reopen, etc.). It MUST start before any code
+        # path that resolves a Beads provider, including the
+        # TaskProvider.Registry snapshot and BootReconciliation's lazy
+        # orphan-reopen pass.
+        # TaskProvider.Registry owns configured task provider routing and must
+        # start before dispatch paths resolve a provider snapshot.
+        ForemanServer.TaskProvider.Registry
+      ] ++
+      maybe_beads_watcher_child() ++
+      maybe_beads_orphan_janitor_child() ++
+      maybe_project_provider_projector_child() ++
+      maybe_boot_reconciliation_child() ++
+      [
+        # RunExecutorRegistry must exist before RunExecutor children start;
+        # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
+        {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
+        # RunExecutorLiveness owns the active-phase deadline table; reads
+        # from StuckDetector must avoid calling a blocked RunExecutor, so
+        # the deadline is published here via ETS BEFORE the executor blocks
+        # into AgentRuntime and cleared after.
+        ForemanServer.RunExecutorLiveness,
+        # RunControl owns the pause/cancel stop-intent table keyed by
+        # run_id. RunExecutor blocks synchronously on an in-flight phase's
+        # agent, so an operator's run.pause/run.cancel command reaches it
+        # through this ETS table rather than a GenServer.call.
+        ForemanServer.RunControl,
+        # Workflow.Catalog owns the in-memory workflow + prompt snapshots,
+        # auto-installs the bundled templates on first boot, and reloads
+        # files when the directory changes. Must start before any code path
+        # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
+        ForemanServer.Workflow.Catalog,
+        ForemanServer.Workflow.RunSupervisor,
+        # Jobsite.Registry/Jobsite.Supervisor mirror the
+        # RunExecutorRegistry/RunSupervisor pattern above, for the
+        # scripted event-sourced jobsite engine: one Executor per
+        # jobsite id, registered via `{:via, Registry, {Jobsite.Registry, id}}`.
+        {Registry, keys: :unique, name: ForemanServer.Jobsite.Registry},
+        ForemanServer.Jobsite.Control,
+        ForemanServer.Jobsite.Supervisor,
+        # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched
+        # AND terminal run events (RunCancelled, RunFlaggedStuck, RunCompleted,
+        # RunFailed), forwarding the latter to BootReconciliation.run_terminated/2
+        # so orphan-task scans during normal operation mirror the boot path.
+        ForemanServer.Workflow.Dispatcher,
+        # Merge gate: pauses a run after PR creation pending explicit
+        # human approval (TRD-014). Previously never supervised anywhere
+        # (dev/prod/test) — every call site and every test file started
+        # it ad hoc via `MergeGate.start_link()`, which only worked by
+        # accident when nothing else had already started it under the
+        # same registered name in the same test run.
+        ForemanServer.Workflow.MergeGate,
+        # CommandRouter handles all append requests.
+        ForemanServer.CommandRouter
+      ] ++
+      maybe_jobsite_boot_recovery_child() ++
+      maybe_messaging_dispatcher_child() ++
+      maybe_notifier_child() ++
+      maybe_threads_children() ++
+      maybe_overview_children() ++
+      maybe_review_children() ++
+      maybe_library_collector_child() ++
+      maybe_approvals_children() ++
+      maybe_coordinator_children() ++
+      maybe_stuck_detector_child() ++
+      maybe_pr_watcher_child() ++
+      maybe_pr_monitor_child() ++
+      maybe_schedule_ticker_child() ++
+      maybe_trigger_poller_child() ++
+      maybe_lifecycle_reconciler_child() ++
+      maybe_jido_signal_bus_child() ++
+      maybe_signal_journal_child() ++
+      maybe_directive_queue_child() ++
+      maybe_signal_to_command_child() ++
+      maybe_task_metadata_query_subscriber_child() ++
+      maybe_agent_runtime_child() ++
+      maybe_jido_checkpoint_repo_child() ++
+      maybe_operator_question_subscriber_child() ++
+      maybe_operator_directive_projector_child() ++
+      maybe_jido_shell_runner_child() ++
+      maybe_operator_timeout_child() ++
+      maybe_overwatch_child() ++
+      maybe_vfs_isolation_child() ++
+      maybe_mcp_allowlist_child() ++
+      maybe_mcp_child() ++
+      [
+        # Endpoint exposes dev-only debug LiveViews.
+        ForemanServerWeb.Endpoint
+      ]
+  end
+
   @impl true
   def start(_type, _args) do
-    children =
-      [
-        # Bounds concurrent SigNoz log-export tasks (OtelLogBridge) so a slow
-        # or unreachable collector cannot accumulate unbounded off-process
-        # work; start_child/2 returns {:error, :max_children} once full and
-        # the caller drops the record with an overload telemetry event
-        # instead of queuing indefinitely (CodeRabbit review).
-        {Task.Supervisor,
-         name: ForemanServer.Observability.OtelLogExportSupervisor, max_children: 50},
-        # PubSub backs LiveView debug subscriptions.
-        {Phoenix.PubSub, name: ForemanServer.PubSub},
-        # Phoenix Presence tracks live aggregate actors for debug pages.
-        ForemanServerWeb.Presence,
-        # EventStore must be started first (ProjectionStore subscribes to it).
-        ForemanServer.EventStore,
-        # ProjectionStore subscribes to EventStore and maintains read model.
-        ForemanServer.ProjectionStore,
-        # DedupeTable owns the dedupe ETS table; started before Inbox.Poller
-        # so the long-lived owner outlives any transient caller that may have
-        # lazily created the table before Poller subscribed.
-        ForemanServer.Inbox.DedupeTable,
-        # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
-        ForemanServer.Inbox.Poller,
-        # Aggregator starts the Registry and supervises Actor children.
-        ForemanServer.Aggregator,
-        # Idempotency store — durable idempotency key records (TRD-075) and
-        # heartbeat lease with expiry detection (TRD-076). ETS fallback when
-        # JidoCheckpointStore.Repo is unavailable so it starts regardless of
-        # repo configuration.
-        ForemanServer.Idempotency.KeyStore,
-        ForemanServer.Idempotency.HeartbeatLease,
-        # Foreman Actions Registry — the tool-catalog layer that
-        # RunExecutor, the agent runtime toolset sync, and the prompt
-        # template loader all consult to find available Jido.Actions.
-        # Started here (in the unconditional block, alongside the
-        # Aggregator) so the catalog is ready when the first
-        # RunExecutor looks up its agent's tools. The default action
-        # set is [GitStatusAction, DiffReadAction, TaskGetAction,
-        # ReadPromptAction]; operators add more via config
-        # :foreman_server, ForemanServer.Actions.Registry, :actions.
-        {ForemanServer.Actions.Registry,
-         actions:
-           Application.get_env(:foreman_server, ForemanServer.Actions.Registry, [])
-           |> Keyword.get(:actions, [
-             ForemanServer.Actions.GitStatusAction,
-             ForemanServer.Actions.DiffReadAction,
-             ForemanServer.Actions.TaskGetAction,
-             ForemanServer.Actions.ReadPromptAction
-           ])}
-      ] ++
-        maybe_json_schema_cache_child() ++
-        [
-          # JsonSchemaCache owns the cached `br schema ... --json` payload
-          # schemas used by every BeadsAdapter parser (claim, list_ready,
-          # complete, fail, reopen, etc.). It MUST start before any code
-          # path that resolves a Beads provider, including the
-          # TaskProvider.Registry snapshot and BootReconciliation's lazy
-          # orphan-reopen pass.
-          # TaskProvider.Registry owns configured task provider routing and must
-          # start before dispatch paths resolve a provider snapshot.
-          ForemanServer.TaskProvider.Registry
-        ] ++
-        maybe_beads_watcher_child() ++
-        maybe_beads_orphan_janitor_child() ++
-        maybe_project_provider_projector_child() ++
-        maybe_boot_reconciliation_child() ++
-        [
-          # RunExecutorRegistry must exist before RunExecutor children start;
-          # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
-          {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
-          # RunExecutorLiveness owns the active-phase deadline table; reads
-          # from StuckDetector must avoid calling a blocked RunExecutor, so
-          # the deadline is published here via ETS BEFORE the executor blocks
-          # into AgentRuntime and cleared after.
-          ForemanServer.RunExecutorLiveness,
-          # RunControl owns the pause/cancel stop-intent table keyed by
-          # run_id. RunExecutor blocks synchronously on an in-flight phase's
-          # agent, so an operator's run.pause/run.cancel command reaches it
-          # through this ETS table rather than a GenServer.call.
-          ForemanServer.RunControl,
-          # Workflow.Catalog owns the in-memory workflow + prompt snapshots,
-          # auto-installs the bundled templates on first boot, and reloads
-          # files when the directory changes. Must start before any code path
-          # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
-          ForemanServer.Workflow.Catalog,
-          ForemanServer.Workflow.RunSupervisor,
-          # Jobsite.Registry/Jobsite.Supervisor mirror the
-          # RunExecutorRegistry/RunSupervisor pattern above, for the
-          # scripted event-sourced jobsite engine: one Executor per
-          # jobsite id, registered via `{:via, Registry, {Jobsite.Registry, id}}`.
-          {Registry, keys: :unique, name: ForemanServer.Jobsite.Registry},
-          ForemanServer.Jobsite.Control,
-          ForemanServer.Jobsite.Supervisor,
-          # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched
-          # AND terminal run events (RunCancelled, RunFlaggedStuck, RunCompleted,
-          # RunFailed), forwarding the latter to BootReconciliation.run_terminated/2
-          # so orphan-task scans during normal operation mirror the boot path.
-          ForemanServer.Workflow.Dispatcher,
-          # Merge gate: pauses a run after PR creation pending explicit
-          # human approval (TRD-014). Previously never supervised anywhere
-          # (dev/prod/test) — every call site and every test file started
-          # it ad hoc via `MergeGate.start_link()`, which only worked by
-          # accident when nothing else had already started it under the
-          # same registered name in the same test run.
-          ForemanServer.Workflow.MergeGate,
-          # CommandRouter handles all append requests.
-          ForemanServer.CommandRouter
-        ] ++
-        maybe_jobsite_boot_recovery_child() ++
-        maybe_messaging_dispatcher_child() ++
-        maybe_notifier_child() ++
-        maybe_threads_children() ++
-        maybe_overview_children() ++
-        maybe_review_children() ++
-        maybe_library_collector_child() ++
-        maybe_approvals_children() ++
-        maybe_coordinator_children() ++
-        maybe_stuck_detector_child() ++
-        maybe_pr_watcher_child() ++
-        maybe_pr_monitor_child() ++
-        maybe_schedule_ticker_child() ++
-        maybe_trigger_poller_child() ++
-        maybe_lifecycle_reconciler_child() ++
-        maybe_jido_signal_bus_child() ++
-        maybe_signal_journal_child() ++
-        maybe_directive_queue_child() ++
-        maybe_signal_to_command_child() ++
-        maybe_task_metadata_query_subscriber_child() ++
-        maybe_agent_runtime_child() ++
-        maybe_jido_checkpoint_repo_child() ++
-        maybe_operator_question_subscriber_child() ++
-        maybe_operator_directive_projector_child() ++
-        maybe_jido_shell_runner_child() ++
-        maybe_operator_timeout_child() ++
-        maybe_overwatch_child() ++
-        maybe_vfs_isolation_child() ++
-        maybe_mcp_allowlist_child() ++
-        maybe_mcp_child() ++
-        [
-          # Endpoint exposes dev-only debug LiveViews.
-          ForemanServerWeb.Endpoint
-        ]
+    # Fixed before any child can take a BeadsDbLease hold, so every hold of
+    # this VM carries the same incarnation (see `ForemanServer.Incarnation`).
+    _ = ForemanServer.Incarnation.id()
 
     opts = [strategy: :one_for_one, name: __MODULE__]
-    {:ok, pid} = Supervisor.start_link(children, opts)
+    {:ok, pid} = Supervisor.start_link(children(), opts)
 
     # TRD-004: register the Jido.Harness backend adapter with the
     # AgentRuntime.AdapterCatalog after the supervisor tree is alive.
@@ -189,6 +204,29 @@ defmodule ForemanServer.Application do
     end
 
     {:ok, pid}
+  end
+
+  # Runs BEFORE the supervision tree is stopped, while every agent and the tool processes it
+  # started are still alive and parented to it. (`stop/1` runs after the tree is down: by then
+  # a RunExecutor or jobsite executor may already have stopped its agent, killing only the
+  # agent's own process group and leaving its tool processes re-parented to pid 1, where no
+  # sweep can find them by ancestry; seen as an intermittent `shutdown-strays` FAIL.) Each
+  # agent and everything it spawned is taken out here (foreman-zmhzw): pi runs each tool in a
+  # session of its own, so signalling the agent's group alone is not enough.
+  @impl true
+  def prep_stop(state) do
+    alias ForemanServer.AgentRuntime.JidoHarness.Driver
+    alias ForemanServer.Workflow.OrphanReaper
+
+    case OrphanReaper.reap_trees(Driver.agent_os_pids()) do
+      {:ok, _reaped} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("could not stop the agents' processes at shutdown: #{inspect(reason)}")
+    end
+
+    state
   end
 
   @doc """

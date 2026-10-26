@@ -32,20 +32,20 @@ defmodule ForemanServer.ProjectSettings do
   @spec keys() :: [atom()]
   def keys, do: @keys
 
-  @doc "Builds the struct from a config map with atom or string keys."
+  @doc """
+  Builds the struct from a projected config map.
+
+  Settings live under their ATOM keys: the projection fold (`ProjectionStore`
+  ProjectRegistered/ProjectUpdated handlers) is the one place that normalises
+  them, whatever spelling the command carried, and it drops any other spelling.
+  A string key is therefore not a setting here, and a present `false` is a value.
+  """
   @spec from_config(map() | nil) :: t()
   def from_config(config) when is_map(config) do
-    struct(__MODULE__, Enum.map(@keys, &{&1, fetch(config, &1)}))
+    struct(__MODULE__, Enum.map(@keys, &{&1, Map.get(config, &1)}))
   end
 
   def from_config(_config), do: %__MODULE__{}
-
-  defp fetch(config, key) do
-    case Map.fetch(config, key) do
-      {:ok, value} -> value
-      :error -> Map.get(config, Atom.to_string(key))
-    end
-  end
 
   @redacted "[redacted]"
 

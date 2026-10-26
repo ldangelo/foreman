@@ -67,7 +67,7 @@ for r in repos:
     wt=(run_dir+"/workspace") if r["primary"] else (run_dir+"/repos/"+i)
     base_branch=subprocess.check_output(["git","-C",r["path"],"symbolic-ref","--quiet","--short","HEAD"],text=True).strip()
     base_ref=subprocess.check_output(["git","-C",r["path"],"rev-parse","HEAD"],text=True).strip()
-    out[i]={"path":wt,"repo_path":r["path"],"branch":branch,"base_branch":base_branch,"base_ref":base_ref,"primary":r["primary"]}
+    out[i]={"path":wt,"branch":branch,"base_branch":base_branch,"base_ref":base_ref,"primary":r["primary"]}
 print(json.dumps(out,separators=(",",":"),sort_keys=True))
 PY
 }
@@ -144,9 +144,9 @@ done
 ok "all worktrees and branches removed"
 
 echo "== 8. rollback: second worktree creation fails (branch already exists in b)"
-git -C "$ROOT/repo-b" branch "$BRANCH"        # simulate a stale branch
-RUN2=run-def; RUN_DIR="$ROOT/worktrees/$PROJECT/$TASK/$RUN2"; BRANCH2="$BRANCH"; RUN=$RUN2
-git -C "$ROOT/repo-a" branch -q -D "$BRANCH" 2>/dev/null
+RUN2=run-def; RUN_DIR="$ROOT/worktrees/$PROJECT/$TASK/$RUN2"; RUN=$RUN2
+BRANCH="foreman/$TASK/$RUN2"                   # recompute from RUN2: the second run's own branch
+git -C "$ROOT/repo-b" branch "$BRANCH"        # simulate a stale branch of that name in b only
 created=()
 rollback() { for i in "${created[@]}"; do git -C "$ROOT/repo-$i" worktree remove --force "${WT[$i]}"; git -C "$ROOT/repo-$i" branch -D -q "$BRANCH"; done; }
 for spec in "a true" "b false"; do

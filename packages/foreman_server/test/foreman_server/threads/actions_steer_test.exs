@@ -202,7 +202,11 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
     agent =
       Agents.pi("x",
         binary: agent_bin,
-        env: %{"FAKE_AGENT_SLEEP_ON_RUN" => "1", "FAKE_AGENT_SLEEP_SECS" => "30"}
+        env: %{
+          "FAKE_AGENT_SESSION_FIRST" => "1",
+          "FAKE_AGENT_SLEEP_ON_RUN" => "1",
+          "FAKE_AGENT_SLEEP_SECS" => "30"
+        }
       )
 
     {:ok, id} =
@@ -217,6 +221,8 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
       )
 
     await_event("JobsiteIterationStarted", :jobsite_id, id)
+    # A steer pauses then resumes: the resume needs the agent's provider session (foreman-cm8nv).
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
     id
   end
 

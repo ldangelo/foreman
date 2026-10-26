@@ -15,15 +15,25 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
   `{:error, %Error{code: :malformed_output}}` and nothing executes. A provider
   that cannot start or ends abnormally is `{:error, %Error{code: :agent_failed}}`,
   a timeout `:agent_timeout`: a recorded turn failure, never a crash.
+
+  Every provider run that returns a result (completed, failed or cancelled)
+  reports its usage, because its tokens were spent: `Turn.usage` on success, and
+  `Error.details.usage` on a failure after the provider ran (`:malformed_output`,
+  `:agent_failed` for a run that did not complete). The repair run's usage is
+  summed with the first run's. A start failure or a timeout has no result, so no
+  usage: none is invented.
   """
   @behaviour ForemanServer.Coordinator.Agent
 
   alias ForemanServer.AgentRuntime.JidoHarness.DetachedRun
   alias ForemanServer.Coordinator.{ActionSource, Context, Error, Turn}
+  alias ForemanServer.Usage
   alias Jido.Harness.{RunRequest, RunResult}
 
   @await_slack_ms 5_000
   @default_timeout_ms 180_000
+
+  @type result :: {:ok, Turn.t()} | {:error, Error.t()}
 
   # pi flags the harness adapter exposes: nothing from the user's pi setup may
   # reach the coordinator (S1 section 3: `pi` otherwise connects every MCP server
@@ -37,11 +47,11 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
   }
 
   @impl true
-  @spec turn(Context.t(), keyword()) :: {:ok, Turn.t()} | {:error, Error.t()}
+  @spec turn(Context.t(), keyword()) :: result()
   def turn(%Context{} = context, opts) do
     case attempt(context.text, opts) do
-      {:error, %Error{code: :malformed_output} = first} ->
-        attempt(repair_prompt(context.text, first), opts)
+      {:error, %Error{code: :malformed_output} = error} = first ->
+        merge_attempts(first, attempt(repair_prompt(context.text, error), opts))
 
       other ->
         other
@@ -143,9 +153,18 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
     end
   end
 
-  defp finish(%RunResult{status: :completed, text: text}), do: ActionSource.parse(text)
+  # The provider ran, so its tokens are spent whatever the reply was worth: the
+  # usage rides on the turn and on a failure alike. Public only so
+  # `harness_usage_test.exs` can exercise it without a provider.
+  @doc false
+  @spec finish(RunResult.t()) :: result()
+  def finish(%RunResult{} = result) do
+    result |> outcome() |> with_usage(Usage.from_run_result(result))
+  end
 
-  defp finish(%RunResult{} = result) do
+  defp outcome(%RunResult{status: :completed, text: text}), do: ActionSource.parse(text)
+
+  defp outcome(%RunResult{} = result) do
     {:error,
      Error.new(:agent_failed, "coordinator run ended #{result.status}", %{
        provider: result.provider,
@@ -153,4 +172,25 @@ defmodule ForemanServer.Coordinator.Agent.Harness do
        error: inspect(result.error)
      })}
   end
+
+  # The repair retry ran the provider a second time: both runs spent tokens, so
+  # the final result carries their sum. An attempt that never reached the
+  # provider (start failure, timeout) has no usage and adds none; when neither
+  # did, nothing is invented. Public only for the same reason as `finish/1`.
+  @doc false
+  @spec merge_attempts(result(), result()) :: result()
+  def merge_attempts(first, second) do
+    case {usage_of(first), usage_of(second)} do
+      {nil, nil} -> second
+      {spent, usage} -> with_usage(second, Usage.merge(spent, usage))
+    end
+  end
+
+  defp usage_of({:ok, %Turn{usage: usage}}), do: usage
+  defp usage_of({:error, %Error{details: details}}), do: Map.get(details, :usage)
+
+  defp with_usage({:ok, %Turn{} = turn}, %Usage{} = usage), do: {:ok, %Turn{turn | usage: usage}}
+
+  defp with_usage({:error, %Error{details: details} = error}, %Usage{} = usage),
+    do: {:error, %Error{error | details: Map.put(details, :usage, usage)}}
 end

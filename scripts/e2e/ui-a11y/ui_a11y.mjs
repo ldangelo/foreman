@@ -31,8 +31,10 @@ if (!project) throw new Error("--project (or FOREMAN_UI_PROJECT) is required");
 const pages = [
   { name: "workspace", path: `/dashboard/projects/${project}` },
   { name: "settings", path: `/dashboard/projects/${project}/settings` },
-  // /dashboard/runs ships no LiveSocket bootstrap (static server render), so it is axe-scanned only.
-  { name: "runs", path: `/dashboard/runs`, live: false, deferred: "foreman-70eq6" },
+  // The run dashboard shares the workspace root layout (foreman-70eq6): it must mount a
+  // LiveSocket and pass axe like the others. It is outside the idle-traffic check because
+  // it refreshes itself on a 2 s timer by design (OperatorRunDashboardLive).
+  { name: "runs", path: `/dashboard/runs`, idle: false },
 ];
 const url = (p) => `${base}${p}?token=${encodeURIComponent(token)}`;
 
@@ -54,17 +56,17 @@ async function connected(page) {
   );
 }
 
-async function open(p, live = true) {
+async function open(p) {
   const page = await ctx.newPage();
   await page.goto(url(p), { waitUntil: "load" });
-  if (live) await connected(page);
+  await connected(page);
   return page;
 }
 
 // ---- 1. axe scans -------------------------------------------------------
 const axeRows = [];
 for (const p of pages) {
-  const page = await open(p.path, p.live !== false);
+  const page = await open(p.path);
   await page.addScriptTag({ path: axePath });
   const res = await page.evaluate(() =>
     // eslint-disable-next-line no-undef
@@ -73,8 +75,6 @@ for (const p of pages) {
   for (const v of res.violations) {
     axeRows.push({ page: p.name, id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.map((n) => n.target.join(" ")).slice(0, 5) });
     if (v.impact === "serious" || v.impact === "critical") {
-      // A deferred page is REPORTED with its bead, never silently excluded.
-      if (p.deferred) { lines.push(`- deferred (${p.deferred}): axe ${p.name}: ${v.id} (${v.impact})`); continue; }
       fail(`axe ${p.name}: ${v.id} (${v.impact}) ${v.help} -> ${v.nodes.map((n) => n.target.join(" ")).slice(0, 3).join(" | ")}`);
     }
   }
@@ -131,6 +131,23 @@ async function tabTo(page, predicate, max = 80) {
   }
   await page.close();
 }
+// The operator-question pane (foreman-exofh) renders only while a question is open: seed one
+// (`POST /webhooks/operator/ingest` with the `agent_id` of one of the project's threads' tasks)
+// to cover it. When it is there, its answer box and then its Answer button must be reachable by
+// keyboard (`tabTo` asserts a visible focus ring at every stop).
+{
+  const page = await open(pages[0].path);
+  if ((await page.locator("#questions-pane").count()) === 0) {
+    ok("workspace: no open question, the question pane was not exercised (seed one to cover it)");
+  } else {
+    const box = await tabTo(page, (i) => i.tag === "textarea" && /^question-.*-answer$/.test(i.id), 40);
+    const answer = box && (await tabTo(page, (i) => i.tag === "button" && i.label === "Answer", 5));
+    if (!box) fail("workspace: the question answer box is not reachable by Tab");
+    else if (!answer) fail("workspace: the Answer button does not follow the question answer box in focus order");
+    else ok(`workspace: question answer box reached after ${box.length} stops, then the "Answer" button`);
+  }
+  await page.close();
+}
 {
   const page = await open(pages[1].path);
   const seq = await tabTo(page, (i) => i.tag === "button" && i.type === "submit" && /Save settings/.test(i.label), 120);
@@ -152,7 +169,7 @@ async function tabTo(page, predicate, max = 80) {
 
 // ---- 3. idle websocket traffic -----------------------------------------
 const idle = [];
-for (const p of pages.slice(0, 2)) {
+for (const p of pages.filter((q) => q.idle !== false)) {
   const page = await ctx.newPage();
   let sent = [], recv = [], armed = true;
   page.on("websocket", (ws) => {

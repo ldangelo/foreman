@@ -217,9 +217,13 @@ defmodule ForemanServer.Coordinator.Conversation do
 
   def apply_event(conv, _event_type, _payload), do: conv
 
-  @doc "True when a message should start a coordinator turn."
+  @doc """
+  True when a message should start a coordinator turn. The `/setup` command
+  (`SetupProposal.request?/1`) does not: `SetupProposer` answers it without a model.
+  """
   @spec trigger?(message()) :: boolean()
-  def trigger?(%{role: "operator"}), do: true
+  def trigger?(%{role: "operator"} = message),
+    do: not ForemanServer.Coordinator.SetupProposal.request?(message)
 
   def trigger?(%{role: role, kind: "report", suppressed: false}) when role in ["system", "agent"],
     do: true

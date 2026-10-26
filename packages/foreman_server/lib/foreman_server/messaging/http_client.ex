@@ -1,5 +1,13 @@
 defmodule ForemanServer.Messaging.HttpClient do
-  @moduledoc "Minimal JSON HTTP client used by chat provider adapters."
+  @moduledoc """
+  Minimal JSON HTTP client used by chat provider adapters.
+
+  TLS is whatever `:httpc` defaults to on the pinned OTP 28: the server's
+  certificate chain is verified against the system CA store and its host name is
+  checked, so a private CA must be in that store. That is not assumed: it is pinned
+  by `http_client_test.exs`, which completes a real TLS request and shows an
+  untrusted CA and a mismatched host name refused (foreman-ireii).
+  """
 
   alias ForemanServer.Messaging.HttpResponse
 

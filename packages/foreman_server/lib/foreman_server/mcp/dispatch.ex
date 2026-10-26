@@ -94,29 +94,26 @@ defmodule ForemanServer.MCP.Dispatch do
   @doc """
   Builds the `Anubis.Server.Supervisor` options for a transport.
 
-  Anubis validates the `:authorization` option with Peri, which **requires**
-  `resource` and `authorization_servers` alongside a validator. Supplying only
-  a validator raises `%Peri.InvalidSchema{}` during `init/1` and the server
-  never starts. The HTTP transport carried a local workaround for this while
-  the stdio transport did not, so stdio could not boot at all in local-dev
-  mode — the MCP client saw only "Transport closed". Both transports now share
-  this function.
+  `transport` is `:stdio` or `{:streamable_http, opts}`; the HTTP transport MUST
+  carry `start: true` (see `ForemanServer.MCP.child_spec/1`: Anubis otherwise
+  guesses whether an HTTP server is running and `:ignore`s the whole server on
+  every boot that is not `mix phx.server`, leaving `/mcp` answering HTTP 500).
+
+  Anubis' own `:authorization` option is never passed. It configures an OAuth 2.1
+  resource server: Peri **requires** `resource` and `authorization_servers`
+  (supplying only a validator raised `%Peri.InvalidSchema{}` during `init/1`, so
+  the server never started), and the plug then calls `validate_token/2` on the
+  validator, which `ForemanServer.MCP.Auth` does not define. Foreman
+  authenticates with its own bearer-token gate instead: the `ForemanServer.MCP.Auth`
+  Plug in front of the HTTP transport and `call/4` for every tool call on both
+  transports, each honouring `allow_insecure_local`. Both transports share this
+  function.
   """
-  @spec transport_opts(keyword(), atom()) :: keyword()
+  @spec transport_opts(keyword(), :stdio | {:streamable_http, keyword()}) :: keyword()
   def transport_opts(opts, transport) do
-    opts = Keyword.put_new(opts, :transport, transport)
-
-    if insecure_local?() do
-      Keyword.delete(opts, :authorization)
-    else
-      Keyword.put_new(opts, :authorization, validator: {Auth, []})
-    end
-  end
-
-  defp insecure_local? do
-    :foreman_server
-    |> Application.get_env(:mcp, [])
-    |> Keyword.get(:allow_insecure_local, false)
+    opts
+    |> Keyword.delete(:authorization)
+    |> Keyword.put_new(:transport, transport)
   end
 
   # Deliberately total over the documented `call_tool/2` contract and nothing

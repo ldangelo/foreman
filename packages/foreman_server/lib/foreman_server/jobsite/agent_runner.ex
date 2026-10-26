@@ -13,12 +13,19 @@ defmodule ForemanServer.Jobsite.AgentRunner do
   a `completion_timeout_ms` grace window, reset on further progress, so
   trailing output (a usage event, an output tag) is still captured. A clean
   `{:result, _}` always wins the race, so a healthy run pays nothing for this.
+
+  `:on_session` (`(session_id -> term())`) is called, from the calling process and before the
+  iteration's result is returned, once the harness reports the provider session of a FRESH run
+  (one not started from `:resume_session`). It exists so the caller can record the session while
+  the iteration is still in flight: see `spawn_session_watcher/3` for why that takes a poll.
+  Its return value is ignored; the callback owns reporting its own failures.
   """
 
   require Logger
 
+  alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ForkSession}
   alias ForemanServer.Jobsite.{Error, IterationResult, Sandbox}
-  alias Jido.Harness.{Run, RunRequest, RunResult}
+  alias Jido.Harness.{Run, RunInfo, RunRequest, RunResult}
 
   @default_idle_timeout_ms 600_000
   @default_completion_timeout_ms 60_000
@@ -90,6 +97,10 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     {provider_session_id, fork_provider_options} =
       resolve_session_opts(agent.provider, resume_session, fork_session)
 
+    # A run that starts FROM a session already has its durable record. Only a fresh one is watched
+    # for the session id it is about to be given (see `spawn_session_watcher/3`).
+    on_session = if is_nil(provider_session_id), do: Keyword.get(opts, :on_session)
+
     with {:ok, cli_path} <-
            sandbox.provider.agent_cli_path(
              sandbox.state,
@@ -119,7 +130,8 @@ defmodule ForemanServer.Jobsite.AgentRunner do
             on_event,
             intent_fun,
             Keyword.get(opts, :archive_dir),
-            agent.secrets
+            agent.secrets,
+            on_session
           )
 
         {:error, reason} ->
@@ -143,14 +155,10 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     {resume_session, %{}}
   end
 
-  defp resolve_session_opts(:pi, nil, fork_session)
-       when is_binary(fork_session) and fork_session != "" do
-    {nil, %{fork_session: fork_session}}
-  end
-
-  defp resolve_session_opts(:claude, nil, fork_session)
-       when is_binary(fork_session) and fork_session != "" do
-    {fork_session, %{fork_session: true}}
+  # The provider -> harness fork options mapping is `ForkSession`'s (also used by the workflow door).
+  defp resolve_session_opts(provider, nil, fork_session)
+       when provider in [:pi, :claude] and is_binary(fork_session) and fork_session != "" do
+    ForkSession.harness_options(provider, fork_session)
   end
 
   defp resolve_session_opts(_provider, _resume_session, _fork_session), do: {nil, %{}}
@@ -218,21 +226,57 @@ defmodule ForemanServer.Jobsite.AgentRunner do
          on_event,
          intent_fun,
          archive_dir,
-         secrets
+         secrets,
+         on_session
        ) do
     case Run.stream(run_id) do
       {:ok, stream} ->
         parent = self()
         consumer = spawn_consumer(stream, signals, on_event, parent)
         awaiter = spawn_awaiter(run_id, parent, archive_dir, secrets)
-        result = wait(run_id, index, signals, completion_timeout_ms, "", nil, intent_fun)
+        watcher = spawn_session_watcher(run_id, parent, on_session)
+
+        result =
+          wait(run_id, index, signals, completion_timeout_ms, "", nil, intent_fun, on_session)
+
         Process.exit(consumer, :kill)
         Process.exit(awaiter, :kill)
+        if watcher, do: Process.exit(watcher, :kill)
         result
 
       {:error, reason} ->
         {:error,
          Error.new(:agent_start_failed, "failed to attach to run stream", %{reason: reason})}
+    end
+  end
+
+  @session_poll_ms 100
+
+  # `on_session` (`(session_id -> term())`) is told the provider session id of a fresh run as soon
+  # as the harness knows it, so an executor that dies mid-iteration has still recorded the session
+  # a resume must continue. The id is NOT in the event stream: the harness folds the agent's first
+  # event (pi's `session`, claude's `system/init`: both mapped to `run_started`) into the run's own
+  # state and never streams it. It is on `Run.info/1`, polled here until it appears or the run ends.
+  # The watcher only messages this process, which calls `on_session` itself from `wait/8`, so the
+  # callback runs in order with the caller's other work and never after the result is returned.
+  defp spawn_session_watcher(_run_id, _parent, nil), do: nil
+
+  defp spawn_session_watcher(run_id, parent, on_session) when is_function(on_session, 1),
+    do: spawn(fn -> watch_session(run_id, parent) end)
+
+  defp watch_session(run_id, parent) do
+    case Run.info(run_id) do
+      {:ok, %{provider_session_id: session_id}} when is_binary(session_id) and session_id != "" ->
+        send(parent, {:session, run_id, session_id})
+
+      {:ok, %RunInfo{} = info} ->
+        unless RunInfo.terminal?(info) do
+          Process.sleep(@session_poll_ms)
+          watch_session(run_id, parent)
+        end
+
+      {:error, _gone} ->
+        :ok
     end
   end
 
@@ -300,13 +344,23 @@ defmodule ForemanServer.Jobsite.AgentRunner do
          completion_timeout_ms,
          latest_text,
          matched_signal,
-         intent_fun
+         intent_fun,
+         on_session
        ) do
     timeout = poll_timeout(matched_signal, completion_timeout_ms, intent_fun)
 
     receive do
       {:text, text} ->
-        wait(run_id, index, signals, completion_timeout_ms, text, matched_signal, intent_fun)
+        wait(
+          run_id,
+          index,
+          signals,
+          completion_timeout_ms,
+          text,
+          matched_signal,
+          intent_fun,
+          on_session
+        )
 
       {:signal, matched} ->
         wait(
@@ -316,7 +370,24 @@ defmodule ForemanServer.Jobsite.AgentRunner do
           completion_timeout_ms,
           latest_text,
           matched_signal || matched,
-          intent_fun
+          intent_fun,
+          on_session
+        )
+
+      # Pinned to this run: a watcher from an earlier iteration may have messaged just before it
+      # was killed, and that id belongs to an iteration the caller has already closed.
+      {:session, ^run_id, session_id} ->
+        on_session.(session_id)
+
+        wait(
+          run_id,
+          index,
+          signals,
+          completion_timeout_ms,
+          latest_text,
+          matched_signal,
+          intent_fun,
+          on_session
         )
 
       # A harness result carries its own failure in `status: :failed` +
@@ -341,17 +412,38 @@ defmodule ForemanServer.Jobsite.AgentRunner do
               completion_timeout_ms,
               latest_text,
               matched_signal,
-              intent_fun
+              intent_fun,
+              on_session
             )
 
           {_signal, :none} ->
             Run.cancel(run_id)
             {:ok, hanging_result(index, latest_text, matched_signal)}
 
-          {_signal, _intent} ->
+          {_signal, {:cancel, _reason}} ->
             Run.cancel(run_id)
-            {:ok, cancelled_result(index, latest_text, matched_signal)}
+            await_cancelled_agent(run_id)
+            {:ok, cancelled_result(run_id, index, latest_text, matched_signal)}
+
+          {_signal, _pause} ->
+            Run.cancel(run_id)
+            {:ok, cancelled_result(run_id, index, latest_text, matched_signal)}
         end
+    end
+  end
+
+  # `Run.cancel/1` reports the run cancelled as soon as it has signalled the agent, which the
+  # harness then takes its time to stop. The executor sweeps the worktree for the agent's tool
+  # processes next, and they are orphans (what `OrphanReaper` matches) only once the agent is gone.
+  defp await_cancelled_agent(run_id) do
+    case Driver.await_exit(run_id) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        Logger.warning(
+          "agent run #{run_id} was still running when the cancel wait ran out; its tool processes may outlive the jobsite"
+        )
     end
   end
 
@@ -450,13 +542,27 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     }
   end
 
-  defp cancelled_result(index, latest_text, matched_signal) do
+  # A paused or cancelled run keeps the provider session it had reported: the harness holds it
+  # (`Run.info/1`) even after the cancel, and a resume that did not get it would start a blank agent.
+  defp cancelled_result(run_id, index, latest_text, matched_signal) do
     %IterationResult{
       index: index,
       status: :cancelled,
       text: latest_text,
+      session_id: reported_session(run_id),
       signalled?: matched_signal != nil,
       matched_signal: matched_signal
     }
+  end
+
+  defp reported_session(run_id) do
+    case Run.info(run_id) do
+      {:ok, %RunInfo{provider_session_id: session_id}}
+      when is_binary(session_id) and session_id != "" ->
+        session_id
+
+      _none_reported ->
+        nil
+    end
   end
 end

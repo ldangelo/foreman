@@ -43,6 +43,28 @@ defmodule ForemanServer.Projects.RepoValidation do
 
   def validate_id(id), do: {:error, {:invalid_repo_id, id}}
 
+  @doc """
+  A repository id derived from a name (a directory name, or one an operator or the coordinator
+  supplied): lower-cased, every run of characters outside `[a-z0-9]` one `-`, at most 32
+  characters, trimmed. The same name always yields the same id, so an action repeated after a
+  crash derives the id it already used.
+  """
+  @spec id_from_name(String.t()) :: {:ok, String.t()} | {:error, {:invalid_repo_name, String.t()}}
+  def id_from_name(name) when is_binary(name) do
+    id =
+      name
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+      |> String.trim("-")
+      |> String.slice(0, 32)
+      |> String.trim_trailing("-")
+
+    case validate_id(id) do
+      :ok -> {:ok, id}
+      {:error, _} -> {:error, {:invalid_repo_name, name}}
+    end
+  end
+
   @doc "A repository path must be an absolute binary."
   @spec validate_path(term()) :: :ok | {:error, {:repo_path_not_absolute, term()}}
   def validate_path(path) when is_binary(path) and path != "" do

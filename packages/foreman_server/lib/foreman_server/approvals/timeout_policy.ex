@@ -49,16 +49,7 @@ defmodule ForemanServer.Approvals.TimeoutPolicy do
         )
 
       :surface ->
-        run(
-          %{
-            type: "tool.expire",
-            command_id: "expire:tool_call:#{run_id}:#{id}",
-            aggregate_id: ToolCall.stream_id(run_id, id),
-            payload: %{run_id: run_id, tool_call_id: id, reason: "timeout"}
-          },
-          :expired,
-          gateway
-        )
+        expire_tool_call(run_id, id, "timeout", gateway: gateway)
     end
   end
 
@@ -75,6 +66,27 @@ defmodule ForemanServer.Approvals.TimeoutPolicy do
     )
   end
 
+  @doc """
+  Expire a still-open tool call whose request can no longer be answered (`tool.expire`),
+  recording why: `"timeout"` for the `:surface` policy; `"run_ended"`, `"client_gone"` or
+  `"server_restart"` when its agent is gone (`ForemanServer.Approvals.Inflight`). The command id is
+  the call's alone, so whichever expiry reaches the aggregate first records its reason, once.
+  `opts`: `:gateway`.
+  """
+  @spec expire_tool_call(String.t(), String.t(), String.t(), keyword()) :: outcome()
+  def expire_tool_call(run_id, id, reason, opts \\ []) do
+    run(
+      %{
+        type: "tool.expire",
+        command_id: "expire:tool_call:#{run_id}:#{id}",
+        aggregate_id: ToolCall.stream_id(run_id, id),
+        payload: %{run_id: run_id, tool_call_id: id, reason: reason}
+      },
+      :expired,
+      Keyword.get(opts, :gateway, ForemanServer.CommandGateway)
+    )
+  end
+
   defp run(command, success, gateway) do
     case Dispatch.system(command, gateway) do
       {:ok, _} -> {:ok, success}
@@ -85,6 +97,7 @@ defmodule ForemanServer.Approvals.TimeoutPolicy do
 
   # Someone decided (or the request expired) first: that is not a failure.
   defp classify({:tool_call_terminal, _status}), do: {:ok, :already_decided}
+  defp classify({:tool_call_expired, _reason}), do: {:ok, :already_decided}
   defp classify({:invalid_tool_call_status, _status}), do: {:ok, :already_decided}
   defp classify({:question_not_open, _status}), do: {:ok, :already_decided}
   defp classify(reason), do: {:error, reason}

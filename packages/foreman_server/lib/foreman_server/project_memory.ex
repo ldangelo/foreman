@@ -123,7 +123,8 @@ defmodule ForemanServer.ProjectMemory do
 
       case dispatch(command) do
         :ok ->
-          {:ok, Topic.build(entry, nil, true)}
+          audit = audit_entry(project_id, entry.name)
+          {:ok, Topic.build(entry, audit, true)}
 
         {:error, reason} ->
           rollback(path, attrs.name, previous)
@@ -146,6 +147,9 @@ defmodule ForemanServer.ProjectMemory do
       end
     end
   end
+
+  defp audit_entry(project_id, name),
+    do: Enum.find(ProjectionStore.project_memory(project_id), &(&1.name == name))
 
   defp previous_bytes(path, name) do
     case Store.read_raw(path, name) do

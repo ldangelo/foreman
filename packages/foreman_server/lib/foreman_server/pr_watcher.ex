@@ -37,9 +37,11 @@ defmodule ForemanServer.PrWatcher do
   When the jobsite ends the reactor re-reads the PR and records `run.pr.fix_finished`
   with the outcome (`pushed` when the PR head moved, `no_change` when it did not,
   `failed` when the jobsite failed or could not start), then hands the fresh observation
-  to the auto-fix policy. After a restart (`handle_continue(:recover)`) fixes whose jobsite
-  already ended are finished, a request that never got a jobsite is finished as
-  `failed` (`lost_on_restart`), and fixes still running are waited for.
+  to the auto-fix policy. A start task that crashes (a defect: it is logged with its
+  reason) is finished as `failed` (`start_crashed`) as well, so a defect never leaves the
+  PR "fixing" until the next restart. After a restart (`handle_continue(:recover)`) fixes
+  whose jobsite already ended are finished, a request that never got a jobsite is finished
+  as `failed` (`lost_on_restart`), and fixes still running are waited for.
 
   Nothing in this module can merge a PR: the merge gate (`run.pr.merge` /
   `merge_approve`) is operator-only and is never dispatched here.

@@ -21,10 +21,11 @@ defmodule ForemanServer.Jobsite.Error do
     * `:agent_start_failed` / `:agent_failed` / `:agent_idle_timeout` — `Jobsite.AgentRunner`
     * `:resume_with_iterations` / `:output_tag_missing` / `:output_invalid` /
       `:output_with_iterations` — `Jobsite.Output` / `Jobsite.Options`
-    * `:jobsite_not_found` / `:not_resumable` — `Jobsite.resume/1`,
-      `Jobsite.resume_async/2`, via `Jobsite.Executor.check_resumable/1`
+    * `:jobsite_not_found` / `:not_resumable` / `:no_session` — `Jobsite.resume/1`,
+      `Jobsite.resume_async/2`, `Jobsite.steer/3`, via `Jobsite.Executor.check_resumable/1`
       (`:not_resumable` covers a terminal jobsite and one that never
-      provisioned a worktree)
+      provisioned a worktree; `:no_session` one whose agent never reported a
+      provider session, so a resume would start a blank agent)
     * `:dispatch_rejected` — `Jobsite.Executor`
     * `:jobsite_start_failed` — `Jobsite.run_async/1` (the Executor exited before it recorded
       `jobsite.start`, so the id it would have returned could never be read)
@@ -32,7 +33,8 @@ defmodule ForemanServer.Jobsite.Error do
       server in the worktree would not terminate; resume refused)
     * `:thread_cap_reached` — `Jobsite.Executor.reserve_thread/2` (project daily thread cap)
     * `:runner_capability` / `:unsupported_phase_action` — `Workflow.Lowering`
-    * `:executor_lost` / `:boot_recovery_failed` — `Jobsite.BootRecovery`
+    * `:executor_lost` / `:boot_recovery_failed` — `Jobsite.BootRecovery` (`:executor_lost`: no
+      worktree, or no provider session, was ever recorded for the orphan)
   """
   @enforce_keys [:code, :message]
   @type t :: %__MODULE__{code: atom(), message: String.t(), details: map()}

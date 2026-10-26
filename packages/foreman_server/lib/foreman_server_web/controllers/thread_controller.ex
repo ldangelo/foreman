@@ -142,6 +142,49 @@ defmodule ForemanServerWeb.ThreadController do
     end
   end
 
+  @doc """
+  `POST /api/threads/:id/rereview` (no body fields): re-run an `undetermined` review.
+  202 `{thread_id, requested: "rereview"}` (it runs or queues for a slot; the new
+  verdict supersedes the undetermined one); 404 unknown thread; 409 `not_reviewed`,
+  `not_rerunnable` (naming `verdict`: a real verdict is final) or `already_running`;
+  422 `archive_unusable` (with `detail` and `code`); 503 `analysis_disabled`.
+  """
+  def rereview(conn, %{"id" => id}) do
+    case Actions.rereview(id) do
+      :ok ->
+        conn |> put_status(:accepted) |> json(%{thread_id: id, requested: "rereview"})
+
+      {:error, :thread_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "thread_not_found", thread_id: id})
+
+      {:error, :not_reviewed} ->
+        conn |> put_status(:conflict) |> json(%{error: "not_reviewed", thread_id: id})
+
+      {:error, {:not_rerunnable, verdict}} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "not_rerunnable", thread_id: id, verdict: verdict})
+
+      {:error, :already_running} ->
+        conn |> put_status(:conflict) |> json(%{error: "already_running", thread_id: id})
+
+      {:error, {:archive_unusable, %ForemanServer.Review.Error{} = error}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "archive_unusable",
+          thread_id: id,
+          code: Atom.to_string(error.code),
+          detail: error.message
+        })
+
+      {:error, :analysis_disabled} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "analysis_disabled", thread_id: id})
+    end
+  end
+
   defp steer_opts(params) do
     message_id = blank_to_nil(Map.get(params, "message_id"))
 

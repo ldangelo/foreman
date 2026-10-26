@@ -17,6 +17,7 @@ that CI cannot give.
 | `combined-flow-live-run.md` | The whole flow in one stack with the GitHub stage on (`E2E_GH_THREE_PRS=1`): three tasks in one coordinator message, three overlapping runs, each opening its own real PR, a failing check on one, Waiting on you, Fix CI, Ready for review, operator `approve-merge` + `merge` to Resolved, usage per thread, then the failure-injection pass. One FAIL: no `PR ready for review` notification on the auto-PR path (`foreman-ehz7l`). |
 | `live-github-protection-ui-autofix.md` + `live-github-ui-*.png` | The workspace Fix CI, Address comments, Resolve conflicts and Create PR buttons clicked on real PRs, `pr_auto_fix` off, on and bounded, a push after merge approval (observed on the build before #650), GitHub's refusal text for an operator merge, and the Create PR merge-gate defect found and fixed there (`foreman-ksy0q`). Merge under branch protection UNVERIFIED. |
 | `parity-gaps-live-run.md` | Live proof of the parity-gap beads with real `claude` (haiku) and pi: claude coordinator and thread, project env and secrets on both doors, setup script, docker network shim, schedules, adopt (move, mint, continue), recommend, per-thread usage, multi-repo self-add and fanout. |
+| `multi-repo-agent-live-run.md` | A real claude (haiku) and a real pi calling Foreman's own `/mcp` on a harness-booted server: per-phase repository selection, an agent adding a registered and an unregistered repository to its own run (`foreman_run_request_repo`), `FOREMAN_REPOS` as each phase's agent saw it, agent-driven `foreman_task_fanout` and its approved single-repository runs, and the typed refusal of a multi-repo jobsite (`multi_repo_agent.sh`, passed=52 failed=0 on each). Root cause and fix of `foreman-cnn1l` (`/mcp` answered HTTP 500 off `mix phx.server`). |
 | `live-steering-live-run.md` | Live in-session steering for claude and pi, the pause/resume fallback, `RunSteerUndelivered` on cancel. |
 | `inflight-approvals-live-run.md` | Per-call approvals for claude (`--permission-prompt-tool`): approve from the CLI, deny from the workspace UI, timeout deny. |
 | `pr-actions-live-view.md` + `02-` to `08-*.png` | Workspace PR action buttons in headless Chromium, and the Overview/Settings/Library screenshots. |
@@ -71,10 +72,16 @@ Step 5b is the parallelism proof: one coordinator message pastes a to-do list of
 coordinator started exactly three threads (distinct titles), each delivered its file on its branch, and then reads `RunStarted` and the
 first terminal event of each thread's run from the event store (`claude_projects/run_interval.exs`, via the server node) and asserts
 that at least two intervals overlap (`start_i < finish_j and start_j < finish_i`) and that the project cap was respected. It prints the
-intervals. Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
+intervals. Each file is read from the branch the thread projection names (`await_thread_file` in `claude_projects/overlap.sh`): while
+it is unreadable the read is repeated for up to 30 s, a file that only appears after waiting is recorded UNVERIFIED (a commit landing
+after `completed` is a server defect the wait must not hide), and an unconfirmed file prints the `foreman-2onq1` diagnostics: git's own
+error, the thread projection, the branch tip, its commits ahead of the main checkout and its files, the foreman branches, the main
+checkout's status, where the file is on disk, the task prompt, what the agent said and the run's commit lines of the server log.
+Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
 the project to 3 in step 1; the global default is 3) and no `coordinator_max_active_threads` below 3 (unset). The assertion can fail:
 `bash scripts/e2e/claude_projects/overlap.sh` runs its stack-free self-test (serial, touching, overlapping and unfinished intervals, the
-exact-file-content comparison, and the paste/nudge branch against a stubbed coordinator; `sh scripts/e2e/exact_content.sh` runs the
+exact-file-content comparison, the paste/nudge branch against a stubbed coordinator, and the branch read against a throwaway repository
+and a stubbed thread projection: exact, wrong, missing, no branch, late; `sh scripts/e2e/exact_content.sh` runs the
 comparison probes alone),
 `E2E_THREE_ONLY=1` runs only setup, step 1 and step 5b, and `E2E_THREE_TASK_MAX_RUNS=1` forces one run at a time for that step,
 which must (and does) make the overlap assertion FAIL.
@@ -102,6 +109,9 @@ The review analyzer runs as usual and is not asserted here.
 - `scripts/e2e/multi_repo.sh` (POSIX `sh`): the two-repository proof, stages `gate green gates failure legacy`, provider via
   `E2E_PROVIDER`, pi isolation via `E2E_PI_ISOLATE`, own database `foreman_e2e_multi_repo`. Run it as
   `devbox run -- sh scripts/e2e/multi_repo.sh [stage ...]`. Write-up: `docs/lessons/multi-repo-e2e-2026-10-21.md`.
+- `scripts/e2e/multi_repo_agent.sh` (bash): the same multi-repository paths with a REAL agent reaching Foreman through `/mcp`, stages
+  `phases fanout jobsite`, `E2E_PROVIDER=claude` (default, haiku) or `pi`, own database `foreman_e2e_multi_repo_agent`. Run it as
+  `devbox run -- bash scripts/e2e/multi_repo_agent.sh`. Write-up: `multi-repo-agent-live-run.md`.
 - `scripts/e2e/ui-a11y/ui_a11y.mjs`: axe-core and keyboard-order checks of the workspace and settings pages plus idle LiveView traffic
   (needs the packages in `scripts/e2e/ui-a11y/package.json` installed and a browser for Playwright). Flags `--base`, `--token`,
   `--project`, `--idle-seconds`, `--max-idle-frames`, `--report`; environment `FOREMAN_UI_BASE`, `FOREMAN_API_TOKEN`,
@@ -127,10 +137,12 @@ database.
 
 Details and bead ids are in [`parity-audit.md`](parity-audit.md).
 
+- The merged flow and failure-injection scripts, including the `cancel-strays` and `shutdown-strays` scenarios, ran green once on the
+  fix for `foreman-zmhzw`: see [`p2m2t-live-run.md`](p2m2t-live-run.md) (`foreman-p2m2t`).
 - The combined flow (three tasks, three PRs, CI failure and fix, merge, usage, failure injection) was run once in one stack: see
   [`combined-flow-live-run.md`](combined-flow-live-run.md). It found that no `PR ready for review` notification reaches the sink when a run opens
-  its PR itself (`foreman-ehz7l`); the `port-closed` and `server-crash` orphan assertions are unchanged (`foreman-e01a1`) and `br-down`
-  failed once and passed on re-run (`foreman-3ll3t`).
+  its PR itself (`foreman-ehz7l`); the `port-closed` orphan assertion is now conditional like `server-crash` (an agent that dies with its exec-port leaves nothing to reap, reported UNVERIFIED; `foreman-e01a1`); `cancel-strays` and `shutdown-strays` cover the `OrphanReaper` sweep after cancel, thread stop and graceful shutdown (`foreman-zmhzw`) and `br-down`
+  failed once and passed on re-run (`foreman-3ll3t`, root cause and fix: `foreman-w29up`, below).
 - pi on MiniMax carries almost all of the evidence; `claude` is proven only for short haiku sessions (coordinator, thread, reviewer,
   in-flight approvals, steering). Claude paths beyond that (for example fix-thread resume) are tracked in `foreman-nufr9`.
 - GitHub is proven on a real private repo except merge under branch protection (HTTP 403 on a private repo of that plan; the temporary public
@@ -138,13 +150,62 @@ Details and bead ids are in [`parity-audit.md`](parity-audit.md).
   `foreman-ksy0q`). A push after merge approval stranded the PR on the build before #650 (observed live); #650 now voids the approval and holds the gate again (`foreman-ehxy6`), covered by tests and not re-run live.
 - Telegram and Slack were never run against the real APIs; this is deferred by the user (`foreman-mivo7`). Only the signed webhook
   is live-verified.
-- Not seen live: blocking inside a real container and the Scheduled tab (`foreman-8vf0s`); project archive and delete. Restart while a call
+- Seen live 2026-10-25 (`foreman-8vf0s`, `p2m2t-live-run.md`): blocking inside a real container (allowlist and none, simulated pi actor) and the Scheduled tab; still not seen: project archive and delete. Restart while a call
   is blocked is only PARTIAL (a stale pre-restart request stays actionable, `foreman-u0646`). The in-flight approvals UI Approve and Deny,
   stop while blocked, the approval timeout and a block longer than 60 s were verified live on claude (#654,
   `live-claude-and-approvals.md`); the 30 min default timeout was not waited.
-- `scripts/e2e` has no schedule step.
-- Per-phase repo selection and multi-repo on real GitHub were not exercised (`foreman-he4yf`); multi-repo was proven with a fake `gh`.
-- Not built: the first-turn setup proposal and `apply_recommendation` (`foreman-4orxm`), coordinator `add_repo` and `schedule`
-  actions (`foreman-tdjj8`), coordinator usage recording (`foreman-ba4y4`), library upload in the workspace (`foreman-8ervf`),
-  running a thread on the user's own machine (C13, `foreman-zn7de`, deferred by the user).
+- `claude_projects_flow.sh` has a schedule step (step 8, quick mode `E2E_SCHEDULE_ONLY=1`, `foreman-q9zzo`); the Scheduled tab has its own `scheduled_tab_flow.sh`.
+- Multi-repo on real GitHub was not exercised (`foreman-he4yf`, closed); multi-repo was proven with a fake `gh`, with pi and with a real claude.
+- Not built: running a thread on the user's own machine (C13, `foreman-zn7de`, deferred by the user).
+- Forked-session continue (`project adopt --continue --fork`), the new worktree cut from the source session's branch (`--from-source-branch`) and the `--add-repo` move (`foreman-kgqqz`) were run live with real claude: `scripts/e2e/fork_live.sh`
+  passed=48 failed=0 (`p2m2t-live-run.md`, section "Forked continue").
+- Fixed on branch `foreman/parity-gaps`, tested but not run against a live provider: first-turn setup proposal and `apply_recommendation`
+  (`foreman-4orxm`), coordinator `add_repo` and `schedule` actions (`foreman-tdjj8`) and usage recording (`foreman-ba4y4`), PR-ready and
+  blocked/stuck notifications with webhook URL safety (`foreman-ehz7l`, `foreman-ireii`), expiry of orphaned in-flight approvals
+  (`foreman-u0646`), the claude permission-flag probe (`foreman-dc618`), session recording so a jobsite resume never runs blank
+  (`foreman-cm8nv`, open until a live resume proves it), UTC-rollover re-admission (`foreman-7wsyx`), the `/dashboard/runs` layout
+  (`foreman-70eq6`) and the bundled `fix` prompt (`foreman-nhe4v`).
+- Fixed on branch `foreman/parity-gaps`, unit/HTTP/Go tests only (not run against a live provider): the residual CodeRabbit findings of #573/#577/#579/#583 (`foreman-3xrtg`: memory error classifier and `forget/2` order, MCP project-memory argument types, overview batching, `truncated` and duplicate-tab refusal, one command allowlist, typed MCP schedule results, `schedule create --idempotency-key`, ticker exactly-once recovery), the test-hygiene negative waits and wildcard refutes (`foreman-bsp5f`), the S4/S5 spike review items (`foreman-i97tz`, the S5 items are design text because no remote-worker code exists) and the test event store emptied before the app boots (`foreman-a4ec2`, the `test` alias in `mix.exs`).
+- Fixed on branch `foreman/parity-gaps`, unit/HTTP/Go tests only (not run against a live provider): the remaining CodeRabbit findings of #586/#587/#589/#591/#592 (`foreman-27ayh`: library projection and audit author, upload cap in `limits` and the CLI pre-check, notifier unknown project, empty `key_fields` and one payload key convention, approvals/questions deliverer recovery and typed listings, one `needs_you_counts/1` read, `ProjectSettings`/`Workspace.Refresh` key conventions, `retry-pr` surplus arguments, PrFix/PrMonitor/`Worktree.attach` residuals); the Claude post-hoc approval stays a documented phase-wide grant.
+- Fixed on branch `foreman/parity-gaps`, found by the automated-test gaps of `foreman-q9zzo` (unit/LiveView/HTTP tests, not run against a live provider): `ProjectContext` caps and budget count characters like the settings limits (the config key is `max_chars`), secret-store values with a non-secret name are redacted from the standing context, `Catalog` keeps a workflow's `operator_timeout_ms`, and the dashboard words an archive refused for active runs. Flow step 6 now asserts a `run_update` delivery for the first thread's run (`claude_projects/notifications.sh`, with a stack-free self-test); in the full flow it passed live in two of three runs, and in the third the webhook sink received no request at all (cause not established, `p2m2t-live-run.md`). The live schedule step (C9) exists: `claude_projects_flow.sh` step 8, quick mode `E2E_SCHEDULE_ONLY=1` passed=32 failed=0 (the UTC-only 422 through the CLI, the Ticker fires an every-minute cron, pause/resume/delete); see `p2m2t-live-run.md` for the full-flow runs.
+- Fixed on branch `foreman/parity-gaps` AND driven in real Chromium against the e2e stack (`foreman-8ervf`): the project settings page edits plain environment variables (`project.environment.set`; a secret-looking name is refused and the value box is cleared) and write-only secrets (`ProjectSecrets`; the value is never in the page, the event store or the server log, only in the 0600 store file), and the Library tab adds a folder or files, replaces an entry, lists its files and downloads one byte-identical, with the 100-file, per-folder and 512 MiB limits enforced for socket uploads. The browser tool's directory upload registered once per tab, so the folder replace was run in a fresh tab.
+- Fixed on branch `foreman/parity-gaps` AND run live with real claude: the workspace answers agent questions (`foreman-exofh`, a "Questions
+  for you" pane with an answer box, the operator `question.answer` command). The answer typed in a real browser
+  (`scripts/e2e/live_claude/questions_ui.mjs`) reached the running claude session and the agent acted on it; evidence in
+  `live-claude-and-approvals.md`, section "foreman-exofh: operator questions in the workspace". pi never raises approvals or questions
+  (it has no per-tool permission prompts).
+- Fixed on branch `foreman/parity-gaps` AND measured on the real coordinator (pi/MiniMax, `foreman-ig27o`, flow step 5b): a three-item paste started no thread when the
+  model's `start_thread` actions named neither `workflow` nor `task_type`. The action schema marks both optional but `WorkflowSelector`
+  refuses an action with neither, so all three were rejected with `no workflow could be chosen` (captured in a live flow run: turn log
+  `start_thread=rejected (...)` three times, no thread, the nudge paste then started three). A probe that builds the coordinator's context with
+  `Context.build/2` and calls `Agent.Harness.turn/2` on a live node answered a lone paste with no selector in 7 of 88 samples (8%, all with
+  `workflow` and `task_type` absent where printed); a paste coalesced with queued review reports was handled as well as a lone one (35 of 36
+  started three threads). The coordinator prompt now says a thread needs `workflow` or `task_type` (at least one) and each WORKFLOWS line
+  lists the task types that resolve to it (`Sources.Live.workflows/0` from `Catalog.type_to_workflow_map/0`); 0 of 40 samples lacked a
+  selector afterwards. Tests: `thread_workflow_contract_test.exs`, `context_test.exs`. `foreman-2onq1` (no file on three branches, once) did
+  not recur and stays open: of 15 ad-hoc runs whose brief names the primary checkout's absolute path, 14 wrote and committed in their own
+  worktree and the 15th wrote its file there too but its pi agent hung before finishing; none wrote into the main checkout.
+- Fixed on branch `foreman/parity-gaps` AND run live (`foreman-w29up`, root cause of `foreman-3ll3t`): a server killed or shut down
+  inside a `br` call strands that call's `BeadsDbLease` hold, and the restarted `BeadsWatcher` skipped every read cycle
+  (`lease_acquire failed reason=:lease_timeout`) so no bead was imported. Holds taken for one call now carry the server incarnation
+  (`ForemanServer.Incarnation`): the next server takes them over at once and boot reconciliation releases them (it now lists every
+  lease stream in the event store). Live evidence: a two-VM run with a real SIGKILL inside the call failed before the fix
+  (`{:error, :lease_timeout}` after 5151 ms, hold left by boot reconciliation) and passed after (read in 46 ms, hold released), and
+  `scripts/e2e/failure_injection.sh` (all nine scenarios) ran three times on the fix, each `passed=45 failed=0 unverified=2`. A
+  process killed inside a live server (same incarnation) keeps its hold until the next restart.
+- Fixed on branch `foreman/parity-gaps` AND run live on a real docker host (OrbStack, docker 29.8.2; `foreman-q8ufk`, `foreman-mr5b1`, found by
+  `scripts/e2e/network_policy_flow.sh crash` and `hook-env`): a `kill -9` with an allowlist jobsite in flight left the policy network and the
+  sandbox container up (the boot sweep removed only the sidecar, by name, and was host-global: another server booting on the same docker
+  host removed live sidecars), and sandbox hooks and `docker exec` ran without the policy's proxy variables, so a hook could not reach an
+  allowed host (`curl: (6) Could not resolve host`, `hook_failed`). Everything a policy creates or governs is now labelled `foreman.owner`
+  (digest of the event store's host/port/database) and `foreman.jobsite`; the cleanup and `NetworkPolicy.sweep_orphans/1` find objects by
+  label only and remove containers before the network; the sandbox's `:env` is the container's own environment (`docker run -e`).
+  Evidence: the baseline `hook-env crash` run was passed=3 failed=3 (hook failed; network and sandbox container still up 37 s after the
+  restart); after the fix the full script (control allowlist none cancel pause-resume hook-env scope crash) passed=137 failed=0
+  unverified=0, `crash` alone passed=30 failed=0 with `docker ps -a` and `docker network ls` holding nothing of Foreman's afterwards, the
+  crash scenario also resumes the orphaned jobsite under the same network name, and `scope` shows a sweep for another owner removes
+  nothing in flight. Tests: `network_policy_test.exs`, `docker_network_argv_test.exs`, `sandboxes/docker_env_test.exs` (stateful fake
+  docker, each mutation-checked) and, with `--include docker`, `network_policy_docker_test.exs` and `sandboxes/docker_test.exs` on the
+  real daemon. Docker objects an older Foreman created before it labelled them are not swept.
+- Fixed on branch `foreman/parity-gaps` AND run live with real claude and pi (`foreman-cnn1l`, `foreman-he4yf`): `/mcp` answered HTTP 500 on any server not started by `mix phx.server` (Anubis skipped its supervisor: `ForemanServer.MCP` now passes `start: true`), and a token-protected MCP could not boot (Anubis' OAuth `:authorization` option is no longer passed); `test/foreman_server/mcp/http_boot_test.exs` fails without either change. `scripts/e2e/multi_repo_agent.sh` then ran per-phase repository selection, thread self-add, agent-driven fanout and the jobsite refusal: passed=52 failed=0 on claude and on pi (`multi-repo-agent-live-run.md`). Multi-repo on real GitHub stays unrun.
 - LiteLLM is not used by any script and is not reachable from the acceptance host.

@@ -136,8 +136,44 @@ defmodule ForemanServer.MixProject do
         "dialyzer",
         "doctor --raise"
       ],
-      test: ["test --cover --color"]
+      # `mix test` starts the app before it requires test_helper.exs, so the event store is emptied
+      # first; see `run_tests/1`.
+      test: &run_tests/1
     ]
+  end
+
+  # ProjectionLeakGuard rides along as a formatter (see its moduledoc). It has to be a task
+  # option: `mix test --formatter X` replaces whatever test_helper.exs configured, and
+  # options given twice add up. Naming ExUnit.CLIFormatter keeps the default output.
+  @test_args ~w(--cover --color --formatter ExUnit.CLIFormatter
+                --formatter ForemanServer.TestSupport.ProjectionLeakGuard)
+
+  defp run_tests(args) do
+    reset_event_store(args)
+    Mix.Task.run("test", @test_args ++ args)
+  end
+
+  # `mix test` boots the application before it requires test_helper.exs. ProjectionStore rebuilds
+  # its read model from the event log on boot and the Dispatcher re-admits every run the log says is
+  # in flight, so a log left by the previous run has to be emptied BEFORE that boot: emptied
+  # afterwards (as test_helper.exs used to) the in-memory projection, the aggregate actors and the
+  # boot-time run executors still carry the previous run (foreman-a4ec2). Needs only the deps
+  # (`loadpaths`), so the project is still compiled by `mix test` itself with its own flags.
+  defp reset_event_store(args) do
+    if Mix.env() != :test do
+      Mix.raise(
+        "refusing to empty the event store in MIX_ENV=#{Mix.env()}; mix test runs in :test"
+      )
+    end
+
+    Mix.Task.run("loadpaths", args)
+    {:ok, _} = Application.ensure_all_started(:postgrex)
+
+    config = EventStore.Config.parsed(ForemanServer.EventStore, :foreman_server)
+    opts = config |> EventStore.Config.default_postgrex_opts() |> Keyword.put(:pool_size, 1)
+    {:ok, conn} = Postgrex.start_link(opts)
+    EventStore.Storage.Initializer.reset!(conn, config)
+    GenServer.stop(conn)
   end
 
   def application do

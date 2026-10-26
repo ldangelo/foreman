@@ -324,6 +324,9 @@ config :foreman_server, :coordinator,
   untrusted_sources: ["mcp"],
   report_turns_per_hour: 6,
   report_backfill_hours: 24,
+  # The first-turn setup proposal (Coordinator.SetupProposer): posted once when a project
+  # is registered and, at startup, for projects whose conversation has no message yet.
+  setup_proposals: true,
   mcp_messages_per_minute: 6,
   context: [max_total_tokens: 12_000]
 
@@ -377,7 +380,7 @@ config :foreman_server, :library,
   produced_max_files_per_run: 100
 
 config :foreman_server, :project_context,
-  max_bytes: 24_000,
+  max_chars: 24_000,
   section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
   section_providers: [ForemanServer.ProjectContext.Memory, ForemanServer.ProjectContext.Library]
 

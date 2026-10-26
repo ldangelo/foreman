@@ -15,6 +15,10 @@ import Config
 #   FOREMAN_START_BEADS_WATCHER=true|false   start/stop BeadsWatcher auto-dispatch (dev.exs defaults to true)
 #   FOREMAN_PR_MONITOR_ENABLED=true          poll GitHub for PR state of every run with an associated PR
 #   FOREMAN_GITHUB_WEBHOOK_SECRET=<secret>   authenticate POST /webhooks/github (HMAC-SHA256); unset = endpoint refuses all deliveries
+#   FOREMAN_NOTIFY_WEBHOOK_URL=<url>         send notifications to one webhook (https, public host unless opted out below)
+#   FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true
+#   FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true
+#                                            accept an http:// URL / a loopback or private-network host for that webhook
 #
 # Only the exact string `true` enables a flag. The test environment is left
 # alone so a developer's shell cannot change a test's outcome.
@@ -72,9 +76,17 @@ if config_env() != :test do
   # Scheduled-task ticker: on by default (config.exs); "false" turns it off,
   # "true" forces it on.
   case System.get_env("FOREMAN_SCHEDULE_TICKER_ENABLED") do
-    "true" -> config :foreman_server, :schedule, ticker_enabled: true
-    "false" -> config :foreman_server, :schedule, ticker_enabled: false
-    _ -> :ok
+    "true" ->
+      config :foreman_server, :schedule, ticker_enabled: true
+
+    "false" ->
+      config :foreman_server, :schedule, ticker_enabled: false
+
+    nil ->
+      :ok
+
+    other ->
+      raise "FOREMAN_SCHEDULE_TICKER_ENABLED must be \"true\" or \"false\", got: #{inspect(other)}"
   end
 
   # Listen port override (acceptance runs and parallel dev servers). Only a
@@ -90,6 +102,10 @@ if config_env() != :test do
   # Outbound notifications to one generic webhook (E10). Sets provider
   # `webhook`, enables delivery for every event class and takes the URL from
   # the variable; unset leaves any `config :foreman_server, :messaging` alone.
+  # The URL must be https and name a public host. A receiver on plain http or on
+  # the operator's own network (loopback included) needs the matching opt-in,
+  # honoured only as the exact string `true`:
+  # FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP, FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS.
   case System.get_env("FOREMAN_NOTIFY_WEBHOOK_URL") do
     url when url in [nil, ""] ->
       :ok
@@ -100,7 +116,13 @@ if config_env() != :test do
         provider: :webhook,
         event_classes: [:collab_url, :action_needed, :stall, :failure, :run_update],
         run_update_rate_limit_ms: 0,
-        webhook: %{url: url}
+        webhook: %{
+          url: url,
+          allow_insecure_http:
+            System.get_env("FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP") == "true",
+          allow_private_hosts:
+            System.get_env("FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS") == "true"
+        }
   end
 
   # The fixed reviewer agent (`config :foreman_server, :review, agent:`). Only

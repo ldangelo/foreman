@@ -15,7 +15,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.CommandGateway
+  alias ForemanServer.EventStore, as: Store
   alias ForemanServer.TaskProviders.BeadsWatcher
 
   @moduletag :tmp_dir
@@ -162,5 +166,62 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherLeaseTest do
     # sequential run.
     runner_attempt_index = Enum.find_index(events, &(&1 == :runner_attempt))
     assert runner_attempt_index < watcher_end_index, inspect(events)
+  end
+
+  # foreman-w29up / foreman-3ll3t: after a restart the watcher logged
+  # "lease_acquire failed reason=:lease_timeout, skipping this read cycle" on every
+  # poll and imported nothing, because the server that was killed inside its own
+  # pass had left its `watcher:<project>:<ns>` hold in the event store.
+  test "boot_replay after a restart is not made to skip its read cycle by a hold the killed server left",
+       %{tmp_dir: tmp_dir} do
+    database_path =
+      Path.join(tmp_dir, "stranded-#{System.unique_integer([:positive, :monotonic])}.db")
+
+    stream = BeadsDbLease.stream_id(database_path)
+    on_exit(fn -> _ = Store.delete_stream(stream, :any_version, :hard) end)
+
+    jsonl_path = Path.join(tmp_dir, "issues.jsonl")
+
+    File.write!(
+      jsonl_path,
+      ~s({"id":"bead-stranded","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
+    )
+
+    assert {:ok, _} =
+             CommandGateway.dispatch_system(%{
+               type: "lease.acquire",
+               command_id: "test:stranded-watcher-hold:#{stream}",
+               aggregate_id: stream,
+               payload: %{
+                 db_path: database_path,
+                 run_id: "watcher:proj-lease:1",
+                 task_id: "watcher:proj-lease:1",
+                 acquired_at_ms: System.system_time(:millisecond),
+                 incarnation: "incarnation-of-the-killed-server"
+               }
+             })
+
+    # The restart: the aggregate actor is rebuilt from the event store.
+    :ok = Supervisor.terminate_child(ForemanServer.Aggregator, stream)
+    :ok = Supervisor.delete_child(ForemanServer.Aggregator, stream)
+
+    {:ok, order_agent} = Agent.start_link(fn -> [] end)
+    :persistent_term.put({SlowFakeCommandGateway, :notify}, {self(), order_agent})
+    on_exit(fn -> :persistent_term.erase({SlowFakeCommandGateway, :notify}) end)
+    on_exit(fn -> if Process.alive?(order_agent), do: Agent.stop(order_agent) end)
+
+    state = %BeadsWatcher{
+      project_id: "proj-lease",
+      jsonl_path: jsonl_path,
+      database_path: database_path,
+      poll_ms: 1_000
+    }
+
+    log = capture_log(fn -> BeadsWatcher.boot_replay(state) end)
+
+    # `boot_replay/1` runs in this process, so the bead's task.create dispatch is
+    # already in the mailbox if (and only if) the pass got the lease.
+    assert_received :gateway_dispatching
+    refute log =~ "lease_acquire failed"
   end
 end

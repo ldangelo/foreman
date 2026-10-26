@@ -62,14 +62,21 @@ defmodule ForemanServer.CommandGateway do
 
   require Logger
 
-  @allowed_operator_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge inbox.send thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  # The ONE operator allowlist. `CommandController` reads it through
+  # `command_endpoint_types/0`; nothing else keeps a copy.
+  @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
   # E9: the operator PR-watch commands (fix threads, stop/start watching, create PR) are
-  # declared once on the Run aggregate's PR rules and appended here so both allowlists
-  # (this one and `CommandController`) stay in step. Merge is deliberately not among them.
+  # declared once on the Run aggregate's PR rules and appended here. Merge is deliberately
+  # not among them.
   @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types() ++
                        ForemanServer.Aggregates.Run.repo_pr_operator_types()
-  @allowed_operator_types @allowed_operator_types ++ @pr_operator_types
-  @schedule_operator_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
+  # Commands reachable through `POST /api/commands`.
+  @command_endpoint_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen coordinator.message coordinator.restart) ++
+                            @schedule_operator_types ++ @pr_operator_types
+  # `inbox.send` is sent only by the MCP tool `foreman_inbox_send` (it has no HTTP route),
+  # so it is a gateway command that `POST /api/commands` deliberately does not accept.
+  @gateway_only_operator_types ~w(inbox.send)
+  @allowed_operator_types @command_endpoint_types ++ @gateway_only_operator_types
   # E8: agent tool-call decisions. Kept out of the long lists above so concurrent
   # allowlist edits do not collide. These address `tool_call:` streams only (never
   # the run's merge gate, which stays `merge_approve` / `run.pr.merge`).
@@ -81,6 +88,33 @@ defmodule ForemanServer.CommandGateway do
   @rehold_timeout 5_000
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
+
+  @doc """
+  Every command type `dispatch_operator/2` accepts through the plain operator
+  allowlist (the agent tool-call/question decisions are separate, see
+  `decision_operator_types/0`). The single source of truth for the allowlist.
+  """
+  @spec operator_types() :: [String.t()]
+  def operator_types, do: @allowed_operator_types
+
+  @doc """
+  The subset of `operator_types/0` reachable through `POST /api/commands`
+  (everything except the gateway-only commands, i.e. `inbox.send`).
+  """
+  @spec command_endpoint_types() :: [String.t()]
+  def command_endpoint_types, do: @command_endpoint_types
+
+  @doc "The `schedule.*` operator command types (a subset of `command_endpoint_types/0`)."
+  @spec schedule_operator_types() :: [String.t()]
+  def schedule_operator_types, do: @schedule_operator_types
+
+  @doc "The E9 operator PR-watch command types (a subset of `command_endpoint_types/0`)."
+  @spec pr_operator_types() :: [String.t()]
+  def pr_operator_types, do: @pr_operator_types
+
+  @doc "The agent tool-call and question decision types, accepted alongside `operator_types/0`."
+  @spec decision_operator_types() :: [String.t()]
+  def decision_operator_types, do: @approval_operator_types ++ @question_operator_types
 
   @doc """
   Dispatch a command originating from a public operator path.

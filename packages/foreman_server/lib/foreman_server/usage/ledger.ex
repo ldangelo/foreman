@@ -15,7 +15,7 @@ defmodule ForemanServer.Usage.Ledger do
 
   @retention_days 366
 
-  @type key :: {String.t(), String.t(), {:worker | :iteration, term()}}
+  @type key :: {String.t(), String.t(), {:worker | :iteration | :turn, term()}}
   @type t :: %__MODULE__{
           days: %{String.t() => %{key() => Rollup.usage_record()}},
           pruned: Bucket.t()
@@ -28,7 +28,9 @@ defmodule ForemanServer.Usage.Ledger do
   @doc """
   Insert (or replace) one record under `key`.
 
-  Keys are `{thread_kind, thread_id, {:worker, worker_id} | {:iteration, index}}`.
+  Keys are `{thread_kind, thread_id, {:worker, worker_id} | {:iteration, index}}`;
+  a coordinator turn is `{"coordinator", project_id, {:turn, turn_id}}` and its
+  record has `thread_id: nil` (no thread, see `Rollup`).
   A jobsite thread whose usage arrives as worker-sourced events (the Overwatch
   runner) must not also count its iteration records: worker records win, in
   either arrival order.

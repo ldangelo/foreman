@@ -13,7 +13,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
      implement_fix_characterization_test.exs, merge_gate_characterization_test.exs):
      - prd.yaml manifest has 7 phases with correct Ensemble skill commands,
        ending in the review phases
-     - fix.yaml dispatches ensemble-fix-issue with --foreman
+     - fix.yaml runs the bundled fix.md prompt (Foreman-owned worktree and branch)
      - merge gate hold activates after implement-trd phase
 
   2. **Task status updated** — RunCompleted → run projection status="completed",
@@ -507,7 +507,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       assert final_phase["name"] == "repo-rules-review"
     end
 
-    test "fix.yaml dispatches ensemble-fix-issue with --foreman" do
+    test "fix.yaml runs the bundled fix.md prompt, not an external skill" do
       path =
         Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "fix.yaml")
 
@@ -515,8 +515,15 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
       assert manifest["name"] == "fix"
       [fix_phase | _review_phases] = Map.get(manifest, "phases", [])
-      assert fix_phase["command"] =~ "/skill:ensemble-fix-issue"
-      assert fix_phase["command"] =~ "--foreman"
+      assert fix_phase["prompt"] == "fix.md"
+      refute Map.has_key?(fix_phase, "command")
+
+      assert File.exists?(
+               Path.join(
+                 Application.app_dir(:foreman_server, "priv/defaults/workflows/prompts"),
+                 "fix.md"
+               )
+             )
     end
   end
 

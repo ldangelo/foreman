@@ -5,8 +5,10 @@ defmodule ForemanServer.Events.ToolCallRequested do
   `input_summary` is redacted and bounded (<= 500 chars) by
   `ForemanServer.Aggregates.ToolCall`; the raw tool input is never stored.
   `delivery` names how a later decision reaches the agent: `"live"` (answered
-  through the provider session) or `"resume_with_override"` (the run resumes with
-  a one-phase `approval_mode` override), see `ForemanServer.Approvals.Capability`.
+  through the provider session), `"inflight"` (a blocked claude permission prompt is
+  answered: that one call) or `"resume_with_override"` (the run resumes with a
+  next-phase `approval_mode` override that covers the whole phase), see
+  `ForemanServer.Approvals.Capability`.
   `project_id` is nil when the producer did not know it; the projection then
   resolves it from the run.
   """

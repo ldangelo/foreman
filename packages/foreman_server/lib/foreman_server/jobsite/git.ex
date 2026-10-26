@@ -402,7 +402,8 @@ defmodule ForemanServer.Jobsite.Git do
     end
   end
 
-  # `git` under a port so the deadline can kill the OS process; prompts disabled.
+  # `git` under a port so the deadline can kill the OS process; prompts disabled. `label`
+  # names the operation in the timeout text (`"<label> timed out"` ends the output).
   defp cmd_with_deadline(args, timeout_ms, label) do
     port =
       Port.open({:spawn_executable, System.find_executable("git")}, [
@@ -416,8 +417,8 @@ defmodule ForemanServer.Jobsite.Git do
 
     # A git that fails instantly (bad ref, missing remote) can exit before the OS
     # pid is read: `Port.info/2` is then `nil`. Its output and exit status are
-    # already queued in the mailbox, so `collect/4` returns them and never needs
-    # to kill anything.
+    # already queued in the mailbox, so `collect/5` returns them and never needs to kill
+    # anything.
     os_pid =
       case Port.info(port, :os_pid) do
         {:os_pid, pid} -> pid

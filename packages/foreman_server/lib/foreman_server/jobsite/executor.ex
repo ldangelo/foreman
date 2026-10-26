@@ -38,6 +38,8 @@ defmodule ForemanServer.Jobsite.Executor do
     Worktree
   }
 
+  alias ForemanServer.Workflow.OrphanReaper
+
   alias ForemanServer.Jobsite.Executor.Observer
 
   @default_completion_signal "<promise>COMPLETE</promise>"
@@ -583,6 +585,7 @@ defmodule ForemanServer.Jobsite.Executor do
   end
 
   defp handle_interrupt(jobsite_id, :cancel, reason, sandbox, worktree, _iterations) do
+    reap_cancelled_agents(jobsite_id, worktree)
     # Cancel discards the worktree, and cancelled work is never committed, so the
     # archive takes the working-tree diff now, before `cleanup/3` removes it.
     capture_diff(jobsite_id, worktree, :worktree)
@@ -590,6 +593,29 @@ defmodule ForemanServer.Jobsite.Executor do
     dispatch(jobsite_id, "jobsite.cancel", "terminal", %{reason: reason})
     Control.clear(jobsite_id)
     {:ok, :cancelled}
+  end
+
+  # The agent is gone by now (`AgentRunner` waits for it after a cancel); the tool processes it
+  # started are not: pi runs each in a session of its own, so the signal to the agent's group never
+  # reaches them, and once the agent exits they are re-parented to pid 1 and keep running in a
+  # worktree that is about to be captured and discarded. Swept before either.
+  #
+  # A `:head` jobsite works in the caller's own checkout, not a worktree of this server's:
+  # whatever else is orphaned in it (a developer's tmux server, a daemon) is not this jobsite's
+  # to kill, so it is never swept.
+  defp reap_cancelled_agents(_jobsite_id, nil), do: :ok
+  defp reap_cancelled_agents(_jobsite_id, %Worktree{strategy: :head}), do: :ok
+
+  defp reap_cancelled_agents(jobsite_id, %Worktree{path: path}) do
+    case OrphanReaper.reap(path) do
+      {:ok, _reaped} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Jobsite #{jobsite_id} could not reap agents orphaned by the cancelled jobsite in #{path}: #{inspect(reason)}"
+        )
+    end
   end
 
   # `iterate/11`/`do_iterate/11` below are kept solely for
@@ -661,7 +687,8 @@ defmodule ForemanServer.Jobsite.Executor do
           completion_timeout_ms: completion_ms,
           completion_signals: signals,
           intent_fun: fn -> Control.intent(jobsite_id) end,
-          archive_dir: resume_archive_dir(jobsite_id, sandbox)
+          archive_dir: resume_archive_dir(jobsite_id, sandbox),
+          on_session: &bind_session(jobsite_id, index, &1)
         ]
         |> put_system_prompt(system_prompt)
 
@@ -735,6 +762,17 @@ defmodule ForemanServer.Jobsite.Executor do
           {:error, error}
       end
     end
+  end
+
+  # The resume path's counterpart of `Executor.Observer.session_bound/4`: the provider session of a
+  # FRESH run (a resumed iteration that gets no session id from the previous one), recorded while
+  # the iteration is still running. `dispatch/4` logs a rejection; the completed iteration records
+  # the session again.
+  defp bind_session(jobsite_id, index, session_id) do
+    dispatch(jobsite_id, "jobsite.session.bind", "iteration:#{index}:session:#{session_id}", %{
+      index: index,
+      session_id: session_id
+    })
   end
 
   # The remote is fixed here, never caller-supplied: a spec can only ask for a
@@ -817,6 +855,14 @@ defmodule ForemanServer.Jobsite.Executor do
   An unknown id is `:jobsite_not_found`; a terminal one, or one that never
   provisioned a worktree (it was only ever `starting`, so there is no
   worktree, branch or session to continue), is `:not_resumable`.
+
+  One whose agent never reported a provider session is `:no_session`: a resume
+  continues the agent's own conversation (`--resume <session>`), the original
+  prompt is not persisted, and with no session to continue the agent would be a
+  blank one answering `Continue.`. That is refused, never run and reported as a
+  completed jobsite. The session is recorded while the iteration runs
+  (`jobsite.session.bind`), so this is the window before the agent's first
+  event, or a provider that reports none.
   """
   @spec check_resumable(String.t()) ::
           {:ok, %ForemanServer.Aggregates.Jobsite.State{}} | {:error, Error.t()}
@@ -842,6 +888,15 @@ defmodule ForemanServer.Jobsite.Executor do
          Error.new(
            :not_resumable,
            "jobsite #{jobsite_id} never provisioned a worktree and cannot be resumed",
+           %{jobsite_id: jobsite_id, status: state.status}
+         )}
+
+      is_nil(state.session_id) ->
+        {:error,
+         Error.new(
+           :no_session,
+           "jobsite #{jobsite_id} has no provider session to continue: its agent was interrupted " <>
+             "before it reported one, so a resume would start a blank agent",
            %{jobsite_id: jobsite_id, status: state.status}
          )}
 

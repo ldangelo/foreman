@@ -1,7 +1,7 @@
 defmodule ForemanServer.Messaging.ConfigResolver do
   @moduledoc "Resolves workflow/project/application messaging config with deterministic precedence."
 
-  alias ForemanServer.Messaging.Config
+  alias ForemanServer.Messaging.{Config, WebhookUrl}
 
   @providers [:telegram, :slack, :webhook]
   @event_classes [:collab_url, :action_needed, :stall, :failure, :run_update, :test]
@@ -146,22 +146,54 @@ defmodule ForemanServer.Messaging.ConfigResolver do
   # `{:system, env}` reference); `secret` is optional and, when present, signs
   # the JSON body (HMAC-SHA256 in `x-foreman-signature`). Both live only in
   # config, never in events: notifications carry the provider name and a
-  # recipient label, not the destination.
+  # recipient label, not the destination. A literal URL is held to
+  # `WebhookUrl`'s rules here (https, no userinfo, no private host);
+  # `allow_insecure_http` and `allow_private_hosts`, both off unless set, are the
+  # operator's opt-outs. A `{:system, env}` URL cannot be read before a send, so
+  # the provider applies the same rules then.
   defp destination(raw, :webhook) do
     with {:ok, cfg} <- provider_config(raw, :webhook, :webhook_destination),
          {:ok, url} <- required_secret_ref(cfg, :url, :webhook_destination),
-         :ok <- http_url(url),
+         {:ok, insecure} <- boolean_field(cfg, :allow_insecure_http, :webhook_destination),
+         {:ok, private} <- boolean_field(cfg, :allow_private_hosts, :webhook_destination),
+         :ok <- http_url(url, allow_insecure_http: insecure, allow_private_hosts: private),
          {:ok, secret} <- optional_secret_ref(cfg, :secret, :webhook_destination) do
-      {:ok, %{provider: :webhook, url: url, secret: secret}}
+      {:ok,
+       %{
+         provider: :webhook,
+         url: url,
+         secret: secret,
+         allow_insecure_http: insecure,
+         allow_private_hosts: private
+       }}
     end
   end
 
-  defp http_url({:system, _name}), do: :ok
+  defp http_url({:system, _name}, _policy), do: :ok
 
-  defp http_url(url) do
-    if String.starts_with?(url, ["http://", "https://"]),
-      do: :ok,
-      else: {:error, {:invalid_field, :webhook_destination, :url, url}}
+  # The URL is never echoed for a refusal that is about its credentials or its
+  # target; only "not an http(s) URL at all" shows it, and that check runs after
+  # the userinfo one, so what is shown cannot carry credentials.
+  defp http_url(url, policy) do
+    case WebhookUrl.check(url, policy) do
+      :ok -> :ok
+      {:error, :not_http_url} -> {:error, {:invalid_field, :webhook_destination, :url, url}}
+      {:error, reason} -> {:error, {:unsafe_url, :webhook_destination, reason}}
+    end
+  end
+
+  # An opt-in flag: absent or null is off, a boolean (or the "true"/"false"
+  # strings YAML/JSON-loaded config carries, as `enabled` accepts) is its
+  # value, anything else is invalid.
+  defp boolean_field(map, key, error_key) do
+    case fetch_field(map, key) do
+      :absent -> {:ok, false}
+      {:present, nil} -> {:ok, false}
+      {:present, value} when is_boolean(value) -> {:ok, value}
+      {:present, "true"} -> {:ok, true}
+      {:present, "false"} -> {:ok, false}
+      {:present, value} -> {:error, {:invalid_field, error_key, key, value}}
+    end
   end
 
   defp optional_secret_ref(map, key, error_key) do

@@ -41,11 +41,29 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
     def run(request, _context) do
       {pid, mode} = Application.fetch_env!(:foreman_server, :review_evaluator_test_stub)
       send(pid, {:request, request})
+      send(pid, {:scratch_present, File.dir?(request.cwd)})
 
       case resolve(mode) do
         # Tokens the attempt spent before it ended, ahead of whatever it then did.
         {:spent, input, inner} ->
           with {:ok, events} <- outcome(inner), do: {:ok, [usage_event(input) | events]}
+
+        # One `:usage` event per assistant message, as pi reports them: the harness's
+        # `RunResult.usage` keeps only the last of them.
+        {:messages, inputs, inner} ->
+          with {:ok, events} <- outcome(inner),
+               do: {:ok, Enum.map(inputs, &usage_event/1) ++ events}
+
+        # What the reviewer's working directory is WHILE it runs there: the directory is gone
+        # once the review ends (foreman-5k19m), so a check made afterwards proves nothing.
+        {:inspect_scratch, inner} ->
+          {_, status} =
+            System.cmd("git", ["-C", request.cwd, "rev-parse", "--git-dir"],
+              stderr_to_stdout: true
+            )
+
+          send(pid, {:scratch_git_status, status})
+          outcome(inner)
 
         other ->
           outcome(other)
@@ -70,6 +88,21 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
          Event.new!(provider: :pi, type: :output_text_final, payload: %{"text" => text}),
          Event.new!(provider: :pi, type: :run_completed, payload: %{})
        ]}
+    end
+
+    # Pi's shape (`Adapters.Pi.map_event/1`): one `turn_started` .. `turn_completed` per model
+    # call. A turn that wrote text ends in an `output_text_final`; one that only thought has none.
+    defp outcome({:turns, turns}) do
+      events =
+        Enum.flat_map(turns, fn
+          {:text, text} ->
+            turn(Event.new!(provider: :pi, type: :output_text_final, payload: %{"text" => text}))
+
+          :thinking ->
+            turn(Event.new!(provider: :pi, type: :thinking_delta, payload: %{"text" => "hmm"}))
+        end)
+
+      {:ok, events ++ [Event.new!(provider: :pi, type: :run_completed, payload: %{})]}
     end
 
     defp outcome(:fail) do
@@ -100,6 +133,14 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
     # Produces nothing, ever: only the harness run's own timers end it.
     defp outcome(mode) when mode in [:hang, :hang_slow_cancel],
       do: {:ok, Stream.repeatedly(fn -> Process.sleep(60_000) end)}
+
+    defp turn(inner_event) do
+      [
+        Event.new!(provider: :pi, type: :turn_started, payload: %{}),
+        inner_event,
+        Event.new!(provider: :pi, type: :turn_completed, payload: %{})
+      ]
+    end
 
     @impl true
     def cancel(_run_id, _context) do
@@ -305,7 +346,7 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       Application.put_env(
         :foreman_server,
         :review_evaluator_test_stub,
-        {self(), {:reply, block(@valid)}}
+        {self(), {:inspect_scratch, {:reply, block(@valid)}}}
       )
 
       assert {:ok, %Verdict{}} = Agent.evaluate(subject)
@@ -314,12 +355,11 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       refute String.starts_with?(Path.expand(request.cwd) <> "/", Path.expand(ctx.repo) <> "/")
       refute String.starts_with?(Path.expand(request.cwd) <> "/", Path.expand(archive) <> "/")
 
-      # Nothing for an auto-commit hook to commit to: not a git work tree.
-      {_, status} =
-        System.cmd("git", ["-C", request.cwd, "rev-parse", "--git-dir"], stderr_to_stdout: true)
-
+      # Nothing for an auto-commit hook to commit to: not a git work tree, checked while the
+      # reviewer ran in it (the directory is removed when the review ends).
+      assert_received {:scratch_git_status, status}
       assert status != 0
-      assert File.dir?(request.cwd)
+      assert_received {:scratch_present, true}
     end
 
     test "malformed reviewer output is surfaced, transcript still archived", ctx do
@@ -568,6 +608,145 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
 
       assert {:ok, %Verdict{}} = result
       assert micros >= 300_000
+    end
+
+    # foreman-5z2u9: `RunResult.usage` is the harness's last-write-wins merge of every usage
+    # payload, so for pi (usage per message) it holds the LAST message only. The reviewer's
+    # spend is the sum of its messages, as the worker door records it.
+    test "the reviewer's usage is the sum of every message of a pi run", ctx do
+      put_mode({:messages, [100, 50, 25], {:reply, block(@valid)}})
+
+      assert {:ok, %Verdict{usage: usage}} = Agent.evaluate(ctx.subject)
+      assert usage.input_tokens == 175
+      assert usage.output_tokens == 3
+    end
+
+    test "a failed review reports the same summed spend on its error", ctx do
+      put_mode({:messages, [100, 50], :fail})
+
+      assert {:error, %Error{details: %{usage: %{usage: usage}}}} = Agent.evaluate(ctx.subject)
+      assert usage.input_tokens == 150
+    end
+
+    # foreman-5k19m: the reviewer's scratch working directory
+    # (`<tmp>/foreman-review/<kind>/<id>`) was created for every review and never removed.
+    test "the scratch directory exists while the reviewer runs and is gone after the verdict",
+         ctx do
+      put_mode({:reply, block(@valid)})
+
+      assert {:ok, %Verdict{}} = Agent.evaluate(ctx.subject)
+
+      assert_received {:scratch_present, true}
+      assert_received {:request, request}
+      refute File.exists?(request.cwd)
+    end
+
+    test "the scratch directory is removed when the review ends in an error", ctx do
+      for mode <- [{:reply, "no verdict here"}, :fail] do
+        put_mode(mode)
+
+        assert {:error, %Error{}} = Agent.evaluate(ctx.subject)
+
+        assert_received {:request, request}
+        refute File.exists?(request.cwd)
+      end
+    end
+
+    test "one scratch directory serves both attempts and goes after the retry", ctx do
+      put_backoff(0)
+      sequence([{:run_failed, @rate_limit}, {:reply, block(@valid)}])
+
+      assert {:ok, %Verdict{}} = Agent.evaluate(ctx.subject)
+
+      # The first attempt's failure did not remove the directory the retry runs in.
+      assert_received {:scratch_present, true}
+      assert_received {:scratch_present, true}
+      assert_received {:request, request}
+      refute File.exists?(request.cwd)
+    end
+
+    test "a request that cannot be built leaves no scratch directory behind", ctx do
+      review = Application.get_env(:foreman_server, :review)
+      agent = %{provider: :pi, model: "m-test", effort: :not_an_effort}
+      Application.put_env(:foreman_server, :review, Keyword.put(review, :agent, agent))
+
+      assert {:error, %Error{code: :evaluator_failed, message: message}} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "invalid reviewer run request"
+
+      refute File.exists?(
+               Path.join([System.tmp_dir!(), "foreman-review", "run", ctx.subject.subject_id])
+             )
+    end
+
+    # foreman-lze33: with `pi` on MiniMax the reviewer sometimes ended its last turn on a
+    # thinking block and no text. `RunResult.text` was then an earlier turn's words, the review
+    # was recorded `undetermined`, and nothing was wrong with the work. A final turn that wrote
+    # no text gets the one retry; a reply that holds text but no verdict does not.
+    @narration "I will read the archived files."
+
+    test "a final turn that wrote no text is retried once and the verdict records why", ctx do
+      put_backoff(0)
+
+      sequence([
+        {:spent, 100, {:turns, [{:text, @narration}, :thinking]}},
+        {:spent, 40, {:reply, block(@valid)}}
+      ])
+
+      assert {:ok, %Verdict{verdict: :partially_met, notes: [note], usage: usage}} =
+               Agent.evaluate(ctx.subject)
+
+      assert note =~ "retried once"
+      assert note =~ "its final turn wrote no text"
+      assert note =~ @narration
+      assert count_requests() == 2
+      # Both attempts spent tokens; the silent one is not hidden.
+      assert usage.input_tokens == 140
+    end
+
+    test "a reviewer that thinks and writes nothing at all is retried too", ctx do
+      put_backoff(0)
+      sequence([{:turns, [:thinking]}, {:reply, block(@valid)}])
+
+      assert {:ok, %Verdict{notes: [note]}} = Agent.evaluate(ctx.subject)
+      assert note =~ "reply empty"
+      assert count_requests() == 2
+    end
+
+    test "a final turn that stays silent twice is an error that notes the one retry", ctx do
+      put_backoff(0)
+      sequence([{:turns, [{:text, @narration}, :thinking]}])
+
+      assert {:error,
+              %Error{
+                code: :evaluator_malformed_output,
+                message: message,
+                details: %{notes: [note]}
+              }} = Agent.evaluate(ctx.subject)
+
+      assert message =~ "reply has no fenced json block"
+      assert message =~ "its final turn wrote no text"
+      assert note =~ "retried once"
+      # One retry, never a third attempt.
+      assert count_requests() == 2
+    end
+
+    test "a final turn that wrote text without a verdict is the reviewer's own output", ctx do
+      put_backoff(0)
+
+      sequence([
+        {:turns, [{:text, @narration}, {:text, "No verdict from me."}]},
+        {:reply, block(@valid)}
+      ])
+
+      assert {:error, %Error{code: :evaluator_malformed_output, message: message} = error} =
+               Agent.evaluate(ctx.subject)
+
+      assert message =~ "No verdict from me."
+      refute message =~ "its final turn wrote no text"
+      refute Map.has_key?(error.details, :notes)
+      assert count_requests() == 1
     end
   end
 end

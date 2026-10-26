@@ -3,6 +3,7 @@ defmodule ForemanServer.PrWatcherTest do
 
   alias ForemanServer.{PrAssociate, PrWatcher, ProjectionStore}
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
+  alias ForemanServer.TestSupport.UniqueIds
 
   # The fetch function is driven from an Agent so a test can change what "GitHub"
   # reports and count how often it was asked.
@@ -42,10 +43,11 @@ defmodule ForemanServer.PrWatcherTest do
 
     {:ok, _} = PrAssociate.store(ctx.run_id, ctx.pr_url)
 
-    assert_receive {:projection_event, %{event_type: "PrChecksChanged", data: %{run_id: run_id}}},
-                   5_000
+    run_id = ctx.run_id
 
-    assert run_id == ctx.run_id
+    assert_receive {:projection_event,
+                    %{event_type: "PrChecksChanged", data: %{run_id: ^run_id}}},
+                   5_000
 
     assert [%{data: %{checks_state: "failing", failing: [%{name: "unit"}]}}] =
              checks_events(ctx.run_id)
@@ -77,7 +79,12 @@ defmodule ForemanServer.PrWatcherTest do
       ProjectionStore.apply_events([
         %{
           event_type: "RunStarted",
-          payload: %{run_id: "run-other", task_id: "t", project_id: "p", workflow_snapshot: %{}}
+          payload: %{
+            run_id: UniqueIds.unique_run_id("other"),
+            task_id: "t",
+            project_id: "p",
+            workflow_snapshot: %{}
+          }
         },
         %{
           event_type: "PrUpdated",

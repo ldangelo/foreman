@@ -92,6 +92,58 @@ func TestThreadStopConflictExitsNonZeroWithServerText(t *testing.T) {
 	}
 }
 
+func TestThreadRereviewPostsToRereviewRoute(t *testing.T) {
+	c, seen := threadServer(t, func(*http.Request) (int, string) {
+		return 202, `{"thread_id":"run:r1","requested":"rereview"}`
+	})
+
+	var err error
+	stdout, _ := captureOutput(t, func() {
+		err = runThread(c, []string{"rereview", "run:r1"})
+	})
+	if err != nil {
+		t.Fatalf("thread rereview: %v", err)
+	}
+	if len(*seen) != 1 || (*seen)[0].method != http.MethodPost || (*seen)[0].path != "/api/threads/run:r1/rereview" {
+		t.Fatalf("requests = %+v, want one POST /api/threads/run:r1/rereview", *seen)
+	}
+	if strings.TrimSpace(string((*seen)[0].body)) != "{}" {
+		t.Fatalf("body = %q, want {}", (*seen)[0].body)
+	}
+	if !strings.Contains(stdout, "rereview") {
+		t.Fatalf("stdout = %q, want the server response", stdout)
+	}
+}
+
+func TestThreadRereviewConflictExitsNonZeroWithServerText(t *testing.T) {
+	c, _ := threadServer(t, func(*http.Request) (int, string) {
+		return 409, `{"error":"not_rerunnable","thread_id":"run:r1","verdict":"met"}`
+	})
+
+	err := runThread(c, []string{"rereview", "run:r1"})
+	if err == nil {
+		t.Fatal("thread rereview on a 409 returned nil")
+	}
+	if code := client.ExitCode(err); code != 3 {
+		t.Fatalf("exit code = %d, want 3 (conflict)", code)
+	}
+	if !strings.Contains(err.Error(), "not_rerunnable") || !strings.Contains(err.Error(), "met") {
+		t.Fatalf("error = %q, want the server's error text", err.Error())
+	}
+}
+
+func TestThreadRereviewRequiresOneArgument(t *testing.T) {
+	c, seen := threadServer(t, func(*http.Request) (int, string) { return 202, `{}` })
+
+	err := runThread(c, []string{"rereview"})
+	if err == nil || !strings.Contains(err.Error(), "foreman thread rereview: expected one argument: <thread-id>") {
+		t.Fatalf("error = %v, want the one-argument usage error", err)
+	}
+	if len(*seen) != 0 {
+		t.Fatalf("requests = %+v, want none", *seen)
+	}
+}
+
 func TestThreadSteerPostsMessageToSteerRoute(t *testing.T) {
 	c, seen := threadServer(t, func(*http.Request) (int, string) {
 		return 202, `{"thread_id":"run:r1","message_id":"m1","mode":"pause_resume"}`

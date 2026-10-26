@@ -37,6 +37,7 @@ defmodule ForemanServer.OverwatchTest do
   alias ForemanServer.Overwatch.LaunchWorker
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.Overwatch.WorkerProtocol
+  alias ForemanServer.TestSupport.Eventually
 
   defmodule FakeAdapter do
     @moduledoc """
@@ -139,7 +140,7 @@ defmodule ForemanServer.OverwatchTest do
 
   # Poll until `fun` returns a truthy value, or give up. Used instead of a
   # bare sleep for the "a relaunch DID happen" direction; the "no relaunch"
-  # direction cannot be polled and takes a settle window.
+  # direction waits on `await_exit_handled/3` instead.
   defp eventually(fun, attempts \\ 100) do
     case fun.() do
       falsy when falsy in [nil, false] and attempts > 0 ->
@@ -149,6 +150,29 @@ defmodule ForemanServer.OverwatchTest do
       value ->
         value
     end
+  end
+
+  # A LaunchWorker's exit reaches this test as a DOWN straight from the dying process,
+  # but two other processes learn of it independently, through their own links: the
+  # WorkerSupervisor, which decides about a relaunch, and the WorkerRegistry, which drops
+  # the name. A relaunch runs synchronously inside the supervisor's handler, so once
+  # `launch_pid` has left the supervisor's children the decision has been made and any
+  # second generation is already registered and has appended WorkerStarted; the registry
+  # may still list the dead pid until it has handled its own exit. Waiting for both makes
+  # the "not relaunched" assertions that follow deterministic, however slow the machine.
+  defp await_exit_handled(launch_pid, worker_id, run_id) do
+    Eventually.await(
+      fn ->
+        reaped? =
+          ForemanServer.Overwatch.WorkerSupervisor
+          |> DynamicSupervisor.which_children()
+          |> Enum.all?(fn {_id, child, _type, _modules} -> child != launch_pid end)
+
+        reaped? and LaunchWorker.pid_for(worker_id, run_id) != launch_pid
+      end,
+      message:
+        "exit of #{inspect(launch_pid)} to be handled by WorkerSupervisor and WorkerRegistry"
+    )
   end
 
   describe "start_phase/2" do
@@ -338,9 +362,7 @@ defmodule ForemanServer.OverwatchTest do
 
       assert_receive {:DOWN, ^ref, :process, ^launch_pid, :normal}, 2_000
 
-      # The supervisor restarts synchronously, so a settle window this wide
-      # would have already registered a second generation.
-      Process.sleep(500)
+      await_exit_handled(launch_pid, worker_id, run_id)
 
       assert LaunchWorker.pid_for(worker_id, run_id) == nil
 
@@ -359,7 +381,7 @@ defmodule ForemanServer.OverwatchTest do
 
       assert_receive {:DOWN, ^ref, :process, ^launch_pid, :normal}, 2_000
 
-      Process.sleep(500)
+      await_exit_handled(launch_pid, worker_id, run_id)
 
       assert LaunchWorker.pid_for(worker_id, run_id) == nil
       assert count(read_worker_events(worker_id, run_id), "WorkerStarted") == 1

@@ -3,8 +3,9 @@ defmodule ForemanServer.Usage do
   Normalised token usage and provider-reported cost for one agent run.
 
   This is the single parsing site for provider usage shapes; everything
-  downstream (the `UsageRecorded` event, the run projection, the future E14
-  rollups) consumes `%ForemanServer.Usage{}` and never a raw provider map.
+  downstream (the `UsageRecorded` and `CoordinatorUsageRecorded` events, the run
+  projection, the future E14 rollups) consumes `%ForemanServer.Usage{}` and never
+  a raw provider map.
 
   Every field is `non_neg_integer() | nil` (cost: `float() | nil`). **`nil`
   means unknown, never zero**: a provider that did not report cost is not a
@@ -42,6 +43,8 @@ defmodule ForemanServer.Usage do
   addition (`nil + nil = nil`, `nil + 3 = 3`), so `merge/2` here is the
   contract and `Jido.AI.Usage` stays out of the boundary.
   """
+
+  alias Jido.Harness.{Event, RunResult}
 
   @derive Jason.Encoder
   defstruct input_tokens: nil,
@@ -112,6 +115,54 @@ defmodule ForemanServer.Usage do
 
   def from_run(provider, raw_usage, _usage_events, events_cost_usd),
     do: normalize(provider, raw_usage, events_cost_usd)
+
+  @doc """
+  Normalise a finished `Jido.Harness.RunResult`: `from_run/4` over its merged `usage`, the
+  payloads of its `:usage` events and the cost its terminal event reports. This is the one
+  place a run's usage is read, for the worker door and for the reviewer alike: reading only
+  `RunResult.usage` counts a pi run's last message and nothing before it.
+  """
+  @spec from_run_result(atom(), RunResult.t()) :: t()
+  def from_run_result(provider, %RunResult{usage: usage, events: events}) when is_atom(provider),
+    do: from_run(provider, usage, usage_events(events), events_cost_usd(events))
+
+  @doc "The payloads of the `:usage` events of a run, in order (what `from_run/4` sums for pi)."
+  @spec usage_events([Event.t()]) :: [map()]
+  def usage_events(events) do
+    for %Event{type: :usage, payload: payload} <- events,
+        is_map(payload),
+        do: payload
+  end
+
+  @doc """
+  Claude reports the dollar cost only on the terminal `:run_completed` event
+  (`claude_stream.ex:71`), never in `RunResult.usage`. Last one wins; `nil` when absent.
+  """
+  @spec events_cost_usd([Event.t()]) :: number() | nil
+  def events_cost_usd(events) do
+    events
+    |> Enum.filter(&match?(%Event{type: :run_completed}, &1))
+    |> List.last()
+    |> case do
+      %Event{payload: %{"cost_usd" => cost}} when is_number(cost) -> cost
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Normalise the usage of one finished harness run (`Jido.Harness.RunResult`),
+  whatever its status: a failed or cancelled run spent its tokens too.
+
+  Gathers the inputs `from_run/4` takes the way the workflow worker does
+  (`JidoHarnessWorker.build_meta/2`): the result's `provider` and `usage`, the
+  payload maps of its `:usage` events (maps only, in order) and the
+  `"cost_usd"` of its LAST `:run_completed` event (Claude reports its cost only
+  there), `nil` when absent. A provider without a known usage shape gives an
+  all-nil usage, and so does a result that reported nothing.
+  """
+  @spec from_run_result(RunResult.t()) :: t()
+  def from_run_result(%RunResult{provider: provider} = result),
+    do: from_run_result(provider, result)
 
   @doc """
   Build a usage from already-normalised fields (an event payload or projection

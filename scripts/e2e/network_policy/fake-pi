@@ -1,0 +1,47 @@
+#!/bin/sh
+# SIMULATED `pi`, baked into the jobsite probe image of scripts/e2e/network_policy_flow.sh. It is NOT
+# an agent: it runs /workspace/probe.sh (the "tool call", committed to the scratch repo) as whoever the
+# jobsite container runs as, with the environment the jobsite's agent env-file gave it (so the proxy
+# variables NetworkPolicy computed are exactly what a real agent's tool calls would inherit), and
+# reports the script's output through the `pi --mode json` event stream the Foreman harness adapter
+# parses. The real `pi` is a node program the image does not carry (see the header of the flow script).
+#
+#   pi [--mode json] [--session <id>] ... <prompt>
+#
+# A prompt containing HOLD makes probe.sh wait for /workspace/.probe-release before it returns, so the
+# harness can look at the running topology (and pause / cancel the jobsite) while the agent is in flight.
+case "${1:-}" in
+  --version|-v) echo "fake-pi 0.0.0 (network policy probe)"; exit 0 ;;
+  --help|-h) echo "usage: pi [--mode json] [--session ID] [prompt]   (simulated; --mode json)"; exit 0 ;;
+esac
+
+session=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--session" ]; then session=$a; fi
+  prev=$a
+done
+for last in "$@"; do :; done
+[ -n "$session" ] || session="fake-pi-$(date +%s)-$$"
+
+# The session header goes out FIRST: Foreman records the provider session as soon as it reads it, and
+# a jobsite can only be resumed once one is recorded.
+printf '{"type":"session","version":3,"id":"%s","timestamp":"%s","cwd":"%s"}\n' \
+  "$session" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(pwd)"
+printf '{"type":"agent_start"}\n{"type":"turn_start"}\n'
+
+case "${last:-}" in *HOLD*) PROBE_HOLD=1; export PROBE_HOLD ;; esac
+# TAG=<word> in the prompt names the run in the target's request log (probe.sh reads PROBE_TAG).
+tag=$(printf '%s' "${last:-}" | sed -n 's/.*TAG=\([A-Za-z0-9_-]*\).*/\1/p')
+if [ -n "$tag" ]; then PROBE_TAG=$tag; export PROBE_TAG; fi
+
+cd /workspace || exit 1
+out=$(sh /workspace/probe.sh 2>&1)
+rc=$?
+printf '%s\n' "$out" > /workspace/net-probe.out
+text=$(printf '%s' "$out" | jq -Rs .)
+
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":%s}],"stopReason":"stop"}}\n' "$text"
+printf '{"type":"turn_end"}\n'
+printf '{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":%s}]}]}\n' "$text"
+exit "$rc"

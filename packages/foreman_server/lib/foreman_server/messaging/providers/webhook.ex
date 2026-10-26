@@ -13,6 +13,19 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
     * `:secret` - optional literal or `{:system, env_name}`. When present the
       request carries `x-foreman-signature: sha256=<hex>`, the HMAC-SHA256 of the
       exact JSON body bytes keyed by the secret.
+    * `:allow_insecure_http`, `:allow_private_hosts` - optional booleans (absent
+      is `false`): the opt-outs of the URL rules below.
+
+  Every request carries `x-foreman-delivery: <notification_id>`, the id a
+  receiver can dedupe a redelivery on without parsing the body.
+
+  The URL is checked again right before each send
+  (`ForemanServer.Messaging.WebhookUrl.check_resolved/3`): a `{:system, env}`
+  URL is only known now, and DNS can change after the config was accepted. An
+  unsafe URL (not https, userinfo, a private host) fails the delivery terminally
+  and nothing is sent; a host that cannot be resolved right now fails it
+  retryably. `config :foreman_server, :messaging, host_resolver: Mod` replaces
+  the DNS lookup (`Mod.resolve(host)`, shaped like `WebhookUrl.resolve/1`).
 
   Error reasons never include the URL or the secret. 2xx succeeds; 429 and 5xx
   and transport errors are retryable; other statuses are terminal.
@@ -20,7 +33,7 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
 
   @behaviour ForemanServer.Messaging.Provider
 
-  alias ForemanServer.Messaging.{DeliveryResult, HttpResponse, Notification, Redactor}
+  alias ForemanServer.Messaging.{DeliveryResult, HttpResponse, Notification, Redactor, WebhookUrl}
 
   @timeout_ms 5_000
   @schema "foreman.notification.v1"
@@ -28,7 +41,9 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
   @impl true
   def send(%Notification{} = notification, destination) when is_map(destination) do
     with {:ok, url} <- required_binary(destination, :url, :webhook_destination),
-         {:ok, secret} <- optional_binary(destination, :secret, :webhook_destination) do
+         {:ok, secret} <- optional_binary(destination, :secret, :webhook_destination),
+         {:ok, policy} <- url_policy(destination),
+         :ok <- check_url(url, policy) do
       {url, body, headers, timeout} = build_request(url, notification, secret)
 
       case http_client().post_json(url, body, headers, timeout) do
@@ -48,6 +63,10 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
            })}
       end
     else
+      # A lookup that failed may succeed next time: redelivered, like a transport error.
+      {:error, {:unresolvable_host, _error_key} = reason} ->
+        {:error, result(notification, :failed, true, inspect(reason), %{})}
+
       {:error, reason} ->
         {:error, result(notification, :failed, false, inspect(reason), %{})}
     end
@@ -73,8 +92,10 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
       metadata: Redactor.redact(notification.metadata)
     }
 
-    {url, body, signature_headers(body, secret), @timeout_ms}
+    {url, body, delivery_headers(notification) ++ signature_headers(body, secret), @timeout_ms}
   end
+
+  defp delivery_headers(%Notification{notification_id: id}), do: [{"x-foreman-delivery", id}]
 
   defp signature_headers(_body, nil), do: []
 
@@ -98,6 +119,32 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
   end
 
   defp retryable_status?(status), do: status == 429 or status >= 500
+
+  defp url_policy(destination) do
+    with {:ok, insecure} <- flag(destination, :allow_insecure_http),
+         {:ok, private} <- flag(destination, :allow_private_hosts) do
+      {:ok, [allow_insecure_http: insecure, allow_private_hosts: private]}
+    end
+  end
+
+  defp flag(map, key) do
+    case fetch_field(map, key) do
+      :absent -> {:ok, false}
+      {:present, nil} -> {:ok, false}
+      {:present, value} when is_boolean(value) -> {:ok, value}
+      {:present, _value} -> {:error, {:invalid_field, :webhook_destination, key}}
+    end
+  end
+
+  defp check_url(url, policy) do
+    case WebhookUrl.check_resolved(url, policy, host_resolver()) do
+      :ok -> :ok
+      {:error, :unresolvable_host} -> {:error, {:unresolvable_host, :webhook_destination}}
+      # Not echoed: the URL may be, or hold, the secret.
+      {:error, :not_http_url} -> {:error, {:invalid_field, :webhook_destination, :url}}
+      {:error, reason} -> {:error, {:unsafe_url, :webhook_destination, reason}}
+    end
+  end
 
   defp required_binary(map, key, error_key) do
     case optional_binary(map, key, error_key) do
@@ -159,5 +206,10 @@ defmodule ForemanServer.Messaging.Providers.Webhook do
   defp http_client do
     Application.get_env(:foreman_server, :messaging, [])
     |> Keyword.get(:http_client, ForemanServer.Messaging.HttpClient)
+  end
+
+  defp host_resolver do
+    Application.get_env(:foreman_server, :messaging, [])
+    |> Keyword.get(:host_resolver, WebhookUrl)
   end
 end

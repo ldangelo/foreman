@@ -19,10 +19,13 @@ defmodule ForemanServer.PrMonitor do
     * otherwise `:pr_monitor_interval_ms` (5 minutes).
 
   All intervals get +/-10% jitter. A failing PR backs off 2x per consecutive
-  failure up to 15 minutes; a rate-limited `gh` pauses the whole sweep (the
+  failure up to 15 minutes; a rate-limited `gh` (its output says "rate limit" or
+  HTTP 429; a bare 403 is an ordinary failure) pauses the whole sweep at once (the
   `Retry-After` seconds when `gh` printed them, else 60 s). A scheduled tick
   observes at most `:pr_monitor_max_per_tick` (default 25) due PRs, longest
-  unobserved first, to bound `gh` usage.
+  unobserved first, to bound `gh` usage; the PRs the cap left over are due again one
+  second later. A watched PR that no run owns any more is looked at again at the
+  stable interval.
 
   ## Configuration
 
@@ -104,8 +107,8 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
-  @doc "Start the monitor, registered under its module name (a second start returns the first)."
-  @spec start_link(keyword()) :: {:ok, pid()}
+  @doc "Start the monitor, registered under its module name (a second start is `{:error, {:already_started, pid}}`)."
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -203,9 +206,11 @@ defmodule ForemanServer.PrMonitor do
           {:ok, _result} ->
             {:cont, {schedule_after_success(acc, record, now), ok + 1, err}}
 
-          # No run owns the PR any more, or its watch ended: nothing to observe.
+          # No run owns the PR any more (it was re-associated), or its watch ended: nothing
+          # to observe. Its watch record can still be live, i.e. still in `watched_prs/0`,
+          # so the pruning below keeps it: replace the entry the last observation left.
           {:error, :not_watched} ->
-            {:cont, {acc, ok, err}}
+            {:cont, {schedule_unowned(acc, record, now), ok, err}}
 
           {:error, reason} ->
             Logger.warning("PrMonitor observe failed url=#{record.pr_url}: #{inspect(reason)}")
@@ -218,8 +223,8 @@ defmodule ForemanServer.PrMonitor do
         end
       end)
 
-    # Entries of PRs no longer watched (merged, closed, stopped, not_watched)
-    # would otherwise stay in `due` and pin `next_delay/2` to its 1 s floor.
+    # Entries of PRs no longer watched (merged, closed, stopped) would otherwise stay in
+    # `due` and pin `next_delay/2` to its 1 s floor.
     live = MapSet.new(watched, & &1.pr_url)
 
     %{
@@ -252,6 +257,17 @@ defmodule ForemanServer.PrMonitor do
     %{
       state
       | due: Map.put(state.due, record.pr_url, due),
+        failures: Map.delete(state.failures, record.pr_url)
+    }
+  end
+
+  # Nothing can observe the PR: look again at the stable interval. An entry left in the
+  # past would tick every second; no entry would make the PR due on every tick, and, as
+  # it is never updated, first in every batch.
+  defp schedule_unowned(state, record, now) do
+    %{
+      state
+      | due: Map.put(state.due, record.pr_url, now + interval_ms()),
         failures: Map.delete(state.failures, record.pr_url)
     }
   end

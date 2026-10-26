@@ -176,23 +176,6 @@ defmodule ForemanServer.Coordinator.ExecutorMemoryTuningTest do
     end
   end
 
-  describe "add_repo and schedule" do
-    test "are recorded as unsupported with a clear reason, never silently dropped", %{
-      project_id: p
-    } do
-      outcomes =
-        run(p, [
-          %{"kind" => "add_repo", "path" => "/tmp/x", "quote" => "add repo"},
-          %{"kind" => "schedule", "spec" => "daily", "quote" => "daily"}
-        ])
-
-      assert [%{status: "rejected", reason: r1}, %{status: "rejected", reason: r2}] = outcomes
-      assert r1 =~ "not available" and r1 =~ "CLI"
-      assert r2 =~ "scheduling is not available"
-      assert Executor.notice(outcomes) =~ "I did not run add_repo"
-    end
-  end
-
   test "ProjectMemory is untouched for other projects", %{project_id: p, tmp_dir: dir} do
     other = H.register_project(Path.join(dir, "o") |> tap(&File.mkdir_p!/1))
     run(p, [%{"kind" => "remember", "name" => "n", "content" => "c"}])

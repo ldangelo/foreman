@@ -3,12 +3,15 @@ defmodule ForemanServer.ProjectionStoreNotificationsTest do
 
   alias EventStore.EventData
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.UniqueIds
 
   test "projects notification lifecycle into run detail" do
+    run_id = UniqueIds.unique_run_id("n1")
+
     run_started = %EventData{
       event_type: "RunStarted",
       data: %{
-        run_id: "run-n1",
+        run_id: run_id,
         project_id: "p-1",
         task_id: "t-1",
         workflow_name: "wf",
@@ -29,8 +32,8 @@ defmodule ForemanServer.ProjectionStoreNotificationsTest do
         subject: "Run failed",
         body: "phase failed",
         correlation_id: "corr-1",
-        run_id: "run-n1",
-        metadata: %{run_id: "run-n1"}
+        run_id: run_id,
+        metadata: %{run_id: run_id}
       }
     }
 
@@ -41,14 +44,14 @@ defmodule ForemanServer.ProjectionStoreNotificationsTest do
         attempt_id: "a-1",
         provider: "telegram",
         correlation_id: "corr-1",
-        run_id: "run-n1",
+        run_id: run_id,
         reason: "timeout",
         retryable?: true
       }
     }
 
     assert :ok = ProjectionStore.apply_events([run_started, enqueued, failed])
-    run = ProjectionStore.run("run-n1")
+    run = ProjectionStore.run(run_id)
 
     assert [
              %{
@@ -56,7 +59,7 @@ defmodule ForemanServer.ProjectionStoreNotificationsTest do
                status: "failed",
                reason: "timeout",
                retryable?: true,
-               metadata: %{run_id: "run-n1"}
+               metadata: %{run_id: ^run_id}
              }
            ] = run.notifications
   end

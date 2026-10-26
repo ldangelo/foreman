@@ -167,6 +167,10 @@ func TestExitHelperProcess(t *testing.T) {
 		os.Args = []string{"foreman", "project", "list", "-h"}
 		main()
 		return
+	case "main-project-schedule-create-timezone":
+		os.Args = append([]string{"foreman", "project"}, timezoneCreateArgs()...)
+		main()
+		return
 	case "success":
 		exitWithError(nil)
 		os.Exit(0)

@@ -18,23 +18,8 @@ defmodule ForemanServerWeb.WebhookControllerTest do
   import Plug.Test
   import Plug.Conn
 
-  alias ForemanServer.Inbox.{DedupeTable, Poller}
+  alias ForemanServer.Inbox.DedupeTable
   alias ForemanServerWeb.WebhookController
-
-  setup_all do
-    # Poller + DedupeTable bootstrap (poller_test.exs pattern).
-    case Process.whereis(DedupeTable) do
-      nil -> {:ok, _} = DedupeTable.start_link([])
-      _ -> :ok
-    end
-
-    case Process.whereis(Poller) do
-      nil -> {:ok, _} = Poller.start_link([])
-      _ -> :ok
-    end
-
-    :ok
-  end
 
   setup do
     DedupeTable.clear()

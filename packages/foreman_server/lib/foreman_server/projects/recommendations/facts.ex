@@ -5,10 +5,11 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
 
   Safety rules (asserted by tests):
 
-    * Only existence of FIXED file names/globs is checked; arbitrary repo
-      content is never read, and no script from the repo is ever executed.
-      External commands run by absolute path found on the server's own `PATH`
-      (never the repo dir), from a neutral working directory.
+    * Only existence of FIXED file names/globs is checked, plus the head of two
+      fixed files (`.git/config`, `.git/HEAD`); arbitrary repo content is never
+      read, and no script from the repo is ever executed. External commands run
+      by absolute path found on the server's own `PATH` (never the repo dir),
+      from a neutral working directory.
     * Every external call is bounded by `:probe_timeout_ms` (default 5 000); a
       hanging command yields `:timeout`, never a hang. The whole collection is
       bounded by `:total_timeout_ms`.
@@ -16,6 +17,8 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
       and detectors stay silent on those: no false alarms.
   """
 
+  alias ForemanServer.Aggregates.Project.Environment
+  alias ForemanServer.ProjectEnvironment
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectSettings
   alias ForemanServer.Workflow.Catalog
@@ -127,6 +130,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     has_beads_dir: false,
     br_binary: false,
     files: %{agents_md: false, claude_md: false, ci: [], manifests: []},
+    checked_out_branch: :unavailable,
     gh: :unavailable,
     git_remote: :unavailable,
     workflows_installed: :unavailable,
@@ -134,6 +138,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     provider_rows: :unavailable,
     settings: :unavailable,
     env_secret_keys: [],
+    env_names: :unavailable,
     memory_count: :unavailable
   ]
 
@@ -152,6 +157,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
             ci: [String.t()],
             manifests: [String.t()]
           },
+          checked_out_branch: String.t() | :detached | :unavailable,
           gh: :authenticated | :unauthenticated | :missing | :timeout | :unavailable,
           git_remote: tri(),
           workflows_installed: tri(),
@@ -159,13 +165,14 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
           provider_rows: [{atom(), :installed | :not_installed}] | :unavailable,
           settings: ProjectSettings.t() | :unavailable,
           env_secret_keys: [String.t()],
+          env_names: [String.t()] | :unavailable,
           memory_count: non_neg_integer() | :unavailable
         }
 
   @ci_patterns [".github/workflows/*.yml", ".github/workflows/*.yaml", ".gitlab-ci.yml"]
   @ci_files [".circleci/config.yml"]
   @manifest_names ~w(mix.exs package.json go.mod pyproject.toml Cargo.toml Gemfile)
-  @secret_key ~r/(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)/i
+  @git_head_sha ~r/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\s*\z/
   @default_probe_timeout_ms 5_000
   @default_total_timeout_ms 15_000
 
@@ -208,6 +215,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     settings = ProjectSettings.from_config(project[:config])
     provider = task_provider_name(project[:task_provider])
     beads_db = repo && first_db(ctx.probe, Path.join([repo, ".beads", "*.db"]))
+    vars = ProjectEnvironment.environment(project_id, project: project)["vars"]
 
     %__MODULE__{
       project_id: project_id,
@@ -218,13 +226,15 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
       has_beads_dir: is_binary(repo) and ctx.probe.exists?(Path.join(repo, ".beads")),
       br_binary: ctx.probe.find_executable("br") != nil,
       files: files(ctx.probe, repo),
+      checked_out_branch: checked_out_branch(ctx.probe, repo),
       gh: gh_status(ctx),
       git_remote: git_remote(ctx.probe, repo),
       workflows_installed: workflows_installed(ctx),
       unmapped_issue_types: unmapped_types(ctx, project_id, provider),
       provider_rows: provider_rows(ctx),
       settings: settings,
-      env_secret_keys: env_secret_keys(project[:config]),
+      env_secret_keys: env_secret_keys(vars),
+      env_names: env_names(project_id, vars),
       memory_count: memory_count(project_id, ctx)
     }
   end
@@ -283,6 +293,20 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     end
   end
 
+  # `.git/HEAD` is `ref: refs/heads/<branch>` on a branch and a bare commit id on a
+  # detached HEAD. Read as a file for the same reason as `.git/config`; a worktree's
+  # `.git` file, a missing repo and any other symbolic ref are `:unavailable`.
+  defp checked_out_branch(_probe, nil), do: :unavailable
+
+  defp checked_out_branch(probe, repo) do
+    case probe.read_head(Path.join([repo, ".git", "HEAD"]), 256) do
+      {:ok, "ref: refs/heads/" <> branch} -> String.trim(branch)
+      {:ok, "ref: " <> _other} -> :unavailable
+      {:ok, body} -> if Regex.match?(@git_head_sha, body), do: :detached, else: :unavailable
+      :error -> :unavailable
+    end
+  end
+
   defp workflows_installed(ctx) do
     with :ok <- within_deadline(ctx),
          {:ok, installed?} <- ctx.probe.call(&Catalog.installed?/0, ctx.timeout) do
@@ -313,22 +337,18 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     end
   end
 
-  defp env_secret_keys(%{} = config) do
-    env = Map.get(config, :env) || Map.get(config, "env")
-
-    if is_map(env) do
-      for {key, value} <- env,
-          is_binary(value) and value != "",
-          name = to_string(key),
-          Regex.match?(@secret_key, name),
-          do: name
-    else
-      []
-    end
+  # The plain variables agents actually receive (the environment record's `vars`,
+  # else legacy `config.env`), judged by the same name rule `project env set` enforces.
+  defp env_secret_keys(vars) do
+    for({name, value} <- vars, value != "", Environment.secret_name?(name), do: name)
     |> Enum.sort()
   end
 
-  defp env_secret_keys(_), do: []
+  # Names only, from the projection: plain variables plus the stored secrets.
+  defp env_names(project_id, vars) do
+    secrets = for %{name: name} <- ProjectionStore.project_secret_names(project_id), do: name
+    (Map.keys(vars) ++ secrets) |> Enum.uniq() |> Enum.sort()
+  end
 
   # Project memory (E2) is optional: an unavailable module or a failing read is
   # `:unavailable`, which no detector reports on.

@@ -5,8 +5,9 @@ defmodule ForemanServer.Approvals.PermissionPromptTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.Aggregates.ToolCall
-  alias ForemanServer.Approvals.{Deliverer, Inflight, PermissionPrompt}
+  alias ForemanServer.Approvals.{Deliverer, Inflight, PermissionPrompt, Requester}
   alias ForemanServer.{CommandGateway, CommandRouter, ProjectionStore}
+  alias ForemanServer.TestSupport.FakeClaudeCli
 
   setup do
     :ok = ProjectionStore.subscribe(replay_existing: false)
@@ -187,9 +188,106 @@ defmodule ForemanServer.Approvals.PermissionPromptTest do
     assert [_one] = ProjectionStore.run_approvals(run_id, status: :all)
   end
 
-  test "claude_options hands the adapter the permission tool and a per-run credential" do
+  # The agent died with the server (or its connection was killed) and nobody released the
+  # request: it must not stay `requested` for an operator to approve into the void (foreman-u0646).
+  defp orphan!(project_id, run_id, id) do
+    {:ok, ^id} =
+      Requester.request(
+        %{run_id: run_id, project_id: project_id, provider: :claude},
+        "Write",
+        "a.txt",
+        tool_call_id: id,
+        delivery: :inflight
+      )
+
+    id
+  end
+
+  defp approve(run_id, id) do
+    CommandGateway.dispatch_operator(%{
+      type: "tool.approve",
+      command_id: "late-approve:#{run_id}:#{id}",
+      aggregate_id: ToolCall.stream_id(run_id, id),
+      payload: %{run_id: run_id, tool_call_id: id}
+    })
+  end
+
+  test "a restart expires the in-flight requests the previous run left, and only those" do
+    {project_id, run_id} = start_run!()
+    :ok = stop_supervised(Inflight)
+
+    orphan = orphan!(project_id, run_id, "inflight-before-restart")
+
+    {:ok, post_hoc} =
+      Requester.request(
+        %{run_id: run_id, project_id: project_id, provider: :claude},
+        "Edit",
+        "b.txt",
+        phase_index: 1
+      )
+
+    start_supervised!(Inflight)
+    await("ToolCallExpired", :tool_call_id, orphan)
+
+    assert %{status: "expired", reason: "server_restart"} =
+             ProjectionStore.tool_call(run_id, orphan)
+
+    # A paused run's post-hoc request survives a restart: its decision resumes the run.
+    assert %{status: "requested"} = ProjectionStore.tool_call(run_id, post_hoc)
+
+    # The late approve is refused and says why, instead of finishing as `delivery_failed`.
+    assert {:error, {:tool_call_expired, "server_restart"}} = approve(run_id, orphan)
+  end
+
+  test "a run that ends expires its in-flight requests that nothing waits for, and no other run's" do
+    {project_id, run_id} = start_run!()
+    {other_project_id, other_run_id} = start_run!()
+    orphan = orphan!(project_id, run_id, "inflight-orphan")
+    bystander = orphan!(other_project_id, other_run_id, "inflight-bystander")
+
+    {:ok, _} =
+      CommandGateway.dispatch_system(%{
+        type: "run.cancel",
+        command_id: "test-cancel:#{run_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id}
+      })
+
+    await("ToolCallExpired", :tool_call_id, orphan)
+    assert %{status: "expired", reason: "run_ended"} = ProjectionStore.tool_call(run_id, orphan)
+    assert %{status: "requested"} = ProjectionStore.tool_call(other_run_id, bystander)
+    assert {:error, {:tool_call_expired, "run_ended"}} = approve(run_id, orphan)
+  end
+
+  test "a waiter killed without releasing its request leaves it expired, not pending" do
+    {_project_id, run_id} = start_run!()
+    args = %{"tool_name" => "Write", "input" => %{}, "tool_use_id" => "toolu_killed"}
+    id = "inflight-toolu_killed"
+
+    waiter = spawn(fn -> PermissionPrompt.decide(run_id, args, []) end)
+    await("ToolCallRequested", :run_id, run_id)
+    assert %{status: "requested"} = ProjectionStore.tool_call(run_id, id)
+
+    Process.exit(waiter, :kill)
+
+    await("ToolCallExpired", :tool_call_id, id)
+    assert %{status: "expired", reason: "client_gone"} = ProjectionStore.tool_call(run_id, id)
+    assert {:error, {:tool_call_expired, "client_gone"}} = approve(run_id, id)
+  end
+
+  @tag :tmp_dir
+  test "claude_options hands the adapter the permission tool and a per-run credential", %{
+    tmp_dir: dir
+  } do
+    FakeClaudeCli.use!(FakeClaudeCli.write!(dir, "claude-known", :known))
+    previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766/")
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     assert [mcp_config: %{"foreman_permission" => server}, provider_options: provider_options] =
              Inflight.claude_options("run-1")
@@ -200,6 +298,49 @@ defmodule ForemanServer.Approvals.PermissionPromptTest do
     assert Inflight.valid_token?("run-1", Inflight.token("run-1"))
     refute Inflight.valid_token?("run-2", Inflight.token("run-1"))
     refute Inflight.valid_token?("run-1", nil)
+  end
+
+  @tag :tmp_dir
+  test "claude_options hands out nothing, and says why, for a CLI that does not know the flag", %{
+    tmp_dir: dir
+  } do
+    cli = FakeClaudeCli.write!(dir, "claude-old", :unknown)
+    FakeClaudeCli.use!(cli)
+    previous = Application.get_env(:foreman_server, :approvals)
+    Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766/")
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert Inflight.claude_options("run-1") == nil end)
+
+    assert log =~ "#{cli} does not know --permission-prompt-tool"
+    assert log =~ "pause and re-run"
+  end
+
+  @tag :tmp_dir
+  test "claude_options still asks in flight when the CLI cannot be probed, and logs that", %{
+    tmp_dir: dir
+  } do
+    FakeClaudeCli.use!(Path.join(dir, "no-such-claude"))
+    previous = Application.get_env(:foreman_server, :approvals)
+    Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766/")
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert [mcp_config: _, provider_options: _] = Inflight.claude_options("run-1")
+      end)
+
+    assert log =~ "could not tell whether the claude CLI knows --permission-prompt-tool"
   end
 
   @tag :tmp_dir

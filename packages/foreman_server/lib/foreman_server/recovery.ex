@@ -11,8 +11,10 @@ defmodule ForemanServer.Recovery do
     minutes). For each, emits a `RunRecoveryEvent` so downstream recovery
     aggregates can mark `recovery.require` and re-drive the run.
   * `interrupted_intents/2` — pure read: recorded fire intents older than a
-    grace period that were never confirmed or skipped. `Schedule.Ticker` redoes
-    each one on boot and every N ticks.
+    grace period that were never confirmed or skipped. `Schedule.Ticker` recovers
+    each one on boot and every N ticks: redo when the slot is still on time, a
+    `missed` skip when it is past the misfire grace, close when the schedule
+    already accounts for the slot.
   * `mark_interrupted/1` — emits `SchedulerIntentStale` (terminal) for an
     interrupted intent that cannot be redone.
   * `confirm_execution/1` — emits `ScheduledFireConfirmed` for an intent.
@@ -91,8 +93,9 @@ defmodule ForemanServer.Recovery do
   window may be mid-flight in the live scheduler and is NOT returned. An intent
   with no recorded time cannot be proven fresh and is returned.
 
-  The redo is the caller's job (`Schedule.Ticker` re-runs the fire steps, all of
-  which are idempotent); this function never writes.
+  The recovery is the caller's job (`Schedule.Ticker` redoes the fire steps, all of
+  which are idempotent, or closes the intent when the planner rules say the slot must
+  not fire); this function never writes.
   """
   @spec interrupted_intents(integer(), non_neg_integer()) :: [map()]
   def interrupted_intents(now_ms, grace_ms)

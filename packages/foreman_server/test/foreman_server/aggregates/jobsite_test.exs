@@ -20,6 +20,13 @@ defmodule ForemanServer.Aggregates.JobsiteTest do
     struct!(base, overrides)
   end
 
+  defp bind(index, session_id) do
+    %{
+      type: "jobsite.session.bind",
+      payload: %{jobsite_id: "js-1", index: index, session_id: session_id}
+    }
+  end
+
   describe "initial_state/0" do
     test "returns a default State struct" do
       state = default_state()
@@ -199,6 +206,79 @@ defmodule ForemanServer.Aggregates.JobsiteTest do
 
       assert {:ok, spec} = Jobsite.handle_command(state, cmd)
       assert spec.event_type == "JobsiteIterationFailed"
+    end
+  end
+
+  describe "handle_command/2 — jobsite.session.bind (foreman-cm8nv)" do
+    test "records the session of the iteration that is open" do
+      state = started_state(%{iteration_index: 1, iteration_open?: true})
+
+      assert {:ok, spec} = Jobsite.handle_command(state, bind(1, "sess-1"))
+      assert spec.event_type == "JobsiteSessionBound"
+      assert spec.stream_id == "jobsite:js-1"
+      assert spec.payload == %{jobsite_id: "js-1", index: 1, session_id: "sess-1"}
+    end
+
+    test "rejects a session for an iteration that is not the open one" do
+      closed = started_state(%{iteration_index: 1, iteration_open?: false})
+      assert {:error, {:iteration_not_open, 1}} = Jobsite.handle_command(closed, bind(1, "s"))
+
+      open = started_state(%{iteration_index: 2, iteration_open?: true})
+
+      assert {:error, {:iteration_out_of_order, 2, 1}} =
+               Jobsite.handle_command(open, bind(1, "s"))
+    end
+
+    test "rejects a missing or blank session id, naming the field" do
+      state = started_state(%{iteration_index: 1, iteration_open?: true})
+
+      for bad <- [nil, "", 7] do
+        assert {:error, {:missing_or_invalid, :session_id}} =
+                 Jobsite.handle_command(state, bind(1, bad))
+      end
+    end
+
+    test "rejects an unknown or a terminal jobsite" do
+      assert {:error, {:jobsite_absent, "js-1"}} =
+               Jobsite.handle_command(default_state(), bind(1, "s"))
+
+      done =
+        started_state(%{
+          status: "completed",
+          terminal?: true,
+          iteration_index: 1,
+          iteration_open?: true
+        })
+
+      assert {:error, {:jobsite_terminal, "completed"}} =
+               Jobsite.handle_command(done, bind(1, "s"))
+    end
+  end
+
+  describe "apply_event/2 — JobsiteSessionBound" do
+    test "sets the session a resume continues, before any iteration completed" do
+      state = started_state(%{iteration_index: 1, iteration_open?: true})
+      assert state.session_id == nil
+
+      event = %ForemanServer.Events.JobsiteSessionBound{
+        jobsite_id: "js-1",
+        index: 1,
+        session_id: "sess-1"
+      }
+
+      bound = Jobsite.apply_event(state, event)
+      assert bound.session_id == "sess-1"
+      assert bound.iteration_open? == true
+      assert bound.iterations == []
+    end
+
+    test "the latest bound id wins, and a map event from handle_command applies the same way" do
+      state = started_state(%{iteration_index: 1, iteration_open?: true, session_id: "old"})
+
+      assert {:ok, spec} = Jobsite.handle_command(state, bind(1, "new"))
+
+      # `spec` is what the actor applies right after the append: the map, not the typed struct.
+      assert Jobsite.apply_event(state, spec).session_id == "new"
     end
   end
 
