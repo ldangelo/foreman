@@ -16,7 +16,8 @@
 #       run's claude session (foreman-nufr9): PrFixStarted.resumed_session, the fix jobsite's
 #       JobsiteIterationStarted.resumed_session_id, the PR head and CI, and claude's own session file
 #   protection  operator merge under GitHub branch protection (required status checks, a required
-#       review, linear history). Branch protection does not exist on private repositories of a free
+#       review; required_linear_history is set and the one-parent result of the squash asserted, a refusal
+#       by it is not exercised). Branch protection does not exist on private repositories of a free
 #       plan (HTTP 403), so this stage makes THE SCRATCH REPOSITORY public for its duration, after a
 #       content safety scan, and restores it to private. It runs only with E2E_GH_ALLOW_PUBLIC=1.
 #
@@ -671,12 +672,31 @@ gh_x_claude_fix_ci() {
 
 # ---------------------------------------------------------------- 9i: branch protection
 
-# What a PUBLIC repository exposes outlives the flip: every commit of every branch and every refs/pull/* ref
-# (a PR keeps its head ref after its branch is deleted, and GitHub offers no way to delete one) stays
-# fetchable, and so do PR text, check output and Actions logs. The scan therefore reads the WHOLE history of
-# EVERY ref, every path ever committed, commit metadata, PR/review/comment text, check output, Actions logs
-# and the repository metadata. Any hit fails the stage BEFORE the flip; the repository stays private and the
-# protection stage is UNVERIFIED. A hit is reported by class and location, never by value.
+# What a PUBLIC repository exposes outlives the flip: every commit of every branch, every refs/pull/* ref (a PR keeps its head
+# ref after its branch is deleted, and GitHub offers no way to delete one) and every tag stays fetchable, and so do PR text, check
+# output and Actions logs. The scan therefore reads the WHOLE history of EVERY ref the repository advertises (refs/*: branches,
+# pull request refs, tags and any other class), every path ever committed, commit and tag metadata, PR/review/comment text,
+# check output, Actions logs and the repository metadata. Any hit fails the stage BEFORE the flip; the repository stays private
+# and the protection stage is UNVERIFIED. A hit is reported by class and location, never by value.
+#
+# Identities: GitHub attributes the squash commit and the refs/pull/*/merge commit of a PR to its author, the
+# account this harness runs as, and Foreman's phase commits carry Foreman <foreman@localhost>. A commit author or
+# committer may therefore be (whole-line matches, nothing else): synthetic (<local>@example.com), GitHub
+# <noreply@github.com>, Foreman <foreman@localhost>, or the account's own PUBLIC profile identity (gh api user:
+# name + email, only when the profile publishes an email: gh_account_identity). That one identity is already on the
+# profile, so naming it in a commit exposes nothing new; it stays an exact secret everywhere else (file contents,
+# commit messages, PR text, check output, logs). github_scan_proof.sh proves, on a local history, that the scan
+# still fails on a planted token, a foreign identity, a local path, a binary blob and the other classes.
+#
+# Binary blobs: any blob reachable from any ref that holds a NUL byte fails the scan (gh_public_binary_blobs). git grep -I and
+# git log -p cannot show such a blob's content, so a secret inside one would otherwise pass; the content checks also read every
+# blob as text (git grep -a) so nothing is ever skipped.
+#
+# Refs: the scan fetches refs/* whole (git ls-remote shows refs/heads, refs/pull and refs/tags on GitHub; any other class is fetched
+# too). The operator clone is made at setup and a fetch with explicit refspecs follows only the tags that point into the fetched
+# history, so a commit that only a tag reaches would be invisible to rev-list, log and grep. A ref that ends at a tree or a blob
+# instead of a commit fails the scan (the content checks read commits); annotated tags are read too: their message as text, their
+# tagger like an author.
 #
 # Paths a commit may ever have touched: the seeded fixture and the one note file each bead's agent adds.
 GH_PUBLIC_ALLOWED_FILES='^(\.github/workflows/(ci|approve)\.yml|\.gitignore|\.coderabbit\.yaml|README\.md|app\.py|test_app\.py|note_[a-z0-9_]+\.txt)$'
@@ -697,62 +717,150 @@ gh_public_scan_file() {
   fi
   for gsf_c in $GH_PUBLIC_CLASSES; do
     eval "gsf_re=\$GH_RE_$gsf_c"
-    gsf_lines=$(grep -nE -- "$gsf_re" "$gsf_text" 2>/dev/null | cut -d: -f1 | head -n 3 | tr '\n' ' ')
+    gsf_lines=$(grep -anE -- "$gsf_re" "$gsf_text" 2>/dev/null | cut -d: -f1 | head -n 3 | tr '\n' ' ')
     if [ -n "$gsf_lines" ]; then fail "$1: the $gsf_c class matches (lines: $gsf_lines of $(basename "$2"))"; gsf_bad=1; fi
   done
-  if [ -s "$EVID/secrets.txt" ] && grep -qF -f "$EVID/secrets.txt" "$gsf_text" 2>/dev/null; then fail "$1: an exact secret or identity of this run appears in $(basename "$2")"; gsf_bad=1; fi
+  if [ -s "$EVID/secrets.txt" ] && grep -qaF -f "$EVID/secrets.txt" "$gsf_text" 2>/dev/null; then fail "$1: an exact secret or identity of this run appears in $(basename "$2")"; gsf_bad=1; fi
   return $gsf_bad
+}
+
+# gh_account_identity: the authenticated account's own PUBLIC profile identity as git prints it (`name <email>`), or
+# nothing when the profile shows no name or no public email (gh api user answers `email: null` unless the owner
+# published one; the harness token has no `user` scope, so nothing private is read).
+gh_account_identity() {
+  gai_json=$(gh api user 2>/dev/null) || return 0
+  gai_name=$(printf '%s' "$gai_json" | jq -r '.name // empty' 2>/dev/null)
+  gai_email=$(printf '%s' "$gai_json" | jq -r '.email // empty' 2>/dev/null)
+  if [ -n "$gai_name" ] && [ -n "$gai_email" ]; then printf '%s <%s>\n' "$gai_name" "$gai_email"; fi
+  return 0
+}
+
+# gh_public_foreign_identities <identities file> [account identity]: the lines of the file (`name <email>`, one per
+# author and committer) that a public repository may not carry. Allowed, as WHOLE lines: synthetic
+# <local>@example.com, GitHub's own, Foreman's phase-commit default (Jobsite.Git.commit_all) and the given account
+# identity (empty or absent: none).
+gh_public_foreign_identities() {
+  gfi_args=(-e 'Foreman <foreman@localhost>' -e 'GitHub <noreply@github.com>')
+  [ -z "${2:-}" ] || gfi_args+=(-e "$2")
+  grep -Fvx "${gfi_args[@]}" "$1" | grep -Ev '^[^<>]* <[^<>@[:space:]]+@example\.com>$'
+}
+
+# gh_public_secrets: the exact values that may appear nowhere public: this run's tokens and the operator's real git identity
+# (the account's profile email is among them; only the commit identity fields may name the profile identity, see step 3)
+gh_public_secrets() {
+  : > "$EVID/secrets.txt"
+  for gps_s in "${GH_TOKEN:-}" "$E2E_API_TOKEN" "$GH_HOOK_SECRET" "$(git config --global user.email 2>/dev/null)" "$(git config --global user.name 2>/dev/null)" "$(gh api user -q '.email // empty' 2>/dev/null)"; do
+    [ -n "$gps_s" ] && printf '%s\n' "$gps_s" >> "$EVID/secrets.txt"
+  done
+}
+
+# gh_public_binary_blobs: every blob reachable from any ref of $GH_OP (branches, refs/pull/*, tags, the stash) that holds a NUL byte
+# ANYWHERE, as <sha8>:<path> (the first path git lists for it). `git grep -I` skips such a blob and `git log -p` prints only "Binary files
+# differ" for it, so a secret inside one would pass every content check; git's own heuristic looks at the first 8000 bytes only, this does not.
+gh_public_binary_blobs() {
+  git -C "$GH_OP" rev-list --objects --all \
+    | git -C "$GH_OP" cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+    | while read -r gbb_type gbb_sha gbb_size gbb_path; do
+        [ "$gbb_type" = blob ] || continue
+        gbb_text=$(git -C "$GH_OP" cat-file blob "$gbb_sha" | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
+        [ "$gbb_text" = "$gbb_size" ] || printf '%s:%s\n' "${gbb_sha:0:8}" "${gbb_path:-?}"
+      done
+}
+
+# gh_public_scan_history: what the git HISTORY of $GH_REPO exposes (steps 1-3). Fetches every ref of origin (refs/*: branches,
+# refs/pull/*, tags, any other class) into the operator clone $GH_OP, then checks the paths ever committed, that every ref ends at
+# a commit and every blob is text, the file contents at every commit, the whole patch history, the annotated tag messages and the
+# commit and tag identities. Needs $EVID/secrets.txt (gh_public_secrets). Returns 1 on any finding.
+gh_public_scan_history() {
+  gsh_bad=0
+  # EVERY ref the repository advertises, not just branches and pull request refs: a tag (or a ref of any other class) is fetchable
+  # once the repository is public, and a commit that only such a ref reaches is invisible here unless it is fetched
+  git -C "$GH_OP" fetch -q --prune origin '+refs/*:refs/remotes/scan/*' || { fail "cannot fetch every ref (refs/*) of $GH_REPO"; return 1; }
+  git -C "$GH_OP" for-each-ref --format='%(refname)' refs/remotes/scan | sed -e 's#^refs/remotes/scan/##' > "$EVID/refs.txt"
+  gsh_branches=$(grep -c '^heads/' "$EVID/refs.txt")
+  gsh_prrefs=$(grep -c '^pull/' "$EVID/refs.txt")
+  gsh_tags=$(grep -c '^tags/' "$EVID/refs.txt")
+  gsh_others=$(grep -vc -e '^heads/' -e '^pull/' -e '^tags/' "$EVID/refs.txt")
+  note "refs scanned: $gsh_branches branch(es), $gsh_prrefs pull request ref(s), $gsh_tags tag(s), $gsh_others other ref(s): $(tr '\n' ' ' < "$EVID/refs.txt")"
+  [ "$gsh_branches" -gt 0 ] || { fail "no branch fetched from $GH_REPO"; return 1; }
+  gsh_revs=$(git -C "$GH_OP" rev-list --all)
+  gsh_ncommits=$(printf '%s\n' "$gsh_revs" | grep -c .)
+
+  # 1. every path ever committed on any ref must be part of the synthetic fixture
+  git -C "$GH_OP" log --all -m --name-only --format= | grep -v '^$' | sort -u > "$EVID/paths-ever.txt"
+  note "paths ever committed on any ref: $(tr '\n' ' ' < "$EVID/paths-ever.txt")"
+  gsh_extra=$(grep -Ev "$GH_PUBLIC_ALLOWED_FILES" "$EVID/paths-ever.txt")
+  [ -z "$gsh_extra" ] && pass "every path ever committed ($(wc -l < "$EVID/paths-ever.txt" | tr -d ' ') distinct) is part of the synthetic fixture" || { fail "paths outside the synthetic fixture in the history: $(printf '%s' "$gsh_extra" | tr '\n' ' ')"; gsh_bad=1; }
+
+  # 1a. every ref must end at a commit (itself, or through one annotated tag): the content checks read commits, so a tag that points
+  # straight at a tree or a blob would hide what it holds from them
+  gsh_noncommit=$(git -C "$GH_OP" for-each-ref --format='%(objecttype)|%(*objecttype)|%(refname)' refs/remotes/scan | awk -F'|' '$1 == "commit" || ($1 == "tag" && $2 == "commit") { next } { print substr($3, 19) " (" $1 ($2 == "" ? "" : ">" $2) ")" }')
+  if [ -n "$gsh_noncommit" ]; then
+    fail "ref(s) that do not point at a commit (the content checks read commits only, so nothing under them was checked): $(printf '%s' "$gsh_noncommit" | tr '\n' ' ')"
+    gsh_bad=1
+  else
+    pass "every one of the $(grep -c . "$EVID/refs.txt") refs ends at a commit"
+  fi
+
+  # 1b. every blob reachable from any ref must be text: a binary blob is REJECTED here, never skipped (see gh_public_binary_blobs)
+  gsh_nblobs=$(git -C "$GH_OP" rev-list --objects --all | git -C "$GH_OP" cat-file --batch-check='%(objecttype) %(rest)' | grep -c '^blob ')
+  gh_public_binary_blobs > "$EVID/binary-blobs.txt"
+  if [ -s "$EVID/binary-blobs.txt" ]; then
+    fail "binary blob(s) in the history (a NUL byte: git grep -I and git log -p skip them, so nothing in them was checked) (sha:path): $(head -n 3 "$EVID/binary-blobs.txt" | tr '\n' ' ')"
+    gsh_bad=1
+  else
+    pass "every blob reachable from any ref ($gsh_nblobs) is text: no NUL byte, nothing is skipped by the content checks"
+  fi
+
+  # 2. file contents at EVERY commit of EVERY ref, and the whole patch history (messages and patches), by class
+  gsh_hit=0
+  for gsh_c in $GH_PUBLIC_CLASSES; do
+    eval "gsh_re=\$GH_RE_$gsh_c"
+    # shellcheck disable=SC2154 # gsh_re is assigned by the eval above
+    gsh_where=$(git -C "$GH_OP" grep -alE "$gsh_re" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
+    if [ -n "$gsh_where" ]; then fail "the $gsh_c class matches file contents in the history (rev:path): $gsh_where"; gsh_hit=1; gsh_bad=1; fi
+  done
+  gsh_where=$(git -C "$GH_OP" grep -alF -f "$EVID/secrets.txt" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
+  if [ -n "$gsh_where" ]; then fail "an exact secret or identity of this run appears in file contents (rev:path): $gsh_where"; gsh_hit=1; gsh_bad=1; fi
+  [ "$gsh_hit" = 0 ] && pass "no token, FOREMAN_* dump, transcript or local path in the contents of any file at any of $gsh_ncommits commit(s) on any ref"
+  # no author/committer lines here: those are step 3's, so the account's own identity (an exact secret) is not in this text
+  git -C "$GH_OP" log --all -m -p --format='COMMIT %H%n%B' > "$EVID/history-all.patch"
+  gh_public_scan_file "git log --all -p" "$EVID/history-all.patch" && pass "the whole patch history ($(wc -c < "$EVID/history-all.patch" | tr -d ' ') bytes) is clean" || gsh_bad=1
+  # annotated tag objects: the message is published text like a commit message (the tagger is step 3's, like an author)
+  git -C "$GH_OP" for-each-ref --format='%(if:equals=tag)%(objecttype)%(then)TAG %(refname)%0a%(contents)%(end)' | grep -v '^$' > "$EVID/tag-messages.txt"
+  gh_public_scan_file "annotated tag messages" "$EVID/tag-messages.txt" && pass "annotated tag messages ($(wc -c < "$EVID/tag-messages.txt" | tr -d ' ') bytes) are clean" || gsh_bad=1
+
+  # 3. commit and tag identities: authors and committers of every commit on every ref, and the tagger of every annotated tag
+  { git -C "$GH_OP" log --all --format='%an <%ae>%n%cn <%ce>'
+    git -C "$GH_OP" for-each-ref --format='%(if:equals=tag)%(objecttype)%(then)%(taggername) %(taggeremail)%(end)' | grep -v '^$'; } | sort -u > "$EVID/identities.txt"
+  note "commit and tag identities: $(tr '\n' ';' < "$EVID/identities.txt")"
+  gsh_account=$(gh_account_identity)
+  if [ -n "$gsh_account" ]; then
+    note "the account's own public profile identity is allowed in the commit identity fields (and nowhere else): $gsh_account"
+  else
+    note "the account profile publishes no name and email: its identity is allowed nowhere"
+  fi
+  gsh_ident=$(gh_public_foreign_identities "$EVID/identities.txt" "$gsh_account")
+  [ -z "$gsh_ident" ] && pass "every commit author and committer is synthetic (@example.com), GitHub's own, Foreman's phase-commit default or the account's own public profile identity" || { fail "commit identity outside the allowlist in the history: $(printf '%s' "$gsh_ident" | tr '\n' ';')"; gsh_bad=1; }
+  # the identity fields are free text: the token/path/env/transcript classes and this run's exact secrets still apply to
+  # them, minus the one allowed account identity itself (its email is an exact secret everywhere else)
+  if [ -n "$gsh_account" ]; then grep -Fvx -e "$gsh_account" "$EVID/identities.txt" > "$EVID/identities-scan.txt"; else cp "$EVID/identities.txt" "$EVID/identities-scan.txt"; fi
+  gh_public_scan_file "commit identities" "$EVID/identities-scan.txt" && pass "no token, local path, FOREMAN_* dump, transcript line or exact secret in any commit author or committer" || gsh_bad=1
+  return "$gsh_bad"
 }
 
 gh_public_safety_check() {
   say "9i-0. content safety scan of $GH_REPO before it is made public (all refs, PR refs, whole history)"
   gps_bad=0
-  # exact values that must never appear: this run's tokens and the operator's real git identity
-  : > "$EVID/secrets.txt"
-  for gps_s in "${GH_TOKEN:-}" "$E2E_API_TOKEN" "$GH_HOOK_SECRET" "$(git config --global user.email 2>/dev/null)" "$(git config --global user.name 2>/dev/null)" "$(gh api user -q '.email // empty' 2>/dev/null)"; do
-    [ -n "$gps_s" ] && printf '%s\n' "$gps_s" >> "$EVID/secrets.txt"
-  done
-
-  # every ref the repository exposes: branches and the pull request refs (head and merge)
-  git -C "$GH_OP" fetch -q origin '+refs/heads/*:refs/remotes/origin/*' '+refs/pull/*:refs/remotes/pull/*' || { fail "cannot fetch every branch and refs/pull/* of $GH_REPO"; return 1; }
-  git -C "$GH_OP" for-each-ref --format='%(refname)' refs/remotes > "$EVID/refs.txt"
-  gps_branches=$(grep -c '^refs/remotes/origin/' "$EVID/refs.txt")
-  gps_prrefs=$(grep -c '^refs/remotes/pull/' "$EVID/refs.txt")
-  note "refs scanned: $gps_branches branch(es), $gps_prrefs pull request ref(s): $(tr '\n' ' ' < "$EVID/refs.txt" | sed -e 's#refs/remotes/##g')"
-  [ "$gps_branches" -gt 0 ] || { fail "no branch fetched from $GH_REPO"; return 1; }
-  gps_revs=$(git -C "$GH_OP" rev-list --all)
-  gps_ncommits=$(printf '%s\n' "$gps_revs" | grep -c .)
-
-  # 1. every path ever committed on any ref must be part of the synthetic fixture
-  git -C "$GH_OP" log --all -m --name-only --format= | grep -v '^$' | sort -u > "$EVID/paths-ever.txt"
-  note "paths ever committed on any ref: $(tr '\n' ' ' < "$EVID/paths-ever.txt")"
-  gps_extra=$(grep -Ev "$GH_PUBLIC_ALLOWED_FILES" "$EVID/paths-ever.txt")
-  [ -z "$gps_extra" ] && pass "every path ever committed ($(wc -l < "$EVID/paths-ever.txt" | tr -d ' ') distinct) is part of the synthetic fixture" || { fail "paths outside the synthetic fixture in the history: $(printf '%s' "$gps_extra" | tr '\n' ' ')"; gps_bad=1; }
-
-  # 2. file contents at EVERY commit of EVERY ref, and the whole patch history, by class
-  gps_hit=0
-  for gps_c in $GH_PUBLIC_CLASSES; do
-    eval "gps_re=\$GH_RE_$gps_c"
-    gps_where=$(git -C "$GH_OP" grep -IlE "$gps_re" $gps_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
-    if [ -n "$gps_where" ]; then fail "the $gps_c class matches file contents in the history (rev:path): $gps_where"; gps_hit=1; gps_bad=1; fi
-  done
-  gps_where=$(git -C "$GH_OP" grep -IlF -f "$EVID/secrets.txt" $gps_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
-  if [ -n "$gps_where" ]; then fail "an exact secret or identity of this run appears in file contents (rev:path): $gps_where"; gps_hit=1; gps_bad=1; fi
-  [ "$gps_hit" = 0 ] && pass "no token, FOREMAN_* dump, transcript or local path in the contents of any file at any of $gps_ncommits commit(s) on any ref"
-  git -C "$GH_OP" log --all -m -p --format='COMMIT %H%n%an <%ae>%n%cn <%ce>%n%B' > "$EVID/history-all.patch"
-  gh_public_scan_file "git log --all -p" "$EVID/history-all.patch" && pass "the whole patch history ($(wc -c < "$EVID/history-all.patch" | tr -d ' ') bytes) is clean" || gps_bad=1
-  # 3. commit identities: only synthetic ones (or GitHub's own for a squash merge)
-  git -C "$GH_OP" log --all --format='%an <%ae>%n%cn <%ce>' | sort -u > "$EVID/identities.txt"
-  note "commit identities: $(tr '\n' ';' < "$EVID/identities.txt")"
-  gps_ident=$(grep -Ev '<[^>]*@example\.com>$|^GitHub <noreply@github\.com>$' "$EVID/identities.txt")
-  [ -z "$gps_ident" ] && pass "every commit author and committer is synthetic (@example.com) or GitHub's own" || { fail "non-synthetic commit identity in the history: $(printf '%s' "$gps_ident" | tr '\n' ';')"; gps_bad=1; }
+  gh_public_secrets
+  gh_public_scan_history || gps_bad=1
 
   # 4. PR text, comments, reviews, check output and statuses of every PR head, the repository metadata
   { gh api "repos/$GH_REPO/pulls?state=all&per_page=100" --paginate -q '.[] | .title, .body' 2>/dev/null
     gh api "repos/$GH_REPO/issues/comments?per_page=100" --paginate -q '.[].body' 2>/dev/null
     gh api "repos/$GH_REPO/pulls/comments?per_page=100" --paginate -q '.[].body' 2>/dev/null
     for gps_pr in $(gh api "repos/$GH_REPO/pulls?state=all&per_page=100" --paginate -q '.[].number' 2>/dev/null); do gh api "repos/$GH_REPO/pulls/$gps_pr/reviews" -q '.[].body' 2>/dev/null; done
-    for gps_sha in $(git -C "$GH_OP" for-each-ref --format='%(objectname)' refs/remotes/pull refs/remotes/origin | sort -u); do
+    for gps_sha in $(git -C "$GH_OP" for-each-ref --format='%(objectname)' refs/remotes/scan/pull refs/remotes/scan/heads | sort -u); do
       gh api "repos/$GH_REPO/commits/$gps_sha/check-runs" -q '.check_runs[] | .name, .output.title, .output.summary, .output.text' 2>/dev/null
       gh api "repos/$GH_REPO/commits/$gps_sha/statuses" -q '.[] | .context, .description, .target_url' 2>/dev/null
     done
@@ -775,12 +883,40 @@ gh_public_safety_check() {
   printf 'ghp_%s\n/Users/someone/x\nFOREMAN_API_TOKEN=abc\n"role": "assistant"\n' "$(printf 'a%.0s' $(seq 1 24))" > "$gps_probe"
   gps_ok=1
   for gps_c in $GH_PUBLIC_CLASSES; do eval "gps_re=\$GH_RE_$gps_c"; grep -qE -- "$gps_re" "$gps_probe" || gps_ok=0; done
-  [ "$gps_ok" = 1 ] && pass "the scan patterns detect a planted token, local path, FOREMAN_* dump and transcript line (the scan can fail)" || { fail "a scan pattern did not match its planted probe: the scan itself is broken"; return 1; }
+  printf 'Someone Else <someone@corp.test>\nForeman <foreman@localhost.corp.test>\n' > "$EVID/probe-identities.txt"
+  [ "$(gh_public_foreign_identities "$EVID/probe-identities.txt" | wc -l | tr -d ' ')" = 2 ] || gps_ok=0
+  [ "$gps_ok" = 1 ] && pass "the scan patterns detect a planted token, local path, FOREMAN_* dump, transcript line and foreign commit identity (the scan can fail)" || { fail "a scan pattern did not match its planted probe: the scan itself is broken"; return 1; }
   return 0
 }
 
+# A visibility change is processed asynchronously: `gh repo edit --visibility` answers at once and `gh repo view` already shows the new
+# value, but for a while the repository is LOCKED: every write answers "Repository has been locked." (HTTP 403) and another visibility
+# change "A previous visibility change is still in progress" (HTTP 422). Seen live 2026-10-26: the protection PUT 4 s after the flip
+# and the unflip 4 s after that were both refused, and the repository stayed PUBLIC until it was set private by hand.
+# gh_retry_locked <command...> retries exactly those two refusals (never another error) for up to E2E_GH_LOCK_SECS (default 240):
+# the output is in GH_LOCK_OUT, the seconds spent in GH_LOCK_WAITED, the status of the last attempt is returned.
+gh_retry_locked() {
+  grl_start=$(date +%s)
+  while :; do
+    GH_LOCK_OUT=$("$@" 2>&1)
+    grl_rc=$?
+    GH_LOCK_WAITED=$(elapsed "$grl_start")
+    [ "$grl_rc" = 0 ] && return 0
+    case "$GH_LOCK_OUT" in
+      *"Repository has been locked"*|*"visibility change is still in progress"*) ;;
+      *) return "$grl_rc" ;;
+    esac
+    [ "$GH_LOCK_WAITED" -lt "${E2E_GH_LOCK_SECS:-240}" ] || return "$grl_rc"
+    sleep 2
+  done
+}
+
 gh_set_visibility() { # <public|private>
-  gh repo edit "$GH_REPO" --visibility "$1" --accept-visibility-change-consequences >"$EVID/visibility-$1.out" 2>&1
+  gh_retry_locked gh repo edit "$GH_REPO" --visibility "$1" --accept-visibility-change-consequences
+  gsv_rc=$?
+  printf '%s\n' "$GH_LOCK_OUT" > "$EVID/visibility-$1.out"
+  [ "$GH_LOCK_WAITED" -lt 2 ] || note "(the repository was locked by the previous visibility change: the change to $1 was accepted after ${GH_LOCK_WAITED}s)"
+  return "$gsv_rc"
 }
 gh_visibility() { gh repo view "$GH_REPO" --json visibility -q .visibility 2>/dev/null; }
 
@@ -788,19 +924,23 @@ gh_unflip() {
   # GH_FLIPPED can be stale (a stage that died keeps its state only up to the last save): ask GitHub what is true
   gu_now=$(gh_visibility)
   [ "$GH_FLIPPED" = 1 ] || [ "$gu_now" = PUBLIC ] || return 0
+  gu_asked=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gh_set_visibility private
   GH_UNFLIP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gu_vis=$(gh_visibility)
-  note "unflip at $GH_UNFLIP_AT: gh repo view --json visibility -> $gu_vis"
+  gu_n=0
+  while [ "$gu_vis" != PRIVATE ] && [ "$gu_n" -lt 30 ]; do sleep 2; gu_n=$((gu_n + 2)); gu_vis=$(gh_visibility); done
+  note "unflip asked at $gu_asked, accepted at $GH_UNFLIP_AT: gh repo view --json visibility -> $gu_vis"
   if [ "$gu_vis" = PRIVATE ]; then GH_FLIPPED=0; else out "  WARNING     $GH_REPO is still $gu_vis: set it private by hand NOW"; fi
 }
 
 # gh_protect <enforce_admins true|false> <required contexts json array>
 gh_protect() {
-  gh api -X PUT "repos/$GH_REPO/branches/main/protection" --input - >"$EVID/protection-put.out" 2>&1 <<EOF
-{"required_status_checks":{"strict":false,"contexts":$2},"enforce_admins":$1,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"required_linear_history":true}
-EOF
+  printf '{"required_status_checks":{"strict":false,"contexts":%s},"enforce_admins":%s,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"required_linear_history":true}\n' "$2" "$1" > "$EVID/protection-body.json"
+  gh_retry_locked gh api -X PUT "repos/$GH_REPO/branches/main/protection" --input "$EVID/protection-body.json"
   gp_rc=$?
+  printf '%s\n' "$GH_LOCK_OUT" > "$EVID/protection-put.out"
+  [ "$GH_LOCK_WAITED" -lt 2 ] || note "(the repository was still locked by the visibility change: the protection was accepted after ${GH_LOCK_WAITED}s)"
   [ "$gp_rc" = 0 ] && { GH_PROTECTED=1; state_save 2>/dev/null; }
   return $gp_rc
 }

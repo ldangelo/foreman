@@ -137,5 +137,5 @@ paste once; the paste helper's second-paste nudge did not trigger).
 
 ## Not exercised
 
-Address comments, resolve conflicts, force-push and re-run in the combined run; merge under branch protection (`foreman-ksy0q`, the
-repository stayed unprotected by decision); claude as provider; Telegram/Slack; the Foreman server restarting during the GitHub stage.
+Address comments, resolve conflicts, force-push and re-run in the combined run; merge under branch protection (`foreman-ksy0q`, the repository stayed unprotected by decision; verified later,
+`live-github-branch-protection.md`); claude as provider; Telegram/Slack; the Foreman server restarting during the GitHub stage.

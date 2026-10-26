@@ -131,4 +131,4 @@ completes after such a resume keeps `last_error: agent_interrupted` from iterati
 - `jido_harness`: 128 passed. `go test ./...` green. `mix format`, `credo --min-priority higher`, `--warnings-as-errors` clean.
 - `claude_projects_flow.sh`: passed=125 failed=0 unverified=2 (twice). One earlier run on the same tree failed at step 3 (the first thread ended `failed`); its stack was not kept, so its cause is unknown. The next two runs did not reproduce it.
 - `failure_injection.sh` (all scenarios incl. `jobsite-resume`): passed=62 failed=0 unverified=2.
-- Open and not buildable here: `foreman-ksy0q` (real GitHub), `foreman-2onq1` (not reproduced), plus the deferred C13 `foreman-zn7de` and `foreman-mivo7`. (`foreman-nufr9`, PrFix resume on a real PR, was run on 2026-10-26: `live-claude-prfix-resume.md`.)
+- Open and not buildable here: `foreman-ksy0q` (real GitHub; merge under real branch protection was verified on 2026-10-26, `live-github-branch-protection.md`, bead closed), `foreman-2onq1` (not reproduced), plus the deferred C13 `foreman-zn7de` and `foreman-mivo7`. (`foreman-nufr9`, PrFix resume on a real PR, was run on 2026-10-26: `live-claude-prfix-resume.md`.)
