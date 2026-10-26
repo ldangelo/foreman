@@ -680,7 +680,9 @@ defmodule ForemanServer.Review.AnalyzerTest do
       send(executor, :stop)
       assert_receive {:DOWN, ^ref, :process, ^executor, _}, 1_000
 
-      assert :ok = Task.await(task, 5_000)
+      # The Analyzer captures the archive (git subprocesses) once the executor is gone, and how
+      # long that takes depends on the host: wait for it, not for a budget.
+      assert :ok = Task.await(task, :infinity)
 
       assert {:ok, %{"status" => "cancelled", "diff_status" => "captured"}} =
                Archive.read_manifest(dir)
@@ -716,7 +718,11 @@ defmodule ForemanServer.Review.AnalyzerTest do
         end)
 
       on_exit(fn -> Process.exit(executor, :kill) end)
-      assert_receive {:executor_registered, ^run_id}, 1_000
+
+      receive do
+        {:executor_registered, ^run_id} -> :ok
+      end
+
       executor
     end
 
@@ -749,11 +755,16 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
       ref = Process.monitor(executor)
       send(executor, :finish)
-      # The executor runs `Capture.close_run/2` (git subprocesses) before it exits: on a
-      # loaded host that took longer than the 1 s this used to allow.
-      assert_receive {:DOWN, ^ref, :process, ^executor, _}, 10_000
 
-      assert :ok = Task.await(task, 5_000)
+      # `Capture.close_run/2` runs git subprocesses before the executor exits, so how long it
+      # takes depends on the host, and a time budget here only moves the load at which the test
+      # fails. Wait for the DOWN itself: the executor wrote the archive and stopped normally,
+      # and the Analyzer, which polls for exactly that, then reviews it.
+      receive do
+        {:DOWN, ^ref, :process, ^executor, reason} -> assert reason == :normal
+      end
+
+      assert :ok = Task.await(task, :infinity)
 
       assert {:ok, %{"status" => "failed", "diff_status" => "captured"}} =
                Archive.read_manifest(dir)
