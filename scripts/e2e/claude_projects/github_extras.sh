@@ -685,7 +685,11 @@ gh_x_claude_fix_ci() {
 # name + email, only when the profile publishes an email: gh_account_identity). That one identity is already on the
 # profile, so naming it in a commit exposes nothing new; it stays an exact secret everywhere else (file contents,
 # commit messages, PR text, check output, logs). github_scan_proof.sh proves, on a local history, that the scan
-# still fails on a planted token, a foreign identity, a local path and the other classes.
+# still fails on a planted token, a foreign identity, a local path, a binary blob and the other classes.
+#
+# Binary blobs: any blob reachable from any ref that holds a NUL byte fails the scan (gh_public_binary_blobs). git grep -I and
+# git log -p cannot show such a blob's content, so a secret inside one would otherwise pass; the content checks also read every
+# blob as text (git grep -a) so nothing is ever skipped.
 #
 # Paths a commit may ever have touched: the seeded fixture and the one note file each bead's agent adds.
 GH_PUBLIC_ALLOWED_FILES='^(\.github/workflows/(ci|approve)\.yml|\.gitignore|\.coderabbit\.yaml|README\.md|app\.py|test_app\.py|note_[a-z0-9_]+\.txt)$'
@@ -706,10 +710,10 @@ gh_public_scan_file() {
   fi
   for gsf_c in $GH_PUBLIC_CLASSES; do
     eval "gsf_re=\$GH_RE_$gsf_c"
-    gsf_lines=$(grep -nE -- "$gsf_re" "$gsf_text" 2>/dev/null | cut -d: -f1 | head -n 3 | tr '\n' ' ')
+    gsf_lines=$(grep -anE -- "$gsf_re" "$gsf_text" 2>/dev/null | cut -d: -f1 | head -n 3 | tr '\n' ' ')
     if [ -n "$gsf_lines" ]; then fail "$1: the $gsf_c class matches (lines: $gsf_lines of $(basename "$2"))"; gsf_bad=1; fi
   done
-  if [ -s "$EVID/secrets.txt" ] && grep -qF -f "$EVID/secrets.txt" "$gsf_text" 2>/dev/null; then fail "$1: an exact secret or identity of this run appears in $(basename "$2")"; gsf_bad=1; fi
+  if [ -s "$EVID/secrets.txt" ] && grep -qaF -f "$EVID/secrets.txt" "$gsf_text" 2>/dev/null; then fail "$1: an exact secret or identity of this run appears in $(basename "$2")"; gsf_bad=1; fi
   return $gsf_bad
 }
 
@@ -743,9 +747,22 @@ gh_public_secrets() {
   done
 }
 
+# gh_public_binary_blobs: every blob reachable from any ref of $GH_OP (branches, refs/pull/*, tags, the stash) that holds a NUL byte
+# ANYWHERE, as <sha8>:<path> (the first path git lists for it). `git grep -I` skips such a blob and `git log -p` prints only "Binary files
+# differ" for it, so a secret inside one would pass every content check; git's own heuristic looks at the first 8000 bytes only, this does not.
+gh_public_binary_blobs() {
+  git -C "$GH_OP" rev-list --objects --all \
+    | git -C "$GH_OP" cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+    | while read -r gbb_type gbb_sha gbb_size gbb_path; do
+        [ "$gbb_type" = blob ] || continue
+        gbb_text=$(git -C "$GH_OP" cat-file blob "$gbb_sha" | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
+        [ "$gbb_text" = "$gbb_size" ] || printf '%s:%s\n' "${gbb_sha:0:8}" "${gbb_path:-?}"
+      done
+}
+
 # gh_public_scan_history: what the git HISTORY of $GH_REPO exposes (steps 1-3). Fetches every branch and every refs/pull/*
-# of origin into the operator clone $GH_OP, then checks the paths ever committed, the file contents at every commit, the
-# whole patch history and the commit identities. Needs $EVID/secrets.txt (gh_public_secrets). Returns 1 on any finding.
+# of origin into the operator clone $GH_OP, then checks the paths ever committed, that every blob is text, the file contents at
+# every commit, the whole patch history and the commit identities. Needs $EVID/secrets.txt (gh_public_secrets). Returns 1 on any finding.
 gh_public_scan_history() {
   gsh_bad=0
   # every ref the repository exposes: branches and the pull request refs (head and merge)
@@ -764,14 +781,25 @@ gh_public_scan_history() {
   gsh_extra=$(grep -Ev "$GH_PUBLIC_ALLOWED_FILES" "$EVID/paths-ever.txt")
   [ -z "$gsh_extra" ] && pass "every path ever committed ($(wc -l < "$EVID/paths-ever.txt" | tr -d ' ') distinct) is part of the synthetic fixture" || { fail "paths outside the synthetic fixture in the history: $(printf '%s' "$gsh_extra" | tr '\n' ' ')"; gsh_bad=1; }
 
+  # 1b. every blob reachable from any ref must be text: a binary blob is REJECTED here, never skipped (see gh_public_binary_blobs)
+  gsh_nblobs=$(git -C "$GH_OP" rev-list --objects --all | git -C "$GH_OP" cat-file --batch-check='%(objecttype) %(rest)' | grep -c '^blob ')
+  gh_public_binary_blobs > "$EVID/binary-blobs.txt"
+  if [ -s "$EVID/binary-blobs.txt" ]; then
+    fail "binary blob(s) in the history (a NUL byte: git grep -I and git log -p skip them, so nothing in them was checked) (sha:path): $(head -n 3 "$EVID/binary-blobs.txt" | tr '\n' ' ')"
+    gsh_bad=1
+  else
+    pass "every blob reachable from any ref ($gsh_nblobs) is text: no NUL byte, nothing is skipped by the content checks"
+  fi
+
   # 2. file contents at EVERY commit of EVERY ref, and the whole patch history (messages and patches), by class
   gsh_hit=0
   for gsh_c in $GH_PUBLIC_CLASSES; do
     eval "gsh_re=\$GH_RE_$gsh_c"
-    gsh_where=$(git -C "$GH_OP" grep -IlE "$gsh_re" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
+    # shellcheck disable=SC2154 # gsh_re is assigned by the eval above
+    gsh_where=$(git -C "$GH_OP" grep -alE "$gsh_re" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
     if [ -n "$gsh_where" ]; then fail "the $gsh_c class matches file contents in the history (rev:path): $gsh_where"; gsh_hit=1; gsh_bad=1; fi
   done
-  gsh_where=$(git -C "$GH_OP" grep -IlF -f "$EVID/secrets.txt" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
+  gsh_where=$(git -C "$GH_OP" grep -alF -f "$EVID/secrets.txt" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
   if [ -n "$gsh_where" ]; then fail "an exact secret or identity of this run appears in file contents (rev:path): $gsh_where"; gsh_hit=1; gsh_bad=1; fi
   [ "$gsh_hit" = 0 ] && pass "no token, FOREMAN_* dump, transcript or local path in the contents of any file at any of $gsh_ncommits commit(s) on any ref"
   # no author/committer lines here: those are step 3's, so the account's own identity (an exact secret) is not in this text

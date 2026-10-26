@@ -7,12 +7,15 @@
 #
 # A. Builds a LOCAL history shaped like the scratch repository's (the seed commit, a run commit by Foreman
 #    <foreman@localhost>, a squash commit on main and a refs/pull/1/merge commit attributed to the account and committed by
-#    GitHub), runs the real scan on it (it must pass), plants ONE violation at a time into a fresh copy (the scan must fail and
-#    name it), and runs the clean history again.
+#    GitHub), runs the real scan on it (it must pass), plants ONE violation at a time into a fresh copy (a token, a foreign
+#    identity, a local path, a binary blob, ...: the scan must fail and name it), and runs the clean history again.
 # B. The identity allowlist line by line, including look-alikes.
 # C. How the account identity is derived from `gh api user` (a profile without a public email yields none).
 # D. gh_retry_locked, which keeps the repository from staying public: it retries exactly the two refusals GitHub gives while a
 #    visibility change is processed ("Repository has been locked.", "A previous visibility change is still in progress"), never another.
+#
+# The number of expectations is fixed (PROOF_EXPECTED): a scenario that is skipped, dropped or added without updating it makes the
+# proof FAIL instead of letting it pass with fewer expectations. Nothing here reads the operator's git configuration.
 #
 # Nothing is pushed anywhere: the "remote" is a bare repository in a temporary directory. The only network call is the
 # read-only `gh api user` the scan itself makes. The account's real name and email are masked in the output.
@@ -42,9 +45,12 @@ PROOF_ACCOUNT=$(gh_account_identity)
 PROOF_NAME=${PROOF_ACCOUNT% <*}
 PROOF_EMAIL=${PROOF_ACCOUNT##*<}
 PROOF_EMAIL=${PROOF_EMAIL%>}
-# the operator's local git name, when it differs from the profile's: an identity the allowlist must NOT accept
-PROOF_GITNAME=$(git config --global user.name 2>/dev/null)
-[ "$PROOF_GITNAME" != "$PROOF_NAME" ] || PROOF_GITNAME=""
+# a name that is not the profile's, for the identities the allowlist must NOT accept: fixed, never read from the operator's git
+# config (a scenario that depended on it would be skipped on a host where it is unset or equal to the profile name)
+PROOF_OTHER_NAME="Operator Local Name"
+[ "$PROOF_OTHER_NAME" != "$PROOF_NAME" ] || PROOF_OTHER_NAME="$PROOF_OTHER_NAME (synthetic)" # distinct from the profile name by construction
+# the documented number of expectations (docs/acceptance/live-github-branch-protection.md): change it with the scenarios
+PROOF_EXPECTED=55
 
 PROOF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ghscan-proof.XXXXXX") || die "mktemp failed" 1
 trap 'rm -rf "$PROOF_DIR"' EXIT
@@ -111,7 +117,19 @@ mut_transcript() { proof_note '{"role": "assistant", "content": "hello"}'; proof
 mut_outside_path() { printf 'x=1\n' > "$PROOF_DIR/mut/secrets.env"; proof_add "a path outside the synthetic fixture"; }
 mut_account_email_file() { proof_note "$PROOF_EMAIL"; proof_add "plant the account's email in a note file"; }
 mut_account_in_message() { proof_add "name the account in a message: Signed-off-by: $PROOF_ACCOUNT"; }
-mut_git_identity() { proof_note "note p9"; proof_add "the operator's local git name with the profile email" "$PROOF_GITNAME" "$PROOF_EMAIL"; }
+mut_git_identity() { proof_note "note p9"; proof_add "another name with the profile email" "$PROOF_OTHER_NAME" "$PROOF_EMAIL"; }
+mut_secret_identity() { proof_note "note p9"; proof_add "this run's webhook secret as the author name" "$GH_HOOK_SECRET" secret@example.com; }
+# binary blobs: the NUL sits on its own line so the secrets on the other lines match on any regex engine
+mut_binary_clean() { printf '\211PNG\r\n\032\n\0\0\0\rIHDR\0\0\0\001\n' > "$PROOF_DIR/mut/note_p9.txt"; proof_add "a binary blob holding no secret"; }
+mut_binary_secret() {
+  printf '\0\n%s\nghp_%s\n' "$GH_HOOK_SECRET" "$(proof_rand 36)" > "$PROOF_DIR/mut/note_p9.txt"
+  proof_add "a binary blob holding this run's webhook secret and a token-shaped string"
+}
+mut_binary_pr_ref() { mut_binary_secret && PROOF_PUSH_REF=refs/pull/9/head; }
+mut_late_nul() {
+  { LC_ALL=C head -c 9000 /dev/zero | LC_ALL=C tr '\0' 'a'; printf '\0\n'; } > "$PROOF_DIR/mut/note_p9.txt"
+  proof_add "a NUL byte after 9000 text bytes (git's own binary heuristic reads only the first 8000)"
+}
 
 # proof_fresh [mutator]: a fresh copy of the clean origin (+ the mutation, pushed to PROOF_PUSH_REF) and a fresh operator clone
 proof_fresh() {
@@ -126,20 +144,34 @@ proof_fresh() {
   git clone -q "$PROOF_DIR/scen.git" "$GH_OP"
 }
 
-# proof_judge <label> <pass | fail:<text the scan must print>>: run the real scan on the current $GH_OP and compare
+# proof_judge <label> <pass[:<text the scan must print>] | fail:<text the scan must print>[;;<more text>...]>: run the real scan on the
+# current $GH_OP and compare
 proof_judge() {
   pj_f0=$FAILED; pj_p0=$PASSED; pj_fl0=$FAILURES
   gh_public_scan_history > "$PROOF_DIR/scan.out" 2>&1
   pj_rc=$?
   FAILED=$pj_f0; PASSED=$pj_p0; FAILURES=$pj_fl0 # the scan's own counters are not the proof's verdict
   case "$2" in
-    pass)
+    pass | pass:*)
       sed -e 's/^/    | /' "$PROOF_DIR/scan.out"
-      if [ "$pj_rc" = 0 ]; then proof_ok "$1: the scan passed"; else proof_bad "$1: the scan rejected a history that must pass"; fi
+      pj_want=${2#pass}
+      pj_want=${pj_want#:}
+      if [ "$pj_rc" = 0 ] && { [ -z "$pj_want" ] || grep -qF -- "$pj_want" "$PROOF_DIR/scan.out"; }; then
+        proof_ok "$1: the scan passed${pj_want:+ (printed: $pj_want)}"
+      else
+        proof_bad "$1: the scan did not pass a history that must pass (rc=$pj_rc${pj_want:+, expected it to print: $pj_want})"
+      fi
       ;;
     fail:*)
       grep -E '^  FAIL' "$PROOF_DIR/scan.out" | cut -c1-230 | sed -e 's/^/    | /'
-      if [ "$pj_rc" != 0 ] && grep -qF -- "${2#fail:}" "$PROOF_DIR/scan.out"; then
+      pj_all=1
+      pj_rest=${2#fail:}
+      while [ -n "$pj_rest" ]; do
+        pj_one=${pj_rest%%;;*}
+        grep -qF -- "$pj_one" "$PROOF_DIR/scan.out" || pj_all=0
+        case "$pj_rest" in *';;'*) pj_rest=${pj_rest#*;;} ;; *) pj_rest="" ;; esac
+      done
+      if [ "$pj_rc" != 0 ] && [ "$pj_all" = 1 ]; then
         proof_ok "$1: the scan FAILED it, as required (printed: ${2#fail:})"
       else
         proof_bad "$1: expected the scan to fail with '${2#fail:}' (rc=$pj_rc)"
@@ -148,7 +180,7 @@ proof_judge() {
   esac
 }
 
-# proof_scenario <label> <pass | fail:<text>> [mutator]
+# proof_scenario <label> <pass[:<text>] | fail:<text>[;;<text>...]> [mutator]
 proof_scenario() {
   say "$1"
   proof_fresh "${3:-}" || { proof_bad "$1: cannot build the scenario"; return 0; }
@@ -209,11 +241,14 @@ proof_retry_case() {
 proof_main() {
   proof_build_origin || { proof_bad "cannot build the local origin"; return 1; }
   gh_public_secrets
+  # the blobs of the clean history: the fixture's files and the one note file; the clean scenarios must say the scan READ them
+  PROOF_NBLOBS=$(($(find "$HERE/github-fixture" -type f | wc -l | tr -d ' ') + 1))
   say "A. gh_public_scan_history on a local history shaped like the scratch repository's"
-  proof_scenario "A0. clean: seed commit, a Foreman run commit, a squash commit and a refs/pull/1/merge commit by the account (committer GitHub)" pass
+  proof_scenario "A0. clean: seed commit, a Foreman run commit, a squash commit and a refs/pull/1/merge commit by the account (committer GitHub)" "pass:every blob reachable from any ref ($PROOF_NBLOBS) is text"
   proof_scenario "A1. (i) a token-shaped string in a file" "fail:the TOKEN class matches file contents" mut_token_file
   proof_scenario "A2. (i) a token-shaped string in a commit message only" "fail:git log --all -p: the TOKEN class matches" mut_token_message
   proof_scenario "A3. (i) a token-shaped string as an author name (identity fields are scanned as free text too)" "fail:commit identities: the TOKEN class matches" mut_token_identity
+  proof_scenario "A3b. (i) this run's exact webhook secret as an author name (identity fields are checked against the secrets too)" "fail:commit identities: an exact secret or identity of this run appears in identities-scan.txt" mut_secret_identity
   proof_scenario "A4. (i) this run's exact webhook secret in a file" "fail:an exact secret or identity of this run appears in file contents" mut_hook_secret
   proof_scenario "A5. (ii) a commit by the foreign identity Someone Else <someone@corp.test>" "fail:commit identity outside the allowlist" mut_foreign_identity
   proof_scenario "A6. (ii) the same foreign identity, reachable only from refs/pull/9/head" "fail:commit identity outside the allowlist" mut_foreign_pr_ref
@@ -223,11 +258,13 @@ proof_main() {
   proof_scenario "A10. a path outside the synthetic fixture" "fail:paths outside the synthetic fixture" mut_outside_path
   proof_scenario "A11. the account's email in a file (allowed in commit identity fields only)" "fail:an exact secret or identity of this run appears in file contents" mut_account_email_file
   proof_scenario "A12. the account's identity in a commit message (allowed in commit identity fields only)" "fail:an exact secret or identity of this run appears in history-all.patch" mut_account_in_message
-  if [ -n "$PROOF_GITNAME" ]; then
-    proof_scenario "A13. the operator's local git name (not the profile's) with the profile email as author" "fail:commit identity outside the allowlist" mut_git_identity
-  fi
+  proof_scenario "A13. another name (fixed, not from git config) with the profile email as author" "fail:commit identity outside the allowlist;;commit identities: an exact secret or identity of this run appears in identities-scan.txt" mut_git_identity
+  proof_scenario "A14. a binary blob (NUL bytes) holding no secret: rejected, not skipped" "fail:binary blob(s) in the history" mut_binary_clean
+  proof_scenario "A15. a binary blob holding this run's webhook secret and a token-shaped string: rejected, and its contents are still read" "fail:binary blob(s) in the history;;the TOKEN class matches file contents;;an exact secret or identity of this run appears in file contents" mut_binary_secret
+  proof_scenario "A16. the same binary blob, reachable only from refs/pull/9/head" "fail:binary blob(s) in the history;;the TOKEN class matches file contents;;an exact secret or identity of this run appears in file contents" mut_binary_pr_ref
+  proof_scenario "A17. a NUL byte after 9000 text bytes (git's own heuristic calls the blob text): rejected all the same" "fail:binary blob(s) in the history" mut_late_nul
   proof_hidden_profile
-  proof_scenario "A-clean-again. the clean history again: it passes only because nothing was planted" pass
+  proof_scenario "A-clean-again. the clean history again: it passes only because nothing was planted" "pass:every blob reachable from any ref ($PROOF_NBLOBS) is text"
 
   say "B. gh_public_foreign_identities, one identity per line (the account identity is given)"
   proof_identity_case allowed "seed <seed@example.com>"
@@ -248,7 +285,7 @@ proof_main() {
   proof_identity_case foreign "x <a@b@example.com>"
   proof_identity_case foreign "Evil <e@corp.test> <a@example.com>"
   proof_identity_case foreign "$PROOF_NAME <someone@corp.test>"
-  [ -z "$PROOF_GITNAME" ] || proof_identity_case foreign "$PROOF_GITNAME <$PROOF_EMAIL>"
+  proof_identity_case foreign "$PROOF_OTHER_NAME <$PROOF_EMAIL>"
   proof_identity_case foreign "$PROOF_ACCOUNT "
   proof_identity_case foreign " $PROOF_ACCOUNT"
   proof_identity_case foreign "$PROOF_ACCOUNT"  "" # the profile publishes no email: nothing is allowed for the account
@@ -270,7 +307,11 @@ proof_main() {
   proof_retry_case "locked for longer than the cap: gives up (the caller then warns)" 99 "HTTP 403: Repository has been locked." 3 gave-up "[2-4]"
 
   say "proof summary"
-  out "   expectations held: $PROOF_OK, broken: $PROOF_BAD"
+  pn_total=$((PROOF_OK + PROOF_BAD))
+  if [ "$pn_total" != "$PROOF_EXPECTED" ]; then
+    proof_bad "the proof ran $pn_total expectations but PROOF_EXPECTED (the documented number) is $PROOF_EXPECTED: a scenario was skipped, dropped or added without updating it"
+  fi
+  out "   expectations held: $PROOF_OK, broken: $PROOF_BAD (documented: $PROOF_EXPECTED)"
   [ "$PROOF_BAD" = 0 ]
 }
 
@@ -278,7 +319,6 @@ proof_main() {
 proof_mask() {
   while IFS= read -r pm_line; do
     pm_line=${pm_line//"$PROOF_ACCOUNT"/<account identity>}
-    [ -z "$PROOF_GITNAME" ] || pm_line=${pm_line//"$PROOF_GITNAME"/<operator git name>}
     pm_line=${pm_line//"$PROOF_EMAIL"/<account email>}
     pm_line=${pm_line//"$PROOF_NAME"/<account name>}
     printf '%s\n' "$pm_line"
