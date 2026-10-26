@@ -383,10 +383,17 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   process that took it is; a hold whose caller lives is never given up, however long its `br`
   call runs (no TTL). The keeper is armed before `lease.acquire` is dispatched, so no entry of
   a call exists unwatched, and stopped after the caller's own release, so a normal call leaves
-  nothing behind (a failed release, `ReleaseError`, leaves it armed). A cleanup that arrives
-  late is a no-op: `lease.release` ignores a run that is not the holder, so a lease that moved
-  on keeps its new holder. The lease is keyed by `run_id`, so two live processes using one
-  `run_id` at once share one hold, which the first to finish releases for both, keeper or not.
+  nothing behind (a failed release, `ReleaseError`, leaves it armed). A call that gives up
+  (acquire error, `:lease_timeout`) removes its queue entry and then releases too: the run can
+  have been promoted between its last poll and the removal, and nothing else would give that
+  hold back. A keeper that is killed or crashes while its caller lives is restarted
+  (`restart: :transient`; a normal stop is terminal) and the replacement monitors the caller
+  afresh (a monitor on a dead pid answers at once), so the caller's later death is still
+  answered; one that keeps dying is restarted five times, then logged with `Logger.error`, its
+  call running unwatched. A cleanup that arrives late is a no-op: `lease.release` ignores a run
+  that is not the holder, so a lease that moved on keeps its new holder. The lease is keyed by
+  `run_id`, so two live processes using one `run_id` at once share one hold, which the first to
+  finish releases for both, keeper or not.
   A cleanup that cannot be dispatched is retried, then logged with `Logger.error`; the hold
   stays until a restart or a manual `lease.release`. While `KeeperSupervisor` is not running
   `with_lease/4` returns `{:error, {:lease_keeper_unavailable, reason}}` and takes no lease.

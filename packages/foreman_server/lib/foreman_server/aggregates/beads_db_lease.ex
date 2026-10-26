@@ -104,7 +104,12 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   is no TTL: a `br` call may legitimately run long and keeps its lease for as long as its caller
   lives. The keeper is armed before `lease.acquire` is dispatched, so no entry of a call can
   exist unwatched, and stopped once the caller's own release landed, so a normal call leaves
-  nothing behind. A cleanup arriving late is harmless: `lease.release` is a no-op for a run that
+  nothing behind. A call that gives up (acquire error, `:lease_timeout`) removes its queue
+  entry and then releases as well: the run can have been promoted between its last poll and the
+  removal, and no keeper would be left to give that hold back. A keeper that is killed or
+  crashes while its caller lives is restarted (`restart: :transient`) and the replacement
+  monitors the caller afresh, so the caller's later death is still answered. A cleanup
+  arriving late is harmless: `lease.release` is a no-op for a run that
   is not the holder, so a lease that moved on to another run stays with it. See the `Keeper`
   moduledoc for the guarantees and for what happens when a cleanup cannot be dispatched.
 
