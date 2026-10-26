@@ -394,6 +394,12 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   that is not the holder, so a lease that moved on keeps its new holder. The lease is keyed by
   `run_id`, so two live processes using one `run_id` at once share one hold, which the first to
   finish releases for both, keeper or not.
+  A restarted caller reuses its run's `run_id`, so a keeper whose caller died first leaves the
+  lease alone while another live call uses the same `run_id` (that call owns the hold now:
+  `lease.acquire` is idempotent per run), and a new call waits in `Keeper.watch/4` for the
+  keepers of dead callers under its `run_id` before it acquires, so a cleanup still on its way
+  cannot release the hold the new call is about to take. Left open: a keeper of a live call
+  killed at the very instant the keeper of a dead call under the same `run_id` looks.
   A cleanup that cannot be dispatched is retried, then logged with `Logger.error`; the hold
   stays until a restart or a manual `lease.release`. While `KeeperSupervisor` is not running
   `with_lease/4` returns `{:error, {:lease_keeper_unavailable, reason}}` and takes no lease.

@@ -1,64 +1,61 @@
 defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   @moduledoc """
-  Gives the lease back for a `BeadsDbLease.with_lease/4` caller that died holding or awaiting it.
+  Watches one `BeadsDbLease.with_lease/4` call and gives its lease back when the process that made
+  the call dies without running the `after` of `with_lease/4`.
 
-  `with_lease/4` returns the lease from a `try/after` in the calling process. A process that ends
-  from an exit signal it does not trap (`Process.exit(pid, :kill)`, a supervisor's `:shutdown` of
-  a child that does not trap exits, the crash of a linked process) never runs that `after`. The
-  hold names the incarnation of this VM, and this VM is alive, so no other caller can call it dead
-  (that is what `ForemanServer.Incarnation` does for a VM that ended): the lease stayed taken
-  until the next restart, and every other caller of that Beads database queued behind it until
-  `:lease_timeout`. A dead waiter was worse: it stayed in the queue and was promoted to a hold
-  nobody would ever release (foreman-8qge).
+  A caller killed outright (`Process.exit(pid, :kill)`, a supervisor's `:shutdown` of a child that
+  does not trap exits, a linked crash) never runs that `after`. Its hold names a VM that is alive,
+  so nothing could call it dead: every later caller of that Beads database queued behind it until
+  the next restart, and a waiter that died in the queue was promoted to a hold nobody released
+  (foreman-8qge). The keeper is the process that outlives the caller. It monitors the caller and,
+  when it goes down, dispatches `lease.remove_waiter` and then `lease.release` for the call's
+  `run_id` (reason `:caller_down`). The waiter goes first: a release first would promote a dead
+  waiter, and the removal that follows would find nobody to remove.
 
-  `with_lease/4` starts one keeper per call, under `KeeperSupervisor` and so outside the caller's
-  own supervision subtree. The keeper monitors the caller and does nothing while it lives: a `br`
-  call may legitimately run long and keeps its lease for as long as it runs, so no timer is
-  involved. When the caller goes down the keeper dispatches `lease.remove_waiter` and then
-  `lease.release` for the caller's `run_id`, with reason `:caller_down`. That is the cleanup the
-  caller's own `after` would have done, in that order: an entry removed from the queue first can
-  no longer be promoted in between, and a hold released second goes to the next waiter that is
-  still alive (a dead one has a keeper doing the same) or frees the lease.
+  ## Guarantees
 
-  Guarantees:
+    * There is no TTL. A hold whose caller lives is never given up, however long its `br` call
+      runs.
+    * The keeper is started and registered before `lease.acquire` is dispatched (`watch/4`), so no
+      entry of a call exists unwatched.
+    * A cleanup that arrives late is a no-op: `lease.release` ignores a run that is not the
+      holder and `lease.remove_waiter` one that is not queued, so a lease that moved on to another
+      run keeps its holder.
+    * A cleanup that cannot be dispatched (the lease actor or the command router is down) is
+      retried every `:retry_interval_ms`, `:max_attempts` times in all, then logged with
+      `Logger.error`: the hold stays until a restart or a hand-dispatched `lease.release`.
+    * The keeper ends with the call. `unwatch/1` stops it once the caller has given the lease back
+      itself and returns when it is gone, so a normal call leaves no monitor behind.
+    * A keeper that is killed or crashes while its caller lives is restarted (`restart:
+      :transient`; a normal stop is terminal) and the replacement monitors the caller afresh. A
+      monitor on a dead pid answers at once, so a caller that died meanwhile is still answered. A
+      keeper that keeps dying is restarted five times, then logged with `Logger.error` and its
+      call runs unwatched. A restart that races the end of the call finds it finished and stands
+      down.
 
-    * **Armed before the lease is touched.** `watch/4` returns once the keeper's `init/1` has set
-      its monitor, and `with_lease/4` dispatches `lease.acquire` only after that, so no entry of a
-      call can exist without a keeper to clear it. A caller that dies with its `lease.acquire`
-      still on the way to the lease actor is covered too: the keeper's commands follow that
-      message to the actor.
-    * **Gone with the call.** `unwatch/1` stops the keeper once the caller's own release has
-      landed, so a normal call leaves no keeper, no monitor and no second `lease.release` behind.
-      A release that failed (`BeadsDbLease.ReleaseError`) leaves the keeper armed: the hold may
-      still exist, and the keeper clears it if the caller dies next.
-    * **A keeper that dies is replaced.** A keeper that ends abnormally while its caller lives
-      (killed, crashed) would leave the call unwatched, so keepers are `restart: :transient`: the
-      replacement is started from the same arguments and monitors the caller again, and a caller
-      that died meanwhile is reported at once (`Process.monitor/1` of a dead pid delivers `:DOWN`
-      immediately), which runs the cleanup. A normal end (after the cleanup, after the attempts
-      are spent, or `unwatch/1`) is final. `unwatch/1` finds the current keeper of the call
-      through the `KeeperRegistry` and marks the call finished first, so a keeper that restarts
-      just as the call ends never comes back armed. A keeper that keeps crashing is restarted at
-      most #{5} times (then reported with `Logger.error`, and its call runs unwatched), so a
-      crash loop cannot exhaust the supervisor's restart intensity.
-    * **A late cleanup is harmless.** `lease.release` and `lease.remove_waiter` are no-ops for a
-      run that neither holds nor waits, and a release naming another run than the holder is
-      ignored. A cleanup that arrives after the lease moved on (taken over, released by boot
-      reconciliation, handed to the next waiter, run again by a restarted keeper) cannot drop the
-      hold of whoever has it now.
-    * **A cleanup that cannot be dispatched is retried, then reported.** The lease actor or the
-      `CommandRouter` may be busy or restarting, the event store unreachable. The keeper tries
-      again every `:retry_interval_ms`, up to `:max_attempts` attempts in all, then reports it
-      with `Logger.error` and stops: the hold stays until the server restarts or somebody
-      dispatches `lease.release` for that `run_id`.
+  ## One `run_id`, several calls
 
-  The cleanup is keyed by `run_id`, as the lease is: it does to that `run_id` what the caller's own
-  release would have done, no more. Two live processes calling `with_lease/4` under one `run_id` at
-  the same time share one hold (an acquire by the run that already holds is idempotent), and the
-  first of them to finish releases it for both, with or without a keeper.
+  The lease is keyed by `run_id`, and a restarted caller reuses its run's stable `run_id`. So a
+  new call can find the hold, or the queue entry, of the call that died: `lease.acquire` for the
+  holder's own `run_id` is idempotent, the new call takes the hold over without an event, and a
+  cleanup that was still on its way for the dead call would release the new call's hold while its
+  callback runs. Two rules keep that from happening, both read from the keepers' registrations
+  (`{:call, db_path, run_id, id}` in `KeeperRegistry`, valued with the caller):
 
-  Logs name the `run_id` and never the database path: the path is not something a log line may
-  carry.
+    * A keeper whose caller died first looks for another LIVE call under the same `run_id`. If
+      there is one, the lease belongs to that call now and the keeper only stops: the new call
+      releases it itself, or its own keeper does when it dies.
+    * `watch/4` of a new call, once its keeper is registered, waits for the keepers of DEAD
+      callers under the same `run_id` that are still running: they are either about to find this
+      call (and leave the lease alone) or already giving the lease back, and that release must
+      land before this call acquires.
+
+  The first rule's registration read and the second's keeper-state read are ordered, so one of
+  them always sees the other: the dead caller's keeper registered long before it died, and the new
+  call registers its keeper before it acquires. What stays outside them: two LIVE processes using
+  one `run_id` at once still share one hold, which the first to finish releases for both, and a
+  keeper of a live call that is itself killed at the instant the keeper of a dead call under the
+  same `run_id` looks (the restart takes a moment to register again) is not seen.
   """
 
   use GenServer, restart: :transient
@@ -111,7 +108,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
 
   @doc """
   Starts the keeper of a `with_lease/4` call made by `caller` for `run_id` on `db_path` and
-  returns once it monitors `caller`.
+  returns once it monitors `caller` and no keeper of a dead caller under the same `run_id` is
+  still running (see the moduledoc: that wait ends with the keeper's own cleanup, bounded by its
+  retry budget).
 
   `{:error, reason}` when no keeper can be started (`KeeperSupervisor` or `KeeperRegistry` is not
   running: the server is starting up or shutting down); no lease may be taken then, as nothing
@@ -134,9 +133,15 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
     }
 
     case DynamicSupervisor.start_child(KeeperSupervisor, {__MODULE__, args}) do
-      {:ok, _keeper} -> {:ok, {id, shared}}
-      {:error, _reason} = error -> error
-      :ignore -> {:error, :keeper_not_started}
+      {:ok, _keeper} ->
+        await_keepers_of_dead_callers(db_path, run_id)
+        {:ok, {id, shared}}
+
+      {:error, _reason} = error ->
+        error
+
+      :ignore ->
+        {:error, :keeper_not_started}
     end
   catch
     :exit, {:noproc, _call} -> {:error, :keeper_supervisor_not_running}
@@ -171,10 +176,33 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   def start_link(%{id: id} = args),
     do: GenServer.start_link(__MODULE__, args, name: {:via, Registry, {KeeperRegistry, id}})
 
+  # The calling call's keeper is registered (`watch/4` starts it first), so a keeper of a dead
+  # caller that looks for live calls from now on finds this one. One that does not is already
+  # past that look and giving the lease back: wait for it, or its release could land on the hold
+  # this call is about to take.
+  defp await_keepers_of_dead_callers(db_path, run_id) do
+    for {keeper, caller} <- calls(db_path, run_id), not Process.alive?(caller) do
+      ref = Process.monitor(keeper)
+
+      receive do
+        {:DOWN, ^ref, :process, ^keeper, _reason} -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  # Every keeper registered for the calls on `db_path` under `run_id`, with the caller it keeps.
+  defp calls(db_path, run_id) do
+    Registry.select(KeeperRegistry, [
+      {{{:call, db_path, run_id, :_}, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}
+    ])
+  end
+
   # -- server ----------------------------------------------------------------------------------
 
   @impl true
-  def init(%{shared: shared, run_id: run_id} = args) do
+  def init(%{id: id, shared: shared, caller: caller, db_path: db_path, run_id: run_id} = args) do
     starts = :atomics.add_get(shared, @starts, 1)
 
     cond do
@@ -191,6 +219,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
         :ignore
 
       true ->
+        # Registered before `watch/4` returns, which is before this call touches the lease.
+        {:ok, _owner} = Registry.register(KeeperRegistry, {:call, db_path, run_id, id}, caller)
         {:ok, new_state(args)}
     end
   end
@@ -217,7 +247,23 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   def handle_info(:retry, %State{} = state), do: give_back(state)
 
   @impl true
-  def handle_continue(:give_back, %State{} = state), do: give_back(state)
+  def handle_continue(:give_back, %State{} = state) do
+    if another_live_call?(state) do
+      log_left_to_live_call(state)
+      {:stop, :normal, state}
+    else
+      give_back(state)
+    end
+  end
+
+  # A later call under the same `run_id` that is alive owns the hold or the queue entry now (the
+  # lease cannot tell two calls of one run apart), so releasing it would take it from that call.
+  # Its own release, or its own keeper when it dies, gives the lease back.
+  defp another_live_call?(%State{db_path: db_path, run_id: run_id, caller: caller}) do
+    db_path
+    |> calls(run_id)
+    |> Enum.any?(fn {_keeper, other} -> other != caller and Process.alive?(other) end)
+  end
 
   defp give_back(%State{} = state) do
     state = %State{state | attempts_made: state.attempts_made + 1}
@@ -297,6 +343,14 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   defp exit_cause(reason), do: reason
 
   # -- logging ---------------------------------------------------------------------------------
+
+  defp log_left_to_live_call(%State{} = state) do
+    Logger.info(
+      "BeadsDbLease: the caller of with_lease/4 for run_id=#{state.run_id} ended " <>
+        "(#{brief(state.exit_reason)}), but another live call uses that run_id; its keeper " <>
+        "leaves the lease to that call"
+    )
+  end
 
   defp log_cleared(_state, %{waiter: false, holder: false}), do: :ok
 

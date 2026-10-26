@@ -110,8 +110,12 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   crashes while its caller lives is restarted (`restart: :transient`) and the replacement
   monitors the caller afresh, so the caller's later death is still answered. A cleanup
   arriving late is harmless: `lease.release` is a no-op for a run that
-  is not the holder, so a lease that moved on to another run stays with it. See the `Keeper`
-  moduledoc for the guarantees and for what happens when a cleanup cannot be dispatched.
+  is not the holder, so a lease that moved on to another run stays with it. A restarted caller
+  reuses its run's `run_id`: a keeper whose caller died leaves the lease alone while another
+  live call uses that `run_id`, and a new call waits for the keepers of dead callers under its
+  `run_id` before it acquires (two live processes under one `run_id` still share one hold). See
+  the `Keeper` moduledoc for the guarantees and for what happens when a cleanup cannot be
+  dispatched.
 
   ## Replay contract
 
@@ -449,6 +453,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   Returns `{:error, {:lease_keeper_unavailable, reason}}` without touching the
   lease when the keeper cannot be started (the server is starting or
   stopping): a hold nothing would clear is never taken.
+
+  A call whose `run_id` a dead caller used waits first for that caller's keeper to finish (see
+  the `Keeper` moduledoc), so the keeper's cleanup cannot land on the hold this call takes.
 
   A call that gives up (acquire error, `:lease_timeout`) removes its queue
   entry and then releases the lease: the run may have been promoted to holder

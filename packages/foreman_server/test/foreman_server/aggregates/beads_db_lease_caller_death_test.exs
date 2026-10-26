@@ -391,6 +391,141 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
     end
   end
 
+  describe "a call under the run_id of a dead one" do
+    test "is held back until the dead call's keeper is done, which then leaves the hold to it",
+         %{db_path: db_path} = ctx do
+      first = start_holder(ctx, "run-same")
+      assert [first_keeper] = keepers_for(first)
+
+      # The dead call's keeper has not looked at the lease yet: its DOWN waits in a suspended
+      # mailbox, the order a new call must not be able to overtake.
+      :ok = :sys.suspend(first_keeper)
+      ref = Process.monitor(first)
+      Process.exit(first, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first, :killed}, 5_000
+
+      second = spawn_second(ctx, db_path, "run-same")
+
+      Eventually.await(fn -> keepers_for(second) != [] and in_keeper?(second) end,
+        message: "the new call is registered and held back"
+      )
+
+      refute_received {:second_holding, ^second}
+
+      :ok = :sys.resume(first_keeper)
+      assert_receive {:second_holding, ^second}, 10_000
+
+      # Nothing was released: the dead call's hold went over to the new call, which holds on
+      # uninterrupted until it gives the lease back itself.
+      assert %BeadsDbLease.Holder{run_id: "run-same"} = lease_state(db_path).holder
+      assert event_types(ctx) == ["BeadsDbLeaseAcquired"]
+
+      send(second, :release)
+      assert_receive {:second_finished, {:ok, :second_done}}, 5_000
+      assert_free(db_path)
+      assert event_types(ctx) == ["BeadsDbLeaseAcquired", "BeadsDbLeaseReleased"]
+    end
+
+    test "does not acquire while the dead call's cleanup is still on its way",
+         %{db_path: db_path, stream: stream} = ctx do
+      first = start_holder(ctx, "run-same")
+      [{actor, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream)
+
+      capture_log(fn ->
+        :ok = :sys.suspend(actor)
+
+        second =
+          try do
+            Process.exit(first, :kill)
+
+            Eventually.await(fn -> queued(actor, "lease.remove_waiter") == 1 end,
+              message: "the dead call's keeper dispatched its cleanup"
+            )
+
+            second = spawn_second(ctx, db_path, "run-same")
+
+            Eventually.await(fn -> keepers_for(second) != [] and in_keeper?(second) end,
+              message: "the new call is registered and held back"
+            )
+
+            # Its acquire is not on its way to the actor: it would overtake the release.
+            assert queued(actor, "lease.acquire") == 0
+            second
+          after
+            :ok = :sys.resume(actor)
+          end
+
+        assert_receive {:second_holding, ^second}, 10_000
+        assert %BeadsDbLease.Holder{run_id: "run-same"} = lease_state(db_path).holder
+        send(second, :release)
+        assert_receive {:second_finished, {:ok, :second_done}}, 5_000
+      end)
+
+      assert_free(db_path)
+
+      assert event_types(ctx) == [
+               "BeadsDbLeaseAcquired",
+               "BeadsDbLeaseReleased",
+               "BeadsDbLeaseAcquired",
+               "BeadsDbLeaseReleased"
+             ]
+    end
+
+    test "takes a hold of its own once the dead call's keeper has cleaned up",
+         %{db_path: db_path} = ctx do
+      first = start_holder(ctx, "run-same")
+      capture_log(fn -> kill(first, :kill) end)
+      assert_free(db_path)
+
+      second = spawn_second(ctx, db_path, "run-same")
+      assert_receive {:second_holding, ^second}, 5_000
+      assert %BeadsDbLease.Holder{run_id: "run-same"} = lease_state(db_path).holder
+
+      send(second, :release)
+      assert_receive {:second_finished, {:ok, :second_done}}, 5_000
+      assert_free(db_path)
+
+      assert event_types(ctx) == [
+               "BeadsDbLeaseAcquired",
+               "BeadsDbLeaseReleased",
+               "BeadsDbLeaseAcquired",
+               "BeadsDbLeaseReleased"
+             ]
+    end
+
+    test "that is live keeps the hold when the dead one's keeper runs",
+         %{db_path: db_path} = ctx do
+      first = start_holder(ctx, "run-same")
+      second = spawn_second(ctx, db_path, "run-same")
+      assert_receive {:second_holding, ^second}, 5_000
+
+      # Two live callers under one run_id share the hold (the lease is keyed by it). The first
+      # one dying must not take it from the second.
+      kill(first, :kill)
+
+      assert %BeadsDbLease.Holder{run_id: "run-same"} = lease_state(db_path).holder
+      assert event_types(ctx) == ["BeadsDbLeaseAcquired"]
+
+      send(second, :release)
+      assert_receive {:second_finished, {:ok, :second_done}}, 5_000
+      assert_free(db_path)
+      assert event_types(ctx) == ["BeadsDbLeaseAcquired", "BeadsDbLeaseReleased"]
+    end
+
+    test "that is live and dies later is cleaned up by its own keeper",
+         %{db_path: db_path} = ctx do
+      first = start_holder(ctx, "run-same")
+      second = spawn_second(ctx, db_path, "run-same")
+      assert_receive {:second_holding, ^second}, 5_000
+
+      kill(first, :kill)
+      assert %BeadsDbLease.Holder{run_id: "run-same"} = lease_state(db_path).holder
+
+      capture_log(fn -> kill(second, :kill) end)
+      assert_free(db_path)
+    end
+  end
+
   describe "a waiter promoted just as its poll expires" do
     test "gives the lease back instead of holding it as a ghost", %{db_path: db_path} = ctx do
       holder = start_holder(ctx, "run-holder")
@@ -604,6 +739,33 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
 
   # The keepers of the calls `caller` is in.
   defp keepers_for(caller), do: LeaseKeepers.for_caller(caller)
+
+  # A call under `run_id` whose callback reports `{:second_holding, pid}` and holds until it is
+  # sent `:release`, then reports `{:second_finished, result}`.
+  defp spawn_second(ctx, db_path, run_id) do
+    parent = self()
+
+    spawn_tracked(ctx, fn ->
+      result =
+        BeadsDbLease.with_lease(db_path, run_id, "task-second", fn ->
+          send(parent, {:second_holding, self()})
+
+          receive do
+            :release -> {:ok, :second_done}
+          end
+        end)
+
+      send(parent, {:second_finished, result})
+    end)
+  end
+
+  # Whether `pid` is parked inside `Keeper`: `watch/4` waiting for a dead call's keeper.
+  defp in_keeper?(pid) do
+    match?(
+      [current_function: {Keeper, _fun, _arity}, status: :waiting],
+      Process.info(pid, [:current_function, :status])
+    )
+  end
 
   # Kills `keeper`, the watch of `caller`'s call, and waits for the replacement the supervisor
   # starts for that same call. Returns the replacement's pid.
