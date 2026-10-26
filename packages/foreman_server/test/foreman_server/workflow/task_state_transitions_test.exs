@@ -192,6 +192,12 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
              })
   end
 
+  # A project is registered in the event log, which outlives the VM that wrote it and is read
+  # by whatever else runs against the same database: a literal id such as "proj-claim-test"
+  # turns the registration into `{:already_exists, :project, id}` as soon as another run has
+  # registered it first. The beads db path is part of the lease stream id, so it follows.
+  defp unique_project_id(label), do: "proj-#{label}-#{Elixir.EventStore.UUID.uuid4()}"
+
   defp issue_with_status(status) do
     %Issue{
       id: "bead-transitions",
@@ -214,8 +220,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
     test "claim/3 transitions bead status to 'in_progress'" do
       start_schema_cache!()
 
-      cached_database_path = "/abs/transitions/claim.db"
-      _project_config = register_project!("proj-claim-test", cached_database_path)
+      project_id = unique_project_id("claim")
+      cached_database_path = "/abs/transitions/#{project_id}.db"
+      _project_config = register_project!(project_id, cached_database_path)
       payload = issue_with_status("in_progress")
 
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
@@ -235,7 +242,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       # Invoke claim/3 and verify it returns the issue with in_progress status
       assert {:ok, issue} =
                RunExecutor.claim(
-                 "proj-claim-test",
+                 project_id,
                  "bead-transitions",
                  "foreman-runner",
                  "run-test-claim"
@@ -247,8 +254,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
     test "complete/3 transitions bead status to 'closed'" do
       start_schema_cache!()
 
-      cached_database_path = "/abs/transitions/complete.db"
-      _project_config = register_project!("proj-complete-test", cached_database_path)
+      project_id = unique_project_id("complete")
+      cached_database_path = "/abs/transitions/#{project_id}.db"
+      _project_config = register_project!(project_id, cached_database_path)
       payload = issue_with_status("closed")
 
       expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
@@ -264,7 +272,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       # Invoke complete/3 and verify it returns the issue with closed status
       assert {:ok, issue} =
                RunExecutor.complete(
-                 "proj-complete-test",
+                 project_id,
                  "bead-transitions",
                  "run-test-complete",
                  nil
@@ -279,8 +287,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       ref = :telemetry_test.attach_event_handlers(self(), [@fail_event])
       on_exit(fn -> :telemetry.detach(ref) end)
 
-      cached_database_path = "/abs/transitions/fail.db"
-      _project_config = register_project!("proj-fail-test", cached_database_path)
+      project_id = unique_project_id("fail")
+      cached_database_path = "/abs/transitions/#{project_id}.db"
+      _project_config = register_project!(project_id, cached_database_path)
 
       payload = issue_with_status("blocked")
 
@@ -314,7 +323,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
 
       assert {:ok, issue} =
                RunExecutor.fail(
-                 "proj-fail-test",
+                 project_id,
                  "bead-transitions",
                  "run-test-fail",
                  failure_reason
@@ -329,8 +338,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
     test "full lifecycle: claim → complete → closed sequence" do
       start_schema_cache!()
 
-      cached_database_path = "/abs/transitions/lifecycle.db"
-      _project_config = register_project!("proj-lifecycle-test", cached_database_path)
+      project_id = unique_project_id("lifecycle")
+      cached_database_path = "/abs/transitions/#{project_id}.db"
+      _project_config = register_project!(project_id, cached_database_path)
 
       # Expect claim call
       expect(BrRunnerMock, :cmd, 1, fn request, _project_config, _opts ->
@@ -343,7 +353,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       # Execute claim
       assert {:ok, claim_issue} =
                RunExecutor.claim(
-                 "proj-lifecycle-test",
+                 project_id,
                  "bead-transitions",
                  "foreman-runner",
                  "run-lifecycle"
@@ -361,7 +371,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       # Execute complete
       assert {:ok, complete_issue} =
                RunExecutor.complete(
-                 "proj-lifecycle-test",
+                 project_id,
                  "bead-transitions",
                  "run-lifecycle",
                  nil
@@ -376,8 +386,9 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       ref = :telemetry_test.attach_event_handlers(self(), [@fail_event])
       on_exit(fn -> :telemetry.detach(ref) end)
 
-      cached_database_path = "/abs/transitions/terminal_fail.db"
-      _project_config = register_project!("proj-terminal-fail-test", cached_database_path)
+      project_id = unique_project_id("terminal-fail")
+      cached_database_path = "/abs/transitions/#{project_id}.db"
+      _project_config = register_project!(project_id, cached_database_path)
 
       # Expect claim call
       expect(BrRunnerMock, :cmd, 1, fn request, _project_config, _opts ->
@@ -390,7 +401,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
       # Execute claim
       assert {:ok, claim_issue} =
                RunExecutor.claim(
-                 "proj-terminal-fail-test",
+                 project_id,
                  "bead-transitions",
                  "foreman-runner",
                  "run-terminal-fail"
@@ -421,7 +432,7 @@ defmodule ForemanServer.Workflow.TaskStateTransitionsTest do
 
       assert {:ok, fail_issue} =
                RunExecutor.fail(
-                 "proj-terminal-fail-test",
+                 project_id,
                  "bead-transitions",
                  "run-terminal-fail",
                  failure_reason
