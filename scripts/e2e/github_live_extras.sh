@@ -13,8 +13,9 @@
 #   claude_fix_ci the fix thread of a run done by a REAL claude (haiku, workflow claudeedit) resumes THAT run's
 #                claude session: PrFixStarted.resumed_session, the fix jobsite's resumed_session_id, the PR head and
 #                CI, claude's own transcript of the session (foreman-nufr9). UNVERIFIED without a logged-in claude
-#   protection   operator merge under GitHub branch protection (required checks, a required review,
-#                linear history): the refusal text and the merge once every rule is met
+#   protection   operator merge under GitHub branch protection (a required review, required checks, and linear history
+#                set on the rule): the refusal text and the merge once every rule is met; the one-parent result of
+#                the squash is asserted, a refusal by required_linear_history itself is not exercised
 #
 # Usage, from a devbox shell (E2E_WORK_DIR, E2E_DB_NAME, E2E_PORT, E2E_HOOK_PORT as for the other harnesses):
 #

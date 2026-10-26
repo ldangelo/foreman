@@ -16,7 +16,8 @@
 #       run's claude session (foreman-nufr9): PrFixStarted.resumed_session, the fix jobsite's
 #       JobsiteIterationStarted.resumed_session_id, the PR head and CI, and claude's own session file
 #   protection  operator merge under GitHub branch protection (required status checks, a required
-#       review, linear history). Branch protection does not exist on private repositories of a free
+#       review; required_linear_history is set and the one-parent result of the squash asserted, a refusal
+#       by it is not exercised). Branch protection does not exist on private repositories of a free
 #       plan (HTTP 403), so this stage makes THE SCRATCH REPOSITORY public for its duration, after a
 #       content safety scan, and restores it to private. It runs only with E2E_GH_ALLOW_PUBLIC=1.
 #
@@ -671,12 +672,12 @@ gh_x_claude_fix_ci() {
 
 # ---------------------------------------------------------------- 9i: branch protection
 
-# What a PUBLIC repository exposes outlives the flip: every commit of every branch and every refs/pull/* ref
-# (a PR keeps its head ref after its branch is deleted, and GitHub offers no way to delete one) stays
-# fetchable, and so do PR text, check output and Actions logs. The scan therefore reads the WHOLE history of
-# EVERY ref, every path ever committed, commit metadata, PR/review/comment text, check output, Actions logs
-# and the repository metadata. Any hit fails the stage BEFORE the flip; the repository stays private and the
-# protection stage is UNVERIFIED. A hit is reported by class and location, never by value.
+# What a PUBLIC repository exposes outlives the flip: every commit of every branch, every refs/pull/* ref (a PR keeps its head
+# ref after its branch is deleted, and GitHub offers no way to delete one) and every tag stays fetchable, and so do PR text, check
+# output and Actions logs. The scan therefore reads the WHOLE history of EVERY ref the repository advertises (refs/*: branches,
+# pull request refs, tags and any other class), every path ever committed, commit and tag metadata, PR/review/comment text,
+# check output, Actions logs and the repository metadata. Any hit fails the stage BEFORE the flip; the repository stays private
+# and the protection stage is UNVERIFIED. A hit is reported by class and location, never by value.
 #
 # Identities: GitHub attributes the squash commit and the refs/pull/*/merge commit of a PR to its author, the
 # account this harness runs as, and Foreman's phase commits carry Foreman <foreman@localhost>. A commit author or
@@ -690,6 +691,12 @@ gh_x_claude_fix_ci() {
 # Binary blobs: any blob reachable from any ref that holds a NUL byte fails the scan (gh_public_binary_blobs). git grep -I and
 # git log -p cannot show such a blob's content, so a secret inside one would otherwise pass; the content checks also read every
 # blob as text (git grep -a) so nothing is ever skipped.
+#
+# Refs: the scan fetches refs/* whole (git ls-remote shows refs/heads, refs/pull and refs/tags on GitHub; any other class is fetched
+# too). The operator clone is made at setup and a fetch with explicit refspecs follows only the tags that point into the fetched
+# history, so a commit that only a tag reaches would be invisible to rev-list, log and grep. A ref that ends at a tree or a blob
+# instead of a commit fails the scan (the content checks read commits); annotated tags are read too: their message as text, their
+# tagger like an author.
 #
 # Paths a commit may ever have touched: the seeded fixture and the one note file each bead's agent adds.
 GH_PUBLIC_ALLOWED_FILES='^(\.github/workflows/(ci|approve)\.yml|\.gitignore|\.coderabbit\.yaml|README\.md|app\.py|test_app\.py|note_[a-z0-9_]+\.txt)$'
@@ -760,17 +767,21 @@ gh_public_binary_blobs() {
       done
 }
 
-# gh_public_scan_history: what the git HISTORY of $GH_REPO exposes (steps 1-3). Fetches every branch and every refs/pull/*
-# of origin into the operator clone $GH_OP, then checks the paths ever committed, that every blob is text, the file contents at
-# every commit, the whole patch history and the commit identities. Needs $EVID/secrets.txt (gh_public_secrets). Returns 1 on any finding.
+# gh_public_scan_history: what the git HISTORY of $GH_REPO exposes (steps 1-3). Fetches every ref of origin (refs/*: branches,
+# refs/pull/*, tags, any other class) into the operator clone $GH_OP, then checks the paths ever committed, that every ref ends at
+# a commit and every blob is text, the file contents at every commit, the whole patch history, the annotated tag messages and the
+# commit and tag identities. Needs $EVID/secrets.txt (gh_public_secrets). Returns 1 on any finding.
 gh_public_scan_history() {
   gsh_bad=0
-  # every ref the repository exposes: branches and the pull request refs (head and merge)
-  git -C "$GH_OP" fetch -q origin '+refs/heads/*:refs/remotes/origin/*' '+refs/pull/*:refs/remotes/pull/*' || { fail "cannot fetch every branch and refs/pull/* of $GH_REPO"; return 1; }
-  git -C "$GH_OP" for-each-ref --format='%(refname)' refs/remotes > "$EVID/refs.txt"
-  gsh_branches=$(grep -c '^refs/remotes/origin/' "$EVID/refs.txt")
-  gsh_prrefs=$(grep -c '^refs/remotes/pull/' "$EVID/refs.txt")
-  note "refs scanned: $gsh_branches branch(es), $gsh_prrefs pull request ref(s): $(tr '\n' ' ' < "$EVID/refs.txt" | sed -e 's#refs/remotes/##g')"
+  # EVERY ref the repository advertises, not just branches and pull request refs: a tag (or a ref of any other class) is fetchable
+  # once the repository is public, and a commit that only such a ref reaches is invisible here unless it is fetched
+  git -C "$GH_OP" fetch -q --prune origin '+refs/*:refs/remotes/scan/*' || { fail "cannot fetch every ref (refs/*) of $GH_REPO"; return 1; }
+  git -C "$GH_OP" for-each-ref --format='%(refname)' refs/remotes/scan | sed -e 's#^refs/remotes/scan/##' > "$EVID/refs.txt"
+  gsh_branches=$(grep -c '^heads/' "$EVID/refs.txt")
+  gsh_prrefs=$(grep -c '^pull/' "$EVID/refs.txt")
+  gsh_tags=$(grep -c '^tags/' "$EVID/refs.txt")
+  gsh_others=$(grep -vc -e '^heads/' -e '^pull/' -e '^tags/' "$EVID/refs.txt")
+  note "refs scanned: $gsh_branches branch(es), $gsh_prrefs pull request ref(s), $gsh_tags tag(s), $gsh_others other ref(s): $(tr '\n' ' ' < "$EVID/refs.txt")"
   [ "$gsh_branches" -gt 0 ] || { fail "no branch fetched from $GH_REPO"; return 1; }
   gsh_revs=$(git -C "$GH_OP" rev-list --all)
   gsh_ncommits=$(printf '%s\n' "$gsh_revs" | grep -c .)
@@ -780,6 +791,16 @@ gh_public_scan_history() {
   note "paths ever committed on any ref: $(tr '\n' ' ' < "$EVID/paths-ever.txt")"
   gsh_extra=$(grep -Ev "$GH_PUBLIC_ALLOWED_FILES" "$EVID/paths-ever.txt")
   [ -z "$gsh_extra" ] && pass "every path ever committed ($(wc -l < "$EVID/paths-ever.txt" | tr -d ' ') distinct) is part of the synthetic fixture" || { fail "paths outside the synthetic fixture in the history: $(printf '%s' "$gsh_extra" | tr '\n' ' ')"; gsh_bad=1; }
+
+  # 1a. every ref must end at a commit (itself, or through one annotated tag): the content checks read commits, so a tag that points
+  # straight at a tree or a blob would hide what it holds from them
+  gsh_noncommit=$(git -C "$GH_OP" for-each-ref --format='%(objecttype)|%(*objecttype)|%(refname)' refs/remotes/scan | awk -F'|' '$1 == "commit" || ($1 == "tag" && $2 == "commit") { next } { print substr($3, 19) " (" $1 ($2 == "" ? "" : ">" $2) ")" }')
+  if [ -n "$gsh_noncommit" ]; then
+    fail "ref(s) that do not point at a commit (the content checks read commits only, so nothing under them was checked): $(printf '%s' "$gsh_noncommit" | tr '\n' ' ')"
+    gsh_bad=1
+  else
+    pass "every one of the $(grep -c . "$EVID/refs.txt") refs ends at a commit"
+  fi
 
   # 1b. every blob reachable from any ref must be text: a binary blob is REJECTED here, never skipped (see gh_public_binary_blobs)
   gsh_nblobs=$(git -C "$GH_OP" rev-list --objects --all | git -C "$GH_OP" cat-file --batch-check='%(objecttype) %(rest)' | grep -c '^blob ')
@@ -805,10 +826,14 @@ gh_public_scan_history() {
   # no author/committer lines here: those are step 3's, so the account's own identity (an exact secret) is not in this text
   git -C "$GH_OP" log --all -m -p --format='COMMIT %H%n%B' > "$EVID/history-all.patch"
   gh_public_scan_file "git log --all -p" "$EVID/history-all.patch" && pass "the whole patch history ($(wc -c < "$EVID/history-all.patch" | tr -d ' ') bytes) is clean" || gsh_bad=1
+  # annotated tag objects: the message is published text like a commit message (the tagger is step 3's, like an author)
+  git -C "$GH_OP" for-each-ref --format='%(if:equals=tag)%(objecttype)%(then)TAG %(refname)%0a%(contents)%(end)' | grep -v '^$' > "$EVID/tag-messages.txt"
+  gh_public_scan_file "annotated tag messages" "$EVID/tag-messages.txt" && pass "annotated tag messages ($(wc -c < "$EVID/tag-messages.txt" | tr -d ' ') bytes) are clean" || gsh_bad=1
 
-  # 3. commit identities: authors and committers of every commit on every ref
-  git -C "$GH_OP" log --all --format='%an <%ae>%n%cn <%ce>' | sort -u > "$EVID/identities.txt"
-  note "commit identities: $(tr '\n' ';' < "$EVID/identities.txt")"
+  # 3. commit and tag identities: authors and committers of every commit on every ref, and the tagger of every annotated tag
+  { git -C "$GH_OP" log --all --format='%an <%ae>%n%cn <%ce>'
+    git -C "$GH_OP" for-each-ref --format='%(if:equals=tag)%(objecttype)%(then)%(taggername) %(taggeremail)%(end)' | grep -v '^$'; } | sort -u > "$EVID/identities.txt"
+  note "commit and tag identities: $(tr '\n' ';' < "$EVID/identities.txt")"
   gsh_account=$(gh_account_identity)
   if [ -n "$gsh_account" ]; then
     note "the account's own public profile identity is allowed in the commit identity fields (and nowhere else): $gsh_account"
@@ -835,7 +860,7 @@ gh_public_safety_check() {
     gh api "repos/$GH_REPO/issues/comments?per_page=100" --paginate -q '.[].body' 2>/dev/null
     gh api "repos/$GH_REPO/pulls/comments?per_page=100" --paginate -q '.[].body' 2>/dev/null
     for gps_pr in $(gh api "repos/$GH_REPO/pulls?state=all&per_page=100" --paginate -q '.[].number' 2>/dev/null); do gh api "repos/$GH_REPO/pulls/$gps_pr/reviews" -q '.[].body' 2>/dev/null; done
-    for gps_sha in $(git -C "$GH_OP" for-each-ref --format='%(objectname)' refs/remotes/pull refs/remotes/origin | sort -u); do
+    for gps_sha in $(git -C "$GH_OP" for-each-ref --format='%(objectname)' refs/remotes/scan/pull refs/remotes/scan/heads | sort -u); do
       gh api "repos/$GH_REPO/commits/$gps_sha/check-runs" -q '.check_runs[] | .name, .output.title, .output.summary, .output.text' 2>/dev/null
       gh api "repos/$GH_REPO/commits/$gps_sha/statuses" -q '.[] | .context, .description, .target_url' 2>/dev/null
     done

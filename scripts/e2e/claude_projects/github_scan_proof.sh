@@ -7,8 +7,9 @@
 #
 # A. Builds a LOCAL history shaped like the scratch repository's (the seed commit, a run commit by Foreman
 #    <foreman@localhost>, a squash commit on main and a refs/pull/1/merge commit attributed to the account and committed by
-#    GitHub), runs the real scan on it (it must pass), plants ONE violation at a time into a fresh copy (a token, a foreign
-#    identity, a local path, a binary blob, ...: the scan must fail and name it), and runs the clean history again.
+#    GitHub), makes the operator clone of it, runs the real scan on it (it must pass), plants ONE violation at a time into a fresh
+#    copy AFTER that clone (a token, a foreign identity, a local path, a binary blob, a commit only a tag or another ref class
+#    reaches, an annotated tag, ...: the scan must fail and name it), and runs the clean history again.
 # B. The identity allowlist line by line, including look-alikes.
 # C. How the account identity is derived from `gh api user` (a profile without a public email yields none).
 # D. gh_retry_locked, which keeps the repository from staying public: it retries exactly the two refusals GitHub gives while a
@@ -50,7 +51,7 @@ PROOF_EMAIL=${PROOF_EMAIL%>}
 PROOF_OTHER_NAME="Operator Local Name"
 [ "$PROOF_OTHER_NAME" != "$PROOF_NAME" ] || PROOF_OTHER_NAME="$PROOF_OTHER_NAME (synthetic)" # distinct from the profile name by construction
 # the documented number of expectations (docs/acceptance/live-github-branch-protection.md): change it with the scenarios
-PROOF_EXPECTED=55
+PROOF_EXPECTED=61
 
 PROOF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ghscan-proof.XXXXXX") || die "mktemp failed" 1
 trap 'rm -rf "$PROOF_DIR"' EXIT
@@ -98,7 +99,8 @@ Co-authored-by: Foreman <foreman@localhost>" "$PROOF_NAME" "$PROOF_EMAIL" GitHub
   git -C "$pb" push -q origin main
 }
 
-# --- the mutators: each plants ONE violation in a work clone ($PROOF_DIR/mut) and commits it; pushed to PROOF_PUSH_REF
+# --- the mutators: each plants ONE violation in a work clone ($PROOF_DIR/mut) and commits it; pushed to PROOF_PUSH_SRC:PROOF_PUSH_REF
+# (HEAD:refs/heads/mutation unless the mutator says otherwise)
 proof_add() { git -C "$PROOF_DIR/mut" add -A && proof_commit "$PROOF_DIR/mut" "$@"; }
 proof_note() { printf '%s\n' "$1" > "$PROOF_DIR/mut/note_p9.txt"; }
 mut_token_file() { printf 'API_KEY=ghp_%s\n' "$(proof_rand 36)" >> "$PROOF_DIR/mut/app.py"; proof_add "plant a GitHub-token-shaped string in app.py"; }
@@ -131,17 +133,43 @@ mut_late_nul() {
   proof_add "a NUL byte after 9000 text bytes (git's own binary heuristic reads only the first 8000)"
 }
 
-# proof_fresh [mutator]: a fresh copy of the clean origin (+ the mutation, pushed to PROOF_PUSH_REF) and a fresh operator clone
+# reachable ONLY from a tag (or a ref of another class) that no branch and no PR ref contains: the operator clone is made before the
+# push, as the harness clones at setup and scans later, and a fetch with explicit refspecs follows no tag that points outside the
+# fetched history
+mut_tag_text() { proof_note "$GH_HOOK_SECRET"; proof_add "a commit only a tag reaches, holding this run's webhook secret"; PROOF_PUSH_REF=refs/tags/v9-leak; }
+mut_tag_binary() { mut_binary_secret && PROOF_PUSH_REF=refs/tags/v9-leak; }
+mut_other_ref() { mut_token_file && PROOF_PUSH_REF=refs/changes/9/1; }
+# an annotated tag has its own message and tagger: <name> <tagger name> <tagger email> <message>, on a commit only the tag reaches
+proof_tag() {
+  proof_commit "$PROOF_DIR/mut" "a commit only the annotated tag $1 reaches" || return 1
+  GIT_COMMITTER_NAME=$2 GIT_COMMITTER_EMAIL=$3 git -C "$PROOF_DIR/mut" -c tag.gpgsign=false -c core.hooksPath=/dev/null tag -a -m "$4" "$1" || return 1
+  PROOF_PUSH_SRC=refs/tags/$1
+  PROOF_PUSH_REF=refs/tags/$1
+}
+mut_tag_message() { proof_tag v9-ann seed seed@example.com "release notes ghp_$(proof_rand 36)"; }
+mut_tag_tagger() { proof_tag v9-ann "Someone Else" someone@corp.test "release notes"; }
+# a tag that points straight at a blob: the content checks read commits only
+mut_tag_blob() {
+  mt_blob=$(printf '%s\n' "$GH_HOOK_SECRET" | git -C "$PROOF_DIR/mut" hash-object -w --stdin) || return 1
+  git -C "$PROOF_DIR/mut" tag v9-blob "$mt_blob" || return 1
+  PROOF_PUSH_SRC=refs/tags/v9-blob
+  PROOF_PUSH_REF=refs/tags/v9-blob
+}
+
+# proof_fresh [mutator]: a fresh copy of the clean origin, a fresh operator clone of it and THEN the mutation, pushed to the origin. The
+# clone comes first, as in the harness (it clones at setup and scans much later): whatever the scan sees beyond the clean history, it
+# had to fetch itself
 proof_fresh() {
   rm -rf "$PROOF_DIR/scen.git" "$PROOF_DIR/mut" "$GH_OP"
   cp -R "$PROOF_DIR/base.git" "$PROOF_DIR/scen.git" || return 1
+  git clone -q "$PROOF_DIR/scen.git" "$GH_OP" || return 1
+  PROOF_PUSH_SRC=HEAD
   PROOF_PUSH_REF=refs/heads/mutation
   if [ -n "${1:-}" ]; then
     git clone -q "$PROOF_DIR/scen.git" "$PROOF_DIR/mut" || return 1
     "$1" || return 1
-    git -C "$PROOF_DIR/mut" push -q origin "HEAD:$PROOF_PUSH_REF" || return 1
+    git -C "$PROOF_DIR/mut" push -q origin "$PROOF_PUSH_SRC:$PROOF_PUSH_REF" || return 1
   fi
-  git clone -q "$PROOF_DIR/scen.git" "$GH_OP"
 }
 
 # proof_judge <label> <pass[:<text the scan must print>] | fail:<text the scan must print>[;;<more text>...]>: run the real scan on the
@@ -263,6 +291,12 @@ proof_main() {
   proof_scenario "A15. a binary blob holding this run's webhook secret and a token-shaped string: rejected, and its contents are still read" "fail:binary blob(s) in the history;;the TOKEN class matches file contents;;an exact secret or identity of this run appears in file contents" mut_binary_secret
   proof_scenario "A16. the same binary blob, reachable only from refs/pull/9/head" "fail:binary blob(s) in the history;;the TOKEN class matches file contents;;an exact secret or identity of this run appears in file contents" mut_binary_pr_ref
   proof_scenario "A17. a NUL byte after 9000 text bytes (git's own heuristic calls the blob text): rejected all the same" "fail:binary blob(s) in the history" mut_late_nul
+  proof_scenario "A18. a commit that only a TAG reaches (no branch, no PR ref) holds this run's webhook secret" "fail:an exact secret or identity of this run appears in file contents" mut_tag_text
+  proof_scenario "A19. the binary blob with the exact secret and a token-shaped string, reachable only from a tag" "fail:binary blob(s) in the history;;the TOKEN class matches file contents;;an exact secret or identity of this run appears in file contents" mut_tag_binary
+  proof_scenario "A20. a token-shaped string in a commit reachable only from refs/changes/9/1 (neither branch, PR ref nor tag)" "fail:the TOKEN class matches file contents" mut_other_ref
+  proof_scenario "A21. an annotated tag whose message holds a token-shaped string (the tagged commit is clean)" "fail:annotated tag messages: the TOKEN class matches" mut_tag_message
+  proof_scenario "A22. an annotated tag by the foreign identity Someone Else <someone@corp.test> (the tagged commit is clean)" "fail:commit identity outside the allowlist in the history: Someone Else <someone@corp.test>" mut_tag_tagger
+  proof_scenario "A23. a tag that points straight at a blob holding the exact secret" "fail:ref(s) that do not point at a commit" mut_tag_blob
   proof_hidden_profile
   proof_scenario "A-clean-again. the clean history again: it passes only because nothing was planted" "pass:every blob reachable from any ref ($PROOF_NBLOBS) is text"
 
