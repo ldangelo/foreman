@@ -222,9 +222,9 @@ The limitations listed next were written for the scripted flow alone; since then
 stage <name>... | stop`) covers what stage 8 leaves: the workspace Fix CI / Address comments / Resolve conflicts / Create PR buttons clicked in a
 real browser (Playwright, `scripts/e2e/ui-a11y/pr_actions_live.mjs`; use `http://localhost:<port>`, the LiveView socket refuses `127.0.0.1`), the
 `pr_auto_fix` policy off / on / bounded, what a push after `approve-merge` does, GitHub's refusal text for an operator merge, and (only with
-`E2E_GH_ALLOW_PUBLIC=1`, after a whole-history content scan that also rejects any binary blob, because branch protection needs a public repository on a free plan) merge under
+`E2E_GH_ALLOW_PUBLIC=1`, after a whole-history content scan of every branch and PR ref, because branch protection needs a public repository on a free plan) merge under
 branch protection (verified live 2026-10-26: the repository is public for about two minutes; GitHub locks it for a few seconds after each visibility change, which the harness
-waits out, `E2E_GH_LOCK_SECS`, default 240; the scan's rules (identity allowlist, binary-blob rejection, token, path and transcript classes) have a local mutation proof, `scripts/e2e/claude_projects/github_scan_proof.sh`). The fixture carries `.coderabbit.yaml` and bead titles start with `e2e-skip` so an account-wide CodeRabbit stays silent.
+waits out, `E2E_GH_LOCK_SECS`, default 240; the scan's identity allowlist ran live, while its later rules, binary-blob rejection, fetching tags and every other ref class, annotated tag messages and taggers, and refs that are not commits, have only a local mutation proof, `scripts/e2e/claude_projects/github_scan_proof.sh`, and were not part of a live scan). The fixture carries `.coderabbit.yaml` and bead titles start with `e2e-skip` so an account-wide CodeRabbit stays silent.
 Stage `claude_fix_ci` is the one stage that runs a REAL claude (haiku, workflow `claudeedit`, bead type `claude-e2e`, through a private
 `HOME` that keeps only the operator's login): a failing check on the run's real PR, the Fix CI button, and then the fix thread must resume
 THAT run's claude session (`PrFixStarted.resumed_session`, `JobsiteIterationStarted.resumed_session_id`, claude's own transcript grows,
@@ -459,8 +459,9 @@ These paths were built and tested with fakes only and are **UNVERIFIED** live:
   recorded no session, the Address comments and Resolve conflicts fix kinds with claude, and a PR fix thread in the docker sandbox (`docs/acceptance/live-claude-prfix-resume.md`,
   "Not exercised"). `pi` sessions are verified and bound to their working directory.
 - The phase-wide effect of approving a tool on a **Claude** run (spike S2).
+- The refusal of a merge by GitHub's **`required_linear_history`** rule itself: the branch-protection run set it and the squash merges it observed left one-parent commits, but no merge-commit merge was attempted.
 
-Verified live and therefore not in this list: merge under GitHub **branch protection** (a required review, required status checks, linear history; refusals reach the operator
+Verified live and therefore not in this list: merge under GitHub **branch protection** (a required review and required status checks; refusals reach the operator
 verbatim, the same approval and head pin merges once every rule is met: `docs/acceptance/live-github-branch-protection.md`), GitHub's refusal of an operator merge, and the E9 PR
 paths (webhook deliveries, force-pushes, check re-runs, merge-conflict resolution, unresolved review threads, the workspace PR action buttons, the `pr_auto_fix` policy):
 `docs/acceptance/live-github-protection-ui-autofix.md`, `docs/acceptance/github-live-run.md`. Also verified live, with a real claude (`haiku`): a PR fix thread resuming its run's

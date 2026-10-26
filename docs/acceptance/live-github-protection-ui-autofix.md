@@ -10,7 +10,7 @@ meets from the outside: a failing commit pushed to the PR branch, a review poste
 
 | # | Item | Result | Evidence |
 |---|---|---|---|
-| 1 | Merge under GitHub **branch protection** (required check, required review, linear history) | **UNVERIFIED in this run; verified live on 2026-10-26** ([`live-github-branch-protection.md`](live-github-branch-protection.md)) | see "Item 1"; in this run protection and rulesets answered HTTP 403 on a private repo of this plan, and the pre-flip content scan for the approved temporary public window failed on the commit identities, so the repo was never made public. The scan now allows the account's own public profile identity and the stage was run |
+| 1 | Merge under GitHub **branch protection** (required check, required review, linear history) | **UNVERIFIED in this run; verified live on 2026-10-26**, except the refusal by `required_linear_history` itself, which was not tested (the squash results had one parent) ([`live-github-branch-protection.md`](live-github-branch-protection.md)) | see "Item 1"; in this run protection and rulesets answered HTTP 403 on a private repo of this plan, and the pre-flip content scan for the approved temporary public window failed on the commit identities, so the repo was never made public. The scan now allows the account's own public profile identity and the stage was run |
 | 1b | GitHub refuses the operator merge: text and state (repo forbids squash merges, works on a private repo) | **PASS** | 9j |
 | 2a | UI **Fix CI** button on a real failing PR | **PASS** | 9c |
 | 2b | UI **Address comments** button on a real unresolved review thread | **PASS** | 9d |
@@ -196,4 +196,4 @@ GitHub's own text reaches the operator verbatim (inside an inspected Elixir tupl
 
 `foreman-ksy0q`: items 2 and 3 and the refusal path (1b) are verified live, and item 4 was observed live on the build before #650 (the fix is not re-run live); item 1 (merge under real branch protection) is not verified, so the bead stays open.
 
-**Update 2026-10-26:** item 1 was verified live on a new scratch repository (`live-github-branch-protection.md`: refusals verbatim under a missing required review, an absent and a failing required status check and a forbidden squash, then the same approval and head pin merging once every rule was met; linear history held); the bead is closed.
+**Update 2026-10-26:** item 1 was verified live on a new scratch repository (`live-github-branch-protection.md`: refusals verbatim under a missing required review, an absent and a failing required status check and a forbidden squash, then the same approval and head pin merging once every rule was met; the squash results had one parent, but a refusal by `required_linear_history` itself was not tested); the bead is closed.
