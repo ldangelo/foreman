@@ -18,14 +18,15 @@ windows** (the first aborted by a harness defect, below), after a whole-history 
 | 3 | Refused while the required status check `e2e/external-policy` is **absent**, and while it is **failing**; merged once it is green | **PASS** (M3, PR #4) |
 | 4 | Refused while the repository forbids the only method Foreman uses (squash), under protection; merged once allowed again | **PASS** (M3) |
 | 5 | **Linear history**: the commit each protected merge landed on `main` has exactly one parent, and `main` has no merge commit | **PASS** |
-| 6 | The pre-flip content scan passes on the real repository with the account's own public profile identity allowed in commit identity fields, and still fails on everything else (mutation proof, 50 expectations) | **PASS** |
+| 6 | The pre-flip content scan passes on the real repository with the account's own public profile identity allowed in commit identity fields, and still fails on everything else, including a binary blob (mutation proof, 55 expectations) | **PASS** |
 | 7 | The repository is PRIVATE again (and archived), protection removed, no webhook, no leftover process, port, database or directory | **PASS** |
 
 `stage protection`: passed=28 failed=0 unverified=0 (119 s). `stage merge_refusal`: 9 PASS, `stage prot_prepare`: 12 PASS, `stage safety`: 8 PASS.
 
 ## Environment
 
-- Branch `foreman/ksy0q-protection-live` off `main` `a934a19a`; the first protection run used commit `1dffdaff`, the successful one `4e809816`
+- Branch `foreman/ksy0q-protection-live` off `main` `a934a19a`; the first protection run used commit `1dffdaff`, the successful one `4e809816`; the review follow-ups
+  (binary-blob rejection in the scan, the proof's fixed count, the doc fixes) came after the live runs and were exercised by the proof script only
   (harness changes only: `scripts/e2e/claude_projects/github_extras.sh`, `scripts/e2e/github_live_extras.sh`, new
   `scripts/e2e/claude_projects/github_scan_proof.sh`). macOS arm64; devbox Elixir 1.20.4 / OTP 28; `gh` 2.103.2, token scopes
   `delete_repo, gist, read:org, repo, workflow` (no `user` scope, so `gh api user` reads only the public profile); `cloudflared` quick tunnel.
@@ -160,8 +161,14 @@ phase commits carry `Foreman <foreman@localhost>`. What changed (harness only, `
 Everything else stays rejected, and the profile email stays an exact secret everywhere except the identity fields of commits: the patch history is scanned without author/committer
 lines, and the identity lines are scanned as free text after taking out that one allowed line.
 
-Result on the real repository: `stage safety` (read-only, before any window: 10 Actions logs, 147677 bytes, PR text 1102 bytes, every other line identical) and the scan inside `stage protection`
-immediately before window 2, which is shown (one more Actions log after the `approve.yml` dry run):
+Review follow-up (after the live runs): `git grep -I` skips a blob that holds a NUL byte and `git log -p` prints only "Binary files differ" for it, so a file with a NUL byte plus a secret passed every
+content check. The scan now **rejects** any blob reachable from any ref (branches, `refs/pull/*`, tags, the stash) that holds a NUL byte anywhere (not git's first-8000-bytes heuristic), with
+`binary blob(s) in the history (a NUL byte: git grep -I and git log -p skip them, so nothing in them was checked) (sha:path): ...`, and its content checks read every blob as text (`git grep -a`,
+`grep -a`) so nothing is skipped either. The live scans below ran before this rule. The new check was run read-only against the archived scratch repository afterwards: 11 blobs reachable from every
+ref (`main` and the four PR heads), none with a NUL byte.
+
+Result on the real repository (these scans pre-date the binary-blob rule): `stage safety` (read-only, before any window: 10 Actions logs, 147677 bytes, PR text 1102 bytes, every other line identical) and the scan
+inside `stage protection` immediately before window 2, which is shown (one more Actions log after the `approve.yml` dry run):
 
 ```text
 refs scanned: 6 branch(es), 7 pull request ref(s): origin/HEAD origin/foreman/gh-5iv/... origin/foreman/gh-dht/... origin/foreman/gh-rne/... origin/foreman/gh-ymo/... origin/main pull/1/head pull/2/head pull/2/merge pull/3/head pull/3/merge pull/4/head pull/4/merge
@@ -185,14 +192,16 @@ the account's profile identity as author, GitHub as committer, `Foreman <foreman
 
 It builds a local bare origin shaped like the scratch repository (seed commit, a Foreman run commit, a squash commit and a `refs/pull/1/merge` commit attributed to the account and
 committed by GitHub, `refs/pull/1/head`), runs the real `gh_public_scan_history` on it, plants one violation at a time into a fresh copy, and runs the clean history again. Nothing is
-pushed to GitHub; the only network call is the scan's own read-only `gh api user`. The account's real name and email are masked in the output (`<account identity>`).
-`bash scripts/e2e/claude_projects/github_scan_proof.sh` ends `expectations held: 50, broken: 0`:
+pushed to GitHub; the only network call is the scan's own read-only `gh api user`. The account's real name and email are masked in the output (`<account identity>`). Nothing in it reads the
+operator's git configuration (the "another name" identity is a fixed synthetic one), and it fails, rather than shrinks, when the number of expectations differs from the documented one
+(`PROOF_EXPECTED`). `bash scripts/e2e/claude_projects/github_scan_proof.sh` ends `expectations held: 55, broken: 0 (documented: 55)`:
 
 ```text
-A0  clean history (the account identity as author of the squash and the merge commit)   scan PASSED
+A0  clean history (the account identity as author of the squash and the merge commit)   scan PASSED, printing "every blob reachable from any ref (8) is text"
 A1  (i) token-shaped string in a file            FAIL  the TOKEN class matches file contents in the history (rev:path): <sha>:app.py
 A2  (i) token-shaped string in a commit message  FAIL  git log --all -p: the TOKEN class matches (lines: 2 of history-all.patch)
 A3  (i) token-shaped string as an author name    FAIL  commit identities: the TOKEN class matches (lines: 2 of identities-scan.txt)
+A3b (i) this run's webhook secret as an author name   FAIL  commit identities: an exact secret or identity of this run appears in identities-scan.txt
 A4  (i) this run's webhook secret in a file      FAIL  an exact secret or identity of this run appears in file contents (rev:path): <sha>:note_p9.txt
 A5  (ii) commit by Someone Else <someone@corp.test>                FAIL  commit identity outside the allowlist in the history: Someone Else <someone@corp.test>
 A6  (ii) the same identity, reachable only from refs/pull/9/head   FAIL  commit identity outside the allowlist in the history: Someone Else <someone@corp.test>
@@ -202,29 +211,37 @@ A9  {"role": "assistant", ...} in a file         FAIL  the TRANSCRIPT class matc
 A10 a path outside the fixture (secrets.env)     FAIL  paths outside the synthetic fixture in the history: secrets.env
 A11 the account's email in a file                FAIL  an exact secret or identity of this run appears in file contents (rev:path): <sha>:note_p9.txt
 A12 the account identity in a commit message     FAIL  git log --all -p: an exact secret or identity of this run appears in history-all.patch
-A13 the operator's local git name + profile email as author   FAIL  commit identity outside the allowlist in the history: <operator git name> <<account email>>
-A-hidden the clean history, profile with no public email      FAIL  commit identity outside the allowlist in the history: <account identity>
-A-clean-again the clean history once more                     scan PASSED
+A13 another name (fixed: "Operator Local Name") + the profile email as author   FAIL  commit identity outside the allowlist in the history: Operator Local Name <<account email>>; and: commit identities: an exact secret or identity of this run appears in identities-scan.txt
+A14 a binary blob (NUL bytes), no secret in it   FAIL  binary blob(s) in the history (a NUL byte: git grep -I and git log -p skip them, so nothing in them was checked) (sha:path): <sha8>:note_p9.txt
+A15 a binary blob holding the webhook secret and a token-shaped string   FAIL  the same binary-blob line, and: the TOKEN class matches file contents in the history; an exact secret or identity of this run appears in file contents
+A16 the same blob, reachable only from refs/pull/9/head                  FAIL  the same three lines
+A17 a NUL byte after 9000 text bytes (git's own heuristic says text)     FAIL  binary blob(s) in the history ... (sha:path): <sha8>:note_p9.txt
+A-hidden the clean history, profile with no public email      FAIL  commit identity outside the allowlist in the history: <account identity>; and: commit identities: an exact secret or identity of this run appears in identities-scan.txt
+A-clean-again the clean history once more                     scan PASSED, printing "every blob reachable from any ref (8) is text"
 ```
 
 Also in the script: B, 23 identity lines one by one (6 accepted: the synthetic forms, `GitHub`, `Foreman`, the account identity; 17 rejected: `foreman <foreman@localhost>`,
 `Foreman <foreman@localhost.corp.test>`, `github <noreply@github.com>`, `x <x@notexample.com>`, `x <x@evil.example.com>`, `x <a@b@example.com>`, `Evil <e@corp.test> <a@example.com>`,
-the account identity with a prefix or a suffix, the operator's local git name with the profile email, and the account identity when the profile publishes no email, among
+the account identity with a prefix or a suffix, another name with the profile email, and the account identity when the profile publishes no email, among
 others); C, `gh_account_identity` against a faked `gh api user` (name and email -> identity; email null, name null, empty strings, an error object, `gh` failing -> nothing); D,
-`gh_retry_locked` (below).
+`gh_retry_locked` (below). Counts: A 21 (A0-A17 with A3b, A-hidden, A-clean-again), B 23, C 6, D 5 = 55.
 
-**The proof itself can fail.** Seven sabotaged copies of `github_extras.sh` (a throwaway harness, not committed; run on the 45-expectation version of the proof, before section D existed)
-each make the proof exit 3 on the expectations that guard that line:
+**The proof itself can fail.** Ten sabotaged copies of `github_extras.sh` and one of the proof script (throwaway, not committed; all run on the final 55-expectation proof) each
+make the proof exit 3 on the expectations that guard that line:
 
 | Sabotage | Proof expectations that broke |
 |---|---|
 | the identity allowlist accepts everything | A5, A6, A13, A-hidden and 17 allowlist rows (21 broken) |
-| `refs/pull/*` no longer fetched | A6 |
-| identity fields no longer scanned as free text | A3 |
+| `refs/pull/*` no longer fetched | A6, A16 |
+| identity fields no longer scanned as free text | A3, A3b, A13 |
 | the patch history (messages) no longer scanned | A2, A12 |
-| the profile email no longer an exact secret | A11, A12 |
+| the profile email no longer an exact secret | A11, A12, A13 |
 | the `example.com` rule loosened to an unanchored local part | the `a@b@example.com` and `Evil <e@corp.test> <a@example.com>` rows |
-| the TOKEN class dropped | A1, A2, A3 |
+| the TOKEN class dropped | A1, A2, A3, A15, A16 |
+| binary blobs no longer rejected (the NUL test never fires) | A14, A15, A16, A17 |
+| `git grep -a` back to `git grep -I` (binary blobs skipped by the content checks) | A15, A16 |
+| the NUL test applied only to blobs of 8000 bytes or less (git's own heuristic) | A17 |
+| the proof script loses a scenario (A13) without `PROOF_EXPECTED` changing | `the proof ran 54 expectations but PROOF_EXPECTED (the documented number) is 55` |
 
 ## Defect found live and fixed: GitHub locks the repository while a visibility change is processed
 
@@ -268,6 +285,9 @@ evidence directory (it holds this run's secrets list) was removed after this wri
 - A single repository on a free personal plan. Per GitHub's own 403 ("Upgrade to GitHub Pro or make this repository public") a paid private repository would not have needed a public window.
 - Foreman needed no change: the refusals are passed through and the gate holds. Every defect met was in the harness (the identity allowlist; the visibility lock, found live;
   and, found by reading the code while fixing that, a `stage` process killed inside the window did not unwind it); nothing here was run by CI.
+- The scan's binary-blob rule was added after the live runs (review follow-up), so the live scans above did not print its line. It was applied afterwards, read-only, to the archived
+  repository: 11 blobs reachable from every ref (`main` and the four PR heads), none with a NUL byte. The squash commits made inside the windows are unreachable after teardown and were
+  not part of that check. The rule was proved on the local mutation history only (A14-A17), never against a binary blob on GitHub.
 
 ## Bead status
 
