@@ -31,10 +31,21 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
       landed, so a normal call leaves no keeper, no monitor and no second `lease.release` behind.
       A release that failed (`BeadsDbLease.ReleaseError`) leaves the keeper armed: the hold may
       still exist, and the keeper clears it if the caller dies next.
+    * **A keeper that dies is replaced.** A keeper that ends abnormally while its caller lives
+      (killed, crashed) would leave the call unwatched, so keepers are `restart: :transient`: the
+      replacement is started from the same arguments and monitors the caller again, and a caller
+      that died meanwhile is reported at once (`Process.monitor/1` of a dead pid delivers `:DOWN`
+      immediately), which runs the cleanup. A normal end (after the cleanup, after the attempts
+      are spent, or `unwatch/1`) is final. `unwatch/1` finds the current keeper of the call
+      through the `KeeperRegistry` and marks the call finished first, so a keeper that restarts
+      just as the call ends never comes back armed. A keeper that keeps crashing is restarted at
+      most #{5} times (then reported with `Logger.error`, and its call runs unwatched), so a
+      crash loop cannot exhaust the supervisor's restart intensity.
     * **A late cleanup is harmless.** `lease.release` and `lease.remove_waiter` are no-ops for a
       run that neither holds nor waits, and a release naming another run than the holder is
       ignored. A cleanup that arrives after the lease moved on (taken over, released by boot
-      reconciliation, handed to the next waiter) cannot drop the hold of whoever has it now.
+      reconciliation, handed to the next waiter, run again by a restarted keeper) cannot drop the
+      hold of whoever has it now.
     * **A cleanup that cannot be dispatched is retried, then reported.** The lease actor or the
       `CommandRouter` may be busy or restarting, the event store unreachable. The keeper tries
       again every `:retry_interval_ms`, up to `:max_attempts` attempts in all, then reports it
@@ -50,15 +61,22 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   carry.
   """
 
-  use GenServer, restart: :temporary
+  use GenServer, restart: :transient
 
   require Logger
 
   alias ForemanServer.Aggregates.BeadsDbLease
-  alias ForemanServer.Aggregates.BeadsDbLease.KeeperSupervisor
+  alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
   alias ForemanServer.{CommandGateway, CommandRouter, Incarnation}
 
   @defaults [call_timeout_ms: 5_000, retry_interval_ms: 1_000, max_attempts: 10]
+
+  # A keeper that crashes again and again is restarted this many times, then left unrestarted.
+  @max_restarts 5
+
+  # Slots of the `:atomics` array a call shares with every keeper it has had, across restarts.
+  @starts 1
+  @finished 2
 
   @typedoc """
   `:call_timeout_ms` bounds each command of the cleanup, `:retry_interval_ms` is the wait before
@@ -69,6 +87,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
           {:call_timeout_ms, pos_integer()}
           | {:retry_interval_ms, pos_integer()}
           | {:max_attempts, pos_integer()}
+
+  @typedoc "What `watch/4` returns and `unwatch/1` takes: names the call, not one keeper process."
+  @opaque watch :: {reference(), :atomics.atomics_ref()}
 
   defmodule State do
     @moduledoc "State of one `BeadsDbLease.Keeper`: the call it keeps and how far its cleanup is."
@@ -92,33 +113,54 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   Starts the keeper of a `with_lease/4` call made by `caller` for `run_id` on `db_path` and
   returns once it monitors `caller`.
 
-  `{:error, :keeper_supervisor_not_running}` when `KeeperSupervisor` is not running (the server is
-  starting up or shutting down); no lease may be taken then, as nothing would clear it.
+  `{:error, reason}` when no keeper can be started (`KeeperSupervisor` or `KeeperRegistry` is not
+  running: the server is starting up or shutting down); no lease may be taken then, as nothing
+  would clear it.
   """
-  @spec watch(pid(), String.t(), String.t(), [option()]) :: {:ok, pid()} | {:error, term()}
+  @spec watch(pid(), String.t(), String.t(), [option()]) :: {:ok, watch()} | {:error, term()}
   def watch(caller, db_path, run_id, opts \\ [])
       when is_pid(caller) and is_binary(db_path) and db_path != "" and is_binary(run_id) and
              run_id != "" and is_list(opts) do
-    args = %{caller: caller, db_path: db_path, run_id: run_id, options: options!(opts)}
+    id = make_ref()
+    shared = :atomics.new(2, signed: false)
+
+    args = %{
+      id: id,
+      shared: shared,
+      caller: caller,
+      db_path: db_path,
+      run_id: run_id,
+      options: options!(opts)
+    }
 
     case DynamicSupervisor.start_child(KeeperSupervisor, {__MODULE__, args}) do
-      {:ok, keeper} -> {:ok, keeper}
+      {:ok, _keeper} -> {:ok, {id, shared}}
       {:error, _reason} = error -> error
+      :ignore -> {:error, :keeper_not_started}
     end
   catch
     :exit, {:noproc, _call} -> {:error, :keeper_supervisor_not_running}
   end
 
   @doc """
-  Stops `keeper`: the call it watches gave the lease back itself. Returns once the keeper has
-  ended, so no monitor is left behind. A keeper that is already gone (it crashed) is not an error:
-  there is nothing left to stand down.
+  Stops the keeper of the call `watch` names: the call gave the lease back itself. Returns once
+  the keeper has ended, so no monitor is left behind. A keeper that is already gone is not an
+  error: there is nothing left to stand down.
   """
-  @spec unwatch(pid()) :: :ok
-  def unwatch(keeper) when is_pid(keeper) do
-    case DynamicSupervisor.terminate_child(KeeperSupervisor, keeper) do
-      :ok -> :ok
-      {:error, :not_found} -> :ok
+  @spec unwatch(watch()) :: :ok
+  def unwatch({id, shared}) do
+    # Before anything else, so a keeper that restarts from here on finds the call finished.
+    :atomics.put(shared, @finished, 1)
+
+    case Registry.lookup(KeeperRegistry, id) do
+      [{keeper, _value}] ->
+        case DynamicSupervisor.terminate_child(KeeperSupervisor, keeper) do
+          :ok -> :ok
+          {:error, :not_found} -> :ok
+        end
+
+      [] ->
+        :ok
     end
   catch
     :exit, {:noproc, _call} -> :ok
@@ -126,24 +168,45 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
 
   @doc false
   @spec start_link(map()) :: GenServer.on_start()
-  def start_link(args), do: GenServer.start_link(__MODULE__, args)
+  def start_link(%{id: id} = args),
+    do: GenServer.start_link(__MODULE__, args, name: {:via, Registry, {KeeperRegistry, id}})
 
   # -- server ----------------------------------------------------------------------------------
 
   @impl true
-  def init(%{caller: caller, db_path: db_path, run_id: run_id, options: options}) do
-    {:ok,
-     %State{
-       caller: caller,
-       monitor: Process.monitor(caller),
-       db_path: db_path,
-       stream_id: BeadsDbLease.stream_id(db_path),
-       run_id: run_id,
-       command_key: System.unique_integer([:positive, :monotonic]),
-       call_timeout_ms: Keyword.fetch!(options, :call_timeout_ms),
-       retry_interval_ms: Keyword.fetch!(options, :retry_interval_ms),
-       max_attempts: Keyword.fetch!(options, :max_attempts)
-     }}
+  def init(%{shared: shared, run_id: run_id} = args) do
+    starts = :atomics.add_get(shared, @starts, 1)
+
+    cond do
+      # The call ended while this keeper was being restarted: nothing is left to keep.
+      :atomics.get(shared, @finished) == 1 ->
+        :ignore
+
+      starts > @max_restarts + 1 ->
+        Logger.error(
+          "BeadsDbLease keeper for run_id=#{run_id} ended abnormally #{starts - 1} times and is " <>
+            "not restarted again: its caller's hold or queue entry is no longer watched"
+        )
+
+        :ignore
+
+      true ->
+        {:ok, new_state(args)}
+    end
+  end
+
+  defp new_state(%{caller: caller, db_path: db_path, run_id: run_id, options: options}) do
+    %State{
+      caller: caller,
+      monitor: Process.monitor(caller),
+      db_path: db_path,
+      stream_id: BeadsDbLease.stream_id(db_path),
+      run_id: run_id,
+      command_key: System.unique_integer([:positive, :monotonic]),
+      call_timeout_ms: Keyword.fetch!(options, :call_timeout_ms),
+      retry_interval_ms: Keyword.fetch!(options, :retry_interval_ms),
+      max_attempts: Keyword.fetch!(options, :max_attempts)
+    }
   end
 
   @impl true

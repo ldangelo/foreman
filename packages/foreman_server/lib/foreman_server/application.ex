@@ -55,6 +55,7 @@ defmodule ForemanServer.Application do
       # of every caller, so it starts here: after the Aggregator and EventStore its cleanup
       # dispatches into, before BeadsWatcher, the orphan janitor, boot reconciliation and the
       # run executors that call with_lease/4 (a call finding it missing is refused).
+      {Registry, keys: :unique, name: ForemanServer.Aggregates.BeadsDbLease.KeeperRegistry},
       ForemanServer.Aggregates.BeadsDbLease.KeeperSupervisor,
       # Idempotency store — durable idempotency key records (TRD-075) and
       # heartbeat lease with expiry detection (TRD-076). ETS fallback when

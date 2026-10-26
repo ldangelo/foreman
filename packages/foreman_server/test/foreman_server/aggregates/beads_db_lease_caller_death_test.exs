@@ -330,17 +330,110 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
       assert_free(db_path)
     end
 
-    test "a keeper that ended during the call does not break it", %{db_path: db_path} do
+    test "a keeper killed during the call is replaced and the call ends with nothing left behind",
+         %{db_path: db_path} = ctx do
       assert {:ok, :done} =
                BeadsDbLease.with_lease(db_path, "run-lonely", "task-lonely", fn ->
                  assert [keeper] = keepers_for(self())
-                 ref = Process.monitor(keeper)
-                 Process.exit(keeper, :kill)
-                 assert_receive {:DOWN, ^ref, :process, ^keeper, :killed}, 5_000
+                 restart_keeper(self(), keeper)
                  {:ok, :done}
                end)
 
+      # The replacement was stopped by the call's own release path, and it was the caller that
+      # gave the lease back: exactly one acquire and one release, no keeper left.
+      assert keepers_for(self()) == []
+      assert event_types(ctx) == ["BeadsDbLeaseAcquired", "BeadsDbLeaseReleased"]
       assert_free(db_path)
+    end
+  end
+
+  describe "a keeper that dies while its caller lives" do
+    test "is replaced, and the replacement gives the lease back when the caller dies next",
+         %{db_path: db_path} = ctx do
+      holder = start_holder(ctx, "run-holder")
+      start_waiter(ctx, "run-next")
+      assert [first] = keepers_for(holder)
+
+      replacement = restart_keeper(holder, first)
+      assert replacement != first
+
+      # The caller dies without running its `after`: only the replacement is left to notice.
+      capture_log(fn ->
+        kill(holder, :kill)
+        assert_receive {:finished, "run-next", {:ok, :ran}}, 10_000
+      end)
+
+      assert_free(db_path)
+    end
+
+    test "is not replaced forever: a keeper that keeps dying ends the watch, loudly",
+         %{db_path: db_path} = ctx do
+      caller = spawn_tracked(ctx, fn -> Process.sleep(:infinity) end)
+      assert {:ok, _watch} = Keeper.watch(caller, db_path, "run-crashy")
+      assert [first] = keepers_for(caller)
+
+      log =
+        capture_log(fn ->
+          # The first keeper and its first five replacements may die and be replaced ...
+          last = Enum.reduce(1..5, first, fn _, keeper -> restart_keeper(caller, keeper) end)
+
+          # ... the next death is not answered.
+          ref = Process.monitor(last)
+          Process.exit(last, :kill)
+          assert_receive {:DOWN, ^ref, :process, ^last, :killed}, 5_000
+          # The supervisor handled the exit (and refused the restart) before it answers this.
+          _ = DynamicSupervisor.count_children(KeeperSupervisor)
+        end)
+
+      assert keepers_for(caller) == []
+      assert log =~ "not restarted again"
+      assert log =~ "run-crashy"
+    end
+  end
+
+  describe "a waiter promoted just as its poll expires" do
+    test "gives the lease back instead of holding it as a ghost", %{db_path: db_path} = ctx do
+      holder = start_holder(ctx, "run-holder")
+      parent = self()
+
+      # One poll, which finds the holder in place, then a four-second sleep: the lease is
+      # released and the waiter promoted during that sleep, after its last look at the lease and
+      # before it removes itself from the queue.
+      waiter =
+        spawn_tracked(ctx, fn ->
+          result =
+            BeadsDbLease.with_lease(
+              db_path,
+              "run-late",
+              "task-late",
+              fn -> {:ok, :must_not_run} end,
+              {1, 4_000}
+            )
+
+          send(parent, {:finished, "run-late", result})
+        end)
+
+      Eventually.await(
+        fn ->
+          Process.info(waiter, :current_function) == {:current_function, {:timer, :sleep, 1}} and
+            "run-late" in waiter_ids(db_path)
+        end,
+        message: "the waiter is queued and has used its only poll"
+      )
+
+      capture_log(fn ->
+        send(holder, :release)
+
+        Eventually.await(
+          fn -> match?(%BeadsDbLease.Holder{run_id: "run-late"}, lease_state(db_path).holder) end,
+          message: "the waiter was promoted while it slept"
+        )
+
+        assert_receive {:finished, "run-late", {:error, :lease_timeout}}, 15_000
+      end)
+
+      assert_free(db_path)
+      assert keepers_for(waiter) == []
     end
   end
 
@@ -376,13 +469,14 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
       :ok = :sys.suspend(actor)
 
       try do
-        {:ok, keeper} =
+        {:ok, _watch} =
           Keeper.watch(caller, db_path, "run-stuck",
             call_timeout_ms: 50,
             retry_interval_ms: 20,
             max_attempts: 200
           )
 
+        [keeper] = keepers_for(caller)
         ref = Process.monitor(keeper)
 
         capture_log(fn ->
@@ -413,13 +507,14 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
       :ok = :sys.suspend(actor)
 
       try do
-        {:ok, keeper} =
+        {:ok, _watch} =
           Keeper.watch(caller, db_path, "run-stuck",
             call_timeout_ms: 30,
             retry_interval_ms: 10,
             max_attempts: 2
           )
 
+        [keeper] = keepers_for(caller)
         ref = Process.monitor(keeper)
 
         log =
@@ -509,6 +604,24 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
 
   # The keepers of the calls `caller` is in.
   defp keepers_for(caller), do: LeaseKeepers.for_caller(caller)
+
+  # Kills `keeper`, the watch of `caller`'s call, and waits for the replacement the supervisor
+  # starts for that same call. Returns the replacement's pid.
+  defp restart_keeper(caller, keeper) do
+    ref = Process.monitor(keeper)
+    Process.exit(keeper, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^keeper, :killed}, 5_000
+
+    Eventually.await(
+      fn ->
+        case keepers_for(caller) do
+          [replacement] when replacement != keeper -> replacement
+          _ -> false
+        end
+      end,
+      message: "a replacement keeper for the caller"
+    )
+  end
 
   # How many commands of `type` wait in `actor`'s mailbox.
   defp queued(actor, type) do

@@ -407,6 +407,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     end
   end
 
+  # How long `with_lease/4` waits to become holder: `{polls, interval_ms}`, 50 polls 100ms apart.
+  @default_poll {50, 100}
+
   @doc """
   Block until this run holds the Beads DB lease, then execute the callback.
 
@@ -441,27 +444,49 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   Returns `{:error, {:lease_keeper_unavailable, reason}}` without touching the
   lease when the keeper cannot be started (the server is starting or
   stopping): a hold nothing would clear is never taken.
+
+  A call that gives up (acquire error, `:lease_timeout`) removes its queue
+  entry and then releases the lease: the run may have been promoted to holder
+  between its last poll and the removal, and `lease.release` is a no-op unless
+  the run is the holder.
   """
   @spec with_lease(String.t(), String.t(), String.t(), (-> {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()} | no_return()
   def with_lease(db_path, run_id, task_id, callback)
       when is_binary(db_path) and db_path != "" and is_binary(run_id) and
-             run_id != "" and is_binary(task_id) and is_function(callback, 0) do
+             run_id != "" and is_binary(task_id) and is_function(callback, 0),
+      do: with_lease(db_path, run_id, task_id, callback, @default_poll)
+
+  # The poll budget spelled out: `{polls, interval_ms}`. `with_lease/4` runs with `@default_poll`;
+  # a test that must hold a caller between its last poll and the end of its budget (promotion at
+  # the timeout) shortens the budget and lengthens the wait.
+  @doc false
+  @spec with_lease(
+          String.t(),
+          String.t(),
+          String.t(),
+          (-> {:ok, term()} | {:error, term()}),
+          {pos_integer(), pos_integer()}
+        ) :: {:ok, term()} | {:error, term()} | no_return()
+  def with_lease(db_path, run_id, task_id, callback, {polls, interval_ms} = poll)
+      when is_binary(db_path) and db_path != "" and is_binary(run_id) and
+             run_id != "" and is_binary(task_id) and is_function(callback, 0) and
+             is_integer(polls) and polls > 0 and is_integer(interval_ms) and interval_ms > 0 do
     # The keeper is armed before anything is written to the lease stream, so no entry of this
     # call (a queued `lease.acquire` included) can exist without a keeper to clear it should
     # this process die.
     case Keeper.watch(self(), db_path, run_id) do
-      {:ok, keeper} -> hold_lease(keeper, db_path, run_id, task_id, callback)
+      {:ok, keeper} -> hold_lease(keeper, db_path, run_id, task_id, callback, poll)
       {:error, reason} -> {:error, {:lease_keeper_unavailable, reason}}
     end
   end
 
-  defp hold_lease(keeper, db_path, run_id, task_id, callback) do
+  defp hold_lease(keeper, db_path, run_id, task_id, callback, {polls, interval_ms}) do
     stream_id = stream_id(db_path)
     ms = System.system_time(:millisecond)
 
     with :ok <- lease_acquire(stream_id, db_path, run_id, task_id, ms),
-         :ok <- poll_until_holder(stream_id, run_id, 50, 100) do
+         :ok <- poll_until_holder(stream_id, run_id, polls, interval_ms) do
       try do
         callback.()
       after
@@ -482,6 +507,12 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         if reason == :lease_timeout, do: log_lease_timeout(stream_id, run_id)
         # Remove timed-out waiter so they don't block future writers.
         _ = lease_remove_waiter(stream_id, db_path, run_id)
+        # The run can have been promoted to holder between its last poll and the removal above
+        # (which then found no waiter). `lease.release` is a no-op unless this run is the
+        # holder, so this gives back exactly that hold, which nothing else would: the keeper
+        # stops just below, and the caller never learns it holds. Like the release after the
+        # callback it raises on a failed dispatch, and the keeper then stays armed.
+        lease_release(stream_id, db_path, run_id, System.system_time(:millisecond))
         Keeper.unwatch(keeper)
         err
     end

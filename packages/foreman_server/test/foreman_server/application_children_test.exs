@@ -22,7 +22,7 @@ defmodule ForemanServer.ApplicationChildrenTest do
     ProjectionStore
   }
 
-  alias ForemanServer.Aggregates.BeadsDbLease.KeeperSupervisor
+  alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
   alias ForemanServer.Schedule.Ticker
   alias ForemanServer.TaskProviders.{BeadsOrphanJanitorSupervisor, BeadsWatcherSupervisor}
   alias ForemanServer.Workflow.{BootReconciliation, Dispatcher, RunSupervisor}
@@ -146,7 +146,10 @@ defmodule ForemanServer.ApplicationChildrenTest do
 
       ids = child_ids()
 
-      assert_started_after(ids, KeeperSupervisor, [EventStore, Aggregator])
+      # The keepers register under a stable id in the KeeperRegistry the moment they start, so
+      # the registry is up before the first keeper can be asked for.
+      assert_started_after(ids, KeeperRegistry, [EventStore, Aggregator])
+      assert_started_after(ids, KeeperSupervisor, [EventStore, Aggregator, KeeperRegistry])
 
       # No lease command can append before the CommandRouter runs, so no `with_lease/4` call can
       # reach a lease before it either; the callers below start no earlier than that.
