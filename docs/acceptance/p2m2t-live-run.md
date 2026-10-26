@@ -124,3 +124,11 @@ completes after such a resume keeps `last_error: agent_interrupted` from iterati
   script (control allowlist none cancel pause-resume hook-env scope crash) passed=137 failed=0 unverified=0 and `crash` alone passed=30 failed=0 with
   `docker ps -a` and `docker network ls` holding nothing of Foreman's afterwards; `crash` resumes the orphaned jobsite under the same network name and
   `scope` runs a sweep for another owner against an in-flight jobsite (nothing removed).
+
+## Final tree (commit after the completion wave)
+
+- Full Elixir suite: 6096 passed at seeds 730691, 424242 and 11 (the first run exposed a seed-dependent leak: five tests deleted the `:approvals` env instead of restoring it; fixed).
+- `jido_harness`: 128 passed. `go test ./...` green. `mix format`, `credo --min-priority higher`, `--warnings-as-errors` clean.
+- `claude_projects_flow.sh`: passed=125 failed=0 unverified=2 (twice). One earlier run on the same tree failed at step 3 (the first thread ended `failed`); its stack was not kept, so its cause is unknown. The next two runs did not reproduce it.
+- `failure_injection.sh` (all scenarios incl. `jobsite-resume`): passed=62 failed=0 unverified=2.
+- Open and not buildable here: `foreman-ksy0q` (real GitHub), `foreman-nufr9` (PrFix resume on a real PR), `foreman-2onq1` (not reproduced), plus the deferred C13 `foreman-zn7de` and `foreman-mivo7`.
