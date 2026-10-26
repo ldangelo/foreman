@@ -87,9 +87,11 @@ defmodule ForemanServer.Threads.TranscriptSteerRowsTest do
         payload: %{run_id: run_id}
       })
 
-    # The call the shared Dispatcher makes on RunCancelled (same command id, so the second
-    # one is a no-op). Made here as well so this test does not depend on that global process
-    # being up and idle: in the full suite another test may have it restarting.
+    # This test pins what the transcript shows, so it records the undelivery itself (the call
+    # `Dispatcher` makes on RunCancelled; same command id, so a second one is a no-op) rather
+    # than depend on the shared Dispatcher process, which another test may have restarting.
+    # That `run.cancel` really reaches it is pinned by live_steering_test.exs ("a steer pending
+    # when the run ends is recorded RunSteerUndelivered").
     :ok = ForemanServer.Workflow.LiveSteer.undeliver_pending(run_id, "run_cancelled")
     await("RunSteerUndelivered", run_id)
 
