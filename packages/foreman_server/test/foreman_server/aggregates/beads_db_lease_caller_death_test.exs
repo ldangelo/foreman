@@ -22,7 +22,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Incarnation
-  alias ForemanServer.TestSupport.Eventually
+  alias ForemanServer.TestSupport.{Eventually, LeaseKeepers}
 
   setup do
     db_path =
@@ -474,26 +474,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
     :ok
   end
 
-  # The keepers of the calls `caller` is in. Missing supervisor: none (nothing keeps any call).
-  defp keepers_for(caller) do
-    case Process.whereis(KeeperSupervisor) do
-      nil ->
-        []
-
-      supervisor ->
-        for {_id, keeper, _type, _modules} <- DynamicSupervisor.which_children(supervisor),
-            is_pid(keeper),
-            keeps?(keeper, caller),
-            do: keeper
-    end
-  end
-
-  defp keeps?(keeper, caller) do
-    match?(%{caller: ^caller}, :sys.get_state(keeper))
-  catch
-    # It finished between listing and asking.
-    :exit, _reason -> false
-  end
+  # The keepers of the calls `caller` is in.
+  defp keepers_for(caller), do: LeaseKeepers.for_caller(caller)
 
   # How many commands of `type` wait in `actor`'s mailbox.
   defp queued(actor, type) do
