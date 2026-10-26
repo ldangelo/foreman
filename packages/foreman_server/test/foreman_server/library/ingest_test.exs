@@ -18,18 +18,19 @@ defmodule ForemanServer.Library.IngestTest do
 
   describe "files" do
     test "101 files is :too_many_files with the default limits", %{tmp_dir: dir} do
-      files =
-        for n <- 1..101,
-            do: %{relative_path: "f#{n}.txt", source_path: touch(dir, "src/f#{n}.txt")}
+      # The limit is on the number of entries; the plan only stats each entry's source, so one real
+      # file is enough. Creating 101 distinct ones is ~300 serialized file-server calls that a
+      # starved host turns into the 60s test timeout, with no extra coverage.
+      src = touch(dir, "src/f.txt")
+      files = for n <- 1..101, do: %{relative_path: "f#{n}.txt", source_path: src}
 
       assert {:error, %Error{code: :too_many_files, details: %{max: 100, got: 101}}} =
                Ingest.plan({:files, files})
     end
 
     test "100 files is accepted", %{tmp_dir: dir} do
-      files =
-        for n <- 1..100,
-            do: %{relative_path: "f#{n}.txt", source_path: touch(dir, "src/f#{n}.txt")}
+      src = touch(dir, "src/f.txt")
+      files = for n <- 1..100, do: %{relative_path: "f#{n}.txt", source_path: src}
 
       assert {:ok, %Plan{kind: :file, files: items}} = Ingest.plan({:files, files})
       assert length(items) == 100
