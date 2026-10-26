@@ -236,7 +236,9 @@ install_traps() {
 #                    stdout/stderr streams; `jq -c 'select(.stream | contains("<run id>"))' events.jsonl` is one run's
 #   run-artifacts/   the run's prompt and phase output files; agent-sessions/ the pi agent's own session files
 #   worktrees.txt    git state of the scratch repository and the run worktrees that were kept (worktrees/ their files)
-#   repo-beads/      the scratch br database; processes.txt the server's process tree
+#   repo-beads/      the scratch br database; repo.bundle every ref of the scratch repository (a completed thread's
+#                    committed branch lives there, its worktree may be gone: `git clone repo.bundle`); processes.txt the
+#                    server's process tree
 #   environment.txt  the host at that moment (load, disk, memory), the other harness stacks alive, the connections to the
 #                    database and what `pi --list-models <model>`, the kickoff preflight's own question, answers then
 #   database.dump    pg_dump -Fc of the database (pg_restore it into any Postgres)
@@ -348,6 +350,20 @@ evidence_keep() {
         git -C "$ek_w" diff --stat HEAD 2>&1 | tail -n 10
       done
     } > "$ek/worktrees.txt" 2>&1
+  fi
+  # the scratch repository itself: a completed thread's committed branch contents live here, and its worktree may be gone
+  # already (worktrees.txt lists the live ones only). One bundle of every ref, bounded (E2E_EVIDENCE_REPO_MAX_KB of .git,
+  # default 200 MB): a repository over the bound or a bundle git refuses is said so in summary.txt, never silently skipped
+  if [ -d "$REPO/.git" ]; then
+    ek_kb=$(du -sk "$REPO/.git" 2>/dev/null | cut -f1)
+    if [ "${ek_kb:-0}" -gt "${E2E_EVIDENCE_REPO_MAX_KB:-204800}" ]; then
+      ev_line "repo.bundle: not kept, $REPO/.git is ${ek_kb} KB (limit ${E2E_EVIDENCE_REPO_MAX_KB:-204800} KB, E2E_EVIDENCE_REPO_MAX_KB)"
+    elif git -C "$REPO" bundle create "$ek/repo.bundle" --all >"$ek/repo.bundle.out" 2>&1; then
+      rm -f "$ek/repo.bundle.out"
+      ev_line "repo.bundle: every ref of the scratch repository, $(wc -c < "$ek/repo.bundle" | tr -d ' ') bytes (git clone repo.bundle <dir>)"
+    else
+      ev_line "repo.bundle: git bundle failed: $(head -c 200 "$ek/repo.bundle.out" | tr '\n' ' ')"
+    fi
   fi
   if [ "$ek_alive" = yes ]; then
     {

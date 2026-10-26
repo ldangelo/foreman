@@ -100,7 +100,7 @@ A run that exits non-zero or fails an assertion keeps its evidence BEFORE the st
 database dropped at exit: in `E2E_EVIDENCE_DIR/<name>-<UTC start time>-<pid>/`, start with `summary.txt` (the failed assertions, every run that
 did not complete with its `failure_reason`, the failure events, the server log's errors), then `api/` (the project, threads, Overview, runs and each
 thread's projection, transcript and task), `events.jsonl` (every event of the event store, decoded; `jq -c 'select(.stream | contains("<run id>"))'`
-is one run's), `server.log`, `agent-sessions/` (pi's own session files), `run-artifacts/`, `worktrees/`, `repo-beads/`, `environment.txt`,
+is one run's), `server.log`, `agent-sessions/` (pi's own session files), `run-artifacts/`, `worktrees/`, `repo-beads/`, `repo.bundle` (every ref of the scratch repository: `git clone repo.bundle`), `environment.txt`,
 `processes.txt` and `database.dump` (`pg_restore` it into any Postgres). A passing run keeps nothing; `E2E_EVIDENCE=always` keeps it anyway
 (to compare a failing run with a passing one) and `E2E_EVIDENCE=0` switches it off. To hunt an intermittent failure of the first thread:
 `for i in $(seq 20); do E2E_FIRST_THREAD_ONLY=1 devbox run -- bash scripts/e2e/claude_projects_flow.sh || break; done` (one stack at a time).

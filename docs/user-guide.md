@@ -211,7 +211,8 @@ or fails an assertion first keeps what a post-mortem needs, while its server is 
 events and the server log's errors and warnings), `server.log`, `notifications.jsonl`, `api/` (what the API answered for the
 project, its threads, the Overview, the runs and each thread's projection, transcript and task), `events.jsonl` (every event
 of the event store, decoded: the run, worktree, phase and worker stdout/stderr streams), `agent-sessions/` (pi's own session
-files), `run-artifacts/`, `worktrees/` and `worktrees.txt`, `repo-beads/`, `environment.txt` (load, disk, memory, the other
+files), `run-artifacts/`, `worktrees/` and `worktrees.txt`, `repo-beads/`, `repo.bundle` (every ref of the scratch repository: a
+completed thread's branch lives there), `environment.txt` (load, disk, memory, the other
 harness stacks alive, the database's connections and what `pi --list-models` answers then), `processes.txt` and `database.dump`
 (`pg_dump -Fc`, `pg_restore` it into any Postgres). A passing run keeps nothing; `E2E_EVIDENCE=always` keeps it for a passing
 run too (to compare it with a failing one) and `E2E_EVIDENCE=0` switches it off. `claude_projects_flow.sh` also stops waiting
