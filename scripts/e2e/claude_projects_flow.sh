@@ -35,6 +35,15 @@
 # never /tmp), E2E_DB_NAME, E2E_PG_HOST/PORT/USER/PASSWORD, E2E_PORT, E2E_HOOK_PORT,
 # E2E_API_TOKEN, E2E_RUN_TIMEOUT (s, default 600), E2E_POLL_SECS, E2E_REVIEW=0 to skip the
 # review-archive step, E2E_TRANSCRIPT=<file>, E2E_KEEP=1 to keep everything for a post-mortem.
+# Failure evidence (foreman-azc2o): when the run exits non-zero or any assertion failed, the harness keeps what
+# a post-mortem needs (server log, notifications, the API's view of every thread, every event of the event
+# store, the agent's session files, a database dump) in E2E_EVIDENCE_DIR/<name>-<UTC time>-<pid>/ (default
+# <repo>/tmp/e2e-evidence; outside the work dir, which is removed) BEFORE the stack is torn down; a passing run
+# keeps nothing unless E2E_EVIDENCE=always; E2E_EVIDENCE=0 switches it off. A thread that sits in `failed` or
+# `cancelled` while a step waits for another status ends that wait after E2E_FAILED_GRACE seconds (default 20)
+# instead of E2E_RUN_TIMEOUT.
+# E2E_FIRST_THREAD_ONLY=1 runs only setup and steps 1-3 (project, memory and library, the first thread from a
+# bead): the quick loop that hunts the intermittent step 3 failure of foreman-azc2o.
 # E2E_THREE_ONLY=1 runs only setup, step 1 and step 5b (the three-task paste and overlap assertion);
 # E2E_SCHEDULE_ONLY=1 runs only setup, step 1 and step 8 (scheduled tasks through the CLI: ticker running,
 # UTC/minimum refusals, an every-minute cron that really fires, pause/resume/delete); E2E_SCHEDULE_FIRE_SECS
@@ -66,11 +75,20 @@ TOKEN_MEMORY="MEMO-$SUFFIX-$(date +%s)"
 TOKEN_LIBRARY="LIBR-$SUFFIX-$(date +%s)"
 
 # wait_thread <thread_id> <status-regex> <timeout> -> THREAD_STATUS
+# Returns 0 when the status matches. Returns 1 when <timeout> seconds pass, or earlier when the thread has sat in
+# `failed` or `cancelled` for E2E_FAILED_GRACE seconds without the regex matching it: a run does not leave either
+# status, and the failing run of foreman-azc2o spent the whole 600 s E2E_RUN_TIMEOUT polling a failed thread.
 wait_thread() {
-  wt_start=$(date +%s); THREAD_STATUS=""
+  wt_start=$(date +%s); THREAD_STATUS=""; wt_dead=""; wt_dead_at=0
   while :; do
     THREAD_STATUS=$(api_get "/api/threads/$1" | jq -r '.thread.status // empty')
     if printf '%s' "$THREAD_STATUS" | grep -Eq "^($2)$"; then return 0; fi
+    case "$THREAD_STATUS" in
+      failed|cancelled)
+        if [ "$THREAD_STATUS" != "$wt_dead" ]; then wt_dead=$THREAD_STATUS; wt_dead_at=$(date +%s); fi
+        [ "$(elapsed "$wt_dead_at")" -lt "${E2E_FAILED_GRACE:-20}" ] || return 1 ;;
+      *) wt_dead="" ;;
+    esac
     [ "$(elapsed "$wt_start")" -lt "$3" ] || return 1
     sleep "$E2E_POLL_SECS"
   done
@@ -511,6 +529,13 @@ fi
 if [ "${E2E_SCHEDULE_ONLY:-0}" = 1 ]; then
   step_project
   step_schedule
+  summary
+  exit $?
+fi
+if [ "${E2E_FIRST_THREAD_ONLY:-0}" = 1 ]; then
+  step_project
+  step_memory_library
+  step_bead_thread
   summary
   exit $?
 fi

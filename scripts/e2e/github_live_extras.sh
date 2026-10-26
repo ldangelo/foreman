@@ -33,13 +33,17 @@
 # Branch protection does not exist on private repositories of a free GitHub plan (HTTP 403), so the protection stage
 # makes THAT repository public for a few minutes, after a content safety scan, and makes it private again; it runs only
 # with E2E_GH_ALLOW_PUBLIC=1 and otherwise counts as UNVERIFIED. Evidence (events, UI JSON, screenshots, command
-# output) is kept in E2E_EVIDENCE_DIR (default <repo>/tmp/gx-evidence), outside the work dir that is removed.
+# output) is kept in E2E_EVIDENCE_DIR (default <repo>/tmp/gx-evidence), outside the work dir that is removed. A run
+# that fails or exits non-zero also keeps the harness's failure evidence (claude_projects/lib.sh evidence_keep: server
+# log, API view, every event, agent sessions, database dump) in a gx-<time>-<pid> subdirectory of it.
 #
 # Exit status: 0 all passed, 1 environment problem, 2 setup failed, 3 one or more assertions failed.
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 E2E_NAME=${E2E_NAME:-gx}
+# before lib.sh: its own default for the evidence directory must not win
+E2E_EVIDENCE_DIR=${E2E_EVIDENCE_DIR:-$ROOT/tmp/gx-evidence}
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
 # shellcheck source=claude_projects/github.sh
@@ -51,7 +55,6 @@ E2E_NAME=${E2E_NAME:-gx}
 
 MODE=${1:-all}
 export E2E_REVIEW_ANALYSIS=0
-E2E_EVIDENCE_DIR=${E2E_EVIDENCE_DIR:-$ROOT/tmp/gx-evidence}
 E2E_TRANSCRIPT=${E2E_TRANSCRIPT:-$E2E_EVIDENCE_DIR/transcript-$MODE.txt}
 
 STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts claude_fix_ci autofix createpr postapproval merge_refusal prot_prepare protection"

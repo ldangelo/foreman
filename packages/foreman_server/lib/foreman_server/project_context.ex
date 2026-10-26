@@ -154,10 +154,17 @@ defmodule ForemanServer.ProjectContext do
     instructions ++ repositories(project)
   end
 
+  # The checkout's path is orientation, never a place to work. Handed over bare ("- primary: <path>"), the coordinator
+  # copied it into a worker's brief ("Repository: <path> ... at the repository root") and the worker obeyed it: it wrote
+  # its file into the main checkout instead of its worktree and the run's branch came out empty (foreman-2onq1).
+  @checkout_note "(the project's main checkout, for orientation only: every thread works in its OWN git worktree, " <>
+                   "its current working directory; never write or create files under this path and never put it " <>
+                   "in a worker's prompt)"
+
   defp repositories(project) do
     case Map.get(project, :path) do
       path when is_binary(path) and path != "" ->
-        [Section.new(:repositories, "Repositories", "- primary: #{path}")]
+        [Section.new(:repositories, "Repositories", "- primary: #{path} #{@checkout_note}")]
 
       _ ->
         []

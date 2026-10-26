@@ -2,14 +2,15 @@
 # Shared harness for scripts/e2e/claude_projects_flow.sh and scripts/e2e/failure_injection.sh.
 # Sourced, never executed. Provides: assertions (PASS/FAIL/UNVERIFIED with evidence), a private
 # throwaway stack (Postgres database, scratch git repo + local bare origin + br database, real
-# Foreman server, notification sink) and CLI/API helpers.
+# Foreman server, notification sink), CLI/API helpers and, when a run fails, the evidence of why (evidence_keep).
 #
 # Real: Foreman server (MIX_ENV=dev, own port, own database), the Go CLI, git, br and a real
 # `pi` agent on minimax/MiniMax-M2.7-highspeed. Not used: GitHub (nothing is pushed anywhere
 # but the scratch repo's local bare origin), real notification endpoints (a local HTTP sink).
 #
 # Cleanup only touches what this harness created: its own PIDs, its own database, its own
-# work directory (marker-protected). Nothing is killed by name.
+# work directory (marker-protected). Nothing is killed by name. It removes the work directory and
+# drops the database, so a run that failed first keeps its evidence outside them (evidence_keep).
 
 set -u
 
@@ -30,6 +31,11 @@ E2E_REVIEW=${E2E_REVIEW:-1}
 E2E_TRANSCRIPT=${E2E_TRANSCRIPT:-}
 E2E_KEEP=${E2E_KEEP:-0}
 E2E_GITHUB=${E2E_GITHUB:-0}
+# Failure evidence (foreman-azc2o): a non-zero exit or a failed assertion makes cleanup() keep what a post-mortem needs
+# under $E2E_EVIDENCE_DIR/<name>-<UTC start time>-<pid>/ before it tears the stack down. E2E_EVIDENCE=0 switches it off,
+# E2E_EVIDENCE=always keeps it for a passing run too (to compare a failing run with a passing one).
+E2E_EVIDENCE_DIR=${E2E_EVIDENCE_DIR:-$ROOT/tmp/e2e-evidence}
+E2E_EVIDENCE=${E2E_EVIDENCE:-1}
 
 SERVER_DIR="$ROOT/packages/foreman_server"
 CLI_DIR="$ROOT/packages/foreman_cli"
@@ -59,6 +65,7 @@ PROJECT="e2e-cp-$SUFFIX"
 COOKIE="e2e-cp-cookie-$SUFFIX"
 NODE="e2ecp${SUFFIX}@127.0.0.1"
 API=""
+EVIDENCE_RUN_DIR="$E2E_EVIDENCE_DIR/$E2E_NAME-$(date -u +%Y%m%dT%H%M%SZ)-$SUFFIX"
 
 PGPASSWORD=$E2E_PG_PASSWORD
 export PGPASSWORD
@@ -190,6 +197,10 @@ cleanup() {
     exit "$cl_rc"
   fi
   if type github_cleanup >/dev/null 2>&1; then github_cleanup; fi
+  if [ "$cl_rc" -ne 0 ] || [ "$FAILED" -gt 0 ] || [ "$E2E_EVIDENCE" = always ]; then
+    # a subshell: whatever goes wrong while keeping the evidence must never skip the teardown below
+    ( evidence_keep "$cl_rc" ) || out "   evidence: keeping it failed (status $?); the teardown goes on"
+  fi
   stop_server
   stop_pid "$HOOK_PID"
   sweep_strays
@@ -207,6 +218,200 @@ install_traps() {
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP
+}
+
+# ---------------------------------------------------------------- failure evidence (foreman-azc2o)
+#
+# The first thread of claude_projects_flow.sh ended `failed` once in three runs and its cause was gone with the stack: cleanup()
+# removes the work directory and drops the database. evidence_keep runs from cleanup() WHILE THE SERVER IS STILL UP, when the
+# harness exits non-zero or an assertion failed (always, with E2E_EVIDENCE=always), and writes to $EVIDENCE_RUN_DIR (outside
+# $WORK; <repo>/tmp is git-ignored):
+#
+#   summary.txt      exit status, the failed assertions, every run that did not complete with its failure_reason, the
+#                    failure events of the event store, the server log's errors and warnings, and what could not be kept
+#   server.log, notifications.jsonl, transcript.txt (E2E_TRANSCRIPT), work-files/ (the CLI outputs the steps left)
+#   api/             what the API answered: project, threads, Overview, runs, queue and, per thread, its projection,
+#                    transcript and task (api/index.txt: every request with its HTTP status)
+#   events.jsonl     every event of the event store, decoded (event_store_dump.exs): run, worktree, phase and worker
+#                    stdout/stderr streams; `jq -c 'select(.stream | contains("<run id>"))' events.jsonl` is one run's
+#   run-artifacts/   the run's prompt and phase output files; agent-sessions/ the pi agent's own session files
+#   worktrees.txt    git state of the scratch repository and the run worktrees that were kept (worktrees/ their files)
+#   repo-beads/      the scratch br database; repo.bundle every ref of the scratch repository (a completed thread's
+#                    committed branch lives there, its worktree may be gone: `git clone repo.bundle`); processes.txt the
+#                    server's process tree
+#   environment.txt  the host at that moment (load, disk, memory), the other harness stacks alive, the connections to the
+#                    database and what `pi --list-models <model>`, the kickoff preflight's own question, answers then
+#   database.dump    pg_dump -Fc of the database (pg_restore it into any Postgres)
+#
+# Every part is best effort and none is silent: what could not be kept is printed and written into summary.txt.
+
+# ev_line <text>: one line into summary.txt and onto the harness output
+ev_line() {
+  printf '%s\n' "$1" >> "$EVIDENCE_RUN_DIR/summary.txt"
+  note "$1"
+}
+
+# ev_get <path> <file>: GET one API path into <file> whatever its status; every request and its status go to api/index.txt.
+# Returns 1 when the server did not answer at all (000), so the caller does not ask again per thread.
+ev_get() {
+  eg_code=$(curl -sS -o "$2" -w '%{http_code}' --max-time 20 -H "authorization: Bearer $E2E_API_TOKEN" "$API$1" 2>"$2.err")
+  printf '%s GET %s\n' "$eg_code" "$1" >> "$EVIDENCE_RUN_DIR/api/index.txt"
+  [ -s "$2.err" ] || rm -f "$2.err"
+  [ "$eg_code" != 000 ]
+}
+
+# ev_copy <what> <source> <dest in the evidence dir>: copies a file or directory, says so when it cannot
+ev_copy() {
+  if [ ! -e "$2" ]; then ev_line "$1: not kept, $2 does not exist"; return 1; fi
+  if cp -R "$2" "$EVIDENCE_RUN_DIR/$3" 2>"$EVIDENCE_RUN_DIR/$3.err"; then rm -f "$EVIDENCE_RUN_DIR/$3.err"; else ev_line "$1: copy of $2 failed: $(head -c 200 "$EVIDENCE_RUN_DIR/$3.err")"; return 1; fi
+}
+
+# evidence_keep <harness exit status>
+evidence_keep() {
+  [ "$E2E_EVIDENCE" = 0 ] && return 0
+  ek_rc=$1; ek=$EVIDENCE_RUN_DIR
+  mkdir -p "$ek/api" || { out "evidence: cannot create $ek, the evidence of this run is lost"; return 1; }
+  say "evidence: exit status $ek_rc, $FAILED failed assertion(s), kept in $ek"
+  ek_alive=no
+  if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then ek_alive=yes; fi
+  ek_bound=""
+  if command -v timeout >/dev/null 2>&1; then ek_bound="timeout 120"; fi
+  {
+    echo "harness $E2E_NAME, exit status $ek_rc: passed=$PASSED failed=$FAILED unverified=$UNVERIFIED wall=$(elapsed "$STARTED_AT")s"
+    echo "kept $(date -u +%Y-%m-%dT%H:%M:%SZ) (server.log times are local, UTC$(date +%z)); host load $(uptime | sed 's/.*load averages*: //')"
+    echo "repository $ROOT at $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?'); model $E2E_MODEL; pi $(pi --version 2>&1 | head -n 1); br $(br --version 2>&1 | head -n 1)"
+    echo "project $PROJECT; database $E2E_DB_NAME on $E2E_PG_HOST:$E2E_PG_PORT; server $API node $NODE pid ${SERVER_PID:-none}, running at the time: $ek_alive"
+    echo "FAILED assertions:${FAILURES:- none}"
+    if [ -n "$UNVERIFIED_LIST" ]; then echo "UNVERIFIED:$UNVERIFIED_LIST"; fi
+  } > "$ek/summary.txt"
+
+  # the server's own words: log, notifications, the CLI outputs the steps left in the work dir
+  ev_copy "server.log" "$SERVER_LOG" server.log
+  if [ -f "$HOOK_CAPTURE" ]; then ev_copy "notifications.jsonl" "$HOOK_CAPTURE" notifications.jsonl; fi
+  if [ -n "$E2E_TRANSCRIPT" ] && [ -f "$E2E_TRANSCRIPT" ]; then ev_copy "transcript.txt" "$E2E_TRANSCRIPT" transcript.txt; fi
+  mkdir -p "$ek/work-files"
+  for ek_f in "$WORK"/*.out "$WORK"/*.log "$WORK"/*.txt "$WORK"/*.jsonl "$WORK"/*.md; do
+    [ -f "$ek_f" ] || continue
+    case "$ek_f" in "$SERVER_LOG"|"$HOOK_CAPTURE") continue ;; esac
+    cp "$ek_f" "$ek/work-files/" 2>/dev/null || ev_line "work-files: could not copy $ek_f"
+  done
+
+  # the API's view while the server is up
+  if [ "$ek_alive" = yes ] && ev_get "/api/projects/$PROJECT/threads" "$ek/api/threads.json"; then
+    ev_get "/api/projects/$PROJECT" "$ek/api/project.json"
+    ev_get "/api/projects/$PROJECT/overview?include_resolved=true" "$ek/api/overview.json"
+    ev_get "/api/runs?project_id=$PROJECT&limit=500" "$ek/api/runs.json"
+    ev_get "/api/queue" "$ek/api/queue.json"
+    for ek_t in $(jq -r '.threads[]?.id // empty' "$ek/api/threads.json" 2>/dev/null | head -n 40); do
+      ek_n=$(printf '%s' "$ek_t" | tr -c 'A-Za-z0-9._-' '_')
+      ev_get "/api/threads/$ek_t" "$ek/api/thread-$ek_n.json"
+      ev_get "/api/threads/$ek_t/transcript" "$ek/api/transcript-$ek_n.json"
+      ek_task=$(jq -r '.thread.task_id // empty' "$ek/api/thread-$ek_n.json" 2>/dev/null)
+      if [ -n "$ek_task" ]; then ev_get "/api/tasks/$ek_task" "$ek/api/task-$(printf '%s' "$ek_task" | tr -c 'A-Za-z0-9._-' '_').json"; fi
+    done
+    ev_line "api: $(grep -c . "$ek/api/index.txt") requests kept in api/ (api/index.txt lists them with their HTTP status)"
+    jq -r '.runs[]? | select(.status != "completed") | "run NOT completed: \(.run_id) status=\(.status) task=\(.task_id // "-") failure_reason=\((.failure_reason // "none") | tostring | .[0:800])"' \
+      "$ek/api/runs.json" 2>/dev/null | while IFS= read -r ek_l; do ev_line "$ek_l"; done
+  else
+    ev_line "api: not kept: the server is not running or did not answer (see server.log; database.dump, when it was kept, has the events)"
+  fi
+
+  # every event of the event store (the failure reasons, the worktree and the workers' stdout/stderr)
+  if [ "$ek_alive" = yes ]; then
+    ek_code=$(cat "$ASSETS/event_store_dump.exs")
+    $ek_bound elixir --name "e2eevd$$@127.0.0.1" --cookie "$COOKIE" --hidden --rpc-eval "$NODE" "$ek_code" > "$ek/events.rpc.out" 2>&1
+    ek_n=$(grep -c '^EVIDENCE ' "$ek/events.rpc.out")
+    if [ "${ek_n:-0}" -gt 0 ]; then
+      grep '^EVIDENCE ' "$ek/events.rpc.out" | cut -c10- > "$ek/events.jsonl" && rm -f "$ek/events.rpc.out"
+      ev_line "events.jsonl: $ek_n events"
+      jq -c 'select(.type | test("(Failed|Crashed|Blocked|FlaggedStuck|Unresponsive|Cancelled)$")) | {at, stream, type, data}' "$ek/events.jsonl" 2>/dev/null \
+        | head -n 12 | cut -c1-1200 | while IFS= read -r ek_l; do ev_line "failure event: $ek_l"; done
+    else
+      ev_line "events.jsonl: not kept, the event store dump printed no event (see events.rpc.out)"
+    fi
+  else
+    ev_line "events.jsonl: not kept, the server is not running (database.dump, when it was kept, has them)"
+  fi
+
+  # what the agent did, on disk: its prompt and output, its own session files, the worktree it worked in
+  if [ -d "$WORK/home/.foreman/runs" ]; then ev_copy "run-artifacts" "$WORK/home/.foreman/runs" run-artifacts; fi
+  if [ -d "$WORK/pi-agent/sessions" ]; then ev_copy "agent-sessions" "$WORK/pi-agent/sessions" agent-sessions; fi
+  if [ -d "$WORK/home/.foreman/worktrees" ]; then ev_copy "worktrees" "$WORK/home/.foreman/worktrees" worktrees; fi
+  if [ -d "$REPO/.beads" ]; then ev_copy "repo-beads" "$REPO/.beads" repo-beads; fi
+  if [ -d "$REPO/.git" ]; then
+    {
+      echo "== git worktree list"; git -C "$REPO" worktree list 2>&1
+      echo; echo "== branches"; git -C "$REPO" for-each-ref --format='%(refname:short) %(objectname:short) %(subject)' refs/heads 2>&1
+      git -C "$REPO" worktree list --porcelain 2>/dev/null | awk '/^worktree / { print substr($0, 10) }' | while IFS= read -r ek_w; do
+        [ "$ek_w" = "$REPO" ] && continue
+        echo; echo "== $ek_w"
+        git -C "$ek_w" status --short --branch 2>&1 | head -n 20
+        git -C "$ek_w" log --format='%h %s' -n 5 2>&1
+        git -C "$ek_w" diff --stat HEAD 2>&1 | tail -n 10
+      done
+    } > "$ek/worktrees.txt" 2>&1
+  fi
+  # the scratch repository itself: a completed thread's committed branch contents live here, and its worktree may be gone
+  # already (worktrees.txt lists the live ones only). One bundle of every ref, bounded (E2E_EVIDENCE_REPO_MAX_KB of .git,
+  # default 200 MB): a repository over the bound or a bundle git refuses is said so in summary.txt, never silently skipped
+  if [ -d "$REPO/.git" ]; then
+    ek_kb=$(du -sk "$REPO/.git" 2>/dev/null | cut -f1)
+    if [ "${ek_kb:-0}" -gt "${E2E_EVIDENCE_REPO_MAX_KB:-204800}" ]; then
+      ev_line "repo.bundle: not kept, $REPO/.git is ${ek_kb} KB (limit ${E2E_EVIDENCE_REPO_MAX_KB:-204800} KB, E2E_EVIDENCE_REPO_MAX_KB)"
+    elif git -C "$REPO" bundle create "$ek/repo.bundle" --all >"$ek/repo.bundle.out" 2>&1; then
+      rm -f "$ek/repo.bundle.out"
+      ev_line "repo.bundle: every ref of the scratch repository, $(wc -c < "$ek/repo.bundle" | tr -d ' ') bytes (git clone repo.bundle <dir>)"
+    else
+      ev_line "repo.bundle: git bundle failed: $(head -c 200 "$ek/repo.bundle.out" | tr '\n' ' ')"
+    fi
+  fi
+  if [ "$ek_alive" = yes ]; then
+    {
+      echo "pid ppid elapsed stat command (the server and its descendants)"
+      for ek_p in $SERVER_PID $(descendants "$SERVER_PID"); do ps -o pid=,ppid=,etime=,stat=,command= -p "$ek_p" 2>/dev/null | cut -c1-240; done
+    } > "$ek/processes.txt"
+  fi
+
+  # last resort and complete record: the database itself
+  if [ "$DB_CREATED" = 1 ]; then
+    if $ek_bound pg_dump -Fc -h "$E2E_PG_HOST" -p "$E2E_PG_PORT" -U "$E2E_PG_USER" -d "$E2E_DB_NAME" -f "$ek/database.dump" 2>"$ek/database.dump.err"; then
+      rm -f "$ek/database.dump.err"
+      ev_line "database.dump: pg_dump -Fc of $E2E_DB_NAME, $(wc -c < "$ek/database.dump" | tr -d ' ') bytes"
+    else
+      ev_line "database.dump: pg_dump failed: $(head -c 200 "$ek/database.dump.err")"
+    fi
+  fi
+
+  # the host at that moment: load, disk, memory, the other harness stacks alive (a BEAM node named e2e* that is not this one,
+  # which would share the machine and possibly the database name), the connections to this database, and what the kickoff
+  # preflight's own question (`pi --list-models <model>`) answers now, asked the way the server asks it
+  {
+    echo "== uptime"; uptime
+    echo "== disk of the work dir"; df -h "$WORK" 2>&1 | tail -n 2
+    echo "== memory"; if command -v vm_stat >/dev/null 2>&1; then vm_stat | head -n 6; else free -m 2>&1 | head -n 3; fi
+    echo "== other harness stacks alive (BEAM nodes named e2e*, not $NODE)"
+    ps -A -o pid=,etime=,command= | grep 'beam\.smp' | grep -- ' -name e2e' | grep -v -- " -name $NODE " | sed -E 's/^( *[0-9]+ +[0-9:-]+ ).* (-name [^ ]+) .*/\1\2/'
+    echo "== connections to $E2E_DB_NAME by state"
+    psql_admin -Atc "select coalesce(state, '-'), count(*) from pg_stat_activity where datname = '$E2E_DB_NAME' group by 1" 2>&1
+    if [ -d "$WORK/pi-agent" ]; then
+      echo "== pi --list-models $E2E_MODEL (HOME=$WORK/home PI_CODING_AGENT_DIR=$WORK/pi-agent, as the server runs it)"
+      ek_t=$(date +%s)
+      env HOME="$WORK/home" PI_CODING_AGENT_DIR="$WORK/pi-agent" PATH="${E2E_PATH_PREFIX:+$E2E_PATH_PREFIX:}$PATH" $ek_bound pi --list-models "$E2E_MODEL" 2>&1 | head -n 20 | cut -c1-200
+      echo "exit status ${PIPESTATUS[0]} after $(elapsed "$ek_t")s"
+    fi
+  } > "$ek/environment.txt" 2>&1
+
+  # the server log's own errors and warnings last, so the runs that did not complete and their failure events come first.
+  # The scratch origin is a local bare repository, so AutoPR's `gh pr create` fails on EVERY run that finishes: those
+  # lines are counted, not listed (grep server.log for them); every other error and warning is listed
+  if [ -f "$SERVER_LOG" ]; then
+    ek_noise='none of the git remotes configured for this repository point to a known GitHub host'
+    ek_all=$(grep -E '\[(error|warning|critical|alert|emergency)\]' "$SERVER_LOG")
+    ek_n=$(printf '%s\n' "$ek_all" | grep -cE "$ek_noise")
+    printf '%s\n' "$ek_all" | grep -vE "$ek_noise" | grep . | tail -n 25 | cut -c1-320 | while IFS= read -r ek_l; do ev_line "server.log: $ek_l"; done
+    if [ "$ek_n" -gt 0 ]; then ev_line "server.log: $ek_n more error line(s) are AutoPR's 'gh pr create' failing for want of a GitHub remote (the scratch origin is a local bare repository): expected, not listed"; fi
+  fi
+  out "   evidence kept: $ek (start with summary.txt)"
 }
 
 pick_port() { # <first port> -> prints a free port at or above it

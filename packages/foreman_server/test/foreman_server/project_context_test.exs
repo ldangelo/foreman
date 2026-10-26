@@ -59,6 +59,17 @@ defmodule ForemanServer.ProjectContextTest do
       assert bundle.truncated == []
     end
 
+    test "the repository path is labelled orientation only, never a place to write (foreman-2onq1)" do
+      register("c1b", %{instructions: "Always use tabs"})
+      assert {:ok, bundle} = ProjectContext.build("c1b", section_providers: [FakeMemory])
+
+      assert [line] = Regex.run(~r/^- primary: \/srv\/repos\/p .*$/m, bundle.system_text)
+      assert line =~ "main checkout, for orientation only"
+      assert line =~ "OWN git worktree"
+      assert line =~ "never write or create files under this path"
+      assert line =~ "never put it in a worker's prompt"
+    end
+
     test "a project without instructions has no Instructions heading" do
       register("c2", %{})
       assert {:ok, bundle} = ProjectContext.build("c2", section_providers: [FakeMemory])

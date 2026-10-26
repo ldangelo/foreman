@@ -91,7 +91,19 @@ which must (and does) make the overlap assertion FAIL.
 Environment (all optional): `E2E_MODEL`, `E2E_WORK_DIR`, `E2E_DB_NAME` (lower case letters, digits, underscore), `E2E_PORT`,
 `E2E_HOOK_PORT`, `E2E_API_TOKEN`, `E2E_RUN_TIMEOUT` (seconds, default 600), `E2E_POLL_SECS`, `E2E_REVIEW=0` (skip the review archive
 step), `E2E_TRANSCRIPT=<file>` (tee every line), `E2E_KEEP=1` (keep the server, database and work dir for a post-mortem; then
-drop the database yourself with `DROP DATABASE IF EXISTS <name> WITH (FORCE)`).
+drop the database yourself with `DROP DATABASE IF EXISTS <name> WITH (FORCE)`), `E2E_FIRST_THREAD_ONLY=1` (setup and steps 1-3
+only, about 30 s: the loop for the intermittent first-thread failure of `foreman-azc2o`), `E2E_FAILED_GRACE` (seconds, default 20: a
+thread that sits in `failed` or `cancelled` ends the wait for another status after that long instead of after `E2E_RUN_TIMEOUT`),
+`E2E_EVIDENCE_DIR` (default `<checkout>/tmp/e2e-evidence`) and `E2E_EVIDENCE` (`1` default, `always`, `0`).
+
+A run that exits non-zero or fails an assertion keeps its evidence BEFORE the stack is torn down, because the work dir is removed and the
+database dropped at exit: in `E2E_EVIDENCE_DIR/<name>-<UTC start time>-<pid>/`, start with `summary.txt` (the failed assertions, every run that
+did not complete with its `failure_reason`, the failure events, the server log's errors), then `api/` (the project, threads, Overview, runs and each
+thread's projection, transcript and task), `events.jsonl` (every event of the event store, decoded; `jq -c 'select(.stream | contains("<run id>"))'`
+is one run's), `server.log`, `agent-sessions/` (pi's own session files), `run-artifacts/`, `worktrees/`, `repo-beads/`, `repo.bundle` (every ref of the scratch repository: `git clone repo.bundle`), `environment.txt`,
+`processes.txt` and `database.dump` (`pg_restore` it into any Postgres). A passing run keeps nothing; `E2E_EVIDENCE=always` keeps it anyway
+(to compare a failing run with a passing one) and `E2E_EVIDENCE=0` switches it off. To hunt an intermittent failure of the first thread:
+`for i in $(seq 20); do E2E_FIRST_THREAD_ONLY=1 devbox run -- bash scripts/e2e/claude_projects_flow.sh || break; done` (one stack at a time).
 
 ## Run the failure injection
 
