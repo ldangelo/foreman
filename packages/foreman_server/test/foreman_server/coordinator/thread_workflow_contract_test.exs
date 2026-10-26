@@ -101,5 +101,16 @@ defmodule ForemanServer.Coordinator.ThreadWorkflowContractTest do
       assert rule6 =~ "NOTHING starts"
       assert rule6 =~ "listed in brackets on a WORKFLOWS line"
     end
+
+    test "tells the coordinator never to hand a worker the checkout's absolute path (foreman-2onq1)",
+         %{
+           prompt: prompt
+         } do
+      assert [rule13] = Regex.run(~r/^13\. .*$/m, prompt)
+      assert rule13 =~ "OWN git worktree"
+      assert rule13 =~ "Never put the absolute path of the project's checkout"
+      assert rule13 =~ "not even as a `Repository:` header"
+      assert rule13 =~ "stay verbatim"
+    end
   end
 end
