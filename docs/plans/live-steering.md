@@ -30,7 +30,11 @@ Other adapters (codex, gemini, opencode, kimi, grok, amp, zai) keep `pause_resum
    turns it into `RunSteerConsumed {message_ids, delivery: "live"}` (existing event, new optional field).
 3. **Closing the input** is serialized in the harness RunWorker: on `:input_idle` (claude `result` / pi `agent_settled`) stdin is
    closed only if no written message is awaiting consumption, so a steer is never dropped by a racing close; a write after
-   close returns `:input_closed` (-> fallback), never silence.
+   close returns `:input_closed` (-> fallback), never silence. A live CLI exits ONLY when its stdin closes, so a TERMINAL event
+   (a turn the provider failed: pi `agent_end` with `stopReason: "error"`, claude `result` with `is_error`; pi's failed `prompt`
+   `response`) closes it too, and a CLI still alive `live_exit_grace_ms` (default 10 s) after its stdin closed is stopped and the
+   run finishes from what it recorded (docs/lessons/run-logs-known-issues.md, 2026-10-26: without this a failed final turn left
+   the run `in_progress` for ever).
 4. **Never silent (b3jtt)**: a message still pending (queued or delivered-not-consumed) when its run goes terminal
    (`RunCompleted/Failed/Cancelled/...`) gets `RunSteerUndelivered {message_id, reason}`; the projection moves it out of `pending_steering`
    into `undelivered_steering`. If the phase ends but the run continues, the message stays pending and the next phase prompt injects it (existing path).

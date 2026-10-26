@@ -162,6 +162,43 @@ func TestLibraryAddFilesRejectsTooManyAndMissingLocally(t *testing.T) {
 	}
 }
 
+// Each file is under the per-file limit and there are fewer than 100 of them, yet the server
+// refuses a request over its per-request cap (`upload_max_bytes`, 512 MiB) only AFTER the whole
+// body was sent: the CLI refuses such a plan before it uploads a byte.
+func TestLibraryAddFilesRejectsAPlanOverThePerRequestTotalLocally(t *testing.T) {
+	c, rec := libraryServer(t, 201, `{}`)
+	dir := t.TempDir()
+	var paths []string
+	for i := range 3 {
+		// Sparse: 3 x 200 MiB is over the 512 MiB total; nothing here is ever read.
+		p := filepath.Join(dir, "big"+libItoa(i)+".bin")
+		f, err := os.Create(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(200 * 1024 * 1024); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, p)
+	}
+
+	err := projectLibrary(c, append([]string{"add", "p1"}, paths...))
+	if err == nil || !strings.Contains(err.Error(), "per request") {
+		t.Fatalf("err = %v, want the per-request total limit", err)
+	}
+	if rec.method != "" {
+		t.Fatalf("a request was sent despite the local failure: %s", rec.method)
+	}
+
+	// `replace` shares the plan, so it refuses the same files the same way.
+	if err := projectLibrary(c, append([]string{"replace", "p1", "e-1"}, paths...)); err == nil || !strings.Contains(err.Error(), "per request") {
+		t.Fatalf("replace shares the plan: err = %v, want the per-request total limit", err)
+	}
+}
+
 func TestLibraryAddFilesUsesBasenames(t *testing.T) {
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{"one.md": "1", "sub/two.md": "2"})

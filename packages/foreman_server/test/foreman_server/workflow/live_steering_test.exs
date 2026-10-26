@@ -11,6 +11,7 @@ defmodule ForemanServer.Workflow.LiveSteeringTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{CommandGateway, CommandRouter, ProjectionStore, RunAdmission, RunControl}
+  alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch.Adapters.JidoHarnessWorker
   alias ForemanServer.TestSupport.RunSlotsReset
@@ -58,10 +59,15 @@ defmodule ForemanServer.Workflow.LiveSteeringTest do
     Application.put_env(
       :jido_harness,
       :provider_config,
-      Map.put(original, :claude, %{cli_path: Path.join(fixtures, "fake_claude_live.py")})
+      original
+      |> Map.put(:claude, %{cli_path: Path.join(fixtures, "fake_claude_live.py")})
+      |> Map.put(:pi, %{cli_path: Path.join(fixtures, "fake_pi_live.py")})
     )
 
     System.put_env("TURN_SECONDS", "2")
+    # How long the fake pi waits for the steer line after its tool call starts (it carries on as
+    # soon as the steer arrives; this only bounds a steer that never comes).
+    System.put_env("STEER_WINDOW", "30")
 
     run_id = "run-live-#{Elixir.EventStore.UUID.uuid4()}"
     project_id = "project-#{run_id}"
@@ -84,6 +90,7 @@ defmodule ForemanServer.Workflow.LiveSteeringTest do
 
     on_exit(fn ->
       System.delete_env("TURN_SECONDS")
+      System.delete_env("STEER_WINDOW")
       Application.put_env(:jido_harness, :provider_config, original)
       RunControl.clear(run_id)
     end)
@@ -114,6 +121,38 @@ defmodule ForemanServer.Workflow.LiveSteeringTest do
 
     ref = Process.monitor(worker)
     assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 20_000
+  end
+
+  test "a steer to a running live pi phase is delivered and consumed in-session by text, with no pause",
+       %{run_id: run_id} do
+    worker = start_worker(run_id, :pi)
+    harness_run_id = await_agent(run_id)
+    await_harness_event(harness_run_id, &(&1.type == :tool_call))
+
+    steer!(run_id, "m1", "use tabs")
+
+    assert_event("RunSteerQueued", run_id)
+    assert_event("RunSteerDelivered", run_id)
+    assert_event("RunSteerConsumed", run_id)
+
+    refute "RunPaused" in event_types(run_id)
+
+    # pi echoes the steer back as text only, so the harness matched it to message m1 FIFO by the
+    # exact text `LiveSteer` wrote (heading included).
+    assert %{data: delivered} =
+             Enum.find(stream_events(run_id), &(&1.event_type == "RunSteerDelivered"))
+
+    assert (Map.get(delivered, :mode) || Map.get(delivered, "mode")) == "live"
+
+    assert %{data: consumed} =
+             Enum.find(stream_events(run_id), &(&1.event_type == "RunSteerConsumed"))
+
+    assert (Map.get(consumed, :delivery) || Map.get(consumed, "delivery")) == "live"
+    assert (Map.get(consumed, :message_ids) || Map.get(consumed, "message_ids")) == ["m1"]
+    assert ProjectionStore.pending_steering(run_id) == []
+
+    ref = Process.monitor(worker)
+    assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 30_000
   end
 
   test "a steer pending when the run ends is recorded RunSteerUndelivered, never left silent",
@@ -147,7 +186,62 @@ defmodule ForemanServer.Workflow.LiveSteeringTest do
     assert {:error, :not_found} = LiveSteer.deliver(run_id, %{message_id: "m1", text: "x"})
   end
 
-  defp start_worker(run_id, provider) do
+  # The e2e hang (scripts/e2e/claude_projects_flow.sh step 4): a steered thread whose work was done
+  # stayed `in_progress` for ever. The provider's FINAL turn had failed (a rate limit), the harness
+  # recorded the terminal event, dropped the `agent_settled` after it, and so never closed the rpc
+  # CLI's stdin: pi sat idle, the worker never reported, and the phase waited for ever (its deadline
+  # is :infinity). The run must now end with the provider's own failure.
+  #
+  # The fake CLIs are told what to do through the run's own env (`env_map`): the VM's env is not what
+  # an already-running erlexec port hands its children.
+  test "a steered live pi phase whose last turn the provider fails ends with that failure, not idle on its stdin",
+       %{run_id: run_id} do
+    env_map = %{"FAKE_PI_OUTCOME" => "steer_error", "STEER_WINDOW" => "30"}
+    worker = start_worker(run_id, :pi, result_recipient: self(), env_map: env_map)
+    ref = Process.monitor(worker)
+    harness_run_id = await_agent(run_id)
+    await_harness_event(harness_run_id, &(&1.type == :tool_call))
+
+    steer!(run_id, "m1", "use tabs")
+    assert_event("RunSteerConsumed", run_id)
+
+    assert_receive {:worker_result, {:error, %FailureCause{detail: detail}}}, 20_000
+    assert detail =~ "authentication_error"
+    assert ProjectionStore.pending_steering(run_id) == []
+    assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 10_000
+  end
+
+  test "a live pi phase whose provider call fails ends with that failure, not idle on its stdin",
+       %{run_id: run_id} do
+    worker =
+      start_worker(run_id, :pi,
+        result_recipient: self(),
+        env_map: %{"FAKE_PI_OUTCOME" => "error"}
+      )
+
+    ref = Process.monitor(worker)
+
+    assert_receive {:worker_result, {:error, %FailureCause{detail: detail}}}, 20_000
+    assert detail =~ "authentication_error"
+    assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 10_000
+  end
+
+  test "a live claude phase whose turn the provider rejects ends with that failure, not idle on its stdin",
+       %{run_id: run_id} do
+    worker =
+      start_worker(run_id, :claude,
+        result_recipient: self(),
+        env_map: %{"FAKE_CLAUDE_RECORDING" => "claude_live_error.jsonl"}
+      )
+
+    ref = Process.monitor(worker)
+
+    assert_receive {:worker_result, {:error, %FailureCause{detail: detail}}}, 20_000
+    assert detail =~ "issue with the selected model"
+    assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 10_000
+  end
+
+  defp start_worker(run_id, provider, extra_opts \\ []) do
     worker_id = "worker-#{Elixir.EventStore.UUID.uuid4()}"
 
     pid =
@@ -165,7 +259,7 @@ defmodule ForemanServer.Workflow.LiveSteeringTest do
                task_id: "task-#{run_id}",
                driver_opts:
                  LiveSteer.put_driver_opts([cwd: System.tmp_dir!(), timeout: 60_000], provider)
-             ]
+             ] ++ extra_opts
            ]},
         restart: :temporary
       })

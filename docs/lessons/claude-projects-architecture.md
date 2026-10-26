@@ -29,7 +29,7 @@ Multi-repo projects (E12, #603) are on `main` and enabled by default (`config :f
 ## Where a change has to land
 
 - A new aggregate: a module under `aggregates/`, a prefix clause in `command_router.ex` `aggregate_module_for/1`, and a catch-all `apply_event/2` clause. Typed event structs live in `events/` and are discovered by `EventCodec` by scanning that directory.
-- A new operator command: BOTH `CommandGateway.@allowed_operator_types` and `CommandController.@allowed_types` (kept in step by `test/foreman_server/command_allowlist_parity_test.exs`), then the CLI, then `docs/cli-reference.md` and `docs/user-guide.md`.
+- A new operator command: `CommandGateway.@command_endpoint_types` (the one allowlist; `CommandController` reads it via `CommandGateway.command_endpoint_types/0`; behaviour pinned by `test/foreman_server/command_allowlist_parity_test.exs`), then the CLI, then `docs/cli-reference.md` and `docs/user-guide.md`.
 - A new MCP tool: `mcp/tools.ex`, and `MCP.Policy.write_tools/0` when it writes; `test/foreman_server/mcp/tool_inventory_test.exs` pins the list, the write set and that each tool is documented in the user guide or CLI reference.
 - A new setting: `Aggregates.Project.Settings` (the key whitelist `ProjectSettings.keys/0` reads), the CLI flag in `packages/foreman_cli/cmd/foreman/project.go`, the settings table in `docs/user-guide.md`.
 

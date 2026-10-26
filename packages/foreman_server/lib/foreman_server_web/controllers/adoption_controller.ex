@@ -4,11 +4,28 @@ defmodule ForemanServerWeb.AdoptionController do
 
   Body (string keys): `subject_kind` (`task|run|jobsite`), `subject_id`, and
 
-    * `mode: "move"` (default) with `target_project_id` - re-home the session;
+    * `mode: "move"` (default) with `target_project_id` - re-home the session.
+      `add_repo: true` first attaches the session's repository to the target when the
+      target does not have it (`project.repo.add`, the command behind
+      `foreman project repo add`; its typed refusals are returned as they are, and the
+      move is then not attempted) instead of refusing `repo_not_in_project`;
     * `mode: "continue"` with `target_project_id` and `prompt` - start a new
-      thread that continues it (the original is untouched);
+      thread that continues it (the original is untouched). `fork: true` makes
+      the thread fork the session's provider session (the agent remembers the
+      conversation) instead of seeding the prompt from the archive; it is
+      refused with a typed 422 (`fork_no_session`, `fork_provider_unsupported`,
+      `fork_provider_mismatch`), never degraded, when it cannot be honoured. The
+      response `mode` is `forked` or `context_seeded`. `from_source_branch: true`
+      (with or without `fork`) cuts the thread's worktree from the BRANCH of the
+      session instead of the project's current branch, and that branch is the
+      thread's PR base; it is refused with a typed 422 (`source_branch_unknown`,
+      `source_branch_not_found`, `source_branch_needs_worktree`), never degraded to
+      the current branch. The response `source_branch` names the branch;
     * `mode: "mint"` with optional `new_project: {id, path, goal, name}` - create
       a project from the session archive manifest and move the session into it.
+
+  The options are boolean when present and each is valid for one mode only: `fork`
+  and `from_source_branch` with `mode: "continue"`, `add_repo` with `mode: "move"`.
 
   Not an MCP tool: re-homing work is an operator decision. The response is a
   whitelisted projection of `ForemanServer.Projects.AdoptionResult`.
@@ -40,32 +57,46 @@ defmodule ForemanServerWeb.AdoptionController do
   end
 
   defp run("move", kind, id, params) do
-    with {:ok, target} <- target(params), do: AdoptionService.adopt(kind, id, target)
+    with :ok <- reject_flag(params, "fork", "continue", "move"),
+         :ok <- reject_flag(params, "from_source_branch", "continue", "move"),
+         {:ok, add_repo} <- flag(params, "add_repo"),
+         {:ok, target} <- target(params),
+         do: AdoptionService.adopt(kind, id, target, add_repo: add_repo)
   end
 
   defp run("continue", kind, id, params) do
     with {:ok, target} <- target(params),
-         :ok <- require_binary(params["prompt"], "prompt") do
-      AdoptionService.continue(kind, id, target, params["prompt"])
+         :ok <- require_binary(params["prompt"], "prompt"),
+         :ok <- reject_flag(params, "add_repo", "move", "continue"),
+         {:ok, fork} <- flag(params, "fork"),
+         {:ok, from_source_branch} <- flag(params, "from_source_branch") do
+      AdoptionService.continue(kind, id, target, params["prompt"],
+        fork: fork,
+        from_source_branch: from_source_branch
+      )
     end
   end
 
   defp run("mint", kind, id, params) do
-    new_project = params["new_project"]
+    with :ok <- reject_flag(params, "fork", "continue", "mint"),
+         :ok <- reject_flag(params, "from_source_branch", "continue", "mint"),
+         :ok <- reject_flag(params, "add_repo", "move", "mint") do
+      new_project = params["new_project"]
 
-    opts =
-      if is_map(new_project) do
-        [
-          project_id: new_project["id"],
-          path: new_project["path"],
-          goal: new_project["goal"],
-          name: new_project["name"]
-        ]
-      else
-        []
-      end
+      opts =
+        if is_map(new_project) do
+          [
+            project_id: new_project["id"],
+            path: new_project["path"],
+            goal: new_project["goal"],
+            name: new_project["name"]
+          ]
+        else
+          []
+        end
 
-    AdoptionService.mint(kind, id, opts)
+      AdoptionService.mint(kind, id, opts)
+    end
   end
 
   defp run(mode, _kind, _id, _params),
@@ -75,6 +106,28 @@ defmodule ForemanServerWeb.AdoptionController do
     case require_binary(params["target_project_id"], "target_project_id") do
       :ok -> {:ok, params["target_project_id"]}
       error -> error
+    end
+  end
+
+  # An option absent is `false`; anything but a boolean is a malformed request, not a "maybe".
+  defp flag(params, key) do
+    case Map.get(params, key, false) do
+      flag when is_boolean(flag) -> {:ok, flag}
+      _other -> {:error, :invalid_params, "#{key} must be a boolean"}
+    end
+  end
+
+  # An option that belongs to one mode: asking for it on another is a mistake to name, not to ignore.
+  defp reject_flag(params, key, only_mode, mode) do
+    case flag(params, key) do
+      {:ok, false} ->
+        :ok
+
+      {:ok, true} ->
+        {:error, :invalid_params, "#{key} is only valid with mode #{only_mode}, not #{mode}"}
+
+      {:error, _, _} = error ->
+        error
     end
   end
 
@@ -90,6 +143,7 @@ defmodule ForemanServerWeb.AdoptionController do
       "from_project_id" => result.from_project_id,
       "adopted" => result.adopted?,
       "new_task_id" => result.new_task_id,
+      "source_branch" => result.source_branch,
       "minted_project_id" => result.minted_project_id,
       "moved" => %{
         "task_ids" => result.moved.task_ids,

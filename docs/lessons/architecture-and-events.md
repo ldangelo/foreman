@@ -352,6 +352,22 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   `BeadsDbLeaseTransferred` event that releases the old holder and promotes the
   head waiter, so cancellation cannot race with promotion. The Dispatcher subscribes
   to this event and re-enters `RunAdmission.start/2` for the promoted run.
+- **Process-bound holds and restarts** (foreman-w29up): `BeadsDbLease.with_lease/4` — every
+  `br` call of `BeadsAdapter`, each `BeadsWatcher` read pass, the orphan janitor — holds the
+  lease for one call in one process and tags the hold with the `ForemanServer.Incarnation` of
+  the server (`incarnation` in the `lease.acquire` payload, on `BeadsDbLeaseAcquired` and
+  `BeadsDbLeaseWaiterRegistered`; `acquired_incarnation` on `BeadsDbLeaseTransferred`). The hold
+  is durable but its owner is not: a server killed mid-call (`kill -9`, OOM, a shutdown that
+  cuts `try/after`) leaves the hold in the event store. The next incarnation takes it over at
+  once (`BeadsDbLeaseAcquired` with `provenance: {:reclaimed_stale_holder, run_id}`) instead of
+  queueing behind it until `:lease_timeout`, and `BootReconciliation.scan_lease_orphans/0`
+  lists every `beads_db_lease:` stream in the event store (not only the DBs a task projection
+  points at: a per-call hold is bound to no task) and releases the holds and waiters of other
+  incarnations. Before this, a stranded `watcher:<project>:<ns>` hold made `BeadsWatcher` log
+  `lease_acquire failed reason=:lease_timeout, skipping this read cycle` on every poll and
+  import nothing. A hold with no `incarnation` (`RunAdmission`'s whole-run hold of an
+  `implement-trd-beads` run) belongs to a run and is reclaimed only through run liveness. A
+  `:lease_timeout` now logs the holder it queued behind.
 - **Fail-closed gating**: `RunAdmission.start/3` reads the lease decision before
   starting the run supervisor. Any uncertainty (acquire error, atom state of
   `:unknown` or `:unexpected`) returns `{:error, ...}` and skips dispatch. A

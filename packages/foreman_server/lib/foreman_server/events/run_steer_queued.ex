@@ -17,6 +17,7 @@ defmodule ForemanServer.Events.RunSteerQueued do
     * `steered_by` - Actor identifier, nil when the caller names none.
     * `approval_mode_override` - Optional `approval_mode` name for the ONE phase
       that consumes this message (E8 resume-with-override: an approved tool call).
+      It sets the mode of that phase as a whole; it is not a per-tool grant.
     * `resume` - When `false` the run stays paused after the steer-pause
       until an operator resumes it; default `true` (auto-resume).
   """

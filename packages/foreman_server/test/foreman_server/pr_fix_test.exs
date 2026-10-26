@@ -55,7 +55,10 @@ defmodule ForemanServer.PrFixTest do
 
       assert String.valid?(plan.prompt)
       assert plan.prompt =~ "Log excerpt for"
-      assert plan.prompt =~ "boom"
+      # the cut-off marker is Foreman's own text, not log text: the non-ASCII scrub of the
+      # log must not turn it into "?" (the one orphaned continuation byte is dropped, the
+      # two whole 2-byte characters that remain are scrubbed to "?")
+      assert plan.prompt =~ "(tail):\n…??boom"
     end
 
     test "a log that is not valid UTF-8 is scrubbed instead of raising" do
@@ -65,7 +68,9 @@ defmodule ForemanServer.PrFixTest do
         plan!("ci", ctx, log_fetcher: fn _url, _check -> {:ok, <<0x80, ?a, 0xFF, ?b>>} end)
 
       assert String.valid?(plan.prompt)
-      assert plan.prompt =~ "?a?b"
+      assert plan.prompt =~ "(tail):\n?a?b"
+      # only a log that was cut carries the marker
+      refute plan.prompt =~ "…?a?b"
     end
 
     test "the prompt data cut at its byte limit never ends inside a character" do
@@ -92,6 +97,8 @@ defmodule ForemanServer.PrFixTest do
 
         assert String.valid?(plan.prompt)
         assert plan.prompt =~ "(truncated)"
+        # the half character is dropped, not left behind as a stray "?"
+        refute plan.prompt =~ "?\n…(truncated)"
       end
     end
   end

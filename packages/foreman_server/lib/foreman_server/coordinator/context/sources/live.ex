@@ -37,13 +37,18 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
 
   @impl true
   def workflows do
+    served = served_types()
+
     Enum.flat_map(Catalog.manifests(), fn filename ->
       case Catalog.load(filename) do
         {:ok, workflow} ->
+          name = Map.get(workflow, :name) || Path.rootname(filename)
+
           [
             %{
-              name: Map.get(workflow, :name) || Path.rootname(filename),
-              description: Map.get(workflow, :description)
+              name: name,
+              description: Map.get(workflow, :description),
+              task_types: Map.get(served, name, [])
             }
           ]
 
@@ -51,6 +56,15 @@ defmodule ForemanServer.Coordinator.Context.Sources.Live do
           []
       end
     end)
+  end
+
+  # workflow name => the task types it serves, read from the same map
+  # `WorkflowSelector` resolves a `task_type` through (`Catalog.type_to_workflow/1`), so
+  # the coordinator is only ever shown a type that selects.
+  defp served_types do
+    Catalog.type_to_workflow_map()
+    |> Enum.group_by(fn {_type, name} -> name end, fn {type, _name} -> type end)
+    |> Map.new(fn {name, types} -> {name, Enum.sort(types)} end)
   end
 
   # Manifests the catalog refused. Named by file (`lvclaude.yaml` -> `lvclaude`),

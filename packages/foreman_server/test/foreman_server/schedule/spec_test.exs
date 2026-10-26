@@ -271,6 +271,22 @@ defmodule ForemanServer.Schedule.SpecTest do
       assert {:ok, next} = Spec.next_after(spec, ~U[2036-01-01 00:00:00Z])
       assert rem(DateTime.to_unix(next) - unix(@anchor) - 600, 1800) == 0
     end
+
+    test "is total: an instant no DateTime can represent is :no_next_slot, never a raise" do
+      # `parse/2` caps `every`, but the arithmetic must not lean on that cap: a spec that
+      # reached storage under older rules cannot be allowed to crash a read.
+      huge = %Spec{kind: :interval, every_seconds: 3_000_000 * 86_400, anchor: dt(@anchor)}
+      assert {:error, :no_next_slot} = Spec.next_after(huge, dt("2026-10-25T00:00:00Z"))
+
+      # Before the anchor the answer is the anchor itself, which is representable.
+      assert {:ok, anchor} = Spec.next_after(huge, dt("2025-01-01T00:00:00Z"))
+      assert anchor == dt(@anchor)
+
+      # Neither kind may raise past the last representable second.
+      last = dt("9999-12-31T23:59:59Z")
+      assert {:error, :no_next_slot} = Spec.next_after(every!("1h"), last)
+      assert {:error, :no_next_slot} = Spec.next_after(cron!("0 9 * * *"), last)
+    end
   end
 
   describe "latest_slot_at_or_before/3" do

@@ -31,7 +31,8 @@ bead_thread_diagnostics() {
   # (c) server log evidence
   if [ -f "${SERVER_LOG:-}" ]; then
     grep -F -- "$bd_id" "$SERVER_LOG" | tail -n 10 | cut -c1-300 | while IFS= read -r l; do note "  (c) log[bead]: $l"; done
-    grep -E 'BeadsWatcher|admission failed|slot_state_unknown|run_limit|deferr' "$SERVER_LOG" | tail -n 10 | cut -c1-300 |
+    # BeadsDbLease: a `lease_timeout` names the holder it queued behind (foreman-w29up).
+    grep -E 'BeadsWatcher|BeadsDbLease|admission failed|slot_state_unknown|run_limit|deferr' "$SERVER_LOG" | tail -n 10 | cut -c1-300 |
       while IFS= read -r l; do note "  (c) log[dispatch]: $l"; done
   else
     note "  (c) no server log at '${SERVER_LOG:-}'"

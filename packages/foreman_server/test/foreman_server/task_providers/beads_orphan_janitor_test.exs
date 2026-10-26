@@ -421,12 +421,16 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
     test "no scan fires before grace_ms elapses", %{state: state} do
       test_pid = self()
       handler_id = "janitor-scan-pre-#{System.unique_integer([:positive])}"
+      project_id = state.project_id
+      grace_ms = 200
 
       :telemetry.attach(
         handler_id,
         [:foreman_server, :task_provider, :beads, :orphan, :janitor, :scan_started],
+        # Stamped in the janitor process (which runs the handler) rather than when this
+        # test process dequeues the message, so scheduling here cannot inflate the gap.
         fn _event, _measurements, metadata, _config ->
-          send(test_pid, {:scan_started, metadata})
+          send(test_pid, {:scan_started, System.monotonic_time(:millisecond), metadata})
         end,
         nil
       )
@@ -443,19 +447,28 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
         {:ok, %{stdout: Jason.encode!(%{"jsonl_path" => db_path <> ".jsonl"})}}
       end)
 
+      booted_at_ms = System.monotonic_time(:millisecond)
+
       {:ok, _pid} =
         start_supervised(
           {BeadsOrphanJanitor,
-           project_id: state.project_id,
+           project_id: project_id,
            database_path: state.database_path,
-           grace_ms: 200,
+           grace_ms: grace_ms,
            scan_interval_ms: 60_000,
-           name: :"janitor-grace-pre-#{state.project_id}"}
+           name: :"janitor-grace-pre-#{project_id}"}
         )
 
-      # Sleep well below grace_ms (200ms) — no scan should have fired.
-      Process.sleep(50)
-      refute_received {:scan_started, _}
+      # Absence is proven by the first scan that DOES arrive, not by sleeping and hoping
+      # none did: `init/1` arms it with `Process.send_after(self(), :scan, grace_ms)`
+      # after `booted_at_ms` was taken, and a timer never fires early, so a scan that
+      # honours the grace window cannot be observed sooner than `grace_ms` after boot —
+      # however slow the machine. Any scan that ignored or shortened the window arrives
+      # first and fails the lower bound. The deadline only bounds a janitor that never scans.
+      assert_receive {:scan_started, scan_at_ms, %{project_id: ^project_id}}, 5_000
+
+      assert scan_at_ms - booted_at_ms >= grace_ms,
+             "first scan fired #{scan_at_ms - booted_at_ms}ms after boot, before grace_ms=#{grace_ms}"
     end
 
     test "scan fires after grace_ms elapses", %{state: state} do

@@ -246,12 +246,55 @@ install_workflows() {
   cp "$ASSETS/workflows/prompts/edit.md" "$WORK/workflows/prompts/edit.md"
 }
 
+# ---------------------------------------------------------------- real claude (opt-in per scenario)
+#
+# The server runs with HOME=$WORK/home, so a real `claude` it spawns only finds the operator's login
+# through the symlinks below (the same three scripts/e2e/live_claude/stack.sh makes). The harness never
+# touches the real HOME otherwise. claude scenarios call claude_ready first: a host without a logged-in
+# claude records UNVERIFIED instead of failing.
+
+# claude_env <command...>: runs the command the way the server's claude processes run: through the
+# redirected HOME and without the Claude Code session variables that make a nested claude refuse or
+# switch to API-key billing.
+claude_env() {
+  env -u CLAUDECODE -u CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS -u MY_ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY \
+    HOME="$WORK/home" "$@"
+}
+
+link_claude_auth() {
+  mkdir -p "$WORK/home/Library"
+  for rel in .claude .claude.json Library/Keychains; do
+    if [ -e "$REAL_HOME/$rel" ] && [ ! -e "$WORK/home/$rel" ]; then ln -s "$REAL_HOME/$rel" "$WORK/home/$rel"; fi
+  done
+}
+
+# claude_ready: 0 when a real `claude` answers through the redirected HOME (installed AND logged in),
+# else 1 with the reason in CLAUDE_UNAVAILABLE.
+claude_ready() {
+  CLAUDE_UNAVAILABLE=""
+  if ! command -v claude >/dev/null 2>&1; then CLAUDE_UNAVAILABLE="no claude binary on PATH"; return 1; fi
+  link_claude_auth
+  cr_out=$(claude_env claude -p "Reply with the single word ok" --model haiku </dev/null 2>&1 | head -c 300)
+  case "$cr_out" in
+    *[Oo]k*) return 0 ;;
+    *) CLAUDE_UNAVAILABLE="claude did not answer through the redirected HOME: $(printf '%s' "$cr_out" | tr '\n' ' ' | cut -c1-160)"; return 1 ;;
+  esac
+}
+
+# install_claude_workflow: adds the real-claude workflow `claudeedit` to the scratch workflow root. It is not
+# part of install_workflows: it takes a server (re)start to be seen, and a catalog that always offered it to
+# the pi coordinator could pick it for a task. Its task type (claude-e2e) matches nothing else.
+install_claude_workflow() {
+  cp "$ASSETS/workflows/claudeedit.yaml" "$WORK/workflows/claudeedit.yaml"
+}
+
 # start_server: (re)starts the Foreman server on $E2E_PORT against the existing database.
 start_server() {
   : > "$SERVER_LOG"
   (
     cd "$SERVER_DIR" || exit 2
-    exec env MIX_ENV=dev DATABASE_URL="$DATABASE_URL" SHELL=/bin/sh \
+    exec env -u CLAUDECODE -u CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS -u MY_ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY \
+      MIX_ENV=dev DATABASE_URL="$DATABASE_URL" SHELL=/bin/sh \
       HOME="$WORK/home" MIX_HOME="${MIX_HOME:-$REAL_HOME/.mix}" HEX_HOME="${HEX_HOME:-$REAL_HOME/.hex}" \
       PATH="${E2E_PATH_PREFIX:+$E2E_PATH_PREFIX:}$PATH" PI_CODING_AGENT_DIR="$WORK/pi-agent" \
       E2E_PORT="$E2E_PORT" E2E_WORKFLOW_ROOT="$WORK/workflows" \
@@ -260,6 +303,7 @@ start_server() {
       FOREMAN_NOTIFY_WEBHOOK_URL="http://127.0.0.1:$E2E_HOOK_PORT/hook" \
       FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true \
       ${E2E_REVIEW_ENV:-FOREMAN_REVIEW_PROVIDER=pi} FOREMAN_REVIEW_MODEL="$E2E_MODEL" \
+      ${E2E_EXTRA_ENV:-} \
       elixir --name "$NODE" --cookie "$COOKIE" -S mix run --no-start --no-halt "$ASSETS/boot.exs"
   ) >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!

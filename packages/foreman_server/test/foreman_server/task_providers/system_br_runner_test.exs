@@ -310,8 +310,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
         task2 = Task.async(run)
 
-        # Call 2 must either be parked inside :global (serialization works) or have
-        # reached the script (serialization broken => a second CALL is logged).
+        # Call 2 must either be parked in :global's lock-retry sleep (serialization works)
+        # or have reached the script (serialization broken => a second CALL is logged).
         await_condition("second call to park on the lock or run concurrently", fn ->
           length(log_markers(log_file)) > 1 or waiting_on_global?(task2.pid)
         end)
@@ -332,6 +332,44 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
         assert pid1 != pid2
       end)
+    end
+
+    # `waiting_on_global?/1` is what lets the test above tell "call 2 is parked behind
+    # call 1's lock" from "call 2 got past the lock". A process that HOLDS a :global lock
+    # has :global on its stack too (its callback runs inside `:global.trans/4`), so only
+    # the lock-retry sleep may count as waiting.
+    test "waiting_on_global?/1 is true for a lock contender and false for the lock holder" do
+      test_pid = self()
+      resource = {:br_db_lock, "waiting-on-global-#{System.unique_integer([:positive])}"}
+
+      holder =
+        spawn_link(fn ->
+          :global.trans({resource, self()}, fn ->
+            send(test_pid, :holding)
+
+            receive do
+              :release -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :holding, 30_000
+
+      contender =
+        spawn_link(fn ->
+          :global.trans({resource, self()}, fn -> send(test_pid, :contender_ran) end)
+        end)
+
+      await_condition("contender to park in the :global lock retry", fn ->
+        waiting_on_global?(contender)
+      end)
+
+      # The holder is inside its callback (it said so above) and so has :global.trans/4 on
+      # its stack; a check that merely looked for a :global frame would call it waiting.
+      refute waiting_on_global?(holder)
+
+      send(holder, :release)
+      assert_receive :contender_ran, 30_000
     end
   end
 
@@ -602,10 +640,14 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     end
   end
 
+  # True while `pid` sleeps in :global's lock-retry loop: `:global.trans/2` fails to set a
+  # contended lock, calls `:global.random_sleep/1` and tries again (kernel's global.erl,
+  # set_lock/4). Any other :global frame is not waiting — in particular the callback of a
+  # lock that WAS acquired runs inside `:global.trans/4`.
   defp waiting_on_global?(pid) do
     case Process.info(pid, :current_stacktrace) do
       {:current_stacktrace, frames} ->
-        Enum.any?(frames, fn {mod, _fun, _arity, _loc} -> mod == :global end)
+        Enum.any?(frames, &match?({:global, :random_sleep, 1, _location}, &1))
 
       nil ->
         false

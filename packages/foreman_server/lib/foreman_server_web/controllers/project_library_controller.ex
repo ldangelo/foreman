@@ -58,7 +58,7 @@ defmodule ForemanServerWeb.ProjectLibraryController do
 
   def create(conn, %{"id" => project_id} = params) do
     with {:ok, source, opts} <- source(params),
-         {:ok, result} <- Library.add(project_id, source, opts, author(conn)) do
+         {:ok, result} <- Library.add(project_id, source, opts, author()) do
       conn |> put_status(:created) |> json(result_body(result))
     else
       {:error, %Error{} = error} -> error_response(conn, error)
@@ -68,7 +68,7 @@ defmodule ForemanServerWeb.ProjectLibraryController do
 
   def update(conn, %{"id" => project_id, "entry_id" => entry_id} = params) do
     with {:ok, source, opts} <- source(params),
-         {:ok, result} <- Library.replace(project_id, entry_id, source, opts, author(conn)) do
+         {:ok, result} <- Library.replace(project_id, entry_id, source, opts, author()) do
       json(conn, result_body(result))
     else
       {:error, %Error{} = error} -> error_response(conn, error)
@@ -77,7 +77,7 @@ defmodule ForemanServerWeb.ProjectLibraryController do
   end
 
   def delete(conn, %{"id" => project_id, "entry_id" => entry_id}) do
-    case Library.remove(project_id, entry_id, author(conn)) do
+    case Library.remove(project_id, entry_id, author()) do
       {:ok, %Entry{} = entry} -> json(conn, %{entry: entry(entry), status: "removed"})
       {:error, %Error{} = error} -> error_response(conn, error)
     end
@@ -138,15 +138,10 @@ defmodule ForemanServerWeb.ProjectLibraryController do
   defp optional_name(%{"name" => name}) when is_binary(name) and name != "", do: name
   defp optional_name(_params), do: nil
 
-  defp author(conn) do
-    ref =
-      case get_req_header(conn, "x-foreman-operator") do
-        [value | _] when value != "" -> value
-        _ -> "api"
-      end
-
-    %{kind: :operator, ref: ref}
-  end
+  # The API has one shared bearer token, so no caller has a verified identity. The audit
+  # events are append-only: a header the caller can set to anything (`x-foreman-operator`) is
+  # never the author, so every API write is attributed to `api`.
+  defp author, do: %{kind: :operator, ref: "api"}
 
   # -- response ----------------------------------------------------------
 
@@ -159,6 +154,7 @@ defmodule ForemanServerWeb.ProjectLibraryController do
       folder_max_files: limits.folder_max_files,
       folder_max_bytes: limits.folder_max_bytes,
       folder_skip_file_bytes: limits.folder_skip_file_bytes,
+      upload_max_bytes: limits.upload_max_bytes,
       max_folders: ForemanServer.Aggregates.ProjectLibrary.max_folders(),
       read_max_bytes: Library.read_max_bytes()
     }

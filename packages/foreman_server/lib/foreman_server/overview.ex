@@ -9,9 +9,18 @@ defmodule ForemanServer.Overview do
   `Overview.Signals` (E8 counts, zero until E8 lands). Nothing here dispatches a
   command; **merging stays operator-only** (`merge_approve` -> `run.pr.merge`).
 
-  Cost: every call classifies all of a project's threads (at most
-  `Threads.max_limit/0`), which is O(threads) plus one bulk projection read.
+  Cost: every call classifies a project's threads, which is O(threads) plus one
+  bulk projection read and one thread build for all projects (`Threads.by_project/0`),
+  one bulk read of the project's approval and question counts (`Signals.for_threads/1`:
+  one scan of each, whatever the number of threads), and a keyed lookup per paused
+  thread (its pending steering) and per thread with a live PR (its PR watch).
   `attention/1` skips card building and sorting but not that pass.
+  `project_fields_many/1` shares one thread build across a whole project list.
+
+  Bound: only the newest `Threads.max_limit/0` (500) threads of a project are
+  classified. When the project has more, `truncated` is `true` and `counts` /
+  `attention` / `groups` omit the older threads (they are the least recently
+  updated).
 
   Options for `build/2`:
 
@@ -38,11 +47,12 @@ defmodule ForemanServer.Overview do
           groups: %{Group.group() => [ThreadCard.t()]},
           counts: %{Group.group() => non_neg_integer()},
           attention: attention(),
+          truncated: boolean(),
           tabs: Tabs.t(),
           generated_at: integer()
         }
-  @enforce_keys [:project_id, :groups, :counts, :attention, :tabs, :generated_at]
-  defstruct [:project_id, :groups, :counts, :attention, :tabs, :generated_at]
+  @enforce_keys [:project_id, :groups, :counts, :attention, :truncated, :tabs, :generated_at]
+  defstruct [:project_id, :groups, :counts, :attention, :truncated, :tabs, :generated_at]
 
   @doc "Default number of resolved cards returned."
   @spec default_resolved_limit() :: pos_integer()
@@ -51,7 +61,7 @@ defmodule ForemanServer.Overview do
   @spec build(String.t(), keyword()) :: {:ok, t()}
   def build(project_id, opts \\ []) when is_binary(project_id) and is_list(opts) do
     now = now(opts)
-    classified = classify_all(project_id, now)
+    %{classified: classified, truncated: truncated} = classify_project(project_id, now)
     include_resolved = Keyword.get(opts, :include_resolved, false)
     resolved_limit = Keyword.get(opts, :resolved_limit, @default_resolved_limit)
 
@@ -77,24 +87,46 @@ defmodule ForemanServer.Overview do
        groups: groups,
        counts: counts,
        attention: attention_from(classified),
+       truncated: truncated,
        tabs: Tabs.build(project_id),
        generated_at: now
      }}
   end
 
-  @doc """
-  Attention and group counts for a project without building cards, sorting or
-  reading tabs. Same pass and rules as `build/2`, so the two can never disagree.
-  """
-  @spec summary(String.t(), keyword()) :: %{
+  @type summary :: %{
           counts: %{Group.group() => non_neg_integer()},
-          attention: attention()
+          attention: attention(),
+          truncated: boolean()
         }
-  def summary(project_id, opts \\ []) when is_binary(project_id) do
-    classified = classify_all(project_id, now(opts))
 
+  @doc """
+  Attention, group counts and the `truncated` bound flag for a project without
+  building cards, sorting or reading tabs. Same pass and rules as `build/2`, so
+  the two can never disagree.
+  """
+  @spec summary(String.t(), keyword()) :: summary()
+  def summary(project_id, opts \\ []) when is_binary(project_id) do
+    project_id |> classify_project(now(opts)) |> summarize()
+  end
+
+  @doc """
+  `summary/2` for several projects as `%{project_id => summary}`, reading and
+  building the threads of all projects once.
+  """
+  @spec summaries([String.t()], keyword()) :: %{String.t() => summary()}
+  def summaries(project_ids, opts \\ []) when is_list(project_ids) do
+    by_project = Threads.by_project()
+    now = now(opts)
+
+    Map.new(project_ids, fn project_id ->
+      {project_id,
+       project_id |> classify_threads(Map.get(by_project, project_id, []), now) |> summarize()}
+    end)
+  end
+
+  defp summarize(%{classified: classified, truncated: truncated}) do
     by_group = Enum.group_by(classified, fn {_card_args, {group, _}} -> group end)
-    %{counts: counts(by_group), attention: attention_from(classified)}
+    %{counts: counts(by_group), attention: attention_from(classified), truncated: truncated}
   end
 
   @doc "Attention for a project (see `summary/2`)."
@@ -103,24 +135,49 @@ defmodule ForemanServer.Overview do
     summary(project_id, opts).attention
   end
 
+  @type project_fields :: %{attention: map(), attention_count: non_neg_integer()}
+
   @doc """
   The `attention` / `attention_count` fields added to a project payload. An
   archived project never needs attention. Keys are atoms; the attention value is
   the string-keyed DTO.
   """
-  @spec project_fields(map()) :: %{attention: map(), attention_count: non_neg_integer()}
-  def project_fields(project) when is_map(project) do
-    attention =
-      cond do
-        archived?(project) -> %{needed: false, count: 0, reasons: []}
-        is_binary(project[:project_id]) -> attention(project[:project_id])
-        true -> %{needed: false, count: 0, reasons: []}
-      end
+  @spec project_fields(map()) :: project_fields()
+  def project_fields(project) when is_map(project), do: hd(project_fields_many([project]))
 
-    %{attention: attention_dto(attention), attention_count: attention.count}
+  @doc """
+  `project_fields/1` for a list of projects (same order), reading and building
+  the threads of all projects once instead of once per project.
+  """
+  @spec project_fields_many([map()]) :: [project_fields()]
+  def project_fields_many(projects) when is_list(projects) do
+    by_project =
+      if Enum.any?(projects, &attention_project_id/1), do: Threads.by_project(), else: %{}
+
+    now = now([])
+
+    Enum.map(projects, fn project ->
+      attention =
+        case attention_project_id(project) do
+          nil ->
+            %{needed: false, count: 0, reasons: []}
+
+          project_id ->
+            %{classified: classified} =
+              classify_threads(project_id, Map.get(by_project, project_id, []), now)
+
+            attention_from(classified)
+        end
+
+      %{attention: attention_dto(attention), attention_count: attention.count}
+    end)
   end
 
-  defp archived?(project), do: Map.get(project, :archived?) == true
+  # An archived project, or one without a binary id, never needs attention.
+  defp attention_project_id(project) do
+    if Map.get(project, :archived?) != true and is_binary(project[:project_id]),
+      do: project[:project_id]
+  end
 
   defp counts(by_group) do
     Map.new(Group.all(), fn g -> {g, by_group |> Map.get(g, []) |> length()} end)
@@ -165,23 +222,29 @@ defmodule ForemanServer.Overview do
     }
   end
 
-  # Threads arrive newest-first from Threads.list, so each group keeps
-  # `updated_at desc` order.
-  defp classify_all(project_id, now) do
-    pr_states = ProjectionStore.pr_states_for_project(project_id)
-
-    project_id
-    |> Threads.list(limit: Threads.max_limit())
-    |> Enum.map(fn %Thread{} = thread ->
-      pr = Map.get(pr_states, head_run_id(thread))
-      watch = watch_records(thread, pr)
-      {{thread, pr, watch}, Group.classify(input(thread, pr, watch, now))}
-    end)
+  defp classify_project(project_id, now) do
+    classify_threads(project_id, Map.get(Threads.by_project(), project_id, []), now)
   end
 
-  defp input(%Thread{} = thread, pr, watch, now) do
-    signals = Signals.for_thread(thread)
+  # `threads` arrive newest-first (`Threads.by_project/0`), so each group keeps
+  # `updated_at desc` order; only the newest `Threads.max_limit/0` are classified.
+  defp classify_threads(project_id, threads, now) do
+    pr_states = ProjectionStore.pr_states_for_project(project_id)
+    {window, rest} = Enum.split(threads, Threads.max_limit())
+    signals = Signals.for_threads(window)
 
+    classified =
+      Enum.map(window, fn %Thread{} = thread ->
+        pr = Map.get(pr_states, head_run_id(thread))
+        watch = watch_records(thread, pr)
+        input = input(thread, pr, watch, Map.fetch!(signals, thread.id), now)
+        {{thread, pr, watch}, Group.classify(input)}
+      end)
+
+    %{classified: classified, truncated: rest != []}
+  end
+
+  defp input(%Thread{} = thread, pr, watch, signals, now) do
     %Input{
       door: thread.door,
       status: thread.status,
@@ -265,6 +328,7 @@ defmodule ForemanServer.Overview do
         end),
       "counts" => Map.new(overview.counts, fn {g, n} -> {Atom.to_string(g), n} end),
       "attention" => attention_dto(overview.attention),
+      "truncated" => overview.truncated,
       "tabs" => Tabs.to_dto(overview.tabs),
       "generated_at" =>
         DateTime.to_iso8601(DateTime.from_unix!(overview.generated_at, :millisecond))

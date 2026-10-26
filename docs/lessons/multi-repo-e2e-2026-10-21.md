@@ -73,6 +73,11 @@ What the assertions establish (all against the live run):
 * Jobsite multi-repo, per-phase repository selection and thread-requested attachment (`run.repo.request`) are not part of
   this run.
 
+> Update 2026-10-25: the last three bullets (only pi, the env contract, jobsite/per-phase/`run.repo.request`) are superseded by `scripts/e2e/multi_repo_agent.sh` (a real claude and
+> a real pi calling Foreman's own `/mcp`: per-phase repository selection, thread self-add, agent-driven fanout, the env contract as each
+> phase's agent saw it, the typed jobsite refusal; `docs/acceptance/multi-repo-agent-live-run.md`, passed=52 failed=0 on each).
+> Real GitHub is still not run.
+
 ## How to run it
 
 ```

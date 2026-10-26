@@ -17,6 +17,28 @@ defmodule ForemanServer.Projects.RepoValidationTest do
                RepoValidation.validate_id(String.duplicate("a", 33))
     end
 
+    test "id_from_name/1 reduces a name to the id syntax, the same way every time" do
+      assert {:ok, "api"} = RepoValidation.id_from_name("api")
+      assert {:ok, "web-app"} = RepoValidation.id_from_name("Web_App")
+      assert {:ok, "my-repo-2"} = RepoValidation.id_from_name("  My Repo 2!! ")
+      assert {:ok, "a-b"} = RepoValidation.id_from_name("a..b")
+      assert {:ok, "9lives"} = RepoValidation.id_from_name("9lives")
+
+      # Long names are cut at 32 characters and never end in a dash.
+      long = String.duplicate("a", 31) <> "-bbbb"
+      assert {:ok, id} = RepoValidation.id_from_name(long)
+      assert String.length(id) <= 32 and not String.ends_with?(id, "-")
+      assert :ok = RepoValidation.validate_id(id)
+
+      assert RepoValidation.id_from_name("same name") == RepoValidation.id_from_name("same name")
+    end
+
+    test "id_from_name/1 refuses a name with nothing usable in it, naming it" do
+      assert {:error, {:invalid_repo_name, ""}} = RepoValidation.id_from_name("")
+      assert {:error, {:invalid_repo_name, "---"}} = RepoValidation.id_from_name("---")
+      assert {:error, {:invalid_repo_name, "!!!"}} = RepoValidation.id_from_name("!!!")
+    end
+
     test "validate_path/1 and reject_duplicate_path/2" do
       assert :ok = RepoValidation.validate_path("/a/b")
       assert {:error, {:repo_path_not_absolute, "a/b"}} = RepoValidation.validate_path("a/b")

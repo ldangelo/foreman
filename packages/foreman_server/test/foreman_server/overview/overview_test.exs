@@ -223,7 +223,9 @@ defmodule ForemanServer.OverviewTest do
     dto = Overview.to_dto(overview)
 
     assert dto |> Map.keys() |> Enum.sort() ==
-             ~w(attention counts generated_at groups project_id tabs)
+             ~w(attention counts generated_at groups project_id tabs truncated)
+
+    assert dto["truncated"] == false
 
     assert dto["groups"] |> Map.keys() |> Enum.sort() ==
              ~w(idle landing ready_for_review resolved waiting_on_you working)
@@ -235,5 +237,72 @@ defmodule ForemanServer.OverviewTest do
            }
 
     assert dto["generated_at"] == "1970-01-12T13:46:40.000Z"
+  end
+
+  describe "the 500-thread bound" do
+    defp fill(project, count) do
+      :ok =
+        ProjectionStore.apply_events(
+          for i <- 1..count do
+            id = "fill-#{project}-#{i}"
+            ev("RunStarted", %{run_id: id, task_id: "t-" <> id, project_id: project})
+          end
+        )
+    end
+
+    test "a project over the bound is reported truncated, with only the newest threads counted" do
+      limit = ForemanServer.Threads.max_limit()
+      fill("big", limit + 1)
+
+      {:ok, overview} = Overview.build("big", now_fun: fn -> @now end)
+      assert overview.truncated
+      assert Enum.sum(Map.values(overview.counts)) == limit
+      assert Overview.summary("big").truncated
+      assert Overview.to_dto(overview)["truncated"] == true
+      assert %{"big" => %{truncated: true}} = Overview.summaries(["big"])
+    end
+
+    test "exactly at the bound is not truncated" do
+      limit = ForemanServer.Threads.max_limit()
+      fill("exact", limit)
+
+      {:ok, overview} = Overview.build("exact", now_fun: fn -> @now end)
+      refute overview.truncated
+      assert Enum.sum(Map.values(overview.counts)) == limit
+    end
+  end
+
+  test "project_fields_many equals project_fields per project but builds the threads once" do
+    seed()
+    :ok = ProjectionStore.apply_events(run("calm", "calm-project"))
+
+    projects = [
+      %{project_id: "p"},
+      %{project_id: "calm-project"},
+      %{project_id: "p", archived?: true},
+      %{name: "no id"}
+    ]
+
+    expected = Enum.map(projects, &Overview.project_fields/1)
+
+    mfa = {ProjectionStore, :thread_inputs, 0}
+    :erlang.trace_pattern(mfa, true, [:call_count])
+
+    try do
+      assert Overview.project_fields_many(projects) == expected
+      assert {:call_count, 1} = :erlang.trace_info(mfa, :call_count)
+    after
+      :erlang.trace_pattern(mfa, false, [:call_count])
+    end
+
+    assert [
+             %{attention_count: 2},
+             %{attention_count: 0},
+             %{attention_count: 0},
+             %{attention_count: 0}
+           ] =
+             expected
+
+    assert [%{attention: %{"needed" => true}} | _] = expected
   end
 end

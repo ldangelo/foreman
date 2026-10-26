@@ -4,8 +4,8 @@ defmodule ForemanServerWeb.Workspace.Actions do
   `ForemanServer.Threads.Actions` (stop, steer, the same functions the HTTP
   thread routes call), `ForemanServer.CoordinatorAPI` (the coordinator message
   and restart entry the HTTP routes use), `ForemanServer.Library` (the library's
-  single entry point: the HTTP routes, MCP and the CLI call the same `add/4` and
-  `remove/3`) and `CommandGateway.dispatch_operator/1` with an
+  single entry point: the HTTP routes, MCP and the CLI call the same `add/4`,
+  `replace/5`, `remove/3` and `read/3`) and `CommandGateway.dispatch_operator/1` with an
   operator-allowlisted command type (`thread.resolve`, `thread.reopen`,
   `run.pause`, `run.resume`, `task.approve`, `task.update`, `project.*`,
   `schedule.*`). The workspace adds no mutation path and no merge/approve-PR
@@ -31,18 +31,29 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
   require Logger
 
-  alias ForemanServer.{CommandGateway, CoordinatorAPI, Library, ProjectionStore, Threads}
+  alias ForemanServer.{
+    CommandGateway,
+    CoordinatorAPI,
+    Library,
+    ProjectEnvironment,
+    ProjectionStore,
+    ProjectSecrets,
+    Threads
+  }
+
   alias ForemanServer.Aggregates.Project.Environment
   alias ForemanServer.Aggregates.ToolCall
   alias ForemanServer.Library.Error, as: LibraryError
-  alias ForemanServer.Library.Ingest
+  alias ForemanServer.Library.{Entry, Ingest, Plan}
   alias ForemanServer.Overview.{PrActions, Signals}
+  alias ForemanServer.SecretStore.Error, as: SecretError
   alias ForemanServer.Threads.{Actions, Thread}
 
   @type result :: {:ok, String.t()} | {:error, String.t()}
   @type intent :: String.t()
   @actor "dashboard"
   @operator %{kind: :operator, ref: @actor}
+  @entry_gone "That library entry no longer exists."
 
   @doc "Stops a thread of the project (confirmation is the caller's job)."
   @spec stop_thread(String.t(), String.t(), intent()) :: result()
@@ -83,12 +94,19 @@ defmodule ForemanServerWeb.Workspace.Actions do
     end
   end
 
-  @doc "Pauses or resumes the newest run of a workflow thread (`:pause | :resume`)."
+  # The run command each `run_control/4` value stands for. It is the one table behind both
+  # the guard and the lookup, so no other value can pick a command.
+  @run_commands %{pause: "run.pause", resume: "run.resume"}
+
+  @doc """
+  Pauses or resumes the newest run of a workflow thread (`:pause | :resume`; any other
+  value raises, it never falls back to a command).
+  """
   @spec run_control(String.t(), String.t(), :pause | :resume, intent()) :: result()
-  def run_control(project_id, thread_id, which, intent) do
+  def run_control(project_id, thread_id, which, intent) when is_map_key(@run_commands, which) do
     case own_thread(project_id, thread_id) do
       {:ok, %Thread{run_ids: [run_id | _]}} ->
-        type = if which == :pause, do: "run.pause", else: "run.resume"
+        type = Map.fetch!(@run_commands, which)
 
         dispatch(
           type,
@@ -148,6 +166,44 @@ defmodule ForemanServerWeb.Workspace.Actions do
       {:error, "That request is no longer pending for this thread."}
     end
   end
+
+  @doc """
+  Answers one open operator question of the project: the operator's `question.answer`
+  command, the one the CLI's `foreman questions answer` and `POST /api/commands` send,
+  so the answer reaches the asking agent through `Questions.Deliverer` exactly as theirs
+  does. The text must not be blank and the question must belong to the project and
+  still be open. The aggregate stays authoritative: a question answered or expired
+  between the projection read here and the command comes back as `{:question_not_open, _}`.
+  """
+  @spec answer_question(String.t(), String.t(), String.t(), String.t(), intent()) :: result()
+  def answer_question(project_id, run_id, question_id, text, intent) when is_binary(text) do
+    with :ok <- answer_present(text),
+         :ok <- open_question_of(project_id, run_id, question_id) do
+      dispatch(
+        "question.answer",
+        ForemanServer.Aggregates.OperatorQuestion.stream_id(run_id, question_id),
+        %{run_id: run_id, question_id: question_id, text: text, answered_by: @actor},
+        intent,
+        "question.answer #{run_id}/#{question_id}"
+      )
+    end
+  end
+
+  defp answer_present(text) do
+    if String.trim(text) == "", do: {:error, "Write an answer first."}, else: :ok
+  end
+
+  defp open_question_of(project_id, run_id, question_id) do
+    case ProjectionStore.question(run_id, question_id) do
+      %{project_id: ^project_id} = question -> question_open(question)
+      _ -> {:error, "Question not found in this project."}
+    end
+  end
+
+  defp question_open(%{status: "open"}), do: :ok
+
+  defp question_open(%{status: status}) when status in ["answered", "expired"],
+    do: {:error, "Could not answer: #{describe({:question_not_open, status})}."}
 
   @pr_kinds Map.new(PrActions.kinds(), &{Atom.to_string(&1), &1})
 
@@ -295,20 +351,111 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
   @doc """
   Adds `files` (`%{relative_path:, source_path:}`: the uploaded temp files) to the
-  project's library as ONE entry through `Library.add/4`, the call behind
-  `POST /api/projects/:id/library` and `foreman project library add`. The library
-  therefore applies the same name, path, count (`max_files_per_add`) and size
+  project's library as ONE entry of kind `file` through `Library.add/4`, the call
+  behind `POST /api/projects/:id/library` and `foreman project library add`. The
+  library therefore applies the same name, path, count (`max_files_per_add`) and size
   (`max_file_bytes`) rules, whatever the browser claimed. A blank `name` lets the
   library derive one.
   """
   @spec library_add(String.t(), [Ingest.file_source()], String.t()) :: result()
-  def library_add(project_id, files, name) when is_binary(name) do
-    case Library.add(project_id, {:files, files}, %{name: blank_to_nil(name)}, @operator) do
-      {:ok, %{entry: entry}} ->
-        {:ok, "Added #{entry.name} to the library (#{files_label(entry.file_count)})."}
+  def library_add(project_id, files, name) when is_binary(name),
+    do: add_entry(project_id, {:files, files}, name)
+
+  @doc """
+  Adds an uploaded folder as ONE entry of kind `folder` through `Library.add/4`, with
+  the `:folder_files` source `POST /api/projects/:id/library` takes for `kind=folder`.
+  `files` carry their paths inside the folder. The library applies the folder rules
+  (hidden files, `node_modules` and files over `folder_skip_file_bytes` are left out;
+  the first `folder_max_files` files within `folder_max_bytes` are kept) and the
+  message says what was skipped. A blank `name` lets the library derive one.
+  """
+  @spec library_add_folder(String.t(), [Ingest.file_source()], String.t()) :: result()
+  def library_add_folder(project_id, files, name) when is_binary(name),
+    do: add_entry(project_id, {:folder_files, files}, name)
+
+  @doc """
+  Replaces the files of one library entry through `Library.replace/5`, the call behind
+  `PUT /api/projects/:id/library/:entry_id`: the entry keeps its id, name and kind. The
+  entry's STORED kind decides how `files` are read (a `file` entry takes them as
+  files, a `folder` entry as an uploaded folder, with the folder rules), never
+  anything the browser sent; an entry produced by a run is refused.
+  """
+  @spec library_replace(String.t(), String.t(), [Ingest.file_source()]) :: result()
+  def library_replace(project_id, entry_id, files) when is_binary(entry_id) do
+    with {:ok, kind} <- library_replace_kind(project_id, entry_id) do
+      source = if kind == :folder, do: {:folder_files, files}, else: {:files, files}
+
+      case Library.replace(project_id, entry_id, source, %{}, @operator) do
+        {:ok, result} ->
+          {:ok, "Replaced #{result.entry.name} in the library (#{contents(result)})."}
+
+        {:error, %LibraryError{code: :not_found}} ->
+          {:error, @entry_gone}
+
+        {:error, %LibraryError{} = error} ->
+          library_failed("replace", error)
+      end
+    end
+  end
+
+  @doc """
+  The kind of upload that replaces a library entry, `:file` or `:folder`, from the
+  entry as stored. An unknown entry and an entry produced by a run (owned by its
+  run, never replaced by hand) are refused with a message.
+  """
+  @spec library_replace_kind(String.t(), String.t()) ::
+          {:ok, :file | :folder} | {:error, String.t()}
+  def library_replace_kind(project_id, entry_id) when is_binary(entry_id) do
+    case Library.get(project_id, entry_id) do
+      {:ok, %Entry{kind: kind}} when kind in [:file, :folder] ->
+        {:ok, kind}
+
+      {:ok, %Entry{kind: :produced}} ->
+        {:error, "Files produced by a run cannot be replaced here."}
+
+      {:error, %LibraryError{code: :not_found}} ->
+        {:error, @entry_gone}
 
       {:error, %LibraryError{} = error} ->
-        library_failed("add", error)
+        library_failed("replace", error)
+    end
+  end
+
+  @doc "The files of one library entry (`%{path:, bytes:, sha256:}`), for its file list."
+  @spec library_entry_files(String.t(), String.t()) ::
+          {:ok, [Entry.file()]} | {:error, String.t()}
+  def library_entry_files(project_id, entry_id) when is_binary(entry_id) do
+    case Library.get(project_id, entry_id) do
+      {:ok, %Entry{files: files}} ->
+        {:ok, files}
+
+      {:error, %LibraryError{code: :not_found}} ->
+        {:error, @entry_gone}
+
+      {:error, %LibraryError{} = error} ->
+        library_failed("list the files", error)
+    end
+  end
+
+  @doc """
+  The bytes of one file of a library entry through `Library.read/3`, the call behind
+  `GET /api/projects/:id/library/:entry_id/files/*path`: at most `Library.read_max_bytes/0`,
+  and the library validates the path (a forged `../` path or entry id is refused). The
+  workspace pushes the bytes to the browser over its authenticated LiveView socket,
+  because a plain link to the HTTP route cannot authenticate in a browser.
+  """
+  @spec library_file(String.t(), String.t(), String.t()) ::
+          {:ok, binary()} | {:error, String.t()}
+  def library_file(project_id, entry_id, path) when is_binary(entry_id) and is_binary(path) do
+    case Library.read(project_id, entry_id, path) do
+      {:ok, bytes} ->
+        {:ok, bytes}
+
+      {:error, %LibraryError{code: :not_found}} ->
+        {:error, "That file is no longer in the library."}
+
+      {:error, %LibraryError{} = error} ->
+        library_failed("download", error)
     end
   end
 
@@ -320,7 +467,7 @@ defmodule ForemanServerWeb.Workspace.Actions do
         {:ok, "Removed #{entry.name} from the library."}
 
       {:error, %LibraryError{code: :not_found}} ->
-        {:error, "That library entry no longer exists."}
+        {:error, @entry_gone}
 
       {:error, %LibraryError{} = error} ->
         library_failed("remove", error)
@@ -363,6 +510,65 @@ defmodule ForemanServerWeb.Workspace.Actions do
         %{project_id: project_id, setup_script: script},
         intent
       )
+
+  @doc """
+  Sets one plain environment variable through `project.environment.set`, the command
+  behind `PUT /api/projects/:id/environment` and `foreman project env set`. That command
+  replaces the whole variable set, so the payload is the variables the project stores NOW
+  (read here, on the server: from the environment record, or from the legacy flat
+  `config.env`, whose hidden values therefore never reach the browser) with `name` put to
+  `value`. A page that loaded earlier never writes back a variable that changed elsewhere in
+  the meantime; two writers in the same instant are last-one-wins, as with the CLI. The setup
+  script and the network policy are not in the payload and keep their stored values. The
+  aggregate judges every variable and its error tuple comes back untouched: a name that looks
+  like a secret is `{:secret_in_vars, name}` (such a value belongs in a project secret, see
+  `set_secret/3`), so it is neither stored nor written to an event.
+  """
+  @spec set_env_var(String.t(), String.t(), String.t(), intent()) :: :ok | {:error, term()}
+  def set_env_var(project_id, name, value, intent) when is_binary(name) and is_binary(value),
+    do: write_env_vars(project_id, Map.put(stored_env_vars(project_id), name, value), intent)
+
+  @doc """
+  Removes one plain variable (`set_env_var/4`'s read-modify-write). Idempotent like
+  `foreman project env unset`: a name that is not set (removed elsewhere since the page
+  loaded, or a resent click) is already the requested end state, so it is `:ok` and
+  dispatches nothing.
+  """
+  @spec unset_env_var(String.t(), String.t(), intent()) :: :ok | {:error, term()}
+  def unset_env_var(project_id, name, intent) when is_binary(name) do
+    vars = stored_env_vars(project_id)
+
+    if Map.has_key?(vars, name),
+      do: write_env_vars(project_id, Map.delete(vars, name), intent),
+      else: :ok
+  end
+
+  defp stored_env_vars(project_id), do: ProjectEnvironment.environment(project_id)["vars"]
+
+  defp write_env_vars(project_id, vars, intent) do
+    dispatch_project(
+      "project.environment.set",
+      project_id,
+      %{project_id: project_id, vars: vars},
+      intent
+    )
+  end
+
+  @doc """
+  Stores (or rotates) one project secret through `ForemanServer.ProjectSecrets`, the path
+  behind `PUT /api/projects/:id/secrets/:name` and `foreman project secret set`. The VALUE
+  goes straight to `ForemanServer.SecretStore`; only the name and the version are recorded
+  (`project.secret.set`, system-only), so no command, event, log line, return value or error
+  of this function carries it. Errors are `ProjectSecrets`' own (a `SecretStore.Error` names
+  what is wrong with the name or the value, never the value).
+  """
+  @spec set_secret(String.t(), String.t(), String.t()) ::
+          {:ok, %{name: String.t(), version: pos_integer()}} | {:error, term()}
+  def set_secret(project_id, name, value), do: ProjectSecrets.set(project_id, name, value, @actor)
+
+  @doc "Deletes one project secret (`:secret_not_found` when it is already gone)."
+  @spec unset_secret(String.t(), String.t()) :: {:ok, %{name: String.t()}} | {:error, term()}
+  def unset_secret(project_id, name), do: ProjectSecrets.unset(project_id, name, @actor)
 
   @typedoc "A repository to attach: id, absolute path on the server host, optional default branch."
   @type repository :: %{id: String.t(), path: String.t(), default_branch: String.t() | nil}
@@ -506,6 +712,34 @@ defmodule ForemanServerWeb.Workspace.Actions do
   defp files_label(1), do: "1 file"
   defp files_label(count), do: "#{count} files"
 
+  defp add_entry(project_id, source, name) do
+    case Library.add(project_id, source, %{name: blank_to_nil(name)}, @operator) do
+      {:ok, result} ->
+        {:ok, "Added #{result.entry.name} to the library (#{contents(result)})."}
+
+      {:error, %LibraryError{} = error} ->
+        library_failed("add", error)
+    end
+  end
+
+  # "3 files", or "3 files; 1 skipped: hidden" / "3 files; 4 skipped: 3 hidden, 1 node_modules":
+  # what an add or a replace kept and, for a folder, what the folder rules left out.
+  defp contents(%{entry: entry, skipped: []}), do: files_label(entry.file_count)
+
+  defp contents(%{entry: entry, skipped: skipped}),
+    do: "#{files_label(entry.file_count)}; #{skipped_label(skipped)}"
+
+  defp skipped_label(skipped) do
+    case skipped |> Plan.skipped_summary() |> Enum.sort() do
+      [{reason, count}] ->
+        "#{count} skipped: #{reason}"
+
+      reasons ->
+        "#{length(skipped)} skipped: " <>
+          Enum.map_join(reasons, ", ", fn {reason, count} -> "#{count} #{reason}" end)
+    end
+  end
+
   # Only a failure of the disk or of the audit command is worth a log line: the
   # rest (a taken name, a path or size rule) is the operator's input, not a fault.
   defp library_failed(verb, %LibraryError{code: code, message: message} = error) do
@@ -541,6 +775,8 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe({:pr_not_watched, _}), do: "no pull request is being watched"
   def describe({:project_archived, id}), do: "project #{id} is archived"
   def describe({:not_found, :project, id}), do: "project #{id} is not registered"
+  def describe({:question_not_open, "answered"}), do: "the question was already answered"
+  def describe({:question_not_open, "expired"}), do: "the question expired before it was answered"
   def describe(:dispatch_timeout), do: "the server did not answer in time"
 
   def describe({:setup_script_too_long, bytes}),
@@ -559,6 +795,21 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe({:reserved_env_name, name}),
     do: "the stored variable #{name} uses the reserved FOREMAN_ prefix"
 
+  def describe({:invalid_env_name, ""}), do: "enter a variable name"
+
+  def describe({:invalid_env_name, name}),
+    do: "#{name} is not a valid name: use letters, digits and underscores, starting with a letter"
+
+  def describe({:env_value_invalid, name}), do: "the value of #{name} must be text"
+
+  def describe({:env_value_too_long, name}),
+    do: "the value of #{name} is over #{Environment.max_value_bytes()} bytes"
+
+  def describe({:too_many_env_vars, count}),
+    do: "a project holds at most #{Environment.max_vars()} variables (this would make #{count})"
+
+  def describe(%SecretError{message: message}), do: message
+
   def describe({:invalid_repo_id, _}),
     do: "the id must be 1-32 lowercase letters, digits or dashes and not start with a dash"
 
@@ -574,6 +825,11 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
   def describe(:project_has_active_runs),
     do: "the project has active runs; try again when they have finished"
+
+  # `project.archive` refuses with the blocking run ids (`{:error, :project_has_active_runs,
+  # run_ids}`), which reaches `failed/2` as a pair; it reads like the bare atom above.
+  def describe({:project_has_active_runs, run_ids}) when is_list(run_ids),
+    do: describe(:project_has_active_runs)
 
   def describe(reason), do: inspect(reason, limit: 8, printable_limit: 200)
 end

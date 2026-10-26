@@ -75,7 +75,8 @@ defmodule ForemanServer.Overview.MergeResolverTest do
                    5_000
   end
 
-  test "merging a PR resolves its thread exactly once, with reason pr_merged", %{project: p} do
+  test "merging a PR resolves its thread with reason pr_merged; a later merged PrUpdated adds nothing",
+       %{project: p} do
     start_resolver()
     run_id = start_run(p)
     thread_id = "run:" <> run_id
@@ -86,7 +87,7 @@ defmodule ForemanServer.Overview.MergeResolverTest do
     assert %{resolved: true, reason: "pr_merged", resolved_by: "system"} =
              ProjectionStore.thread_flags(thread_id)
 
-    # a duplicate merge signal finds the thread already resolved and dispatches nothing
+    # the thread is already resolved, so the follow-up merge signal dispatches nothing
     :ok =
       ProjectionStore.apply_events([
         event("PrUpdated", %{run_id: run_id, pr_status: "merged", head_sha: "sha-" <> run_id})
@@ -156,6 +157,109 @@ defmodule ForemanServer.Overview.MergeResolverTest do
 
     assert {:ok, %{resolved: false}} = Threads.get("run:" <> reopened)
     assert stream("run:" <> reopened) == []
+  end
+
+  test "live path: a thread reopened after the merge is not resolved again by a later merged PrUpdated",
+       %{project: p} do
+    run_id = start_run(p)
+    thread_id = "run:" <> run_id
+    reopened_at = "2026-10-21T00:00:00Z"
+    {:ok, reopened_dt, _offset} = DateTime.from_iso8601(reopened_at)
+    reopened_ms = DateTime.to_unix(reopened_dt, :millisecond)
+
+    :ok =
+      ProjectionStore.apply_events([
+        event("PrMerged", %{run_id: run_id}),
+        event("ThreadResolved", %{
+          thread_id: thread_id,
+          project_id: p,
+          reason: "operator",
+          resolved_by: "op",
+          source: "operator",
+          at: "2026-10-20T00:00:00Z"
+        }),
+        event("ThreadReopened", %{thread_id: thread_id, project_id: p, at: reopened_at})
+      ])
+
+    assert {:ok, %{resolved: false}} = Threads.get(thread_id)
+    start_resolver()
+
+    # A poll that observed the merge BEFORE the reopen: the folded state is
+    # merged, but the operator's reopen is newer, so the thread stays open.
+    :ok =
+      ProjectionStore.apply_events([
+        event("PrUpdated", %{
+          run_id: run_id,
+          pr_status: "merged",
+          head_sha: "stale",
+          observed_at: reopened_ms - 1_000
+        })
+      ])
+
+    _ = :sys.get_state(:merge_resolver_test)
+    assert {:ok, %{resolved: false}} = Threads.get(thread_id)
+    assert stream(thread_id) == []
+
+    # Positive control: a merge observed after the reopen does resolve it.
+    :ok =
+      ProjectionStore.apply_events([
+        event("PrUpdated", %{
+          run_id: run_id,
+          pr_status: "merged",
+          head_sha: "fresh",
+          observed_at: reopened_ms + 1_000
+        })
+      ])
+
+    await_resolved(thread_id)
+    assert stream(thread_id) == ["ThreadResolved"]
+  end
+
+  # A thread older than the newest `Threads.max_limit/0` threads must still be found.
+  defp start_old_run_behind_a_full_window(project) do
+    Process.put(:projection_store_now_ms, fn -> 1_000 end)
+    old_run = start_run(project)
+
+    Process.put(:projection_store_now_ms, fn -> 2_000 end)
+
+    :ok =
+      ProjectionStore.apply_events(
+        for _ <- 1..Threads.max_limit() do
+          id = "fill-#{uid()}"
+          event("RunStarted", %{run_id: id, task_id: "t-" <> id, project_id: project})
+        end
+      )
+
+    Process.put(:projection_store_now_ms, fn -> 1_500 end)
+    old_run
+  end
+
+  test "live path: a merge of a thread outside the newest-window still resolves it", %{project: p} do
+    start_resolver()
+    run_id = start_old_run_behind_a_full_window(p)
+    thread_id = "run:" <> run_id
+
+    assert length(Threads.list(p, limit: Threads.max_limit())) == Threads.max_limit()
+    refute thread_id in Enum.map(Threads.list(p, limit: Threads.max_limit()), & &1.id)
+
+    :ok = ProjectionStore.apply_events([event("PrMerged", %{run_id: run_id})])
+    Process.delete(:projection_store_now_ms)
+
+    await_resolved(thread_id)
+    assert stream(thread_id) == ["ThreadResolved"]
+  end
+
+  test "catch-up resolves a merged thread outside the newest-window", %{project: p} do
+    run_id = start_old_run_behind_a_full_window(p)
+    thread_id = "run:" <> run_id
+    :ok = ProjectionStore.apply_events([event("PrMerged", %{run_id: run_id})])
+    Process.delete(:projection_store_now_ms)
+
+    refute thread_id in Enum.map(Threads.list(p, limit: Threads.max_limit()), & &1.id)
+
+    start_resolver()
+    await_resolved(thread_id)
+    assert stream(thread_id) == ["ThreadResolved"]
   end
 
   test "an already-resolved thread is not resolved again", %{project: p} do

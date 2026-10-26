@@ -69,6 +69,14 @@ defmodule Jido.Harness.Run do
   `:not_live` (run was not started live), `:input_closed` (the run already
   finished its work and closed stdin), `:not_running`, `:duplicate_input`, or
   `{:write_failed, term}`.
+
+  A live run's CLI never exits by itself; the harness ends it by closing its stdin:
+  when the provider goes idle (`:input_idle`) with nothing pending, when a written
+  message the provider never took has waited out the idle grace, and when the run
+  records a terminal event (a turn the provider failed). A CLI still alive
+  `live_exit_grace_ms` (provider config, default 10 s) after that is stopped and the
+  run finishes from what it recorded, with a `:provider_event` of kind
+  `"live_exit_grace_expired"` in its events.
   """
   @spec send_input(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
   def send_input(run_id, input_id, text) when is_binary(input_id) and is_binary(text),

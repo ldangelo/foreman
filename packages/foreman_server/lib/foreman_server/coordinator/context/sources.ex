@@ -17,10 +17,18 @@ defmodule ForemanServer.Coordinator.Context.Sources do
           repositories: [String.t()]
         }
 
+  # `task_types` are the task types the workflow SERVES, as `Catalog.type_to_workflow/1` resolves
+  # them: a thread that names no `workflow` is started by its `task_type` alone.
+  @type workflow :: %{
+          name: String.t(),
+          description: String.t() | nil,
+          task_types: [String.t()]
+        }
+
   @callback conversation(String.t()) :: {:ok, Conversation.t()} | {:error, :project_not_found}
   @callback project(String.t()) :: {:ok, project()} | {:error, :project_not_found}
   @callback threads(String.t()) :: [Thread.t()]
-  @callback workflows() :: [%{name: String.t(), description: String.t() | nil}]
+  @callback workflows() :: [workflow()]
   @callback invalid_workflows() :: [
               %{name: String.t(), reason: String.t(), serving_previous: boolean()}
             ]

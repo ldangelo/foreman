@@ -15,9 +15,11 @@ defmodule ForemanServer.Overview.MergeResolver do
 
   A **catch-up sweep** at init resolves threads whose PR merged while the server
   was down (one pass over each project's merged PR states, at most
-  `:catch_up_limit` resolutions). A thread the operator reopened after the merge
-  is left alone: a merge counts only if it is newer than the thread's
-  `reopened_at`; when the merge time is unknown, any reopen wins.
+  `:catch_up_limit` resolutions). The live path and the sweep share one rule for
+  a thread the operator reopened after the merge: it is left alone, because a
+  merge counts only if it is newer than the thread's `reopened_at`; when the
+  merge time is unknown, any reopen wins. Threads are found by run id with no
+  recency window (`Threads.by_run_ids/1`), so an old thread is never skipped.
 
   Only the disposition flag is touched. Closed-without-merge PRs are classified
   `:resolved` by `Overview.Group` but are **not** auto-resolved here: the
@@ -73,11 +75,14 @@ defmodule ForemanServer.Overview.MergeResolver do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # A live event is by definition newer than any earlier reopen.
+  # Live and catch-up share one rule: a thread reopened after the merge stays
+  # open unless the merge is provably newer (`merge_after_reopen?/2`). A stale
+  # `PrUpdated` that re-reports an older merge must not undo the operator's reopen.
   defp resolve_run(run_id) do
     with %{project_id: project_id} when is_binary(project_id) <- ProjectionStore.run(run_id),
          %{pr_state: :merged} = pr <- ProjectionStore.pr_state(run_id),
-         %Thread{} = thread <- unresolved_thread(project_id, run_id) do
+         %Thread{} = thread <- unresolved_thread(project_id, run_id),
+         true <- merge_after_reopen?(thread, pr) do
       resolve(thread, pr)
     end
 
@@ -103,10 +108,10 @@ defmodule ForemanServer.Overview.MergeResolver do
     if merged == [] do
       []
     else
-      threads = Threads.list(project_id, resolved: false, limit: Threads.max_limit())
+      threads = Threads.by_run_ids(Enum.map(merged, fn {run_id, _pr} -> run_id end))
 
       for {run_id, pr} <- merged,
-          %Thread{} = thread <- [Enum.find(threads, &(run_id in &1.run_ids))],
+          %Thread{resolved: false} = thread <- [Map.get(threads, run_id)],
           merge_after_reopen?(thread, pr) do
         {thread, pr}
       end
@@ -116,10 +121,13 @@ defmodule ForemanServer.Overview.MergeResolver do
 
   defp catch_up_project(_project), do: []
 
+  # `Threads.by_run_ids/1` has no recency window: a thread outside the newest
+  # `Threads.max_limit/0` is still found.
   defp unresolved_thread(project_id, run_id) do
-    project_id
-    |> Threads.list(resolved: false, limit: Threads.max_limit())
-    |> Enum.find(&(run_id in &1.run_ids))
+    case Map.get(Threads.by_run_ids([run_id]), run_id) do
+      %Thread{resolved: false, project_id: ^project_id} = thread -> thread
+      _resolved_or_missing -> nil
+    end
   end
 
   # A reopened thread stays open unless the merge is provably newer.

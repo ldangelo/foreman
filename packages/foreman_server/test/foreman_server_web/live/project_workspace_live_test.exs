@@ -1,14 +1,17 @@
 defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Plug.Conn
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
   alias ForemanServer.{CommandGateway, ProjectionStore, ProjectStore, Threads}
-  alias ForemanServerWeb.Workspace.Actions
+  alias ForemanServer.Overview.{Group, ThreadCard}
+  alias ForemanServer.Threads.Thread
+  alias ForemanServerWeb.Workspace.{Actions, Components}
   alias ForemanServer.TelemetryTest.Handler
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{PrWatchSupport, ProjectionStoreReset}
 
   @endpoint ForemanServerWeb.Endpoint
   @token "project-workspace-live-token"
@@ -123,6 +126,17 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
   defp await_element(view, selector),
     do: await_until(view, fn _ -> has_element?(view, selector) end)
+
+  # The exit reason of the view when `fun` (a render_* call) crashes it. LiveViewTest links
+  # the test process to the view's proxy, so exits are trapped for the call; the crash is
+  # the view's own and its error log is not noise for the rest of the run.
+  defp view_crash(fun) do
+    Process.flag(:trap_exit, true)
+    test = self()
+    capture_log(fn -> send(test, {:crashed, catch_exit(fun.())}) end)
+    assert_received {:crashed, {reason, _call}}
+    reason
+  end
 
   describe "auth" do
     test "unauthenticated and wrong-token requests get 401, never the page", %{id: id} do
@@ -380,7 +394,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     } do
       {view, _} = mount_view(id)
 
+      # Library is the default tab, so clicking it on a fresh page proves nothing: leave it
+      # for another tab, see the panel go, then come back.
+      assert has_element?(view, ~s(#tab-library[aria-selected="true"]))
+      assert has_element?(view, "#panel-library")
+
+      view |> element("#tab-pull_requests") |> render_click()
+      refute has_element?(view, "#panel-library")
+      assert has_element?(view, "#panel-pull_requests")
+      assert has_element?(view, ~s(#tab-library[aria-selected="false"]))
+
       html = view |> element("#tab-library") |> render_click()
+      assert has_element?(view, "#panel-library")
+      refute has_element?(view, "#panel-pull_requests")
+      assert has_element?(view, ~s(#tab-library[aria-selected="true"]))
       refute html =~ "Not available yet."
       assert html =~ "Nothing to show."
       refute has_element?(view, "#panel-library li")
@@ -690,6 +717,242 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       assert {:error, "That thread belongs to another project."} =
                Actions.set_resolved(id, "run:r-other", :resolve, "i")
+    end
+
+    test "a task action on a project that is not there says so, not 'task not found'", %{} do
+      assert {:error, "Project not found."} =
+               Actions.start_proposed("no-such-project", "t-ready", "i")
+
+      assert {:error, "Project not found."} =
+               Actions.decline_proposed("no-such-project", "t-ready", "i")
+    end
+  end
+
+  describe "intents" do
+    test "a view's action after a restart is a new command, never a replay of an old session's",
+         %{id: id} do
+      # session 1 resolves the thread ...
+      {view, _} = mount_view(id)
+      view |> element("#thread-run\\:r-failed button[phx-value-action=resolve]") |> render_click()
+      await_element(view, "#group-resolved #thread-run\\:r-failed")
+
+      # ... someone else reopens it ...
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed", :reopen, "elsewhere")
+      assert {:ok, %{resolved: false}} = Threads.get("run:r-failed")
+
+      # ... and after a restart a view's counters start from zero again, only its random
+      # session nonce is new. Its resolve is a new command and must append a new event; a
+      # command id repeating the old session's would be answered "Done" with nothing appended.
+      {restarted, _} = mount_view(id)
+
+      restarted
+      |> element("#thread-run\\:r-failed button[phx-value-action=resolve]")
+      |> render_click()
+
+      await_element(restarted, "#group-resolved #thread-run\\:r-failed")
+      assert {:ok, %{resolved: true}} = Threads.get("run:r-failed")
+    end
+  end
+
+  describe "run control" do
+    # `start_run!/1` writes a real RunStarted to the run's stream, so the run aggregate
+    # answers `run.pause` and `run.resume`.
+    setup %{id: id} do
+      run = PrWatchSupport.start_run!(project_id: id)
+      {:ok, run_id: run.run_id, thread: "run:" <> run.run_id}
+    end
+
+    defp run_event_types(run_id) do
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:" <> run_id, 0, 100)
+      Enum.map(events, & &1.event_type)
+    end
+
+    test "pause and resume each dispatch their own command", %{
+      id: id,
+      run_id: run_id,
+      thread: thread
+    } do
+      assert {:ok, "Done: run.pause " <> _} = Actions.run_control(id, thread, :pause, "i-1")
+      assert run_event_types(run_id) == ["RunStarted", "RunPaused"]
+
+      assert {:ok, "Done: run.resume " <> _} = Actions.run_control(id, thread, :resume, "i-2")
+      assert run_event_types(run_id) == ["RunStarted", "RunPaused", "RunResumed"]
+    end
+
+    test "any other value raises and dispatches nothing, never a silent run.resume", %{
+      id: id,
+      run_id: run_id,
+      thread: thread
+    } do
+      assert {:ok, _} = Actions.run_control(id, thread, :pause, "i-1")
+
+      for which <- [:stop, :cancel, :unpause, "resume", nil] do
+        assert_raise FunctionClauseError, fn -> Actions.run_control(id, thread, which, "i-x") end
+      end
+
+      # any value but :pause used to resume the paused run
+      assert run_event_types(run_id) == ["RunStarted", "RunPaused"]
+    end
+  end
+
+  describe "an event the page does not know" do
+    # No catch-all clause: a renamed phx-value key, an unknown tab or an action outside the
+    # allowed list is a defect that must show (the view restarts), not a dead button.
+    test "restarts the view instead of doing nothing", %{id: id} do
+      {view, _} = mount_view(id)
+
+      assert {:function_clause,
+              [
+                {ForemanServerWeb.ProjectWorkspaceLive, :handle_event, ["no_such_event", %{}, _],
+                 _}
+                | _
+              ]} =
+               view_crash(fn -> render_click(view, "no_such_event", %{}) end)
+    end
+
+    test "events whose parameters match no clause raise" do
+      socket = %Phoenix.LiveView.Socket{}
+
+      for {event, params} <- [
+            {"no_such_event", %{}},
+            {"tab", %{"tab" => "no_such_tab"}},
+            {"thread_action", %{"action" => "explode", "thread-id" => "run:r-work"}},
+            {"thread_action", %{"action" => "pause"}},
+            {"schedule", %{"op" => "delete", "id" => "s-1"}},
+            {"steer", %{"thread-id" => "run:r-work", "text" => "x"}}
+          ] do
+        assert_raise FunctionClauseError, fn ->
+          ForemanServerWeb.ProjectWorkspaceLive.handle_event(event, params, socket)
+        end
+      end
+    end
+  end
+
+  describe "thread cards" do
+    # Every action id a card can carry, from building a card for every door, status, group
+    # and reason (`ThreadCard.build/4` is pure).
+    defp card_actions do
+      for door <- [:workflow, :jobsite],
+          status <- ["in_progress", "paused", "failed", "completed"],
+          group <- Group.all(),
+          reason <- Group.reasons(),
+          thread = %Thread{
+            id: if(door == :workflow, do: "run:r1", else: "jobsite:j1"),
+            door: door,
+            project_id: "p",
+            title: "T",
+            status: status
+          },
+          action <- ThreadCard.build(thread, nil, {group, reason}, []).actions,
+          uniq: true,
+          do: action
+    end
+
+    defp card_html(actions) do
+      card = %ThreadCard{
+        thread_id: "run:r1",
+        door: :workflow,
+        title: "Card",
+        group: :working,
+        reason: :in_flight,
+        steering: "pause_resume",
+        actions: actions
+      }
+
+      render_component(&Components.thread_card/1,
+        card: card,
+        confirm_stop: nil,
+        steer_nonce: "n"
+      )
+    end
+
+    @action_markers %{
+      "run.cancel" => ~s(phx-click="confirm_stop"),
+      "run.pause" => ~s(phx-value-action="pause"),
+      "run.resume" => ~s(phx-value-action="resume"),
+      "thread.resolve" => ~s(phx-value-action="resolve"),
+      "thread.reopen" => ~s(phx-value-action="reopen"),
+      "thread.steer" => ~s(phx-submit="steer")
+    }
+
+    test "every action a card can carry renders its own control" do
+      ids = card_actions()
+      # not vacuous: every documented action is found
+      assert Map.keys(@action_markers) -- ids == []
+
+      for id <- ids do
+        assert card_html([id]) =~ Map.fetch!(@action_markers, id)
+      end
+    end
+
+    test "an action with no control raises instead of rendering an empty card" do
+      assert_raise FunctionClauseError, fn -> card_html(["thread.merge"]) end
+    end
+
+    test "the page accepts every thread_action value its cards send, and only those", %{id: id} do
+      sent =
+        for action <- card_actions(),
+            [_, value] <-
+              Regex.scan(
+                ~r/phx-click="thread_action"\s+phx-value-action="([^"]+)"/,
+                card_html([action])
+              ),
+            uniq: true,
+            do: value
+
+      assert Enum.sort(sent) == Enum.sort(Components.thread_actions())
+
+      {view, _} = mount_view(id)
+
+      for value <- sent do
+        assert is_binary(
+                 render_click(view, "thread_action", %{
+                   "action" => value,
+                   "thread-id" => "run:r-work"
+                 })
+               )
+      end
+
+      assert {:function_clause,
+              [{ForemanServerWeb.ProjectWorkspaceLive, :handle_event, _, _} | _]} =
+               view_crash(fn ->
+                 render_click(view, "thread_action", %{
+                   "action" => "explode",
+                   "thread-id" => "run:r-work"
+                 })
+               end)
+    end
+  end
+
+  describe "header" do
+    test "shows the name in the project's config whichever key shape it has, else the id", %{
+      id: id
+    } do
+      unique = System.unique_integer([:positive])
+      atom_keyed = "named-atom-#{unique}"
+      string_keyed = "named-string-#{unique}"
+
+      # an Elixir caller's config has atom keys, an HTTP client's (JSON) string keys
+      for {project, config} <- [
+            {atom_keyed, %{name: "Atom Keyed"}},
+            {string_keyed, %{"name" => "String Keyed"}}
+          ] do
+        assert {:ok, _} =
+                 ProjectStore.save(%{
+                   project_id: project,
+                   path: "/tmp/#{project}",
+                   config: config
+                 })
+      end
+
+      for {project, shown} <- [
+            {atom_keyed, "Atom Keyed"},
+            {string_keyed, "String Keyed"},
+            {id, id}
+          ] do
+        {view, _} = mount_view(project)
+        assert view |> element("header h1") |> render() =~ shown
+      end
     end
   end
 

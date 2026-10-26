@@ -16,8 +16,10 @@ defmodule ForemanServer.Approvals.Capability do
     * `:resume_with_override` - the provider has no live approval channel (pi
       rejects `approval_mode: :prompt` at session start; headless claude has no
       interactive channel through the one-shot transport). The run is paused, and a
-      decision resumes it through E6 steering with the approved tool's
-      one-phase `approval_mode` override.
+      decision resumes it through E6 steering with a next-phase `approval_mode`
+      override. That override is an approval MODE, not a per-tool grant: it relaxes
+      the permission mode of the run's NEXT PHASE as a whole, so every tool of that
+      phase is allowed, not only the approved one. Only `:inflight` decides one call.
 
   An unknown provider gets `:resume_with_override`, the mode that needs nothing
   from the provider. Clients see the mode as `approval_delivery` so a UI never
@@ -55,9 +57,13 @@ defmodule ForemanServer.Approvals.Capability do
   def parse_delivery(_), do: :resume_with_override
 
   @doc """
-  The minimal `approval_mode` name that lets an approved tool run for one phase:
-  `"auto_edit"` for edit-class tools, `"auto_approve"` otherwise. Always a name
-  `ForemanServer.Jobsite.Agent.parse_approval_mode/1` accepts.
+  The `approval_mode` name an approval resumes the run's next phase with:
+  `"auto_edit"` for edit-class tools, `"auto_approve"` otherwise (for Claude
+  `--permission-mode acceptEdits` / `bypassPermissions`). It covers the WHOLE phase,
+  not only the approved tool: there is no per-tool grant on this path (`bypassPermissions`
+  skips every permission check, so an `allowed_tools` list cannot narrow it, and a
+  per-tool grant would need a new steer field through every layer of the resume path).
+  Always a name `ForemanServer.Jobsite.Agent.parse_approval_mode/1` accepts.
   """
   @spec override_for(String.t()) :: String.t()
   def override_for(tool_name) when is_binary(tool_name) do

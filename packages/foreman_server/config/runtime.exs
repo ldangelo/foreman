@@ -76,8 +76,12 @@ if config_env() != :test do
   # Scheduled-task ticker: on by default (config.exs); "false" turns it off,
   # "true" forces it on.
   case System.get_env("FOREMAN_SCHEDULE_TICKER_ENABLED") do
-    "true" -> config :foreman_server, :schedule, ticker_enabled: true
-    "false" -> config :foreman_server, :schedule, ticker_enabled: false
+    "true" ->
+      config :foreman_server, :schedule, ticker_enabled: true
+
+    "false" ->
+      config :foreman_server, :schedule, ticker_enabled: false
+
     nil ->
       :ok
 

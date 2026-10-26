@@ -283,12 +283,18 @@ defmodule ForemanServer.PrFix do
     limit = Application.get_env(:foreman_server, :pr_fix, [])[:log_tail_bytes] || 20_000
     size = byte_size(text)
 
-    excerpt =
-      if size > limit,
-        do: "…" <> (text |> binary_part(size - limit, limit) |> drop_leading_continuation()),
-        else: text
+    if size > limit do
+      # The marker is Foreman's own text, not log text: it goes on after the scrub.
+      "…" <> scrub_log(text |> binary_part(size - limit, limit) |> drop_leading_continuation())
+    else
+      scrub_log(text)
+    end
+  end
 
-    excerpt
+  # Log text is untrusted: valid UTF-8 first (the regex raises on invalid bytes), then
+  # ASCII only, then redacted.
+  defp scrub_log(bytes) do
+    bytes
     |> String.replace_invalid("?")
     |> String.replace(~r/[^\x00-\x7F]|\x00/u, "?")
     |> WorkerLogPolicy.redact()

@@ -29,6 +29,8 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
     gid = get(config, :gid) || host_id("-g")
     mounts = get(config, :mounts, [])
     network = get(config, :network)
+    env = get(config, :env, %{})
+    labels = get(config, :labels, %{})
     # Holds agent.env (credentials) and the exec shim, so it must live outside the
     # worktree: Foreman commits everything in the worktree and may push the branch.
     state_dir =
@@ -41,9 +43,11 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
       args =
         ["run", "-d", "--rm", "-v", "#{worktree.path}:#{sandbox_path}"] ++
           git_args ++
+          env_args(env) ++
           safe_directory_args(safe_dirs) ++
           mount_args(mounts) ++
           ["-w", sandbox_path, "-u", "#{uid}:#{gid}"] ++
+          label_args(labels) ++
           network_args(network) ++
           [image, "sleep", "infinity"]
 
@@ -228,6 +232,20 @@ defmodule ForemanServer.Jobsite.Sandboxes.Docker do
   end
 
   defp get(map, key, default \\ nil), do: Aggregate.get(map, key, default)
+
+  # The sandbox's `:env` is the CONTAINER's environment, so everything run in it (hooks, `exec/3`,
+  # the agent's shim, which layers its own env-file on top) sees it: under a network policy the
+  # proxy variables are the only way out. It is persisted with the sandbox config, so it is never
+  # a secret (the agent's own env travels in the 0600 env-file instead).
+  defp env_args(env), do: pair_args("-e", env)
+
+  defp label_args(labels), do: pair_args("--label", labels)
+
+  defp pair_args(flag, pairs) do
+    pairs
+    |> Enum.sort_by(fn {k, _v} -> to_string(k) end)
+    |> Enum.flat_map(fn {k, v} -> [flag, "#{k}=#{v}"] end)
+  end
 
   defp network_args(nil), do: []
   defp network_args(network), do: ["--network", network]

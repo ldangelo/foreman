@@ -9,7 +9,9 @@ defmodule ForemanServer.Overview.TabProvider do
   as `available: false` - honest capability reporting, not an empty list.
 
   A provider that raises is isolated by `Overview.Tabs`: only its own tab is
-  reported unavailable.
+  reported unavailable (a `tab/0` that raises is logged and skipped). Each tab
+  has exactly one provider: two providers naming the same tab, including a
+  configured one shadowing a built-in, make `Tabs.build/1` raise `ArgumentError`.
   """
 
   @callback tab() :: atom()

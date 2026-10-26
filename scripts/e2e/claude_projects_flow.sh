@@ -36,6 +36,9 @@
 # E2E_API_TOKEN, E2E_RUN_TIMEOUT (s, default 600), E2E_POLL_SECS, E2E_REVIEW=0 to skip the
 # review-archive step, E2E_TRANSCRIPT=<file>, E2E_KEEP=1 to keep everything for a post-mortem.
 # E2E_THREE_ONLY=1 runs only setup, step 1 and step 5b (the three-task paste and overlap assertion);
+# E2E_SCHEDULE_ONLY=1 runs only setup, step 1 and step 8 (scheduled tasks through the CLI: ticker running,
+# UTC/minimum refusals, an every-minute cron that really fires, pause/resume/delete); E2E_SCHEDULE_FIRE_SECS
+# (default 180) is the deadline for that first fire.
 # E2E_THREE_TASK_MAX_RUNS=1 forces the project to one run at a time for step 5b, so the overlap
 # assertion must FAIL (the evidence that it can). `bash claude_projects/overlap.sh` runs only the
 # stack-free self-test of the interval, paste and branch-read helpers.
@@ -51,6 +54,8 @@ E2E_NAME=cp
 . "$HERE/claude_projects/github.sh"
 # shellcheck source=claude_projects/overlap.sh
 . "$HERE/claude_projects/overlap.sh"
+# shellcheck source=claude_projects/notifications.sh
+. "$HERE/claude_projects/notifications.sh"
 
 check_environment
 github_prepare
@@ -312,6 +317,15 @@ step_notifications_usage() {
   [ "${n:-0}" -ge 1 ] && pass "notification sink received $n deliveries" || fail "notification sink received nothing"
   classes=$(jq -r '.body | (.event_class // .class // .kind // empty)' "$HOOK_CAPTURE" 2>/dev/null | sort | uniq -c | tr '\n' ';')
   note "delivery classes: ${classes:-none}"
+  # Any delivery of any class passes the count above. A finished run owes the sink ITS OWN run_update
+  # (preference every_turn, set in step 1): name the class and the run (the first thread's, finished in step 3).
+  notifications_selftest
+  if [ -z "${T1_RUN:-}" ]; then
+    fail "the first thread's run id is unknown, so its run_update delivery cannot be checked"
+  else
+    d=$(delivery_count "$HOOK_CAPTURE" run_update "$T1_RUN")
+    [ "${d:-0}" -ge 1 ] && pass "the sink received $d run_update delivery(ies) for run $T1_RUN" || fail "no run_update delivery for run $T1_RUN reached the sink (delivery classes: ${classes:-none})"
+  fi
   u=$(fm usage --project "$PROJECT" --format json 2>&1); urc=$?
   assert_eq "usage report exits 0" "$urc" "0"
   out "   usage: $(printf '%s' "$u" | tr '\n' ' ' | cut -c1-300)"
@@ -352,6 +366,134 @@ step_review() {
   assert_has "the verdict was posted as a comment on the source bead" "$cm" "verdict"
 }
 
+# ---------------------------------------------------------------- 8. scheduled tasks
+
+# refusal_matches <expected-body> <exit> <stderr> <stdout>: 0 only when the CLI exited 1, stderr
+# carries `foreman: HTTP 422: <expected-body>` VERBATIM and stdout never claimed `created schedule`.
+refusal_matches() {
+  [ "$2" = 1 ] || return 1
+  case "$3" in *"foreman: HTTP 422: $1"*) ;; *) return 1 ;; esac
+  case "$4" in *"created schedule"*) return 1 ;; esac
+  return 0
+}
+
+# schedule_refusal_selftest: stack-free proof that refusal_matches can fail (wrong body, wrong exit
+# code, a created line on stdout, a truncated body) as well as pass.
+schedule_refusal_selftest() {
+  sr_body='{"error":"{:invalid_schedule_spec, :timezone, :unsupported_timezone}"}'
+  sr_err="foreman: HTTP 422: $sr_body"
+  refusal_matches "$sr_body" 1 "$sr_err" "" && pass "refusal check accepts the exact 422 body" || fail "refusal check rejects the exact 422 body"
+  refusal_matches '{"error":"{:invalid_schedule_spec, :every, :below_minimum}"}' 1 "$sr_err" "" && fail "refusal check accepted a WRONG body" || pass "refusal check rejects a wrong body"
+  refusal_matches "$sr_body" 0 "$sr_err" "" && fail "refusal check accepted exit 0" || pass "refusal check rejects exit 0"
+  refusal_matches "$sr_body" 1 "$sr_err" "created schedule x in project y" && fail "refusal check accepted a created line" || pass "refusal check rejects a 'created schedule' line"
+  refusal_matches "$sr_body" 1 "foreman: HTTP 422: {\"error\":\"{:invalid_schedule_spec, :timezone" "" && fail "refusal check accepted a truncated body" || pass "refusal check rejects a truncated body"
+}
+
+# schedule_json: the project's schedules as the CLI prints them with --json
+schedule_json() { fm project schedule list --project-id "$PROJECT" --json 2>/dev/null; }
+
+# schedule_refused <what> <expected-body> <name> <create flags...>: the create is refused through the CLI
+schedule_refused() {
+  sf_what=$1; sf_body=$2; sf_name=$3; shift 3
+  sf_out=$(fm project schedule create --project-id "$PROJECT" --name "$sf_name" --prompt "never created" --workflow edit "$@" 2>"$WORK/sched-refused.err")
+  sf_rc=$?
+  sf_err=$(cat "$WORK/sched-refused.err")
+  if refusal_matches "$sf_body" "$sf_rc" "$sf_err" "$sf_out"; then
+    pass "$sf_what: exit 1, stderr carries the 422 body verbatim"
+  else
+    fail "$sf_what: exit $sf_rc, stderr '$(printf '%s' "$sf_err" | cut -c1-300)', stdout '$(printf '%s' "$sf_out" | cut -c1-200)'; expected 'foreman: HTTP 422: $sf_body'"
+  fi
+  note "stderr: $sf_err"
+  assert_eq "$sf_what: nothing persisted under that name" "$(schedule_json | jq --arg n "$sf_name" '[.schedules[]? | select(.name == $n)] | length')" "0"
+}
+
+step_schedule() {
+  say "8. scheduled tasks: ticker, UTC refusal, create, fire, pause/resume/delete"
+  schedule_refusal_selftest
+  ticker=$(schedule_json | jq -r '.ticker // empty')
+  if [ "$ticker" = running ]; then pass "the schedule ticker is running"; else fail "the schedule ticker is '$ticker', not 'running': schedules cannot fire"; fi
+
+  schedule_refused "--timezone America/Chicago" '{"error":"{:invalid_schedule_spec, :timezone, :unsupported_timezone}"}' "e2e-tz-$SUFFIX" \
+    --cron "* * * * *" --timezone America/Chicago
+  schedule_refused "--every 1m" '{"error":"{:invalid_schedule_spec, :every, :below_minimum}"}' "e2e-min-$SUFFIX" \
+    --every 1m
+  [ "$ticker" = running ] || { note "not creating a schedule: nothing could fire it"; return 1; }
+
+  sname="e2e-every-minute-$SUFFIX"
+  before=$(date +%s)
+  if sout=$(fm project schedule create --project-id "$PROJECT" --name "$sname" --cron "* * * * *" --timezone UTC --workflow edit \
+      --idempotency-key "e2e-sched-$SUFFIX" --prompt "Create a file named scheduled.txt containing exactly the single word SCHEDULED." 2>"$WORK/sched-create.err"); then
+    pass "schedule create accepted"
+  else
+    fail "schedule create rejected: $(cat "$WORK/sched-create.err") $sout"; return 1
+  fi
+  after=$(date +%s)
+  SID=$(printf '%s' "$sout" | sed -n 's/^created schedule \([^ ]*\) in project .*$/\1/p')
+  assert_eq "CLI says created" "$sout" "created schedule $SID in project $PROJECT"
+  [ -n "$SID" ] || { fail "no schedule id in the create output"; return 1; }
+  row=$(schedule_json | jq -c --arg id "$SID" '[.schedules[]? | select(.schedule_id == $id)][0] // empty')
+  note "schedule row: $row"
+  assert_eq "list shows the schedule active" "$(printf '%s' "$row" | jq -r '.status // empty')" "active"
+  nf=$(printf '%s' "$row" | jq -r '(.next_fire_at // empty) | sub("\\.[0-9]+"; "") | fromdateiso8601' 2>/dev/null)
+  if [ -n "$nf" ] && [ "$nf" -ge "$before" ] && [ "$nf" -le $((after + 60)) ]; then
+    pass "next_fire_at $(printf '%s' "$row" | jq -r '.next_fire_at') (unix $nf) is within 60s of creation ($before..$((after + 60)))"
+  else
+    fail "next_fire_at '$nf' not within $before..$((after + 60))"
+  fi
+
+  # first fire: at most ~90s away (next minute boundary, then the 30s ticker)
+  sw=$(date +%s); outcome=""
+  while :; do
+    outcome=$(schedule_json | jq -r --arg id "$SID" '[.schedules[]? | select(.schedule_id == $id)][0].last_outcome.kind // empty')
+    [ "$outcome" = fired ] && break
+    [ "$(elapsed "$sw")" -lt "${E2E_SCHEDULE_FIRE_SECS:-180}" ] || break
+    sleep "$E2E_POLL_SECS"
+  done
+  if [ "$outcome" = fired ]; then
+    pass "schedule fired after $(elapsed "$sw")s (last_outcome.kind=fired)"
+  else
+    fail "schedule never fired within ${E2E_SCHEDULE_FIRE_SECS:-180}s (last_outcome: $(schedule_json | jq -c --arg id "$SID" '[.schedules[]? | select(.schedule_id == $id)][0].last_outcome'))"
+  fi
+
+  prefix="sched-$SID-"
+  if [ "$outcome" = fired ]; then
+    thr=$(api_get "/api/projects/$PROJECT/threads" | jq -c --arg p "$prefix" '[.threads[]? | select((.task_id // "") | startswith($p))]')
+    note "scheduled threads: $(printf '%s' "$thr" | jq -c '[.[] | {id, task_id, status}]')"
+    assert_eq "exactly one thread/task id starts with $prefix" "$(printf '%s' "$thr" | jq 'length')" "1"
+    stask=$(printf '%s' "$thr" | jq -r '.[0].task_id // empty')
+    sthread=$(printf '%s' "$thr" | jq -r '.[0].id // empty')
+    slot=${stask#"$prefix"}
+    now=$(date +%s)
+    case "$slot" in
+      ''|*[!0-9]*) fail "slot '$slot' in task id '$stask' is not a unix second" ;;
+      *)
+        assert_eq "slot $slot is a minute boundary" "$((slot % 60))" "0"
+        if [ "$slot" -ge "$before" ] && [ "$slot" -le "$now" ]; then pass "slot $slot lies between creation ($before) and now ($now)"; else fail "slot $slot outside $before..$now"; fi ;;
+    esac
+    rn=0; srun=""
+    while [ -z "$srun" ] && [ "$rn" -lt 90 ]; do
+      srun=$(api_get "/api/threads/$sthread" | jq -r '.thread.run_ids[0] // empty')
+      [ -n "$srun" ] || { sleep 2; rn=$((rn + 2)); }
+    done
+    if [ -n "$srun" ]; then pass "the scheduled task started run $srun"; else fail "no run appeared on thread $sthread within 90s"; fi
+  fi
+
+  # pause / resume / delete right after the fire
+  st() { schedule_json | jq -r --arg id "$SID" '[.schedules[]? | select(.schedule_id == $id)][0].status // "absent"'; }
+  fm project schedule pause --project-id "$PROJECT" --id "$SID" >"$WORK/sched-pause.out" 2>&1 \
+    && assert_eq "pause output" "$(cat "$WORK/sched-pause.out")" "paused schedule $SID in project $PROJECT" || fail "schedule pause: $(cat "$WORK/sched-pause.out")"
+  assert_eq "list shows the schedule paused" "$(st)" "paused"
+  fm project schedule resume --project-id "$PROJECT" --id "$SID" >"$WORK/sched-resume.out" 2>&1 \
+    && assert_eq "resume output" "$(cat "$WORK/sched-resume.out")" "resumed schedule $SID in project $PROJECT" || fail "schedule resume: $(cat "$WORK/sched-resume.out")"
+  assert_eq "list shows the schedule active again" "$(st)" "active"
+  fm project schedule delete --project-id "$PROJECT" --id "$SID" >"$WORK/sched-delete.out" 2>&1 \
+    && assert_eq "delete output" "$(cat "$WORK/sched-delete.out")" "deleted schedule $SID in project $PROJECT" || fail "schedule delete: $(cat "$WORK/sched-delete.out")"
+  assert_eq "list no longer shows the schedule" "$(st)" "absent"
+  assert_eq "no schedule is left behind" "$(schedule_json | jq '.schedules | length')" "0"
+  assert_eq "nothing else fired: still exactly one $prefix thread after the delete" \
+    "$(api_get "/api/projects/$PROJECT/threads" | jq --arg p "$prefix" '[.threads[]? | select((.task_id // "") | startswith($p))] | length')" "$([ "$outcome" = fired ] && echo 1 || echo 0)"
+}
+
 # ---------------------------------------------------------------- main
 
 setup_stack
@@ -366,6 +508,12 @@ if [ "${E2E_THREE_ONLY:-0}" = 1 ]; then
   summary
   exit $?
 fi
+if [ "${E2E_SCHEDULE_ONLY:-0}" = 1 ]; then
+  step_project
+  step_schedule
+  summary
+  exit $?
+fi
 step_project
 step_memory_library
 if step_bead_thread; then
@@ -374,6 +522,7 @@ if step_bead_thread; then
   step_three_tasks
   step_notifications_usage
   step_review
+  step_schedule
 else
   note "skipping the dependent steps: the first thread failed"
 fi

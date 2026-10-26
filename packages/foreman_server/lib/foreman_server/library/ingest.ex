@@ -21,8 +21,11 @@ defmodule ForemanServer.Library.Ingest do
 
   The mirrored Claude limits come from `config :foreman_server, :library`
   (`max_files_per_add`, `max_file_bytes`, `folder_max_files`, `folder_max_bytes`,
-  `folder_skip_file_bytes`). Selection is deterministic: the same tree always
-  yields the same plan.
+  `folder_skip_file_bytes`). `upload_max_bytes`, the cap on the total size of ONE
+  add, is read through `limits/1` as well, so every transport that receives uploads
+  enforces the same number: `LibraryUploadParser` over HTTP, the workspace for
+  socket uploads. Selection is deterministic: the same tree always yields the
+  same plan.
 
   Relative paths are validated by `validate_relative_path/1`: empty, absolute,
   NUL-containing, `.`/`..`/empty segments and anything resolving outside the entry
@@ -50,7 +53,8 @@ defmodule ForemanServer.Library.Ingest do
       max_file_bytes: Keyword.get(config, :max_file_bytes, 480 * 1024 * 1024),
       folder_max_files: Keyword.get(config, :folder_max_files, 100),
       folder_max_bytes: Keyword.get(config, :folder_max_bytes, 200 * 1024 * 1024),
-      folder_skip_file_bytes: Keyword.get(config, :folder_skip_file_bytes, 30 * 1024 * 1024)
+      folder_skip_file_bytes: Keyword.get(config, :folder_skip_file_bytes, 30 * 1024 * 1024),
+      upload_max_bytes: Keyword.get(config, :upload_max_bytes, 512 * 1024 * 1024)
     }
     |> Map.merge(Map.new(overrides))
   end

@@ -12,7 +12,10 @@ defmodule ForemanServer.Notifier do
        only `:blocked` rows (failures, stalls, needs-input, approvals, CI
        failing, review not met); `every_turn` also delivers `:progress` rows
        (completions, PR ready, review recorded) and enables the `:run_update`
-       class for that notification even if the global config leaves it out.
+       class for that notification even if the global config leaves it out. An
+       event that names no project at all (a standalone jobsite) uses the
+       default; one that names a project the projection does not know is
+       skipped as `project_unresolved` and logged at warning.
     2. **Messaging config**: no enabled provider or an event class the config
        does not enable means nothing is enqueued (and no suppression event is
        written for every ignored event).
@@ -67,7 +70,12 @@ defmodule ForemanServer.Notifier do
   @type outcome ::
           {:notified, String.t()}
           | {:skipped,
-             :unmapped | :preference | :messaging_disabled | :pr_fix_jobsite | :rate_limited}
+             :unmapped
+             | :preference
+             | :project_unresolved
+             | :messaging_disabled
+             | :pr_fix_jobsite
+             | :rate_limited}
           | {:error, term()}
 
   @type status :: %{
@@ -116,8 +124,9 @@ defmodule ForemanServer.Notifier do
   Counters since boot: events turned into a notification (`notified`: enqueued,
   not yet delivered), refused by `Messaging.notify/2` or an invalid config
   (`errors`, with the redacted `last_error`), and mapped events skipped, by
-  reason (`preference`, `messaging_disabled`, `pr_fix_jobsite`,
-  `rate_limited`). Unmapped events are not counted: that is nearly every event.
+  reason (`preference`, `project_unresolved`, `messaging_disabled`,
+  `pr_fix_jobsite`, `rate_limited`). Unmapped events are not counted: that is
+  nearly every event.
   """
   @spec stats(GenServer.server()) :: stats()
   def stats(server \\ __MODULE__), do: GenServer.call(server, :stats)
@@ -175,18 +184,26 @@ defmodule ForemanServer.Notifier do
 
   @doc """
   Handles one projected event: returns the new state and what happened. Public
-  so the decision logic is testable without a subscription.
+  so the decision logic is testable without a subscription. This is where the
+  payload's keys are normalised, once (`Rule.normalize_payload!/1`) and only for
+  an event type the table maps (nearly every event is not: those are never
+  touched): everything below reads strings only. `payload` may be a map or a
+  typed event struct.
   """
   @spec process(state(), String.t(), map()) :: {state(), outcome()}
   def process(state, type, payload) when is_binary(type) and is_map(payload) do
-    {state, outcome} = decide(state, type, payload)
+    {state, outcome} =
+      if Mapping.mapped?(state.rules, type),
+        do: decide(state, type, Rule.normalize_payload!(payload)),
+        else: {state, {:skipped, :unmapped}}
+
     {count(state, outcome), outcome}
   end
 
   defp decide(state, type, payload) do
     with {:ok, rule} <- lookup(state, type, payload),
          project_id = project_id(payload),
-         preference = preference(project_id),
+         {:ok, preference} <- preference(project_id),
          :ok <- check_preference(preference, rule.level),
          opts = messaging_opts(preference),
          {:ok, config} <- resolve_config(opts),
@@ -220,12 +237,24 @@ defmodule ForemanServer.Notifier do
 
   # -- preference ------------------------------------------------------------
 
-  defp preference(nil), do: @default_preference
+  # An event that names no project at all (a standalone jobsite: `JobsiteStarted.project_id` is
+  # nullable) has nothing to resolve, so the default applies. An event that names a project the
+  # projection does not know is a dangling reference: that project can neither have opted out nor
+  # be asked, so the event is skipped and counted, never delivered under the default that exists
+  # for "no preference set" (AGENTS.md 5.3, absent is not malformed).
+  defp preference(nil), do: {:ok, @default_preference}
 
   defp preference(project_id) do
     case ProjectionStore.project_settings(project_id) do
-      %ProjectSettings{notification_preference: pref} when is_binary(pref) -> pref
-      _ -> @default_preference
+      %ProjectSettings{notification_preference: pref} when is_binary(pref) ->
+        {:ok, pref}
+
+      %ProjectSettings{notification_preference: nil} ->
+        {:ok, @default_preference}
+
+      nil ->
+        Logger.warning("notifier: event names project #{project_id}, which is not known; skipped")
+        {:skip, :project_unresolved}
     end
   end
 

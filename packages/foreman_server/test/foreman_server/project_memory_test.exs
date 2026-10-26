@@ -165,6 +165,20 @@ defmodule ForemanServer.ProjectMemoryTest do
       assert {:ok, "- [a](a.md) - d\n"} = ProjectMemory.index(p)
     end
 
+    test "an unreadable sibling topic fails the forget with the topic still on disk and no event",
+         %{project_id: p, dir: dir} do
+      {:ok, _} = ProjectMemory.write(p, attrs("a", "keep me"), @agent)
+      events_before = length(stream_events(p))
+      # A directory named like a topic file cannot be read as a topic.
+      File.mkdir_p!(mem(dir, "bad.md"))
+
+      assert {:error, %Error{code: :write_failed}} = ProjectMemory.forget(p, "a", @operator)
+
+      assert File.read!(mem(dir, "a.md")) =~ "keep me"
+      assert length(stream_events(p)) == events_before
+      assert [%{name: "a"}] = ProjectionStore.project_memory(p)
+    end
+
     test "write A, change to B, write A again records all three audit events", %{project_id: p} do
       {:ok, _} = ProjectMemory.write(p, attrs("a", "A"), @agent)
       {:ok, _} = ProjectMemory.write(p, attrs("a", "B"), @agent)

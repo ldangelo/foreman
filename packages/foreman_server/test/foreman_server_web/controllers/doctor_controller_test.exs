@@ -223,8 +223,7 @@ defmodule ForemanServerWeb.DoctorControllerTest do
 
       send(
         Notifier,
-        {:projection_event,
-         %{event_type: "RunFailed", data: %{run_id: run_id, project_id: "doctor-p", reason: "x"}}}
+        {:projection_event, %{event_type: "RunFailed", data: %{run_id: run_id, reason: "x"}}}
       )
 
       # The call is answered after the event above was handled.

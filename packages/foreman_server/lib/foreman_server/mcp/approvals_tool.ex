@@ -1,22 +1,22 @@
 defmodule ForemanServer.MCP.ApprovalsTool do
   @moduledoc """
   Implementation of the read-only `foreman_approvals_list` MCP tool: a project's
-  (or one run's) tool-call permission requests as `ForemanServer.Approvals.DTO`
-  maps. There is deliberately no MCP tool that decides a request: deciding is the
-  operator's `tool.approve` / `tool.deny` command over `POST /api/commands` or the
-  CLI.
+  (or one run's) tool-call permission requests as a `ForemanServer.Approvals.Listing`
+  (the same typed payload the HTTP list endpoints return). There is deliberately no
+  MCP tool that decides a request: deciding is the operator's `tool.approve` /
+  `tool.deny` command over `POST /api/commands` or the CLI.
   """
 
-  alias ForemanServer.Approvals.DTO
+  alias ForemanServer.Approvals.Listing
   alias ForemanServer.MCP.ToolError
   alias ForemanServer.{ProjectStore, ProjectionStore}
 
   @doc "Run the tool for `args` (atom keys: `project_id` or `run_id`, optional `status`)."
-  @spec call(map()) :: {:ok, map()} | {:error, ToolError.t()}
+  @spec call(map()) :: {:ok, Listing.t()} | {:error, ToolError.t()}
   def call(args) when is_map(args) do
     with {:ok, status} <- status(Map.get(args, :status)),
          {:ok, calls} <- read(args, status) do
-      {:ok, %{"approvals" => DTO.list(calls)}}
+      {:ok, Listing.build(calls)}
     end
   end
 

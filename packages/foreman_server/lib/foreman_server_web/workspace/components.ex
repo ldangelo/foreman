@@ -9,7 +9,9 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   use Phoenix.Component
 
+  alias ForemanServer.Library
   alias ForemanServer.Overview.{Group, ThreadCard}
+  alias ForemanServerWeb.Workspace.LibraryUpload
   alias Phoenix.LiveView.UploadConfig
 
   @group_titles %{
@@ -169,6 +171,72 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp approval_note(%{approval_delivery: "inflight"}), do: "the agent is waiting on this call"
   defp approval_note(_approval), do: "approving resumes the paused run"
 
+  attr(:questions, :list, required: true)
+
+  @doc """
+  The project's open operator questions (`Questions.DTO`, oldest first), each with the
+  form that answers it. Nothing is rendered when none is open. Question text and the
+  asker are agent-authored: HEEx escapes them.
+  """
+  def questions_pane(assigns) do
+    ~H"""
+    <section :if={@questions != []} id="questions-pane" aria-labelledby="questions-heading">
+      <h2 id="questions-heading">
+        Questions for you <span class="ws-muted">({length(@questions)})</span>
+      </h2>
+      <article
+        :for={q <- @questions}
+        class="ws-card"
+        id={question_dom_id(q)}
+        aria-labelledby={question_dom_id(q) <> "-text"}
+      >
+        <p class="ws-msg" id={question_dom_id(q) <> "-text"}>{q.text || "The agent asked without a question text."}</p>
+        <p class="ws-muted">{question_meta(q)}</p>
+        <form id={question_dom_id(q) <> "-form"} phx-submit="answer_question">
+          <input type="hidden" name="run_id" value={q.run_id} />
+          <input type="hidden" name="question_id" value={q.question_id} />
+          <%!-- phx-update="ignore": LiveView rewrites an input the browser does not have focused from the
+               server's markup, which would wipe a typed answer at the next refresh. The text belongs to
+               the browser until it is submitted or the question leaves the pane. --%>
+          <label>
+            <span>Your answer</span>
+            <textarea id={question_dom_id(q) <> "-answer"} name="text" rows="3" maxlength="8000" required phx-update="ignore" aria-describedby={question_dom_id(q) <> "-text"}></textarea>
+          </label>
+          <button type="submit">Answer</button>
+        </form>
+      </article>
+    </section>
+    """
+  end
+
+  defp question_dom_id(q), do: "question-#{q.run_id}-#{q.question_id}"
+
+  # Who asked, in which run (a question outside any run says nothing) and when.
+  defp question_meta(q) do
+    [
+      q.agent_id && "asked by #{q.agent_id}",
+      q.run_id != ForemanServer.Aggregates.OperatorQuestion.global_run() && "run #{q.run_id}",
+      q.opened_at
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
+  end
+
+  # The plain buttons of a thread card: `ThreadCard` action id => {the `thread_action` event
+  # value it sends, its label}. The values the page accepts (`thread_actions/0`) come from this
+  # table, so a card cannot offer a button the page would refuse. An action id with no
+  # control at all (not here, not `run.cancel`, not `thread.steer`) raises when rendered.
+  @thread_buttons %{
+    "run.pause" => {"pause", "Pause"},
+    "run.resume" => {"resume", "Resume"},
+    "thread.resolve" => {"resolve", "Resolve"},
+    "thread.reopen" => {"reopen", "Reopen"}
+  }
+
+  @doc "The `thread_action` event values the thread cards send."
+  @spec thread_actions() :: [String.t()]
+  def thread_actions, do: for({value, _label} <- Map.values(@thread_buttons), do: value)
+
   attr(:action, :string, required: true)
   attr(:card, ThreadCard, required: true)
   attr(:confirm_stop, :string, default: nil)
@@ -185,27 +253,12 @@ defmodule ForemanServerWeb.Workspace.Components do
     """
   end
 
-  defp action_control(%{action: "run.pause"} = assigns) do
-    ~H"""
-    <button type="button" phx-click="thread_action" phx-value-action="pause" phx-value-thread-id={@card.thread_id}>Pause</button>
-    """
-  end
+  defp action_control(%{action: action} = assigns) when is_map_key(@thread_buttons, action) do
+    {value, label} = Map.fetch!(@thread_buttons, action)
+    assigns = assign(assigns, value: value, label: label)
 
-  defp action_control(%{action: "run.resume"} = assigns) do
     ~H"""
-    <button type="button" phx-click="thread_action" phx-value-action="resume" phx-value-thread-id={@card.thread_id}>Resume</button>
-    """
-  end
-
-  defp action_control(%{action: "thread.resolve"} = assigns) do
-    ~H"""
-    <button type="button" phx-click="thread_action" phx-value-action="resolve" phx-value-thread-id={@card.thread_id}>Resolve</button>
-    """
-  end
-
-  defp action_control(%{action: "thread.reopen"} = assigns) do
-    ~H"""
-    <button type="button" phx-click="thread_action" phx-value-action="reopen" phx-value-thread-id={@card.thread_id}>Reopen</button>
+    <button type="button" phx-click="thread_action" phx-value-action={@value} phx-value-thread-id={@card.thread_id}>{@label}</button>
     """
   end
 
@@ -275,8 +328,13 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:tabs, :map, required: true)
   attr(:schedules, :list, required: true)
   attr(:upload, UploadConfig, required: true)
+  attr(:folder_upload, UploadConfig, required: true)
+  attr(:replace_upload, UploadConfig, required: true)
   attr(:library_name, :string, default: "")
+  attr(:library_folder_name, :string, default: "")
   attr(:confirm_remove, :string, default: nil)
+  attr(:replace_entry, :map, default: nil)
+  attr(:open_entry, :map, default: nil)
   attr(:library_limits, :map, required: true)
 
   @doc "Library / Pull requests / Scheduled tabs."
@@ -294,8 +352,13 @@ defmodule ForemanServerWeb.Workspace.Components do
           tabs={@tabs}
           schedules={@schedules}
           upload={@upload}
+          folder_upload={@folder_upload}
+          replace_upload={@replace_upload}
           library_name={@library_name}
+          library_folder_name={@library_folder_name}
           confirm_remove={@confirm_remove}
+          replace_entry={@replace_entry}
+          open_entry={@open_entry}
           library_limits={@library_limits}
         />
       </div>
@@ -335,15 +398,20 @@ defmodule ForemanServerWeb.Workspace.Components do
       <li :for={row <- @data.rows} id={"library-entry-#{row["entry_id"]}"}>
         <strong>{row["name"]}</strong>
         <span class="ws-muted"> · {row["kind"]} · {files_label(row["file_count"])} · {format_bytes(row["bytes"])}</span>
+        <button type="button" phx-click="library_files" phx-value-entry-id={row["entry_id"]} aria-expanded={to_string(for_row?(@open_entry, row))}>Files of {row["name"]}</button>
+        <button :if={row["kind"] in ["file", "folder"]} type="button" phx-click="library_replace_open" phx-value-entry-id={row["entry_id"]}>Replace {row["name"]}</button>
         <%= if @confirm_remove == row["entry_id"] do %>
           <button type="button" phx-click="library_remove" phx-value-entry-id={row["entry_id"]}>Confirm remove {row["name"]}</button>
           <button type="button" phx-click="library_cancel_remove">Cancel</button>
         <% else %>
           <button type="button" phx-click="library_confirm_remove" phx-value-entry-id={row["entry_id"]}>Remove {row["name"]}</button>
         <% end %>
+        <.entry_files :if={for_row?(@open_entry, row)} entry={@open_entry} name={row["name"]} />
+        <.replace_form :if={for_row?(@replace_entry, row)} entry={@replace_entry} name={row["name"]} upload={@replace_upload} library_limits={@library_limits} />
       </li>
     </ul>
     <.library_upload upload={@upload} library_name={@library_name} library_limits={@library_limits} />
+    <.library_folder_upload upload={@folder_upload} folder_name={@library_folder_name} library_limits={@library_limits} />
     """
   end
 
@@ -364,19 +432,46 @@ defmodule ForemanServerWeb.Workspace.Components do
     """
   end
 
+  # True when `state` (`%{entry_id: ...}`: the open file list or the replace form) belongs to the row.
+  defp for_row?(%{entry_id: id}, %{"entry_id" => id}), do: true
+  defp for_row?(_state, _row), do: false
+
+  attr(:entry, :map, required: true)
+  attr(:name, :string, required: true)
+
+  # The files of one entry, each with a Download button that asks the server for its bytes
+  # (`Library.read/3`: at most `Library.read_max_bytes/0`; bigger files are listed without one).
+  defp entry_files(assigns) do
+    assigns = assign(assigns, :read_max, Library.read_max_bytes())
+
+    ~H"""
+    <ul id={"library-files-#{@entry.entry_id}"} aria-label={"Files of " <> @name}>
+      <li :for={file <- @entry.files}>
+        <span>{file.path}</span>
+        <span class="ws-muted">({format_bytes(file.bytes)})</span>
+        <button :if={file.bytes <= @read_max} type="button" phx-click="library_download" phx-value-entry-id={@entry.entry_id} phx-value-path={file.path}>Download {file.path}</button>
+        <span :if={file.bytes > @read_max} class="ws-muted">over the {format_bytes(@read_max)} read limit</span>
+      </li>
+    </ul>
+    """
+  end
+
   attr(:upload, UploadConfig, required: true)
   attr(:library_name, :string, required: true)
   attr(:library_limits, :map, required: true)
 
-  # Files are uploaded over the LiveView socket (`allow_upload/3`, same count and
-  # size limits as `POST /api/projects/:id/library`) and added in ONE entry.
+  # Files are uploaded over the LiveView socket (`allow_upload/3`, same count and size
+  # limits as `POST /api/projects/:id/library`, plus the cap on the whole add:
+  # `LibraryUpload`) and added in ONE entry.
   defp library_upload(assigns) do
+    assigns = assign(assigns, :over_cap, over_cap(assigns.upload, assigns.library_limits))
+
     ~H"""
     <form id="library-form" phx-submit="library_add" phx-change="library_validate">
       <fieldset>
         <legend>Add files</legend>
         <p id="library-limits" class="ws-muted">
-          Up to {@library_limits.max_entries} files per add, {format_bytes(@library_limits.max_file_bytes)} each.
+          {files_limits(@library_limits)}
           Agents read them, read-only, from $FOREMAN_LIBRARY_PATH.
         </p>
         <div>
@@ -394,20 +489,150 @@ defmodule ForemanServerWeb.Workspace.Components do
             <span class="ws-muted">({format_bytes(entry.client_size)})</span>
             <progress :if={entry.progress > 0} value={entry.progress} max="100" aria-label={"Upload progress of " <> entry.client_name}>{entry.progress}%</progress>
             <button type="button" phx-click="library_cancel_upload" phx-value-ref={entry.ref} aria-label={"Cancel upload of " <> entry.client_name}>Cancel upload</button>
-            <span :for={error <- upload_errors(@upload, entry)} class="ws-error" role="alert">{upload_error_text(error)}</span>
+            <span :for={error <- upload_errors(@upload, entry)} class="ws-error" role="alert">{upload_error_text(error, :files, @upload.max_entries)}</span>
           </li>
         </ul>
-        <p :for={error <- upload_errors(@upload)} class="ws-error" role="alert">{upload_error_text(error)}</p>
-        <button type="submit">Add to library</button>
+        <p :for={error <- upload_errors(@upload)} class="ws-error" role="alert">{upload_error_text(error, :files, @upload.max_entries)}</p>
+        <p :if={@over_cap} class="ws-error" role="alert">{cap_message(@over_cap, @library_limits.upload_max_bytes)}</p>
+        <button type="submit" disabled={@over_cap != nil}>Add to library</button>
       </fieldset>
     </form>
     """
   end
 
-  defp upload_error_text(:too_large), do: "This file is over the per-file limit."
-  defp upload_error_text(:too_many_files), do: "Too many files: cancel some of them."
-  defp upload_error_text(:not_accepted), do: "This kind of file is not accepted."
-  defp upload_error_text(_other), do: "This file could not be uploaded."
+  attr(:upload, UploadConfig, required: true)
+  attr(:folder_name, :string, required: true)
+  attr(:library_limits, :map, required: true)
+
+  # A folder (`webkitdirectory`): the browser sends every file with its path below the
+  # chosen folder, and the library applies its folder rules (`Library.Ingest`) to them.
+  defp library_folder_upload(assigns) do
+    assigns = assign(assigns, :over_cap, over_cap(assigns.upload, assigns.library_limits))
+
+    ~H"""
+    <form id="library-folder-form" phx-submit="library_folder_add" phx-change="library_folder_validate">
+      <fieldset>
+        <legend>Add a folder</legend>
+        <p id="library-folder-limits" class="ws-muted">
+          {folder_limits(@library_limits)}
+          Agents read it, read-only, from $FOREMAN_LIBRARY_PATH.
+        </p>
+        <div>
+          <label for="library_folder_name">Name (optional)</label>
+          <input id="library_folder_name" type="text" name="name" value={@folder_name} maxlength="128" autocomplete="off" aria-describedby="library-folder-name-help" />
+          <p id="library-folder-name-help" class="ws-muted">Letters, digits, spaces, dashes and underscores. Left blank, the entry is named after the folder; when that is not a valid name, it is named folder.</p>
+        </div>
+        <div>
+          <label for={@upload.ref}>Folder</label>
+          <.live_file_input upload={@upload} webkitdirectory aria-describedby="library-folder-limits" />
+        </div>
+        <.selection id="library-folder-selected" upload={@upload} form={:folder} library_limits={@library_limits} />
+        <p :if={@over_cap} class="ws-error" role="alert">{cap_message(@over_cap, @library_limits.upload_max_bytes)}</p>
+        <button :if={@upload.entries != []} type="button" phx-click="library_folder_clear">Clear selection</button>
+        <button type="submit" disabled={@over_cap != nil}>Add folder</button>
+      </fieldset>
+    </form>
+    """
+  end
+
+  attr(:entry, :map, required: true)
+  attr(:name, :string, required: true)
+  attr(:upload, UploadConfig, required: true)
+  attr(:library_limits, :map, required: true)
+
+  # Replaces the files of ONE entry in place (`Library.replace/5`: id, name and kind stay):
+  # a folder entry takes a folder (`webkitdirectory`), a file entry takes files.
+  defp replace_form(assigns) do
+    assigns =
+      assigns
+      |> assign(:folder?, assigns.entry.kind == :folder)
+      |> assign(:over_cap, over_cap(assigns.upload, assigns.library_limits))
+
+    ~H"""
+    <form id="library-replace-form" phx-submit="library_replace" phx-change="library_replace_validate">
+      <fieldset>
+        <legend>Replace {@name}</legend>
+        <p id="library-replace-limits" class="ws-muted">
+          {if @folder?, do: folder_limits(@library_limits), else: files_limits(@library_limits)}
+          The entry keeps its name; its current files are removed.
+        </p>
+        <div>
+          <label for={@upload.ref}>{if @folder?, do: "Folder that replaces", else: "Files that replace"} {@name}</label>
+          <.live_file_input upload={@upload} webkitdirectory={@folder?} aria-describedby="library-replace-limits" />
+        </div>
+        <.selection id="library-replace-selected" upload={@upload} form={if @folder?, do: :folder, else: :replace_files} library_limits={@library_limits} />
+        <p :if={@over_cap} class="ws-error" role="alert">{cap_message(@over_cap, @library_limits.upload_max_bytes)}</p>
+        <button type="submit" disabled={@over_cap != nil}>Replace files</button>
+        <button type="button" phx-click="library_replace_cancel">Cancel replacing {@name}</button>
+      </fieldset>
+    </form>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:upload, UploadConfig, required: true)
+  attr(:form, :atom, required: true)
+  attr(:library_limits, :map, required: true)
+
+  # What a folder or a replacement upload holds so far: the paths, sizes, progress and
+  # errors. The selection is dropped as a whole (the form's own button), not file by file.
+  defp selection(assigns) do
+    ~H"""
+    <ul :if={@upload.entries != []} id={@id} aria-label="Selected files">
+      <li :for={entry <- @upload.entries} id={"#{@id}-#{entry.ref}"}>
+        <span>{entry_path(entry)}</span>
+        <span class="ws-muted">({format_bytes(entry.client_size)})</span>
+        <progress :if={entry.progress > 0} value={entry.progress} max="100" aria-label={"Upload progress of " <> entry_path(entry)}>{entry.progress}%</progress>
+        <span :for={error <- upload_errors(@upload, entry)} class="ws-error" role="alert">{upload_error_text(error, @form, @upload.max_entries)}</span>
+      </li>
+    </ul>
+    <p :for={error <- upload_errors(@upload)} class="ws-error" role="alert">{upload_error_text(error, @form, @upload.max_entries)}</p>
+    """
+  end
+
+  # `webkitRelativePath` is "" for a file that was not picked as part of a folder.
+  defp entry_path(%{client_relative_path: rel, client_name: name}) when rel in [nil, ""], do: name
+  defp entry_path(%{client_relative_path: rel}), do: rel
+
+  defp over_cap(upload, limits),
+    do: LibraryUpload.declared_over_cap(upload, limits.upload_max_bytes)
+
+  defp files_limits(limits) do
+    "Up to #{limits.max_files_per_add} files per add, " <>
+      "#{format_bytes(LibraryUpload.max_file_size(limits))} each. " <>
+      "At most #{format_bytes(limits.upload_max_bytes)} in all."
+  end
+
+  defp folder_limits(limits) do
+    "Up to #{limits.folder_max_files} files and #{format_bytes(limits.folder_max_bytes)} per folder; " <>
+      "hidden files, node_modules and files over #{format_bytes(limits.folder_skip_file_bytes)} " <>
+      "are left out. At most #{format_bytes(limits.upload_max_bytes)} in all."
+  end
+
+  @doc "The refusal of an upload over `upload_max_bytes`, naming both sizes."
+  @spec cap_message(non_neg_integer(), pos_integer()) :: String.t()
+  def cap_message(bytes, max) do
+    "These files add up to #{format_bytes(bytes)}; at most #{format_bytes(max)} can be added at once."
+  end
+
+  defp upload_error_text(:too_large, _form, _max_entries),
+    do: "This file is over the per-file limit."
+
+  defp upload_error_text(:too_many_files, :folder, max_entries) do
+    "More than #{max_entries} files are selected, hidden files and node_modules included. " <>
+      "Add this folder with foreman project library add: it leaves those out before uploading."
+  end
+
+  defp upload_error_text(:too_many_files, :replace_files, max_entries),
+    do: "Too many files: choose at most #{max_entries}."
+
+  defp upload_error_text(:too_many_files, :files, _max_entries),
+    do: "Too many files: cancel some of them."
+
+  defp upload_error_text(:not_accepted, _form, _max_entries),
+    do: "This kind of file is not accepted."
+
+  defp upload_error_text(_other, _form, _max_entries), do: "This file could not be uploaded."
 
   defp files_label(1), do: "1 file"
   defp files_label(count), do: "#{count} files"

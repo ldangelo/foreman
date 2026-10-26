@@ -105,7 +105,57 @@ defmodule ForemanServer.ProjectContextTest do
 
       assert String.starts_with?(long, kept)
       assert String.ends_with?(kept, "padding")
-      assert byte_size(kept) <= 16_000
+      assert String.length(kept) <= 16_000
+    end
+
+    # The settings validator counts `String.length/1` characters (16 000 for instructions), so a
+    # text it accepted must reach the agent whole, whatever its encoded size. Counting BYTES cut
+    # these at 16 000 bytes (the default cap) / 24 000 bytes (the budget) with a truncation marker.
+    for {label, char} <- [two_byte: "é", three_byte: "日", four_byte: "😀"] do
+      test "in-limit #{label} instructions (16 000 characters) are delivered whole, unmarked" do
+        instructions = String.duplicate(unquote(char), 16_000)
+        assert byte_size(instructions) > 24_000
+        id = "mb-#{unquote(label)}"
+        register(id, %{instructions: instructions})
+
+        {:ok, bundle} = ProjectContext.build(id, section_providers: [])
+
+        assert bundle.truncated == []
+        refute bundle.system_text =~ "[truncated:"
+        assert bundle.system_text =~ "## Project instructions\n" <> instructions
+        assert bundle.bytes == byte_size(bundle.system_text)
+      end
+    end
+
+    test "characters are counted as graphemes: a combining sequence is one character, like the validator" do
+      # "e" + U+0301 is two codepoints, three bytes, ONE character: 16 000 of them pass the
+      # 16 000-character settings limit, and must not be cut by a codepoint or byte count.
+      instructions = String.duplicate("e\u0301", 16_000)
+      assert String.length(instructions) == 16_000
+      assert length(String.codepoints(instructions)) == 32_000
+      register("mb-grapheme", %{instructions: instructions})
+
+      {:ok, bundle} = ProjectContext.build("mb-grapheme", section_providers: [])
+
+      assert bundle.truncated == []
+      assert bundle.system_text =~ "## Project instructions\n" <> instructions
+    end
+
+    test "the instructions cap is 16 000 characters, not bytes, when a longer text is cut" do
+      # Not reachable through the settings validator (it refuses 16 001), but a projection can
+      # hold more: the cut must land on the character cap and report what it omitted in bytes.
+      instructions = String.duplicate("日", 16_500)
+      register("mb-over", %{instructions: instructions})
+
+      {:ok, bundle} = ProjectContext.build("mb-over", section_providers: [])
+
+      assert [%{section: :instructions, omitted_bytes: omitted, omitted_lines: 1}] =
+               bundle.truncated
+
+      assert omitted == 500 * byte_size("日")
+      [_, body] = String.split(bundle.system_text, "## Project instructions\n", parts: 2)
+      [kept | _] = String.split(body, "\n[truncated:")
+      assert kept == String.duplicate("日", 16_000)
     end
 
     test "secret values never reach the text" do
@@ -120,7 +170,7 @@ defmodule ForemanServer.ProjectContextTest do
   end
 
   describe "assemble/3 budget" do
-    test "multi-byte text is never split mid-codepoint" do
+    test "multi-byte text is cut at the character cap, never mid-codepoint" do
       body = String.duplicate("€", 5_000)
 
       bundle =
@@ -132,7 +182,25 @@ defmodule ForemanServer.ProjectContextTest do
         )
 
       assert String.valid?(bundle.system_text)
-      assert bundle.system_text =~ "[truncated:"
+      [_, rest] = String.split(bundle.system_text, "## Project instructions\n", parts: 2)
+      [kept | _] = String.split(rest, "\n[truncated:")
+      assert kept == String.duplicate("€", 1_000)
+    end
+
+    test "the total budget is counted in characters: multi-byte text under it is not cut" do
+      body = String.duplicate("日", 2_000)
+      assert byte_size(body) > 3_000
+
+      bundle =
+        ProjectContext.assemble(
+          [Section.new(:instructions, "Project instructions", body)],
+          nil,
+          secrets: [],
+          max_chars: 3_000
+        )
+
+      assert bundle.truncated == []
+      assert bundle.system_text =~ body
     end
 
     test "total budget shrinks library first, then memory; instructions survive" do
@@ -148,11 +216,11 @@ defmodule ForemanServer.ProjectContextTest do
       bundle =
         ProjectContext.assemble(sections, nil,
           secrets: [],
-          max_bytes: 3_000,
+          max_chars: 3_000,
           section_caps: %{memory: 6_000, library: 3_000}
         )
 
-      assert byte_size(bundle.system_text) <= 3_000
+      assert String.length(bundle.system_text) <= 3_000
       assert bundle.system_text =~ "rule 100"
       ids = Enum.map(bundle.truncated, & &1.section)
       assert :library in ids

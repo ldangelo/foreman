@@ -23,7 +23,7 @@ defmodule ForemanServer.Jobsite.AgentRunner do
 
   require Logger
 
-  alias ForemanServer.AgentRuntime.JidoHarness.Driver
+  alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ForkSession}
   alias ForemanServer.Jobsite.{Error, IterationResult, Sandbox}
   alias Jido.Harness.{Run, RunInfo, RunRequest, RunResult}
 
@@ -155,14 +155,10 @@ defmodule ForemanServer.Jobsite.AgentRunner do
     {resume_session, %{}}
   end
 
-  defp resolve_session_opts(:pi, nil, fork_session)
-       when is_binary(fork_session) and fork_session != "" do
-    {nil, %{fork_session: fork_session}}
-  end
-
-  defp resolve_session_opts(:claude, nil, fork_session)
-       when is_binary(fork_session) and fork_session != "" do
-    {fork_session, %{fork_session: true}}
+  # The provider -> harness fork options mapping is `ForkSession`'s (also used by the workflow door).
+  defp resolve_session_opts(provider, nil, fork_session)
+       when provider in [:pi, :claude] and is_binary(fork_session) and fork_session != "" do
+    ForkSession.harness_options(provider, fork_session)
   end
 
   defp resolve_session_opts(_provider, _resume_session, _fork_session), do: {nil, %{}}

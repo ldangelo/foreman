@@ -23,6 +23,34 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
                    2_000
   end
 
+  # One pending tool call and one open question of `subject` (a run or jobsite id), both
+  # recorded under `project`, folded straight into the projection.
+  defp pending_needs_you!(subject, project) do
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ToolCallRequested",
+          payload: %{
+            run_id: subject,
+            tool_call_id: "call-" <> subject,
+            tool_name: "Bash",
+            project_id: project,
+            requested_at: "2026-10-25T00:00:00Z"
+          }
+        },
+        %{
+          event_type: "QuestionOpened",
+          payload: %{
+            run_id: subject,
+            question_id: "q-" <> subject,
+            project_id: project,
+            text: "which one?",
+            at: "2026-10-25T00:00:01Z"
+          }
+        }
+      ])
+  end
+
   setup %{tmp_dir: tmp} do
     id = uid()
     repo = Path.join(tmp, "repo")
@@ -57,6 +85,46 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     refute ctx.run in Enum.map(ProjectionStore.list_runs(project_id: ctx.a), & &1.run_id)
 
     assert {:ok, %{"project_id" => ^b, "adopted_from" => ^a}} = Archive.read_manifest(dir)
+  end
+
+  # The project-scoped lists filter on the project id stored with each request, while the
+  # Overview counts follow the run id: a move must re-home the stored ids too, or the target
+  # project's lists lose pending items its Overview still counts.
+  test "adopting a terminal run re-homes its pending approval and question into the target project",
+       ctx do
+    seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: true})
+    pending_needs_you!(ctx.run, ctx.a)
+    await_adopted()
+
+    assert {:ok, %{adopted?: true}} = AdoptionService.adopt("run", ctx.run, ctx.b)
+    assert_adopted(ctx.run)
+
+    run = ctx.run
+    b = ctx.b
+
+    assert [%{run_id: ^run, tool_call_id: _, project_id: ^b}] =
+             ProjectionStore.project_approvals(b)
+
+    assert [%{run_id: ^run, question_id: _, project_id: ^b}] =
+             ProjectionStore.project_questions(b)
+
+    assert ProjectionStore.project_approvals(ctx.a) == []
+    assert ProjectionStore.project_questions(ctx.a) == []
+
+    # Another run of the source project keeps its own pending items where they were.
+    other = ctx.run <> "-stay"
+
+    seed_run!(%{
+      project: ctx.a,
+      run: other,
+      task: ctx.task <> "-stay",
+      repo: ctx.repo,
+      terminal?: true
+    })
+
+    pending_needs_you!(other, ctx.a)
+    assert [%{run_id: ^other}] = ProjectionStore.project_approvals(ctx.a)
+    assert [%{run_id: ^other}] = ProjectionStore.project_questions(ctx.a)
   end
 
   test "the move survives a per-project rebuild of the source and the target", ctx do
@@ -179,7 +247,7 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
     dir = archive!(ctx.repo, ctx.run, ctx.a)
     before = File.read!(Path.join(dir, "manifest.json"))
 
-    assert {:ok, %{mode: "continue", new_task_id: new_task}} =
+    assert {:ok, %{mode: "context_seeded", new_task_id: new_task}} =
              AdoptionService.continue("run", ctx.run, ctx.b, "also add /readyz")
 
     assert File.read!(Path.join(dir, "manifest.json")) == before
@@ -444,6 +512,21 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
                Archive.read_manifest(dir)
     end
 
+    test "a finished jobsite's pending approval and question move with it", ctx do
+      js = "js-#{ctx.id}"
+      seed_jobsite!(%{project: ctx.a, jobsite: js, repo: ctx.repo, terminal?: true})
+      pending_needs_you!(js, ctx.a)
+      await_adopted()
+
+      assert {:ok, %{adopted?: true}} = AdoptionService.adopt("jobsite", js, ctx.b)
+      assert_adopted(js)
+
+      assert [%{run_id: ^js}] = ProjectionStore.project_approvals(ctx.b)
+      assert [%{run_id: ^js}] = ProjectionStore.project_questions(ctx.b)
+      assert ProjectionStore.project_approvals(ctx.a) == []
+      assert ProjectionStore.project_questions(ctx.a) == []
+    end
+
     test "a running jobsite cannot be moved", ctx do
       js = "js-#{ctx.id}"
       seed_jobsite!(%{project: ctx.a, jobsite: js, repo: ctx.repo, terminal?: false})
@@ -460,7 +543,7 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
       dir = archive!(:jobsite, ctx.repo, js, ctx.a)
       before = File.read!(Path.join(dir, "manifest.json"))
 
-      assert {:ok, %{mode: "continue", new_task_id: task, from_project_id: from}} =
+      assert {:ok, %{mode: "context_seeded", new_task_id: task, from_project_id: from}} =
                AdoptionService.continue("jobsite", js, ctx.b, "also add /readyz")
 
       assert from == ctx.a

@@ -172,6 +172,58 @@ defmodule ForemanServer.Jobsite.WorktreeSyncRemoteTest do
       assert File.read!(Path.join(existing, "wip.txt")) == "unsaved\n"
     end
 
+    test "an up-to-date branch in a linked worktree with uncommitted changes is refused too",
+         %{repo: repo, peer: peer, root: root} do
+      tip = peer_pushes!(peer, 1)
+      Fix.git!(repo, ["fetch", "-q", "origin", @branch])
+      existing = Path.join(root, "dirty-current-wt")
+      Fix.git!(repo, ["worktree", "add", "-q", "-b", @branch, existing, tip])
+      File.write!(Path.join(existing, "wip.txt"), "unsaved\n")
+
+      assert {:error, %Error{code: :worktree_create_failed, details: %{branch: @branch}}} =
+               attach(repo)
+
+      assert local_sha(repo) == tip
+      assert File.read!(Path.join(existing, "wip.txt")) == "unsaved\n"
+      assert Fix.git!(existing, ["status", "--porcelain"]) == "?? wip.txt"
+    end
+
+    test "an up-to-date branch in a clean linked worktree is reused as it is",
+         %{repo: repo, peer: peer, root: root} do
+      tip = peer_pushes!(peer, 1)
+      Fix.git!(repo, ["fetch", "-q", "origin", @branch])
+      existing = Path.join(root, "clean-current-wt")
+      Fix.git!(repo, ["worktree", "add", "-q", "-b", @branch, existing, tip])
+
+      assert {:ok, wt} = attach(repo)
+
+      assert wt.base_sha == tip
+
+      assert Fix.git!(wt.path, ["rev-parse", "--show-toplevel"]) ==
+               Fix.git!(existing, ["rev-parse", "--show-toplevel"])
+
+      assert local_sha(repo) == tip
+    end
+
+    test "an up-to-date branch checked out in the MAIN worktree is refused as such, dirty or not",
+         %{repo: repo, peer: peer} do
+      tip = peer_pushes!(peer, 1)
+      Fix.git!(repo, ["fetch", "-q", "origin", @branch])
+      Fix.git!(repo, ["checkout", "-q", "-b", @branch, tip])
+      File.write!(Path.join(repo, "wip.txt"), "unsaved\n")
+
+      assert {:error,
+              %Error{
+                code: :worktree_create_failed,
+                message: message,
+                details: %{branch: @branch}
+              }} = attach(repo)
+
+      assert message =~ "main worktree"
+      assert local_sha(repo) == tip
+      assert File.read!(Path.join(repo, "wip.txt")) == "unsaved\n"
+    end
+
     test "unpushed local commits are never discarded: the attach is refused", %{
       repo: repo,
       peer: peer

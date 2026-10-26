@@ -31,7 +31,8 @@ A project is a registered repository with standing instructions, durable memory,
 - **Threads and steering** — list, stop, resolve and steer threads; steering is delivered into the running session for claude and pi, with pause, commit, resume with your message as the fallback.
 - **Overview and workspace** — "what needs me?" grouping at `GET /api/projects/:id/overview` and the LiveView workspace at `/dashboard/projects/:id` (bearer-token guarded).
 - **Coordinator** — one durable conversation per project that answers, asks, proposes and starts threads through a closed command set; it can never merge or approve.
-- **Approvals and questions** — agent tool-permission requests and operator questions surface as "waiting on you"; there is no MCP tool to decide them.
+- **Approvals and questions** — agent tool-permission requests and operator questions surface as "waiting on you"; decide them with the CLI, `POST /api/commands` or the workspace (Approve / Deny on the thread card, a "Questions for you" pane with an answer box); there is no MCP tool to decide them. pi has no per-tool permission prompts, so it never raises an approval.
+- **Approvals and questions: reads and scope** — list them with `foreman approvals|questions list`, `GET /api/projects/:id/approvals|questions`, `GET /api/runs/:run_id/approvals` or the read-only MCP tools `foreman_approvals_list` / `foreman_questions_list` (one typed payload for HTTP and MCP). Approving decides ONE request; only an in-flight approval (a Claude phase in `approval_mode: prompt`) is per call, while a post-hoc approval (`resume_with_override`) relaxes the approval mode of the run's next phase as a whole, so every tool of that phase is allowed.
 - **PR watching and auto-fix** — observation by default, bounded opt-in fix threads; verified against a real private GitHub repo (the workspace buttons and the `pr_auto_fix` policy off/on/bounded included) except merge under branch protection and the voiding of an approval by a later push (#650, covered by tests, not re-run live) (see `docs/acceptance/github-live-run.md` and `docs/acceptance/live-github-protection-ui-autofix.md`).
 - **Notifications, schedules, usage and limits, pause/resume, adoption and setup recommendations.**
 - **The merge gate is operator-only** (`foreman run approve-merge --head-sha <sha>`, then `foreman run merge`). You approve the exact commit you reviewed; a push after approval voids the approval and holds the gate again.
@@ -61,7 +62,7 @@ A thread is the operator-facing unit of work (a workflow run, `run:<id>`, or a j
 - HTTP: `GET /api/projects/:project_id/threads`, `GET /api/threads/:id`, `GET /api/threads/:id/transcript`, `GET /api/threads/:id/stream` (SSE), `POST /api/threads/:id/stop`, `POST /api/threads/:id/steer`, `POST /api/threads/:id/rereview` (re-run an `undetermined` review), and the deterministic lookup `GET /api/projects/:project_id/threads/find?q=&external_id=&branch=&pr=`.
 - MCP: `foreman_thread_list`, `foreman_thread_get`, `foreman_thread_transcript`, `foreman_thread_find` (read) and the write-gated `foreman_thread_stop`, `foreman_thread_steer`.
 - CLI: `foreman thread list|get|stop|steer|resolve|reopen|rereview`.
-- Overview: `GET /api/projects/:project_id/overview` groups a project's threads (ready for review / waiting on you / working / landing / idle / resolved) with counts, an attention flag and tab data; MCP `foreman_overview` (read-only); `attention` on project payloads. Merging stays operator-only.
+- Overview: `GET /api/projects/:project_id/overview` groups a project's newest 500 threads (ready for review / waiting on you / working / landing / idle / resolved) with counts, an attention flag, a `truncated` flag and tab data; MCP `foreman_overview` (read-only); `attention` on project payloads. Merging stays operator-only.
 - Commands/events: `thread.resolve` / `thread.reopen` (`ThreadResolved` / `ThreadReopened`) and `run.steer` (`RunSteerQueued`, then the system-only `run.steer.deliver|consume|undeliver` -> `RunSteerDelivered|Consumed|Undelivered`; deliberately not operator-allowlisted).
 - Config: `config :foreman_server, :threads, idle_resolver:, idle_resolve_after_days:, sweep_interval_ms:` (idle auto-resolve of terminal, PR-less threads).
 
@@ -172,6 +173,14 @@ register separate lease streams.
 - When the holder releases with waiters, the aggregate emits a single
   `BeadsDbLeaseTransferred` event that releases the old holder and
   promotes the head waiter atomically.
+- A hold taken for one `br` call (`BeadsDbLease.with_lease/4`: `BeadsAdapter`,
+  each `BeadsWatcher` read pass) carries the server's
+  `ForemanServer.Incarnation`. A server killed mid-call strands that hold in
+  the event store; the next server takes it over at once (and boot
+  reconciliation releases it) instead of queueing behind it, so
+  `BeadsWatcher` keeps importing after a restart. Holds without an
+  incarnation (`RunAdmission`'s whole-run hold) are reclaimed through run
+  liveness only.
 - `RunAdmission.start/3` fail-closed: any uncertainty around the lease
   decision returns `{:error, ...}` and skips dispatch; a `:queued`
   decision returns without starting the supervisor and the dispatcher

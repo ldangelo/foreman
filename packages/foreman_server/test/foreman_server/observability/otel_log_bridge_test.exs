@@ -75,36 +75,27 @@ defmodule ForemanServer.Observability.OtelLogBridgeTest do
     # `payload` to an unrelated concurrent log (e.g. a HeartbeatLease expiry
     # from another test) instead of this test's own record — and then this
     # test's own record, still sitting in the mailbox, would misreport as a
-    # "duplicate". Drain the mailbox for the whole window and require
-    # exactly one payload matching this test's own marker.
-    assert [payload] = drain_signoz_logs("foreman signoz capture", 500)
+    # "duplicate". Drain the mailbox and require exactly one payload matching
+    # this test's own marker. No wait is needed: the handler runs in the
+    # process that logs, so the record is already queued when Logger.info/2
+    # returns, and a duplicate would be too.
+    assert [payload] = signoz_payloads_matching(drain_signoz_logs(), "foreman signoz capture")
     [resource_logs] = payload.resource_logs
     [scope_logs] = resource_logs.scope_logs
     assert [_record] = scope_logs.log_records
   end
 
-  defp drain_signoz_logs(marker, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    drain_signoz_logs(marker, deadline, [])
+  # Every capture message currently in the mailbox, oldest first; never waits.
+  defp drain_signoz_logs(acc \\ []) do
+    receive do
+      {:foreman_signoz_log, payload} -> drain_signoz_logs([payload | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 
-  defp drain_signoz_logs(marker, deadline, acc) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    if remaining <= 0 do
-      acc
-    else
-      receive do
-        {:foreman_signoz_log, payload} ->
-          if signoz_payload_matches?(payload, marker) do
-            drain_signoz_logs(marker, deadline, [payload | acc])
-          else
-            drain_signoz_logs(marker, deadline, acc)
-          end
-      after
-        remaining -> acc
-      end
-    end
+  defp signoz_payloads_matching(payloads, marker) do
+    Enum.filter(payloads, &signoz_payload_matches?(&1, marker))
   end
 
   defp signoz_payload_matches?(payload, marker) do
@@ -155,11 +146,23 @@ defmodule ForemanServer.Observability.OtelLogBridgeTest do
     assert :ok =
              OtelLogBridge.install(enabled: true, exporter: {:capture, self()}, level: :critical)
 
-    Logger.error("below :critical threshold, must not export")
-    refute_receive {:foreman_signoz_log, _}, 100
+    # The markers pin this test's own two records: the handler also receives every log the
+    # rest of the VM emits, so a wildcard pattern could bind to (or be fooled by) somebody
+    # else's :critical log.
+    suffix = System.unique_integer([:positive])
+    error_marker = "below :critical threshold, must not export #{suffix}"
+    critical_marker = "meets :critical threshold, must export #{suffix}"
 
-    Logger.critical("meets :critical threshold, must export")
-    assert_receive {:foreman_signoz_log, _}, 500
+    Logger.error(error_marker)
+    Logger.critical(critical_marker)
+
+    # The handler runs in the process that logs, so each call has already exported (or
+    # declined) its record when it returns: there is nothing to wait for. The :critical
+    # record is the positive proof that the bridge is live; the :error one was logged
+    # before it, so it would be queued ahead of it.
+    exported = drain_signoz_logs()
+    assert [_critical] = signoz_payloads_matching(exported, critical_marker)
+    assert [] = signoz_payloads_matching(exported, error_marker)
   end
 
   defp time_unix_nano(payload) do

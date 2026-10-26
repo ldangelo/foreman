@@ -22,8 +22,9 @@ The library holds files and folders every agent of the project can read (read-on
 at $FOREMAN_LIBRARY_PATH). 'add' takes either one folder or one or more files:
 a folder is walked here with the server's rules (skips hidden files, node_modules,
 symlinks and files over 30 MB; at most the first 100 files within 200 MB; at most 10
-folders per project), files are limited to 100 per add and 480 MB each. The server
-applies the same rules again and stays authoritative. Every skipped file is printed.
+folders per project), files are limited to 100 per add and 480 MB each, and one add may
+carry at most 512 MiB in total (one request). The server applies the same rules again and
+stays authoritative. Every skipped file is printed.
 --format=json prints the server response with the local skipped list merged in.`
 
 // The Library limits, mirrored from the server's `config :foreman_server, :library`
@@ -34,6 +35,9 @@ const (
 	libraryFolderMaxFiles = 100
 	libraryFolderMaxBytes = 200 * 1024 * 1024
 	libraryFolderSkipFile = 30 * 1024 * 1024
+	// One add is one request; the server refuses a larger body only after reading all of it
+	// (`upload_max_bytes`, reported in the `limits` of `library list`).
+	libraryUploadMaxBytes = 512 * 1024 * 1024
 )
 
 type libraryUploadPlan struct {
@@ -226,6 +230,7 @@ func planLibraryUpload(paths []string) (libraryUploadPlan, error) {
 
 	seen := map[string]bool{}
 	plan := libraryUploadPlan{kind: "file"}
+	var total int64
 	for _, p := range paths {
 		info, err := os.Lstat(p)
 		if err != nil {
@@ -242,6 +247,10 @@ func planLibraryUpload(paths []string) (libraryUploadPlan, error) {
 			return libraryUploadPlan{}, fmt.Errorf("two files are named %q; rename one", base)
 		}
 		seen[base] = true
+		total += info.Size()
+		if total > libraryUploadMaxBytes {
+			return libraryUploadPlan{}, fmt.Errorf("these files add up to more than %d bytes, the limit for one add per request (split them across several adds)", int64(libraryUploadMaxBytes))
+		}
 		plan.files = append(plan.files, client.UploadFile{Name: base, Path: p})
 	}
 	return plan, nil

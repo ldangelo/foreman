@@ -10,25 +10,31 @@ defmodule ForemanServer.ProjectContext do
 
   Rendering order is fixed: Instructions, Repositories, Memory, Library, then
   any other provider section. Each body is capped (`:section_caps`); if the
-  rendered whole still exceeds `:max_bytes`, sections shrink lowest priority
-  first (Library, Memory, Repositories, other, Instructions last). Every cut
-  is announced inside the text by a `[truncated: ...]` marker and recorded in
-  `Bundle.truncated`. A project with nothing to inject yields
-  `system_text: nil`.
+  rendered whole still exceeds `:max_chars`, sections shrink lowest priority
+  first (Library, Memory, Repositories, other, Instructions last). Caps and
+  the budget count characters (`String.length/1`), the unit of the settings
+  limits, so a text the settings validator accepted is never cut for being
+  multibyte. Every cut is announced inside the text by a `[truncated: ...]`
+  marker and recorded in `Bundle.truncated`. A project with nothing to inject
+  yields `system_text: nil`.
   """
 
   alias ForemanServer.Identity
   alias ForemanServer.Overwatch.WorkerLogPolicy
   alias ForemanServer.ProjectContext.Bundle
   alias ForemanServer.ProjectContext.Section
+  alias ForemanServer.ProjectEnvironment
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectSettings
-  alias ForemanServer.WorkerEnvironment
 
   require Logger
 
   @order [:instructions, :repositories, :memory, :library]
-  @default_max_bytes 24_000
+  # Every cap and the total budget is counted in CHARACTERS (`String.length/1`), the unit of
+  # the settings limits (`Aggregates.Project.Settings`: instructions 16 000 characters). A byte
+  # budget cut multibyte instructions the validator had accepted, so an in-limit text reached
+  # the agent with a `[truncated: ...]` marker.
+  @default_max_chars 24_000
   @default_caps %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000}
   @other_cap 3_000
 
@@ -79,8 +85,8 @@ defmodule ForemanServer.ProjectContext do
   @doc "Assembles a bundle from already-gathered sections (pure; used by tests)."
   @spec assemble([Section.t()], String.t() | nil, keyword()) :: Bundle.t()
   def assemble(sections, project_id, opts \\ []) do
-    max_bytes =
-      Keyword.get_lazy(opts, :max_bytes, fn -> config(:max_bytes, @default_max_bytes) end)
+    max_chars =
+      Keyword.get_lazy(opts, :max_chars, fn -> config(:max_chars, @default_max_chars) end)
 
     caps =
       Map.merge(
@@ -108,7 +114,7 @@ defmodule ForemanServer.ProjectContext do
 
     ordered = Enum.sort_by(scrubbed, &order_index(&1.id))
     entries = Enum.map(ordered, &cap_section(&1, Map.get(caps, &1.id, @other_cap)))
-    entries = fit_budget(entries, max_bytes)
+    entries = fit_budget(entries, max_chars)
 
     finalize(entries, redactions)
   end
@@ -181,13 +187,13 @@ defmodule ForemanServer.ProjectContext do
     }
   end
 
-  defp fit_budget(entries, max_bytes) do
+  defp fit_budget(entries, max_chars) do
     entries
     |> shrink_ids()
     |> Enum.reduce_while(entries, fn id, acc ->
-      if rendered_size(acc) <= max_bytes,
+      if rendered_size(acc) <= max_chars,
         do: {:halt, acc},
-        else: {:cont, shrink_entry(acc, id, max_bytes)}
+        else: {:cont, shrink_entry(acc, id, max_chars)}
     end)
   end
 
@@ -199,51 +205,57 @@ defmodule ForemanServer.ProjectContext do
     Enum.filter([:library, :memory, :repositories] ++ others ++ [:instructions], &(&1 in present))
   end
 
-  defp shrink_entry(entries, id, max_bytes) do
+  defp shrink_entry(entries, id, max_chars) do
     entry = Enum.find(entries, &(&1.section.id == id))
-    excess = rendered_size(entries) - max_bytes
-    target = max(byte_size(entry.body) - excess - marker_slack(entry), 0)
+    excess = rendered_size(entries) - max_chars
+    target = max(String.length(entry.body) - excess - marker_slack(entry), 0)
     {body, omitted_bytes, omitted_lines} = truncate_lines(entry.section.body, target)
 
     updated = %{entry | body: body, omitted_bytes: omitted_bytes, omitted_lines: omitted_lines}
     next = Enum.map(entries, fn e -> if e.section.id == id, do: updated, else: e end)
 
-    if rendered_size(next) > max_bytes and body != "" and target < byte_size(entry.body),
-      do: shrink_entry_again(next, id, max_bytes, target),
+    if rendered_size(next) > max_chars and body != "" and target < String.length(entry.body),
+      do: shrink_entry_again(next, id, max_chars, target),
       else: next
   end
 
-  # The marker line itself costs bytes; shrink further until the whole fits.
-  defp shrink_entry_again(entries, id, max_bytes, previous_target) do
+  # The marker line itself costs characters; shrink further until the whole fits.
+  defp shrink_entry_again(entries, id, max_chars, previous_target) do
     entry = Enum.find(entries, &(&1.section.id == id))
-    target = max(previous_target - (rendered_size(entries) - max_bytes), 0)
+    target = max(previous_target - (rendered_size(entries) - max_chars), 0)
     {body, omitted_bytes, omitted_lines} = truncate_lines(entry.section.body, target)
     updated = %{entry | body: body, omitted_bytes: omitted_bytes, omitted_lines: omitted_lines}
     next = Enum.map(entries, fn e -> if e.section.id == id, do: updated, else: e end)
 
-    if rendered_size(next) > max_bytes and body != "" and target < previous_target,
-      do: shrink_entry_again(next, id, max_bytes, target),
+    if rendered_size(next) > max_chars and body != "" and target < previous_target,
+      do: shrink_entry_again(next, id, max_chars, target),
       else: next
   end
 
   defp marker_slack(%{omitted_bytes: 0} = entry),
-    do: byte_size(marker_text(entry.section, 999_999)) + 1
+    do: String.length(marker_text(entry.section, 999_999)) + 1
 
   defp marker_slack(_entry), do: 0
 
-  defp rendered_size(entries), do: entries |> render_entries() |> byte_size()
+  defp rendered_size(entries), do: entries |> render_entries() |> String.length()
 
   @doc false
-  # Cuts `text` to at most `cap` bytes at a line boundary (never inside a UTF-8
-  # codepoint). A single line longer than `cap` is hard-cut at a codepoint
-  # boundary. Returns `{kept, omitted_bytes, omitted_lines}`.
+  # Cuts `text` to at most `cap` CHARACTERS (`String.length/1`) at a line boundary, never inside
+  # a grapheme (so never inside a UTF-8 codepoint). A single line longer than `cap` is hard-cut
+  # at a grapheme boundary. Returns `{kept, omitted_bytes, omitted_lines}`: what was omitted is
+  # reported in bytes, the unit of the archived manifest.
   @spec truncate_lines(String.t(), non_neg_integer()) ::
           {String.t(), non_neg_integer(), non_neg_integer()}
   def truncate_lines(text, cap) when byte_size(text) <= cap, do: {text, 0, 0}
 
   def truncate_lines(text, cap) do
-    window = trim_partial_codepoint(binary_part(text, 0, cap))
+    if String.length(text) <= cap,
+      do: {text, 0, 0},
+      else: cut_at_line(text, String.slice(text, 0, cap))
+  end
 
+  # `window` is the first `cap` characters of `text` (a binary prefix of it).
+  defp cut_at_line(text, window) do
     kept =
       cond do
         binary_part(text, byte_size(window), 1) == "\n" ->
@@ -262,12 +274,6 @@ defmodule ForemanServer.ProjectContext do
   end
 
   defp last_newline(window), do: window |> :binary.matches("\n") |> List.last() |> elem(0)
-
-  defp trim_partial_codepoint(bin) do
-    if String.valid?(bin),
-      do: bin,
-      else: trim_partial_codepoint(binary_part(bin, 0, byte_size(bin) - 1))
-  end
 
   # --- rendering ------------------------------------------------------------
 
@@ -334,7 +340,22 @@ defmodule ForemanServer.ProjectContext do
         secrets
 
       :error ->
-        project_id |> WorkerEnvironment.build_env_map() |> WorkerEnvironment.extract_secrets()
+        resolved_secrets(project_id)
+    end
+  end
+
+  # The redaction list every door uses (`ProjectEnvironment.resolve/1`): every secret-store
+  # VALUE, whatever its name, plus the env values whose names look secret. An invalid
+  # environment raises, as `WorkerEnvironment.build/2` did: a context is never built with a
+  # partial list.
+  defp resolved_secrets(project_id) do
+    case ProjectEnvironment.resolve(project_id) do
+      {:ok, %{secrets: secrets}} ->
+        secrets
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "project #{inspect(project_id)} environment is invalid: #{inspect(reason)}"
     end
   end
 

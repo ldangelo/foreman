@@ -111,6 +111,29 @@ defmodule ForemanServerWeb.ProjectMemoryControllerTest do
              put_topic(p, "Bad_Name", %{"content" => "x"}) |> json_response(422)
   end
 
+  test "the description cap is the configured :max_description_chars", %{project_id: p} do
+    original = Application.fetch_env!(:foreman_server, :project_memory)
+    on_exit(fn -> Application.put_env(:foreman_server, :project_memory, original) end)
+
+    Application.put_env(
+      :foreman_server,
+      :project_memory,
+      Keyword.put(original, :max_description_chars, 10)
+    )
+
+    assert %{"error" => "invalid_body", "message" => message} =
+             put_topic(p, "a", %{"content" => "x", "description" => String.duplicate("d", 11)})
+             |> json_response(422)
+
+    assert message =~ "at most 10 characters"
+
+    assert %{"entry" => %{"description" => description}} =
+             put_topic(p, "a", %{"content" => "x", "description" => String.duplicate("d", 10)})
+             |> json_response(200)
+
+    assert description == String.duplicate("d", 10)
+  end
+
   test "unknown project is 404 and archived project is 409", %{project_id: p} do
     assert %{"error" => "project_not_found"} =
              put_topic("ghost-project", "a", %{"content" => "x"}) |> json_response(404)

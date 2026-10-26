@@ -63,12 +63,18 @@ defmodule ForemanServer.Inbox.PollerTest do
     test "unmatched source does not crash" do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
 
-      assert {:ok, :started, _item} =
+      assert {:ok, :started, %InboxItemStarted{} = item} =
                SharedInbox.ingest(OtherSource, %{
                  "id" => "no-handler-#{System.unique_integer([:positive])}"
                })
 
-      refute_receive {:inbox_item_started, _, _}, 100
+      # `ingest/2` casts the event to the Poller and `synchronize/0` is a call from this
+      # same process, so it is answered only after the Poller handled that cast — i.e.
+      # after it looked for a handler for OtherSource and found none. A delivery would
+      # have been sent to this process before the reply.
+      assert %{started: started} = Poller.synchronize()
+      assert started >= 1
+      refute_received {:inbox_item_started, _handler, ^item}
     end
   end
 

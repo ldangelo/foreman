@@ -4,19 +4,25 @@
 # out on projection catch-up and makes randomly generated ids collide with tasks
 # left by earlier runs.
 #
-# The app (and with it ProjectionStore's boot replay) is already up when this file
-# runs, so emptying the log leaves the in-memory projection holding the PREVIOUS
-# run's runs, tasks and projects: the projection is reset too, or a second local
-# `mix test` starts from the last run's leftovers while CI (fresh DB) never does
-# (foreman-a4ec2). The Dispatcher re-admits that run's tasks as it boots, and what it
-# appended is flushed first, or it lands in the fresh log after the reset.
-ForemanServer.TestSupport.RunDrain.drain!()
-config = EventStore.Config.parsed(ForemanServer.EventStore, :foreman_server)
-{:ok, conn} = Postgrex.start_link(EventStore.Config.default_postgrex_opts(config))
-EventStore.Storage.Initializer.reset!(conn, config)
-GenServer.stop(conn)
-ForemanServer.TestSupport.AggregateActorReset.reset!()
-ForemanServer.TestSupport.ProjectionStoreReset.reset!()
+# `mix test` boots the app before it requires this file, and the boot is what replays
+# the log: ProjectionStore rebuilds the projection from it and the Dispatcher
+# re-admits the runs it says are in flight. So the `test` alias in mix.exs empties the
+# log BEFORE the app starts (foreman-a4ec2). Emptied from here, the in-memory
+# projection, the aggregate actors and the executors the boot started for the previous
+# run's tasks would still carry that run: a second local `mix test` would start from
+# the last run's leftovers while CI (fresh DB) never does.
+#
+# Nothing is reset here. A log that is not empty means the alias did not run (the suite
+# was started some other way) or another `mix test` shares this database; either way the
+# app has replayed state this run did not create, so stop instead of testing on it.
+{:ok, replayed} = ForemanServer.EventStore.read_all_streams_forward(0, 1)
+
+if replayed != [] do
+  raise "the event store was not empty when the app booted, so ProjectionStore and the " <>
+          "Dispatcher replayed a run this suite did not create. `mix test` empties the log " <>
+          "before the app starts (the `test` alias in mix.exs): run the suite with `mix test`, " <>
+          "and give every concurrent run its own DATABASE_URL (foreman-a4ec2)"
+end
 
 # Give this VM a private temp directory. Tests build scratch paths under
 # `System.tmp_dir!/0` as "<prefix>-#{System.unique_integer([:positive])}", but that counter

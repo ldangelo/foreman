@@ -36,7 +36,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.JidoHarness
-  alias ForemanServer.AgentRuntime.JidoHarness.{ModelCatalog, ReadinessCheck}
+  alias ForemanServer.AgentRuntime.JidoHarness.{ForkSession, ModelCatalog, ReadinessCheck}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.LiveSteer
@@ -936,6 +936,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # may have switched. It deliberately does not hang off `remember_worktree/2`:
   # a phase declaring `worktree: enabled: false` provisions no worktree, yet
   # such a run can still land a PR through the `FOREMAN_BRANCH` override.
+  #
+  # A task continued from its source session's branch (`adopt --continue
+  # --from-source-branch`, `TaskCreated.source_branch`) is cut from THAT branch
+  # (`apply_source_branch/4`), so that branch is its base: the name comes from the
+  # task, not from whichever branch the checkout is on.
   defp remember_run_base_branch(state) do
     if Map.has_key?(state, :run_base_branch) do
       state
@@ -945,10 +950,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
           Map.put(state, :run_base_branch, {:ok, branch})
 
         :error ->
-          resolved = checkout_branch(vcs_working_directory(state))
+          resolved = resolve_run_base_branch(state)
           dispatch_run_base_branch(state.run_id, resolved)
           Map.put(state, :run_base_branch, resolved)
       end
+    end
+  end
+
+  defp resolve_run_base_branch(state) do
+    case source_branch(state) do
+      nil -> checkout_branch(vcs_working_directory(state))
+      branch -> {:ok, branch}
+    end
+  end
+
+  # The branch the run is to be cut from, when its task names one. `state` may carry no task (the
+  # base-branch tests build a bare state), which is the same as a task that names none.
+  defp source_branch(state) do
+    case Map.get(state, :task) do
+      %{source_branch: branch} when is_binary(branch) -> branch
+      _no_source_branch -> nil
     end
   end
 
@@ -1350,6 +1371,35 @@ defmodule ForemanServer.Workflow.RunExecutor do
        ) do
     state = with_run_worktrees(state, worktree_record)
     request = build_request(state, phase_spec, phase_index, worktree_record)
+
+    # Decided before anything is recorded or written for the launch: a fork that cannot be honoured
+    # fails the phase here, it never starts a blank agent (`fork_for_launch/3`).
+    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)) do
+      build_agent_launch(
+        state,
+        phase_spec,
+        index,
+        phase_index,
+        worktree_record,
+        resolved,
+        steering,
+        request,
+        fork
+      )
+    end
+  end
+
+  defp build_agent_launch(
+         state,
+         phase_spec,
+         index,
+         phase_index,
+         worktree_record,
+         resolved,
+         steering,
+         request,
+         fork
+       ) do
     prompt_steering = if phase_action(phase_spec) == :command, do: [], else: steering
     request = %{request | prompt: append_steering_block(request.prompt, prompt_steering)}
 
@@ -1415,6 +1465,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> maybe_put_approval_mode(phase_spec, steering)
          |> maybe_put_inflight_permission(state.run_id, JidoHarness.request_provider(request))
          |> maybe_put_add_dirs(state, JidoHarness.request_provider(request))
+         |> put_fork(fork)
          |> LiveSteer.put_driver_opts(JidoHarness.request_provider(request))
        end,
        launch_opts: [
@@ -1427,6 +1478,38 @@ defmodule ForemanServer.Workflow.RunExecutor do
          secrets: resolved.secrets
        ]
      }}
+  end
+
+  # `adopt --continue --fork`: the task carries the provider session its run forks
+  # (`TaskCreated.fork_provider` / `fork_session_id`, validated by `ForkSession.validate/2` when the
+  # task was created). Only the run's FIRST phase launches from it (index 0): later phases start
+  # their own sessions like any phase, and a crash-resumed run that restarts past phase 0 does not
+  # fork again. A phase whose provider is not the session's cannot fork it: the run fails here, loudly,
+  # instead of starting a blank agent for a thread that claims to continue one.
+  defp fork_for_launch(%{task: task}, 0, provider) do
+    case {Map.get(task, :fork_provider), Map.get(task, :fork_session_id)} do
+      {nil, nil} ->
+        {:ok, nil}
+
+      {fork_provider, session_id} when is_binary(fork_provider) and is_binary(session_id) ->
+        if to_string(provider) == fork_provider,
+          do: {:ok, ForkSession.harness_options(fork_provider, session_id)},
+          else: {:error, {:fork_provider_mismatch, fork_provider, to_string(provider)}}
+    end
+  end
+
+  defp fork_for_launch(_state, _index, _provider), do: {:ok, nil}
+
+  defp put_fork(driver_opts, nil), do: driver_opts
+
+  defp put_fork(driver_opts, {session_id, provider_options}) do
+    driver_opts
+    |> Keyword.update(:provider_options, provider_options, &Map.merge(&1, provider_options))
+    |> then(fn opts ->
+      if is_binary(session_id),
+        do: Keyword.put(opts, :provider_session_id, session_id),
+        else: opts
+    end)
   end
 
   # A phase's `approval_mode:` is the harness's tool-approval mode. Absent
@@ -2763,7 +2846,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp maybe_create_worktree(state, phase_index) do
     case state.worktree_spec do
       %{enabled: false} ->
-        {:ok, nil}
+        # A run continued from its source branch is cut from it in its own worktree: with none there is
+        # nothing to cut, and the PR base `remember_run_base_branch/1` records would be a lie.
+        case source_branch(state) do
+          nil -> {:ok, nil}
+          branch -> {:error, {:source_branch_needs_worktree, branch}}
+        end
 
       _ ->
         ensure_run_worktree(state, phase_index)
@@ -2847,6 +2935,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
            resolve_run_base(state, spec),
+         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key),
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = Worktree.operation_id(state.run_id, nil),
@@ -3190,6 +3279,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       _ ->
         resolve_revision(project_root, "HEAD")
+    end
+  end
+
+  # `adopt --continue --from-source-branch`: the run is cut from the tip of its task's `source_branch`, a
+  # LOCAL branch of the repository the worktree is cut in, in place of that checkout's `HEAD` (or of a
+  # base the workflow declares: the operator asked for this branch by name). A branch that is not there
+  # is a typed failure, never `HEAD`. It cannot be combined with an ImplementationContext, whose
+  # frozen `source_revision` is the base by definition; `implementation_key` is set exactly then.
+  defp apply_source_branch(state, project_root, base_ref, implementation_key) do
+    case source_branch(state) do
+      nil ->
+        {:ok, base_ref}
+
+      branch when is_binary(implementation_key) ->
+        {:error, {:source_branch_conflicts_with_implementation_context, branch}}
+
+      branch ->
+        case resolve_revision(project_root, "refs/heads/" <> branch) do
+          {:ok, sha} -> {:ok, sha}
+          {:error, _reason} -> {:error, {:source_branch_not_found, branch, project_root}}
+        end
     end
   end
 
@@ -4583,6 +4693,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def __ensure_run_worktree_for_test__(state, phase_index),
     do: ensure_run_worktree(state, phase_index)
+
+  @doc false
+  def __maybe_create_worktree_for_test__(state, phase_index),
+    do: maybe_create_worktree(state, phase_index)
 
   # Provider-facing identifier for the task. Shares `task_identity/1` with
   # `worktree_task_id/1` (CodeRabbit review) so the worktree and the

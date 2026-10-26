@@ -3,6 +3,8 @@ defmodule ForemanServer.Aggregates.Task do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.{Aggregate, ProjectionStore}
+  alias ForemanServer.AgentRuntime.JidoHarness.ForkSession
+  alias ForemanServer.Projects.SourceBranch
   alias ForemanServer.Workflow.RunRepoSet
 
   defmodule Annotation do
@@ -179,7 +181,9 @@ defmodule ForemanServer.Aggregates.Task do
          :ok <- require_absent(state, task_id),
          :ok <- validate_status(Aggregate.get(payload, :status, "open")),
          :ok <- validate_project_allows_tasks(Aggregate.get(payload, :project_id)),
-         {:ok, repo_fields} <- validate_repo_targets(Aggregate.get(payload, :project_id), payload) do
+         {:ok, repo_fields} <- validate_repo_targets(Aggregate.get(payload, :project_id), payload),
+         {:ok, fork_fields} <- validate_fork_session(payload),
+         {:ok, source_fields} <- validate_source_branch(payload) do
       {:ok,
        %{
          stream_id: "task:#{task_id}",
@@ -210,6 +214,8 @@ defmodule ForemanServer.Aggregates.Task do
                provider_tracked: Aggregate.get(payload, :provider_tracked, true)
              },
              repo_fields
+             |> Map.merge(fork_fields)
+             |> Map.merge(source_fields)
            )
        }}
     end
@@ -542,6 +548,33 @@ defmodule ForemanServer.Aggregates.Task do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  # Optional fork of a provider session (`adopt --continue --fork`). A task naming neither field
+  # adds no key to its event (events of ordinary tasks are unchanged). One field without the other,
+  # an unknown provider, or an id that is not safe as a CLI argument is refused, never stored.
+  defp validate_fork_session(payload) do
+    provider = Aggregate.get(payload, :fork_provider)
+    session_id = Aggregate.get(payload, :fork_session_id)
+
+    case ForkSession.validate(provider, session_id) do
+      :none -> {:ok, %{}}
+      :ok -> {:ok, %{fork_provider: provider, fork_session_id: session_id}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # Optional branch the task's run is cut from (`adopt --continue --from-source-branch`). A task naming
+  # none adds no key to its event (events of ordinary tasks are unchanged); a name that is not safe to
+  # hand to git is refused, never stored.
+  defp validate_source_branch(payload) do
+    branch = Aggregate.get(payload, :source_branch)
+
+    case SourceBranch.validate(branch) do
+      :none -> {:ok, %{}}
+      :ok -> {:ok, %{source_branch: branch}}
+      {:error, _reason} = error -> error
     end
   end
 

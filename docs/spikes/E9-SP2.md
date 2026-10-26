@@ -30,9 +30,16 @@ session behaviour. Claude OAuth is expired, so Claude is **UNVERIFIED**.
    different project ... Fork this session into current directory? [y/N]" and
    waits for input: non-interactively that is a hang/abort, not a resume. A
    fresh worktree path therefore CANNOT resume the original session.
-6. Claude (`--resume <id>`): sessions live under the project dir derived from
-   cwd. **[UNVERIFIED]** that it behaves like pi; the design below does not
-   depend on it.
+6. Claude (`--resume <id>`): **measured, claude 2.1.308 does NOT behave like pi.** It looks a session up by
+   id across project directories: a plain `--resume <id>` resumed the SAME session from a git worktree of
+   the repo, from an unrelated directory, after the original directory was deleted, and at the recreated
+   original path (`scripts/e2e/claude_resume_cwd_probe.sh`, 10 PASS). The design below does not depend on
+   it (recreating the worktree at the original path stays correct and sufficient for claude).
+7. **Forking is not cwd-bound for either provider** (measured, same session of a deleted directory too):
+   `claude --resume <id> --fork-session` and `pi --fork <id>` from another directory answer from the copied
+   history with a NEW session id and no prompt; only a plain pi `--session <id>` from another directory
+   asks ("Fork this session into current directory? [y/N]", point 5). `adopt --continue --fork` relies on
+   this (`AgentRuntime.JidoHarness.ForkSession`).
 
 ## Decision
 

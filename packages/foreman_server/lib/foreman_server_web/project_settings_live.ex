@@ -19,8 +19,18 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   Validation is the server's: the form sends what was typed and renders the
   aggregate's distinct error tuple next to the field it belongs to; nothing is
   checked client-side only. A save sends only the fields the operator changed.
-  Environment variable values and secrets are never rendered (variable NAMES
-  only); they are still edited with the CLI (`foreman project env|secret`).
+
+  The environment has forms of its own. Plain variables are set and removed one at a
+  time through `project.environment.set` (the command behind `foreman project env`).
+  That command replaces the variable set, so the new set is built from what the server
+  stores at that moment and a variable changed elsewhere survives; the aggregate refuses
+  a name that looks like a secret, as on the CLI. Secrets are WRITE-ONLY: the value goes
+  straight to `ForemanServer.SecretStore` through `ForemanServer.ProjectSecrets` (the
+  path behind `foreman project secret` and `PUT /api/projects/:id/secrets/:name`), the
+  page lists only name, version and time, its form has no `phx-change` (nothing typed
+  reaches the server before the submit) and no assign, log line, event or rendered
+  attribute ever holds a value. The listing is `ProjectEnvironmentDTO`, the read the
+  HTTP and MCP surfaces share, so the values of a legacy `config.env` stay hidden.
   """
 
   use ForemanServerWeb, :live_view
@@ -31,6 +41,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
 
   alias ForemanServer.{
     ProjectEnvironment,
+    ProjectEnvironmentDTO,
     ProjectMemory,
     ProjectionStore,
     ProjectSettings,
@@ -40,6 +51,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
 
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.ProjectMemory.Error, as: MemoryError
+  alias ForemanServer.SecretStore.Error, as: SecretError
   alias ForemanServerWeb.Workspace.{Actions, ProjectNotFound, ProjectView, Refresh}
 
   @text_fields ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
@@ -50,6 +62,8 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   # A textarea with one entry per line, stored as a list of strings.
   @list_fields ~w(repo_allowlist)a
   @blank_repo_form %{"id" => "", "path" => "", "default_branch" => ""}
+  @blank_env_form %{"name" => ""}
+  @blank_secret_form %{"name" => ""}
   # The aggregate's repository errors, by the field of the add form that owns them.
   @repo_id_errors ~w(invalid_repo_id repo_id_taken)a
   @repo_path_errors ~w(repo_path_not_absolute repo_path_not_found repo_not_git_work_tree
@@ -83,7 +97,16 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
             memory_error: nil,
             confirm_repo_remove: nil,
             repo_form: @blank_repo_form,
-            repo_errors: %{}
+            repo_errors: %{},
+            env_add_form: @blank_env_form,
+            env_add_errors: %{},
+            env_errors: %{},
+            env_nonce: 0,
+            confirm_env_remove: nil,
+            secret_form: @blank_secret_form,
+            secret_errors: %{},
+            secret_nonce: 0,
+            confirm_secret_unset: nil
           )
           |> load()
           |> load_form()
@@ -229,6 +252,65 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
     end
   end
 
+  # -- environment variables and secrets ---------------------------------------
+  # A plain variable goes through `project.environment.set`, one per submit. A secret value
+  # is write-only (moduledoc): neither form has a `phx-change`, and the value is passed on and
+  # forgotten, never assigned.
+
+  def handle_event("env_save", %{"env" => %{"name" => name, "value" => value}}, socket)
+      when is_binary(name) and is_binary(value),
+      do: {:noreply, write_env_var(socket, name, value, :row)}
+
+  def handle_event("env_add", %{"env" => %{"name" => name, "value" => value}}, socket)
+      when is_binary(name) and is_binary(value),
+      do: {:noreply, write_env_var(socket, String.trim(name), value, :add)}
+
+  def handle_event("env_confirm_remove", %{"name" => name}, socket) when is_binary(name),
+    do: {:noreply, assign(socket, :confirm_env_remove, name)}
+
+  def handle_event("env_cancel_remove", _params, socket),
+    do: {:noreply, assign(socket, :confirm_env_remove, nil)}
+
+  def handle_event("env_remove", %{"name" => name}, socket) when is_binary(name) do
+    socket = assign(socket, :confirm_env_remove, nil)
+
+    case Actions.unset_env_var(socket.assigns.project_id, name, Refresh.intent(socket)) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(env_errors: %{}, notice: "Removed #{name}.", notice_kind: :ok)
+         |> load()}
+
+      {:error, reason} ->
+        notice = "Could not remove #{name}: " <> Actions.describe(reason)
+        {:noreply, socket |> assign(notice: notice, notice_kind: :error) |> load()}
+    end
+  end
+
+  def handle_event("secret_set", %{"secret" => %{"name" => name, "value" => value}}, socket)
+      when is_binary(name) and is_binary(value),
+      do: {:noreply, write_secret(socket, String.trim(name), value)}
+
+  def handle_event("secret_confirm_unset", %{"name" => name}, socket) when is_binary(name),
+    do: {:noreply, assign(socket, :confirm_secret_unset, name)}
+
+  def handle_event("secret_cancel_unset", _params, socket),
+    do: {:noreply, assign(socket, :confirm_secret_unset, nil)}
+
+  def handle_event("secret_unset", %{"name" => name}, socket) when is_binary(name) do
+    socket = assign(socket, :confirm_secret_unset, nil)
+
+    case Actions.unset_secret(socket.assigns.project_id, name) do
+      {:ok, _result} ->
+        {:noreply,
+         socket |> assign(notice: "Removed secret #{name}.", notice_kind: :ok) |> load()}
+
+      {:error, reason} ->
+        notice = "Could not remove secret #{name}: " <> Actions.describe(reason)
+        {:noreply, socket |> assign(notice: notice, notice_kind: :error) |> load()}
+    end
+  end
+
   def handle_event("memory_select", %{"name" => name}, socket) do
     case ProjectMemory.read(socket.assigns.project_id, name) do
       {:ok, topic, content} ->
@@ -323,7 +405,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         assign(socket,
           project: project,
           status: view.status,
-          env_names: view.env_names,
+          env: environment(project_id),
           repos: ProjectionStore.project_repositories(project_id) || [],
           usage: usage(project_id),
           limits: limits(project_id),
@@ -573,6 +655,158 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   defp repo_error_field({:invalid_default_branch, _branch}), do: :default_branch
   defp repo_error_field(_reason), do: nil
 
+  # -- environment: plain variables and write-only secrets ---------------------
+
+  # What the page lists. One read, the one the HTTP and MCP surfaces share
+  # (`ProjectEnvironmentDTO`): the values of a legacy `config.env` come back redacted
+  # there, so they are never rendered (a project without any variable is not "legacy"
+  # here), and a secret is only ever a name, a version and a time.
+  defp environment(project_id) do
+    case ProjectEnvironmentDTO.fetch(project_id) do
+      {:ok, %{"vars" => vars, "legacy_env" => legacy?, "secrets" => secrets}} ->
+        hidden? = legacy? and map_size(vars) > 0
+
+        %{
+          vars: Enum.map(Enum.sort(vars), &listed_var(&1, hidden?)),
+          legacy?: hidden?,
+          secrets: Enum.map(secrets, &listed_secret/1)
+        }
+
+      :not_found ->
+        %{vars: [], legacy?: false, secrets: []}
+    end
+  end
+
+  defp listed_var({name, _redacted}, true), do: {name, :hidden}
+  defp listed_var({name, value}, false), do: {name, value}
+
+  defp listed_secret(%{"name" => name, "version" => version, "updated_at" => updated_at}),
+    do: %{name: name, version: version, updated_at: updated_at}
+
+  # `source` is the form the variable came from, the `:row` of a listed variable or the
+  # `:add` form: it decides where a refusal shows. After an add, the box is emptied (its
+  # wrapper gets a new id, so the browser drops what was typed); a refused add keeps the
+  # NAME but never the value, which may be the secret the operator typed into the wrong form.
+  defp write_env_var(socket, name, value, source) do
+    case Actions.set_env_var(socket.assigns.project_id, name, value, Refresh.intent(socket)) do
+      :ok ->
+        socket
+        |> reset_env_add_form(source)
+        |> assign(env_errors: %{}, notice: "Set #{name}.", notice_kind: :ok)
+        |> load()
+
+      {:error, reason} ->
+        {field, message} = env_error(reason, name)
+        assign_env_error(socket, name, source, field, message)
+    end
+  end
+
+  defp reset_env_add_form(socket, :add),
+    do:
+      socket
+      |> assign(env_add_form: @blank_env_form, env_add_errors: %{})
+      |> update(:env_nonce, &(&1 + 1))
+
+  defp reset_env_add_form(socket, :row), do: socket
+
+  defp assign_env_error(socket, name, :row, nil, message),
+    do: assign(socket, notice: "Could not set #{name}: " <> message, notice_kind: :error)
+
+  defp assign_env_error(socket, name, :row, _field, message),
+    do:
+      assign(socket,
+        env_errors: %{name => message},
+        notice: "Fix the highlighted field.",
+        notice_kind: :error
+      )
+
+  defp assign_env_error(socket, name, :add, field, message) do
+    socket = socket |> assign(:env_add_form, %{"name" => name}) |> update(:env_nonce, &(&1 + 1))
+
+    if field do
+      assign(socket,
+        env_add_errors: %{field => message},
+        notice: "Fix the highlighted field.",
+        notice_kind: :error
+      )
+    else
+      assign(socket,
+        env_add_errors: %{},
+        notice: "Could not set #{name}: " <> message,
+        notice_kind: :error
+      )
+    end
+  end
+
+  # The field that owns the aggregate's refusal of the variable just typed, with its words;
+  # `nil` for a refusal about another variable or the project (a stored variable that looks
+  # like a secret, a full set, an archived project): the notice carries those.
+  defp env_error({:secret_in_vars, name}, name),
+    do:
+      {:name,
+       "#{name} looks like a secret, so it cannot be a plain variable (plain values are " <>
+         "stored in the event log). Set it under Secrets instead."}
+
+  defp env_error({:reserved_env_name, name}, name),
+    do: {:name, "Names starting with FOREMAN_ are reserved for Foreman."}
+
+  defp env_error({:invalid_env_name, name} = reason, name),
+    do: {:name, Actions.describe(reason)}
+
+  defp env_error({tag, name} = reason, name)
+       when tag in [:env_value_invalid, :env_value_too_long],
+       do: {:value, Actions.describe(reason)}
+
+  defp env_error(reason, _typed), do: {nil, Actions.describe(reason)}
+
+  # The value is handed to the secret store and forgotten here. A refusal keeps the NAME
+  # typed, empties the value box (new wrapper id) and says what is wrong with the name or the
+  # value (the store never echoes the value); anything else is not about a field.
+  defp write_secret(socket, name, value) do
+    case Actions.set_secret(socket.assigns.project_id, name, value) do
+      {:ok, %{version: version}} ->
+        socket
+        |> assign(
+          secret_form: @blank_secret_form,
+          secret_errors: %{},
+          notice: "Saved secret #{name} (version #{version}).",
+          notice_kind: :ok
+        )
+        |> update(:secret_nonce, &(&1 + 1))
+        |> load()
+
+      {:error, reason} ->
+        socket
+        |> assign(:secret_form, %{"name" => name})
+        |> update(:secret_nonce, &(&1 + 1))
+        |> assign_secret_error(reason)
+    end
+  end
+
+  defp assign_secret_error(socket, reason) do
+    message = Actions.describe(reason)
+
+    case secret_error_field(reason) do
+      nil ->
+        assign(socket,
+          secret_errors: %{},
+          notice: "Could not save the secret: " <> message,
+          notice_kind: :error
+        )
+
+      field ->
+        assign(socket,
+          secret_errors: %{field => message},
+          notice: "Fix the highlighted field.",
+          notice_kind: :error
+        )
+    end
+  end
+
+  defp secret_error_field(%SecretError{code: :invalid_secret_name}), do: :name
+  defp secret_error_field(%SecretError{code: :invalid_secret_value}), do: :value
+  defp secret_error_field(_reason), do: nil
+
   # -- render ----------------------------------------------------------------
 
   @impl true
@@ -584,7 +818,8 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         notification_preferences: Settings.notification_preferences(),
         default_max_repos: Settings.default_max_repos_per_run(),
         max_instructions: Settings.max_instructions_chars(),
-        max_script_bytes: Environment.max_script_bytes()
+        max_script_bytes: Environment.max_script_bytes(),
+        max_env_value_bytes: Environment.max_value_bytes()
       )
 
     ~H"""
@@ -681,11 +916,78 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
 
       <section aria-labelledby="env-h">
         <h2 id="env-h">Environment</h2>
-        <p :if={@env_names == []} class="ws-muted">No environment variables.</p>
-        <ul :if={@env_names != []}>
-          <li :for={name <- @env_names}>{name} = <span aria-label="value hidden">••••••</span></li>
+        <p id="env-help" class="ws-muted">Plain variables every agent of this project starts with. They are stored in the event log and shown here as typed (at most {@max_env_value_bytes} bytes each): put a password or token under Secrets instead.</p>
+        <p :if={@env.legacy?} id="env-legacy-note">This project still keeps its variables in the legacy <code>config.env</code>, so their values are hidden here. Setting or removing any variable moves all of them into the environment record, which shows its values.</p>
+        <p :if={@env.vars == []} class="ws-muted">No environment variables.</p>
+        <ul :if={@env.vars != []} id="env-list">
+          <li :for={{name, value} <- @env.vars} id={"env-var-" <> name}>
+            <%= if value == :hidden do %>
+              <code>{name}</code> <span class="ws-muted">value hidden</span>
+            <% else %>
+              <form id={"env-form-" <> name} phx-submit="env_save">
+                <input type="hidden" name="env[name]" value={name} />
+                <label for={"env_value_" <> name}>{name}</label>
+                <input id={"env_value_" <> name} type="text" name="env[value]" value={value} autocomplete="off" spellcheck="false" aria-describedby={"env-error-" <> name} aria-invalid={to_string(@env_errors[name] != nil)} />
+                <button type="submit">Save {name}</button>
+              </form>
+            <% end %>
+            <%= if @confirm_env_remove == name do %>
+              <button type="button" phx-click="env_remove" phx-value-name={name}>Confirm remove {name}</button>
+              <button type="button" phx-click="env_cancel_remove">Cancel</button>
+            <% else %>
+              <button type="button" phx-click="env_confirm_remove" phx-value-name={name}>Remove {name}</button>
+            <% end %>
+            <p id={"env-error-" <> name} :if={@env_errors[name]} class="ws-error" role="alert">{@env_errors[name]}</p>
+          </li>
         </ul>
-        <p class="ws-muted">Values and secrets are never shown here.</p>
+        <form id="env-add-form" phx-submit="env_add" aria-labelledby="env-add-h">
+          <h3 id="env-add-h">Set a variable</h3>
+          <div>
+            <label for="env_name">Name</label>
+            <p id="env-name-help" class="ws-muted">Letters, digits and underscores, starting with a letter. An existing name gets the new value.</p>
+            <input id="env_name" type="text" name="env[name]" value={@env_add_form["name"]} autocomplete="off" spellcheck="false" aria-describedby="env-name-help env-name-error" aria-invalid={to_string(@env_add_errors[:name] != nil)} />
+            <p id="env-name-error" :if={@env_add_errors[:name]} class="ws-error" role="alert">{@env_add_errors[:name]}</p>
+          </div>
+          <div id={"env-value-box-#{@env_nonce}"}>
+            <label for="env_value">Value</label>
+            <input id="env_value" type="text" name="env[value]" autocomplete="off" spellcheck="false" aria-describedby="env-value-error" aria-invalid={to_string(@env_add_errors[:value] != nil)} />
+            <p id="env-value-error" :if={@env_add_errors[:value]} class="ws-error" role="alert">{@env_add_errors[:value]}</p>
+          </div>
+          <button type="submit">Set variable</button>
+        </form>
+      </section>
+
+      <section aria-labelledby="secrets-h">
+        <h2 id="secrets-h">Secrets</h2>
+        <p id="secrets-help" class="ws-muted">Write-only. A secret's value is kept on the server host, never in the event log, and never shown again, not even here; agents get it as an environment variable of that name. Setting an existing name replaces its value.</p>
+        <p :if={@env.secrets == []} class="ws-muted">No secrets.</p>
+        <ul :if={@env.secrets != []} id="secret-list">
+          <li :for={secret <- @env.secrets} id={"secret-" <> secret.name}>
+            <code>{secret.name}</code>
+            <span class="ws-muted">version {secret.version}<span :if={secret.updated_at}>, set {secret.updated_at}</span></span>
+            <%= if @confirm_secret_unset == secret.name do %>
+              <button type="button" phx-click="secret_unset" phx-value-name={secret.name}>Confirm remove secret {secret.name}</button>
+              <button type="button" phx-click="secret_cancel_unset">Cancel</button>
+            <% else %>
+              <button type="button" phx-click="secret_confirm_unset" phx-value-name={secret.name}>Remove secret {secret.name}</button>
+            <% end %>
+          </li>
+        </ul>
+        <form id="secret-form" phx-submit="secret_set" autocomplete="off" aria-labelledby="secret-add-h">
+          <h3 id="secret-add-h">Set a secret</h3>
+          <div>
+            <label for="secret_name">Name</label>
+            <p id="secret-name-help" class="ws-muted">Capital letters, digits and underscores, starting with a letter (for example DEPLOY_TOKEN); not FOREMAN_.</p>
+            <input id="secret_name" type="text" name="secret[name]" value={@secret_form["name"]} autocomplete="off" spellcheck="false" aria-describedby="secret-name-help secret-name-error" aria-invalid={to_string(@secret_errors[:name] != nil)} />
+            <p id="secret-name-error" :if={@secret_errors[:name]} class="ws-error" role="alert">{@secret_errors[:name]}</p>
+          </div>
+          <div id={"secret-value-box-#{@secret_nonce}"}>
+            <label for="secret_value">Value</label>
+            <input id="secret_value" type="password" name="secret[value]" autocomplete="new-password" aria-describedby="secrets-help secret-value-error" aria-invalid={to_string(@secret_errors[:value] != nil)} />
+            <p id="secret-value-error" :if={@secret_errors[:value]} class="ws-error" role="alert">{@secret_errors[:value]}</p>
+          </div>
+          <button type="submit">Set secret</button>
+        </form>
       </section>
 
       <section aria-labelledby="setup-script-h">

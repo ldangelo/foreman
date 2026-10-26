@@ -68,7 +68,7 @@ Commands:
   project setup-script <id> show|set|clear the project setup script
   project network <id> show|set the project network policy (--mode --allow)
   project recommend <id> Setup recommendations (--format json, --fail-on warn|action)
-  project adopt       Move/continue/mint a project from a session (--kind --id --into|--new-project)
+  project adopt       Move/continue/mint a project from a session (--kind --id --into|--new-project; --continue --prompt [--fork] [--from-source-branch]; --into [--add-repo])
   project pause <id>  Pause a project (--reason text)
   project resume <id> Resume a paused project
   project reactivate <id> Reactivate an archived project

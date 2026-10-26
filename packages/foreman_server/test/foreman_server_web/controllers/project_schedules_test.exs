@@ -3,6 +3,7 @@ defmodule ForemanServerWeb.ProjectSchedulesTest do
 
   import Plug.Conn
   import Phoenix.ConnTest
+  import ExUnit.CaptureLog
 
   alias ForemanServer.{CommandGateway, ProjectStore}
   alias ForemanServer.TestSupport.ProjectionStoreReset
@@ -146,6 +147,43 @@ defmodule ForemanServerWeb.ProjectSchedulesTest do
     by_name = Map.new(schedules, &{&1["name"], &1["next_fire_at"]})
     assert by_name["early"] <= by_name["alpha"]
     assert by_name["alpha"] == by_name["zeta"]
+  end
+
+  test "a stored spec beyond today's limits lists with no next_fire_at instead of failing the read",
+       %{id: id} do
+    create(id, "s-ok", "a-ok")
+
+    # An event written before `every` was capped (or edited by hand): the read must still answer.
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "ScheduleCreated",
+          payload: %{
+            schedule_id: "s-huge",
+            project_id: id,
+            name: "b-huge",
+            spec: %{
+              "every" => "3000000d",
+              "timezone" => "UTC",
+              "anchor" => "2026-01-01T00:00:00Z"
+            },
+            prompt: "x",
+            workflow: "implement",
+            created_at: "2026-01-01T00:00:00Z"
+          }
+        }
+      ])
+
+    log =
+      capture_log(fn ->
+        assert %{"schedules" => [ok, huge]} = get_json("/api/projects/#{id}/schedules", 200)
+        assert is_binary(ok["next_fire_at"])
+        assert %{"schedule_id" => "s-huge", "status" => "active", "next_fire_at" => nil} = huge
+      end)
+
+    # Not silent: the read says which schedule has no next fire, and why.
+    assert log =~ "could not compute next_fire_at for s-huge"
+    assert log =~ "above_maximum"
   end
 
   test "empty project lists no schedules", %{id: id} do

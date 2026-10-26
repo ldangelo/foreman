@@ -109,6 +109,253 @@ defmodule ForemanServer.Messaging.ProvidersTest do
     assert slack_body == %{text: "safe text"}
   end
 
+  describe "slack adapter" do
+    @slack_url "https://hooks.slack.com/services/T000/B000/PROVIDERSECRET"
+    @rendered "[info] Test\nHello\nmetadata=%{run_id: \"run-1\"}"
+
+    setup do
+      {:ok, notification} =
+        Notification.normalize(%{@notification_attrs | provider: :slack, recipient: "default"})
+
+      {:ok, notification: notification}
+    end
+
+    test "any 2xx is a delivery: the rendered text is posted to the webhook URL, nothing is retried",
+         %{notification: notification} do
+      for status <- [200, 201, 299] do
+        Process.put(:fake_http_response, {:ok, %HttpResponse{status: status, body: "ok"}})
+
+        assert {:ok, result} = Slack.send(notification, %{webhook_url: @slack_url})
+
+        assert %{
+                 status: :succeeded,
+                 provider: :slack,
+                 notification_id: "n-1",
+                 retryable?: false,
+                 reason: nil,
+                 metadata: %{status: ^status, body: "ok"}
+               } = result
+
+        assert is_binary(result.delivered_at)
+        assert_received {:provider_request, @slack_url, %{text: @rendered}, [], 5_000}
+      end
+    end
+
+    test "anything else fails the delivery, and only 429 and 5xx are worth retrying", %{
+      notification: notification
+    } do
+      table = [
+        {300, false},
+        {400, false},
+        {401, false},
+        {403, false},
+        {404, false},
+        {429, true},
+        {500, true},
+        {503, true}
+      ]
+
+      for {status, retryable?} <- table do
+        Process.put(:fake_http_response, {:ok, %HttpResponse{status: status, body: "nope"}})
+
+        assert {:error, failed} = Slack.send(notification, %{webhook_url: @slack_url})
+
+        assert %{
+                 status: :failed,
+                 provider: :slack,
+                 notification_id: "n-1",
+                 retryable?: ^retryable?,
+                 delivered_at: nil,
+                 metadata: %{status: ^status}
+               } = failed
+
+        assert failed.reason == "slack_http_#{status}: nope"
+        assert_received {:provider_request, @slack_url, _body, [], 5_000}
+      end
+    end
+
+    test "a transport error is a retryable failure, never a delivery", %{
+      notification: notification
+    } do
+      Process.put(:fake_http_response, {:error, :timeout})
+
+      assert {:error, %{status: :failed, retryable?: true, reason: ":timeout", delivered_at: nil}} =
+               Slack.send(notification, %{webhook_url: @slack_url})
+    end
+
+    test "an error body that echoes the webhook URL does not carry it into the result", %{
+      notification: notification
+    } do
+      Process.put(
+        :fake_http_response,
+        {:ok, %HttpResponse{status: 404, body: "no_service " <> @slack_url}}
+      )
+
+      assert {:error, failed} = Slack.send(notification, %{webhook_url: @slack_url})
+
+      assert failed.reason ==
+               "slack_http_404: no_service https://hooks.slack.com/services/[REDACTED]"
+
+      refute inspect(failed) =~ "PROVIDERSECRET"
+    end
+
+    test "a destination without a usable URL fails terminally and sends nothing", %{
+      notification: notification
+    } do
+      for {destination, reason} <- [
+            {%{}, "{:missing_field, :slack_destination, :webhook_url}"},
+            {%{webhook_url: ""}, ~s({:invalid_field, :slack_destination, :webhook_url, ""})},
+            {%{webhook_url: 42}, "{:invalid_field, :slack_destination, :webhook_url, 42}"}
+          ] do
+        assert {:error, failed} = Slack.send(notification, destination)
+        assert %{status: :failed, retryable?: false} = failed
+        assert failed.reason == reason
+        refute_received {:provider_request, _, _, _, _}
+      end
+    end
+  end
+
+  describe "telegram adapter" do
+    @token "123456:abcdefghijklmnopqrstuvwxyzABCDE"
+    @send_url "https://api.telegram.org/bot#{@token}/sendMessage"
+    @destination %{token: @token, chat_id: "-1001234"}
+
+    setup do
+      {:ok, notification} = Notification.normalize(@notification_attrs)
+      {:ok, notification: notification}
+    end
+
+    test "any 2xx is a delivery: chat id and rendered text go to the bot's sendMessage",
+         %{notification: notification} do
+      for status <- [200, 201, 299] do
+        Process.put(
+          :fake_http_response,
+          {:ok, %HttpResponse{status: status, body: ~s({"ok":true})}}
+        )
+
+        assert {:ok, result} = Telegram.send(notification, @destination)
+
+        assert %{
+                 status: :succeeded,
+                 provider: :telegram,
+                 notification_id: "n-1",
+                 retryable?: false,
+                 reason: nil,
+                 metadata: %{status: ^status, body: ~s({"ok":true})}
+               } = result
+
+        assert is_binary(result.delivered_at)
+
+        assert_received {:provider_request, @send_url,
+                         %{
+                           chat_id: "-1001234",
+                           text: @rendered,
+                           disable_web_page_preview: true
+                         }, [], 5_000}
+      end
+    end
+
+    test "anything else fails the delivery, and only 429 and 5xx are worth retrying", %{
+      notification: notification
+    } do
+      table = [
+        {300, false},
+        {400, false},
+        {401, false},
+        {403, false},
+        {404, false},
+        {409, false},
+        {429, true},
+        {500, true},
+        {502, true}
+      ]
+
+      for {status, retryable?} <- table do
+        body = ~s({"ok":false,"error_code":#{status},"description":"nope"})
+        Process.put(:fake_http_response, {:ok, %HttpResponse{status: status, body: body}})
+
+        assert {:error, failed} = Telegram.send(notification, @destination)
+
+        assert %{
+                 status: :failed,
+                 provider: :telegram,
+                 notification_id: "n-1",
+                 retryable?: ^retryable?,
+                 delivered_at: nil,
+                 metadata: %{status: ^status}
+               } = failed
+
+        assert failed.reason == "telegram_http_#{status}: #{body}"
+        assert_received {:provider_request, @send_url, _body, [], 5_000}
+      end
+    end
+
+    test "a transport error is a retryable failure, never a delivery", %{
+      notification: notification
+    } do
+      Process.put(:fake_http_response, {:error, :econnrefused})
+
+      assert {:error,
+              %{status: :failed, retryable?: true, reason: ":econnrefused", delivered_at: nil}} =
+               Telegram.send(notification, @destination)
+    end
+
+    test "the token never reaches a failure result, whether the answer echoes it with or without `bot`",
+         %{notification: notification} do
+      Process.put(
+        :fake_http_response,
+        {:ok,
+         %HttpResponse{
+           status: 502,
+           body: "upstream /bot#{@token}/sendMessage failed for #{@token}"
+         }}
+      )
+
+      assert {:error, failed} = Telegram.send(notification, @destination)
+
+      assert failed.reason ==
+               "telegram_http_502: upstream /bot[REDACTED]/sendMessage failed for [REDACTED]"
+
+      refute inspect(failed) =~ "abcdefghijklmnopqrstuvwxyzABCDE"
+    end
+
+    test "a destination missing its token or chat id fails terminally and sends nothing", %{
+      notification: notification
+    } do
+      for {destination, reason} <- [
+            {%{chat_id: "-1001234"}, "{:missing_field, :telegram_destination, :token}"},
+            {%{token: @token}, "{:missing_field, :telegram_destination, :chat_id}"},
+            {%{token: @token, chat_id: ""},
+             ~s({:invalid_field, :telegram_destination, :chat_id, ""})}
+          ] do
+        assert {:error, failed} = Telegram.send(notification, destination)
+        assert %{status: :failed, retryable?: false} = failed
+        assert failed.reason == reason
+        refute_received {:provider_request, _, _, _, _}
+      end
+    end
+
+    test "a {:system, env} token is read when the message is sent; an unset one is terminal", %{
+      notification: notification
+    } do
+      var = "FOREMAN_PROVIDERS_TEST_TG_TOKEN_#{System.unique_integer([:positive])}"
+      on_exit(fn -> System.delete_env(var) end)
+      destination = %{token: {:system, var}, chat_id: "-1001234"}
+
+      assert {:error, failed} = Telegram.send(notification, destination)
+      assert failed.retryable? == false
+
+      assert failed.reason ==
+               "{:unresolved_secret_ref, :telegram_destination, :token, \"#{var}\"}"
+
+      refute_received {:provider_request, _, _, _, _}
+
+      System.put_env(var, @token)
+      assert {:ok, %{status: :succeeded}} = Telegram.send(notification, destination)
+      assert_received {:provider_request, @send_url, %{chat_id: "-1001234"}, [], 5_000}
+    end
+  end
+
   describe "webhook adapter" do
     setup do
       {:ok, notification} =

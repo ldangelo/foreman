@@ -187,8 +187,14 @@ defmodule ForemanServerWeb.AgentPermissionControllerTest do
 
   test "a blocked call emits progress events for its token, then the result (claude drops a silent reply after ~60s)",
        %{run_id: run_id} do
+    previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_progress_ms: 30)
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     call = %{
       "id" => 9,

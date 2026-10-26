@@ -7,10 +7,16 @@ defmodule ForemanServer.Overview.TabsTest do
   alias ForemanServer.Overview.Tabs
   alias ForemanServer.TestSupport.{ProjectionStoreReset, Tmp}
 
-  defmodule CrashingLibrary do
+  defmodule CrashingScheduled do
+    @behaviour ForemanServer.Overview.TabProvider
+    def tab, do: :scheduled
+    def rows(_project_id), do: raise("provider exploded")
+  end
+
+  defmodule ShadowingLibrary do
     @behaviour ForemanServer.Overview.TabProvider
     def tab, do: :library
-    def rows(_project_id), do: raise("provider exploded")
+    def rows(_project_id), do: []
   end
 
   defmodule RaisingTab do
@@ -106,14 +112,32 @@ defmodule ForemanServer.Overview.TabsTest do
   end
 
   test "a crashing provider is isolated: its tab is unavailable, pull_requests still renders" do
-    Application.put_env(:foreman_server, :overview, tab_providers: [CrashingLibrary])
+    Application.put_env(:foreman_server, :overview, tab_providers: [CrashingScheduled])
 
     log = capture_log(fn -> send(self(), {:tabs, Tabs.build("p")}) end)
     assert_received {:tabs, tabs}
 
     assert log =~ "provider exploded"
-    assert %{available: false, rows: [], error: "provider_failed"} = tabs.library
+    assert %{available: false, rows: [], error: "provider_failed"} = tabs.scheduled
     assert %{available: true, rows: [_]} = tabs.pull_requests
+  end
+
+  test "two providers naming one tab is a configuration error, not a silent override" do
+    Application.put_env(:foreman_server, :overview,
+      tab_providers: [WorkingScheduled, CrashingScheduled]
+    )
+
+    assert_raise ArgumentError, ~r/:scheduled.*WorkingScheduled.*CrashingScheduled/s, fn ->
+      Tabs.build("p")
+    end
+  end
+
+  test "a configured provider cannot shadow a built-in tab" do
+    Application.put_env(:foreman_server, :overview, tab_providers: [ShadowingLibrary])
+
+    assert_raise ArgumentError, ~r/:library.*Tabs\.Library.*ShadowingLibrary/s, fn ->
+      Tabs.build("p")
+    end
   end
 
   test "a provider whose tab/0 raises is isolated: the other tabs still build" do

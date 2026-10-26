@@ -58,6 +58,36 @@ defmodule ForemanServer.Threads do
     end
   end
 
+  @doc """
+  Every thread, grouped by project id, each list most recently updated first.
+
+  One bulk projection read and one thread build for all projects, so a caller
+  that needs several projects (the project list's attention flags) pays for the
+  build once instead of once per project. Unlike `list/2` it applies no limit.
+  """
+  @spec by_project() :: %{String.t() => [Thread.t()]}
+  def by_project do
+    ProjectionStore.thread_inputs()
+    |> build_all()
+    |> Enum.group_by(& &1.project_id)
+  end
+
+  @doc """
+  The thread that owns each of the given run ids, as `%{run_id => thread}`; run
+  ids no thread owns are absent. Unlike `list/2` there is no limit: a thread
+  outside the newest-`max_limit/0` window is still found.
+  """
+  @spec by_run_ids([String.t()]) :: %{String.t() => Thread.t()}
+  def by_run_ids(run_ids) when is_list(run_ids) do
+    wanted = MapSet.new(run_ids)
+
+    for %Thread{run_ids: owned} = thread <- build_all(ProjectionStore.thread_inputs()),
+        run_id <- owned,
+        MapSet.member?(wanted, run_id),
+        into: %{},
+        do: {run_id, thread}
+  end
+
   defp clamp_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@max_limit)
 
   defp build_all(inputs) do

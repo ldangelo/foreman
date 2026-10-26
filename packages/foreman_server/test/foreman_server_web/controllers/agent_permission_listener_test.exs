@@ -43,8 +43,15 @@ defmodule ForemanServerWeb.AgentPermissionListenerTest do
         approval_id: "approval-#{run_id}"
       })
 
+    previous = Application.get_env(:foreman_server, :approvals)
+
     Application.put_env(:foreman_server, :approvals, inflight_progress_ms: 40)
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     ref = :"agent_permission_listener_#{System.unique_integer([:positive])}"
 

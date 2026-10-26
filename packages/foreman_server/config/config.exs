@@ -380,7 +380,7 @@ config :foreman_server, :library,
   produced_max_files_per_run: 100
 
 config :foreman_server, :project_context,
-  max_bytes: 24_000,
+  max_chars: 24_000,
   section_caps: %{instructions: 16_000, repositories: 1_000, memory: 6_000, library: 3_000},
   section_providers: [ForemanServer.ProjectContext.Memory, ForemanServer.ProjectContext.Library]
 

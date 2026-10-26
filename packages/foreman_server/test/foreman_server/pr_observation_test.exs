@@ -178,6 +178,31 @@ defmodule ForemanServer.PrObservationTest do
       assert Enum.count(events, &(&1.event_type == "PrChecksChanged")) == 3
     end
 
+    # foreman-i97tz (S4.md, thread-state transition identity): the spike keyed thread signals
+    # `thr:<id>:open|resolved`, which would collapse a repeated open -> resolved -> reopened cycle of
+    # ONE thread onto its first `open`. The built scheme keys the review event by digest AND a
+    # monotonic observation_seq, so the third observation (same digest as the first) still appends.
+    test "an unresolved -> resolved -> unresolved thread cycle yields three distinct review events",
+         ctx do
+      thread = fn resolved ->
+        %{id: "PRRT_1", resolved: resolved, outdated: false, path: "a.ex", line: 1, comments: []}
+      end
+
+      open = Support.status(threads: [thread.(false)])
+      resolved = Support.status(threads: [thread.(true)])
+
+      r1 = step(ctx, open, nil)
+      r2 = step(ctx, resolved, r1)
+      r3 = step(ctx, open, r2)
+
+      assert [r1.review_seq, r2.review_seq, r3.review_seq] == [1, 2, 3]
+      assert r1.review_digest == r3.review_digest
+      assert [r1.thread_ids, r2.thread_ids, r3.thread_ids] == [["PRRT_1"], [], ["PRRT_1"]]
+
+      assert Enum.count(Support.run_events(ctx.run_id), &(&1.event_type == "PrReviewChanged")) ==
+               3
+    end
+
     test "the command id is deterministic: two observers reading the same previous collapse to one event",
          ctx do
       status = Support.status(checks: [Support.failing_check("unit")], checks_state: :failing)

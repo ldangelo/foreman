@@ -161,7 +161,8 @@ defmodule ForemanServer.Usage do
   all-nil usage, and so does a result that reported nothing.
   """
   @spec from_run_result(RunResult.t()) :: t()
-  def from_run_result(%RunResult{provider: provider} = result), do: from_run_result(provider, result)
+  def from_run_result(%RunResult{provider: provider} = result),
+    do: from_run_result(provider, result)
 
   @doc """
   Build a usage from already-normalised fields (an event payload or projection

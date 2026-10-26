@@ -5,10 +5,8 @@ defmodule ForemanServerWeb.CommandController do
   `POST /api/commands` is the **sole** external mutation surface. The
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on the operator allowlist
-  (`project.register`, `project.update`, `project.archive`,
-  `project.reactivate`, `project.pause`, `project.resume`, `task.create`, `task.approve`, `task.retry`,
-  `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
-  `run.steer`, `merge_approve`, and `run.pr.merge`),
+  (`CommandGateway.command_endpoint_types/0`, the single list of accepted
+  command types, plus `CommandGateway.decision_operator_types/0`),
   enriches the payload, and dispatches to
   `CommandRouter`.
 
@@ -22,15 +20,9 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.environment.set project.archive project.reactivate project.pause project.resume project.adopt project.repo.add project.repo.remove task.create task.approve task.retry task.update run.cancel run.pause run.resume run.remove run.reset run.steer merge_approve run.pr.merge thread.resolve thread.reopen coordinator.message coordinator.restart schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
-  # E9: operator PR-watch commands, declared once on the Run aggregate's PR rules.
-  @pr_operator_types ForemanServer.Aggregates.Run.PrWatch.operator_types() ++
-                       ForemanServer.Aggregates.Run.repo_pr_operator_types()
-  @allowed_types @allowed_types ++ @pr_operator_types
-  @schedule_types ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
-  # E8 agent tool-call decisions (own attribute so allowlist edits do not collide).
-  # NOT the merge gate: `merge_approve` / `run.pr.merge` are unrelated and unchanged.
-  @approval_types ~w(tool.approve tool.deny question.answer)
+  # The allowlist lives in `CommandGateway` (one list, no copies here).
+  @schedule_types CommandGateway.schedule_operator_types()
+  @pr_operator_types CommandGateway.pr_operator_types()
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -100,7 +92,7 @@ defmodule ForemanServerWeb.CommandController do
       not (is_binary(type) and type != "") ->
         {:error, :invalid_envelope}
 
-      not (type in (@allowed_types ++ @approval_types) and is_map(payload)) ->
+      not (accepted_type?(type) and is_map(payload)) ->
         {:error, :invalid_envelope}
 
       true ->
@@ -123,6 +115,12 @@ defmodule ForemanServerWeb.CommandController do
   end
 
   defp build_envelope(_), do: {:error, :invalid_envelope}
+
+  defp accepted_type?(type),
+    do:
+      type in CommandGateway.command_endpoint_types() or
+        type in CommandGateway.decision_operator_types()
+
   # No-id task.create: returns nil so the gateway resolves the backend ID.
   defp resolve_aggregate_id("task.create", payload, params) do
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")

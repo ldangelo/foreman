@@ -1,6 +1,8 @@
 defmodule ForemanServer.Schedule.TickerTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.{CommandGateway, EventStore, ProjectionStore, Recovery}
   alias ForemanServer.Schedule.Ticker
   alias ForemanServer.TestSupport.ProjectionStoreReset
@@ -20,7 +22,13 @@ defmodule ForemanServer.Schedule.TickerTest do
       end
     end
 
-    def dispatch_system_approval(command), do: CommandGateway.dispatch_system_approval(command)
+    def dispatch_system_approval(command) do
+      case fault(command) do
+        nil -> CommandGateway.dispatch_system_approval(command)
+        {:raise, message} -> raise message
+        result -> result
+      end
+    end
 
     defp fault(command) do
       faults = :persistent_term.get({__MODULE__, :faults}, [])
@@ -127,6 +135,69 @@ defmodule ForemanServer.Schedule.TickerTest do
   defp stream_types(stream) do
     {:ok, events} = EventStore.read_stream_forward(stream, 0, 99_999)
     Enum.map(events, & &1.event_type)
+  end
+
+  # The approval keeps failing with an error nobody classified, so the fire stays
+  # unfinished: `create` succeeded, the slot is not consumed.
+  defp unfinished_fire(ctx) do
+    id = create_schedule(ctx, %{auto_approve: true})
+    slot = first_slot(ctx, id)
+    set_clock(ctx, slot + 5)
+    FaultDispatch.put([{"task.approve", id, {:error, :router_unavailable}}])
+    start_ticker(ctx, dispatch: FaultDispatch)
+    capture_log(fn -> :ok = Ticker.tick_now() end)
+
+    assert %{errors: 1} = Ticker.stats()
+    assert ProjectionStore.task_projection(task_id(id, slot))
+    assert %{last_slot: nil} = schedule(ctx, id)
+    {id, slot}
+  end
+
+  defp record_intent!(ctx, id, slot) do
+    assert {:ok, _} =
+             Recovery.record_intent("#{id}:#{slot}", %{
+               schedule_id: id,
+               project_id: ctx.p,
+               slot: slot,
+               task_id: task_id(id, slot)
+             })
+
+    :ok
+  end
+
+  # The task a fire created before it crashed, under a command id of its own.
+  defp create_task_elsewhere!(ctx, id, slot) do
+    tid = task_id(id, slot)
+
+    assert {:ok, _} =
+             CommandGateway.dispatch_system(%{
+               command_id: "earlier-attempt-#{tid}",
+               aggregate_id: "task:" <> tid,
+               type: "task.create",
+               payload: %{task_id: tid, project_id: ctx.p, title: "t", provider_tracked: false}
+             })
+
+    tid
+  end
+
+  defp mark_fired!(ctx, id, slot, tid) do
+    assert {:ok, _} =
+             CommandGateway.dispatch_system(%{
+               command_id: "manual-fired-#{id}-#{slot}",
+               aggregate_id: "schedule:#{ctx.p}:#{id}",
+               type: "schedule.mark_fired",
+               payload: %{
+                 schedule_id: id,
+                 project_id: ctx.p,
+                 slot: slot,
+                 task_id: tid,
+                 intent_id: "#{id}:#{slot}",
+                 collapsed_count: 0,
+                 at: DateTime.to_iso8601(DateTime.from_unix!(slot))
+               }
+             })
+
+    :ok
   end
 
   # (1) ---------------------------------------------------------------------
@@ -435,13 +506,13 @@ defmodule ForemanServer.Schedule.TickerTest do
 
   # (9) ---------------------------------------------------------------------
 
-  test "a typed task.create rejection is a recorded error skip and does not stop another schedule",
+  test "a deterministic task.create rejection is a recorded error skip and does not stop another schedule",
        ctx do
     bad = create_schedule(ctx, %{name: "a-bad"})
     good = create_schedule(ctx, %{name: "z-good"})
     slot = max(first_slot(ctx, bad), first_slot(ctx, good))
     set_clock(ctx, slot + 5)
-    FaultDispatch.put([{"task.create", bad, {:error, {:unknown_workflow, "gone"}}}])
+    FaultDispatch.put([{"task.create", bad, {:error, {:missing_or_invalid, :task_id}}}])
     start_ticker(ctx, dispatch: FaultDispatch)
 
     :ok = Ticker.tick_now()
@@ -454,6 +525,85 @@ defmodule ForemanServer.Schedule.TickerTest do
     assert %{last_outcome: %{kind: "fired"}} = schedule(ctx, good)
     # The intent for the rejected fire is confirmed, not left to be redone forever.
     assert %{status: "confirmed"} = intent("#{bad}:#{slot}")
+  end
+
+  test "each deterministic task.create rejection is recorded under its own skip reason", ctx do
+    rejections = [
+      {{:project_paused, ctx.p}, "project_paused"},
+      {{:project_archived, ctx.p}, "project_paused"},
+      {{:missing_or_invalid, :task_id}, "error"},
+      {{:invalid_task_status, "bogus"}, "error"},
+      {:project_id_required, "error"}
+    ]
+
+    cases = for {rejection, reason} <- rejections, do: {create_schedule(ctx), rejection, reason}
+    slot = cases |> Enum.map(fn {id, _, _} -> first_slot(ctx, id) end) |> Enum.max()
+    set_clock(ctx, slot + 5)
+
+    FaultDispatch.put(
+      for {id, rejection, _reason} <- cases, do: {"task.create", id, {:error, rejection}}
+    )
+
+    start_ticker(ctx, dispatch: FaultDispatch)
+
+    :ok = Ticker.tick_now()
+
+    assert %{skipped: 5, fired: 0, errors: 0} = Ticker.stats()
+
+    for {id, _rejection, reason} <- cases do
+      assert %{last_slot: ^slot, last_outcome: %{kind: "skipped", reason: ^reason}} =
+               schedule(ctx, id)
+
+      assert ProjectionStore.task_projection(task_id(id, slot)) == nil
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+    end
+  end
+
+  # (10) --------------------------------------------------------------------
+
+  # Shapes the ticker does not classify: infrastructure failures, and a typed tag that
+  # `task.create` never returns. None of them is a recorded outcome: the intent stays and
+  # the next tick retries the same commands.
+  @unclassified [
+    :timeout,
+    {:wrong_expected_version, 3},
+    :projection_recovery_failed,
+    :noproc,
+    {:actor_down, :noproc},
+    :router_unavailable,
+    {:unknown_workflow, "gone"},
+    "boom",
+    %{code: :overloaded}
+  ]
+
+  test "an error nobody classified is retried on the next tick, never recorded as a skip", ctx do
+    cases = for error <- @unclassified, do: {create_schedule(ctx), error}
+    slot = cases |> Enum.map(fn {id, _} -> first_slot(ctx, id) end) |> Enum.max()
+    set_clock(ctx, slot + 5)
+    FaultDispatch.put(for {id, error} <- cases, do: {"task.create", id, {:error, error}})
+    start_ticker(ctx, dispatch: FaultDispatch)
+
+    capture_log(fn -> :ok = Ticker.tick_now() end)
+
+    n = length(cases)
+    assert %{errors: ^n, skipped: 0, fired: 0} = Ticker.stats()
+
+    for {id, _error} <- cases do
+      assert %{last_slot: nil} = schedule(ctx, id)
+      assert %{status: "recorded"} = intent("#{id}:#{slot}")
+      assert ProjectionStore.task_projection(task_id(id, slot)) == nil
+    end
+
+    FaultDispatch.clear()
+    :ok = Ticker.tick_now()
+
+    assert %{errors: ^n, skipped: 0, fired: ^n} = Ticker.stats()
+
+    for {id, _error} <- cases do
+      assert %{last_slot: ^slot, last_outcome: %{kind: "fired"}} = schedule(ctx, id)
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+      assert stream_types("task:" <> task_id(id, slot)) == ["TaskCreated"]
+    end
   end
 
   test "a crashing schedule increments errors and the healthy one still fires", ctx do
@@ -469,5 +619,282 @@ defmodule ForemanServer.Schedule.TickerTest do
     assert %{errors: 1, fired: 1} = Ticker.stats()
     assert %{last_slot: nil} = schedule(ctx, bad)
     assert %{last_outcome: %{kind: "fired"}} = schedule(ctx, good)
+  end
+
+  # (11) --------------------------------------------------------------------
+
+  describe "task.approve refused after task.create" do
+    test "a deterministic refusal records the fire with its task: no skip, no orphan, no second task",
+         ctx do
+      id = create_schedule(ctx, %{auto_approve: true})
+      slot = first_slot(ctx, id)
+      tid = task_id(id, slot)
+      set_clock(ctx, slot + 5)
+      FaultDispatch.put([{"task.approve", id, {:error, {:project_paused, ctx.p}}}])
+      start_ticker(ctx, dispatch: FaultDispatch)
+
+      log = capture_log(fn -> :ok = Ticker.tick_now() end)
+
+      # Surfaced, not swallowed: the log names the task and the refusal.
+      assert log =~ "task.approve for #{tid} was rejected"
+      assert log =~ "project_paused"
+      assert %{fired: 1, skipped: 0, errors: 0} = Ticker.stats()
+
+      # The slot is fired with its task, which stays an open proposal ...
+      assert %{status: "open", approval_id: nil} = ProjectionStore.task_projection(tid)
+
+      assert %{last_slot: ^slot, last_outcome: %{kind: "fired", slot: ^slot}, last_task_id: ^tid} =
+               schedule(ctx, id)
+
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+      assert stream_types("schedule:#{ctx.p}:#{id}") == ["ScheduleCreated", "ScheduleFired"]
+
+      # ... so the overlap check sees the pending task: the next slot is skipped beside it.
+      second = slot + 3_600
+      set_clock(ctx, second + 5)
+      :ok = Ticker.tick_now()
+
+      assert %{last_slot: ^second, last_outcome: %{kind: "skipped", reason: "overlap"}} =
+               schedule(ctx, id)
+
+      # A restart finds nothing to redo and creates no second task.
+      restart_ticker(ctx)
+      assert %{errors: 0} = Ticker.stats()
+      assert stream_types("task:" <> tid) == ["TaskCreated"]
+      assert ProjectionStore.task_projection(task_id(id, second)) == nil
+    end
+
+    test "every deterministic refusal is recorded the same way", ctx do
+      refusals = [
+        {:project_paused, ctx.p},
+        {:project_archived, ctx.p},
+        {:task_not_approvable, "ready"},
+        {:workflow_load_failed, "gone", :enoent},
+        {:implementation_context_failed, :trd_path_missing}
+      ]
+
+      cases = for refusal <- refusals, do: {create_schedule(ctx, %{auto_approve: true}), refusal}
+      slot = cases |> Enum.map(fn {id, _} -> first_slot(ctx, id) end) |> Enum.max()
+      set_clock(ctx, slot + 5)
+
+      FaultDispatch.put(for {id, refusal} <- cases, do: {"task.approve", id, {:error, refusal}})
+
+      start_ticker(ctx, dispatch: FaultDispatch)
+
+      capture_log(fn -> :ok = Ticker.tick_now() end)
+
+      assert %{fired: 5, skipped: 0, errors: 0} = Ticker.stats()
+
+      for {id, _refusal} <- cases do
+        tid = task_id(id, slot)
+
+        assert %{last_slot: ^slot, last_outcome: %{kind: "fired"}, last_task_id: ^tid} =
+                 schedule(ctx, id)
+
+        assert %{status: "open", approval_id: nil} = ProjectionStore.task_projection(tid)
+        assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+      end
+    end
+
+    test "an unclassified approve failure keeps the intent; the retry approves the same task",
+         ctx do
+      # `:task_not_found` and `:not_found` are not refusals: a task that was just created
+      # cannot be missing, so they are retried like any shape the ticker does not know.
+      errors = [:router_unavailable, :timeout, {:task_not_found, "x"}, {:not_found, :task, "x"}]
+      cases = for error <- errors, do: {create_schedule(ctx, %{auto_approve: true}), error}
+      slot = cases |> Enum.map(fn {id, _} -> first_slot(ctx, id) end) |> Enum.max()
+      set_clock(ctx, slot + 5)
+      FaultDispatch.put(for {id, error} <- cases, do: {"task.approve", id, {:error, error}})
+      start_ticker(ctx, dispatch: FaultDispatch)
+
+      capture_log(fn -> :ok = Ticker.tick_now() end)
+
+      n = length(cases)
+      assert %{fired: 0, skipped: 0, errors: ^n} = Ticker.stats()
+
+      for {id, _error} <- cases do
+        assert %{last_slot: nil} = schedule(ctx, id)
+        assert %{status: "recorded"} = intent("#{id}:#{slot}")
+        assert %{approval_id: nil} = ProjectionStore.task_projection(task_id(id, slot))
+      end
+
+      FaultDispatch.clear()
+      :ok = Ticker.tick_now()
+
+      assert %{fired: ^n, skipped: 0, errors: ^n} = Ticker.stats()
+
+      for {id, _error} <- cases do
+        tid = task_id(id, slot)
+        assert %{approval_id: approval_id} = ProjectionStore.task_projection(tid)
+        assert is_binary(approval_id)
+
+        assert %{last_slot: ^slot, last_outcome: %{kind: "fired"}, last_task_id: ^tid} =
+                 schedule(ctx, id)
+
+        # The dispatcher may append `TaskDispatched` after the approval, so not an exact list.
+        types = stream_types("task:" <> tid)
+        assert Enum.count(types, &(&1 == "TaskCreated")) == 1
+        assert "TaskApproved" in types
+      end
+    end
+  end
+
+  # (12) --------------------------------------------------------------------
+
+  describe "a skip decision never orphans a task" do
+    test "a slot that turns late after its task was created is fired, not skipped as missed",
+         ctx do
+      {id, slot} = unfinished_fire(ctx)
+      tid = task_id(id, slot)
+
+      # Past the grace the planner decides `missed` ...
+      set_clock(ctx, slot + 700)
+      log = capture_log(fn -> :ok = Ticker.tick_now() end)
+
+      # ... but the task exists, so the slot is recorded as fired and the task left un-approved.
+      assert log =~ "not skipped as missed"
+      assert %{fired: 1, skipped: 0, errors: 1} = Ticker.stats()
+
+      assert %{last_slot: ^slot, last_outcome: %{kind: "fired"}, last_task_id: ^tid} =
+               schedule(ctx, id)
+
+      assert %{status: "open", approval_id: nil} = ProjectionStore.task_projection(tid)
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+      assert stream_types("schedule:#{ctx.p}:#{id}") == ["ScheduleCreated", "ScheduleFired"]
+    end
+
+    test "a project paused after the task was created does not turn its slot into a skip", ctx do
+      {id, slot} = unfinished_fire(ctx)
+      tid = task_id(id, slot)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "ProjectPaused", payload: %{project_id: ctx.p}}
+        ])
+
+      log = capture_log(fn -> :ok = Ticker.tick_now() end)
+
+      assert log =~ "not skipped as project_paused"
+
+      assert %{last_slot: ^slot, last_outcome: %{kind: "fired"}, last_task_id: ^tid} =
+               schedule(ctx, id)
+
+      assert %{status: "open", approval_id: nil} = ProjectionStore.task_projection(tid)
+      assert stream_types("schedule:#{ctx.p}:#{id}") == ["ScheduleCreated", "ScheduleFired"]
+    end
+  end
+
+  # (13) --------------------------------------------------------------------
+
+  describe "recovery applies the planner's rules to the intent's slot" do
+    test "a late slot without a task is recorded as missed and confirmed; nothing is created",
+         ctx do
+      id = create_schedule(ctx, %{auto_approve: true})
+      slot = first_slot(ctx, id)
+      record_intent!(ctx, id, slot)
+      set_clock(ctx, slot + 3_000)
+      start_ticker(ctx)
+
+      # `stats/0` is a call: it runs after the boot-time recovery continuation.
+      assert %{fired: 0, skipped: 1, errors: 0} = Ticker.stats()
+
+      assert %{
+               last_slot: ^slot,
+               last_outcome: %{kind: "skipped", reason: "missed", missed_count: 1}
+             } = schedule(ctx, id)
+
+      assert ProjectionStore.task_projection(task_id(id, slot)) == nil
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+
+      # The slot is consumed: the next tick does not run it either.
+      :ok = Ticker.tick_now()
+      assert %{fired: 0, skipped: 1, errors: 0} = Ticker.stats()
+      assert ProjectionStore.task_projection(task_id(id, slot)) == nil
+    end
+
+    test "the boundary is the planner's: exactly the grace late is redone, a second more is missed",
+         ctx do
+      on_time = create_schedule(ctx, %{misfire_grace_seconds: 600})
+      late = create_schedule(ctx, %{misfire_grace_seconds: 599})
+      slot = max(first_slot(ctx, on_time), first_slot(ctx, late))
+      record_intent!(ctx, on_time, slot)
+      record_intent!(ctx, late, slot)
+      set_clock(ctx, slot + 600)
+      start_ticker(ctx)
+
+      assert %{fired: 1, skipped: 1, errors: 0} = Ticker.stats()
+      assert %{last_outcome: %{kind: "fired"}} = schedule(ctx, on_time)
+      assert ProjectionStore.task_projection(task_id(on_time, slot))
+
+      assert %{last_outcome: %{kind: "skipped", reason: "missed"}} = schedule(ctx, late)
+      assert ProjectionStore.task_projection(task_id(late, slot)) == nil
+    end
+
+    test "a late slot whose task already exists is recorded as fired and left un-approved",
+         ctx do
+      id = create_schedule(ctx, %{auto_approve: true})
+      slot = first_slot(ctx, id)
+      tid = create_task_elsewhere!(ctx, id, slot)
+      record_intent!(ctx, id, slot)
+      set_clock(ctx, slot + 3_000)
+      start_ticker(ctx)
+
+      assert %{fired: 1, skipped: 0, errors: 0} = Ticker.stats()
+
+      assert %{last_slot: ^slot, last_outcome: %{kind: "fired"}, last_task_id: ^tid} =
+               schedule(ctx, id)
+
+      assert %{status: "open", approval_id: nil} = ProjectionStore.task_projection(tid)
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+      assert stream_types("task:" <> tid) == ["TaskCreated"]
+    end
+
+    test "a slot the schedule already accounts for creates no task and its intent is closed",
+         ctx do
+      # A week of grace: lateness plays no part, only the accounting does.
+      superseded = create_schedule(ctx, %{misfire_grace_seconds: 7 * 86_400})
+      first = first_slot(ctx, superseded)
+      later = first + 3_600
+      mark_fired!(ctx, superseded, later, "t-later")
+      record_intent!(ctx, superseded, first)
+
+      # Never fired since creation: a slot before the baseline (`active_since`) never counts.
+      fresh = create_schedule(ctx, %{misfire_grace_seconds: 7 * 86_400})
+      before_baseline = first_slot(ctx, fresh) - 3_600
+      record_intent!(ctx, fresh, before_baseline)
+
+      set_clock(ctx, later + 5)
+      start_ticker(ctx)
+
+      assert %{fired: 0, skipped: 2, errors: 0} = Ticker.stats()
+      assert %{status: "skipped"} = intent("#{superseded}:#{first}")
+      assert %{status: "skipped"} = intent("#{fresh}:#{before_baseline}")
+      assert ProjectionStore.task_projection(task_id(superseded, first)) == nil
+      assert ProjectionStore.task_projection(task_id(fresh, before_baseline)) == nil
+
+      assert stream_types("schedule:#{ctx.p}:#{superseded}") == [
+               "ScheduleCreated",
+               "ScheduleFired"
+             ]
+
+      assert stream_types("schedule:#{ctx.p}:#{fresh}") == ["ScheduleCreated"]
+    end
+
+    test "an interrupted intent of a fire that was already recorded is confirmed without a second task",
+         ctx do
+      id = create_schedule(ctx, %{auto_approve: true})
+      slot = first_slot(ctx, id)
+      tid = create_task_elsewhere!(ctx, id, slot)
+      mark_fired!(ctx, id, slot, tid)
+      record_intent!(ctx, id, slot)
+      set_clock(ctx, slot + 5)
+      start_ticker(ctx)
+
+      assert %{fired: 1, skipped: 0, errors: 0} = Ticker.stats()
+      assert %{status: "confirmed"} = intent("#{id}:#{slot}")
+      assert stream_types("task:" <> tid) == ["TaskCreated"]
+      assert stream_types("schedule:#{ctx.p}:#{id}") == ["ScheduleCreated", "ScheduleFired"]
+      assert %{approval_id: nil} = ProjectionStore.task_projection(tid)
+    end
   end
 end

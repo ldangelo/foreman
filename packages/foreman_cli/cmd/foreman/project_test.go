@@ -1165,7 +1165,10 @@ func TestProjectScheduleCreateEnvelope(t *testing.T) {
 	if len(*seen) != 1 {
 		t.Fatalf("requests = %d, want 1", len(*seen))
 	}
-	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","payload":{"project_id":"p","name":"n","spec":{"every":"1h"},"prompt":"x","workflow":"implement","auto_approve":true,"overlap":"skip"}}`)
+	const seed = `{"auto_approve":true,"name":"n","overlap":"skip","project_id":"p","prompt":"x","spec":{"every":"1h"},"workflow":"implement"}`
+	wantCommandID := sha256HexTest("schedule.create." + seed)
+	wantScheduleID := "sch-" + sha256HexTest("schedule.create.id." + seed)[:12]
+	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","command_id":"`+wantCommandID+`","payload":{"project_id":"p","schedule_id":"`+wantScheduleID+`","name":"n","spec":{"every":"1h"},"prompt":"x","workflow":"implement","auto_approve":true,"overlap":"skip"}}`)
 	if !strings.Contains(stdout, "sch-abc") {
 		t.Fatalf("stdout = %q, want schedule id", stdout)
 	}
@@ -1180,7 +1183,7 @@ func TestProjectScheduleCreateAllFlags(t *testing.T) {
 	}
 
 	captureStdout(t, func() {
-		err := runProject(c, []string{"schedule", "create", "--project-id", "p", "--name", "n", "--cron", "0 9 * * 1-5", "--timezone", "America/Chicago", "--prompt-file", promptFile, "--workflow", "implement", "--auto-approve=false", "--overlap", "allow", "--id", "mine"})
+		err := runProject(c, []string{"schedule", "create", "--project-id", "p", "--name", "n", "--cron", "0 9 * * 1-5", "--timezone", "Etc/UTC", "--prompt-file", promptFile, "--workflow", "implement", "--auto-approve=false", "--overlap", "allow", "--id", "mine"})
 		if err != nil {
 			t.Fatalf("schedule create: %v", err)
 		}
@@ -1189,7 +1192,102 @@ func TestProjectScheduleCreateAllFlags(t *testing.T) {
 	if len(*seen) != 1 {
 		t.Fatalf("requests = %d, want 1", len(*seen))
 	}
-	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","payload":{"schedule_id":"mine","project_id":"p","name":"n","spec":{"cron":"0 9 * * 1-5","timezone":"America/Chicago"},"prompt":"from file\n","workflow":"implement","auto_approve":false,"overlap":"allow"}}`)
+	const seed = `{"auto_approve":false,"name":"n","overlap":"allow","project_id":"p","prompt":"from file\n","schedule_id":"mine","spec":{"cron":"0 9 * * 1-5","timezone":"Etc/UTC"},"workflow":"implement"}`
+	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","command_id":"`+sha256HexTest("schedule.create."+seed)+`","payload":{"schedule_id":"mine","project_id":"p","name":"n","spec":{"cron":"0 9 * * 1-5","timezone":"Etc/UTC"},"prompt":"from file\n","workflow":"implement","auto_approve":false,"overlap":"allow"}}`)
+}
+
+// scheduleEnvelope is the part of a `schedule.create` command the idempotency tests inspect.
+type scheduleEnvelope struct {
+	CommandID string         `json:"command_id"`
+	Payload   map[string]any `json:"payload"`
+}
+
+// scheduleCreateEnvelopes runs `schedule create` once per args set against one server and
+// returns the decoded command envelopes it sent.
+func scheduleCreateEnvelopes(t *testing.T, argSets ...[]string) []scheduleEnvelope {
+	t.Helper()
+
+	c, seen := scheduleTestServer(t, http.StatusCreated, `{"status":"accepted","result":{"project_id":"p","schedule_id":"x"}}`)
+	for _, args := range argSets {
+		captureStdout(t, func() {
+			if err := runProject(c, append([]string{"schedule", "create"}, args...)); err != nil {
+				t.Fatalf("schedule create %v: %v", args, err)
+			}
+		})
+	}
+
+	envelopes := make([]scheduleEnvelope, len(*seen))
+	for i, req := range *seen {
+		if err := json.Unmarshal(req.body, &envelopes[i]); err != nil {
+			t.Fatalf("decode request body %q: %v", req.body, err)
+		}
+	}
+
+	return envelopes
+}
+
+func TestProjectScheduleCreateRetryIsTheSameCommandAndSchedule(t *testing.T) {
+	base := []string{"--project-id", "p", "--name", "n", "--every", "1h", "--prompt", "x", "--workflow", "implement"}
+
+	// no key: the identical retry hashes to the same command and schedule id
+	got := scheduleCreateEnvelopes(t, base, base)
+	if len(got) != 2 {
+		t.Fatalf("requests = %d, want 2", len(got))
+	}
+	if got[0].CommandID == "" || got[0].CommandID != got[1].CommandID {
+		t.Fatalf("command ids = %q, %q; want equal and non-empty", got[0].CommandID, got[1].CommandID)
+	}
+	if id, _ := got[0].Payload["schedule_id"].(string); id == "" || id != got[1].Payload["schedule_id"] {
+		t.Fatalf("schedule ids = %v, %v; want equal and non-empty", got[0].Payload["schedule_id"], got[1].Payload["schedule_id"])
+	}
+
+	// a different payload is a different command and schedule
+	other := scheduleCreateEnvelopes(t, append(append([]string{}, base...), "--overlap", "allow"))
+	if other[0].CommandID == got[0].CommandID || other[0].Payload["schedule_id"] == got[0].Payload["schedule_id"] {
+		t.Fatalf("a different payload must not share the command or schedule id: %+v vs %+v", other[0], got[0])
+	}
+}
+
+func TestProjectScheduleCreateIdempotencyKey(t *testing.T) {
+	base := []string{"--project-id", "p", "--name", "n", "--every", "1h", "--prompt", "x", "--workflow", "implement"}
+	keyed := func(key string, extra ...string) []string {
+		return append(append(append([]string{}, base...), "--idempotency-key", key), extra...)
+	}
+
+	// the same key keeps command and schedule even when other flags differ (a retry that edits a flag)
+	got := scheduleCreateEnvelopes(t, keyed("k1"), keyed("k1", "--overlap", "allow"), keyed("k2"))
+	if len(got) != 3 {
+		t.Fatalf("requests = %d, want 3", len(got))
+	}
+	if got[0].CommandID != sha256HexTest("schedule.create.p\x00k1") {
+		t.Fatalf("command id = %q, want sha256 of the project and key", got[0].CommandID)
+	}
+	if wantID := "sch-" + sha256HexTest("schedule.create.id.p\x00k1")[:12]; got[0].Payload["schedule_id"] != wantID {
+		t.Fatalf("schedule id = %v, want %s", got[0].Payload["schedule_id"], wantID)
+	}
+	if got[0].CommandID != got[1].CommandID || got[0].Payload["schedule_id"] != got[1].Payload["schedule_id"] {
+		t.Fatalf("same key must give the same command and schedule id: %+v vs %+v", got[0], got[1])
+	}
+	if got[2].CommandID == got[0].CommandID || got[2].Payload["schedule_id"] == got[0].Payload["schedule_id"] {
+		t.Fatalf("a different key must give a different command and schedule id: %+v vs %+v", got[2], got[0])
+	}
+
+	// the key is scoped by project: another project with the same key is another command
+	other := scheduleCreateEnvelopes(t, []string{"--project-id", "q", "--name", "n", "--every", "1h", "--prompt", "x", "--workflow", "implement", "--idempotency-key", "k1"})
+	if other[0].CommandID == got[0].CommandID {
+		t.Fatalf("project q and p share command id %q for the same key", other[0].CommandID)
+	}
+}
+
+func TestProjectScheduleCreateExplicitIDIsKept(t *testing.T) {
+	got := scheduleCreateEnvelopes(t,
+		[]string{"--project-id", "p", "--name", "n", "--every", "1h", "--prompt", "x", "--workflow", "implement", "--id", "mine", "--idempotency-key", "k1"})
+	if got[0].Payload["schedule_id"] != "mine" {
+		t.Fatalf("schedule id = %v, want the explicit --id", got[0].Payload["schedule_id"])
+	}
+	if got[0].CommandID != sha256HexTest("schedule.create.p\x00k1") {
+		t.Fatalf("command id = %q, want the key-derived id", got[0].CommandID)
+	}
 }
 
 func TestProjectScheduleCreateUsageErrorsSendNothing(t *testing.T) {

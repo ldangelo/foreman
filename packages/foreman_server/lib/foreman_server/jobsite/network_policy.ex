@@ -25,11 +25,20 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
   worse than an error. The workflow door runs agents on the server host and cannot
   enforce network policy; `network_enforced_on/0` says where enforcement exists.
 
-  `apply/4` returns a cleanup fun that removes sidecar and network; callers MUST
-  invoke it when the jobsite ends, however it ends. `sweep_orphans/1` removes
-  `foreman-jobsite-*` leftovers after a crash (called from `Jobsite.BootRecovery`).
-  Failures to create anything fail CLOSED (`:network_policy_failed`): never run
-  unrestricted when a policy was requested.
+  `apply/4` returns a cleanup fun that removes the jobsite's containers and its
+  network; callers MUST invoke it when the jobsite ends, however it ends.
+  `sweep_orphans/1` removes the leftovers of a crashed server (called from
+  `Jobsite.BootRecovery`). Failures to create anything fail CLOSED
+  (`:network_policy_failed`): never run unrestricted when a policy was requested.
+
+  Everything a policy creates or governs carries Foreman's labels: the network,
+  the sidecar and the sandbox container (`none` included) are labelled
+  `foreman.owner=<owner/0>` and `foreman.jobsite=<id>`. Cleanup and the boot
+  sweep find objects by those labels and by nothing else, so a container or
+  network that merely has a similar name, or belongs to another Foreman server
+  on the same docker host, is never touched. A network cannot be removed while a
+  container is attached to it, so the containers (the sidecar AND a sandbox the
+  jobsite never got to close) are always removed first.
   """
 
   alias ForemanServer.Aggregate
@@ -37,6 +46,8 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
 
   @image "foreman-egress-proxy:1"
   @proxy_port 3128
+  @owner_label "foreman.owner"
+  @jobsite_label "foreman.jobsite"
   @always_allowed ~w(api.anthropic.com api.openai.com api.minimax.io
                      generativelanguage.googleapis.com openrouter.ai github.com
                      api.github.com registry.npmjs.org)
@@ -74,7 +85,8 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
   @doc """
   Apply `policy` (the project's `environment.network` map) to the sandbox
   `provider`/`config` of jobsite `jobsite_id`. Returns the config to create the
-  sandbox with and a cleanup fun.
+  sandbox with (`:network`, the proxy variables in `:env` for an allowlist, and
+  the `:labels` of every policy mode) and a cleanup fun.
   """
   @spec apply(policy(), module(), map() | nil, String.t()) ::
           {:ok, map() | nil, cleanup()} | {:error, Error.t()}
@@ -91,19 +103,25 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
     end
   end
 
-  defp apply_mode("none", _policy, config, _id),
-    do: {:ok, put(config, :network, "none"), &noop/0}
+  defp apply_mode("none", _policy, config, id),
+    do: {:ok, config |> put(:network, "none") |> put_labels(labels(id)), &noop/0}
 
   defp apply_mode("allowlist", policy, config, id) do
     binary = get(config, :binary, "docker")
     network = network_name(id)
     proxy = proxy_name(id)
     hosts = (@always_allowed ++ hosts(policy)) |> Enum.uniq()
-    cleanup = fn -> teardown(binary, network, proxy) end
+    labels = labels(id)
+    cleanup = fn -> teardown(binary, id, network) end
 
     with :ok <- ensure_image(binary),
-         :ok <- docker(binary, ["network", "create", "--internal", network], "network create"),
-         :ok <- start_proxy(binary, network, proxy, hosts),
+         :ok <-
+           docker(
+             binary,
+             ["network", "create", "--internal"] ++ label_args(labels) ++ [network],
+             "network create"
+           ),
+         :ok <- start_proxy(binary, network, proxy, hosts, labels),
          :ok <- docker(binary, ["network", "connect", "bridge", proxy], "proxy egress attach") do
       proxy_url = "http://#{proxy}:#{@proxy_port}"
 
@@ -119,7 +137,7 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
           "no_proxy" => "localhost,127.0.0.1"
         })
 
-      {:ok, config |> put(:network, network) |> put(:env, env), cleanup}
+      {:ok, config |> put(:network, network) |> put(:env, env) |> put_labels(labels), cleanup}
     else
       {:error, %Error{}} = error ->
         cleanup.()
@@ -135,23 +153,39 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
   def proxy_name(jobsite_id), do: "foreman-jobsite-proxy-" <> jobsite_id
 
   @doc """
-  Removes every `foreman-jobsite-*` proxy container and network. Run at boot:
-  at that point no jobsite of this node is running, so all of them are orphans.
-  Never raises; a missing docker binary is a quiet no-op.
+  This server's identity on a docker host that other Foreman servers share: a
+  digest of the host, port and database of its event store, which a restarted
+  server has in common with its predecessor and another server (another
+  database) does not. It is the `foreman.owner` label of everything a policy
+  creates.
+  """
+  @spec owner() :: String.t()
+  def owner do
+    config = ForemanServer.EventStore.config()
+
+    [:hostname, :port, :database, :socket_dir]
+    |> Enum.map_join("|", &to_string(config[&1]))
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 12)
+  end
+
+  @doc """
+  Removes everything of this server's (`owner/0`, or the `:owner` option) that
+  an earlier run left on the docker host: every labelled container (sidecars,
+  sandboxes) first, then every labelled network. Run at boot: at that point no
+  jobsite of this server is running, so all of them are orphans; another
+  server's objects carry its own `foreman.owner` and are not listed. Never
+  raises on docker; a missing docker binary is a quiet no-op.
   """
   @spec sweep_orphans(keyword()) :: :ok
   def sweep_orphans(opts \\ []) do
     binary = Keyword.get(opts, :binary, "docker")
+    filter = "label=#{@owner_label}=#{Keyword.get_lazy(opts, :owner, &owner/0)}"
 
-    containers = list(binary, ["ps", "-aq", "--filter", "name=foreman-jobsite-proxy-"])
+    remove_containers(binary, filter)
 
-    networks =
-      list(binary, ["network", "ls", "--format", "{{.Name}}", "--filter", "name=foreman-jobsite-"])
-
-    for id <- containers, do: run(binary, ["rm", "-f", id])
-
-    for name <- networks,
-        String.starts_with?(name, "foreman-jobsite-"),
+    for name <- list(binary, ["network", "ls", "--format", "{{.Name}}", "--filter", filter]),
         do: run(binary, ["network", "rm", name])
 
     :ok
@@ -225,7 +259,7 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
 
   # The allow-file is written inside the container from `ALLOW`, so no host
   # path is mounted. Hosts were validated by `Environment` (`^[a-z0-9.*-]+$`).
-  defp start_proxy(binary, network, proxy, hosts) do
+  defp start_proxy(binary, network, proxy, hosts, labels) do
     docker(
       binary,
       [
@@ -235,14 +269,17 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
         "--name",
         proxy,
         "--network",
-        network,
-        "-e",
-        "ALLOW=" <> Enum.map_join(hosts, "\n", &host_regex/1),
-        @image,
-        "sh",
-        "-c",
-        ~s(printf '%s\\n' "$ALLOW" > /etc/tinyproxy/allow && exec tinyproxy -d)
-      ],
+        network
+      ] ++
+        label_args(labels) ++
+        [
+          "-e",
+          "ALLOW=" <> Enum.map_join(hosts, "\n", &host_regex/1),
+          @image,
+          "sh",
+          "-c",
+          ~s(printf '%s\\n' "$ALLOW" > /etc/tinyproxy/allow && exec tinyproxy -d)
+        ],
       "proxy start"
     )
   end
@@ -258,11 +295,23 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
     "^" <> body <> "$"
   end
 
-  defp teardown(binary, network, proxy) do
-    run(binary, ["rm", "-f", proxy])
+  # The jobsite's containers first (the sidecar and, when the jobsite never got to
+  # close it, the sandbox): docker refuses to remove a network that has one attached.
+  defp teardown(binary, jobsite_id, network) do
+    remove_containers(binary, "label=#{@jobsite_label}=#{jobsite_id}")
     run(binary, ["network", "rm", network])
     :ok
   end
+
+  defp remove_containers(binary, filter) do
+    for id <- list(binary, ["ps", "-aq", "--filter", filter]), do: run(binary, ["rm", "-f", id])
+    :ok
+  end
+
+  defp labels(jobsite_id), do: %{@owner_label => owner(), @jobsite_label => jobsite_id}
+
+  defp label_args(labels),
+    do: labels |> Enum.sort() |> Enum.flat_map(fn {k, v} -> ["--label", "#{k}=#{v}"] end)
 
   defp docker(binary, args, label) do
     case run(binary, args) do
@@ -303,6 +352,11 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
   # resume's JSON round-trip; writes use the atom key and drop a string twin.
   defp put(config, key, value),
     do: config |> Map.delete(Atom.to_string(key)) |> Map.put(key, value)
+
+  # The sandbox container carries the labels of the network and the sidecar (and
+  # whatever labels the caller's own config already has).
+  defp put_labels(config, labels),
+    do: put(config, :labels, Map.merge(get(config, :labels, %{}), labels))
 
   defp noop, do: :ok
 end

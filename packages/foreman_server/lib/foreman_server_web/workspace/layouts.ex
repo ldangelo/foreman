@@ -5,10 +5,12 @@ defmodule ForemanServerWeb.Workspace.Layouts do
 
   The rest of the browser surface renders without a root layout (and ships no
   client JavaScript), so these pages carry their own: the CSRF meta tag, the
-  two vendored client libraries served from `/assets/vendor/` (see the endpoint)
-  and the LiveSocket bootstrap. A page title and a visible-focus stylesheet live
-  here too, so every page has the same landmarks and focus ring. The skip link
-  targets `#main`: each page marks its `<main>` with that id.
+  two vendored client libraries served from `/assets/vendor/` (see the endpoint),
+  the LiveSocket bootstrap and one inline handler for the `library-download` event
+  the Library tab pushes (a file's bytes travel over the authenticated socket; a
+  link to the API could not send the token). A page title and a visible-focus
+  stylesheet live here too, so every page has the same landmarks and focus ring.
+  The skip link targets `#main`: each page marks its `<main>` with that id.
   """
 
   use Phoenix.Component
@@ -53,6 +55,17 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           var csrf = document.querySelector("meta[name='csrf-token']").getAttribute("content");
           var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {params: {_csrf_token: csrf}});
           liveSocket.connect();
+          window.addEventListener("phx:library-download", function (event) {
+            var bytes = Uint8Array.from(atob(event.detail.data), function (c) { return c.charCodeAt(0); });
+            var url = URL.createObjectURL(new Blob([bytes], {type: "application/octet-stream"}));
+            var link = document.createElement("a");
+            link.href = url;
+            link.download = event.detail.name;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(function () { URL.revokeObjectURL(url); }, 40000);
+          });
         </script>
       </body>
     </html>

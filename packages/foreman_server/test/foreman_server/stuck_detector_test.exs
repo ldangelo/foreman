@@ -112,7 +112,7 @@ defmodule ForemanServer.StuckDetectorTest do
       :telemetry.attach(
         handler_id,
         @event,
-        fn _name, _m, _md, _cfg -> send(test_pid, :should_not_fire) end,
+        fn name, m, md, _cfg -> send(test_pid, {:telemetry, name, m, md}) end,
         nil
       )
 
@@ -126,7 +126,7 @@ defmodule ForemanServer.StuckDetectorTest do
         )
 
       assert results == []
-      refute_received :should_not_fire
+      refute_received {:telemetry, @event, _measurements, %{run_id: ^run_id}}
       assert StuckDetectorTestHelper.last_event_at_ms(run_id) == last_event
     end
 
@@ -207,14 +207,23 @@ defmodule ForemanServer.StuckDetectorTest do
         {:ok, :stub}
       end
 
+      expected_aggregate_id = "run:#{run_id}"
+
       results =
         StuckDetector.scan(
           now_ms_fun: fn -> last_event + 899_999 end,
           dispatch_fun: dispatch_fun
         )
 
-      refute_receive {:telemetry, [:foreman, :run, :stuck], _, _}, 100
-      refute_receive {:dispatched, _, _}, 100
+      # scan/1 emits its telemetry and calls dispatch_fun in this very process, so every
+      # message it could have produced is already in the mailbox when it returns: no wait
+      # is needed. The patterns are the exact shapes the 900_000/900_001 ms tests below
+      # assert positively, pinned to this run.
+      refute_received {:telemetry, [:foreman, :run, :stuck], _measurements, %{run_id: ^run_id}}
+
+      refute_received {:dispatched,
+                       %{aggregate_id: ^expected_aggregate_id, type: "run.flag_stuck"}, _timeout}
+
       assert results == []
     end
 
@@ -343,7 +352,7 @@ defmodule ForemanServer.StuckDetectorTest do
       :telemetry.attach(
         handler_id,
         @event,
-        fn _, _, _, _ -> send(test_pid, :should_not_fire) end,
+        fn name, m, md, _cfg -> send(test_pid, {:telemetry, name, m, md}) end,
         nil
       )
 
@@ -356,7 +365,8 @@ defmodule ForemanServer.StuckDetectorTest do
         )
 
       assert results == []
-      refute_receive :should_not_fire, 100
+      # scan/1 runs in this process, so a stuck event for this run would already be queued.
+      refute_received {:telemetry, @event, _measurements, %{run_id: ^run_id}}
     end
 
     test "flags a run with a live executor whose deadline has expired (wedged agent)" do

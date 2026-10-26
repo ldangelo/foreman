@@ -2,7 +2,9 @@ defmodule ForemanServerWeb.CommandControllerScheduleTest do
   use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
+  import Plug.Conn, only: [put_req_header: 3]
 
+  alias ForemanServer.Aggregates.Schedule, as: ScheduleAggregate
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
@@ -55,6 +57,20 @@ defmodule ForemanServerWeb.CommandControllerScheduleTest do
 
     # The anchor is server-stamped creation time, not client supplied.
     assert {:ok, _, 0} = DateTime.from_iso8601(anchor)
+  end
+
+  test "a retried schedule.create with the same command_id and schedule_id is one schedule",
+       %{project_id: p} do
+    # What `foreman project schedule create` sends on a retry after a timeout.
+    extra = %{command_id: "cli-retry-#{EventStore.UUID.uuid4()}"}
+    payload = create_payload(p, %{schedule_id: "sch-0123456789ab"})
+
+    first = post_command("schedule.create", payload, extra) |> json_response(201)
+    second = post_command("schedule.create", payload, extra) |> json_response(201)
+
+    assert first == second
+    assert %{"result" => %{"schedule_id" => "sch-0123456789ab"}} = first
+    assert [%{schedule_id: "sch-0123456789ab"}] = ProjectionStore.schedules(p)
   end
 
   test "a client-supplied `at` cannot back-date the schedule", %{project_id: p} do
@@ -124,22 +140,132 @@ defmodule ForemanServerWeb.CommandControllerScheduleTest do
     end
   end
 
-  test "gateway and controller allowlists agree on the schedule operator types" do
-    expected = ~w(schedule.create schedule.update schedule.pause schedule.resume schedule.delete)
-    gateway = source_types("lib/foreman_server/command_gateway.ex", "@allowed_operator_types")
+  test "every schedule operator type the gateway lists is accepted by the controller and the gateway",
+       %{project_id: p} do
+    types = ForemanServer.CommandGateway.schedule_operator_types()
 
-    controller =
-      source_types("lib/foreman_server_web/controllers/command_controller.ex", "@allowed_types")
+    assert Enum.sort(types) ==
+             ~w(schedule.create schedule.delete schedule.pause schedule.resume schedule.update)
 
-    assert Enum.filter(gateway, &String.starts_with?(&1, "schedule.")) |> Enum.sort() ==
-             Enum.sort(expected)
+    %{"result" => %{"schedule_id" => id}} =
+      post_command("schedule.create", create_payload(p)) |> json_response(201)
 
-    assert Enum.filter(controller, &String.starts_with?(&1, "schedule.")) |> Enum.sort() ==
-             Enum.sort(expected)
+    # `schedule.delete` last: it ends the stream. Neither 400 (controller rejected the
+    # type or envelope) nor 403 (gateway refused the type) may happen for a listed type.
+    for type <- List.delete(types, "schedule.delete") ++ ["schedule.delete"] do
+      conn = post_command(type, create_payload(p, %{schedule_id: id}))
+
+      refute conn.status in [400, 403], "#{type} was refused: #{conn.resp_body}"
+    end
+
+    assert %{"error" => "invalid_envelope"} =
+             post_command("schedule.fire", %{project_id: p, schedule_id: id})
+             |> json_response(400)
   end
 
-  defp source_types(path, attr) do
-    [_, list] = Regex.run(~r/#{Regex.escape(attr)} ~w\(([^)]*)\)/, File.read!(path))
-    String.split(list)
+  # foreman-q9zzo C9: `foreman project schedule create --timezone America/Chicago` is accepted by
+  # the CLI, which sends the flag verbatim and leaves the verdict to the server; the server takes
+  # UTC only (`Schedule.Spec`). The body is the JSON `projectScheduleCreate` builds (its field
+  # names), and the 422 is what the CLI prints after `foreman: HTTP 422: `
+  # (`cmd/foreman/project_schedule_test.go` pins the other half with the same literal).
+  describe "the timezone rule, as the CLI hits it" do
+    @refusal ~s({"error":"{:invalid_schedule_spec, :timezone, :unsupported_timezone}"})
+
+    defp cli_post(type, payload) do
+      build_conn()
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/commands", Jason.encode!(%{"type" => type, "payload" => payload}))
+    end
+
+    defp cli_create(project_id, schedule_id, spec) do
+      cli_post("schedule.create", %{
+        "schedule_id" => schedule_id,
+        "project_id" => project_id,
+        "name" => "n",
+        "spec" => spec,
+        "prompt" => "x",
+        "workflow" => "implement",
+        "auto_approve" => true,
+        "overlap" => "skip"
+      })
+    end
+
+    defp stream_types(project_id, schedule_id) do
+      case ForemanServer.EventStore.read_stream_forward(
+             ScheduleAggregate.stream_id(project_id, schedule_id),
+             0,
+             10
+           ) do
+        {:ok, events} -> Enum.map(events, & &1.event_type)
+        {:error, :stream_not_found} -> []
+      end
+    end
+
+    defp listed(project_id) do
+      build_conn() |> get("/api/projects/#{project_id}/schedules") |> json_response(200)
+    end
+
+    test "a timezone other than UTC is a 422 with the typed error, and nothing is persisted",
+         %{project_id: p} do
+      for {id, spec} <- [
+            {"s-every", %{"every" => "1h", "timezone" => "America/Chicago"}},
+            {"s-cron", %{"cron" => "0 9 * * 1-5", "timezone" => "America/Chicago"}}
+          ] do
+        conn = cli_create(p, id, spec)
+
+        assert response(conn, 422) == @refusal
+        assert stream_types(p, id) == []
+      end
+
+      assert ProjectionStore.schedules(p) == []
+      assert %{"schedules" => []} = listed(p)
+    end
+
+    test "UTC, Etc/UTC and no timezone at all still create, and are stored as UTC",
+         %{project_id: p} do
+      for {id, spec} <- [
+            {"s-utc", %{"every" => "1h", "timezone" => "UTC"}},
+            {"s-etc", %{"cron" => "0 9 * * 1-5", "timezone" => "Etc/UTC"}},
+            {"s-none", %{"cron" => "0 9 * * 1-5"}}
+          ] do
+        assert %{"status" => "accepted", "result" => %{"schedule_id" => ^id}} =
+                 json_response(cli_create(p, id, spec), 201)
+
+        assert stream_types(p, id) == ["ScheduleCreated"]
+      end
+
+      assert %{"schedules" => schedules} = listed(p)
+      assert Enum.sort(Enum.map(schedules, & &1["schedule_id"])) == ["s-etc", "s-none", "s-utc"]
+      assert Enum.all?(schedules, &(&1["timezone"] == "UTC"))
+    end
+
+    test "schedule.update refuses the same timezone and keeps the stored spec", %{project_id: p} do
+      assert %{"status" => "accepted"} =
+               json_response(cli_create(p, "s-up", %{"every" => "1h"}), 201)
+
+      before = ProjectionStore.schedule(p, "s-up").spec
+
+      refused =
+        cli_post("schedule.update", %{
+          "project_id" => p,
+          "schedule_id" => "s-up",
+          "spec" => %{"every" => "2h", "timezone" => "America/Chicago"}
+        })
+
+      assert response(refused, 422) == @refusal
+      assert stream_types(p, "s-up") == ["ScheduleCreated"]
+      assert ProjectionStore.schedule(p, "s-up").spec == before
+
+      accepted =
+        cli_post("schedule.update", %{
+          "project_id" => p,
+          "schedule_id" => "s-up",
+          "spec" => %{"every" => "2h", "timezone" => "UTC"}
+        })
+
+      assert %{"status" => "accepted"} = json_response(accepted, 201)
+      assert stream_types(p, "s-up") == ["ScheduleCreated", "ScheduleUpdated"]
+      assert %{"every" => "2h", "timezone" => "UTC"} = ProjectionStore.schedule(p, "s-up").spec
+    end
   end
 end

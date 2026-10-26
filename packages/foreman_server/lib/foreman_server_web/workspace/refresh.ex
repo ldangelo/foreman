@@ -10,6 +10,10 @@ defmodule ForemanServerWeb.Workspace.Refresh do
   periodic timer: an idle project causes no work at all. Worker output events
   never trigger a refresh (they carry no state the workspace shows).
 
+  The events are the shapes `ProjectionStore` broadcasts (`%EventData{}`,
+  `%RecordedEvent{}` and applied `%{event_type:, payload:}` maps, atom-keyed); any
+  other shape raises instead of being guessed at.
+
   The window is `config :foreman_server, :workspace, coalesce_ms:` (default 250).
   Each refresh emits `[:foreman_server, :workspace, :refresh]` telemetry.
   """
@@ -72,25 +76,30 @@ defmodule ForemanServerWeb.Workspace.Refresh do
     |> Phoenix.Component.update(:refresh_count, &(&1 + 1))
   end
 
-  defp relevant?(%{event_type: type} = event, project_id) when is_binary(type) do
+  # The one place an event's shape is read. `ProjectionStore` broadcasts what it applied:
+  # `%EventData{}` and `%RecordedEvent{}` (their `data` is a typed event struct or an
+  # atom-keyed map: the event store serializer writes terms, so keys keep their type) and the
+  # `%{event_type:, payload:}` maps `ProjectionStore.apply_events/1` also accepts. The project
+  # id is read under its one key, `:project_id`. Any other shape raises: ignoring it, or
+  # refreshing for it, would hide the change.
+  defp relevant?(event, project_id) do
+    {type, payload} = parts(event)
+
     not Enum.any?(@ignored_prefixes, &String.starts_with?(type, &1)) and
-      case event_project_id(event) do
-        nil -> true
-        id -> id == project_id
-      end
+      of_project?(payload, project_id)
   end
 
-  defp relevant?(_event, _project_id), do: false
+  defp parts(%{event_type: type, data: %{} = data}) when is_binary(type), do: {type, data}
+  defp parts(%{event_type: type, payload: %{} = data}) when is_binary(type), do: {type, data}
 
-  # Projection events carry atom-keyed data when freshly appended and
-  # string-keyed data when replayed from the log; read the project id once, here.
-  defp event_project_id(%{data: data}) when is_map(data), do: project_id_of(data)
-  defp event_project_id(%{payload: data}) when is_map(data), do: project_id_of(data)
-  defp event_project_id(_event), do: nil
-
-  defp project_id_of(%{project_id: id}), do: id
-  defp project_id_of(%{"project_id" => id}), do: id
-  defp project_id_of(_), do: nil
+  # An event that names no project (a run event, say) concerns every workspace. A project id
+  # that is neither absent nor a string is a defect, not a reason to guess.
+  defp of_project?(payload, project_id) do
+    case Map.get(payload, :project_id) do
+      nil -> true
+      id when is_binary(id) -> id == project_id
+    end
+  end
 
   defp coalesce_ms do
     :foreman_server

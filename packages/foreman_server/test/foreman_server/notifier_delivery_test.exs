@@ -11,6 +11,9 @@ defmodule ForemanServer.NotifierDeliveryTest do
 
   @moduletag :tmp_dir
 
+  import ExUnit.CaptureLog, only: [capture_log: 1]
+
+  alias ForemanServer.Aggregates.{OperatorQuestion, ToolCall}
   alias ForemanServer.{CommandGateway, EventStore, Notifier}
   alias ForemanServer.Messaging.{Dispatcher, HttpResponse}
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
@@ -25,7 +28,8 @@ defmodule ForemanServer.NotifierDeliveryTest do
     def post_json(url, body, headers, _timeout) do
       send(Application.fetch_env!(:foreman_server, :e10_test_pid), {:http, url, body, headers})
       status = Application.get_env(:foreman_server, :e10_http_status, 200)
-      {:ok, %HttpResponse{status: status, body: "ok"}}
+      answer = Application.get_env(:foreman_server, :e10_http_body, "ok")
+      {:ok, %HttpResponse{status: status, body: answer}}
     end
   end
 
@@ -47,6 +51,7 @@ defmodule ForemanServer.NotifierDeliveryTest do
     on_exit(fn ->
       Application.delete_env(:foreman_server, :e10_test_pid)
       Application.delete_env(:foreman_server, :e10_http_status)
+      Application.delete_env(:foreman_server, :e10_http_body)
       Application.delete_env(:foreman_server, :e10_test_stream)
 
       if original,
@@ -305,6 +310,164 @@ defmodule ForemanServer.NotifierDeliveryTest do
              "NotificationDeliveryAttempted",
              "NotificationDeliverySucceeded"
            ]
+  end
+
+  # The Bot API leg of the pipeline (Slack and the webhook are above). The token rides in the URL
+  # path, a secret in the request line instead of a header, so it is the one most likely to leak
+  # into an event or a log line.
+  describe "Telegram" do
+    @tg_token "123456789:AAEhBP0av28TGSECRETTOKENabcdefghijk"
+    @tg_chat "-1001234567890"
+    @tg_url "https://api.telegram.org/bot#{@tg_token}/sendMessage"
+
+    setup do
+      configure(provider: :telegram, telegram: [token: @tg_token, chat_id: @tg_chat])
+    end
+
+    test "a run failure is posted to the bot's sendMessage; the token is in that request line and nowhere else",
+         %{project_id: project_id} do
+      run_id = "run-tg-#{System.unique_integer([:positive])}"
+
+      Application.put_env(
+        :foreman_server,
+        :e10_http_body,
+        ~s({"ok":true,"result":{"message_id":7}})
+      )
+
+      log =
+        capture_log(fn ->
+          start_pipeline()
+          emit("RunFailed", %{run_id: run_id, project_id: project_id, reason: "phase exploded"})
+
+          assert_receive {:http, @tg_url, body, []}, 5_000
+
+          # The text is the three lines of the notification, then the ids it carries (their order
+          # is `inspect/1`'s, not a contract).
+          assert %{chat_id: @tg_chat, disable_web_page_preview: true, text: text} = body
+          assert [title, run_line, reason_line, metadata] = String.split(text, "\n")
+          assert title == "[critical] Run failed"
+          assert run_line == "run_id: #{run_id}"
+          assert reason_line == "reason: phase exploded"
+          assert metadata =~ "run_id: #{inspect(run_id)}"
+          assert metadata =~ "project_id: #{inspect(project_id)}"
+
+          H.await_event("NotificationDeliverySucceeded", &(&1.run_id == run_id))
+        end)
+
+      enqueued = H.await_event("NotificationEnqueued", &(&1.run_id == run_id))
+      assert to_string(enqueued.provider) == "telegram"
+      assert enqueued.recipient == "default"
+      events = notification_events(enqueued)
+
+      assert Enum.map(events, & &1.event_type) == [
+               "NotificationEnqueued",
+               "NotificationDeliveryAttempted",
+               "NotificationDeliverySucceeded"
+             ]
+
+      refute inspect(events) =~ "TGSECRETTOKEN"
+      refute log =~ "TGSECRETTOKEN"
+    end
+
+    test "a non-2xx answer is a recorded failure: terminal for a bad request or token, retryable for a rate limit or an outage",
+         %{project_id: project_id} do
+      start_pipeline()
+
+      for {status, retryable?} <- [{400, false}, {401, false}, {429, true}, {500, true}] do
+        run_id = "run-tg-#{status}-#{System.unique_integer([:positive])}"
+
+        # What an error page in front of the API does: it names the request it refused. The token
+        # is in that line, so the recorded reason must not repeat it.
+        refused = fn name ->
+          ~s({"ok":false,"error_code":#{status},"description":"refused #{name}"})
+        end
+
+        Application.put_env(:foreman_server, :e10_http_status, status)
+
+        Application.put_env(
+          :foreman_server,
+          :e10_http_body,
+          refused.("/bot#{@tg_token}/sendMessage")
+        )
+
+        emit("RunFailed", %{run_id: run_id, project_id: project_id, reason: "phase exploded"})
+
+        assert_receive {:http, @tg_url, %{chat_id: @tg_chat}, []}, 5_000
+        failed = H.await_event("NotificationDeliveryFailed", &(&1.run_id == run_id))
+
+        assert failed.retryable? == retryable?
+
+        assert failed.reason ==
+                 "telegram_http_#{status}: " <> refused.("/bot[REDACTED]/sendMessage")
+
+        events = notification_events(failed)
+
+        assert Enum.map(events, & &1.event_type) == [
+                 "NotificationEnqueued",
+                 "NotificationDeliveryAttempted",
+                 "NotificationDeliveryFailed"
+               ]
+
+        refute inspect(events) =~ "TGSECRETTOKEN"
+      end
+    end
+  end
+
+  # foreman-q9zzo C12: an expired question, an expired approval and an exhausted PR fix, each
+  # produced by the aggregate that owns it (the commands the approvals sweeper and the auto-fix
+  # policy dispatch), reach the sink under the DEFAULT preference: they are action_needed, which
+  # `blocked_only` delivers.
+  test "an expired question, an expired approval and an exhausted PR fix reach the sink",
+       %{project_id: project_id} do
+    configure(provider: :webhook, webhook: [url: @hook_url])
+    start_pipeline()
+    %{run_id: run_id} = PrWatchSupport.start_run!(project_id: project_id)
+    pr_url = "https://github.com/acme/repo/pull/12"
+    question_id = "q-#{System.unique_integer([:positive])}"
+    tool_call_id = "tc-#{System.unique_integer([:positive])}"
+    question = OperatorQuestion.stream_id(run_id, question_id)
+    tool_call = ToolCall.stream_id(run_id, tool_call_id)
+
+    for {type, aggregate_id, payload} <- [
+          {"question.open", question,
+           %{run_id: run_id, question_id: question_id, project_id: project_id, text: "Which DB?"}},
+          {"question.expire", question,
+           %{run_id: run_id, question_id: question_id, reason: "timeout"}},
+          {"tool.request", tool_call,
+           %{run_id: run_id, tool_call_id: tool_call_id, tool_name: "Bash"}},
+          {"tool.expire", tool_call,
+           %{run_id: run_id, tool_call_id: tool_call_id, reason: "timeout"}},
+          {"run.pr.fix_exhausted", "run:#{run_id}",
+           %{
+             run_id: run_id,
+             pr_url: pr_url,
+             kind: "ci",
+             reason: "max_attempts",
+             head_sha: "sha-1"
+           }}
+        ] do
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: type,
+                 command_id: "#{type}:#{aggregate_id}",
+                 aggregate_id: aggregate_id,
+                 payload: payload
+               })
+    end
+
+    for {subject, text, url} <- [
+          {"Question expired unanswered", "run_id: #{run_id}\nreason: timeout", nil},
+          {"Approval request expired", "run_id: #{run_id}\nreason: timeout", nil},
+          {"PR fix attempts exhausted",
+           "run_id: #{run_id}\npr_url: #{pr_url}\nkind: ci\nreason: max_attempts\nattempts: 0",
+           pr_url}
+        ] do
+      assert_receive {:http, @hook_url, %{subject: ^subject} = body, _headers}, 5_000
+
+      assert %{event_class: :action_needed, severity: :warning, run_id: ^run_id} = body
+      assert body.body == text
+      assert body.url == url
+    end
   end
 
   defp set_preference(project_id, preference) do

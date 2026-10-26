@@ -29,6 +29,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
   alias ForemanServer.Idempotency.{CrashRecovery, KeyStore, RestartBackoff}
+  alias ForemanServer.Incarnation
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   @orphan_reopen_event [:foreman_server, :workflow, :boot_reconciliation, :orphan_reopen]
@@ -116,19 +117,30 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @doc """
   Request a scan of every per-DB Beads lease stream for orphaned entries
-  — a holder or waiter whose `run_id` does not correspond to a non-terminal
-  run projection. Each orphan is dispatched as `lease.release` (for the
-  holder) or `lease.remove_waiter` (for queued waiters) so the lease is
-  cleanly transferred or freed after a restart that found stranded state.
+  — a holder or waiter whose owner no longer exists. Each orphan is
+  dispatched as `lease.release` (for the holder) or `lease.remove_waiter`
+  (for queued waiters) so the lease is cleanly transferred or freed after
+  a restart that found stranded state.
 
-  The scan walks every task projection that has a Beads DB path, groups
-  by `db_path`, loads the lease aggregate via `Aggregate.load/2`, and
-  inspects the lease holder and waiter list. A lease entry is considered
-  live only when the run projection exists AND `terminal?` is false;
-  everything else (no run projection, terminal run, or run whose binding
-  has been cleared) is released or removed. Both `lease.release` and
-  `lease.remove_waiter` are idempotent no-ops against foreign entries, so
-  the scan is safe to re-run.
+  The scan lists every `beads_db_lease:` stream in the event store — not
+  only the ones a task projection points at: a hold taken around one `br`
+  call by `BeadsWatcher`, `BeadsAdapter` or the janitor is bound to no
+  task, so a walk keyed on tasks never reaches the holds a killed server
+  strands. It loads each lease aggregate via `Aggregate.load/2` and
+  inspects the holder and waiter list. An entry is live by one of two
+  rules:
+
+    * A hold taken for one call names the `ForemanServer.Incarnation` of
+      the server that took it. It is live exactly when that is this
+      server: every other incarnation has ended, and the call with it.
+    * A hold without an incarnation belongs to a run. It is live only
+      when a task bound to that DB path names the run AND the run
+      projection exists and `terminal?` is false; everything else (no run
+      projection, terminal run, or run whose binding has been cleared) is
+      released or removed.
+
+  Both `lease.release` and `lease.remove_waiter` are idempotent no-ops
+  against foreign entries, so the scan is safe to re-run.
 
   Dispatches as a cast so the actual scan runs inside the
   `BootReconciliation` process. Returns `:ok` once the cast is enqueued.
@@ -557,35 +569,75 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     Process.send_after(self(), :scan_lease_orphans, @scan_retry_ms)
   end
 
+  @lease_stream_prefix "beads_db_lease:"
+  @lease_stream_page_size 100
+
   defp do_scan_lease_orphans do
-    tasks_with_db_path()
-    |> Enum.group_by(& &1.db_path, & &1.run_id)
-    |> Enum.each(&reconcile_lease_stream/1)
+    active_runs_by_db = Enum.group_by(tasks_with_db_path(), & &1.db_path, & &1.run_id)
+
+    case lease_stream_ids(1, []) do
+      {:ok, stream_ids} ->
+        Enum.each(stream_ids, &reconcile_lease_stream(&1, active_runs_by_db))
+
+      {:error, reason} ->
+        Logger.error(
+          "BootReconciliation could not list the Beads lease streams: #{inspect(reason)}"
+        )
+    end
 
     :ok
   end
 
-  defp reconcile_lease_stream({db_path, run_ids}) when is_binary(db_path) and db_path != "" do
-    active_run_ids = MapSet.new(run_ids)
-    {state, _version} = Aggregate.load(BeadsDbLease, BeadsDbLease.stream_id(db_path))
+  # Candidates come from the event store, not from task projections: a lease
+  # taken around one `br` call is bound to no task, so a stream reachable only
+  # through tasks misses exactly the holds a killed server strands
+  # (foreman-w29up). `paginate_streams(search: term)` matches `%term%`, so the
+  # prefix is re-checked; sorting by `stream_uuid` keeps paging stable.
+  defp lease_stream_ids(page_number, acc) do
+    opts = [
+      search: @lease_stream_prefix,
+      page_number: page_number,
+      page_size: @lease_stream_page_size,
+      sort_by: :stream_uuid
+    ]
 
-    cond do
-      not state.exists? ->
-        :ok
+    case ForemanServer.EventStore.paginate_streams(opts) do
+      {:ok, %EventStore.Page{entries: entries, total_pages: total_pages}} ->
+        acc =
+          Enum.reduce(entries, acc, fn %EventStore.Streams.StreamInfo{stream_uuid: stream_uuid},
+                                       uuids ->
+            if String.starts_with?(stream_uuid, @lease_stream_prefix),
+              do: [stream_uuid | uuids],
+              else: uuids
+          end)
 
-      holder_orphan?(state, active_run_ids) ->
-        release_lease(db_path, state.holder.run_id, :boot_orphan_holder)
+        if page_number >= total_pages,
+          do: {:ok, Enum.reverse(acc)},
+          else: lease_stream_ids(page_number + 1, acc)
 
-      true ->
-        :ok
+      {:error, reason} ->
+        {:error, reason}
     end
-
-    state.waiters
-    |> Enum.reject(fn waiter -> lease_entry_live?(waiter.run_id, active_run_ids) end)
-    |> Enum.each(&remove_lease_waiter(db_path, &1, :boot_orphan_waiter))
   end
 
-  defp reconcile_lease_stream(_), do: :ok
+  defp reconcile_lease_stream(stream_id, active_runs_by_db) do
+    {state, _version} = Aggregate.load(BeadsDbLease, stream_id)
+
+    if state.exists? do
+      db_path = state.db_path
+      active_run_ids = active_runs_by_db |> Map.get(db_path, []) |> MapSet.new()
+
+      if holder_orphan?(state, active_run_ids) do
+        release_lease(db_path, state.holder.run_id, :boot_orphan_holder)
+      end
+
+      state.waiters
+      |> Enum.reject(&lease_entry_live?(&1, active_run_ids))
+      |> Enum.each(&remove_lease_waiter(db_path, &1, :boot_orphan_waiter))
+    end
+
+    :ok
+  end
 
   # ---------------------------------------------------------------------------
   # Run slots orphan scan
@@ -784,14 +836,22 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp holder_orphan?(%BeadsDbLease.State{holder: nil}, _active_run_ids), do: false
 
   defp holder_orphan?(
-         %BeadsDbLease.State{holder: %BeadsDbLease.Holder{run_id: run_id}},
+         %BeadsDbLease.State{holder: %BeadsDbLease.Holder{} = holder},
          active_run_ids
-       )
-       when is_binary(run_id) do
-    not lease_entry_live?(run_id, active_run_ids)
+       ) do
+    not lease_entry_live?(holder, active_run_ids)
   end
 
-  defp lease_entry_live?(run_id, active_run_ids) when is_binary(run_id) do
+  # A hold taken for one call names the incarnation of the server that took it
+  # and is live exactly when that is this server: its `run_id` is a synthetic
+  # one (`watcher:...`) or a run long since done, so no run projection can
+  # speak for it. A hold without an incarnation belongs to a run and is live
+  # while that run is.
+  defp lease_entry_live?(%{incarnation: incarnation}, _active_run_ids)
+       when is_binary(incarnation),
+       do: incarnation == Incarnation.id()
+
+  defp lease_entry_live?(%{run_id: run_id}, active_run_ids) when is_binary(run_id) do
     MapSet.member?(active_run_ids, run_id) and not run_terminal?(run_id)
   end
 

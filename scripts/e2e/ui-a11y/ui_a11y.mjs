@@ -131,6 +131,23 @@ async function tabTo(page, predicate, max = 80) {
   }
   await page.close();
 }
+// The operator-question pane (foreman-exofh) renders only while a question is open: seed one
+// (`POST /webhooks/operator/ingest` with the `agent_id` of one of the project's threads' tasks)
+// to cover it. When it is there, its answer box and then its Answer button must be reachable by
+// keyboard (`tabTo` asserts a visible focus ring at every stop).
+{
+  const page = await open(pages[0].path);
+  if ((await page.locator("#questions-pane").count()) === 0) {
+    ok("workspace: no open question, the question pane was not exercised (seed one to cover it)");
+  } else {
+    const box = await tabTo(page, (i) => i.tag === "textarea" && /^question-.*-answer$/.test(i.id), 40);
+    const answer = box && (await tabTo(page, (i) => i.tag === "button" && i.label === "Answer", 5));
+    if (!box) fail("workspace: the question answer box is not reachable by Tab");
+    else if (!answer) fail("workspace: the Answer button does not follow the question answer box in focus order");
+    else ok(`workspace: question answer box reached after ${box.length} stops, then the "Answer" button`);
+  }
+  await page.close();
+}
 {
   const page = await open(pages[1].path);
   const seq = await tabTo(page, (i) => i.tag === "button" && i.type === "submit" && /Save settings/.test(i.label), 120);

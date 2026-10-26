@@ -128,21 +128,73 @@ defmodule ForemanServer.Aggregates.ScheduleTest do
       assert {:error, {:missing_or_invalid, :at}} = run.(%{at: nil})
     end
 
-    test "a non-integer max_per_project config raises instead of disabling the cap" do
+    test "a misconfigured max_per_project raises instead of disabling the cap" do
       original = Application.get_env(:foreman_server, :schedule, [])
       on_exit(fn -> Application.put_env(:foreman_server, :schedule, original) end)
 
-      Application.put_env(
-        :foreman_server,
-        :schedule,
-        Keyword.put(original, :max_per_project, "50")
-      )
-
-      assert_raise ArgumentError, ~r/max_per_project/, fn ->
-        Schedule.handle_command(
-          Schedule.initial_state(),
-          cmd("schedule.create", create_payload(%{schedule_id: "c"}))
+      # `count >= "50"` is false for any count: a string, nil or atom would switch the cap off.
+      for bad <- ["50", nil, :infinity, 2.5, 0, -1] do
+        Application.put_env(
+          :foreman_server,
+          :schedule,
+          Keyword.put(original, :max_per_project, bad)
         )
+
+        error =
+          assert_raise ArgumentError, ~r/max_per_project/, fn ->
+            Schedule.handle_command(
+              Schedule.initial_state(),
+              cmd("schedule.create", create_payload(%{schedule_id: "c"}))
+            )
+          end
+
+        assert error.message =~ inspect(bad)
+      end
+    end
+
+    test "a misconfigured default_misfire_grace_seconds raises when it is needed, not before" do
+      original = Application.get_env(:foreman_server, :schedule, [])
+      on_exit(fn -> Application.put_env(:foreman_server, :schedule, original) end)
+      max_grace = 7 * 86_400
+
+      for bad <- ["600", nil, 2.5, -1, max_grace + 1] do
+        Application.put_env(
+          :foreman_server,
+          :schedule,
+          Keyword.put(original, :default_misfire_grace_seconds, bad)
+        )
+
+        error =
+          assert_raise ArgumentError, ~r/default_misfire_grace_seconds/, fn ->
+            Schedule.handle_command(
+              Schedule.initial_state(),
+              cmd("schedule.create", create_payload())
+            )
+          end
+
+        assert error.message =~ inspect(bad)
+
+        # The server setting is never read when the caller supplies a grace of its own.
+        assert {:ok, %{payload: %{misfire_grace_seconds: 60}}} =
+                 Schedule.handle_command(
+                   Schedule.initial_state(),
+                   cmd("schedule.create", create_payload(%{misfire_grace_seconds: 60}))
+                 )
+      end
+
+      # Every value in range is a valid default, the bounds included.
+      for good <- [0, 600, max_grace] do
+        Application.put_env(
+          :foreman_server,
+          :schedule,
+          Keyword.put(original, :default_misfire_grace_seconds, good)
+        )
+
+        assert {:ok, %{payload: %{misfire_grace_seconds: ^good}}} =
+                 Schedule.handle_command(
+                   Schedule.initial_state(),
+                   cmd("schedule.create", create_payload())
+                 )
       end
     end
 

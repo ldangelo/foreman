@@ -124,6 +124,7 @@ defmodule ForemanServer.Jobsite.Worktree do
   # fetch it, then make the local branch equal to the remote tip (create it, or
   # fast-forward a branch that is behind) BEFORE the worktree is added. A local branch
   # that has commits the remote lacks is refused rather than merged or discarded.
+  # A linked worktree that already holds the branch is reused only with a clean tree.
   # `base_sha` is then the branch tip at attach time, so a later "commits since base"
   # counts only what the jobsite adds.
   defp do_create(repo_path, {:branch, name} = strategy, opts) do
@@ -149,7 +150,7 @@ defmodule ForemanServer.Jobsite.Worktree do
           with :ok <- Git.set_branch(repo_path, name, remote_sha), do: {:ok, remote_sha}
 
         {:ok, ^remote_sha} ->
-          {:ok, remote_sha}
+          reuse_checkout(repo_path, name, remote_sha)
 
         {:ok, local_sha} ->
           catch_up(repo_path, name, local_sha, remote_sha)
@@ -167,6 +168,22 @@ defmodule ForemanServer.Jobsite.Worktree do
          "local branch has unpushed commits: it is not an ancestor of its remote tip",
          %{branch: name, local: local_sha, remote: remote_sha}
        )}
+    end
+  end
+
+  # An up-to-date branch moves nothing, but a linked worktree already holding it is then
+  # reused as it stands, and the agent commits and pushes everything in it: uncommitted
+  # changes there are refused (clean tree only). The MAIN worktree is left to
+  # `attach_branch/4`, which refuses it.
+  defp reuse_checkout(repo_path, name, tip) do
+    with {:ok, [main | _] = existing} <- Git.worktree_list(repo_path) do
+      case Enum.find(existing, &(&1.branch == name)) do
+        %{path: path} when path != main.path ->
+          with :ok <- require_clean(name, path, "reused"), do: {:ok, tip}
+
+        _none_or_main ->
+          {:ok, tip}
+      end
     end
   end
 
@@ -190,17 +207,23 @@ defmodule ForemanServer.Jobsite.Worktree do
            )}
 
         %{path: path} ->
-          if Git.dirty?(path) do
-            {:error,
-             Error.new(
-               :worktree_create_failed,
-               "branch #{inspect(name)} is checked out in a worktree with uncommitted changes; it was not fast-forwarded",
-               %{branch: name, path: path}
-             )}
-          else
-            with :ok <- Git.fast_forward(path, remote_sha), do: {:ok, remote_sha}
-          end
+          with :ok <- require_clean(name, path, "fast-forwarded"),
+               :ok <- Git.fast_forward(path, remote_sha),
+               do: {:ok, remote_sha}
       end
+    end
+  end
+
+  defp require_clean(name, path, verb) do
+    if Git.dirty?(path) do
+      {:error,
+       Error.new(
+         :worktree_create_failed,
+         "branch #{inspect(name)} is checked out in a worktree with uncommitted changes; it was not #{verb}",
+         %{branch: name, path: path}
+       )}
+    else
+      :ok
     end
   end
 

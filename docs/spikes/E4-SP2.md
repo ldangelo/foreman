@@ -28,6 +28,11 @@ Non-proxy-aware tools therefore bypass nothing; they simply have no route. Plain
   `generativelanguage.googleapis.com`, `openrouter.ai`, `github.com`, `api.github.com`, `registry.npmjs.org`.
 - Cleanup: sandbox destroy removes the sidecar (`docker rm -f`) then the network (`docker network rm`); a failure
   to clean is logged, never raised. Cost observed: ~1 s extra at create (image already built).
+  Forward pointer (foreman-q8ufk, foreman-mr5b1): as shipped, the objects are `foreman-jobsite-<id>` and
+  `foreman-jobsite-proxy-<id>`, all of a policy's objects (network, sidecar, sandbox container) carry the labels
+  `foreman.owner` and `foreman.jobsite`, cleanup and the boot sweep remove the labelled containers (the sandbox
+  included) before the network, and the sandbox's `HTTP(S)_PROXY` variables are the container's own environment
+  (`docker run -e`), so hooks and `docker exec` run under them too; see `Jobsite.NetworkPolicy`.
 - Failure modes: docker missing / build failure / network create failure -> `{:error, :network_allowlist_failed}`
   at sandbox create (fail closed: never run un-restricted when a policy was requested).
 - Caveat: allowlisting is by hostname through CONNECT; an allowed host that proxies arbitrary content defeats it.

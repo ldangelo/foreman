@@ -7,8 +7,10 @@ defmodule ForemanServer.Questions.Deliverer do
 
     * a question tied to a live workflow run is delivered as an E6 steering
       message (`run.steer`, `message_id` `question:<question_id>`, text
-      `"Answer to your question <id>: ..."`); the run is then resumed if it is
-      paused. The steer's idempotent message id makes a repeated delivery a no-op.
+      `"Answer to your question <id>: ..."`). A run that was paused when the answer
+      arrived is then resumed, while it still holds the message; a running run is
+      left to the dispatcher, which pauses and resumes it for the steer. The steer's
+      idempotent message id makes a repeated delivery a no-op.
     * any other question (no run) is published on the operator reply topic
       (`JidoSignalTopics.foreman_operator_reply/0`) for signal-bus agents.
 
@@ -63,16 +65,20 @@ defmodule ForemanServer.Questions.Deliverer do
   def handle_info(_other, state), do: {:noreply, state}
 
   @doc """
-  Re-deliver answers to run questions whose run is still paused (the answer may
-  have been recorded while the server was down). The answer text is read back from
-  the `QuestionAnswered` event; the steer has a deterministic message id, so an
-  answer that did arrive is a no-op. Returns the number attempted.
+  Re-deliver the answers of questions whose run has not ended (running or paused): the
+  answer may have been recorded while the deliverer was down (or it died while delivering).
+  The answer text is read back from the `QuestionAnswered` event. The steer and resume
+  commands have deterministic ids, so an answer that did arrive is a no-op, and a run is
+  resumed only while it still holds this answer's message (`resume_if_paused/3`). Answers
+  to a run that ended cannot be delivered and are not retried; a question of no run is not
+  republished (the bus reply has no durable delivery marker, so a replay would re-publish
+  history to agents that already got their answer). Returns the number attempted.
   """
   @spec recover(keyword()) :: non_neg_integer()
   def recover(opts \\ []) do
     pending =
       for %{run_id: run_id, question_id: id} <- ProjectionStore.answered_questions(),
-          match?(%{status: "paused"}, ProjectionStore.run(run_id)),
+          match?(%{terminal?: false}, ProjectionStore.run(run_id)),
           text = answer_text(run_id, id),
           is_binary(text),
           do: {run_id, id, text}
@@ -128,14 +134,19 @@ defmodule ForemanServer.Questions.Deliverer do
     end
   end
 
+  # A run that was RUNNING when the answer arrived is the dispatcher's: it pauses the run
+  # for the steer and resumes it by itself, so a resume sent here would race that cycle (and
+  # report a delivered answer as failed). Only a run that was already paused is resumed here.
   defp steer_run(run_id, question_id, text, gateway) do
+    paused_before? = paused?(run_id)
+
     steer = %{
       type: "run.steer",
       command_id: "question-steer:#{run_id}:#{question_id}",
       aggregate_id: "run:" <> run_id,
       payload: %{
         run_id: run_id,
-        message_id: "question:" <> question_id,
+        message_id: steer_message_id(question_id),
         text: "Answer to your question #{question_id}: #{text}",
         steered_by: "question",
         resume: true
@@ -143,25 +154,37 @@ defmodule ForemanServer.Questions.Deliverer do
     }
 
     with {:ok, _} <- unwrap(Dispatch.system(steer, gateway)) do
-      resume_if_paused(run_id, question_id, gateway)
+      if paused_before?, do: resume_if_paused(run_id, question_id, gateway), else: :ok
     end
   end
 
+  # A paused run is resumed only while it still holds this answer's steer message. Once the
+  # run took it (a recovery pass over an old answer) the pause is for some other reason (an
+  # operator's, an approval's) and is not this answer's to undo.
   defp resume_if_paused(run_id, question_id, gateway) do
-    case ProjectionStore.run(run_id) do
-      %{status: "paused"} ->
-        resume = %{
-          type: "run.resume",
-          command_id: "question-resume:#{run_id}:#{question_id}",
-          aggregate_id: "run:" <> run_id,
-          payload: %{run_id: run_id, reason: "question_answered"}
-        }
+    if paused?(run_id) and steer_pending?(run_id, question_id),
+      do: resume(run_id, question_id, gateway),
+      else: :ok
+  end
 
-        with {:ok, _} <- unwrap(Dispatch.system(resume, gateway)), do: :ok
+  defp paused?(run_id), do: match?(%{status: "paused"}, ProjectionStore.run(run_id))
 
-      _running_or_gone ->
-        :ok
-    end
+  defp resume(run_id, question_id, gateway) do
+    resume = %{
+      type: "run.resume",
+      command_id: "question-resume:#{run_id}:#{question_id}",
+      aggregate_id: "run:" <> run_id,
+      payload: %{run_id: run_id, reason: "question_answered"}
+    }
+
+    with {:ok, _} <- unwrap(Dispatch.system(resume, gateway)), do: :ok
+  end
+
+  defp steer_message_id(question_id), do: "question:" <> question_id
+
+  defp steer_pending?(run_id, question_id) do
+    message_id = steer_message_id(question_id)
+    Enum.any?(ProjectionStore.pending_steering(run_id), &(&1.message_id == message_id))
   end
 
   defp publish_reply(run_id, question_id, text, answered_by, opts) do

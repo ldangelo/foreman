@@ -375,10 +375,10 @@ defmodule ForemanServer.Aggregates.Schedule do
   defp validate_overlap(value) when value in @overlaps, do: {:ok, value}
   defp validate_overlap(value), do: {:error, {:invalid_overlap, value}}
 
-  defp validate_grace(value)
-       when is_integer(value) and value >= 0 and value <= @max_misfire_grace,
-       do: {:ok, value}
+  defguardp is_misfire_grace(value)
+            when is_integer(value) and value >= 0 and value <= @max_misfire_grace
 
+  defp validate_grace(value) when is_misfire_grace(value), do: {:ok, value}
   defp validate_grace(value), do: {:error, {:invalid_misfire_grace_seconds, value}}
 
   defp validate_slot(slot) when is_integer(slot) and slot >= 0, do: {:ok, slot}
@@ -410,13 +410,13 @@ defmodule ForemanServer.Aggregates.Schedule do
   defp validate_limit(project_id) do
     max =
       case config(:max_per_project, @default_max_per_project) do
-        max when is_integer(max) and max >= 0 ->
+        max when is_integer(max) and max > 0 ->
           max
 
         other ->
           raise ArgumentError,
                 "config :foreman_server, :schedule, max_per_project must be a " <>
-                  "non-negative integer, got: #{inspect(other)}"
+                  "positive integer, got: #{inspect(other)}"
       end
 
     count = project_id |> ProjectionStore.schedules() |> length()
@@ -456,7 +456,20 @@ defmodule ForemanServer.Aggregates.Schedule do
     with {:ok, spec} <- parse_spec(v, at), do: {:ok, Spec.to_map(spec)}
   end
 
-  defp default_grace, do: config(:default_misfire_grace_seconds, @default_misfire_grace)
+  # A server setting, not operator input: a wrong type or range is a
+  # misconfiguration and fails loudly instead of being reported against the
+  # caller's (absent) `misfire_grace_seconds`.
+  defp default_grace do
+    case config(:default_misfire_grace_seconds, @default_misfire_grace) do
+      grace when is_misfire_grace(grace) ->
+        grace
+
+      other ->
+        raise ArgumentError,
+              "config :foreman_server, :schedule, default_misfire_grace_seconds must be an " <>
+                "integer from 0 to #{@max_misfire_grace}, got: #{inspect(other)}"
+    end
+  end
 
   defp config(key, default) do
     :foreman_server |> Application.get_env(:schedule, []) |> Keyword.get(key, default)

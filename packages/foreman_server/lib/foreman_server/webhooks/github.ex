@@ -34,7 +34,7 @@ defmodule ForemanServer.Webhooks.Github do
   ## Optional accelerator (spike S4)
 
   Polling (`ForemanServer.PrMonitor`) is the primary signal source; webhooks only
-  make it faster. `check_run` / `check_suite` (`completed`), `pull_request_review`,
+  make it faster. `check_run` / `check_suite` (`completed`, `rerequested`), `pull_request_review`,
   `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment`
   and `pull_request` `synchronize` / `ready_for_review` / `converted_to_draft`
   deliveries are partial payloads, so they carry no state: each one asks
@@ -100,9 +100,10 @@ defmodule ForemanServer.Webhooks.Github do
 
   @doc """
   The PR URLs a non-`pull_request-state` delivery asks to be refreshed
-  (spike S4 allowlist): `check_run` / `check_suite` (completed), `pull_request_review`,
-  `pull_request_review_comment`, `pull_request_review_thread`, PR `issue_comment`, and
-  `pull_request` `synchronize` / `ready_for_review` / `converted_to_draft`.
+  (spike S4 allowlist): `check_run` / `check_suite` (`completed`, `rerequested`),
+  `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`,
+  PR `issue_comment`, and `pull_request` `synchronize` / `ready_for_review` /
+  `converted_to_draft`.
 
   These keys are discriminated by their own top-level key (`check_run`,
   `review`, `comment`, `thread`, `issue`), BEFORE the `pull_request` clause: review and

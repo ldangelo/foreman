@@ -27,6 +27,7 @@ defmodule ForemanServer.Projects.Adoption do
   """
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.Review.Archive
 
   @type subject_kind :: String.t()
@@ -203,7 +204,9 @@ defmodule ForemanServer.Projects.Adoption do
 
   # The subject's repo must be one of the target's repositories: its own path or an
   # attached one (E12). A subject with no discoverable repo (a task that never ran)
-  # has nothing to mismatch.
+  # has nothing to mismatch. Paths are compared canonically (symlinks resolved): an
+  # attached repository is stored under its canonical path (`project.repo.add`), so a
+  # session recorded under a symlinked path of the same checkout still belongs to it.
   defp check_repo(nil, _target), do: :ok
 
   defp check_repo(repo_path, %{project_id: target_id}) do
@@ -214,8 +217,15 @@ defmodule ForemanServer.Projects.Adoption do
       else: {:error, {:repo_not_in_project, repo_path}}
   end
 
-  defp same_path?(a, b) when is_binary(a) and is_binary(b), do: Path.expand(a) == Path.expand(b)
+  defp same_path?(a, b) when is_binary(a) and is_binary(b), do: canonical(a) == canonical(b)
   defp same_path?(_a, _b), do: false
+
+  defp canonical(path) do
+    case RepoValidation.canonical_path(path) do
+      {:ok, real} -> real
+      {:error, _not_found} -> Path.expand(path)
+    end
+  end
 
   defp fetch(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

@@ -33,4 +33,4 @@ Both reverted afterwards.
 - Server restart / stop with a delivered-unconsumed steer.
 - Claude cost model: the claude phase used the CLI default model.
 
-Harness tests: `live_input_test.exs` (6) in `packages/jido_harness`.
+Harness tests: `live_input_test.exs` (13, 7 of them the failed-turn and exit-grace cases) in `packages/jido_harness`.

@@ -1,6 +1,7 @@
 defmodule ForemanServerWeb.ProjectSettingsLiveTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
@@ -9,11 +10,13 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
 
   alias ForemanServer.{
     CommandGateway,
+    EventStore,
     ProjectEnvironment,
     ProjectionStore,
     ProjectMemory,
     ProjectSettings,
-    ProjectStore
+    ProjectStore,
+    SecretStore
   }
 
   alias ForemanServer.TestSupport.ProjectionStoreReset
@@ -93,6 +96,39 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
     view
     |> form("#repo-form", repo: %{id: id, path: path, default_branch: branch})
     |> render_submit()
+  end
+
+  # Sends every operator and system command envelope this test's views dispatch to the test
+  # process as `{:dispatched, :dispatch_operator | :dispatch_system, envelope}` and lets it
+  # through unchanged (other processes' dispatches arrive too: match on the type).
+  defp capture_dispatches! do
+    test = self()
+    {:ok, _} = Application.ensure_all_started(:meck)
+    :meck.new(CommandGateway, [:passthrough, :no_link])
+    on_exit(fn -> :meck.unload(CommandGateway) end)
+
+    for fun <- [:dispatch_operator, :dispatch_system] do
+      :meck.expect(CommandGateway, fun, fn envelope ->
+        send(test, {:dispatched, fun, envelope})
+        :meck.passthrough([envelope])
+      end)
+    end
+
+    :ok
+  end
+
+  # True when ANY recorded event, of any stream, mentions `text`.
+  defp event_log_mentions?(text) do
+    EventStore.stream_all_forward()
+    |> Enum.any?(&(inspect(&1, limit: :infinity, printable_limit: :infinity) =~ text))
+  end
+
+  # Runs `fun` (it returns the page's HTML) with debug logging captured: `{html, log}`.
+  defp html_and_log(fun) do
+    test = self()
+    log = capture_log([level: :debug], fn -> send(test, {:html, fun.()}) end)
+    assert_received {:html, html}
+    {html, log}
   end
 
   test "requires authentication", %{id: id} do
@@ -423,26 +459,54 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
     end
   end
 
-  test "an event burst refreshes the read-only panes a bounded number of times", %{id: id} do
+  test "an event burst costs one refresh of the read-only panes, however many events arrive", %{
+    id: id
+  } do
     {view, _} = mount_view(id)
-    before = :sys.get_state(view.pid).socket.assigns.refresh_count
+    pid = view.pid
+    before = :sys.get_state(pid).socket.assigns.refresh_count
 
-    for n <- 1..100,
-        do:
-          send(
-            view.pid,
-            {:projection_event,
-             %{event_type: "RunStarted", data: %{project_id: id, run_id: "x#{n}"}}}
-          )
-
+    # Attached BEFORE anything is sent, so no refresh can fire unobserved (and it is
+    # detached even when the test fails).
     {handler, ref} =
       Handler.attach_event_handlers(self(), [[:foreman_server, :workspace, :refresh]])
 
-    pid = view.pid
-    assert_receive {[:foreman_server, :workspace, :refresh], ^ref, _, %{pid: ^pid}}, 5_000
-    :telemetry.detach(handler)
+    on_exit(fn -> :telemetry.detach(handler) end)
 
-    assert :sys.get_state(view.pid).socket.assigns.refresh_count - before <= 2
+    # The view is held while the burst is queued, so every event is already in its mailbox
+    # when it handles the first: the coalescing window cannot be straddled, the burst is
+    # exactly one refresh, and nothing here depends on how fast the test process sends.
+    :ok = :sys.suspend(pid)
+
+    for n <- 1..100 do
+      send(
+        pid,
+        {:projection_event, %{event_type: "RunStarted", data: %{project_id: id, run_id: "x#{n}"}}}
+      )
+    end
+
+    :ok = :sys.resume(pid)
+
+    assert_receive {[:foreman_server, :workspace, :refresh], ^ref, _, %{pid: ^pid}}, 5_000
+    assert :sys.get_state(pid).socket.assigns.refresh_count - before == 1
+  end
+
+  # No catch-all `handle_event/3`: a renamed form key or an unknown operation is a defect
+  # that must show (the view restarts), not a dead control.
+  test "an event the page does not know raises instead of doing nothing" do
+    socket = %Phoenix.LiveView.Socket{}
+
+    for {event, params} <- [
+          {"no_such_event", %{}},
+          {"save", %{}},
+          {"validate", %{"goal" => "renamed key"}},
+          {"confirm_lifecycle", %{"op" => "explode"}},
+          {"env_save", %{"env" => %{"name" => 1, "value" => "v"}}}
+        ] do
+      assert_raise FunctionClauseError, fn ->
+        ForemanServerWeb.ProjectSettingsLive.handle_event(event, params, socket)
+      end
+    end
   end
 
   describe "setup script" do
@@ -690,6 +754,471 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
       assert html =~ "Could not add: project #{id} is archived"
       refute html =~ ~s(id="repo-id-error")
       refute html =~ ~s(id="repo-path-error")
+    end
+  end
+
+  describe "environment variables" do
+    setup %{id: id} do
+      # The fixture's legacy `API_TOKEN` is a secret-looking variable the record refuses (the
+      # legacy tests below drive it); start from the record form with plain variables, as
+      # `foreman project env set` leaves it. The script and the network policy must survive.
+      seed_environment(id, %{
+        vars: %{"LOG_LEVEL" => "debug"},
+        setup_script: "make deps",
+        network: %{"mode" => "none"}
+      })
+    end
+
+    test "lists each variable with its value, in a box labelled by its name", %{id: id} do
+      {view, html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#env-var-LOG_LEVEL label[for="env_value_LOG_LEVEL"]),
+               "LOG_LEVEL"
+             )
+
+      assert has_element?(view, ~s(#env-form-LOG_LEVEL input#env_value_LOG_LEVEL[value="debug"]))
+      assert has_element?(view, "#env-form-LOG_LEVEL button", "Save LOG_LEVEL")
+      refute html =~ "value hidden"
+      refute has_element?(view, "#env-legacy-note")
+    end
+
+    test "setting a variable sends project.environment.set with the stored set plus the new one",
+         %{id: id} do
+      capture_dispatches!()
+      {view, _} = mount_view(id)
+
+      html =
+        view
+        |> form("#env-add-form", env: %{name: "CACHE_DIR", value: "/var/cache/x"})
+        |> render_submit()
+
+      assert html =~ "Set CACHE_DIR."
+
+      assert_received {:dispatched, :dispatch_operator,
+                       %{type: "project.environment.set"} = envelope}
+
+      assert envelope.aggregate_id == "project:" <> id
+
+      # the payload names the variables and nothing else: the script and the network keep theirs
+      assert envelope.payload == %{
+               project_id: id,
+               vars: %{"LOG_LEVEL" => "debug", "CACHE_DIR" => "/var/cache/x"}
+             }
+
+      assert %{
+               "vars" => %{"LOG_LEVEL" => "debug", "CACHE_DIR" => "/var/cache/x"},
+               "setup_script" => "make deps",
+               "network" => %{"mode" => "none", "hosts" => []}
+             } = environment(id)
+
+      # the new value is listed, the add form is empty and its value box was replaced
+      assert has_element?(view, ~s(#env-form-CACHE_DIR input[value="/var/cache/x"]))
+      assert has_element?(view, ~s(#env_name[value=""]))
+      assert html =~ ~s(id="env-value-box-1")
+    end
+
+    test "editing a listed variable replaces only its value", %{id: id} do
+      {view, _} = mount_view(id)
+
+      html = view |> form("#env-form-LOG_LEVEL", env: %{value: "info"}) |> render_submit()
+
+      assert html =~ "Set LOG_LEVEL."
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "info"}
+      assert has_element?(view, ~s(#env-form-LOG_LEVEL input[value="info"]))
+    end
+
+    test "a variable changed elsewhere after the page loaded survives a save", %{id: id} do
+      {view, _} = mount_view(id)
+
+      # another writer (the CLI) adds a variable while this page is open
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "elsewhere-#{id}",
+                 type: "project.environment.set",
+                 aggregate_id: "project:#{id}",
+                 payload: %{project_id: id, vars: %{"LOG_LEVEL" => "debug", "FROM_CLI" => "1"}}
+               })
+
+      view |> form("#env-form-LOG_LEVEL", env: %{value: "info"}) |> render_submit()
+
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "info", "FROM_CLI" => "1"}
+    end
+
+    test "a secret-looking name is refused at its field and its value goes nowhere", %{id: id} do
+      value = "sk-live-NEVER-STORED-8675309"
+      {view, _} = mount_view(id)
+
+      {html, log} =
+        html_and_log(fn ->
+          view
+          |> form("#env-add-form", env: %{name: "STRIPE_API_KEY", value: value})
+          |> render_submit()
+        end)
+
+      assert html =~ ~s(id="env-name-error")
+      assert html =~ "STRIPE_API_KEY looks like a secret"
+      assert html =~ "Set it under Secrets instead."
+
+      # nothing was stored, rendered, logged or written to any event
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "debug"}
+      refute html =~ value
+      refute render(view) =~ value
+
+      # the log capture saw the event, with the value filtered by `config :phoenix, :filter_parameters`
+      assert log =~ ~s(HANDLE EVENT "env_add")
+      assert log =~ ~s("value" => "[FILTERED]")
+      refute log =~ value
+      refute event_log_mentions?(value)
+
+      # the name stays typed for a correction, the value box is replaced (empty)
+      assert has_element?(view, ~s(#env_name[value="STRIPE_API_KEY"]))
+      assert html =~ ~s(id="env-value-box-1")
+    end
+
+    test "reserved, malformed and blank names are refused at the name field", %{id: id} do
+      {view, _} = mount_view(id)
+
+      for {name, words} <- [
+            {"FOREMAN_TOKEN_X", "reserved for Foreman"},
+            {"1ST", "is not a valid name"},
+            {"a-b", "is not a valid name"},
+            {"  ", "enter a variable name"}
+          ] do
+        html = view |> form("#env-add-form", env: %{name: name, value: "v"}) |> render_submit()
+
+        assert html =~ ~s(id="env-name-error"), "no error for #{inspect(name)}"
+        assert html =~ words, "wrong words for #{inspect(name)}"
+      end
+
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "debug"}
+    end
+
+    test "a value over the limit is refused at its own field", %{id: id} do
+      big = String.duplicate("x", Environment.max_value_bytes() + 1)
+      {view, _} = mount_view(id)
+
+      html = view |> form("#env-add-form", env: %{name: "BIG", value: big}) |> render_submit()
+      assert html =~ ~s(id="env-value-error")
+      assert html =~ "the value of BIG is over #{Environment.max_value_bytes()} bytes"
+
+      html = view |> form("#env-form-LOG_LEVEL", env: %{value: big}) |> render_submit()
+      assert html =~ ~s(id="env-error-LOG_LEVEL")
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "debug"}
+    end
+
+    test "removal needs a confirm step; the script and the network survive it", %{id: id} do
+      {view, _} = mount_view(id)
+
+      view |> element("#env-var-LOG_LEVEL button", "Remove LOG_LEVEL") |> render_click()
+      assert has_element?(view, "#env-var-LOG_LEVEL button", "Confirm remove LOG_LEVEL")
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "debug"}
+
+      view |> element("#env-var-LOG_LEVEL button", "Cancel") |> render_click()
+      refute has_element?(view, "#env-var-LOG_LEVEL button", "Confirm remove LOG_LEVEL")
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "debug"}
+
+      view |> element("#env-var-LOG_LEVEL button", "Remove LOG_LEVEL") |> render_click()
+
+      html =
+        view |> element("#env-var-LOG_LEVEL button", "Confirm remove LOG_LEVEL") |> render_click()
+
+      assert html =~ "Removed LOG_LEVEL."
+      assert html =~ "No environment variables."
+      refute has_element?(view, "#env-var-LOG_LEVEL")
+
+      assert %{
+               "vars" => vars,
+               "setup_script" => "make deps",
+               "network" => %{"mode" => "none", "hosts" => []}
+             } = environment(id)
+
+      assert vars == %{}
+    end
+
+    test "a stale or resent removal is already the requested end state", %{id: id} do
+      {view, _} = mount_view(id)
+
+      assert render_click(view, "env_remove", %{"name" => "LOG_LEVEL"}) =~ "Removed LOG_LEVEL."
+      assert render_click(view, "env_remove", %{"name" => "LOG_LEVEL"}) =~ "Removed LOG_LEVEL."
+      assert environment(id)["vars"] == %{}
+    end
+
+    test "an archived project refuses a set with the aggregate's words", %{id: id} do
+      {view, _} = mount_view(id)
+      assert {:ok, _} = ProjectStore.archive(id)
+
+      html = view |> form("#env-add-form", env: %{name: "LATE", value: "1"}) |> render_submit()
+
+      assert html =~ "Could not set LATE: project #{id} is archived"
+      assert environment(id)["vars"] == %{"LOG_LEVEL" => "debug"}
+    end
+
+    test "every control is labelled and the secrets pointer is in the help text", %{id: id} do
+      {_view, html} = mount_view(id)
+
+      for control <- ~w(env_name env_value env_value_LOG_LEVEL secret_name secret_value) do
+        assert html =~ ~s(for="#{control}"), "no label for #{control}"
+        assert html =~ ~s(id="#{control}"), "no control #{control}"
+      end
+
+      assert html =~ "put a password or token under Secrets instead"
+    end
+  end
+
+  describe "legacy variables" do
+    test "values stay hidden; setting a variable moves them into the record and shows them", %{
+      tmp_dir: dir
+    } do
+      id = "legacy-#{System.unique_integer([:positive])}"
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: id,
+                 path: dir,
+                 name: "Legacy Demo",
+                 config: %{"env" => %{"NPM_REGISTRY" => "https://r.example", "RETRIES" => "3"}}
+               })
+
+      {view, html} = mount_view(id)
+
+      assert html =~ "NPM_REGISTRY"
+      assert has_element?(view, "#env-legacy-note")
+      assert has_element?(view, "#env-var-RETRIES", "value hidden")
+      refute html =~ "https://r.example"
+      refute has_element?(view, "#env-form-RETRIES")
+
+      html =
+        view
+        |> form("#env-add-form", env: %{name: "LOG_LEVEL", value: "debug"})
+        |> render_submit()
+
+      assert html =~ "Set LOG_LEVEL."
+      refute has_element?(view, "#env-legacy-note")
+      assert has_element?(view, ~s(#env-form-NPM_REGISTRY input[value="https://r.example"]))
+      assert has_element?(view, ~s(#env-form-RETRIES input[value="3"]))
+
+      assert environment(id)["vars"] ==
+               %{"NPM_REGISTRY" => "https://r.example", "RETRIES" => "3", "LOG_LEVEL" => "debug"}
+    end
+
+    test "a stored variable that looks like a secret refuses a set; removing it unblocks", %{
+      id: id
+    } do
+      {view, _} = mount_view(id)
+      assert has_element?(view, "#env-var-API_TOKEN", "value hidden")
+
+      html = view |> form("#env-add-form", env: %{name: "FOO", value: "bar"}) |> render_submit()
+
+      assert html =~ "the stored variable API_TOKEN looks like a secret"
+      refute html =~ "s3cr3t-value-123"
+      refute ProjectEnvironment.record_form?(ProjectStore.get(id).config)
+
+      view |> element("#env-var-API_TOKEN button", "Remove API_TOKEN") |> render_click()
+
+      html =
+        view |> element("#env-var-API_TOKEN button", "Confirm remove API_TOKEN") |> render_click()
+
+      assert html =~ "Removed API_TOKEN."
+      assert environment(id)["vars"] == %{}
+
+      view |> form("#env-add-form", env: %{name: "FOO", value: "bar"}) |> render_submit()
+      assert environment(id)["vars"] == %{"FOO" => "bar"}
+      assert has_element?(view, ~s(#env-form-FOO input[value="bar"]))
+    end
+  end
+
+  describe "secrets" do
+    @secret "hunter2-NOT-IN-EVENTS-5551234"
+
+    setup %{tmp_dir: dir} do
+      store = Application.get_env(:foreman_server, :secret_store)
+
+      Application.put_env(
+        :foreman_server,
+        :secret_store,
+        Keyword.put(store, :dir, Path.join(dir, "secret-store"))
+      )
+
+      on_exit(fn -> Application.put_env(:foreman_server, :secret_store, store) end)
+      :ok
+    end
+
+    test "a secret is write-only: the value reaches the store and nowhere else", %{id: id} do
+      capture_dispatches!()
+      {view, _} = mount_view(id)
+
+      {html, log} =
+        html_and_log(fn ->
+          view
+          |> form("#secret-form", secret: %{name: "DEPLOY_TOKEN", value: @secret})
+          |> render_submit()
+        end)
+
+      assert html =~ "Saved secret DEPLOY_TOKEN (version 1)."
+      assert has_element?(view, "#secret-DEPLOY_TOKEN", "version 1")
+
+      # the value reached the secret store ...
+      assert {:ok, @secret} = SecretStore.get(id, "DEPLOY_TOKEN")
+
+      # ... and nothing else: not the page, the process state, the log or any event
+      refute html =~ @secret
+      refute render(view) =~ @secret
+      assert log =~ ~s(HANDLE EVENT "secret_set")
+      assert log =~ ~s("value" => "[FILTERED]")
+      refute log =~ @secret
+
+      # (the positive controls prove the inspected state and event log are not empty ones)
+      assigns =
+        inspect(:sys.get_state(view.pid).socket.assigns,
+          limit: :infinity,
+          printable_limit: :infinity
+        )
+
+      assert assigns =~ id
+      refute assigns =~ @secret
+
+      assert event_log_mentions?("DEPLOY_TOKEN")
+      refute event_log_mentions?(@secret)
+
+      assert [%{event_type: "ProjectSecretSet"}] = secret_events(id)
+
+      # the only command is the system one that records name and author, never the value
+      assert_received {:dispatched, :dispatch_system, %{type: "project.secret.set"} = envelope}
+      assert envelope.payload == %{project_id: id, name: "DEPLOY_TOKEN", author_ref: "dashboard"}
+      refute_received {:dispatched, :dispatch_operator, %{type: "project.secret.set"}}
+
+      # the form was reset: a fresh, empty password box; the name is empty again
+      assert html =~ ~s(id="secret-value-box-1")
+      assert has_element?(view, ~s(#secret_name[value=""]))
+    end
+
+    test "the value box is a password input without any value attribute; the form never syncs",
+         %{id: id} do
+      {view, html} = mount_view(id)
+
+      [tag] = Regex.run(~r/<input[^>]*id="secret_value"[^>]*>/, html)
+      assert tag =~ ~s(type="password")
+      assert tag =~ ~s(autocomplete="new-password")
+      refute tag =~ ~r/\svalue=/
+
+      [form_tag] = Regex.run(~r/<form[^>]*id="secret-form"[^>]*>/, html)
+      assert form_tag =~ ~s(phx-submit="secret_set")
+      refute form_tag =~ "phx-change"
+      assert has_element?(view, ~s(#secret-form #secret_value[type="password"]))
+    end
+
+    test "setting a name again rotates it; the list shows the version, never a value", %{id: id} do
+      {view, _} = mount_view(id)
+
+      view
+      |> form("#secret-form", secret: %{name: "DEPLOY_TOKEN", value: "first-value-1"})
+      |> render_submit()
+
+      html =
+        view
+        |> form("#secret-form", secret: %{name: "DEPLOY_TOKEN", value: "second-value-2"})
+        |> render_submit()
+
+      assert html =~ "Saved secret DEPLOY_TOKEN (version 2)."
+      assert {:ok, "second-value-2"} = SecretStore.get(id, "DEPLOY_TOKEN")
+      assert has_element?(view, "#secret-list li#secret-DEPLOY_TOKEN", "version 2")
+
+      # a second page load lists name and version only
+      {_view2, html2} = mount_view(id)
+      assert html2 =~ "DEPLOY_TOKEN"
+      refute html2 =~ "first-value-1"
+      refute html2 =~ "second-value-2"
+    end
+
+    test "a bad name or value is refused at its field and nothing is stored", %{id: id} do
+      {view, _} = mount_view(id)
+
+      html =
+        view
+        |> form("#secret-form", secret: %{name: "lower_case", value: @secret})
+        |> render_submit()
+
+      assert html =~ ~s(id="secret-name-error")
+      assert html =~ "secret name must match"
+      refute html =~ @secret
+      # the name stays typed, the value box was replaced
+      assert has_element?(view, ~s(#secret_name[value="lower_case"]))
+      assert html =~ ~s(id="secret-value-box-1")
+
+      html =
+        view
+        |> form("#secret-form", secret: %{name: "FOREMAN_X", value: @secret})
+        |> render_submit()
+
+      assert html =~ ~s(id="secret-name-error")
+
+      html =
+        view |> form("#secret-form", secret: %{name: "EMPTY_ONE", value: ""}) |> render_submit()
+
+      assert html =~ ~s(id="secret-value-error")
+      assert html =~ "secret value must be 1.."
+
+      assert {:ok, []} = SecretStore.names(id)
+      assert secret_events(id) == []
+    end
+
+    test "removal needs a confirm step, deletes the value and records the name only", %{id: id} do
+      capture_dispatches!()
+      {view, _} = mount_view(id)
+
+      view
+      |> form("#secret-form", secret: %{name: "DEPLOY_TOKEN", value: @secret})
+      |> render_submit()
+
+      view
+      |> element("#secret-DEPLOY_TOKEN button", "Remove secret DEPLOY_TOKEN")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#secret-DEPLOY_TOKEN button",
+               "Confirm remove secret DEPLOY_TOKEN"
+             )
+
+      assert {:ok, @secret} = SecretStore.get(id, "DEPLOY_TOKEN")
+
+      view |> element("#secret-DEPLOY_TOKEN button", "Cancel") |> render_click()
+      assert {:ok, @secret} = SecretStore.get(id, "DEPLOY_TOKEN")
+
+      view
+      |> element("#secret-DEPLOY_TOKEN button", "Remove secret DEPLOY_TOKEN")
+      |> render_click()
+
+      html =
+        view
+        |> element("#secret-DEPLOY_TOKEN button", "Confirm remove secret DEPLOY_TOKEN")
+        |> render_click()
+
+      assert html =~ "Removed secret DEPLOY_TOKEN."
+      assert html =~ "No secrets."
+      assert {:error, %{code: :secret_not_found}} = SecretStore.get(id, "DEPLOY_TOKEN")
+
+      assert_received {:dispatched, :dispatch_system, %{type: "project.secret.unset"} = envelope}
+      assert envelope.payload == %{project_id: id, name: "DEPLOY_TOKEN", author_ref: "dashboard"}
+      refute event_log_mentions?(@secret)
+    end
+
+    test "removing a secret that is already gone is an error notice, not a crash", %{id: id} do
+      {view, _} = mount_view(id)
+
+      html = render_click(view, "secret_unset", %{"name" => "NEVER_SET"})
+
+      assert html =~ "Could not remove secret NEVER_SET: no such secret"
+      assert Process.alive?(view.pid)
+    end
+  end
+
+  defp secret_events(id) do
+    case EventStore.read_stream_forward("project_secret:#{id}", 0, 100) do
+      {:ok, events} -> events
+      {:error, :stream_not_found} -> []
     end
   end
 end

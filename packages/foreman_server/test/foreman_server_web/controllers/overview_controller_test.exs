@@ -57,7 +57,9 @@ defmodule ForemanServerWeb.OverviewControllerTest do
     body = json_response(api_get("/api/projects/p/overview"), 200)
 
     assert body |> Map.keys() |> Enum.sort() ==
-             ~w(attention counts generated_at groups project_id tabs)
+             ~w(attention counts generated_at groups project_id tabs truncated)
+
+    assert body["truncated"] == false
 
     assert body["groups"] |> Map.keys() |> Enum.sort() ==
              ~w(idle landing ready_for_review resolved waiting_on_you working)

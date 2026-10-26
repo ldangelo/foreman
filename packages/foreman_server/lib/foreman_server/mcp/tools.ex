@@ -98,6 +98,35 @@ defmodule ForemanServer.MCP.Tools do
     defstruct [:run_id, :message_id, :status]
   end
 
+  defmodule ScheduleCommandResult do
+    @moduledoc """
+    Result of `foreman_schedule_create|pause|resume|delete`. Key convention for the
+    schedule tools' MCP output: snake_case atom keys (the struct fields), JSON-encoded
+    as-is. The accepted event (which carries the full prompt) is internal and never
+    returned. `status` is the command outcome: `created`, `paused`, `resumed` or `deleted`.
+    """
+    @enforce_keys [:project_id, :schedule_id, :status]
+    @type t :: %__MODULE__{project_id: String.t(), schedule_id: String.t(), status: String.t()}
+    @derive Jason.Encoder
+    defstruct [:project_id, :schedule_id, :status]
+  end
+
+  defmodule ScheduleListResult do
+    @moduledoc """
+    Result of `foreman_schedule_list`: the same `ForemanServer.Schedule.DTO` structs the
+    HTTP read returns, plus the ticker state (`running` | `disabled`). Same key
+    convention as `ScheduleCommandResult`.
+    """
+    @enforce_keys [:project_id, :ticker, :schedules]
+    @type t :: %__MODULE__{
+            project_id: String.t(),
+            ticker: String.t(),
+            schedules: [ForemanServer.Schedule.DTO.t()]
+          }
+    @derive Jason.Encoder
+    defstruct [:project_id, :ticker, :schedules]
+  end
+
   defmodule ProjectMemoryEntry do
     @moduledoc "Whitelisted memory topic metadata returned by the project-memory tools."
     @enforce_keys [:name, :bytes]
@@ -245,7 +274,8 @@ defmodule ForemanServer.MCP.Tools do
     name: "foreman_overview",
     description:
       "Project Overview: threads grouped as ready_for_review, waiting_on_you, working, " <>
-        "landing, idle, resolved, with counts, an attention flag and tab data. " <>
+        "landing, idle, resolved, with counts, an attention flag, a truncated flag (only the " <>
+        "newest 500 threads are classified) and tab data. " <>
         "Without project_id: one attention line per active project. Read-only; merging " <>
         "stays operator-only.",
     inputSchema: %{
@@ -1063,12 +1093,10 @@ defmodule ForemanServer.MCP.Tools do
         },
         "description" => %{
           type: "string",
-          maxLength: 200,
           description: "One-line hook shown in the MEMORY.md index."
         },
         "content" => %{
           type: "string",
-          maxLength: 65_536,
           description: "Markdown content of the topic (secrets are redacted)."
         },
         "run_id" => %{type: "string", description: "Optional run recorded as the author."},
@@ -1098,7 +1126,8 @@ defmodule ForemanServer.MCP.Tools do
     description:
       "List tool-call permission requests from agents that are waiting on the operator, oldest first. " <>
         "Read-only: deciding a request is an operator command over the HTTP command API or CLI, never an MCP tool. " <>
-        "Pass project_id (the project's requests) or run_id (one run or jobsite). status=all also lists decided, expired and finished ones.",
+        "Pass project_id (the project's requests) or run_id (one run or jobsite). status=all also lists decided, expired and finished ones. " <>
+        "approval_delivery says what a decision grants: inflight answers the blocked call (that one call); resume_with_override relaxes the approval mode of the run's NEXT PHASE as a whole (every tool of that phase, not only the decided call); live answers the provider session.",
     inputSchema: %{
       type: "object",
       properties: %{
@@ -1275,7 +1304,21 @@ defmodule ForemanServer.MCP.Tools do
   # Multi-repo write tools (E12 S10/S11); implemented in `ForemanServer.MCP.RepoTools`.
   @tools @tools ++ ForemanServer.MCP.RepoTools.schemas()
 
-  def list_tools, do: @tools
+  # The project-memory write caps are runtime configuration
+  # (`config :foreman_server, :project_memory`), so the advertised `maxLength`
+  # values are read from `ProjectMemory.Store.config/1` on every listing: one
+  # source for Store, the HTTP controller and this schema.
+  def list_tools, do: Enum.map(@tools, &with_runtime_limits/1)
+
+  defp with_runtime_limits(%{name: "foreman_project_memory_write"} = schema) do
+    update_in(schema, [:inputSchema, :properties], fn properties ->
+      properties
+      |> put_in(["description", :maxLength], ProjectMemory.Store.config(:max_description_chars))
+      |> put_in(["content", :maxLength], ProjectMemory.Store.config(:max_topic_bytes))
+    end)
+  end
+
+  defp with_runtime_limits(schema), do: schema
 
   # -------------------------------------------------------------------
   # Dispatch
@@ -1801,7 +1844,14 @@ defmodule ForemanServer.MCP.Tools do
     start_us = System.monotonic_time(:microsecond)
 
     result =
-      with {:ok, topics} <- ProjectMemory.list(project_id),
+      with :ok <-
+             project_memory_string_args(
+               "foreman_project_memory_list",
+               %{project_id: project_id},
+               [:project_id],
+               []
+             ),
+           {:ok, topics} <- ProjectMemory.list(project_id),
            {:ok, index} <- ProjectMemory.index(project_id) do
         {:ok,
          %__MODULE__.ProjectMemoryListResult{
@@ -1818,7 +1868,14 @@ defmodule ForemanServer.MCP.Tools do
     start_us = System.monotonic_time(:microsecond)
 
     result =
-      with {:ok, topic, content} <- ProjectMemory.read(project_id, name) do
+      with :ok <-
+             project_memory_string_args(
+               "foreman_project_memory_read",
+               %{project_id: project_id, name: name},
+               [:project_id, :name],
+               []
+             ),
+           {:ok, topic, content} <- ProjectMemory.read(project_id, name) do
         {:ok,
          %__MODULE__.ProjectMemoryReadResult{
            name: topic.name,
@@ -1837,6 +1894,13 @@ defmodule ForemanServer.MCP.Tools do
 
     result =
       with :ok <- authorize_write_tool("foreman_project_memory_write"),
+           :ok <-
+             project_memory_string_args(
+               "foreman_project_memory_write",
+               args,
+               [:project_id, :name, :content],
+               [:description, :run_id, :session_id]
+             ),
            {:ok, topic} <-
              ProjectMemory.write(
                project_id,
@@ -1860,6 +1924,13 @@ defmodule ForemanServer.MCP.Tools do
 
     result =
       with :ok <- authorize_write_tool("foreman_project_memory_forget"),
+           :ok <-
+             project_memory_string_args(
+               "foreman_project_memory_forget",
+               args,
+               [:project_id, :name],
+               [:run_id, :session_id]
+             ),
            {:ok, topic} <- ProjectMemory.forget(project_id, name, project_memory_author(args)) do
         {:ok, %__MODULE__.ProjectMemoryForgetResult{name: topic.name, status: "forgotten"}}
       end
@@ -1964,6 +2035,31 @@ defmodule ForemanServer.MCP.Tools do
       message: "Too many coordinator messages from MCP for this project; retry later"
     }
 
+  # `Dispatch` only renames schema-declared keys; it does not check value types,
+  # and the guarded `ProjectMemory` functions would raise `FunctionClauseError` on
+  # a non-string. Required arguments must be strings; optional ones a string or
+  # null.
+  defp project_memory_string_args(tool, args, required, optional) do
+    invalid =
+      Enum.reject(required, &is_binary(Map.fetch!(args, &1))) ++
+        Enum.reject(optional, fn key ->
+          value = Map.get(args, key)
+          is_nil(value) or is_binary(value)
+        end)
+
+    case invalid do
+      [] ->
+        :ok
+
+      keys ->
+        {:error,
+         %ToolError{
+           code: "INVALID_PARAMS",
+           message: "Tool #{tool} arguments must be strings: #{Enum.join(keys, ", ")}"
+         }}
+    end
+  end
+
   # An MCP caller is an agent; operators use the CLI/HTTP surfaces.
   defp project_memory_author(args),
     do: %{kind: :agent, ref: Map.get(args, :run_id) || Map.get(args, :session_id)}
@@ -2001,7 +2097,8 @@ defmodule ForemanServer.MCP.Tools do
       case ProjectMemory.Error.category(code) do
         :not_found -> "NOT_FOUND"
         :invalid_input -> "INVALID_PARAMS"
-        _ -> "DOMAIN_ERROR"
+        :conflict -> "DOMAIN_ERROR"
+        :internal -> "DOMAIN_ERROR"
       end
 
     %ToolError{code: tool_code, message: "#{code}: #{message}"}
@@ -2143,15 +2240,22 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp overview_lines do
-    for %{project_id: id} = project when is_binary(id) <- ProjectionStore.list_projects(),
-        Map.get(project, :archived?) != true do
-      %{counts: counts, attention: attention} = Overview.summary(id)
+    projects =
+      for %{project_id: id} = project when is_binary(id) <- ProjectionStore.list_projects(),
+          Map.get(project, :archived?) != true,
+          do: project
+
+    summaries = Overview.summaries(Enum.map(projects, & &1.project_id))
+
+    for %{project_id: id} = project <- projects do
+      %{counts: counts, attention: attention, truncated: truncated} = Map.fetch!(summaries, id)
 
       %{
         "project_id" => id,
         "name" => Map.get(project, :name),
         "attention" => Overview.attention_dto(attention),
-        "counts" => Map.new(counts, fn {group, n} -> {Atom.to_string(group), n} end)
+        "counts" => Map.new(counts, fn {group, n} -> {Atom.to_string(group), n} end),
+        "truncated" => truncated
       }
     end
   end
@@ -2159,10 +2263,11 @@ defmodule ForemanServer.MCP.Tools do
   defp tool_foreman_project_list(%{}) do
     start_us = System.monotonic_time(:microsecond)
 
+    views = ProjectionStore.list_projects() |> Enum.map(&ProjectSettings.public_view/1)
+
     result =
-      ProjectionStore.list_projects()
-      |> Enum.map(&ProjectSettings.public_view/1)
-      |> Enum.map(&with_attention/1)
+      views
+      |> Enum.zip_with(Overview.project_fields_many(views), &Map.merge/2)
 
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, "foreman_project_list", :ok)
@@ -2352,7 +2457,8 @@ defmodule ForemanServer.MCP.Tools do
 
         _project ->
           {:ok,
-           %{
+           %__MODULE__.ScheduleListResult{
+             project_id: project_id,
              ticker: ForemanServer.Schedule.DTO.ticker_status(),
              schedules: ForemanServer.Schedule.DTO.list(project_id)
            }}
@@ -2449,7 +2555,7 @@ defmodule ForemanServer.MCP.Tools do
     case result do
       {:ok, _event} ->
         Telemetry.mcp_tool_call(duration_us, tool, :ok)
-        {:ok, schedule_result(schedule_id)}
+        {:ok, schedule_result(type, project_id, schedule_id)}
 
       {:error, reason} ->
         Telemetry.mcp_tool_call(duration_us, tool, :error)
@@ -2457,9 +2563,20 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
-  # The tool contract is the schedule id alone: the accepted event carries the full
-  # payload (prompt included) and is internal.
-  defp schedule_result(schedule_id), do: %{schedule_id: schedule_id}
+  # The tool contract is `%ScheduleCommandResult{}`: the accepted event carries the
+  # full payload (prompt included) and is internal.
+  defp schedule_result(type, project_id, schedule_id) do
+    %__MODULE__.ScheduleCommandResult{
+      project_id: project_id,
+      schedule_id: schedule_id,
+      status: schedule_command_status(type)
+    }
+  end
+
+  defp schedule_command_status("schedule.create"), do: "created"
+  defp schedule_command_status("schedule.pause"), do: "paused"
+  defp schedule_command_status("schedule.resume"), do: "resumed"
+  defp schedule_command_status("schedule.delete"), do: "deleted"
 
   defp authorize_write(tool) do
     if Policy.authorized?(tool) do

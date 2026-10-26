@@ -18,12 +18,19 @@ const approvalsHelp = `Usage of approvals:
   foreman approvals approve --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
   foreman approvals deny    --run <id> --call <tool_call_id> [--by <name>] [--reason <text>]
 
-Agent tool-permission requests. approve/deny decide ONE agent tool call
-(tool.approve / tool.deny); they are unrelated to the run merge gate, which is
-only ever 'foreman run approve-merge/merge'. An approval resumes the run with a
-relaxed approval mode for the NEXT PHASE ONLY (auto_edit for edit tools,
-auto_approve otherwise), so it grants more than the single tool for that phase
-(post-hoc path: pi/claude have no per-tool grant). A Claude phase in approval_mode prompt is asked in flight instead (approval_delivery inflight): approve/deny answers the blocked call itself.
+Agent tool-permission requests. approve/deny decide ONE request (tool.approve /
+tool.deny); they are unrelated to the run merge gate, which is only ever
+'foreman run approve-merge/merge'. What an approval grants depends on the
+request's approval_delivery:
+  inflight              a Claude phase in approval_mode prompt: the agent's call is
+                        blocked, and approve/deny answers that ONE call.
+  resume_with_override  post-hoc: the phase ended denied and the run is paused. An
+                        approval resumes it with a relaxed approval mode for the NEXT
+                        PHASE as a whole (auto_edit when the tool edits files,
+                        auto_approve otherwise), so EVERY tool of that phase is
+                        allowed, not only the approved one: there is no per-tool grant
+                        on this path.
+  live                  ACP providers: answers the provider session's own request.
 `
 
 const questionsHelp = `Usage of questions:
@@ -179,21 +186,25 @@ func listNeedsYou(c *client.Client, path string, all bool, format, key string, c
 			if i > 0 {
 				fmt.Fprint(w, "\t")
 			}
-			fmt.Fprint(w, sanitizeCell(fmt.Sprint(row[col])))
+			fmt.Fprint(w, sanitizeCell(row[col]))
 		}
 		fmt.Fprintln(w)
 	}
 	return w.Flush()
 }
 
-// sanitizeCell makes agent-supplied text safe for one table cell: control
-// characters (newline, tab, carriage return, ANSI escapes) become spaces, so a
+// sanitizeCell makes one table cell safe: a JSON null or a key the server did not
+// send is an empty cell (never Go's `<nil>`), and control characters (newline,
+// tab, carriage return, ANSI escapes) in agent-supplied text become spaces, so a
 // value can neither forge extra rows nor rewrite the terminal.
-func sanitizeCell(v string) string {
+func sanitizeCell(v any) string {
+	if v == nil {
+		return ""
+	}
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
 		}
 		return r
-	}, v)
+	}, fmt.Sprint(v))
 }

@@ -123,6 +123,32 @@ defmodule ForemanServer.PrWatcherFixTest do
     {id, opts}
   end
 
+  # The start task dies: the fix is finished as failed, the crash is logged with its reason,
+  # and the PR takes a new request (nothing stays "in flight" until the next restart).
+  defp assert_start_crash_finishes_fix!(tc, starter, logged_reason) do
+    ctx = setup_run!(tc)
+    start_watcher!(ctx, tc, starter: starter)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        request_fix!(ctx)
+
+        finished = await_event("PrFixFinished", ctx.run_id)
+        assert finished.outcome == "failed"
+        assert finished.error_code == "start_crashed"
+        await_idle()
+      end)
+
+    # the defect is not swallowed: the crash is logged with its reason
+    assert log =~ "PrWatcher fix task"
+    assert log =~ "crashed: " <> logged_reason
+
+    assert [%{fix: %{in_flight: nil}}] = ProjectionStore.pr_watch(ctx.run_id)
+    # the PR is free again: the aggregate accepts a new request (dispatch! raises on refusal)
+    request_fix!(ctx)
+    assert await_event("PrFixFinished", ctx.run_id).error_code == "start_crashed"
+  end
+
   describe "starting a fix" do
     test "one push-enabled jobsite on the PR head branch, then PrFixStarted records its id", tc do
       ctx = setup_run!(tc)
@@ -206,23 +232,16 @@ defmodule ForemanServer.PrWatcherFixTest do
 
     test "a start task that crashes finishes the fix as failed instead of leaving it in flight",
          tc do
-      ctx = setup_run!(tc)
-
       # not a `{:ok, id} | {:error, _}` shape: the start task raises CaseClauseError
-      starter = fn _opts -> :unexpected end
-      start_watcher!(ctx, tc, starter: starter)
+      assert_start_crash_finishes_fix!(
+        tc,
+        fn _opts -> :unexpected end,
+        "{{:case_clause, :unexpected}"
+      )
+    end
 
-      request_fix!(ctx)
-
-      finished = await_event("PrFixFinished", ctx.run_id)
-      assert finished.outcome == "failed"
-      assert finished.error_code == "start_crashed"
-      await_idle()
-
-      assert [%{fix: %{in_flight: nil}}] = ProjectionStore.pr_watch(ctx.run_id)
-      # the PR is free again: the aggregate accepts a new request (dispatch! raises on refusal)
-      request_fix!(ctx)
-      assert await_event("PrFixFinished", ctx.run_id).error_code == "start_crashed"
+    test "a start task that is killed finishes the fix as failed too", tc do
+      assert_start_crash_finishes_fix!(tc, fn _opts -> Process.exit(self(), :kill) end, ":killed")
     end
   end
 

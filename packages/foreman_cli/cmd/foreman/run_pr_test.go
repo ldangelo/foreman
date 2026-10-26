@@ -91,6 +91,7 @@ func TestRunPrVerbsRejectSurplusPositionalArguments(t *testing.T) {
 		{"address-comments", "run-7", "extra"},
 		{"resolve-conflicts", "run-7", "extra"},
 		{"create-pr", "run-7", "extra"},
+		{"retry-pr", "run-7", "--repo-id", "b", "extra"},
 		{"watch-stop", "run-7", "https://github.com/a/b/pull/2"},
 		{"watch-start", "run-7", "https://github.com/a/b/pull/2"},
 	}

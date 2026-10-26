@@ -32,13 +32,27 @@ defmodule ForemanServer.MCP do
   # Supervision / child spec
   # -------------------------------------------------------------------
 
-  @doc "Returns a child spec for the HTTP MCP server (streamable HTTP transport)."
+  @doc """
+  Returns a child spec for the HTTP MCP server (streamable HTTP transport).
+
+  The transport carries `start: true`, which is load-bearing. Left unset,
+  `Anubis.Server.Supervisor` decides for itself whether an HTTP server is running:
+  it starts only under `mix phx.server`, `PHX_SERVER` or `ANUBIS_MCP_SERVER`,
+  because Phoenix's own `:serve_endpoints` application env defaults to `false`.
+  On every other boot that still serves the endpoint (a release, where `prod.exs`
+  sets `server: true`; `mix run --no-start --no-halt boot.exs`, which the live
+  e2e harnesses use) the supervisor answered `:ignore`, never wrote its
+  `:session_config` persistent_term, and every `/mcp` request raised `ArgumentError`
+  (HTTP 500). Putting this child in the tree is already Foreman's decision
+  (`ForemanServer.Application` gates it on `:mcp, enabled: true`), so Anubis' guess
+  must not veto it (foreman-cnn1l).
+  """
   def child_spec(opts \\ []) do
     %{
       id: __MODULE__,
       start:
         {Anubis.Server.Supervisor, :start_link,
-         [__MODULE__, Dispatch.transport_opts(opts, :streamable_http)]},
+         [__MODULE__, Dispatch.transport_opts(opts, {:streamable_http, start: true})]},
       type: :supervisor,
       restart: :permanent
     }

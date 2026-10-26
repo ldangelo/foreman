@@ -269,7 +269,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
       GenServer.stop(pid)
     end
 
-    test "a second write inside the debounce window does not schedule a second timer", %{
+    test "a second event inside the debounce window does not schedule a second timer", %{
       tmp_dir: tmp_dir
     } do
       jsonl_path = Path.join(tmp_dir, "issues.jsonl")
@@ -277,21 +277,31 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
 
       project_id = "proj-fswatch-coalesce-#{System.unique_integer([:positive, :monotonic])}"
       pid = boot_watcher(project_id, tmp_dir, jsonl_path, poll_ms: 60_000)
+      test_pid = self()
 
-      await_fs_watch_write!(jsonl_path, "warmup")
+      # A burst of two file events for the JSONL, in the shape `file_system` sends them,
+      # run through the watcher's own `handle_info/2` — both inside ONE `:sys.replace_state/2`
+      # callback, which executes in the watcher process between two of its messages. Neither
+      # the real 100ms debounce timer nor an OS notification can land between the two
+      # events, so the second one is, by construction, inside the first one's debounce
+      # window and there is nothing to race or wait for. (Writing the file twice and
+      # sleeping a little, as this test used to, only hoped to win that race: the second
+      # notification could arrive late, or the first timer could already have fired.)
+      # The real write -> event -> debounced read pipeline is covered by the tests above.
+      :sys.replace_state(pid, fn state ->
+        event = {:file_event, state.fs_watcher_pid, {jsonl_path, [:modified]}}
 
-      File.write!(jsonl_path, "not-json-1\n", [:append])
+        {:noreply, first} = BeadsWatcher.handle_info(event, %{state | debounce_timer: nil})
+        {:noreply, second} = BeadsWatcher.handle_info(event, first)
 
-      first_timer_ref = wait_for(fn -> :sys.get_state(pid).debounce_timer end, 3_000)
-      refute is_nil(first_timer_ref), "debounce timer was never scheduled after the first write"
+        send(test_pid, {:debounce_timers, first.debounce_timer, second.debounce_timer})
+        second
+      end)
 
-      # Still inside the 100ms debounce window — a second event for
-      # the same file must be a no-op, not replace the pending timer
-      # with a new one.
-      File.write!(jsonl_path, "not-json-2\n", [:append])
-      Process.sleep(20)
-
-      assert :sys.get_state(pid).debounce_timer == first_timer_ref
+      # The watcher sent this before it answered replace_state/2 (same sender, in order).
+      assert_received {:debounce_timers, first_timer, second_timer}
+      assert is_reference(first_timer), "debounce timer was never scheduled after the first event"
+      assert second_timer == first_timer
 
       GenServer.stop(pid)
     end

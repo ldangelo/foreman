@@ -3,7 +3,8 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
 
   @moduletag :tmp_dir
 
-  alias ForemanServer.{CommandRouter, EventStore, ProjectionStore}
+  alias Anubis.Server.Frame
+  alias ForemanServer.{CommandRouter, EventStore, MCP, ProjectionStore}
   alias ForemanServer.MCP.{Policy, ToolError, Tools}
 
   @write_tools ["foreman_project_memory_write", "foreman_project_memory_forget"]
@@ -174,5 +175,90 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
 
     assert {:error, %ToolError{code: "NOT_FOUND"}} =
              Tools.call_tool("foreman_project_memory_read", %{project_id: p, name: "a"})
+  end
+
+  describe "argument types through the real MCP dispatch path" do
+    setup do
+      config = Application.get_env(:foreman_server, :mcp, [])
+      Application.put_env(:foreman_server, :mcp, Keyword.put(config, :allow_insecure_local, true))
+      writes(true)
+      :ok
+    end
+
+    # Anubis's `validate_input` only renames keys (`ForemanServer.MCP.Dispatch`), so a
+    # wrongly typed value reaches the handler exactly as it does in production.
+    defp mcp_call(name, arguments) do
+      tool = Enum.find(MCP.__components__(:tool), &(&1.name == name))
+      {:ok, atomized} = tool.validate_input.(arguments)
+      MCP.handle_tool_call(name, atomized, Frame.new())
+    end
+
+    test "non-string arguments are INVALID_PARAMS, never a FunctionClauseError", %{
+      project_id: p,
+      dir: dir
+    } do
+      cases = [
+        {"foreman_project_memory_write", %{"project_id" => p, "name" => "a", "content" => 123},
+         "content"},
+        {"foreman_project_memory_write", %{"project_id" => p, "name" => 5, "content" => "x"},
+         "name"},
+        {"foreman_project_memory_write",
+         %{"project_id" => p, "name" => "a", "content" => "x", "description" => 5},
+         "description"},
+        {"foreman_project_memory_write",
+         %{"project_id" => p, "name" => "a", "content" => "x", "run_id" => 5}, "run_id"},
+        {"foreman_project_memory_write", %{"project_id" => 7, "name" => "a", "content" => "x"},
+         "project_id"},
+        {"foreman_project_memory_forget", %{"project_id" => p, "name" => 5}, "name"},
+        {"foreman_project_memory_forget",
+         %{"project_id" => p, "name" => "a", "session_id" => %{}}, "session_id"},
+        {"foreman_project_memory_read", %{"project_id" => p, "name" => 5}, "name"},
+        {"foreman_project_memory_list", %{"project_id" => 7}, "project_id"}
+      ]
+
+      for {tool, arguments, field} <- cases do
+        assert {:error, %Anubis.MCP.Error{code: "INVALID_PARAMS", message: message}, _frame} =
+                 mcp_call(tool, arguments)
+
+        assert message == "Tool #{tool} arguments must be strings: #{field}"
+      end
+
+      refute File.exists?(Path.join(dir, ".foreman/memory/a.md"))
+      assert stream(p) == []
+    end
+
+    test "an explicit null description and run_id stay accepted", %{project_id: p} do
+      assert {:reply, %Anubis.Server.Response{}, _frame} =
+               mcp_call("foreman_project_memory_write", %{
+                 "project_id" => p,
+                 "name" => "a",
+                 "content" => "x",
+                 "description" => nil,
+                 "run_id" => nil
+               })
+    end
+  end
+
+  test "the write tool's maxLength values follow the configured caps" do
+    original = Application.fetch_env!(:foreman_server, :project_memory)
+    on_exit(fn -> Application.put_env(:foreman_server, :project_memory, original) end)
+
+    properties = fn ->
+      Tools.list_tools()
+      |> Enum.find(&(&1.name == "foreman_project_memory_write"))
+      |> get_in([:inputSchema, :properties])
+    end
+
+    assert %{"description" => %{maxLength: 200}, "content" => %{maxLength: 65_536}} =
+             properties.()
+
+    Application.put_env(
+      :foreman_server,
+      :project_memory,
+      Keyword.merge(original, max_description_chars: 17, max_topic_bytes: 4_321)
+    )
+
+    assert %{"description" => %{maxLength: 17}, "content" => %{maxLength: 4_321}} =
+             properties.()
   end
 end

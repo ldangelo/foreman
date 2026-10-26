@@ -1,7 +1,9 @@
 defmodule Jido.Harness.LiveInputTest do
   use ExUnit.Case, async: false
 
-  alias Jido.Harness.Adapters.CLIMapper
+  import ExUnit.CaptureLog
+
+  alias Jido.Harness.Adapters.{CLIMapper, Pi}
   alias Jido.Harness.{Event, Run}
 
   @claude_recording Path.expand("../support/fixtures/claude_live_input.jsonl", __DIR__)
@@ -25,15 +27,33 @@ defmodule Jido.Harness.LiveInputTest do
     :ok
   end
 
-  defp start_live(provider, prompt) do
+  defp start_live(provider, prompt, env \\ %{}) do
     {:ok, run_id} =
       Run.start(provider, %{
         prompt: prompt,
+        env: env,
         provider_options: %{live_input: true},
         runtime_timeout_ms: 30_000
       })
 
     run_id
+  end
+
+  # Merged into one provider's config for the rest of the test (`setup` restores the original).
+  defp put_provider_config(provider, extra) do
+    config = Application.get_env(:jido_harness, :provider_config)
+    Application.put_env(:jido_harness, :provider_config, Map.update!(config, provider, &Map.merge(&1, extra)))
+  end
+
+  defp exit_grace_expired?(%Event{type: :provider_event, payload: %{"kind" => "live_exit_grace_expired"}}), do: true
+  defp exit_grace_expired?(_event), do: false
+
+  # The process the run's CLI ran as, once the run has finished.
+  defp run_process(run_id) do
+    [info] =
+      Enum.filter(Jido.Harness.ProcessManager.list_processes(), &(Map.get(&1.metadata, :run_id) == run_id))
+
+    info
   end
 
   defp events(run_id) do
@@ -135,6 +155,110 @@ defmodule Jido.Harness.LiveInputTest do
                Jido.Harness.Adapters.Pi.build_argv(request, %{live_input: true})
 
       assert message =~ "attachments"
+    end
+
+    test "a failed prompt response maps to run_failed with pi's reason; other responses are not the run's outcome" do
+      rejected = %{
+        "id" => "foreman-prompt",
+        "type" => "response",
+        "command" => "prompt",
+        "success" => false,
+        "error" => "No API key found for minimax."
+      }
+
+      assert [%Event{type: :run_failed, payload: %{"error" => "No API key found for minimax."}}] =
+               Pi.map_live_event(rejected)
+
+      assert [%Event{type: :run_failed, payload: %{"error" => "Pi rejected the prompt"}}] =
+               Pi.map_live_event(Map.delete(rejected, "error"))
+
+      # A refused steer leaves the run going (its message just stays pending until the idle grace).
+      assert [%Event{type: :provider_event}] = Pi.map_live_event(%{rejected | "command" => "steer"})
+
+      started = %{"id" => "foreman-prompt", "type" => "response", "command" => "prompt", "success" => true}
+      assert [%Event{type: :provider_event}] = Pi.map_live_event(started)
+    end
+  end
+
+  # An rpc CLI never exits by itself: a run ends when its stdin closes. Each outcome below is one in
+  # which no `:input_idle` can close it (the terminal event is recorded first and everything after it is
+  # dropped, or the provider never starts a turn), which left the CLI idle on an open stdin and
+  # `Run.await/2` waiting for ever.
+  describe "live runs that do not end in a success" do
+    test "claude: a turn the provider rejects (REAL records, unknown model) fails the run instead of idling on its stdin" do
+      run_id = start_live(:claude, "first", %{"FAKE_CLAUDE_RECORDING" => "claude_live_error.jsonl"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "issue with the selected model"
+      assert Enum.count(result.events, &(&1.type == :run_failed)) == 1
+
+      # The terminal event itself closed stdin and claude exited on the EOF: the watchdog never ran.
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+      assert {:error, reason} = Run.send_input(run_id, "late", "too late")
+      assert reason in [:input_closed, :not_running]
+    end
+
+    test "pi: a turn the provider fails (REAL pi 1.4.0 records, HTTP 401) fails the run instead of idling on its stdin" do
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "error"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "authentication_error"
+      assert Enum.count(result.events, &(&1.type == :run_failed)) == 1
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+
+      assert {:error, reason} = Run.send_input(run_id, "late", "too late")
+      assert reason in [:input_closed, :not_running]
+    end
+
+    test "pi: a prompt pi rejects (no API key) fails the run with pi's reason instead of waiting for events that never come" do
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "rejected"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "No API key found for minimax"
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+    end
+
+    test "a CLI that outlives its closed stdin after a failure is stopped after the exit grace, and the run still fails" do
+      put_provider_config(:pi, %{live_exit_grace_ms: 300})
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "error", "FAKE_PI_IGNORE_EOF" => "1"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "authentication_error"
+      assert Enum.any?(result.events, &exit_grace_expired?/1)
+
+      # Stopped by the harness (cancelled), not exited on its own.
+      assert {:ok, %{state: :cancelled}} =
+               Jido.Harness.ProcessManager.await_process(run_process(run_id).process_id, 15_000)
+    end
+
+    test "a CLI that outlives its closed stdin after a SUCCESSFUL turn is stopped after the exit grace, and the run completes" do
+      put_provider_config(:pi, %{live_exit_grace_ms: 300})
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_IGNORE_EOF" => "1"})
+
+      assert {:ok, result} = Run.await(run_id, 20_000)
+      assert result.status == :completed
+      assert Enum.count(result.events, &(&1.type == :input_idle)) == 1
+      assert Enum.count(result.events, &(&1.type == :run_completed)) == 1
+      assert Enum.any?(result.events, &exit_grace_expired?/1)
+
+      assert {:ok, %{state: :cancelled}} =
+               Jido.Harness.ProcessManager.await_process(run_process(run_id).process_id, 15_000)
+    end
+
+    test "the exit grace is a positive integer: anything else refuses to start the run" do
+      put_provider_config(:pi, %{live_exit_grace_ms: 0})
+      test_pid = self()
+
+      capture_log(fn ->
+        send(test_pid, {:started, Run.start(:pi, %{prompt: "x", provider_options: %{live_input: true}})})
+      end)
+
+      assert_received {:started, {:error, %Jido.Harness.Error{details: %{reason: reason}}}}
+      assert reason =~ "live_exit_grace_ms must be a positive integer"
     end
   end
 end

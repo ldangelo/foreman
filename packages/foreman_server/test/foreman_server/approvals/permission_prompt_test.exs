@@ -280,8 +280,14 @@ defmodule ForemanServer.Approvals.PermissionPromptTest do
     tmp_dir: dir
   } do
     FakeClaudeCli.use!(FakeClaudeCli.write!(dir, "claude-known", :known))
+    previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766/")
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     assert [mcp_config: %{"foreman_permission" => server}, provider_options: provider_options] =
              Inflight.claude_options("run-1")
@@ -300,8 +306,14 @@ defmodule ForemanServer.Approvals.PermissionPromptTest do
   } do
     cli = FakeClaudeCli.write!(dir, "claude-old", :unknown)
     FakeClaudeCli.use!(cli)
+    previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766/")
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     log = ExUnit.CaptureLog.capture_log(fn -> assert Inflight.claude_options("run-1") == nil end)
 
@@ -314,8 +326,14 @@ defmodule ForemanServer.Approvals.PermissionPromptTest do
     tmp_dir: dir
   } do
     FakeClaudeCli.use!(Path.join(dir, "no-such-claude"))
+    previous = Application.get_env(:foreman_server, :approvals)
     Application.put_env(:foreman_server, :approvals, inflight_base_url: "http://127.0.0.1:4766/")
-    on_exit(fn -> Application.delete_env(:foreman_server, :approvals) end)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :approvals, previous),
+        else: Application.delete_env(:foreman_server, :approvals)
+    end)
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->

@@ -7,6 +7,10 @@ defmodule ForemanServer.Events.BeadsDbLeaseTransferred do
   `BeadsDbLeaseAcquired` so the Actor protocol is unchanged: the
   state transition is encoded in a single event whose `apply_event`
   swaps the holder and drops the head waiter in one step.
+
+  `acquired_incarnation` is the incarnation the promoted waiter was
+  registered under (see `BeadsDbLeaseWaiterRegistered`); the new holder
+  inherits it.
   """
   @enforce_keys [
     :db_path,
@@ -26,7 +30,8 @@ defmodule ForemanServer.Events.BeadsDbLeaseTransferred do
           acquired_run_id: String.t(),
           acquired_task_id: String.t(),
           acquired_at_ms: integer(),
-          enqueued_at_ms: integer()
+          enqueued_at_ms: integer(),
+          acquired_incarnation: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -37,6 +42,7 @@ defmodule ForemanServer.Events.BeadsDbLeaseTransferred do
     :acquired_run_id,
     :acquired_task_id,
     :acquired_at_ms,
-    :enqueued_at_ms
+    :enqueued_at_ms,
+    acquired_incarnation: nil
   ]
 end

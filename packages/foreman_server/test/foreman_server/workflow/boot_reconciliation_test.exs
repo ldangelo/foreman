@@ -3,9 +3,11 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
 
   import Mox
   alias EventStore.RecordedEvent
+  alias ForemanServer.Aggregate
   alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.Incarnation
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
@@ -402,7 +404,11 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     assert_receive {@healthy_event, ^ref, %{count: 1}, healthy_metadata}, 1_000
     assert healthy_metadata.issue_id == task_id
 
-    refute_receive {@orphan_reopen_event, ^ref, _, _}, 100
+    # reconcile/0 runs, and emits its telemetry, in this process: the healthy event above
+    # is the positive proof the second pass finished, so a second reopen for this issue
+    # would already be queued. Pinned to this issue, in the shape the first pass asserts.
+    refute_received {@orphan_reopen_event, ^ref, _measurements,
+                     %{project_id: ^project_id, issue_id: ^task_id}}
   end
 
   describe "task-run orphan scan" do
@@ -441,7 +447,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
 
       assert :ok = BootReconciliation.scan_task_run_orphans()
 
-      Process.sleep(100)
+      flush_boot_reconciliation()
       assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
     end
 
@@ -453,7 +459,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
 
       assert :ok = BootReconciliation.scan_task_run_orphans()
 
-      Process.sleep(100)
+      flush_boot_reconciliation()
       assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
     end
 
@@ -465,7 +471,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
 
       assert :ok = BootReconciliation.scan_task_run_orphans()
 
-      Process.sleep(100)
+      flush_boot_reconciliation()
       assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
     end
 
@@ -477,7 +483,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
 
       assert :ok = BootReconciliation.scan_task_run_orphans()
 
-      Process.sleep(100)
+      flush_boot_reconciliation()
       assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
     end
   end
@@ -538,7 +544,9 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       # path while the router is down.
       assert :ok = BootReconciliation.run_terminated(run_id, "run_flagged_stuck")
 
-      Process.sleep(20)
+      # The cast is handled in mailbox order, so once this returns the handler has taken
+      # the router-down branch (deferred, nothing dispatched).
+      flush_boot_reconciliation()
       assert Map.get(ProjectionStore.task_projection(task_id), :acknowledged_run_id) == nil
 
       {:ok, _} = Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
@@ -712,6 +720,72 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
             if removed? and not holder_released?, do: :ok, else: {:still_waiting, removed?}
         end
       end)
+    end
+
+    test "scan_lease_orphans/0 releases holds a killed server stranded in streams no task points at" do
+      # BeadsWatcher / BeadsAdapter / janitor holds are bound to no task, so no task
+      # projection names these DBs: a walk keyed on tasks never reached them (foreman-w29up).
+      tagged_db = unique_database_path("lease-stranded-tagged")
+      legacy_db = unique_database_path("lease-stranded-legacy")
+      tagged_stream = BeadsDbLease.stream_id(tagged_db)
+      legacy_stream = BeadsDbLease.stream_id(legacy_db)
+
+      on_exit(fn ->
+        for stream <- [tagged_stream, legacy_stream],
+            do: Store.delete_stream(stream, :any_version, :hard)
+      end)
+
+      acquire_lease!(tagged_db, "watcher:proj:1", "incarnation-of-the-killed-server")
+      # Written before holds carried an incarnation, e.g. by the server this one replaces.
+      acquire_lease!(legacy_db, "watcher:proj:2", nil)
+
+      assert :ok = BootReconciliation.scan_lease_orphans()
+
+      for {stream, run_id} <- [
+            {tagged_stream, "watcher:proj:1"},
+            {legacy_stream, "watcher:proj:2"}
+          ] do
+        assert_eventually(fn ->
+          released? =
+            lease_event?(stream, "BeadsDbLeaseReleased", %{
+              run_id: run_id,
+              reason: :boot_orphan_holder
+            })
+
+          if released?, do: :ok, else: :retry
+        end)
+      end
+    end
+
+    test "scan_lease_orphans/0 removes a killed server's waiter and leaves a hold of this server alone" do
+      db_path = unique_database_path("lease-live-per-call-hold")
+      stream = BeadsDbLease.stream_id(db_path)
+      on_exit(fn -> _ = Store.delete_stream(stream, :any_version, :hard) end)
+      dead = "incarnation-of-the-killed-server"
+
+      acquire_lease!(db_path, "watcher:old:1", dead)
+      acquire_lease!(db_path, "run-dead", dead)
+      # A call of this server takes the lease over from the dead hold; the dead run stays queued.
+      acquire_lease!(db_path, "watcher:live:1", Incarnation.id())
+
+      assert :ok = BootReconciliation.scan_lease_orphans()
+
+      assert_eventually(fn ->
+        removed? =
+          lease_event?(stream, "BeadsDbLeaseWaiterRemoved", %{
+            run_id: "run-dead",
+            reason: :boot_orphan_waiter
+          })
+
+        if removed?, do: :ok, else: :retry
+      end)
+
+      # A stream's holder is judged before its waiters, so that decision has been made.
+      # No task projection speaks for this hold (its run_id is synthetic): only its
+      # incarnation does, and the scan must not take it from under the call that is running.
+      {state, _version} = Aggregate.load(BeadsDbLease, stream)
+      assert %BeadsDbLease.Holder{run_id: "watcher:live:1"} = state.holder
+      refute lease_event?(stream, "BeadsDbLeaseReleased", %{run_id: "watcher:live:1"})
     end
 
     test "scan_lease_orphans/0 returns :ok and dispatches asynchronously", %{temp_dir: _temp_dir} do
@@ -955,6 +1029,16 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     )
   end
 
+  # Barrier for the "nothing was dispatched" tests. BootReconciliation handles its casts
+  # one at a time in mailbox order and runs each scan (with every command it dispatches)
+  # to completion inside the handler, so a system call queued behind a cast is answered
+  # only after that cast was fully handled — the decision whether to dispatch has been
+  # made by then. It also crashes the test if the process is not running.
+  defp flush_boot_reconciliation do
+    _ = :sys.get_state(BootReconciliation, 15_000)
+    :ok
+  end
+
   defp attach_boot_events(events) do
     ref = :telemetry_test.attach_event_handlers(self(), events)
 
@@ -1003,6 +1087,38 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     path = Path.join(System.tmp_dir!(), "#{script_key}-#{System.unique_integer([:positive])}.db")
     File.touch!(path)
     path
+  end
+
+  defp acquire_lease!(db_path, run_id, incarnation) do
+    payload = %{
+      db_path: db_path,
+      run_id: run_id,
+      task_id: run_id,
+      acquired_at_ms: System.system_time(:millisecond)
+    }
+
+    payload = if incarnation, do: Map.put(payload, :incarnation, incarnation), else: payload
+
+    assert {:ok, _} =
+             CommandGateway.dispatch_system(%{
+               type: "lease.acquire",
+               command_id: "test:lease-acquire:#{run_id}:#{System.unique_integer([:positive])}",
+               aggregate_id: BeadsDbLease.stream_id(db_path),
+               payload: payload
+             })
+  end
+
+  defp lease_event?(stream, event_type, expected) do
+    case Store.read_stream_forward(stream, 0, 100) do
+      {:ok, events} ->
+        Enum.any?(events, fn %RecordedEvent{event_type: type, data: data} ->
+          type == event_type and
+            Enum.all?(expected, fn {key, value} -> Map.get(data, key) == value end)
+        end)
+
+      {:error, :stream_not_found} ->
+        false
+    end
   end
 
   defp project_task_provider(database_path) do

@@ -224,6 +224,11 @@ defmodule ForemanServer.Notifier.Mapping do
     end
   end
 
+  @doc "Does the table react to this event type at all (whatever its payload)?"
+  @spec mapped?([Rule.t()], String.t()) :: boolean()
+  def mapped?(rules, event_type) when is_list(rules) and is_binary(event_type),
+    do: Enum.any?(rules, &(&1.event_type == event_type))
+
   @doc "Event types the table reacts to."
   @spec event_types([Rule.t()]) :: [String.t()]
   def event_types(rules), do: rules |> Enum.map(& &1.event_type) |> Enum.uniq()

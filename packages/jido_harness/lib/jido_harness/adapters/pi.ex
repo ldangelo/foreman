@@ -345,6 +345,16 @@ defmodule Jido.Harness.Adapters.Pi do
       when is_binary(session_id),
       do: [Helpers.event(:pi, :provider_event, session_id, %{"kind" => "session_state"}, raw)]
 
+  # A `prompt` pi cannot start (no API key for the model, compaction in progress, ...) is answered
+  # with a failed `response`, after which pi stays alive and silent: no agent_start, no agent_end, no
+  # agent_settled. For the run's own prompt that failure IS the outcome, and in rpc mode nothing
+  # else would ever end the run.
+  def map_live_event(%{"type" => "response", "command" => "prompt", "success" => false} = raw) do
+    error = Map.get(raw, "error")
+    message = if is_binary(error) and error != "", do: error, else: "Pi rejected the prompt"
+    [Helpers.event(:pi, :run_failed, nil, %{"error" => message}, raw)]
+  end
+
   def map_live_event(raw), do: map_event(raw)
 
   @doc false

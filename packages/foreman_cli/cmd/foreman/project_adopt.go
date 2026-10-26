@@ -19,6 +19,9 @@ func projectAdopt(c *client.Client, args []string) error {
 	goal := fs.String("goal", "", "Goal for the minted project (with --new-project)")
 	cont := fs.Bool("continue", false, "Continue the session as a new thread instead of moving it")
 	prompt := fs.String("prompt", "", "Continuation instruction (with --continue)")
+	fork := fs.Bool("fork", false, "With --continue: fork the session's provider session (the agent remembers it) instead of seeding the prompt from the archive")
+	fromSourceBranch := fs.Bool("from-source-branch", false, "With --continue: cut the new thread's worktree from the branch of the session being continued instead of the project's current branch")
+	addRepo := fs.Bool("add-repo", false, "With a move (--into without --continue): attach the session's repository to the target project first if it is not one of its repositories")
 	format := fs.String("format", "", "Output format (json)")
 	if err := fs.parse(args); err != nil {
 		return err
@@ -31,6 +34,12 @@ func projectAdopt(c *client.Client, args []string) error {
 		return usageError(fs, "foreman project adopt: --new-project cannot be combined with --into or --continue")
 	case !*newProject && *into == "":
 		return usageError(fs, "foreman project adopt: one of --into or --new-project is required")
+	case *fork && !*cont:
+		return usageError(fs, "foreman project adopt: --fork requires --continue")
+	case *fromSourceBranch && !*cont:
+		return usageError(fs, "foreman project adopt: --from-source-branch requires --continue")
+	case *addRepo && (*cont || *newProject):
+		return usageError(fs, "foreman project adopt: --add-repo applies only to a move (--into without --continue)")
 	case *cont && *prompt == "":
 		return usageError(fs, "foreman project adopt: --continue requires --prompt")
 	}
@@ -55,9 +64,18 @@ func projectAdopt(c *client.Client, args []string) error {
 		body["mode"] = "continue"
 		body["target_project_id"] = *into
 		body["prompt"] = *prompt
+		if *fork {
+			body["fork"] = true
+		}
+		if *fromSourceBranch {
+			body["from_source_branch"] = true
+		}
 	default:
 		body["mode"] = "move"
 		body["target_project_id"] = *into
+		if *addRepo {
+			body["add_repo"] = true
+		}
 	}
 
 	var out map[string]any

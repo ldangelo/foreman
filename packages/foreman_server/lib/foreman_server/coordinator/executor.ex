@@ -747,22 +747,8 @@ defmodule ForemanServer.Coordinator.Executor do
 
   # The repository id is the `name` (else the directory name) reduced to the id
   # syntax of `RepoValidation`, so the same action always yields the same id.
-  defp repo_id(%{"path" => path} = params) do
-    base = Map.get(params, "name", Path.basename(path))
-
-    id =
-      base
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9]+/, "-")
-      |> String.trim("-")
-      |> String.slice(0, 32)
-      |> String.trim_trailing("-")
-
-    case RepoValidation.validate_id(id) do
-      :ok -> {:ok, id}
-      {:error, _} -> {:error, {:invalid_repo_name, base}}
-    end
-  end
+  defp repo_id(%{"path" => path} = params),
+    do: RepoValidation.id_from_name(Map.get(params, "name", Path.basename(path)))
 
   # A re-run of this very action (the turn was interrupted after the command
   # committed) finds its repository already registered; the gateway would refuse

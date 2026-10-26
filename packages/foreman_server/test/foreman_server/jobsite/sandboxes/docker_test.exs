@@ -71,4 +71,27 @@ defmodule ForemanServer.Jobsite.Sandboxes.DockerTest do
     {output, 0} = System.cmd(shim_path, [])
     assert output =~ "JOBSITE_TEST_VAR=shim-value"
   end
+
+  test "the env of the config is the container's own environment: exec sees it, the agent's env-file overrides it" do
+    repo = tmp_repo!()
+    assert {:ok, worktree} = Worktree.create(repo_path: repo, strategy: :head)
+    on_exit(fn -> Worktree.close(worktree) end)
+
+    env = %{"HTTP_PROXY" => "http://proxy.invalid:3128", "NO_PROXY" => "localhost,127.0.0.1"}
+
+    assert {:ok, state, _sandbox_path, _container} =
+             Docker.create(%{image: @image, env: env}, worktree)
+
+    on_exit(fn -> Docker.close(state) end)
+
+    # What a sandbox hook and every other `Sandbox.exec/3` runs through.
+    assert {:ok, %{exit_code: 0, stdout: "http://proxy.invalid:3128\n"}} =
+             Docker.exec(state, ~S|echo "$HTTP_PROXY"|, [])
+
+    assert {:ok, shim_path} =
+             Docker.agent_cli_path(state, "printenv", %{"HTTP_PROXY" => "http://agent.invalid:1"})
+
+    assert {"http://agent.invalid:1\n", 0} = System.cmd(shim_path, ["HTTP_PROXY"])
+    assert {"localhost,127.0.0.1\n", 0} = System.cmd(shim_path, ["NO_PROXY"])
+  end
 end

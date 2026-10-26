@@ -16,7 +16,8 @@ defmodule ForemanServer.Notifier.Rule do
     * `body_fields` - payload fields rendered as `field: value` lines of the body.
     * `key_fields` - payload fields identifying ONE occurrence; they form the
       deduplication key, so they must differ between genuinely different events
-      and be equal for a replay of the same one.
+      and be equal for a replay of the same one. At least one is required: with
+      none, every event of the type would share one dedupe key.
     * `url_field` - optional payload field holding a link (a PR url).
   """
 
@@ -81,13 +82,16 @@ defmodule ForemanServer.Notifier.Rule do
       subject: subject,
       match: normalize_match!(Map.get(attrs, :match, %{})),
       body_fields: names!(Map.get(attrs, :body_fields, []), :body_fields),
-      key_fields: names!(fetch!(attrs, :key_fields), :key_fields),
+      key_fields: non_empty_names!(fetch!(attrs, :key_fields), :key_fields),
       url_field: optional_name!(Map.get(attrs, :url_field), :url_field)
     }
   end
 
-  @doc "Does the rule apply to a payload with string or atom keys?"
-  @spec matches?(t(), map()) :: boolean()
+  @doc """
+  Does the rule apply to a payload? `payload` is a normalised one
+  (`normalize_payload!/1`).
+  """
+  @spec matches?(t(), %{optional(String.t()) => term()}) :: boolean()
   def matches?(%__MODULE__{match: match}, payload) do
     Enum.all?(match, fn {field, allowed} ->
       case field_value(payload, field) do
@@ -98,31 +102,45 @@ defmodule ForemanServer.Notifier.Rule do
   end
 
   @doc """
-  Reads `field` (a string) from a payload that may carry atom or string keys.
-  A payload holding both forms with different values is corrupt and raises.
+  The event payload with every key a string: the ONE key convention the notifier
+  reads (AGENTS.md 5.4), applied once where a MAPPED event enters
+  `ForemanServer.Notifier.process/3`. Events carry atom keys when freshly
+  appended and string keys when they came from JSON, and one payload can hold
+  both forms of a key (the crash-loop detector's `run.block` stores `"run_id"`
+  and the aggregate adds `:run_id`): equal values collapse into one entry, a
+  conflicting pair is a corrupt payload and raises. The message names the key
+  only, because the values may be secrets. A typed event struct (the `data` of
+  a freshly appended typed event) is read through its fields. Never mints an
+  atom; a key that is neither an atom nor a binary raises.
   """
-  @spec field_value(map(), String.t()) :: term()
-  def field_value(payload, field) when is_map(payload) and is_binary(field) do
-    atom_entry =
-      Enum.find(payload, fn {key, _} -> is_atom(key) and Atom.to_string(key) == field end)
+  @spec normalize_payload!(map()) :: %{optional(String.t()) => term()}
+  def normalize_payload!(%{__struct__: _} = event),
+    do: event |> Map.from_struct() |> normalize_payload!()
 
-    case {atom_entry, Map.fetch(payload, field)} do
-      {{_key, value}, :error} ->
-        value
+  def normalize_payload!(payload) when is_map(payload) do
+    Enum.reduce(payload, %{}, fn {key, value}, normalised ->
+      name = key_name!(key)
 
-      {nil, {:ok, value}} ->
-        value
+      case Map.fetch(normalised, name) do
+        :error ->
+          Map.put(normalised, name, value)
 
-      {nil, :error} ->
-        nil
+        {:ok, ^value} ->
+          normalised
 
-      {{_key, value}, {:ok, value}} ->
-        value
-
-      {{_key, a}, {:ok, s}} ->
-        raise ArgumentError, "conflicting #{field} keys: #{inspect(a)} vs #{inspect(s)}"
-    end
+        {:ok, _other} ->
+          raise ArgumentError, "conflicting #{name} keys in an event payload"
+      end
+    end)
   end
+
+  defp key_name!(key) when is_atom(key), do: Atom.to_string(key)
+  defp key_name!(key) when is_binary(key), do: key
+
+  @doc "Reads `field` from a normalised payload (`normalize_payload!/1`); `nil` when absent."
+  @spec field_value(%{optional(String.t()) => term()}, String.t()) :: term()
+  def field_value(payload, field) when is_map(payload) and is_binary(field),
+    do: Map.get(payload, field)
 
   defp fetch!(attrs, key) do
     case Map.fetch(attrs, key) do
@@ -147,6 +165,9 @@ defmodule ForemanServer.Notifier.Rule do
 
   defp names!(list, key) when is_list(list), do: Enum.map(list, &name!(&1, key))
   defp names!(other, key), do: validate!(false, key, other)
+
+  defp non_empty_names!(list, key) when is_list(list) and list != [], do: names!(list, key)
+  defp non_empty_names!(other, key), do: validate!(false, key, other)
 
   defp optional_name!(nil, _key), do: nil
   defp optional_name!(name, key), do: name!(name, key)

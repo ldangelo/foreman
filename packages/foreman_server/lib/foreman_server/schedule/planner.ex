@@ -11,7 +11,8 @@ defmodule ForemanServer.Schedule.Planner do
   burst. Evaluated in this order, first match wins:
 
     1. no due slot after `max(last_slot, active_since)` -> `:wait`
-    2. `now - slot > misfire_grace_seconds` -> `{:skip, slot, :missed, missed_count}`
+    2. `misfired?/3` (`now - slot > misfire_grace_seconds`) ->
+       `{:skip, slot, :missed, missed_count}`
     3. project missing, archived or paused -> `{:skip, slot, :project_paused, nil}`
     4. `overlap: "skip"` and the previous fire's task is still `open`, `ready` or
        `in_progress` -> `{:skip, slot, :overlap, nil}`
@@ -21,6 +22,10 @@ defmodule ForemanServer.Schedule.Planner do
   A stored spec that no longer parses is `{:error, {:invalid_schedule_spec, ...}}`
   (the ticker counts it; it is never silently treated as "nothing due").
   `missed_count` is the number of slots in `(after, now]`, including the latest.
+
+  `misfired?/3` and `accounted_for?/2` are public because boot recovery
+  (`Schedule.Ticker`) applies the same two rules to the slot of a recorded intent: one
+  predicate for "too late to fire", no second copy.
   """
 
   alias ForemanServer.Schedule.Spec
@@ -62,11 +67,30 @@ defmodule ForemanServer.Schedule.Planner do
     end
   end
 
-  defp decide(schedule, spec, slot, after_slot, now, ctx) do
-    grace = schedule.misfire_grace_seconds || 0
+  @doc """
+  Whether `slot` is past the schedule's misfire grace at `now` (rule 2). A schedule
+  with no recorded grace has none: any lateness is a miss.
+  """
+  @spec misfired?(map(), integer(), DateTime.t()) :: boolean()
+  def misfired?(schedule, slot, %DateTime{} = now) when is_integer(slot),
+    do: DateTime.to_unix(now) - slot > (schedule.misfire_grace_seconds || 0)
 
+  @doc """
+  Whether the schedule already accounts for `slot`: a later or equal slot was fired
+  or skipped, or the slot falls at or before the baseline (`active_since`: creation,
+  last resume or last spec change). Such a slot must never produce a task.
+  """
+  @spec accounted_for?(map(), integer()) :: boolean()
+  def accounted_for?(schedule, slot) when is_integer(slot) do
+    case lower_bound(schedule) do
+      nil -> false
+      bound -> slot <= bound
+    end
+  end
+
+  defp decide(schedule, spec, slot, after_slot, now, ctx) do
     cond do
-      DateTime.to_unix(now) - slot > grace ->
+      misfired?(schedule, slot, now) ->
         {:skip, slot, :missed, Spec.missed_count(spec, after_slot, now)}
 
       not project_active?(ctx.project) ->
