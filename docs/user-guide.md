@@ -1088,6 +1088,11 @@ pause/resume flow below. A steer the run ends without taking (it completed or fa
 first) is recorded `RunSteerUndelivered` with the reason, listed under the run's
 `undelivered_steering`, and shown in the thread transcript; it is never dropped silently.
 Disable with `config :foreman_server, :live_steering, enabled: false`.
+A live run's CLI exits only when its input closes, so Foreman closes the CLI's input at the
+first terminal event (a turn the provider failed included). A CLI still alive for
+`live_exit_grace_ms` after its input closed (`provider_config`, a positive integer in
+milliseconds, default 10000) is stopped and the run finishes from what it recorded, with a
+`live_exit_grace_expired` provider event in the run's events.
 
 Pause/resume flow. `run.steer` queues a
 `RunSteerQueued` event (durable, idempotent per `message_id`); the run is

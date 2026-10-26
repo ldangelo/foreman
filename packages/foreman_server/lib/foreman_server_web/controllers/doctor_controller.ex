@@ -112,13 +112,33 @@ defmodule ForemanServerWeb.DoctorController do
       :warn,
       "Notifications were refused",
       "#{errors} event(s) could not be turned into a notification since the server started " <>
-        "(provider #{provider}); last: #{inspect(stats.last_error, limit: 20)}"
+        "(provider #{provider}); last: #{inspect(stats.last_error, limit: 20)}" <>
+        unresolved_note(stats)
+    )
+  end
+
+  defp notifier_row(%{
+         messaging: {:enabled, provider},
+         stats: %{skipped: %{project_unresolved: unresolved}}
+       })
+       when unresolved > 0 do
+    check(
+      "notifier",
+      :warn,
+      "Notifications were dropped",
+      "#{unresolved} event(s) named a project the server does not know since it started, so no " <>
+        "notification was sent (provider #{provider})."
     )
   end
 
   defp notifier_row(%{messaging: {:enabled, provider}, stats: stats}) do
     check("notifier", :ok, "Notifications are on (#{provider})", stats_detail(stats))
   end
+
+  defp unresolved_note(%{skipped: %{project_unresolved: n}}) when n > 0,
+    do: "; #{n} more event(s) named a project the server does not know and were dropped"
+
+  defp unresolved_note(_stats), do: ""
 
   defp stats_detail(nil), do: "The notifier and the dispatcher are running."
 
