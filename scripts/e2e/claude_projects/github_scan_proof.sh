@@ -5,6 +5,10 @@
 # (github_extras.sh: gh_public_scan_history, gh_public_foreign_identities, gh_account_identity; bead foreman-ksy0q). A scan that
 # passes proves nothing unless it also fails on what it exists to stop.
 #
+# RE-RUN THIS SCRIPT AFTER ANY CHANGE to gh_public_safety_check or the helpers it calls (the ref fetch, the binary-blob rule,
+# the identity allowlist, the secret classes) and before any public window. No CI job runs it (it needs a logged-in `gh`), so
+# this line is the only thing that keeps the scan honest: exit 0 with 'expectations held: N, broken: 0 (documented: N)'.
+#
 # A. Builds a LOCAL history shaped like the scratch repository's (the seed commit, a run commit by Foreman
 #    <foreman@localhost>, a squash commit on main and a refs/pull/1/merge commit attributed to the account and committed by
 #    GitHub), makes the operator clone of it, runs the real scan on it (it must pass), plants ONE violation at a time into a fresh
