@@ -678,6 +678,15 @@ gh_x_claude_fix_ci() {
 # and the repository metadata. Any hit fails the stage BEFORE the flip; the repository stays private and the
 # protection stage is UNVERIFIED. A hit is reported by class and location, never by value.
 #
+# Identities: GitHub attributes the squash commit and the refs/pull/*/merge commit of a PR to its author, the
+# account this harness runs as, and Foreman's phase commits carry Foreman <foreman@localhost>. A commit author or
+# committer may therefore be (whole-line matches, nothing else): synthetic (<local>@example.com), GitHub
+# <noreply@github.com>, Foreman <foreman@localhost>, or the account's own PUBLIC profile identity (gh api user:
+# name + email, only when the profile publishes an email: gh_account_identity). That one identity is already on the
+# profile, so naming it in a commit exposes nothing new; it stays an exact secret everywhere else (file contents,
+# commit messages, PR text, check output, logs). github_scan_proof.sh proves, on a local history, that the scan
+# still fails on a planted token, a foreign identity, a local path and the other classes.
+#
 # Paths a commit may ever have touched: the seeded fixture and the one note file each bead's agent adds.
 GH_PUBLIC_ALLOWED_FILES='^(\.github/workflows/(ci|approve)\.yml|\.gitignore|\.coderabbit\.yaml|README\.md|app\.py|test_app\.py|note_[a-z0-9_]+\.txt)$'
 GH_RE_TOKEN='gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY|[Bb]earer [A-Za-z0-9._-]{16,}'
@@ -704,48 +713,94 @@ gh_public_scan_file() {
   return $gsf_bad
 }
 
-gh_public_safety_check() {
-  say "9i-0. content safety scan of $GH_REPO before it is made public (all refs, PR refs, whole history)"
-  gps_bad=0
-  # exact values that must never appear: this run's tokens and the operator's real git identity
+# gh_account_identity: the authenticated account's own PUBLIC profile identity as git prints it (`name <email>`), or
+# nothing when the profile shows no name or no public email (gh api user answers `email: null` unless the owner
+# published one; the harness token has no `user` scope, so nothing private is read).
+gh_account_identity() {
+  gai_json=$(gh api user 2>/dev/null) || return 0
+  gai_name=$(printf '%s' "$gai_json" | jq -r '.name // empty' 2>/dev/null)
+  gai_email=$(printf '%s' "$gai_json" | jq -r '.email // empty' 2>/dev/null)
+  if [ -n "$gai_name" ] && [ -n "$gai_email" ]; then printf '%s <%s>\n' "$gai_name" "$gai_email"; fi
+  return 0
+}
+
+# gh_public_foreign_identities <identities file> [account identity]: the lines of the file (`name <email>`, one per
+# author and committer) that a public repository may not carry. Allowed, as WHOLE lines: synthetic
+# <local>@example.com, GitHub's own, Foreman's phase-commit default (Jobsite.Git.commit_all) and the given account
+# identity (empty or absent: none).
+gh_public_foreign_identities() {
+  gfi_args=(-e 'Foreman <foreman@localhost>' -e 'GitHub <noreply@github.com>')
+  [ -z "${2:-}" ] || gfi_args+=(-e "$2")
+  grep -Fvx "${gfi_args[@]}" "$1" | grep -Ev '^[^<>]* <[^<>@[:space:]]+@example\.com>$'
+}
+
+# gh_public_secrets: the exact values that may appear nowhere public: this run's tokens and the operator's real git identity
+# (the account's profile email is among them; only the commit identity fields may name the profile identity, see step 3)
+gh_public_secrets() {
   : > "$EVID/secrets.txt"
   for gps_s in "${GH_TOKEN:-}" "$E2E_API_TOKEN" "$GH_HOOK_SECRET" "$(git config --global user.email 2>/dev/null)" "$(git config --global user.name 2>/dev/null)" "$(gh api user -q '.email // empty' 2>/dev/null)"; do
     [ -n "$gps_s" ] && printf '%s\n' "$gps_s" >> "$EVID/secrets.txt"
   done
+}
 
+# gh_public_scan_history: what the git HISTORY of $GH_REPO exposes (steps 1-3). Fetches every branch and every refs/pull/*
+# of origin into the operator clone $GH_OP, then checks the paths ever committed, the file contents at every commit, the
+# whole patch history and the commit identities. Needs $EVID/secrets.txt (gh_public_secrets). Returns 1 on any finding.
+gh_public_scan_history() {
+  gsh_bad=0
   # every ref the repository exposes: branches and the pull request refs (head and merge)
   git -C "$GH_OP" fetch -q origin '+refs/heads/*:refs/remotes/origin/*' '+refs/pull/*:refs/remotes/pull/*' || { fail "cannot fetch every branch and refs/pull/* of $GH_REPO"; return 1; }
   git -C "$GH_OP" for-each-ref --format='%(refname)' refs/remotes > "$EVID/refs.txt"
-  gps_branches=$(grep -c '^refs/remotes/origin/' "$EVID/refs.txt")
-  gps_prrefs=$(grep -c '^refs/remotes/pull/' "$EVID/refs.txt")
-  note "refs scanned: $gps_branches branch(es), $gps_prrefs pull request ref(s): $(tr '\n' ' ' < "$EVID/refs.txt" | sed -e 's#refs/remotes/##g')"
-  [ "$gps_branches" -gt 0 ] || { fail "no branch fetched from $GH_REPO"; return 1; }
-  gps_revs=$(git -C "$GH_OP" rev-list --all)
-  gps_ncommits=$(printf '%s\n' "$gps_revs" | grep -c .)
+  gsh_branches=$(grep -c '^refs/remotes/origin/' "$EVID/refs.txt")
+  gsh_prrefs=$(grep -c '^refs/remotes/pull/' "$EVID/refs.txt")
+  note "refs scanned: $gsh_branches branch(es), $gsh_prrefs pull request ref(s): $(tr '\n' ' ' < "$EVID/refs.txt" | sed -e 's#refs/remotes/##g')"
+  [ "$gsh_branches" -gt 0 ] || { fail "no branch fetched from $GH_REPO"; return 1; }
+  gsh_revs=$(git -C "$GH_OP" rev-list --all)
+  gsh_ncommits=$(printf '%s\n' "$gsh_revs" | grep -c .)
 
   # 1. every path ever committed on any ref must be part of the synthetic fixture
   git -C "$GH_OP" log --all -m --name-only --format= | grep -v '^$' | sort -u > "$EVID/paths-ever.txt"
   note "paths ever committed on any ref: $(tr '\n' ' ' < "$EVID/paths-ever.txt")"
-  gps_extra=$(grep -Ev "$GH_PUBLIC_ALLOWED_FILES" "$EVID/paths-ever.txt")
-  [ -z "$gps_extra" ] && pass "every path ever committed ($(wc -l < "$EVID/paths-ever.txt" | tr -d ' ') distinct) is part of the synthetic fixture" || { fail "paths outside the synthetic fixture in the history: $(printf '%s' "$gps_extra" | tr '\n' ' ')"; gps_bad=1; }
+  gsh_extra=$(grep -Ev "$GH_PUBLIC_ALLOWED_FILES" "$EVID/paths-ever.txt")
+  [ -z "$gsh_extra" ] && pass "every path ever committed ($(wc -l < "$EVID/paths-ever.txt" | tr -d ' ') distinct) is part of the synthetic fixture" || { fail "paths outside the synthetic fixture in the history: $(printf '%s' "$gsh_extra" | tr '\n' ' ')"; gsh_bad=1; }
 
-  # 2. file contents at EVERY commit of EVERY ref, and the whole patch history, by class
-  gps_hit=0
-  for gps_c in $GH_PUBLIC_CLASSES; do
-    eval "gps_re=\$GH_RE_$gps_c"
-    gps_where=$(git -C "$GH_OP" grep -IlE "$gps_re" $gps_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
-    if [ -n "$gps_where" ]; then fail "the $gps_c class matches file contents in the history (rev:path): $gps_where"; gps_hit=1; gps_bad=1; fi
+  # 2. file contents at EVERY commit of EVERY ref, and the whole patch history (messages and patches), by class
+  gsh_hit=0
+  for gsh_c in $GH_PUBLIC_CLASSES; do
+    eval "gsh_re=\$GH_RE_$gsh_c"
+    gsh_where=$(git -C "$GH_OP" grep -IlE "$gsh_re" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
+    if [ -n "$gsh_where" ]; then fail "the $gsh_c class matches file contents in the history (rev:path): $gsh_where"; gsh_hit=1; gsh_bad=1; fi
   done
-  gps_where=$(git -C "$GH_OP" grep -IlF -f "$EVID/secrets.txt" $gps_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
-  if [ -n "$gps_where" ]; then fail "an exact secret or identity of this run appears in file contents (rev:path): $gps_where"; gps_hit=1; gps_bad=1; fi
-  [ "$gps_hit" = 0 ] && pass "no token, FOREMAN_* dump, transcript or local path in the contents of any file at any of $gps_ncommits commit(s) on any ref"
-  git -C "$GH_OP" log --all -m -p --format='COMMIT %H%n%an <%ae>%n%cn <%ce>%n%B' > "$EVID/history-all.patch"
-  gh_public_scan_file "git log --all -p" "$EVID/history-all.patch" && pass "the whole patch history ($(wc -c < "$EVID/history-all.patch" | tr -d ' ') bytes) is clean" || gps_bad=1
-  # 3. commit identities: only synthetic ones (or GitHub's own for a squash merge)
+  gsh_where=$(git -C "$GH_OP" grep -IlF -f "$EVID/secrets.txt" $gsh_revs -- 2>/dev/null | head -n 3 | cut -c1-60 | tr '\n' ' ')
+  if [ -n "$gsh_where" ]; then fail "an exact secret or identity of this run appears in file contents (rev:path): $gsh_where"; gsh_hit=1; gsh_bad=1; fi
+  [ "$gsh_hit" = 0 ] && pass "no token, FOREMAN_* dump, transcript or local path in the contents of any file at any of $gsh_ncommits commit(s) on any ref"
+  # no author/committer lines here: those are step 3's, so the account's own identity (an exact secret) is not in this text
+  git -C "$GH_OP" log --all -m -p --format='COMMIT %H%n%B' > "$EVID/history-all.patch"
+  gh_public_scan_file "git log --all -p" "$EVID/history-all.patch" && pass "the whole patch history ($(wc -c < "$EVID/history-all.patch" | tr -d ' ') bytes) is clean" || gsh_bad=1
+
+  # 3. commit identities: authors and committers of every commit on every ref
   git -C "$GH_OP" log --all --format='%an <%ae>%n%cn <%ce>' | sort -u > "$EVID/identities.txt"
   note "commit identities: $(tr '\n' ';' < "$EVID/identities.txt")"
-  gps_ident=$(grep -Ev '<[^>]*@example\.com>$|^GitHub <noreply@github\.com>$' "$EVID/identities.txt")
-  [ -z "$gps_ident" ] && pass "every commit author and committer is synthetic (@example.com) or GitHub's own" || { fail "non-synthetic commit identity in the history: $(printf '%s' "$gps_ident" | tr '\n' ';')"; gps_bad=1; }
+  gsh_account=$(gh_account_identity)
+  if [ -n "$gsh_account" ]; then
+    note "the account's own public profile identity is allowed in the commit identity fields (and nowhere else): $gsh_account"
+  else
+    note "the account profile publishes no name and email: its identity is allowed nowhere"
+  fi
+  gsh_ident=$(gh_public_foreign_identities "$EVID/identities.txt" "$gsh_account")
+  [ -z "$gsh_ident" ] && pass "every commit author and committer is synthetic (@example.com), GitHub's own, Foreman's phase-commit default or the account's own public profile identity" || { fail "commit identity outside the allowlist in the history: $(printf '%s' "$gsh_ident" | tr '\n' ';')"; gsh_bad=1; }
+  # the identity fields are free text: the token/path/env/transcript classes and this run's exact secrets still apply to
+  # them, minus the one allowed account identity itself (its email is an exact secret everywhere else)
+  if [ -n "$gsh_account" ]; then grep -Fvx -e "$gsh_account" "$EVID/identities.txt" > "$EVID/identities-scan.txt"; else cp "$EVID/identities.txt" "$EVID/identities-scan.txt"; fi
+  gh_public_scan_file "commit identities" "$EVID/identities-scan.txt" && pass "no token, local path, FOREMAN_* dump, transcript line or exact secret in any commit author or committer" || gsh_bad=1
+  return "$gsh_bad"
+}
+
+gh_public_safety_check() {
+  say "9i-0. content safety scan of $GH_REPO before it is made public (all refs, PR refs, whole history)"
+  gps_bad=0
+  gh_public_secrets
+  gh_public_scan_history || gps_bad=1
 
   # 4. PR text, comments, reviews, check output and statuses of every PR head, the repository metadata
   { gh api "repos/$GH_REPO/pulls?state=all&per_page=100" --paginate -q '.[] | .title, .body' 2>/dev/null
@@ -775,7 +830,9 @@ gh_public_safety_check() {
   printf 'ghp_%s\n/Users/someone/x\nFOREMAN_API_TOKEN=abc\n"role": "assistant"\n' "$(printf 'a%.0s' $(seq 1 24))" > "$gps_probe"
   gps_ok=1
   for gps_c in $GH_PUBLIC_CLASSES; do eval "gps_re=\$GH_RE_$gps_c"; grep -qE -- "$gps_re" "$gps_probe" || gps_ok=0; done
-  [ "$gps_ok" = 1 ] && pass "the scan patterns detect a planted token, local path, FOREMAN_* dump and transcript line (the scan can fail)" || { fail "a scan pattern did not match its planted probe: the scan itself is broken"; return 1; }
+  printf 'Someone Else <someone@corp.test>\nForeman <foreman@localhost.corp.test>\n' > "$EVID/probe-identities.txt"
+  [ "$(gh_public_foreign_identities "$EVID/probe-identities.txt" | wc -l | tr -d ' ')" = 2 ] || gps_ok=0
+  [ "$gps_ok" = 1 ] && pass "the scan patterns detect a planted token, local path, FOREMAN_* dump, transcript line and foreign commit identity (the scan can fail)" || { fail "a scan pattern did not match its planted probe: the scan itself is broken"; return 1; }
   return 0
 }
 
