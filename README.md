@@ -181,6 +181,14 @@ register separate lease streams.
   `BeadsWatcher` keeps importing after a restart. Holds without an
   incarnation (`RunAdmission`'s whole-run hold) are reclaimed through run
   liveness only.
+- A `with_lease/4` caller killed inside a live server (`Process.exit(pid, :kill)`,
+  a supervisor's `:shutdown`, a linked crash) never runs its `after`, and the
+  incarnation tag cannot call its hold dead because its server is alive. Each
+  call is watched by a `BeadsDbLease.Keeper` that, when the caller goes down,
+  releases its hold (`lease.release`) and drops its queue entry
+  (`lease.remove_waiter`), so a dead holder frees the lease and a dead waiter
+  is never promoted. There is no TTL: a long `br` call keeps its lease for as
+  long as its caller lives.
 - `RunAdmission.start/3` fail-closed: any uncertainty around the lease
   decision returns `{:error, ...}` and skips dispatch; a `:queued`
   decision returns without starting the supervisor and the dispatcher

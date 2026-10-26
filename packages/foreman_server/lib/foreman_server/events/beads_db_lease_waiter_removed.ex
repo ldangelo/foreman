@@ -5,7 +5,9 @@ defmodule ForemanServer.Events.BeadsDbLeaseWaiterRemoved do
 
   The Dispatcher (or Run aggregate terminalization) emits this
   when a queued run transitions to terminal — preventing a
-  promotion-to-already-terminal race that would strand the lease.
+  promotion-to-already-terminal race that would strand the lease. A
+  `BeadsDbLease.Keeper` emits it (`reason: :caller_down`) when the
+  `with_lease/4` caller waiting in the queue died.
   """
   @enforce_keys [:db_path, :run_id, :removed_at_ms, :reason]
   @type t :: %__MODULE__{

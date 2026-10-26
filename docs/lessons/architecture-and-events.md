@@ -368,6 +368,28 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   import nothing. A hold with no `incarnation` (`RunAdmission`'s whole-run hold of an
   `implement-trd-beads` run) belongs to a run and is reclaimed only through run liveness. A
   `:lease_timeout` now logs the holder it queued behind.
+- **Callers that die within one incarnation** (foreman-8qge): the incarnation tag separates
+  VMs, not processes. A `with_lease/4` caller killed inside a live server
+  (`Process.exit(pid, :kill)`, a supervisor's `:shutdown` of a child that does not trap exits,
+  a linked crash) never runs its `after`; its hold names a VM that is alive, so nothing could
+  call it dead. It blocked every later caller of that Beads database until the next restart
+  (`BeadsWatcher` skipped every read cycle with `:lease_timeout`), and a waiter that died in
+  the queue was promoted to a hold nobody released. Every `with_lease/4` call is now watched by
+  a `BeadsDbLease.Keeper` (under `BeadsDbLease.KeeperSupervisor`, outside every caller's
+  subtree) that monitors the caller and, when it goes down, dispatches `lease.remove_waiter`
+  and then `lease.release` for its `run_id` (reason `:caller_down`). Takeover assumptions, none
+  of them a clock: a hold of another VM incarnation is dead (one server per event store and
+  Beads database, else a live hold is taken over); a hold of this VM is dead exactly when the
+  process that took it is; a hold whose caller lives is never given up, however long its `br`
+  call runs (no TTL). The keeper is armed before `lease.acquire` is dispatched, so no entry of
+  a call exists unwatched, and stopped after the caller's own release, so a normal call leaves
+  nothing behind (a failed release, `ReleaseError`, leaves it armed). A cleanup that arrives
+  late is a no-op: `lease.release` ignores a run that is not the holder, so a lease that moved
+  on keeps its new holder. The lease is keyed by `run_id`, so two live processes using one
+  `run_id` at once share one hold, which the first to finish releases for both, keeper or not.
+  A cleanup that cannot be dispatched is retried, then logged with `Logger.error`; the hold
+  stays until a restart or a manual `lease.release`. While `KeeperSupervisor` is not running
+  `with_lease/4` returns `{:error, {:lease_keeper_unavailable, reason}}` and takes no lease.
 - **Fail-closed gating**: `RunAdmission.start/3` reads the lease decision before
   starting the run supervisor. Any uncertainty (acquire error, atom state of
   `:unknown` or `:unexpected`) returns `{:error, ...}` and skips dispatch. A
