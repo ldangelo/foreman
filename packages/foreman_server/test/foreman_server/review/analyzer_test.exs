@@ -1102,7 +1102,8 @@ defmodule ForemanServer.Review.AnalyzerTest do
 
       for id <- ids, do: assert(await_verdict("jobsite", id, "met"))
       assert Enum.sort([a, b, c, d]) == Enum.sort(ids)
-      assert :sys.get_state(analyzer).in_flight == %{}
+      # a task's DOWN is handled after its verdict is projected: wait for the last one
+      assert await(fn -> if :sys.get_state(analyzer).in_flight == %{}, do: true end)
     end
 
     test "a subject that is already queued is not queued again", %{repo: repo, analyzer: analyzer} do
