@@ -116,6 +116,20 @@ defmodule ForemanServerWeb.DoctorController do
     )
   end
 
+  defp notifier_row(%{
+         messaging: {:enabled, provider},
+         stats: %{skipped: %{project_unresolved: unresolved}}
+       })
+       when unresolved > 0 do
+    check(
+      "notifier",
+      :warn,
+      "Notifications were dropped",
+      "#{unresolved} event(s) named a project the server does not know since it started, so no " <>
+        "notification was sent (provider #{provider})."
+    )
+  end
+
   defp notifier_row(%{messaging: {:enabled, provider}, stats: stats}) do
     check("notifier", :ok, "Notifications are on (#{provider})", stats_detail(stats))
   end

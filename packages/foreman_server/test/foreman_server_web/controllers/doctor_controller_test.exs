@@ -216,6 +216,31 @@ defmodule ForemanServerWeb.DoctorControllerTest do
       assert detail =~ "0 enqueued"
     end
 
+    test "an event naming an unknown project is dropped and the row warns" do
+      configure_webhook(url: "https://example.test/hook")
+      start_pipeline()
+
+      send(
+        Notifier,
+        {:projection_event,
+         %{
+           event_type: "RunFailed",
+           data: %{
+             run_id: "run-doctor-#{System.unique_integer([:positive])}",
+             project_id: "no-such-project",
+             reason: "x"
+           }
+         }}
+      )
+
+      assert %{skipped: %{project_unresolved: 1}} = Notifier.stats()
+
+      assert %{"status" => "warn", "title" => "Notifications were dropped", "detail" => detail} =
+               notifier_row()
+
+      assert detail =~ "1 event(s)"
+    end
+
     test "events refused since boot keep the row a warning after the config is fixed" do
       configure_webhook([])
       start_pipeline()

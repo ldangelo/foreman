@@ -110,3 +110,4 @@ packages/*/deps/**/*.credo.exs
 # jobsite run js-b6e1438582585cf6 committed three such files into a feature
 # branch as a side effect of writing the PRD/TRD the run was asked for.
 /.ensemble/new-feature/
+*.coverdata

@@ -1,5 +1,11 @@
 defmodule ForemanServer.Aggregates.BeadsDbLease do
   @moduledoc """
+  Takeover assumption: a hold tagged with a different VM incarnation is taken over
+  because that VM is presumed gone (killed or stopped). One lease stream is served by
+  ONE server at a time; a second server started while the first is still inside its
+  `br` call (a rolling restart overlap) would take that live hold over, so do not run
+  two servers against one event store and one beads database.
+
   Per-DB Beads lease aggregate that serializes whole
   `implement-trd-beads` runs against a single Beads database file.
 
