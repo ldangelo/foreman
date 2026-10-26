@@ -836,8 +836,34 @@ gh_public_safety_check() {
   return 0
 }
 
+# A visibility change is processed asynchronously: `gh repo edit --visibility` answers at once and `gh repo view` already shows the new
+# value, but for a while the repository is LOCKED: every write answers "Repository has been locked." (HTTP 403) and another visibility
+# change "A previous visibility change is still in progress" (HTTP 422). Seen live 2026-10-26: the protection PUT 4 s after the flip
+# and the unflip 4 s after that were both refused, and the repository stayed PUBLIC until it was set private by hand.
+# gh_retry_locked <command...> retries exactly those two refusals (never another error) for up to E2E_GH_LOCK_SECS (default 240):
+# the output is in GH_LOCK_OUT, the seconds spent in GH_LOCK_WAITED, the status of the last attempt is returned.
+gh_retry_locked() {
+  grl_start=$(date +%s)
+  while :; do
+    GH_LOCK_OUT=$("$@" 2>&1)
+    grl_rc=$?
+    GH_LOCK_WAITED=$(elapsed "$grl_start")
+    [ "$grl_rc" = 0 ] && return 0
+    case "$GH_LOCK_OUT" in
+      *"Repository has been locked"*|*"visibility change is still in progress"*) ;;
+      *) return "$grl_rc" ;;
+    esac
+    [ "$GH_LOCK_WAITED" -lt "${E2E_GH_LOCK_SECS:-240}" ] || return "$grl_rc"
+    sleep 2
+  done
+}
+
 gh_set_visibility() { # <public|private>
-  gh repo edit "$GH_REPO" --visibility "$1" --accept-visibility-change-consequences >"$EVID/visibility-$1.out" 2>&1
+  gh_retry_locked gh repo edit "$GH_REPO" --visibility "$1" --accept-visibility-change-consequences
+  gsv_rc=$?
+  printf '%s\n' "$GH_LOCK_OUT" > "$EVID/visibility-$1.out"
+  [ "$GH_LOCK_WAITED" -lt 2 ] || note "(the repository was locked by the previous visibility change: the change to $1 was accepted after ${GH_LOCK_WAITED}s)"
+  return "$gsv_rc"
 }
 gh_visibility() { gh repo view "$GH_REPO" --json visibility -q .visibility 2>/dev/null; }
 
@@ -845,19 +871,23 @@ gh_unflip() {
   # GH_FLIPPED can be stale (a stage that died keeps its state only up to the last save): ask GitHub what is true
   gu_now=$(gh_visibility)
   [ "$GH_FLIPPED" = 1 ] || [ "$gu_now" = PUBLIC ] || return 0
+  gu_asked=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gh_set_visibility private
   GH_UNFLIP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gu_vis=$(gh_visibility)
-  note "unflip at $GH_UNFLIP_AT: gh repo view --json visibility -> $gu_vis"
+  gu_n=0
+  while [ "$gu_vis" != PRIVATE ] && [ "$gu_n" -lt 30 ]; do sleep 2; gu_n=$((gu_n + 2)); gu_vis=$(gh_visibility); done
+  note "unflip asked at $gu_asked, accepted at $GH_UNFLIP_AT: gh repo view --json visibility -> $gu_vis"
   if [ "$gu_vis" = PRIVATE ]; then GH_FLIPPED=0; else out "  WARNING     $GH_REPO is still $gu_vis: set it private by hand NOW"; fi
 }
 
 # gh_protect <enforce_admins true|false> <required contexts json array>
 gh_protect() {
-  gh api -X PUT "repos/$GH_REPO/branches/main/protection" --input - >"$EVID/protection-put.out" 2>&1 <<EOF
-{"required_status_checks":{"strict":false,"contexts":$2},"enforce_admins":$1,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"required_linear_history":true}
-EOF
+  printf '{"required_status_checks":{"strict":false,"contexts":%s},"enforce_admins":%s,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"required_linear_history":true}\n' "$2" "$1" > "$EVID/protection-body.json"
+  gh_retry_locked gh api -X PUT "repos/$GH_REPO/branches/main/protection" --input "$EVID/protection-body.json"
   gp_rc=$?
+  printf '%s\n' "$GH_LOCK_OUT" > "$EVID/protection-put.out"
+  [ "$GH_LOCK_WAITED" -lt 2 ] || note "(the repository was still locked by the visibility change: the protection was accepted after ${GH_LOCK_WAITED}s)"
   [ "$gp_rc" = 0 ] && { GH_PROTECTED=1; state_save 2>/dev/null; }
   return $gp_rc
 }

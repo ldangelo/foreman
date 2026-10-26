@@ -11,6 +11,8 @@
 #    name it), and runs the clean history again.
 # B. The identity allowlist line by line, including look-alikes.
 # C. How the account identity is derived from `gh api user` (a profile without a public email yields none).
+# D. gh_retry_locked, which keeps the repository from staying public: it retries exactly the two refusals GitHub gives while a
+#    visibility change is processed ("Repository has been locked.", "A previous visibility change is still in progress"), never another.
 #
 # Nothing is pushed anywhere: the "remote" is a bare repository in a temporary directory. The only network call is the
 # read-only `gh api user` the scan itself makes. The account's real name and email are masked in the output.
@@ -183,6 +185,27 @@ proof_derive_case() {
   if [ "$pd_got" = "$2" ]; then proof_ok "$1 -> '${pd_got:-<none>}'"; else proof_bad "$1: expected '${2:-<none>}', got '${pd_got:-<none>}'"; fi
 }
 
+# proof_flaky <counter file> <refuse the first N attempts> <refusal text>: a command that refuses its first N attempts
+proof_flaky() {
+  pf_n=$(($(cat "$1" 2>/dev/null || echo 0) + 1))
+  echo "$pf_n" > "$1"
+  if [ "$pf_n" -le "$2" ]; then echo "$3"; return 1; fi
+  echo "accepted on attempt $pf_n"
+}
+
+# proof_retry_case <label> <refuse N attempts> <refusal text> <lock cap seconds> <expect: accepted|gave-up> <attempts: a case pattern>
+proof_retry_case() {
+  rm -f "$PROOF_DIR/attempts"
+  E2E_GH_LOCK_SECS=$4 gh_retry_locked proof_flaky "$PROOF_DIR/attempts" "$2" "$3"
+  pr_rc=$?
+  pr_n=$(cat "$PROOF_DIR/attempts")
+  case "$pr_rc" in 0) pr_got=accepted ;; *) pr_got=gave-up ;; esac
+  pr_n_ok=0
+  # shellcheck disable=SC2254 # $6 is a case pattern on purpose: a count, or a range of counts (whole-second clocks make the cap approximate)
+  case "$pr_n" in $6) pr_n_ok=1 ;; esac
+  if [ "$pr_got" = "$5" ] && [ "$pr_n_ok" = 1 ]; then proof_ok "$1: $pr_got after $pr_n attempt(s)"; else proof_bad "$1: expected $5 after $6 attempt(s), got $pr_got after $pr_n"; fi
+}
+
 proof_main() {
   proof_build_origin || { proof_bad "cannot build the local origin"; return 1; }
   gh_public_secrets
@@ -238,6 +261,13 @@ proof_main() {
   proof_derive_case "empty name and email" "" '{"login":"pat","name":"","email":""}' 0
   proof_derive_case "an error object" "" '{"message":"Bad credentials"}' 0
   proof_derive_case "gh failing" "" 'gh: Bad credentials (HTTP 401)' 1
+
+  say "D. gh_retry_locked: only GitHub's two visibility-change refusals are retried"
+  proof_retry_case "no refusal" 0 "unused" 30 accepted 1
+  proof_retry_case "403 Repository has been locked (twice), then accepted" 2 "HTTP 403: Repository has been locked." 30 accepted 3
+  proof_retry_case "422 a previous visibility change is still in progress (once), then accepted" 1 "HTTP 422: Failed to update visibility. A previous visibility change is still in progress." 30 accepted 2
+  proof_retry_case "another error (404) is not retried" 5 "HTTP 404: Not Found" 30 gave-up 1
+  proof_retry_case "locked for longer than the cap: gives up (the caller then warns)" 99 "HTTP 403: Repository has been locked." 3 gave-up "[2-4]"
 
   say "proof summary"
   out "   expectations held: $PROOF_OK, broken: $PROOF_BAD"

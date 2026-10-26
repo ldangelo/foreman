@@ -122,6 +122,14 @@ run_stage() {
   state_save
 }
 
+# stage_exit: the exit trap of a `stage` process. A stage that fails, is interrupted or is terminated inside the public window of
+# `protection` must not leave the repository public or protected: it runs the unwind the serve process runs at its end (the flags
+# are the ones the stage itself saved, so a stage that finished cleanly does nothing here).
+stage_exit() {
+  state_save
+  if [ "${GH_FLIPPED:-0}" = 1 ] || [ "${GH_PROTECTED:-0}" = 1 ]; then gh_unwind_protection; state_save; fi
+}
+
 case "$MODE" in
   all)
     setup_all
@@ -151,7 +159,9 @@ case "$MODE" in
     kill -0 "$SERVER_PID" 2>/dev/null || die "the stack's server (pid $SERVER_PID) is not running" 1
     mkdir -p "$E2E_EVIDENCE_DIR"
     gh_extras_init
-    trap state_save EXIT
+    trap stage_exit EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
     for s in "$@"; do run_stage "$s"; done
     summary
     exit $?
