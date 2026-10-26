@@ -4,7 +4,9 @@ defmodule ForemanServer.Events.BeadsDbLeaseReleased do
 
   `reason` is one of `:run_completed`, `:run_failed`, `:run_cancelled`,
   `:run_flagged_stuck`, `:orphan_recovered` (boot reconciliation cleared
-  a dead holder), or `:run_start_failed` (compensation after acquire
+  a dead holder), `:caller_down` (the `BeadsDbLease.Keeper` of a
+  `with_lease/4` call gave the lease back because its caller died without
+  releasing), or `:run_start_failed` (compensation after acquire
   succeeded but `run.start` rejected).
   """
   @enforce_keys [:db_path, :run_id, :released_at_ms, :reason]

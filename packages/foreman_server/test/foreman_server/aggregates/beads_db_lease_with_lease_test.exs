@@ -13,7 +13,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseWithLeaseTest do
   `{:claim_failure, :lease_timeout}` indefinitely.
 
   The same stranded hold, left by a server that was killed instead of
-  raising (foreman-w29up), is covered by the incarnation tests below.
+  raising (foreman-w29up), is covered by the incarnation tests below. A
+  caller killed inside a live server (foreman-8qge) is
+  `beads_db_lease_caller_death_test.exs`.
   """
 
   use ExUnit.Case, async: false
@@ -25,6 +27,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseWithLeaseTest do
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Incarnation
+  alias ForemanServer.TestSupport.LeaseKeepers
 
   test "a raising callback still releases the lease for the next acquirer" do
     db_path = "/tmp/beads-lease-crash-test-#{System.unique_integer([:positive, :monotonic])}.db"
@@ -128,6 +131,8 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseWithLeaseTest do
       end)
 
     assert_receive :holding, 5_000
+    # The live holder is watched, and the watch never touches a hold whose caller lives.
+    assert [_keeper] = LeaseKeepers.for_caller(holder.pid)
 
     # This waits out its ~5s poll budget behind the live holder.
     log =
@@ -141,7 +146,18 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseWithLeaseTest do
     assert log =~ "run_id=run-late timed out behind holder run_id=watcher:live:1"
     assert log =~ "incarnation=#{inspect(Incarnation.id())}"
 
+    # The call that gave up (this process) left no keeper behind, and the holder's is untouched.
+    assert LeaseKeepers.for_caller(self()) == []
+    assert [_keeper] = LeaseKeepers.for_caller(holder.pid)
+    assert %BeadsDbLease.Holder{run_id: "watcher:live:1"} = holder_of(stream)
+
     send(holder.pid, :release)
     assert {:ok, :done} = Task.await(holder, 5_000)
+    assert LeaseKeepers.for_caller(holder.pid) == []
+  end
+
+  defp holder_of(stream) do
+    {state, _version} = Aggregate.load(BeadsDbLease, stream)
+    state.holder
   end
 end

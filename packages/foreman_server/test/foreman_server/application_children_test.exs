@@ -13,8 +13,19 @@ defmodule ForemanServer.ApplicationChildrenTest do
   """
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{CommandRouter, PrMonitor, PrWatcher, ProjectionStore}
+  alias ForemanServer.{
+    Aggregator,
+    CommandRouter,
+    EventStore,
+    PrMonitor,
+    PrWatcher,
+    ProjectionStore
+  }
+
+  alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
   alias ForemanServer.Schedule.Ticker
+  alias ForemanServer.TaskProviders.{BeadsOrphanJanitorSupervisor, BeadsWatcherSupervisor}
+  alias ForemanServer.Workflow.{BootReconciliation, Dispatcher, RunSupervisor}
 
   @config_dir Path.expand("../../config", __DIR__)
 
@@ -119,6 +130,41 @@ defmodule ForemanServer.ApplicationChildrenTest do
       ticker(false)
 
       refute Ticker in child_ids()
+    end
+  end
+
+  describe "BeadsDbLease.KeeperSupervisor" do
+    test "is supervised after the Aggregator it dispatches through and before every lease caller" do
+      # Restored after the test; the test environment leaves the first two off.
+      for key <- [
+            :start_beads_watcher?,
+            :start_beads_orphan_janitor?,
+            :start_boot_reconciliation?
+          ] do
+        ForemanServer.TestSupport.Eventually.put_env_for_test(:foreman_server, key, true)
+      end
+
+      ids = child_ids()
+
+      # The keepers register under a stable id in the KeeperRegistry the moment they start, so
+      # the registry is up before the first keeper can be asked for.
+      assert_started_after(ids, KeeperRegistry, [EventStore, Aggregator])
+      assert_started_after(ids, KeeperSupervisor, [EventStore, Aggregator, KeeperRegistry])
+
+      # No lease command can append before the CommandRouter runs, so no `with_lease/4` call can
+      # reach a lease before it either; the callers below start no earlier than that.
+      callers = [
+        CommandRouter,
+        BeadsWatcherSupervisor,
+        BeadsOrphanJanitorSupervisor,
+        BootReconciliation,
+        RunSupervisor,
+        Dispatcher
+      ]
+
+      for caller <- callers do
+        assert_started_after(ids, caller, [KeeperSupervisor])
+      end
     end
   end
 

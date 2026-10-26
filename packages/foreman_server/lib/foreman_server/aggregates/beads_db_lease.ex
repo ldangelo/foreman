@@ -1,10 +1,19 @@
 defmodule ForemanServer.Aggregates.BeadsDbLease do
   @moduledoc """
-  Takeover assumption: a hold tagged with a different VM incarnation is taken over
-  because that VM is presumed gone (killed or stopped). One lease stream is served by
-  ONE server at a time; a second server started while the first is still inside its
-  `br` call (a rolling restart overlap) would take that live hold over, so do not run
-  two servers against one event store and one beads database.
+  Takeover assumptions. A hold is called dead, and given up, in exactly two cases, and no clock
+  is involved in either:
+
+    * its VM is gone. A hold tagged with a different VM incarnation is taken over because that
+      VM is presumed gone (killed or stopped). One lease stream is served by ONE server at a
+      time; a second server started while the first is still inside its `br` call (a rolling
+      restart overlap) would take that live hold over, so do not run two servers against one
+      event store and one beads database.
+    * its process is gone. A `with_lease/4` caller that dies inside this VM without running its
+      `after` has its entries cleared by its `Keeper`. That assumes only that the keeper outlives
+      the caller (it is supervised outside every caller's subtree) and that the lease is keyed
+      by `run_id`, as it is (see "Callers that die within one incarnation").
+
+  A hold whose caller is alive is never given up, however long its `br` call runs.
 
   Per-DB Beads lease aggregate that serializes whole
   `implement-trd-beads` runs against a single Beads database file.
@@ -78,6 +87,36 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   survives restarts and is reclaimed only through the run's own
   liveness.
 
+  ### Callers that die within one incarnation
+
+  The incarnation tag only separates VMs. A process that ends inside `with_lease/4` without
+  running its `after` (`Process.exit(pid, :kill)`, a supervisor's `:shutdown` of a child that
+  does not trap exits, the crash of a linked process) leaves a hold of THIS incarnation, which
+  no other caller can call dead: its VM is alive. Before keepers (foreman-8qge) that hold kept
+  the lease until the next restart, so every caller of that database queued behind it until
+  `:lease_timeout`, and a waiter that died in the queue was promoted to a hold nobody would
+  release.
+
+  So every `with_lease/4` call is watched by a `Keeper`
+  (`ForemanServer.Aggregates.BeadsDbLease.Keeper`, under `KeeperSupervisor`): a process outside
+  the caller's own subtree that monitors it and, when it goes down, dispatches
+  `lease.remove_waiter` and then `lease.release` for its `run_id` (reason `:caller_down`). There
+  is no TTL: a `br` call may legitimately run long and keeps its lease for as long as its caller
+  lives. The keeper is armed before `lease.acquire` is dispatched, so no entry of a call can
+  exist unwatched, and stopped once the caller's own release landed, so a normal call leaves
+  nothing behind. A call that gives up (acquire error, `:lease_timeout`) removes its queue
+  entry and then releases as well: the run can have been promoted between its last poll and the
+  removal, and no keeper would be left to give that hold back. A keeper that is killed or
+  crashes while its caller lives is restarted (`restart: :transient`) and the replacement
+  monitors the caller afresh, so the caller's later death is still answered. A cleanup
+  arriving late is harmless: `lease.release` is a no-op for a run that
+  is not the holder, so a lease that moved on to another run stays with it. A restarted caller
+  reuses its run's `run_id`: a keeper whose caller died leaves the lease alone while another
+  live call uses that `run_id`, and a new call waits for the keepers of dead callers under its
+  `run_id` before it acquires (two live processes under one `run_id` still share one hold). See
+  the `Keeper` moduledoc for the guarantees and for what happens when a cleanup cannot be
+  dispatched.
+
   ## Replay contract
 
   `apply_event/2` accepts both the live `EventStore.RecordedEvent`
@@ -86,6 +125,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   normalised to a plain map via `event_data_to_map/1`.
   """
   alias ForemanServer.Aggregate
+  alias ForemanServer.Aggregates.BeadsDbLease.Keeper
   alias ForemanServer.CommandGateway
   alias ForemanServer.Incarnation
 
@@ -376,16 +416,21 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     end
   end
 
+  # How long `with_lease/4` waits to become holder: `{polls, interval_ms}`, 50 polls 100ms apart.
+  @default_poll {50, 100}
+
   @doc """
   Block until this run holds the Beads DB lease, then execute the callback.
 
-  Dispatches `lease.acquire`, polls aggregate state via Registry until
-  `holder?(state, run_id)` is true, runs `callback.()` inside a
-  `try/after`, then releases. The release is guaranteed to be attempted
-  on a raised exception or thrown value from the callback (not on a
-  hard external kill of the calling process), so a crashing `br` call
-  cannot leave the lease permanently held and starve every future claim
-  against the DB.
+  Starts this call's `Keeper` (see the moduledoc), dispatches `lease.acquire`,
+  polls aggregate state via Registry until `holder?(state, run_id)` is true,
+  runs `callback.()` inside a `try/after`, then releases and stands the keeper
+  down. The release is guaranteed to be attempted on a raised exception or
+  thrown value from the callback, so a crashing `br` call cannot leave the
+  lease permanently held and starve every future claim against the DB. A
+  calling process that is killed outright never runs that `after`; its keeper
+  notices and gives the lease back, so a dead caller cannot hold the lease or
+  keep a place in the queue either.
 
   Returns `{:ok, result}` on success, `{:error, reason}` on an acquire
   failure or timeout. Raises `ReleaseError` if the release dispatch
@@ -404,17 +449,56 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   The hold is tagged with this server's `ForemanServer.Incarnation`, so a
   hold left behind by a server that died mid-call (see the moduledoc) is
   taken over at once instead of being waited for until `:lease_timeout`.
+
+  Returns `{:error, {:lease_keeper_unavailable, reason}}` without touching the
+  lease when the keeper cannot be started (the server is starting or
+  stopping): a hold nothing would clear is never taken.
+
+  A call whose `run_id` a dead caller used waits first for that caller's keeper to finish (see
+  the `Keeper` moduledoc), so the keeper's cleanup cannot land on the hold this call takes.
+
+  A call that gives up (acquire error, `:lease_timeout`) removes its queue
+  entry and then releases the lease: the run may have been promoted to holder
+  between its last poll and the removal, and `lease.release` is a no-op unless
+  the run is the holder.
   """
   @spec with_lease(String.t(), String.t(), String.t(), (-> {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()} | no_return()
   def with_lease(db_path, run_id, task_id, callback)
       when is_binary(db_path) and db_path != "" and is_binary(run_id) and
-             run_id != "" and is_binary(task_id) and is_function(callback, 0) do
+             run_id != "" and is_binary(task_id) and is_function(callback, 0),
+      do: with_lease(db_path, run_id, task_id, callback, @default_poll)
+
+  # The poll budget spelled out: `{polls, interval_ms}`. `with_lease/4` runs with `@default_poll`;
+  # a test that must hold a caller between its last poll and the end of its budget (promotion at
+  # the timeout) shortens the budget and lengthens the wait.
+  @doc false
+  @spec with_lease(
+          String.t(),
+          String.t(),
+          String.t(),
+          (-> {:ok, term()} | {:error, term()}),
+          {pos_integer(), pos_integer()}
+        ) :: {:ok, term()} | {:error, term()} | no_return()
+  def with_lease(db_path, run_id, task_id, callback, {polls, interval_ms} = poll)
+      when is_binary(db_path) and db_path != "" and is_binary(run_id) and
+             run_id != "" and is_binary(task_id) and is_function(callback, 0) and
+             is_integer(polls) and polls > 0 and is_integer(interval_ms) and interval_ms > 0 do
+    # The keeper is armed before anything is written to the lease stream, so no entry of this
+    # call (a queued `lease.acquire` included) can exist without a keeper to clear it should
+    # this process die.
+    case Keeper.watch(self(), db_path, run_id) do
+      {:ok, keeper} -> hold_lease(keeper, db_path, run_id, task_id, callback, poll)
+      {:error, reason} -> {:error, {:lease_keeper_unavailable, reason}}
+    end
+  end
+
+  defp hold_lease(keeper, db_path, run_id, task_id, callback, {polls, interval_ms}) do
     stream_id = stream_id(db_path)
     ms = System.system_time(:millisecond)
 
     with :ok <- lease_acquire(stream_id, db_path, run_id, task_id, ms),
-         :ok <- poll_until_holder(stream_id, run_id, 50, 100) do
+         :ok <- poll_until_holder(stream_id, run_id, polls, interval_ms) do
       try do
         callback.()
       after
@@ -426,12 +510,22 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
         # exists to prevent, just via the release path instead of the
         # callback path.
         lease_release(stream_id, db_path, run_id, release_ms)
+        # Only once the release has landed: a failed one raised above, and the keeper that is
+        # still armed then clears the hold if this process dies next.
+        Keeper.unwatch(keeper)
       end
     else
       {:error, reason} = err ->
         if reason == :lease_timeout, do: log_lease_timeout(stream_id, run_id)
         # Remove timed-out waiter so they don't block future writers.
         _ = lease_remove_waiter(stream_id, db_path, run_id)
+        # The run can have been promoted to holder between its last poll and the removal above
+        # (which then found no waiter). `lease.release` is a no-op unless this run is the
+        # holder, so this gives back exactly that hold, which nothing else would: the keeper
+        # stops just below, and the caller never learns it holds. Like the release after the
+        # callback it raises on a failed dispatch, and the keeper then stays armed.
+        lease_release(stream_id, db_path, run_id, System.system_time(:millisecond))
+        Keeper.unwatch(keeper)
         err
     end
   end

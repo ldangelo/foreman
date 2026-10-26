@@ -690,6 +690,17 @@ register separate lease streams.
   holds and waiters of other incarnations (foreman-w29up). A hold with no
   incarnation (`RunAdmission`'s whole-run hold) belongs to a run and is
   reclaimed through run liveness only.
+- **Dead callers.** The incarnation tag separates VMs, not processes: a
+  `with_lease/4` caller killed inside a live server (`Process.exit(pid, :kill)`,
+  a supervisor's `:shutdown`, a linked crash) never runs its `after`.
+  Every call is therefore watched by a `BeadsDbLease.Keeper` (under
+  `BeadsDbLease.KeeperSupervisor`, outside every caller's subtree) that, when
+  the caller goes down, dispatches `lease.remove_waiter` then `lease.release`
+  for its `run_id` (reason `:caller_down`), so a dead holder frees the lease
+  and a dead waiter is dropped, not promoted (foreman-8qge). No TTL: a hold
+  whose caller lives is never given up. A late cleanup is a no-op for a lease
+  that moved on. `with_lease/4` returns
+  `{:error, {:lease_keeper_unavailable, _}}` while the supervisor is down.
 - **Terminal fan-out.** The `Dispatcher` dispatches `lease.release`
   and `lease.remove_waiter` on every terminal run event
   (`RunCancelled`, `RunDeleted`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,

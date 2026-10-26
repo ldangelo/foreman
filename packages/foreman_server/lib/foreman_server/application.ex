@@ -50,6 +50,13 @@ defmodule ForemanServer.Application do
       ForemanServer.Inbox.Poller,
       # Aggregator starts the Registry and supervises Actor children.
       ForemanServer.Aggregator,
+      # One keeper per BeadsDbLease.with_lease/4 call in flight gives the lease back when its
+      # caller dies without running its `after` (foreman-8qge). It lives outside the subtree
+      # of every caller, so it starts here: after the Aggregator and EventStore its cleanup
+      # dispatches into, before BeadsWatcher, the orphan janitor, boot reconciliation and the
+      # run executors that call with_lease/4 (a call finding it missing is refused).
+      {Registry, keys: :unique, name: ForemanServer.Aggregates.BeadsDbLease.KeeperRegistry},
+      ForemanServer.Aggregates.BeadsDbLease.KeeperSupervisor,
       # Idempotency store — durable idempotency key records (TRD-075) and
       # heartbeat lease with expiry detection (TRD-076). ETS fallback when
       # JidoCheckpointStore.Repo is unavailable so it starts regardless of
