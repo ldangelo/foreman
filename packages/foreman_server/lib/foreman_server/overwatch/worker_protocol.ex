@@ -87,7 +87,7 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
       `:adapter`, `:prompt_path` (optional `:tool_names`,
       `:artifact_paths`; default `[]`)
     * `:worker_session_bound` — `:worker_id`, `:run_id`, `:provider`,
-      `:provider_session_id` (optional `:model`)
+      `:provider_session_id` (optional `:model`, `:approval_mode`)
     * `:usage_recorded` — `:worker_id`, `:run_id`, `:provider` plus the
       `ForemanServer.Events.UsageRecorded` usage fields
     * `:worker_exited`, `:tool_call_finished`, `:assistant_message`,

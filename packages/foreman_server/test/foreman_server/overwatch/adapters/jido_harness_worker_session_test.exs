@@ -68,8 +68,14 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerSessionTest do
       {:ok, worker_id: uuid(), run_id: uuid()}
     end
 
-    defp start_worker(worker_id, run_id) do
-      opts = [worker_id: worker_id, run_id: run_id, provider: :claude, prompt: "p"]
+    defp start_worker(worker_id, run_id, driver_opts \\ []) do
+      opts = [
+        worker_id: worker_id,
+        run_id: run_id,
+        provider: :claude,
+        prompt: "p",
+        driver_opts: driver_opts
+      ]
 
       start_supervised!(%{
         id: {JidoHarnessWorker, worker_id},
@@ -107,6 +113,33 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerSessionTest do
 
       assert bound.data["provider"] == "claude"
       assert bound.data["provider_session_id"] == "c0ffee"
+    end
+
+    test "binds the approval mode the phase ran with next to the session (a fix thread needs it)",
+         %{worker_id: worker_id, run_id: run_id} do
+      pid = start_worker(worker_id, run_id, model: "haiku", approval_mode: :auto_approve)
+      meta = %RunMeta{provider: :claude, provider_session_id: "c0ffee", run_status: :completed}
+
+      deliver(pid, {:ok, "x"}, meta)
+
+      {:ok, [bound | _]} =
+        Store.read_stream_forward(Tracker.stream_id(worker_id, run_id), 0, 99_999_999)
+
+      assert bound.data["model"] == "haiku"
+      assert bound.data["approval_mode"] == "auto_approve"
+    end
+
+    test "a phase that set no approval mode binds none", %{worker_id: worker_id, run_id: run_id} do
+      pid = start_worker(worker_id, run_id, model: "haiku")
+      meta = %RunMeta{provider: :claude, provider_session_id: "c0ffee", run_status: :completed}
+
+      deliver(pid, {:ok, "x"}, meta)
+
+      {:ok, [bound | _]} =
+        Store.read_stream_forward(Tracker.stream_id(worker_id, run_id), 0, 99_999_999)
+
+      assert bound.data["model"] == "haiku"
+      refute Map.has_key?(bound.data, "approval_mode")
     end
 
     test "a failed run still binds its session id", %{worker_id: worker_id, run_id: run_id} do

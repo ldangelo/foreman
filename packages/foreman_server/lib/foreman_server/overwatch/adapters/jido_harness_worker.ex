@@ -268,6 +268,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
         provider_session_id: session_id
       }
       |> put_model(Keyword.get(state.driver_opts, :model))
+      |> put_approval_mode(Keyword.get(state.driver_opts, :approval_mode))
 
     _ = WorkerProtocol.emit(:worker_session_bound, payload)
     :ok
@@ -308,6 +309,15 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     do: Map.put(payload, :model, model)
 
   defp put_model(payload, _model), do: payload
+
+  # The harness approval mode the agent ran with (`RunExecutor.maybe_put_approval_mode/3` puts the
+  # atom `:default | :prompt | :auto_edit | :auto_approve` in the driver options; a phase that sets
+  # none leaves the key out). Recorded by NAME next to the session it governed: a later agent that
+  # resumes that session (a PR fix thread) has to run with the same permissions.
+  defp put_approval_mode(payload, mode) when is_atom(mode) and not is_nil(mode),
+    do: Map.put(payload, :approval_mode, Atom.to_string(mode))
+
+  defp put_approval_mode(payload, _mode), do: payload
 
   # Unwrap RunResult.normalize's 3-tuple to the 2-tuple RunExecutor expects.
   # Metadata is dropped here — Invocation drops it for the same reason.

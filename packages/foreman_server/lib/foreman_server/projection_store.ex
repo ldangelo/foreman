@@ -2835,12 +2835,19 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_event_by_type(state, "WorkerSessionBound", payload) do
     case decode_or_skip("WorkerSessionBound", payload) do
       {:ok, %WorkerSessionBound{} = event} ->
-        entry = %{
-          worker_id: event.worker_id,
-          provider: event.provider,
-          model: event.model,
-          provider_session_id: event.provider_session_id
-        }
+        # `approval_mode` only when the phase set one: an entry without it reads as "the harness default"
+        # (and keeps the shape every earlier event folded to).
+        entry =
+          maybe_put(
+            %{
+              worker_id: event.worker_id,
+              provider: event.provider,
+              model: event.model,
+              provider_session_id: event.provider_session_id
+            },
+            :approval_mode,
+            event.approval_mode
+          )
 
         update_run_projection(state, event.run_id, payload_event_at_ms(payload), fn run ->
           sessions =

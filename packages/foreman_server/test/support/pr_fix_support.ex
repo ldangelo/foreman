@@ -123,19 +123,26 @@ defmodule ForemanServer.TestSupport.PrFixSupport do
     ])
   end
 
-  @doc "Project the provider session the run's worker persisted (`WorkerSessionBound`)."
-  @spec session_bound!(ctx(), String.t(), String.t() | nil, String.t()) :: :ok
-  def session_bound!(ctx, provider, model, session_id) do
+  @doc """
+  Project the provider session the run's worker persisted (`WorkerSessionBound`). `extra` is merged
+  into the payload (for example `%{approval_mode: "auto_approve"}`).
+  """
+  @spec session_bound!(ctx(), String.t(), String.t() | nil, String.t(), map()) :: :ok
+  def session_bound!(ctx, provider, model, session_id, extra \\ %{}) do
     ProjectionStore.apply_events([
       %{
         event_type: "WorkerSessionBound",
-        payload: %{
-          worker_id: "worker-#{ctx.run_id}",
-          run_id: ctx.run_id,
-          provider: provider,
-          provider_session_id: session_id,
-          model: model
-        }
+        payload:
+          Map.merge(
+            %{
+              worker_id: "worker-#{ctx.run_id}",
+              run_id: ctx.run_id,
+              provider: provider,
+              provider_session_id: session_id,
+              model: model
+            },
+            extra
+          )
       }
     ])
   end
