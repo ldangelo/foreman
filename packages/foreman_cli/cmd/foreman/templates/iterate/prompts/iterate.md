@@ -34,6 +34,13 @@ Each turn:
      files). It is what keeps runtime state out of git.
    - Persist your bead closes by running `br sync --flush-only` after `br close`,
      then commit only `.beads/issues.jsonl` (never hand-edit it).
+   - The flush is not self-verifying: it prints "Nothing to export" and exits 0
+     even when `issues.jsonl` holds only a fraction of the database. After it,
+     run `br sync --status --json` and require `coverage_drift` to be `false` and
+     no conflict markers (`<<<<<<<`) in `.beads/issues.jsonl` before committing
+     it. If `coverage_drift` is `true`, do NOT commit `.beads/issues.jsonl` and do
+     not hand-edit it or run `br sync --merge`/`--import-only`; leave the closes
+     uncommitted and report the drift counts in your closing comment.
 4. Stop the turn. The next turn picks the next issue, so dependents only start
    after their blockers are closed.
 
