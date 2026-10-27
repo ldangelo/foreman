@@ -117,6 +117,10 @@ defmodule ForemanServer.Integration.BeadsEpicTreeE2ETest do
     ProjectionStoreReset.reset!()
     RunSlotsReset.reset!()
 
+    # The run is started by the app-wide Dispatcher reacting to the projection's events. If an
+    # earlier test left it unsubscribed, fail here, named, not 60 s later at `assert_receive`.
+    ProjectionStoreReset.assert_subscribed!(ForemanServer.Workflow.Dispatcher)
+
     # Every `br` call the server makes - claim, tree reads, closing/blocking the
     # epic, the schema fetches - runs against the fixture's real database.
     stub(BrRunnerMock, :cmd, &SystemBrRunner.cmd/3)

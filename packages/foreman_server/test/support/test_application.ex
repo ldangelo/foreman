@@ -41,6 +41,34 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
     :ok
   end
 
+  @doc """
+  True when the process registered as `name` is in the live `ProjectionStore`'s subscriber map.
+  """
+  @spec subscribed?(atom() | pid()) :: boolean()
+  def subscribed?(name_or_pid) do
+    pid = if is_pid(name_or_pid), do: name_or_pid, else: Process.whereis(name_or_pid)
+    is_pid(pid) and Map.has_key?(:sys.get_state(ForemanServer.ProjectionStore).subscribers, pid)
+  end
+
+  @doc """
+  Raises at once if `name` is not subscribed to the live `ProjectionStore`.
+
+  A live singleton that lost its subscription (the store crashed and was restarted by the
+  supervisor, which comes back with no subscribers) never sees another event, so a test that
+  waits for it to act on one hangs until its own timeout. This names the cause instead.
+  """
+  @spec assert_subscribed!(atom()) :: :ok
+  def assert_subscribed!(name) do
+    if subscribed?(name) do
+      :ok
+    else
+      raise "#{inspect(name)} (pid #{inspect(Process.whereis(name))}) is not subscribed to " <>
+              "ForemanServer.ProjectionStore: an earlier test crashed or replaced the store " <>
+              "(a restarted store has no subscribers), so no event will ever reach it. " <>
+              "Crash-on-purpose tests must use ForemanServer.TestSupport.ThrowawayProjectionStore."
+    end
+  end
+
   # `current_state` is the GenServer's live state as handed to us by
   # `:sys.replace_state`'s callback — it is already the correct source
   # for "subscribers before this reset". Do NOT re-fetch it via

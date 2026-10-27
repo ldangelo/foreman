@@ -1,10 +1,8 @@
 defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureLog
-
   alias ForemanServer.ProjectionStore
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{ProjectionStoreReset, ThrowawayProjectionStore}
 
   @sha String.duplicate("c", 64)
   @sha2 String.duplicate("d", 64)
@@ -59,7 +57,7 @@ defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
       p = unique_project()
 
       exit_reason =
-        apply_to_throwaway_store([
+        ThrowawayProjectionStore.crash_on_apply!([
           %{event_type: "ProjectLibraryAdded", payload: %{project_id: p, name: "broken"}}
         ])
 
@@ -78,7 +76,9 @@ defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
         payload = Map.merge(payload, unquote(Macro.escape(extra)))
 
         exit_reason =
-          apply_to_throwaway_store([%{event_type: unquote(type), payload: payload}])
+          ThrowawayProjectionStore.crash_on_apply!([
+            %{event_type: unquote(type), payload: payload}
+          ])
 
         assert {%ArgumentError{message: message}, _stack} = exit_reason
         assert message =~ "ProjectionStore: #{unquote(type)} with unusable"
@@ -89,7 +89,7 @@ defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
       p = unique_project()
 
       exit_reason =
-        apply_to_throwaway_store([
+        ThrowawayProjectionStore.crash_on_apply!([
           %{
             event_type: "ProjectLibraryRemoved",
             payload: %{project_id: p, entry_id: "", name: "b", author_kind: "operator", at: @at}
@@ -104,7 +104,7 @@ defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
       p = unique_project()
 
       exit_reason =
-        apply_to_throwaway_store([
+        ThrowawayProjectionStore.crash_on_apply!([
           %{event_type: "ProjectLibraryRemoved", payload: %{project_id: p}}
         ])
 
@@ -125,24 +125,5 @@ defmodule ForemanServer.ProjectionStoreProjectLibraryTest do
       author_kind: "operator",
       at: @at
     }
-  end
-
-  # Fires `events` at a throwaway ProjectionStore (not the named singleton, which every other test
-  # and the live subscribers share) and returns the exit reason of the call that must crash it.
-  # The throwaway rebuilds from the event log like the real one and takes the same
-  # `{:apply_events, events, now_ms_fun}` message `ProjectionStore.apply_events/1` sends.
-  defp apply_to_throwaway_store(events) do
-    {:ok, pid} = GenServer.start(ProjectionStore, [])
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-    ref = Process.monitor(pid)
-
-    {exit_reason, _log} =
-      with_log(fn ->
-        catch_exit(GenServer.call(pid, {:apply_events, events, fn -> 1 end}))
-      end)
-
-    assert {reason, {GenServer, :call, [^pid | _]}} = exit_reason
-    assert_receive {:DOWN, ^ref, :process, ^pid, _down_reason}
-    reason
   end
 end
