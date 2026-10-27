@@ -36,9 +36,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       existing task already past `"open"` → dedupe (`:reconciled` per
       AC-022-2) → status gate (TRD-004: only `status: "open"` proceeds;
       others are `:skipped`) → workflow selection (TRD-005:
-      `Catalog.type_to_workflow/1`; a missing or non-string
-      `issue_type` is `:malformed`; a present but unmapped `issue_type`
-      holds `:transient`) → `trd_path` check (TRD-006: required for
+      `Catalog.type_to_workflow/1`; an `issue_type` that is absent and
+      one that is present but unusable are both `:malformed`, each under
+      its own reason; a usable but unmapped one is `:unmapped`, held
+      and re-evaluated on every poll) → `trd_path` check (TRD-006: required for
       `implement-trd`/`implement-trd-beads`; missing/empty moves the
       bead to `blocked` and returns `:skipped`) → otherwise synthesize
       a deterministic `task.create` envelope, dispatch via
@@ -174,6 +175,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
               lines_suppressed: 0,
               lines_reconciled: 0,
               lines_malformed: 0,
+              lines_unmapped: 0,
               lines_transient: 0
   end
 
@@ -556,6 +558,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         lines_suppressed: counters.lines_suppressed,
         lines_reconciled: counters.lines_reconciled,
         lines_malformed: counters.lines_malformed,
+        lines_unmapped: counters.lines_unmapped,
         lines_transient: counters.lines_transient
       }
     )
@@ -743,6 +746,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       lines_suppressed: counters.lines_suppressed + if(outcome == :skipped, do: 1, else: 0),
       lines_reconciled: counters.lines_reconciled + if(outcome == :reconciled, do: 1, else: 0),
       lines_malformed: counters.lines_malformed + if(outcome == :malformed, do: 1, else: 0),
+      lines_unmapped: counters.lines_unmapped + if(outcome == :unmapped, do: 1, else: 0),
       lines_transient: counters.lines_transient + if(outcome == :transient, do: 1, else: 0)
     }
   end
@@ -813,10 +817,22 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        `[:watcher, :status_gate, :skipped, :draft_status]` and returns
        `:skipped` (terminal advance — no task, no bead mutation).
     5. Workflow selection (REQ-001). Resolve `issue_type` via
-       `Catalog.type_to_workflow/1`. An unmapped type emits
-       `[:watcher, :status_gate, :skipped, :unmapped_type]` and
-       returns `:transient` (the cursor holds; the operator updates
-       the workflow manifests and the next poll retries).
+       `Catalog.type_to_workflow/1`; three causes can stop a bead here
+       and each is recorded as its own thing (AC-002-1):
+       an `issue_type` key that is absent returns `:malformed` with
+       reason `:issue_type_missing`; one that is present but not a
+       non-empty string (a JSON `null`, `""`, a number, ...) returns
+       `:malformed` with reason `{:issue_type_unusable, value}` — the
+       field is unusable, which is not the same as no workflow existing
+       (AC-002-2); a usable type no manifest maps emits
+       `[:watcher, :status_gate, :skipped, :unmapped_type]` and returns
+       `:unmapped`. `:unmapped` is its own outcome rather than
+       `:transient` so a bead that is inert until a manifest declares its
+       type is distinguishable from one whose dispatch failed and will
+       simply be retried (AC-001-2). The hold itself is unchanged and
+       fail-closed: the bead is not touched, and because every poll
+       re-evaluates it, mapping its type (a manifest `task_types:` entry
+       plus `foreman init --force`) dispatches it on the next poll.
     6. `trd_path` check (REQ-007, AC-007-1, AC-007-2). Workflows that
        provision an `ImplementationContext` (`implement-trd`,
        `implement-trd-beads`) require a non-empty
@@ -851,7 +867,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        cursor holds and the line is retried on the next poll).
 
   Returns one of
-  `:imported | :skipped | :reconciled | :rejected | :malformed | :transient`.
+  `:imported | :skipped | :reconciled | :rejected | :malformed | :unmapped | :transient`.
   """
   @spec process_line(t(), binary()) :: atom()
   def process_line(state, line) when is_binary(line) do
@@ -891,7 +907,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           :skipped
 
         {:error, :unmapped_type} ->
-          :transient
+          :unmapped
 
         {:error, :missing_trd_path} ->
           :skipped
@@ -1099,11 +1115,17 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # ----- Workflow selection (REQ-001) -------------------------------------
 
   defp select_workflow(state, parsed) when is_map(parsed) do
-    case Map.get(parsed, "issue_type") do
-      issue_type when is_binary(issue_type) and issue_type != "" ->
+    # `Map.fetch/2`, not `Map.get/2`: a JSON `null` decodes to `nil`, which `get`
+    # cannot tell from an absent key. Absent and present-but-unusable are two
+    # causes with two operator actions (§5.3), so each gets its own reason.
+    case Map.fetch(parsed, "issue_type") do
+      {:ok, issue_type} when is_binary(issue_type) and issue_type != "" ->
         resolve_workflow_type(state, parsed, issue_type)
 
-      _missing_or_invalid ->
+      {:ok, unusable} ->
+        {:malformed, {:issue_type_unusable, inspect(unusable)}}
+
+      :error ->
         {:malformed, :issue_type_missing}
     end
   end
