@@ -862,8 +862,9 @@ commands automatically — no separate approval step is needed. Use
 `foreman run get <run-id>` / `foreman run list` (see "Runs" below) to
 monitor the resulting run. Re-opening the bead (`br update <id> --status=open`) does
 NOT retry a run: once a task exists past `open` the watcher only reconciles the bead
-(`:reconciled`). The retry path is `task.retry` then a fresh `task.approve` on
-`POST /api/commands`; the steps are under "Recovering from a preflight failure" in §7.2.
+(`:reconciled`). The retry path is `task.retry` on `POST /api/commands` (the watcher
+then re-approves the task itself); the steps are under "Recovering from a preflight
+failure" in §7.2.
 
 Select the workflow via the bead's type (mapped through a manifest's
 `task_types:` declaration — `foreman doctor` lists the current mapping in its
@@ -1668,25 +1669,23 @@ or branch, and nothing about the bead or the failed run's history has to be disc
    install the provider CLI / put `pi` on the server's `PATH` for the other classes.
 3. Re-dispatch. Re-opening the bead (`br update <id> --status=open`) does NOT do it:
    once a task exists past `open`, BeadsWatcher reconciles the bead (`:reconciled`)
-   instead of dispatching again. `task.retry` alone does not do it either: it returns
-   the task to `open`, but the watcher's re-approval reuses its fixed command id
-   (`beads-cmd:<project>:<bead>:auto-approve`), which replays the original approval and
-   leaves the task `open` with no run bound. Send both commands, in order, to
-   `POST /api/commands` (there is no CLI verb for either; `command_id` may be omitted,
-   the server mints a fresh one, which is what makes the second command a new approval):
+   instead of dispatching again. Send `task.retry` to `POST /api/commands` (there is no
+   CLI verb; `command_id` may be omitted, the server mints one). It returns the task to
+   `open`; the watcher approves it again on its next rescan of the bead (a change to the
+   Beads JSONL, or the 30 s backstop poll) under an approval id scoped by the task's
+   `retry_count` (`beads-cmd:<project>:<bead>:auto-approve:retry-<n>`), which starts a
+   NEW run. Do not also send `task.approve`: that would be a second approval for the
+   same retry.
 
    ```bash
    curl -sS -X POST "${FOREMAN_API_URL:-http://127.0.0.1:4766}/api/commands" -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
      -H 'content-type: application/json' \
      -d '{"type":"task.retry","payload":{"task_id":"beads:<project-id>:<bead-id>","reason":"fixed models.default"}}'
-   curl -sS -X POST "${FOREMAN_API_URL:-http://127.0.0.1:4766}/api/commands" -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
-     -H 'content-type: application/json' \
-     -d '{"type":"task.approve","payload":{"task_id":"beads:<project-id>:<bead-id>","approved_by":"<you>"}}'
    ```
 
-   `task.retry` is refused unless the bound run is terminal (§5); the approval's response
-   carries the new `run_id`. The workflow is read from the catalog again at approval, so
-   the corrected manifest is what the new run freezes.
+   `task.retry` is refused unless the bound run is terminal (§5). Watch `foreman run list`
+   for the new run. The workflow is read from the catalog again at approval, so the
+   corrected manifest is what the new run freezes.
 
 Re-dispatch costs one new run record (a new `run-…` id, since the approval id is new)
 and one new branch (`foreman/<task-id>/<run-id>` by default). The failed run keeps its

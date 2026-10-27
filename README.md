@@ -143,8 +143,9 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   `task.retry` command it issued still exists (only a task whose bound
   run is already terminal is eligible) and is sent on `POST /api/commands`.
   Re-opening the bead (`br update <id> --status=open`) does not retry: once a
-  task exists past `open` the watcher only reconciles it. After `task.retry`,
-  send a fresh `task.approve` to mint the new run; see `docs/user-guide.md` §7.2
+  task exists past `open` the watcher only reconciles it. `task.retry` alone is
+  the whole recovery: the watcher re-approves the task under an approval id scoped
+  by its retry count and a NEW run starts; see `docs/user-guide.md` §7.2
   ("Recovering from a preflight failure").
 
 Enablement, the per-project `task_provider` block, the doctor health
