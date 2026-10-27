@@ -15,11 +15,14 @@ defmodule ForemanServer.Workflow.PreflightFailure do
   `AGENTS.md` §5.3 requires distinct codes for distinct causes.
 
   The fields answer the question an operator actually has, in the order they
-  would ask it: which phase, which provider, which model string as the manifest
-  wrote it, and which class of failure. `detail` is the one field that is not a
-  discriminator — it carries whatever the underlying check returned (the
-  provider's install hint, or the catalog query's own output) and exists so the
-  failure is diagnosable from the run record alone, without re-running.
+  would ask it: which phase, which provider, which model string, which rule
+  chose that string (`model_source`, a `ForemanServer.Workflow.ModelResolution`
+  source: the phase's own `models.default`, or the project's `thread_model`
+  filling a phase that declares none), and which class of failure. `detail` is
+  the one field that is not a discriminator — it carries whatever the
+  underlying check returned (the provider's install hint, or the catalog
+  query's own output) and exists so the failure is diagnosable from the run
+  record alone, without re-running.
   """
 
   @classes [
@@ -30,7 +33,7 @@ defmodule ForemanServer.Workflow.PreflightFailure do
   ]
 
   @enforce_keys [:phase, :provider, :class]
-  defstruct [:phase, :provider, :class, model: nil, detail: nil]
+  defstruct [:phase, :provider, :class, model: nil, model_source: nil, detail: nil]
 
   @type class ::
           :provider_unsupported
@@ -43,6 +46,7 @@ defmodule ForemanServer.Workflow.PreflightFailure do
           provider: atom(),
           class: class(),
           model: String.t() | nil,
+          model_source: ForemanServer.Workflow.ModelResolution.source() | nil,
           detail: term()
         }
 
@@ -59,13 +63,27 @@ defmodule ForemanServer.Workflow.PreflightFailure do
   @spec summarize(t()) :: String.t()
   def summarize(%__MODULE__{} = f) do
     base =
-      "phase #{inspect(f.phase)}: #{f.class} - " <> class_phrase(%{f | detail: nil})
+      "phase #{inspect(f.phase)}: #{f.class} - " <>
+        class_phrase(%{f | detail: nil}) <> source_clause(f)
 
     case f.detail do
       nil -> base
       detail -> base <> " (" <> detail_phrase(detail) <> ")"
     end
   end
+
+  # Names where the model string came from, so the fix lands on the right
+  # artifact: a workflow's `models.default` is edited in the manifest, a
+  # project's `thread_model` with `foreman project update`. Omitted when no model
+  # is involved or no source was recorded.
+  defp source_clause(%{model: model, model_source: :phase_declared}) when is_binary(model),
+    do: "; the model comes from the phase's models.default"
+
+  defp source_clause(%{model: model, model_source: :project_thread_model})
+       when is_binary(model),
+       do: "; the model comes from the project's thread_model"
+
+  defp source_clause(_failure), do: ""
 
   defp class_phrase(%{class: :provider_unsupported, provider: provider}),
     do: "provider #{inspect(provider)} is not a supported provider"

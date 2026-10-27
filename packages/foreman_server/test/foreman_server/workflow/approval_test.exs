@@ -94,6 +94,40 @@ defmodule ForemanServer.Workflow.ApprovalTest do
       assert phase.prompt_path == prompt_path
     end
 
+    # TRD-007 / AC-001-3: the run's own record names the workflow it ran and the
+    # manifest copy it was loaded from. `RunStarted` persists this snapshot, so
+    # dropping any of the three keys here would silently remove the evidence that
+    # distinguishes an installed copy from a bundled one. (The catalog derives the
+    # digest itself only for a manifest that declares a `worktree:` block; one
+    # without carries whatever `digest:` it declares, or none.)
+    test "freezes the workflow name, manifest path and digest onto the snapshot", %{tmp: tmp} do
+      manifest_path = Path.join(tmp, "provenance.yaml")
+      File.write!(Path.join(tmp, "prompts/provenance.md"), "do the thing")
+
+      File.write!(manifest_path, """
+      name: provenance
+      worktree:
+        enabled: false
+      phases:
+        - name: only
+          prompt: provenance.md
+      """)
+
+      :ok = Catalog.reload()
+
+      assert {:ok, prepared} =
+               Approval.prepare(
+                 %{task_id: "task-prov", task_type: "provenance"},
+                 approval_id: "approval-prov"
+               )
+
+      snapshot = prepared.workflow_snapshot
+      assert snapshot.workflow_name == "provenance"
+      assert snapshot.manifest_path == manifest_path
+      assert is_binary(snapshot.manifest_digest) and snapshot.manifest_digest != ""
+      assert snapshot.manifest_digest == prepared.workflow_digest
+    end
+
     test "carries a non-empty prompt into workflow_snapshot[\"input\"][\"prompt\"]", %{tmp: tmp} do
       manifest_path = Path.join(tmp, "demo2.yaml")
       prompt_path = Path.join(tmp, "prompts/demo2.md")
