@@ -2703,6 +2703,10 @@ defmodule ForemanServer.ProjectionStore do
             run_id: nil,
             workflow_snapshot: nil,
             failure_reason: nil,
+            # How many times `task.retry` has reset this task (`TaskRetried`
+            # increments it). `BeadsWatcher` reads it to give the approval it
+            # re-sends after a retry an identity of its own.
+            retry_count: 0,
             created_at_ms: payload_event_at_ms(payload),
             last_event_at_ms: payload_event_at_ms(payload)
           }
@@ -2809,6 +2813,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:failure_reason, nil)
           |> Map.put(:run_terminal_reason, nil)
           |> Map.put(:run_terminal_at, nil)
+          |> Map.update(:retry_count, 1, &(&1 + 1))
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
         end)
     end

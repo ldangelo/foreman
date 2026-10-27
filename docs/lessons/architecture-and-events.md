@@ -204,7 +204,7 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `ProjectArchived` | `Project.handle_command/2` | Archives project projection |
 | `TaskCreated` | `Task.handle_command/2` | Creates task projection |
 | `TaskApproved` | `Task.handle_command/2` | Transitions task to ready, triggers dispatch |
-| `TaskRetried` | `Task.handle_command/2` | Resets task for retry |
+| `TaskRetried` | `Task.handle_command/2` | Resets task to `open` for re-approval (projection `retry_count` +1) |
 | `TaskRunTerminated` | `Task.handle_command/2` | Marks task run-level terminal |
 | `TaskDispatched` | `Task.handle_command/2` | Records dispatch on task (`Dispatcher` issues the `task.dispatch` command) |
 | `ProjectRunReserved` | `Project.handle_command/2` | Implementation key reservation |
@@ -318,6 +318,15 @@ Do not reintroduce a second list.
 produce no additional events. Domain idempotency (e.g. rejecting a second
 `run.complete` on an already-completed run) is implemented in each aggregate's
 `handle_command/2`.
+
+**A `task.approve` command_id is also the approval's identity.** `CommandGateway` makes it the
+`approval_id` and `Identity.run_id/2` derives the run id from it, so re-sending a command_id after
+`task.retry` (which returns the task to `open` to be approved *again*) is answered from the event
+stream with the ORIGINAL `TaskApproved`: nothing is appended, the task stays `open`, and the caller
+sees `{:ok, _}` (foreman-nfizr). A re-approval needs a command_id of its own. `BeadsWatcher` scopes
+its deterministic id by the task's `retry_count` (read-model field, +1 per `TaskRetried`):
+`beads-cmd:<project>:<bead>:auto-approve` for the first approval, `...:auto-approve:retry-<n>` after
+the n-th retry, so one retry's approval delivered twice is still one approval.
 
 **Optimistic Concurrency**: Every append uses `expected_stream_version`. If the
 stream has moved past the expected version, append fails with `{:error, :wrong_expected_version}`.

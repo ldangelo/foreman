@@ -1181,7 +1181,7 @@ foreman reset foreman-abc12 --keep-worktree
 
 ### `foreman retry`
 
-> **NOT IMPLEMENTED.** `foreman retry` is not dispatched, and neither is `foreman task retry` any more — TRD-018 (2026-09-13) removed it too (see the note at the top of this file). The internal `task.retry` command it used to invoke is unchanged, but there is no CLI verb left to call it; there is no `--dispatch`, `--model`, or positional-id form either way.
+> **NOT IMPLEMENTED.** `foreman retry` is not dispatched, and neither is `foreman task retry` any more — TRD-018 (2026-09-13) removed it too (see the note at the top of this file). The internal `task.retry` command it used to invoke is unchanged, but there is no CLI verb left to call it; there is no `--dispatch`, `--model`, or positional-id form either way. The command is sent through `POST /api/commands`; for a task that came from a bead, `BeadsWatcher` then approves it again on its next rescan under a retry-scoped command id, so no `task approve` follows (see `docs/user-guide.md` §4).
 
 Reset a task and optionally re-dispatch it immediately.
 

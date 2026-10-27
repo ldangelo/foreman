@@ -29,8 +29,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       (suppress + `:skipped` per AC-022-3) → check
       `ProjectionStore.get_task(external_id: bead.id)`. No existing task
       → proceed. An existing task still `status: "open"` (created but
-      never approved, e.g. a prior `task.approve` attempt failed) →
-      retry approval directly, without a new `task.create` dispatch
+      never approved, e.g. a prior `task.approve` attempt failed — or
+      returned to `open` by an operator's `task.retry`, see "Re-approval
+      after `task.retry`" below) → retry approval directly, without a
+      new `task.create` dispatch
       (`:imported` on success, `:transient` on failure so the next poll
       retries again — see the auto-approval paragraph below). An
       existing task already past `"open"` → dedupe (`:reconciled` per
@@ -93,6 +95,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   the watcher was offline are recovered, created, and approved on the
   next rescan exactly as they would have been had the watcher been
   running continuously (TRD-004..TRD-007 requirement REQ-004).
+
+  ## Re-approval after `task.retry` (foreman-nfizr)
+
+  `task.retry` (an operator command, `POST /api/commands`) returns a task whose
+  bound run is terminal to `open`; the next rescan finds it there and approves
+  it again, which starts a NEW run. An approval's identity is its `command_id`
+  (it becomes the `approval_id`, the run id derives from it, and the aggregate
+  actor answers a re-sent id with the original event), so the second approval
+  cannot reuse the first one's id: `auto_approve_command_id/3` appends
+  `:retry-<n>` for the task's `retry_count` (`ProjectionStore` counts
+  `TaskRetried`) and leaves a never-retried task's id as it always was. One
+  retry's approval delivered twice is a replay of that approval; the next retry
+  is a new one.
+
+  Re-opening the bead (`br update <id> --status=open`) does NOT dispatch a
+  retry: a task past `"open"` (`failed`, `closed`, ...) is `:reconciled`
+  whatever its bead says, so a retry is always the operator's explicit
+  `task.retry` and never inferred from a bead's status.
 
   ## Opt-in supervision (TRD §2.2.6 item 9)
 
@@ -799,8 +819,11 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
        (AC-022-2). No projected task → proceed. A projected task still
        `status: "open"` (a prior `task.create` succeeded, or was
        already idempotently present, but the matching `task.approve`
-       previously failed) → retry approval directly, without a new
-       `task.create` dispatch (see step 7's `:imported`/`:transient`
+       previously failed; or an operator's `task.retry` returned it to
+       `"open"`) → retry approval directly, without a new
+       `task.create` dispatch, under an approval id scoped by the task's
+       `retry_count` (see "Re-approval after `task.retry`" in the
+       moduledoc; see step 7's `:imported`/`:transient`
        rule below — nothing else in the system retries `task.approve`,
        so treating this as `:reconciled` would strand the task
        forever). A projected task past `"open"` → emit
@@ -899,8 +922,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         :reconcile ->
           :reconciled
 
-        {:retry_approval, bead_id} ->
-          finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
+        {:retry_approval, bead_id, retry_count} ->
+          finish_approval(state, bead_id, auto_approve_bead(state, bead_id, retry_count))
 
         {:malformed, reason} ->
           emit_malformed(state, reason, line)
@@ -994,17 +1017,24 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
           nil ->
             :ok
 
-          %{status: "open"} ->
+          %{status: "open"} = task ->
             # `task.create` previously succeeded (or was already
             # idempotently present) for this bead, but the task was
             # never approved — `TaskApproved` is the only event that
-            # advances a task's projected status past `"open"`. Nothing
-            # else in the system retries `task.approve`, so treating
-            # this as `:reconcile` here would strand the task forever:
-            # every later replay of this same line would hit this exact
-            # branch and dedupe it away without ever re-attempting
-            # approval. Retry the approval directly instead.
-            {:retry_approval, bead_id}
+            # advances a task's projected status past `"open"` — or an
+            # operator's `task.retry` returned it to `"open"` after a
+            # terminal run. Nothing else in the system retries
+            # `task.approve`, so treating this as `:reconcile` here
+            # would strand the task forever: every later replay of this
+            # same line would hit this exact branch and dedupe it away
+            # without ever re-attempting approval. Retry the approval
+            # directly instead.
+            #
+            # `retry_count` scopes that approval's identity (see
+            # `auto_approve_command_id/3`). `Map.fetch!/2`: every
+            # projected task carries it, and an `"open"` task without it
+            # must fail here rather than fall through to `:reconcile`.
+            {:retry_approval, bead_id, Map.fetch!(task, :retry_count)}
 
           _existing ->
             TaskProviderTelemetry.emit(
@@ -1344,7 +1374,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   defp classify_dispatch_result(state, bead_id, result) do
     cond do
       task_created_or_existing?(result) ->
-        finish_approval(state, bead_id, auto_approve_bead(state, bead_id))
+        # `check_dedupe/2` found no projected task for this bead, so no
+        # `task.retry` can have applied to it yet: retry count 0.
+        finish_approval(state, bead_id, auto_approve_bead(state, bead_id, 0))
 
       terminal_rejection?(result) ->
         # No task was created — `validate_status/1`, `validate_project_allows_tasks/1`,
@@ -1427,11 +1459,15 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # `dispatch_operator/2` — the watcher is system automation, not an
   # operator). From the operator's perspective this is a single effective
   # create-and-approve step: no separate approval action is ever required.
-  defp auto_approve_bead(state, bead_id) do
+  #
+  # `retry_count` is how many times `task.retry` has reset the task (0 when it
+  # never was); it scopes the approval's identity, see
+  # `auto_approve_command_id/3`.
+  defp auto_approve_bead(state, bead_id, retry_count) do
     task_id = "beads:" <> state.project_id <> ":" <> bead_id
 
     approve_command = %{
-      command_id: "beads-cmd:" <> state.project_id <> ":" <> bead_id <> ":auto-approve",
+      command_id: auto_approve_command_id(state, bead_id, retry_count),
       type: "task.approve",
       aggregate_id: "task:" <> task_id,
       payload: %{task_id: task_id, approved_by: "beads_watcher"}
@@ -1464,10 +1500,35 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
+  # An approval's identity is its `command_id`: `CommandGateway` makes it the
+  # `approval_id`, `Identity.run_id/2` derives the run from it, and the
+  # aggregate actor treats it as the idempotency key, answering a re-sent id
+  # from the event stream with the ORIGINAL `TaskApproved` and appending
+  # nothing.
+  #
+  # One id per bead is therefore right for the first approval (a rescan or a
+  # failed attempt replays it harmlessly) and wrong after `task.retry`, which
+  # returns the task to `"open"` precisely so that it can be approved again.
+  # That approval has to be a new one: under the same id it replays the failed
+  # run's approval, no event is appended, and the task stays `"open"` while
+  # `process_line/2` reports `:imported` (foreman-nfizr). So retry count 0
+  # keeps the id every existing approval already carries, and each retry gets
+  # an id of its own: delivering one retry's approval twice is still a replay,
+  # and the next retry is a new approval.
+  defp auto_approve_command_id(state, bead_id, retry_count)
+       when is_integer(retry_count) and retry_count >= 0 do
+    first = "beads-cmd:" <> state.project_id <> ":" <> bead_id <> ":auto-approve"
+
+    case retry_count do
+      0 -> first
+      retry -> first <> ":retry-" <> Integer.to_string(retry)
+    end
+  end
+
   # `task_created_or_existing?/1` covers both a freshly created task and
   # one already present from a prior `task.create` attempt (idempotent
   # retry) or a prior approval attempt (`check_dedupe/2` routing
-  # `{:retry_approval, bead_id}` straight to `finish_approval/3` with no
+  # `{:retry_approval, bead_id, retry_count}` straight to `finish_approval/3` with no
   # new `task.create` dispatch). Reporting `:imported` is accurate only
   # once approval actually succeeds — `:imported` before then would
   # strand a created-but-unapproved task, since nothing else retries
@@ -1477,7 +1538,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # `:transient` instead: `check_dedupe/2` keeps seeing `status: "open"`
   # on this task and routes the next poll's replay of the same line back
   # into a fresh approval attempt rather than `:reconcile`.
-  # `auto_approve_bead/2` has already emitted `@error_event` for a
+  # `auto_approve_bead/3` has already emitted `@error_event` for a
   # failure.
   defp finish_approval(state, bead_id, {:ok, _} = approve_result) do
     TaskProviderTelemetry.emit(

@@ -1359,6 +1359,20 @@ The retry is rejected when the task is missing, has no bound run,
 references a missing run projection, references a run bound to another
 task, or the run is not terminal.
 
+For a task that came from a bead, `task.retry` (sent through `POST
+/api/commands`) is the whole recovery. It returns the task to `open` with
+no run bound, and `BeadsWatcher` approves it again on its next rescan of
+that bead (a change to the Beads JSONL, or the 30 s backstop poll). That
+approval has a command id of its own,
+`beads-cmd:<project-id>:<bead-id>:auto-approve:retry-<n>` (`<n>` is the
+task's `retry_count`), and the run id derives from it, so it starts exactly
+one new run; the failed run's record is kept. The first approval of a
+bead keeps `beads-cmd:<project-id>:<bead-id>:auto-approve`, and one
+retry's approval delivered twice is still one approval. No `task.approve`
+is needed afterwards. Re-opening the bead (`br update <id> --status=open`)
+does not start a retry: a task already past `open` is reconciled whatever
+its bead says.
+
 ## 5. Task lifecycle
 
 Task lifecycle is event-driven:
