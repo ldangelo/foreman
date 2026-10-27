@@ -151,6 +151,25 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterBrFixturesTest do
     end
   end
 
+  describe "create/2 source_repo from the real agent_context string (foreman-yqgvw)" do
+    test "the JSON-string agent_context in `br create --json` yields foreman:<task_id>" do
+      install_stub(create: "create_plain.json")
+
+      fixture = BrFixtures.issue!("create_plain.json")
+      assert is_binary(fixture["agent_context"])
+
+      assert {:ok, %Issue{metadata: %{source_repo: "foreman:t1"}}} =
+               BeadsAdapter.create(@project, %{
+                 title: "Plain fixture issue",
+                 description: "body",
+                 priority: 2,
+                 task_type: "task",
+                 task_id: "t1",
+                 command_id: "cmd-yqgvw"
+               })
+    end
+  end
+
   describe "annotate/3 against real `br comments add --json`" do
     test "a real comment-added response is accepted" do
       install_stub(comments_add: "comments_add.json")

@@ -143,6 +143,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   require Logger
 
   alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.TaskProviders.BeadsAgentContext
   alias ForemanServer.CommandRouter
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.Workflow.ImplementationContext
@@ -1331,18 +1332,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # its `foreman` envelope as such a string and must be dispatched
   # (`BeadsWatcherGapBeadTest`).
   defp extract_trd_path(parsed) do
-    case Map.get(parsed, "agent_context") do
-      agent_context when is_map(agent_context) ->
-        Map.get(agent_context, "trd_path")
-
-      raw when is_binary(raw) ->
-        case Jason.decode(raw) do
-          {:ok, %{"trd_path" => trd_path}} -> trd_path
-          _not_an_object_with_a_path -> nil
-        end
-
-      _other ->
-        nil
+    case BeadsAgentContext.decode(Map.get(parsed, "agent_context")) do
+      {:ok, agent_context} -> Map.get(agent_context, "trd_path")
+      :absent -> nil
+      {:error, :malformed} -> nil
     end
   end
 
