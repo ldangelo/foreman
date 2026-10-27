@@ -510,7 +510,10 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherEpicExecutionTest do
         project_id: state.project_id,
         external_id: bead_id,
         workflow_type: "implement-trd-beads",
-        status: status
+        status: status,
+        # every projected task carries it (ProjectionStore, TaskCreated); BeadsWatcher
+        # scopes a re-approval's id by it and fails loudly on an open task without it
+        retry_count: 0
       })
     end)
   end
