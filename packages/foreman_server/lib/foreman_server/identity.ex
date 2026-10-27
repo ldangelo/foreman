@@ -159,6 +159,17 @@ defmodule ForemanServer.Identity do
   end
 
   @doc """
+  Command id of one `run.worktree_retained` (foreman-gr27): one per run, repository and
+  retained path, so a repeated cleanup of the same worktree dedupes.
+  """
+  @spec run_worktree_retained_command_id(String.t(), String.t(), String.t()) :: String.t()
+  def run_worktree_retained_command_id(run_id, repo_id, path)
+      when is_binary(run_id) and run_id != "" and is_binary(repo_id) and repo_id != "" and
+             is_binary(path) and path != "" do
+    "workflow:" <> run_id <> ":" <> repo_id <> ":worktree_retained:" <> path
+  end
+
+  @doc """
   System command ID for recording that one repository's PR could not be created.
   `at` (millisecond timestamp) keeps each failed attempt - the finalisation and
   every `run.pr.retry` - a distinct event, while repeating one attempt dedupes.

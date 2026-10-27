@@ -3001,6 +3001,21 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  # foreman-gr27: a worktree the run could not reclaim. Appended to the run projection's
+  # `retained_worktrees` (oldest first) so `run/1` names the path still on disk.
+  defp apply_event_by_type(state, "RunWorktreeRetained", payload) do
+    entry = %{
+      repo_id: get(payload, :repo_id),
+      path: get(payload, :path),
+      reason: get(payload, :reason),
+      at: get(payload, :at)
+    }
+
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.update(run, :retained_worktrees, [entry], &(&1 ++ [entry]))
+    end)
+  end
+
   # `PrAssociated` lands on BOTH the association map and the run projection.
   # It previously wrote only the association map, so `run/1` — and therefore
   # `GET /api/runs/:id` and `GET /api/runs` — carried no PR field at all: the

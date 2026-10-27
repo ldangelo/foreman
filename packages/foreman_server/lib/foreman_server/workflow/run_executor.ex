@@ -39,6 +39,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime.JidoHarness.{ForkSession, ModelCatalog, ReadinessCheck}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.BeadsTreeCompletion
+  alias ForemanServer.Workflow.CheckoutGuard
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.LiveSteer
   alias ForemanServer.RunControl
@@ -1175,11 +1176,41 @@ defmodule ForemanServer.Workflow.RunExecutor do
       # boundary would destroy the very checkout the next phase continues in.
       # Disk is reclaimed once, by `cleanup_run_worktree/2` in `finalize_run/1`,
       # and by the `RunDeleted` fan-out for runs that end some other way.
-      {:ok,
-       state
-       |> remember_run_worktree(worktree_record)
-       |> remember_worktree(worktree_record)
-       |> load_run_worktrees(), worktree_record}
+      with {:ok, state} <- snapshot_checkout(state, worktree_record) do
+        {:ok,
+         state
+         |> remember_run_worktree(worktree_record)
+         |> remember_worktree(worktree_record)
+         |> load_run_worktrees(), worktree_record}
+      end
+    end
+  end
+
+  # foreman-koas6. The main checkout's status, taken once when the run's worktree is
+  # provisioned and before any agent runs, is what `CheckoutGuard` compares the checkout
+  # against at the run's end. An executor that finds the worktree already in its state was
+  # resumed: it never saw the checkout before the earlier phases, so it records `nil`
+  # (guard silent) rather than a snapshot that could blame the operator's edits. A workflow
+  # that never declares a committing phase (`CheckoutGuard.expected?/1`) records `nil` too:
+  # it was never expected to leave a commit, so an empty branch proves nothing.
+  defp snapshot_checkout(state, record) do
+    cond do
+      Map.has_key?(state, :checkout_snapshot) ->
+        {:ok, state}
+
+      Map.has_key?(state, :run_worktree) ->
+        {:ok, Map.put(state, :checkout_snapshot, nil)}
+
+      is_map(record) and CheckoutGuard.expected?(Map.get(state, :phase_specs) || []) ->
+        with {:ok, snapshot} <- CheckoutGuard.snapshot(record) do
+          {:ok, Map.put(state, :checkout_snapshot, snapshot)}
+        end
+
+      is_map(record) ->
+        {:ok, Map.put(state, :checkout_snapshot, nil)}
+
+      true ->
+        {:ok, state}
     end
   end
 
@@ -1227,8 +1258,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `emit_phase_failure/4`, exactly as any other failed phase does.
   @doc false
   @spec verify_run_outcome(state(), String.t() | nil) :: :ok | {:error, FailureCause.t()}
-  def verify_run_outcome(state, artifact_path),
-    do: BeadsTreeCompletion.verify(state.plan_context || %{}, artifact_path)
+  def verify_run_outcome(state, artifact_path) do
+    with :ok <- verify_checkout_untouched(state) do
+      BeadsTreeCompletion.verify(state.plan_context || %{}, artifact_path)
+    end
+  end
+
+  # foreman-koas6: an empty run branch while the main checkout gained files means the worker
+  # wrote into the checkout instead of the worktree. See `CheckoutGuard` for what is and is
+  # not detected.
+  defp verify_checkout_untouched(state) do
+    case {Map.get(state, :checkout_snapshot), Map.get(state, :run_worktree)} do
+      {%CheckoutGuard{} = snapshot, %{} = record} -> CheckoutGuard.verify(snapshot, record)
+      _ -> :ok
+    end
+  end
 
   defp emit_phase_start(state, phase_spec, phase_index) do
     phase_id = Identity.phase_id(state.run_id, phase_index)
@@ -3874,12 +3918,62 @@ defmodule ForemanServer.Workflow.RunExecutor do
           |> Enum.flat_map(fn record ->
             case do_clean_run_worktree(state, record) do
               :ok -> []
-              {:error, reason} -> [{Map.get(record, :repo_id), reason}]
+              {:error, reason} -> [{Map.get(record, :repo_id), reason, record}]
             end
           end)
 
-        if failures == [], do: :ok, else: {:error, {:worktree_cleanup_failed, failures}}
+        # A worktree that survives cleanup holds work `git worktree remove` refused to
+        # destroy. It stays on disk, so the run says so: warning + `RunWorktreeRetained`
+        # naming the path (foreman-gr27), not only a `VcsOperationFailed` nobody reads.
+        Enum.each(failures, fn {_repo_id, reason, record} ->
+          record_worktree_retained(state, record, reason)
+        end)
+
+        if failures == [],
+          do: :ok,
+          else:
+            {:error,
+             {:worktree_cleanup_failed,
+              Enum.map(failures, fn {repo_id, reason, _record} -> {repo_id, reason} end)}}
     end
+  end
+
+  # The run-level record of a worktree cleanup could not remove. A failed dispatch is logged
+  # with the path, never raised: the run's own outcome is already decided.
+  defp record_worktree_retained(state, record, reason) do
+    path = Map.get(record, :worktree_path)
+    repo_id = record_repo_id(state, record)
+    rendered = inspect(reason)
+
+    Logger.warning(
+      "RunExecutor #{state.run_id} worktree retained at #{path} (repository #{repo_id}): " <>
+        "cleanup refused: #{rendered}. The directory stays on disk until an operator removes it."
+    )
+
+    if is_binary(path) and path != "" do
+      case CommandGateway.dispatch_system(%{
+             type: "run.worktree_retained",
+             command_id: Identity.run_worktree_retained_command_id(state.run_id, repo_id, path),
+             aggregate_id: "run:#{state.run_id}",
+             payload: %{
+               run_id: state.run_id,
+               repo_id: repo_id,
+               path: path,
+               reason: rendered,
+               at: System.system_time(:millisecond)
+             }
+           }) do
+        {:ok, _} ->
+          :ok
+
+        {:error, error} ->
+          Logger.error(
+            "RunExecutor #{state.run_id} retained worktree #{path} NOT recorded on the run: #{inspect(error)}"
+          )
+      end
+    end
+
+    :ok
   end
 
   # `run.cancel` stops the agent through the harness (`RunControl.cancel_agent/1`), which signals
