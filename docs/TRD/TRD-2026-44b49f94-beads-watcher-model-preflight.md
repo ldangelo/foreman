@@ -428,13 +428,12 @@ REQ-009 asks for (correct the cause → re-open the bead → one new run, failed
 history retained) and the "declares `models.default` must be qualified" rule
 where operators author workflows.
 
-> **Forward pointer (2026-10-27, preflight PR 3):** the "re-open the bead" recovery
-> above does NOT re-dispatch (BeadsWatcher dedupes a task that is past `open`, and
-> `task.retry` alone has the watcher replay the original approval through its fixed
-> command id). The path that works is `task.retry` followed by a fresh `task.approve`
-> on `POST /api/commands`; it is documented, with its cost, in `docs/user-guide.md`
-> section 7.2 "Recovering from a preflight failure". The defect is tracked as
-> `foreman-pfta.1`. This task's claims are left as written (point-in-time spec).
+> **Forward pointer (2026-10-27, preflight PR 3):** at the time of this pass the "re-open
+> the bead" recovery above did NOT re-dispatch (BeadsWatcher dedupes a task that is past
+> `open`, and `task.retry` alone had the watcher replay the original approval through its
+> fixed command id). The recovery that works, and what it costs, is documented in
+> `docs/user-guide.md` section 7.2 "Recovering from a preflight failure"; the defect is
+> tracked as `foreman-pfta.1`. This task's claims are left as written (point-in-time spec).
 
 ## Master Task List
 

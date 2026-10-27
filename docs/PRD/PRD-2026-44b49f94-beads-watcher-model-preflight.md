@@ -230,9 +230,9 @@ statement about the workflow, and pushes debugging toward the wrong artifact.
 
 > **Forward pointer (2026-10-27, preflight PR 3):** the auto-resolved recovery in AC-009-1
 > ("re-open the owning bead") was verified not to re-dispatch; see
-> `docs/user-guide.md` section 7.2 "Recovering from a preflight failure" for the path that
-> does (`task.retry` then a fresh `task.approve`) and bead `foreman-pfta.1` for the defect.
-> The requirement text is left as written (point-in-time spec).
+> `docs/user-guide.md` section 7.2 "Recovering from a preflight failure" for the recovery
+> that works and bead `foreman-pfta.1` for the defect. The requirement text is left as
+> written (point-in-time spec).
 
 ### REQ-010: Preflight remains a hard gate
 
