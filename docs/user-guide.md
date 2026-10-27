@@ -890,9 +890,13 @@ hours has no wall-clock deadline. It replaces the earlier
   `issue_type` is `implement_trd_beads`, and `agent_context.trd_path` is a
   non-empty project-relative path; a `trd_path` that is not a tracked regular file at the project's HEAD inside the project root (missing, deleted, a directory, absolute or escaping the project, or untracked) is treated like a missing `trd_path`: the bead is moved to `blocked` with the same remediation comment, instead of being retried forever (previously it was held transient and `task.approve` kept failing). Project-level faults (project not registered, root not a git repo) are not blamed on the bead and still proceed to `task.create`. The check re-runs every time the watcher sees the bead as `open`, so after fixing the path (commit the TRD, or `br update` the `trd_path`) reopen it as the comment says (`--status open`, or re-label) and it dispatches on the next scan. Tagging command:
   `br update <epic-id> --type implement_trd_beads --add-label foreman-exec
-  --agent-context '{"trd_path":"docs/TRD/..."}' --status open`. Until the
-  ensemble-side `implement-trd-beads --plan --foreman` tagging ships, you tag
-  the root epic by hand like this.
+  --agent-context '{"trd_path":"docs/TRD/..."}' --status open`. The ensemble
+  `implement-trd-beads --plan --foreman` scaffold is specified to apply exactly
+  these three fields (`issue_type`, `agent_context.trd_path`, `foreman-exec`) to
+  the root epic only, so Foreman picks the tree up with no manual step; plain
+  `--plan` without `--foreman` tags nothing. That tagging lives in the ensemble
+  repo, not in Foreman, so until it ships you tag the root epic by hand like
+  this.
 - **Completion is judged on the Beads graph, not on the agent.** `beads-build`
   has no exit code, so after the run's last phase commits Foreman reads the
   tree with `br show`. The run completes only if **every** parent-child
