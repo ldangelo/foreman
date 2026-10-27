@@ -203,19 +203,20 @@ jobs:
           echo "id=${RUNNER_OS}-${RUNNER_ARCH}-${ID}${VERSION_ID}-${OTP}-${ELIXIR}" >> "$GITHUB_OUTPUT"
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
-      # `deps/` is tracked in git, so only the build is cached. The dialyzer PLTs are the
-      # expensive part of `mix quality` (about 135 s cold): the core and Elixir PLTs live in
-      # $MIX_HOME (~/.mix), the project PLT in _build/dev. dialyxir re-checks a restored PLT
-      # against the current deps, so a stale one is refreshed, not trusted.
-      - name: Cache build and PLTs
+      # `deps/` is vendored in git but its build outputs are not (erlexec's port, rebar `_build`s
+      # are ignored), and the restored `_build` points at them: cache both. The dialyzer PLTs are
+      # the expensive part of `mix quality` (about 135 s cold): the core and Elixir PLTs live in
+      # $MIX_HOME (~/.mix), the project PLT in _build/dev; dialyxir re-checks a restored PLT
+      # against the current deps. Exact key only, no `restore-keys`: an older `deps/` restored
+      # over a checkout whose vendored deps moved on would clobber them.
+      - name: Cache deps, build and PLTs
         uses: actions/cache@v4
         with:
           path: |
+            packages/jido_harness/deps
             packages/jido_harness/_build
             ~/.mix/dialyxir_*
-          key: jido-harness-${{ steps.toolchain.outputs.id }}-${{ hashFiles('packages/jido_harness/mix.lock') }}
-          restore-keys: |
-            jido-harness-${{ steps.toolchain.outputs.id }}-
+          key: jido-harness-v2-${{ steps.toolchain.outputs.id }}-${{ hashFiles('packages/jido_harness/mix.lock') }}
       # .gitignore keeps `deps/**/.credo.exs` out of git on purpose (credo's own config would be
       # taken for a project root), but credo cannot compile without it. A checkout therefore
       # lacks it: drop the dep so `mix deps.get` fetches the file with the package from Hex.
