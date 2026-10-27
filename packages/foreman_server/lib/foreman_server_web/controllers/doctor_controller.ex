@@ -8,6 +8,10 @@ defmodule ForemanServerWeb.DoctorController do
     * `provider.<name>` - one row per jido_harness provider
       (`MCP.Tools.Doctor.rows/0`, the same data as the `foreman_doctor` MCP tool);
     * `workflows` - the workflow catalog has manifests installed;
+    * `workflows.bead_types` - which bead types BeadsWatcher dispatches (each
+      mapped to its workflow) and which it holds for want of a workflow,
+      derived from the manifests' own `task_types:` (`TaskProviders.BeadTypeEligibility`);
+      `warn` only when no type maps at all, since an unmapped type is by design;
     * `workflow.<file>` - one `warn` row per manifest the catalog REFUSED to
       load (`Catalog.invalid/0`), carrying the file's validation error;
     * `notifier` - outbound notifications: `ok` when they are off or on and able
@@ -25,6 +29,7 @@ defmodule ForemanServerWeb.DoctorController do
 
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Projects.Recommendations
+  alias ForemanServer.TaskProviders.BeadTypeEligibility
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.LoadError
   alias ForemanServerWeb.MCP.Tools.Doctor
@@ -168,7 +173,7 @@ defmodule ForemanServerWeb.DoctorController do
   end
 
   defp workflow_checks do
-    [workflows_check() | invalid_workflow_checks()]
+    [workflows_check(), bead_types_check() | invalid_workflow_checks()]
   end
 
   defp workflows_check do
@@ -181,6 +186,39 @@ defmodule ForemanServerWeb.DoctorController do
 
       :error ->
         check("workflows", :warn, "Workflow catalog unknown", "The catalog did not answer.")
+    end
+  end
+
+  # Informational, not a gate: an unmapped type is the documented not-applicable
+  # category (such a bead is held, never dispatched), so it must not turn `foreman
+  # doctor --strict` red on a stock install where `task` is unmapped by design.
+  # Only "nothing at all maps" is a warning, because then BeadsWatcher can
+  # dispatch no bead whatever its type.
+  defp bead_types_check do
+    case safely(&BeadTypeEligibility.report/0) do
+      {:ok, %BeadTypeEligibility{mapped: []} = report} ->
+        check(
+          "workflows.bead_types",
+          :warn,
+          "No workflow maps any bead type",
+          "BeadsWatcher can dispatch no bead. " <> BeadTypeEligibility.summarize(report)
+        )
+
+      {:ok, %BeadTypeEligibility{mapped: mapped, unmapped: unmapped} = report} ->
+        check(
+          "workflows.bead_types",
+          :ok,
+          "Bead types: #{length(mapped)} mapped to a workflow, #{length(unmapped)} held",
+          BeadTypeEligibility.summarize(report)
+        )
+
+      :error ->
+        check(
+          "workflows.bead_types",
+          :warn,
+          "Bead type mapping unknown",
+          "The catalog did not answer."
+        )
     end
   end
 
