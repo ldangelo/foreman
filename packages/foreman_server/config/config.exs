@@ -353,6 +353,15 @@ config :foreman_server, :schedule,
   max_per_project: 50,
   default_misfire_grace_seconds: 600
 
+# Operational server log file: a built-in OTP `:logger_std_h` handler mirrors every
+# console log line to ~/.foreman/logs/foreman-server.log (size-rotated, so no
+# external tee is needed; the console handler is unchanged). Disabled in test.
+config :foreman_server, :server_log,
+  enabled: true,
+  path: Path.join(System.user_home!(), ".foreman/logs/foreman-server.log"),
+  max_bytes: 10_000_000,
+  max_files: 5
+
 # Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
 # Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
 config :foreman_server, :secret_store,

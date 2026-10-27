@@ -210,6 +210,19 @@ defmodule ForemanServer.Application do
         )
     end
 
+    # Server log file (~/.foreman/logs/foreman-server.log). Same policy as the
+    # bridge above: a failed install is loud but never aborts boot.
+    case ForemanServer.Observability.FileLog.install_from_config() do
+      result when result in [:ok, :disabled] ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "server log file handler failed to install; logs go to the console only: " <>
+            inspect(reason)
+        )
+    end
+
     {:ok, pid}
   end
 
