@@ -15,6 +15,7 @@ defmodule ForemanServer.Workflow.DispatcherCrashRecoveryTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{ProjectionStore, RunControl}
+  alias ForemanServer.TestSupport.MeckScope
   alias ForemanServer.Workflow.Dispatcher
 
   setup_all do
@@ -37,12 +38,14 @@ defmodule ForemanServer.Workflow.DispatcherCrashRecoveryTest do
     )
 
     ensure_started(ForemanServer.Workflow.RunSupervisor, ForemanServer.Workflow.RunSupervisor)
-    :ok
+
+    # `:meck.new(ProjectionStore, [:passthrough])` copies a 5.5k-line module (~1.3 s): once per module.
+    MeckScope.new_once!(ProjectionStore)
   end
 
   setup do
     :ok = ForemanServer.DispatcherQuiesce.suspend!()
-    :ok
+    MeckScope.restore_on_exit!(ProjectionStore)
   end
 
   describe "TaskDispatched replayed for a run a previous server left in flight" do
@@ -168,13 +171,11 @@ defmodule ForemanServer.Workflow.DispatcherCrashRecoveryTest do
       workflow_snapshot: %{phases: [%{"name" => "phase-1"}, %{"name" => "phase-2"}]}
     }
 
-    :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
     :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
     on_exit(fn ->
       for mod <- [
-            ForemanServer.ProjectionStore,
             ForemanServer.RunAdmission,
             ForemanServer.Workflow.RunSupervisor
           ] do

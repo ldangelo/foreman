@@ -141,17 +141,23 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
 
   # Writes a throwaway line and waits for the watcher to emit
   # `[:watcher, :malformed]` for it, retrying with a fresh write up to
-  # `attempts` times (each with a generous per-attempt budget) before
-  # failing. `file_system` delivery is real OS-level IPC to a native
-  # listener process: its own startup (spawning the port process,
-  # registering with the platform's file-event API) happens
-  # asynchronously after `FileSystem.start_link/1` returns, so a write
-  # immediately after boot can race ahead of it and be silently missed
-  # — not merely delayed. On a loaded machine, even a "hot" listener
-  # can occasionally coalesce or delay a single notification past a
-  # tight budget. Retrying with a fresh write is what actually proves
-  # "the fs-watch path works", as opposed to trusting one observation.
-  defp await_fs_watch_write!(jsonl_path, label, attempts \\ 4) do
+  # `attempts` times before failing. `file_system` delivery is real
+  # OS-level IPC to a native listener process: its own startup (spawning
+  # the port process, registering with the platform's file-event API)
+  # happens asynchronously after `FileSystem.start_link/1` returns, so a
+  # write immediately after boot can race ahead of it and be silently
+  # missed — not merely delayed. On a loaded machine, even a "hot"
+  # listener can occasionally coalesce or delay a single notification.
+  # Retrying with a fresh write is what actually proves "the fs-watch
+  # path works", as opposed to trusting one observation.
+  #
+  # A missed write costs one attempt window, and on a CI runner the first
+  # write is regularly missed (the listener starts after it), so the
+  # window is short: 500 ms is five times the watcher's 100 ms debounce.
+  # 24 attempts keep the old 12 s budget (4 x 3 s). A notification that
+  # arrives after its window still counts: every attempt shares one `ref`,
+  # so it satisfies the next `receive`.
+  defp await_fs_watch_write!(jsonl_path, label, attempts \\ 24) do
     handler_id = unique_handler(label)
     ref = make_ref()
     attach_malformed(handler_id, self(), ref)
@@ -164,7 +170,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherFsWatchTest do
     receive do
       {:telemetry, ^ref, metadata} -> metadata
     after
-      3_000 -> do_await_fs_watch_write(jsonl_path, ref, label, attempts - 1)
+      500 -> do_await_fs_watch_write(jsonl_path, ref, label, attempts - 1)
     end
   end
 

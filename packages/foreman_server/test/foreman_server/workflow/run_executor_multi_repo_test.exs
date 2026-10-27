@@ -15,7 +15,17 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.RunExecutor
 
-  setup do
+  setup_all do
+    template =
+      Path.join(System.tmp_dir!(), "multi-repo-tpl-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(template)
+    on_exit(fn -> File.rm_rf(template) end)
+    for id <- ~w(a b c), do: seed_repo!(template, id)
+    %{template: template}
+  end
+
+  setup %{template: template} do
     ProjectionStoreReset.reset!()
 
     root = Path.join(System.tmp_dir!(), "multi-repo-#{System.unique_integer([:positive])}")
@@ -28,7 +38,7 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
       File.rm_rf(Path.join(ForemanServer.Workflow.RunWorktreeLayout.base_root(), project_id))
     end)
 
-    repos = for id <- ~w(a b c), into: %{}, do: {id, init_repo!(root, id)}
+    repos = for id <- ~w(a b c), into: %{}, do: {id, init_repo!(template, root, id)}
 
     register_project!(project_id, repos["a"])
     add_repo!(project_id, "b", repos["b"])
@@ -408,7 +418,14 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
 
   # -- helpers -----------------------------------------------------------
 
-  defp init_repo!(root, id) do
+  # Seeding a repo is ~6 git processes and identical for every test, so it is done once per id
+  # in `setup_all` and each test gets a copy.
+  defp init_repo!(template, root, id) do
+    File.cp_r!(Path.join(template, "repo-#{id}"), Path.join(root, "repo-#{id}"))
+    Path.join(root, "repo-#{id}")
+  end
+
+  defp seed_repo!(root, id) do
     repo = Path.join(root, "repo-#{id}")
     File.mkdir_p!(repo)
     git!(repo, ["init", "--initial-branch=main", "--quiet"])

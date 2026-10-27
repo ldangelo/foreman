@@ -443,9 +443,11 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   defp completed_worker_success?({:ok, _output}), do: true
   defp completed_worker_success?({:error, _reason}), do: false
 
-  @spec wait_for_worker_result(pid(), String.t(), String.t(), timeout()) ::
+  # `down_grace_ms` is how long a delivered result waits for the launch process's DOWN; a test
+  # that holds the launch process alive passes a short one.
+  @spec wait_for_worker_result(pid(), String.t(), String.t(), timeout(), non_neg_integer()) ::
           {:ok, String.t()} | {:error, term()}
-  defp wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms) do
+  defp wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms, down_grace_ms \\ 5_000) do
     ref = Process.monitor(launch_pid)
     timeout_ms = remaining_from(deadline_ms)
 
@@ -573,7 +575,7 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
         receive do
           {:DOWN, ^ref, :process, ^launch_pid, _reason} -> :ok
         after
-          5_000 -> :ok
+          down_grace_ms -> :ok
         end
     end
 
@@ -581,6 +583,12 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   end
 
   @doc false
-  def __wait_for_worker_result_for_test__(launch_pid, worker_id, run_id, deadline_ms),
-    do: wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms)
+  def __wait_for_worker_result_for_test__(
+        launch_pid,
+        worker_id,
+        run_id,
+        deadline_ms,
+        down_grace_ms \\ 5_000
+      ),
+      do: wait_for_worker_result(launch_pid, worker_id, run_id, deadline_ms, down_grace_ms)
 end

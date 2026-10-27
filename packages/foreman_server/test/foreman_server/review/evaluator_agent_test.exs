@@ -147,7 +147,7 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
       {_pid, mode} = Application.fetch_env!(:foreman_server, :review_evaluator_test_stub)
       # Holds the harness run past `await_run`'s deadline (timeout + slack) so the caller
       # gives up while the run is still finishing.
-      if mode == :hang_slow_cancel, do: Process.sleep(6_000)
+      if mode == :hang_slow_cancel, do: Process.sleep(600)
       :ok
     end
   end
@@ -483,6 +483,12 @@ defmodule ForemanServer.Review.EvaluatorAgentTest do
     test "a caller that stops waiting archives what the run produced and says why", ctx do
       put_mode(:hang_slow_cancel)
       put_timeout(100)
+
+      Application.put_env(
+        :foreman_server,
+        :review,
+        Keyword.put(Application.get_env(:foreman_server, :review), :evaluator_await_slack_ms, 100)
+      )
 
       assert {:error, %Error{code: :evaluator_failed, message: message}} =
                Agent.evaluate(ctx.subject)

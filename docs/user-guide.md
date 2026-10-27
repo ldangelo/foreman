@@ -2567,7 +2567,9 @@ Configuration (`config :foreman_server, :review`): `capture`, `analysis`
 (set `analysis: false` to keep archiving but stop spending an agent run per
 terminal run), `archive_root`, `agent` (`%{provider:, model:, effort:}` — the
 reviewer is deliberately independent of the run's own provider), `evaluator`,
-`evaluator_timeout_ms`, `evaluator_retry_backoff_ms`, `max_concurrent_analyses`,
+`evaluator_timeout_ms`, `evaluator_await_slack_ms` (default 5000: how long past the
+timeout the evaluator waits for the run to end before it cancels it and archives what
+the run produced), `evaluator_retry_backoff_ms`, `max_concurrent_analyses`,
 `max_transcript_bytes`, `max_diff_bytes`, `max_comment_bytes`, `max_gap_beads`.
 
 ## Further Reading
@@ -2631,7 +2633,8 @@ interval below), and a failed one is a failed check. Two things trigger a read:
   authenticated on the server host. Polling is adaptive per PR: 30 s while checks
   are pending, 60 s within ten minutes of a change, 5 minutes when stable
   (`:pr_monitor_interval_ms`), 15 minutes after a day idle, with jitter, a
-  per-tick cap (`:pr_monitor_max_per_tick`, 25) and back-off on failures or rate
+  per-tick cap (`:pr_monitor_max_per_tick`, 25), a floor between ticks
+  (`:pr_monitor_min_delay_ms`, 1 s) and back-off on failures or rate
   limits;
 - `POST /webhooks/github` (needs `FOREMAN_GITHUB_WEBHOOK_SECRET`). Subscribe the
   webhook to `check_run`, `check_suite`, `pull_request`, `pull_request_review`,

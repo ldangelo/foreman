@@ -1,5 +1,22 @@
 name: ci
 
+# main requires three status checks by NAME: `foreman_server`, `jido_harness`, `foreman_cli`
+# (non-strict, matched by job name, app github-actions). Each name must be reported by exactly
+# one job that goes green only when its work did, on every run, or auto-merge waits forever.
+#
+#   changes             decides whether the code jobs run (scripts/ci/changed-code.sh)
+#   foreman_server_p1-4 the suite split with `mix test --partitions 4`; named so they can never
+#                       be mistaken for the required context
+#   foreman_server      REQUIRED. Aggregate of the four partitions: fails if any partition
+#                       failed or was cancelled, passes only when all four passed (or the
+#                       change set was docs-only and none were meant to run)
+#   jido_harness        REQUIRED
+#   foreman_cli         REQUIRED
+#
+# A docs-only change set (see scripts/ci/changed-code.sh) skips the partitions and the two other
+# jobs with a job-level `if`; GitHub reports such a job as skipped, which satisfies a required
+# check. A workflow-level `paths:` filter must never be used here: it would leave the required
+# checks pending forever.
 on:
   pull_request:
     branches: [main]
@@ -9,41 +26,82 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR supersedes the older run of the same PR. Pushes to main are keyed by SHA,
+# so a run on main is never cancelled and never waits behind another.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  foreman-server:
-    name: foreman_server
+  changes:
+    name: changes
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A PR is checked out as its merge commit (parents: base, head) and a push to main is
+          # one squash commit, so two commits are enough for the diff.
+          fetch-depth: 2
+      - name: Classify the change set
+        id: classify
         env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: foreman_test
-        ports:
-          - 55432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          scripts/ci/changed-code.sh --self-test
+          if [ "$EVENT" = pull_request ]; then
+            scripts/ci/changed-code.sh HEAD^1 HEAD
+          else
+            scripts/ci/changed-code.sh "$BEFORE" HEAD
+          fi
+
+  foreman-server-tests:
+    name: foreman_server_p${{ matrix.partition }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3, 4]
     env:
       MIX_ENV: test
       SHELL: /bin/bash
-      POSTGRES_HOST: localhost
-      POSTGRES_PORT: 55432
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: foreman_test
+      MIX_TEST_PARTITION: ${{ matrix.partition }}
     steps:
+      # Each partition has its own runner and its own Postgres, so the test database needs no
+      # per-partition name. Started first and in the background: the image pull and initdb run
+      # while the toolchain, deps and compile steps work.
+      - name: Start Postgres
+        run: |
+          (docker run -d --name foreman-pg -p 55432:5432 \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=foreman_test \
+            postgres:15 > /tmp/pg-start.log 2>&1 &)
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
+        id: beam
         with:
           elixir-version: '1.20.4'
           otp-version: '28'
+      # Resolved OS image + OTP + Elixir. The cache key below starts with it, so an entry built
+      # by another toolchain can neither hit nor be restored from a prefix. (A key made of
+      # mix.lock alone kept serving an entry from before the 10-14 toolchain pin: 98 deps were
+      # recompiled on every run for nine days.)
+      - name: Toolchain id
+        id: toolchain
+        env:
+          OTP: ${{ steps.beam.outputs.otp-version }}
+          ELIXIR: ${{ steps.beam.outputs.elixir-version }}
+        run: |
+          . /etc/os-release
+          echo "id=${RUNNER_OS}-${RUNNER_ARCH}-${ID}${VERSION_ID}-${OTP}-${ELIXIR}" >> "$GITHUB_OUTPUT"
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
       - name: Install inotify-tools
-        run: sudo apt-get update && sudo apt-get install -y inotify-tools
+        run: |
+          sudo apt-get install -y inotify-tools || { sudo apt-get update && sudo apt-get install -y inotify-tools; }
       - name: Install br (Beads CLI)
         env:
           BR_INSTALLER_SHA: 6c8283c43773212ad1509c2caa4f400674674a50
@@ -56,58 +114,108 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify Jido fork pins
         run: echo "JRM-T003 reading pins from JIDO_FORKS.md"
-      - name: Cache deps
+      - name: Cache deps and build
         uses: actions/cache@v4
         with:
           path: |
             packages/foreman_server/deps
             packages/foreman_server/_build
-          key: ${{ runner.os }}-foreman-server-${{ hashFiles('packages/foreman_server/mix.lock') }}
+          key: foreman-server-${{ steps.toolchain.outputs.id }}-${{ hashFiles('packages/foreman_server/mix.lock') }}
+          restore-keys: |
+            foreman-server-${{ steps.toolchain.outputs.id }}-
       - name: Install dependencies
         run: cd packages/foreman_server && mix deps.get
       - name: Compile with warnings as errors
         run: cd packages/foreman_server && mix compile --warnings-as-errors
+      # Lint is independent of the partition: one leg runs it.
       - name: Format check
+        if: matrix.partition == 1
         run: cd packages/foreman_server && mix format --check-formatted
       - name: Credo
+        if: matrix.partition == 1
         run: cd packages/foreman_server && mix credo --min-priority higher
       - name: Doctor
+        if: matrix.partition == 1
         run: cd packages/foreman_server && mix doctor --raise
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 120); do
+            if docker exec foreman-pg pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+              echo "postgres ready (poll $i)"; exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/pg-start.log; docker logs foreman-pg || true
+          echo "::error::postgres did not become ready"; exit 1
       - name: Setup database
-        run: cd packages/foreman_server && MIX_ENV="test" mix ecto.create && MIX_ENV="test" mix ecto.migrate && MIX_ENV="test" mix event_store.init
-      - name: Run tests with coverage
-        run: cd packages/foreman_server && mix test --cover --warnings-as-errors
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: foreman-server-coverage
-          path: packages/foreman_server/_build/test/cover/
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: foreman-server-test-results
-          path: packages/foreman_server/_build/test/test-results/
+        run: cd packages/foreman_server && mix ecto.create && mix ecto.migrate && mix event_store.init
+      # SlowestReport prints the slowest tests and modules at the end of every log, so the next
+      # slow test is visible. Not `--slowest`: that implies `--trace`, which runs everything
+      # serially with test timeouts off, a different run from the one this job exists to execute.
+      - name: Run tests (partition ${{ matrix.partition }} of 4)
+        run: cd packages/foreman_server && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport
+
+  # The REQUIRED `foreman_server` context. `if: always()` makes it report even when a partition
+  # failed or was cancelled; the step then fails unless every partition passed.
+  foreman-server:
+    name: foreman_server
+    needs: [changes, foreman-server-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all four partitions
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          PARTITIONS: ${{ needs.foreman-server-tests.result }}
+        run: |
+          echo "changes=$CHANGES code=$CODE partitions=$PARTITIONS"
+          if [ "$CHANGES" != success ]; then
+            echo "::error::the change classification did not succeed ($CHANGES)"; exit 1
+          fi
+          if [ "$CODE" = true ] && [ "$PARTITIONS" = success ]; then
+            echo "all four partitions passed"
+          elif [ "$CODE" = false ] && [ "$PARTITIONS" = skipped ]; then
+            echo "docs-only change set: the partitions were skipped on purpose"
+          else
+            echo "::error::foreman_server failed: partitions=$PARTITIONS (code=$CODE)"; exit 1
+          fi
 
   jido-harness:
     name: jido_harness
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
+        id: beam
         with:
           elixir-version: '1.20.4'
           otp-version: '28'
+      - name: Toolchain id
+        id: toolchain
+        env:
+          OTP: ${{ steps.beam.outputs.otp-version }}
+          ELIXIR: ${{ steps.beam.outputs.elixir-version }}
+        run: |
+          . /etc/os-release
+          echo "id=${RUNNER_OS}-${RUNNER_ARCH}-${ID}${VERSION_ID}-${OTP}-${ELIXIR}" >> "$GITHUB_OUTPUT"
       - name: Install hex/rebar
         run: mix local.hex --force && mix local.rebar --force
-      - name: Cache deps
+      # `deps/` is tracked in git, so only the build is cached. The dialyzer PLTs are the
+      # expensive part of `mix quality` (about 135 s cold): the core and Elixir PLTs live in
+      # $MIX_HOME (~/.mix), the project PLT in _build/dev. dialyxir re-checks a restored PLT
+      # against the current deps, so a stale one is refreshed, not trusted.
+      - name: Cache build and PLTs
         uses: actions/cache@v4
         with:
           path: |
-            packages/jido_harness/deps
             packages/jido_harness/_build
-          key: ${{ runner.os }}-jido-harness-${{ hashFiles('packages/jido_harness/mix.lock') }}
+            ~/.mix/dialyxir_*
+          key: jido-harness-${{ steps.toolchain.outputs.id }}-${{ hashFiles('packages/jido_harness/mix.lock') }}
+          restore-keys: |
+            jido-harness-${{ steps.toolchain.outputs.id }}-
       - name: Install dependencies
         run: cd packages/jido_harness && mix deps.get
       - name: Quality
@@ -117,6 +225,8 @@ jobs:
 
   foreman-cli:
     name: foreman_cli
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -41,12 +41,16 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
   # @row_columns. Fixtures spell the joined form identically; keep the two in step.
   @header_columns ~w(provider model context max-out thinking images)
 
-  @spec check(atom(), String.t() | nil) :: :ok | :unchecked | {:error, term()}
-  def check(_provider, nil), do: :unchecked
-  def check(:pi, model) when is_binary(model), do: pi_model_exists?(model)
-  def check(_provider, _model), do: :unchecked
+  @spec check(atom(), String.t() | nil, keyword()) :: :ok | :unchecked | {:error, term()}
+  def check(provider, model, opts \\ [])
+  def check(_provider, nil, _opts), do: :unchecked
 
-  defp pi_model_exists?(model) do
+  def check(:pi, model, opts) when is_binary(model),
+    do: pi_model_exists?(model, Keyword.get(opts, :query_timeout_ms, @query_timeout_ms))
+
+  def check(_provider, _model, _opts), do: :unchecked
+
+  defp pi_model_exists?(model, query_timeout_ms) do
     # `Task.async/1` LINKS the caller — a raw `System.cmd` :enoent (no `pi`
     # on PATH) or any other exception inside the task crashes RunExecutor
     # itself instead of returning a clean {:error, ...}. Confirmed live:
@@ -62,7 +66,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ModelCatalog do
       end)
 
     result =
-      case Task.yield(task, @query_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      case Task.yield(task, query_timeout_ms) || Task.shutdown(task, :brutal_kill) do
         {:ok, {:ok, {output, 0}}} -> parse_result(output, model)
         {:ok, {:ok, {output, _nonzero}}} -> {:error, {:catalog_query_failed, String.trim(output)}}
         {:ok, {:error, reason}} -> {:error, {:catalog_query_failed, reason}}
