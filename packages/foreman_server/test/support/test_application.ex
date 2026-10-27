@@ -53,9 +53,10 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   @doc """
   Raises at once if `name` is not subscribed to the live `ProjectionStore`.
 
-  A live singleton that lost its subscription (the store crashed and was restarted by the
-  supervisor, which comes back with no subscribers) never sees another event, so a test that
-  waits for it to act on one hangs until its own timeout. This names the cause instead.
+  A live singleton that lost its subscription (`keep_subscribers: false`, or a throwaway/replaced
+  store) never sees another event, so a test that waits for it to act on one hangs until its own
+  timeout. This names the cause instead. (A supervisor restart of the real store keeps
+  subscribers: `ProjectionStore.SubscriberLedger`, foreman-m75e9.)
   """
   @spec assert_subscribed!(atom()) :: :ok
   def assert_subscribed!(name) do
@@ -63,8 +64,8 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
       :ok
     else
       raise "#{inspect(name)} (pid #{inspect(Process.whereis(name))}) is not subscribed to " <>
-              "ForemanServer.ProjectionStore: an earlier test crashed or replaced the store " <>
-              "(a restarted store has no subscribers), so no event will ever reach it. " <>
+              "ForemanServer.ProjectionStore: an earlier test replaced the store or reset it " <>
+              "with keep_subscribers: false, so no event will ever reach it. " <>
               "Crash-on-purpose tests must use ForemanServer.TestSupport.ThrowawayProjectionStore."
     end
   end

@@ -606,6 +606,28 @@ repaired by re-running the same adoption.
 Task-provider boundary reminder: RunExecutor drives claim/complete/fail;
 BootReconciliation drives orphan-reopen.
 
+### A restarted ProjectionStore must not lose its subscribers (foreman-m75e9)
+
+`ProjectionStore` subscribers (Dispatcher, PR watcher, notifier, approvals, ...) call
+`subscribe/1` once, in their own `init/1`. A supervisor restart of the named store used to come
+back with an empty subscriber map: the server stayed up, tasks imported and were approved, and
+no run ever started because the live Dispatcher never received another event. A store crash
+must not depend on every subscriber noticing it.
+
+- The durable subscriber list lives in `ProjectionStore.SubscriberLedger`, an ETS table owned by
+  a process started *before* the store and outside its failure domain. The store writes it on
+  `subscribe` and `:DOWN`, and re-adopts (monitors) the live entries in `init/1`.
+- A restarted store rebuilds its projection from the event log in `init/1`; on restart it also
+  replays the log to subscribers that asked for `replay_existing: true` (this covers events
+  committed while the store was down). `replay_existing: false` subscribers stay live-only: events
+  committed during the downtime are not redelivered to them.
+- Only the registered singleton uses the ledger. A throwaway store (`GenServer.start/2`) must
+  never adopt live subscribers, so crash-on-purpose tests keep using `ThrowawayProjectionStore`;
+  the crash-the-real-singleton regression is `projection_store_restart_test.exs`.
+- Rejected: re-subscribing in every subscriber (20+ hand-rolled monitors) and `rest_for_one`
+  (restarts the Aggregator, CommandRouter and run executors, and re-fires Dispatcher/boot
+  reconciliation side effects for a read-model crash).
+
 <!-- bv-agent-instructions-v3 -->
 
 ---

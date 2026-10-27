@@ -32,6 +32,7 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
+  alias ForemanServer.ProjectionStore.SubscriberLedger
 
   alias ForemanServer.Events.{
     CoordinatorUsageRecorded,
@@ -1142,7 +1143,7 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def init(init_arg) do
-    {:ok, rebuild_from_event_log(init_now_ms_fun(init_arg))}
+    {:ok, init_now_ms_fun(init_arg) |> rebuild_from_event_log() |> restore_subscribers()}
   end
 
   @impl true
@@ -1560,6 +1561,7 @@ defmodule ForemanServer.ProjectionStore do
 
     Process.put(:projection_subscribers, subscribers)
     state = %{state | subscribers: subscribers}
+    if singleton?(), do: SubscriberLedger.put(pid, Keyword.get(opts, :replay_existing, false))
 
     if Keyword.get(opts, :replay_existing, false) do
       case EventStore.read_all_streams_forward(0, 99_999_999) do
@@ -1570,6 +1572,7 @@ defmodule ForemanServer.ProjectionStore do
         {:error, reason} ->
           if newly_monitored? do
             Process.demonitor(ref, [:flush])
+            if singleton?(), do: SubscriberLedger.delete(pid)
             remaining = Map.delete(subscribers, pid)
             Process.put(:projection_subscribers, remaining)
             {:reply, {:error, reason}, %{state | subscribers: remaining}}
@@ -1943,7 +1946,40 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    if singleton?(), do: SubscriberLedger.delete(pid)
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+  end
+
+  # Only the named singleton keeps a durable subscriber ledger; a throwaway store started with
+  # `GenServer.start/2` (tests that crash one on purpose) must not adopt the live subscribers.
+  defp singleton?, do: Process.whereis(__MODULE__) == self()
+
+  # A supervisor restart hands this process an empty subscriber map, but every boot-time
+  # subscriber subscribed once and is still alive. Re-adopt them from the ledger (foreman-m75e9).
+  # `replay_existing: true` subscribers get the committed log again, exactly as at their own
+  # subscribe: that also covers events committed while the store was down, which no live
+  # broadcast delivered. `replay_existing: false` subscribers keep their live-only contract.
+  defp restore_subscribers(state) do
+    if singleton?() do
+      entries = SubscriberLedger.list()
+      subscribers = Map.new(entries, fn %{pid: pid} -> {pid, Process.monitor(pid)} end)
+      Process.put(:projection_subscribers, subscribers)
+
+      case Enum.filter(entries, & &1.replay_existing) do
+        [] ->
+          :ok
+
+        replaying ->
+          case EventStore.read_all_streams_forward(0, 99_999_999) do
+            {:ok, events} -> Enum.each(replaying, &replay_events(&1.pid, events))
+            {:error, reason} -> raise "ProjectionStore restart replay failed: #{inspect(reason)}"
+          end
+      end
+
+      %{state | subscribers: subscribers}
+    else
+      state
+    end
   end
 
   defp broadcast_events(state, events) do
