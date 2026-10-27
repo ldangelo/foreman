@@ -3962,7 +3962,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         }
       }
 
-      {:ok, state} = RunExecutor.init({"run-template", projection, []})
+      # Minted, not typed: `:kickoff` drives the run through the real dispatch path, so it is
+      # left in the process-wide ProjectionStore (this run's task is not in the store, so it
+      # cannot be completed). Every test's `setup` resets that store, so a typed id is wiped
+      # unless this test is the module's last one - the seed's shuffle decides (foreman-jcyfj).
+      run_id = ForemanServer.TestSupport.UniqueIds.unique_run_id("template")
+      {:ok, state} = RunExecutor.init({run_id, projection, []})
       {:noreply, _next_state} = RunExecutor.handle_info(:kickoff, state)
 
       expected_artifact =
@@ -3972,7 +3977,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert prompt =~ "# implement :: code-generation"
       assert prompt =~ "Phase index: 1"
       assert prompt =~ "Task ID: task-template"
-      assert prompt =~ "Run ID: run-template"
+      assert prompt =~ "Run ID: #{run_id}"
       assert prompt =~ "Project: `project-template`"
       assert prompt =~ "Workflow: `implement` (`digest-template`)"
       assert prompt =~ expected_artifact
@@ -4033,7 +4038,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         }
       }
 
-      {:ok, state} = RunExecutor.init({"run-strict", projection, []})
+      # Minted, not typed - see the `run-template` test above (foreman-jcyfj).
+      run_id = ForemanServer.TestSupport.UniqueIds.unique_run_id("strict")
+      {:ok, state} = RunExecutor.init({run_id, projection, []})
       assert length(state.phase_specs) == 1
 
       # Drive :kickoff synchronously so the assertion below observes
