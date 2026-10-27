@@ -13,42 +13,70 @@ defmodule ForemanServer.TestSupport.RunDrain do
   # actor kill (`run_slots.release ... exited {:killed, ...}`), and
   # `TaskRunTerminated` arrives for a task the store no longer knows.
   #
-  # `drain!/1` stops every executor under `RunSupervisor` (synchronously) and
-  # then flushes the Dispatcher -> BootReconciliation -> Dispatcher mailboxes, so
-  # events those executors already emitted are fully handled before the caller
-  # resets anything.
+  # The executor need not exist yet when the drain starts. A test that ends right after
+  # approving a task leaves the Dispatcher still handling `TaskDispatched`
+  # (`RunAdmission.start/2` is several aggregate round trips; a Dispatcher that was just
+  # restarted is behind its whole replay of the event log), and it is the Dispatcher that
+  # starts the executor, when it gets to it. Stopping the executors first and flushing the
+  # Dispatcher afterwards lets that very flush start the executor the stop had just missed:
+  # it outlives the drain and the reset, finds its project gone and, 30-60 ms later, emits
+  # `PhaseStarted`, `PhaseFailed`, `TaskExecutionFailed` and `RunSlotReleased`, none of which
+  # names a project, into whichever test runs then (foreman-nix1u: every workspace view
+  # refreshes on an event that names no project).
+  #
+  # So `drain!/1` works in rounds. A round flushes the Dispatcher -> BootReconciliation ->
+  # Dispatcher mailboxes (what is queued there runs to the end, and may start executors),
+  # then stops every executor under `RunSupervisor` (synchronously). A round that stopped
+  # something goes round again: the events those executors emitted on the way out are queued
+  # behind the barriers, and handling them may start more. The drain returns after the first
+  # round that found nothing to stop: no executor is running and nothing queued can start one.
 
   @default_barriers [ForemanServer.Workflow.Dispatcher, ForemanServer.Workflow.BootReconciliation]
   @barrier_timeout_ms 5_000
+  # A drain that still finds executors after this many rounds is draining a Dispatcher that
+  # keeps starting runs for itself: fail instead of leaking them into the next test.
+  @max_rounds 10
 
   @spec drain!(keyword()) :: :ok
   def drain!(opts \\ []) do
-    barriers = Keyword.get(opts, :barrier, @default_barriers)
+    drain_rounds(Keyword.get(opts, :barrier, @default_barriers), @max_rounds)
+  end
 
-    stop_executors()
+  defp drain_rounds(_barriers, 0) do
+    raise "RunDrain.drain!/1: executors were still being started after #{@max_rounds} rounds " <>
+            "of flush-and-stop; the barrier processes keep starting runs for themselves"
+  end
 
+  defp drain_rounds(barriers, rounds_left) do
     # Dispatcher may cast to BootReconciliation, whose dispatches the
     # Dispatcher can observe again, hence the second pass.
     flush(barriers)
     flush(barriers)
-    :ok
+
+    case stop_executors() do
+      0 -> :ok
+      _stopped -> drain_rounds(barriers, rounds_left - 1)
+    end
   end
 
+  # The number of executors stopped.
   defp stop_executors do
     case Process.whereis(ForemanServer.Workflow.RunSupervisor) do
       nil ->
-        :ok
+        0
 
       sup ->
-        for {_id, pid, _type, _modules} <- DynamicSupervisor.which_children(sup), is_pid(pid) do
-          # `terminate_child/2` returns once the child is down.
-          _ = DynamicSupervisor.terminate_child(sup, pid)
-        end
+        executors =
+          for {_id, pid, _type, _modules} <- DynamicSupervisor.which_children(sup),
+              is_pid(pid),
+              do: pid
 
-        :ok
+        # `terminate_child/2` returns once the child is down.
+        Enum.each(executors, &DynamicSupervisor.terminate_child(sup, &1))
+        length(executors)
     end
   catch
-    :exit, _ -> :ok
+    :exit, _ -> 0
   end
 
   defp flush(names) do

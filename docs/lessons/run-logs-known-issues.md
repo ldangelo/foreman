@@ -117,6 +117,30 @@ Each rule names the failure it removed and how it was reproduced, so it can be t
 - **A LiveView page held stale on purpose must not refresh.** Removing an entry "elsewhere" and then clicking its row
   races the page's own refresh (`coalesce_ms`, 20 ms in tests, 250 ms by default): set `coalesce_ms: 60_000` for the
   test, or send the event with `render_click(view, event, params)`.
+- **`RunDrain` drains to a fixpoint, because the Dispatcher starts a run when it gets to it, not when the projection shows
+  it (foreman-nix1u).** `AdoptionService.continue/5` approves the new thread (`auto_approve: true`); the live Dispatcher
+  starts a real `RunExecutor` for it after `RunAdmission.start/2`'s aggregate round trips, and later still while it is
+  behind (every `DispatcherRestart.restart!/0` replays the whole event log into its mailbox: seconds in a full-size VM).
+  Every `ProjectionStoreReset.reset!/0` drains first, but the drain stopped the executors and only then flushed the
+  Dispatcher, so the flush started the very executor the stop had missed. It outlived the reset, found its project gone
+  and 31-63 ms later emitted `PhaseStarted`, `PhaseFailed`, `TaskExecutionFailed` and `RunSlotReleased`, none of which
+  names a project; an event without a project concerns every workspace, so a view mounted by the next test refreshed.
+  `ProjectWorkspaceLiveTest` "an idle workspace does no work" got `[:foreman_server, :workspace, :refresh]` inside its
+  100 ms `refute_receive` (main CI run 40436675237: the task id prefix `continue-` and the same
+  `run_phases(0) failed: :project_not_found` are in its log). Reproduced by running the flow of `AdoptionProjectionTest`
+  "continue creates a new thread..." and then the workspace test's own setup and body: 6 of 6 failed, 0 of 6 with the
+  Dispatcher terminated or with the rounds below. `RunDrain.drain!/1` now flushes, stops, and goes round again until a
+  round finds no executor to stop; a test whose own point is the approval still keeps the Dispatcher out
+  (`Supervisor.terminate_child/2` and `DispatcherRestart.restart!/0`, as every other `continue` test does).
+- **A test that waits for ticks of a sweep over shared state owns that state (foreman-p7123).** `PrMonitor` sweeps every
+  PR the one `ProjectionStore` watches, and a capped tick (`:pr_monitor_max_per_tick`) takes the first N of them in
+  `{updated_at, run_id, pr_url}` order. The PRs earlier tests left open are fetched, one tick each, before a PR whose run id
+  sorts behind them, so "the leftovers are polled on the next tick" waited for as many ticks as there were leftovers: 20
+  fetches of other PRs in 20 s at the old 1 s floor (main CI run 40436675237), and about 120 leftovers are enough to
+  exceed the 2 s window at the 20 ms floor (`:pr_monitor_min_delay_ms`, foreman-r22ik). The tests of "scheduled ticks" now
+  start from `ProjectionStoreReset.reset!/0`, so the three PRs they create are the whole watch set. With 250 leftovers
+  seeded the old test failed 3 of 3 with the CI message; the new one passes, and still fails when a capped tick is
+  scheduled a full interval out instead of at the floor.
 
 ### Elixir Test Suite Non-Determinism (2026-09-02)
 

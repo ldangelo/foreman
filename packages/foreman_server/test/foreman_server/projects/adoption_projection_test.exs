@@ -243,6 +243,14 @@ defmodule ForemanServer.Projects.AdoptionProjectionTest do
   end
 
   test "continue creates a new thread in the target and leaves the source untouched", ctx do
+    # `continue` approves the new task; keep the app-level Dispatcher from starting a real run,
+    # which would outlive this test and emit events (`PhaseFailed`, `TaskExecutionFailed`, ...)
+    # into whichever test runs next (foreman-nix1u).
+    :ok =
+      Supervisor.terminate_child(ForemanServer.Application, ForemanServer.Workflow.Dispatcher)
+
+    on_exit(fn -> ForemanServer.TestSupport.DispatcherRestart.restart!() end)
+
     seed_run!(%{project: ctx.a, run: ctx.run, task: ctx.task, repo: ctx.repo, terminal?: false})
     dir = archive!(ctx.repo, ctx.run, ctx.a)
     before = File.read!(Path.join(dir, "manifest.json"))
