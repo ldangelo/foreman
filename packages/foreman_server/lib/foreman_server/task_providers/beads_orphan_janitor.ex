@@ -24,6 +24,14 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
           bead.id` → close with `transition_comment: "foreman-orphan:no-task"`.
         - (b) task exists and is `closed` / `failed` → close with
           `transition_comment: "foreman-orphan:terminal-task"`.
+        - (a) with no task but a `Review.BeadSink` gap bead (tag `task_id`
+          starts `review:`, see `BeadSink.gap_task_id?/1`) → retain with
+          `[:retained, :gap_awaiting_dispatch]`: its task only exists once
+          `BeadsWatcher` dispatches it, so "no task" means "not dispatched yet".
+          A gap bead that is never dispatched stays open until an operator acts
+          (out of scope). Once its task exists, (b) and "in flight" apply as usual.
+        - malformed `agent_context` (not a JSON object) → never closed;
+          counted in `lines_malformed` and logged at error level.
         - non-foreman-tagged → skip, emit
           `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]`.
         - foreman-tagged but no `linked_at` (or malformed `linked_at`) →
@@ -32,6 +40,9 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
           stay retained until provenance is re-established).
         - foreman-tagged and `linked_at` is younger than `grace_ms` → retain
           with telemetry `[:retained, :age_young]`.
+
+    * `agent_context` is decoded with `BeadsAgentContext` (real `br` emits it as a
+      JSON string; map-shaped legacy fixtures also work).
 
     * On every successful close, emit
       `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :closed]`
@@ -74,7 +85,11 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
 
   use GenServer
 
+  require Logger
+
+  alias ForemanServer.Review.BeadSink
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+  alias ForemanServer.TaskProviders.BeadsAgentContext
 
   @runner Application.compile_env(
             :foreman_server,
@@ -411,6 +426,14 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
           :untagged ->
             {:untagged, nil}
 
+          :malformed_context ->
+            Logger.error(
+              "BeadsOrphanJanitor: bead #{inspect(bead_id)} in project #{state.project_id} " <>
+                "has a malformed agent_context; leaving it untouched (never closed as an orphan)"
+            )
+
+            {:malformed, bead_id}
+
           {:tagged, tag} ->
             case age_gate(state, parsed, tag, now_ms) do
               :ok ->
@@ -436,26 +459,23 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
   # ----- Step 2: Foreman-tag check (AC-023-4) --------------------------
 
   # Returns `{:tagged, tag_map}` when `agent_context.foreman` is present;
-  # `:untagged` otherwise. The foreman-tag check is the architectural
+  # `:untagged` when `agent_context` is absent or carries no foreman envelope;
+  # `:malformed_context` when `agent_context` cannot be decoded (the caller
+  # logs it and leaves the bead alone: an unreadable provenance never makes a
+  # bead eligible for closing). The foreman-tag check is the architectural
   # invariant: the janitor NEVER touches untagged beads.
-  # INTENTIONALLY map-only (foreman-yqgvw). Real `br` 0.6.0 emits `agent_context` as
-  # a JSON STRING, so against real data this matches nothing: every bead is
-  # `:untagged` and the janitor never closes anything. That is load-bearing, not an
-  # oversight: decoding the string would make every Foreman-created bead eligible,
-  # including `Review.BeadSink` gap beads whose tag `task_id` is the synthetic
-  # `review:<kind>:<id>` (no task ever has that id) and which only get a task
-  # (`external_id == bead id`) once `BeadsWatcher` dispatches them. A gap bead not
-  # yet dispatched after `grace_ms` (watcher off, dispatch held) would be closed as
-  # `foreman-orphan:no-task`. Making the janitor live on real data is a product
-  # decision (it needs a gap-bead exemption first); see
-  # docs/lessons/beads-runtime-and-dispatch.md and BeadsOrphanJanitorRealShapeTest.
+  #
+  # Real `br` 0.6.0 emits `agent_context` as a JSON STRING; `BeadsAgentContext`
+  # is the shared decoder (foreman-n3923). `BeadsWatcher.foreman_tag?/1` stays
+  # string-blind on purpose (it is what lets gap beads be dispatched), so this
+  # reader decodes on its own and carries the gap-bead exemption in
+  # `classify_orphan/4`.
   defp foreman_tag_classify(parsed) when is_map(parsed) do
-    case parsed do
-      %{"agent_context" => %{"foreman" => tag}} when is_map(tag) ->
-        {:tagged, tag}
-
-      _ ->
-        :untagged
+    case BeadsAgentContext.decode(Map.get(parsed, "agent_context")) do
+      {:ok, %{"foreman" => tag}} when is_map(tag) -> {:tagged, tag}
+      {:ok, _no_foreman_envelope} -> :untagged
+      :absent -> :untagged
+      {:error, :malformed} -> :malformed_context
     end
   end
 
@@ -493,7 +513,13 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
 
   # ----- Step 4: Projection lookup + orphan classification ------------
 
-  # `nil` → no task → orphan case (a) → close with `:no-task`.
+  # `nil` → no task → orphan case (a) → close with `:no-task`, EXCEPT for a
+  #   `Review.BeadSink` gap bead: its tag `task_id` is the synthetic
+  #   `review:<kind>:<id>` and a task (`external_id == bead id`) exists only
+  #   after `BeadsWatcher` dispatches it, so "no task" means "waiting for
+  #   dispatch", not "orphan" → retain (`:gap_awaiting_dispatch`). Once a task
+  #   exists the normal rules below apply to it. A gap bead that is never
+  #   dispatched stays open until an operator acts: out of scope here.
   # `%{status: "closed" | "failed"}` → orphan case (b) → close with
   #   `:terminal-task`.
   # `%{status: <other>}` → foreman-side story still in flight → retain.
@@ -502,7 +528,11 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
 
     case lookup_task(state.project_id, bead_id) do
       nil ->
-        close_orphan(state, bead_id, tag, "foreman-orphan:no-task", now_ms)
+        if BeadSink.gap_task_id?(Map.get(tag, "task_id")) do
+          {:retained, :gap_awaiting_dispatch, bead_id}
+        else
+          close_orphan(state, bead_id, tag, "foreman-orphan:no-task", now_ms)
+        end
 
       %{status: status} when is_binary(status) ->
         if MapSet.member?(@valid_terminal_statuses, status) do
@@ -690,6 +720,7 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
   defp inspect_reason(:no_linked_at), do: "no_linked_at"
   defp inspect_reason(:projection_shape), do: "projection_shape"
   defp inspect_reason(:close_failure), do: "close_failure"
+  defp inspect_reason(:gap_awaiting_dispatch), do: "gap_awaiting_dispatch"
   defp inspect_reason({:active_task, status}), do: "active_task:#{status}"
   defp inspect_reason(reason), do: inspect(reason)
 
@@ -722,6 +753,14 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
   end
 
   defp increment_retained(counters, :close_failure) do
+    %{
+      counters
+      | lines_retained: counters.lines_retained + 1,
+        lines_tagged: counters.lines_tagged + 1
+    }
+  end
+
+  defp increment_retained(counters, :gap_awaiting_dispatch) do
     %{
       counters
       | lines_retained: counters.lines_retained + 1,

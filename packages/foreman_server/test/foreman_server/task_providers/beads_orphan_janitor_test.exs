@@ -508,41 +508,30 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
     end
   end
 
-  describe "run_scan/2 against the real br export shape (foreman-yqgvw)" do
-    # Real `br` 0.6.0 emits `agent_context` as a JSON STRING (issues.jsonl and
-    # `br show --json` alike). The janitor is intentionally map-only: a
-    # Foreman-created bead, including a Review.BeadSink gap bead (synthetic
-    # `review:...` task_id, task only appears once BeadsWatcher dispatches it),
-    # is NOT classified as tagged and is NEVER closed, however old. If this
-    # starts failing the janitor has begun closing undispatched gap beads; see
-    # docs/lessons/beads-runtime-and-dispatch.md before changing it.
-    test "a bead with a string agent_context is untagged and never closed", %{
+  describe "run_scan/2 with a JSON-string agent_context (foreman-n3923)" do
+    # Real `br` 0.6.0 emits `agent_context` as a JSON STRING; the janitor decodes
+    # it with the shared `BeadsAgentContext`. The real-br end-to-end cases live in
+    # `beads_orphan_janitor_real_br_test.exs`; these pin the gap-bead exemption's
+    # boundary: it only covers a gap bead WAITING FOR DISPATCH (no task yet).
+    test "a gap bead whose task exists and is terminal is closed by the normal rule", %{
       state: state,
       now_ms: now_ms
     } do
-      linked_at = DateTime.from_unix!(now_ms - 600_000, :millisecond) |> DateTime.to_iso8601()
-
-      line =
-        Jason.encode!(%{
-          id: "gap-bead-1",
-          title: "gap",
-          agent_context:
-            Jason.encode!(%{
-              foreman: %{
-                task_id: "review:run:r1",
-                command_id: "review:r1:gap:0",
-                origin: "foreman",
-                linked_at: linked_at
-              }
-            })
-        })
-
-      state = put_jsonl(state, [line])
+      :ets.insert(:janitor_projection, {"gap-bead-1", %{status: "closed"}})
+      state = put_jsonl(state, [string_context_line("gap-bead-1", "review:run:r1", now_ms)])
 
       counters = BeadsOrphanJanitor.run_scan(state, now_ms: now_ms)
 
-      assert counters.lines_untagged == 1
-      assert counters.lines_tagged == 0
+      assert counters.lines_closed == 1
+      assert_received {:complete_called, "gap-bead-1", "foreman-orphan:terminal-task"}
+    end
+
+    test "a gap bead with no task is retained, not closed", %{state: state, now_ms: now_ms} do
+      state = put_jsonl(state, [string_context_line("gap-bead-2", "review:run:r1", now_ms)])
+
+      counters = BeadsOrphanJanitor.run_scan(state, now_ms: now_ms)
+
+      assert counters.lines_retained == 1
       assert counters.lines_closed == 0
       refute_received {:complete_called, _, _}
     end
@@ -583,6 +572,25 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
           linked_at: linked_at
         }
       }
+    })
+  end
+
+  # A bead as real `br` exports it: `agent_context` is a JSON string, linked 10 min ago.
+  defp string_context_line(id, task_id, now_ms) do
+    linked_at = DateTime.from_unix!(now_ms - 600_000, :millisecond) |> DateTime.to_iso8601()
+
+    Jason.encode!(%{
+      id: id,
+      title: "string context",
+      agent_context:
+        Jason.encode!(%{
+          foreman: %{
+            task_id: task_id,
+            command_id: "cmd-#{id}",
+            origin: "foreman",
+            linked_at: linked_at
+          }
+        })
     })
   end
 

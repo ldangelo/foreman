@@ -129,7 +129,8 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   `config :foreman_server, :start_beads_orphan_janitor?, true`. After a
   grace window, `BeadsOrphanJanitor` closes Beads whose matching
   Foreman task never landed (stranded issuance) or whose Foreman task
-  already terminated. The janitor caches its last scan counters as
+  already terminated. Review gap beads that have not been dispatched yet
+  (no task) are never closed as orphans. The janitor caches its last scan counters as
   `orphan_backlog` (8 fields: `lines_processed`, `lines_tagged`,
   `lines_untagged`, `lines_malformed`, `lines_retained`,
   `lines_closed`, `lines_age_young`, `lines_no_linked_at`).
