@@ -15,7 +15,8 @@ defmodule ForemanServer.Workflow.BeadsTreeCompletionTest do
   hand-written.
 
   The run-level propagation (the run ends `RunFailed`, the task fails, the
-  unfinished children reach the artifact) is in `run_executor_beads_tree_test.exs`.
+  unfinished children reach the artifact) is in `run_executor_command_test.exs`
+  ("an implement-trd-beads epic tree decides the run's outcome").
   """
   use ExUnit.Case, async: false
 
