@@ -11,13 +11,8 @@
 # Earlier history of this file: review behavior was previously set only in the
 # Repository/Organization web UI. `inheritance: true` keeps this file a narrow override of
 # the UI settings instead of a full replacement.
-inheritance: true` is REQUIRED here, not decorative. It is what makes this
-# file a narrow override instead of a full replacement: every value not named
-# below continues to come from the Repository/Organization UI. Without it, the
-# `inheritance` schema default of `false` would silently reset unlisted settings
-# to CodeRabbit's own defaults — including `request_changes_workflow`, which the
-# UI sets to `true` and which is currently the only merge gate this repository
-# has (there is no test CI on pull requests).
+# `inheritance: true` is REQUIRED: without it the schema default (false) would reset every setting not named
+# below to CodeRabbit defaults instead of the Repository/Organization UI values.
 inheritance: true
 
 language: "en-US"
