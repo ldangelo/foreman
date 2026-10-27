@@ -1190,7 +1190,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # provisioned and before any agent runs, is what `CheckoutGuard` compares the checkout
   # against at the run's end. An executor that finds the worktree already in its state was
   # resumed: it never saw the checkout before the earlier phases, so it records `nil`
-  # (guard silent) rather than a snapshot that could blame the operator's edits.
+  # (guard silent) rather than a snapshot that could blame the operator's edits. A workflow
+  # that never declares a committing phase (`CheckoutGuard.expected?/1`) records `nil` too:
+  # it was never expected to leave a commit, so an empty branch proves nothing.
   defp snapshot_checkout(state, record) do
     cond do
       Map.has_key?(state, :checkout_snapshot) ->
@@ -1199,10 +1201,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Map.has_key?(state, :run_worktree) ->
         {:ok, Map.put(state, :checkout_snapshot, nil)}
 
-      is_map(record) ->
+      is_map(record) and CheckoutGuard.expected?(Map.get(state, :phase_specs) || []) ->
         with {:ok, snapshot} <- CheckoutGuard.snapshot(record) do
           {:ok, Map.put(state, :checkout_snapshot, snapshot)}
         end
+
+      is_map(record) ->
+        {:ok, Map.put(state, :checkout_snapshot, nil)}
 
       true ->
         {:ok, state}

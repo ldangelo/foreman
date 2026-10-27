@@ -441,33 +441,64 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
   end
 
   describe "checkout guard through phase_begin/3 and verify_run_outcome/2 (foreman-koas6)" do
-    setup ctx do
-      state = state(ctx)
-      phase = %{name: "work"}
-      assert {:ok, state, record} = RunExecutor.phase_begin(state, phase, 0)
-      %{state: state, record: record}
+    defp begin_run!(ctx, phase_specs) do
+      state = state(ctx, %{}, %{phase_specs: phase_specs})
+      assert {:ok, state, record} = RunExecutor.phase_begin(state, hd(phase_specs), 0)
+      {state, record}
     end
 
-    test "the run fails when its worktree is empty and the checkout gained a file", ctx do
+    defp commit_in!(record) do
+      File.write!(Path.join(record.worktree_path, "work.txt"), "real work\n")
+      git!(record.worktree_path, ["add", "."])
+      git!(record.worktree_path, ["commit", "--no-gpg-sign", "-m", "work", "--quiet"])
+    end
+
+    test "a committing workflow with an empty branch and checkout growth fails", ctx do
+      {state, _record} = begin_run!(ctx, [%{name: "work", commit: true}])
       File.write!(Path.join(ctx.repos["a"], "wrote-here-instead.md"), "oops\n")
 
       assert {:error, %{code: :checkout_written_instead_of_worktree, detail: detail}} =
-               RunExecutor.verify_run_outcome(ctx.state, nil)
+               RunExecutor.verify_run_outcome(state, nil)
 
       assert detail =~ "wrote-here-instead.md"
     end
 
     test "an operator edit in the checkout does not fail a run that committed", ctx do
-      File.write!(Path.join(ctx.record.worktree_path, "work.txt"), "real work\n")
-      git!(ctx.record.worktree_path, ["add", "."])
-      git!(ctx.record.worktree_path, ["commit", "--no-gpg-sign", "-m", "work", "--quiet"])
+      {state, record} = begin_run!(ctx, [%{name: "work", commit: true}])
+      commit_in!(record)
       File.write!(Path.join(ctx.repos["a"], "operator.txt"), "mine\n")
 
-      assert :ok = RunExecutor.verify_run_outcome(ctx.state, nil)
+      assert :ok = RunExecutor.verify_run_outcome(state, nil)
+    end
+
+    test "a workflow that never declares commit: true is not guarded (operator edit)", ctx do
+      # `assess` declares no `commit:` at all: an empty branch is its normal outcome.
+      {state, _record} = begin_run!(ctx, [%{name: "report"}])
+      File.write!(Path.join(ctx.repos["a"], "operator.txt"), "mine\n")
+
+      assert :ok = RunExecutor.verify_run_outcome(state, nil)
+    end
+
+    test "a workflow whose every phase is commit: false is not guarded", ctx do
+      {state, _record} = begin_run!(ctx, [%{name: "read", commit: false}])
+      File.write!(Path.join(ctx.repos["a"], "operator.txt"), "mine\n")
+
+      assert :ok = RunExecutor.verify_run_outcome(state, nil)
+    end
+
+    test "commit: false deferral: work pending in the worktree is not an empty run", ctx do
+      {state, record} =
+        begin_run!(ctx, [%{name: "one", commit: false}, %{name: "two", commit: true}])
+
+      File.write!(Path.join(record.worktree_path, "deferred.txt"), "pending\n")
+      File.write!(Path.join(ctx.repos["a"], "operator.txt"), "mine\n")
+
+      assert :ok = RunExecutor.verify_run_outcome(state, nil)
     end
 
     test "an untouched checkout passes with an empty branch", ctx do
-      assert :ok = RunExecutor.verify_run_outcome(ctx.state, nil)
+      {state, _record} = begin_run!(ctx, [%{name: "work", commit: true}])
+      assert :ok = RunExecutor.verify_run_outcome(state, nil)
     end
   end
 

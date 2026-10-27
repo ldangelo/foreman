@@ -96,16 +96,19 @@ untracked files is **kept**, never destroyed. When that happens the run records
 path. The run's own status does not change (its work was already proposed).
 Inspect or commit what is there, then `foreman run remove --id <run-id>`.
 
-**Work written to the checkout instead of the worktree.** If a run's last phase
-ends with no commit on its branch and a clean worktree, but the project's own
-checkout gained or changed files since the run's first phase started (a worker
-used the checkout's absolute path), the run **fails** with
+**Work written to the checkout instead of the worktree.** For a workflow with at
+least one phase declaring `commit: true` (`fix`, `implement-trd`,
+`implement-trd-beads`, `prd` and `review` do; `assess` does not), if the last
+phase ends with no commit on the run's branch and a clean worktree, but the
+project's own checkout gained or changed files since the run's first phase
+started (a worker used the checkout's absolute path), the run **fails** with
 `:checkout_written_instead_of_worktree`, naming the files. The comparison is
 against the checkout's status when the run began, so edits already in progress
 are not blamed. It does not fire when the run committed anything, cannot see
 writes that leave `git status` unchanged (ignored paths), checks only the
 primary repository of a multi-repository run, and stays silent on a resumed
-executor. A no-op run while you edit the checkout in the same window is
+executor. A committing workflow whose agent legitimately changed nothing (a
+review with no findings) while you edited the checkout in the same window is
 indistinguishable from the real failure and is failed too; the reason lists the
 files so you can judge.
 

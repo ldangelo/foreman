@@ -723,16 +723,21 @@ raise), so that server would not bind the session.
 
 - **Silent empty branch.** foreman-2onq1 (PR #677) fixed the prompt that gave workers the
   checkout's absolute path; a model can still write there. `Workflow.CheckoutGuard` is the
-  backstop: `RunExecutor.phase_begin/3` snapshots the checkout's `git status` entries (path ->
-  status, size, mtime) when the run's worktree is first provisioned, and
+  backstop. It applies only to a run whose workflow declares `commit: true` on at least one
+  phase (`CheckoutGuard.expected?/1`): an absent `commit:` is the default, not an expectation
+  (`assess` declares none and writes its report outside the worktree, so an empty branch is its
+  normal outcome). Bundled: `fix`, `implement-trd`, `implement-trd-beads`, `prd`, `review` are
+  guarded; `assess` is not. `RunExecutor.phase_begin/3` snapshots the checkout's `git status`
+  entries (path -> status, size, mtime) when the run's worktree is first provisioned, and
   `verify_run_outcome/2` (after the last phase's commit) fails the run with
   `:checkout_written_instead_of_worktree` when the branch has no commit past its base, the
   worktree is clean, and the checkout gained/changed entries versus the snapshot. `.beads/` is
-  excluded. It cannot see: runs that committed anything (never failed, whatever the operator
-  does), writes leaving status unchanged (ignored paths, identical rewrites), secondary
-  repositories of a multi-repo run, resumed executors (no snapshot; `nil` passes). A genuinely
-  no-op run plus an operator edit in the same window is a false positive by construction; the
-  reason names the files.
+  excluded. It cannot see: workflows with no `commit: true` phase, runs that committed anything
+  (never failed, whatever the operator does), writes leaving status unchanged (ignored paths,
+  identical rewrites), secondary repositories of a multi-repo run, resumed executors (no
+  snapshot; `nil` passes). Remaining false positive: a committing workflow whose agent
+  legitimately changed nothing (e.g. a review with no findings) while the operator edited the
+  checkout in the same window; the reason names the files.
 - **Retained worktree.** `clean_worktree` is deliberately unforced, so a dirty worktree
   survives. `cleanup_run_worktree/3` now dispatches `run.worktree_retained`
   (`RunWorktreeRetained{run_id, repo_id, path, reason, at}`), folded into the run projection's

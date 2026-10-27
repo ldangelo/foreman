@@ -38,6 +38,14 @@ defmodule ForemanServer.Workflow.CheckoutGuardTest do
     %{repo: repo, worktree: worktree, record: record}
   end
 
+  test "expected?/1: only an explicit commit: true counts" do
+    assert CheckoutGuard.expected?([%{name: "a", commit: true}])
+    assert CheckoutGuard.expected?([%{name: "a", commit: false}, %{name: "b", commit: true}])
+    refute CheckoutGuard.expected?([%{name: "a"}])
+    refute CheckoutGuard.expected?([%{name: "a", commit: false}])
+    refute CheckoutGuard.expected?([])
+  end
+
   defp snapshot!(record) do
     assert {:ok, snap} = CheckoutGuard.snapshot(record)
     snap

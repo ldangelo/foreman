@@ -9,6 +9,16 @@ defmodule ForemanServer.Workflow.CheckoutGuard do
   (foreman-2onq1 fixed the prompt that caused it; this is the deterministic
   backstop).
 
+  ## When it applies
+
+  Only to a run whose workflow was EXPECTED to commit: at least one phase declares
+  `commit: true` explicitly (`expected?/1`). An absent `commit:` also means "commit" to
+  `RunExecutor.phase_commits?/1`, but that default is not an expectation: `assess` declares
+  nothing and writes its report outside the worktree, so an empty branch is its normal
+  outcome. A workflow whose every phase says `commit: false`, or says nothing, is never
+  guarded. Of the bundled workflows, `fix`, `implement-trd`, `implement-trd-beads`, `prd` and
+  `review` declare `commit: true` (guarded); `assess` declares none (not guarded).
+
   ## What is compared
 
   `snapshot/1` records the checkout's `git status --porcelain` entries (path ->
@@ -30,12 +40,14 @@ defmodule ForemanServer.Workflow.CheckoutGuard do
 
   ## What it cannot detect
 
+    * A workflow with no explicit `commit: true` phase (see above).
     * A run that DID commit in its worktree and also wrote elsewhere in the
       checkout: its branch is not empty, so this is not the silent-empty failure.
-    * The operator editing the checkout during a run whose worktree is empty
-      (a legitimately no-op run): indistinguishable by status alone, so such a
-      run is failed and the reason names the files for the operator to judge.
-      A run that commits is never failed, whatever the operator does.
+    * An operator editing the checkout during a run of a committing workflow whose
+      agent legitimately changed nothing (for example a review that found nothing):
+      indistinguishable by status alone, so such a run is failed and the reason
+      names the files for the operator to judge. A run that commits is never failed,
+      whatever the operator does.
     * A write that leaves the checkout's status unchanged (an ignored path, or a
       byte-identical rewrite of a tracked file).
     * Resumed runs: the snapshot lives in executor memory, so a resumed executor
@@ -58,6 +70,16 @@ defmodule ForemanServer.Workflow.CheckoutGuard do
           base_ref: String.t(),
           entries: %{String.t() => entry()}
         }
+
+  @doc """
+  Whether the workflow was expected to commit: some phase declares `commit: true`
+  explicitly. `phase_specs` are normalized `PhaseSpec` maps, where an absent `commit:` is
+  `nil` (`RunExecutor.phase_commits?/1` treats that as commit, which is a default, not an
+  expectation).
+  """
+  @spec expected?([map()]) :: boolean()
+  def expected?(phase_specs) when is_list(phase_specs),
+    do: Enum.any?(phase_specs, &(Map.get(&1, :commit) == true))
 
   @doc "Records the checkout's status entries and the base the run is cut from."
   @spec snapshot(%{project_root: String.t(), base_ref: String.t()}) ::
