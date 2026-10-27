@@ -19,9 +19,9 @@ name: ci
 # checks pending forever.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, exp-ci-speed-base]
   push:
-    branches: [main]
+    branches: [main, exp-ci-speed-base]
 
 permissions:
   contents: read
