@@ -345,6 +345,19 @@ are deployed by `foreman init --force`. The CLI selects them via
 `--workflow-type implement-trd` or `--workflow-type implement-trd-beads`
 (see `docs/cli-reference.md` for the full flag set).
 
+`implement-trd-beads` no longer implements a TRD in one skill call: its single
+phase dispatches `/skill:ensemble-beads-build {{implementation.bead_id}}
+--foreman` (formerly `/skill:ensemble-full-implement-trd-beads
+{{implementation.trd_path_argument}} --foreman`), where `bead_id` is the
+frozen id of the tagged root epic bead (`task.external_id`), and it declares no
+`timeout_minutes:` (no deadline). The run is judged on the Beads graph, not the
+agent: after the last phase's commit `RunExecutor.verify_run_outcome/2`
+(`Workflow.BeadsTreeCompletion`) fails the run unless every parent-child
+descendant of the epic is `closed` (`:incomplete_children`,
+`:beads_tree_unreadable`, `:beads_tree_unverifiable`). Mechanics and caveats:
+`docs/lessons/beads-runtime-and-dispatch.md`; operator view: `docs/user-guide.md`
+("Executing a Beads epic tree").
+
 Strict approval rendering materializes the `command` field and the
 `worktree.base` field so the human review surfaces the exact slash
 command and base ref Foreman will execute. Branch placeholders
@@ -525,6 +538,12 @@ JSON round-trip is lossless.
   `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
   at approval. Every `br`/`bv` invocation passes `BEADS_DB` and
   `TRD_SCOPE` explicitly. Scaffolds are prefixed `[trd:<TRD_SCOPE>]`.
+- **Bead id.** For `implement-trd-beads`, also freeze `bead_id` (the triggering
+  bead's `task.external_id`; missing/blank fails approval with
+  `{:implementation_context_failed, :bead_id_missing | :bead_id_malformed}`),
+  rendered as `{{implementation.bead_id}}`. A `{{implementation.*}}`
+  placeholder still unresolved after approval rendering refuses the approval
+  with `{:implementation_placeholder_unresolved, [...]}`.
 - **Clean-vs-dirty cleanup.** Clean worktrees are removed on
   terminal phases; dirty worktrees are preserved with reason
   `:dirty` / `:active_workers` / `:clean_failed` /

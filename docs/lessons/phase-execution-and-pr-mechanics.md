@@ -574,6 +574,18 @@ same loss of information in the opposite direction. The STOP-on-missing rule
 above is what keeps a failure here loud, naming the absent path instead of
 producing a silently mis-sourced TRD.
 
+**A run's outcome can be checked after its LAST phase's commit (`implement-trd-beads`, PR 2 of TRD-2026-72f477ca).**
+`JobsiteObserver` calls `RunExecutor.verify_run_outcome/2` on the `:commit`
+step of the final phase only (before the stack-PR record and `phase.complete`);
+an `{:error, %FailureCause{}}` becomes `{:outcome_failed, reason}` and the phase,
+run and task fail through the normal failure path, so the usual failure
+side-effects (e.g. the Beads `blocked` transition comment) apply. The only check
+today is `Workflow.BeadsTreeCompletion`, and it applies only when the frozen
+plan context carries a `bead_id`. It exists because a `/skill:` phase is a
+prompt with no exit code: an agent that stops short (`EXECUTION BLOCKED`, a
+refused quality gate, a failed `br` call) simply ends its turn and the phase
+completes. See `beads-runtime-and-dispatch.md` for the graph rules.
+
 `cleanup_phase_worktree/4` is **deleted** — worktree reclamation is now
 run-level (`cleanup_run_worktree/2` from `finalize_run/1`). The paragraphs
 below described its behavior and are kept because the reasoning error they

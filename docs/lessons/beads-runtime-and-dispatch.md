@@ -43,6 +43,67 @@ target workflow's manifest (and a matching `foreman init --force` to refresh
 the installed runtime copy) — the mapping does not grow automatically as
 workflows are added.
 
+**`implement_trd_beads` beads are epic roots; the run is judged on the Beads graph (TRD-2026-72f477ca PR 2).**
+`implement-trd-beads.yaml` (name and `task_types: [implement_trd_beads]`
+unchanged) dispatches `/skill:ensemble-beads-build {{implementation.bead_id}}
+--foreman` (was `/skill:ensemble-full-implement-trd-beads
+{{implementation.trd_path_argument}} --foreman`): single worktree, single
+phase, and NO `timeout_minutes` (`FailurePolicy` resolves `:infinity`; a tree of
+dozens of beads runs for hours).
+
+- *Eligibility (unchanged).* `BeadsWatcher` dispatches a bead only when its
+  status is `open`, it carries label `foreman-exec`, `issue_type:
+  implement_trd_beads` maps to the workflow, and `agent_context.trd_path` is a
+  non-empty project-relative path (a missing/empty `trd_path` blocks the bead
+  with a remediation comment).
+- *Bead id.* `implementation.bead_id` is the frozen id of the bead that
+  triggered the task (`task.external_id`, set by BeadsWatcher).
+  `ImplementationContext` fails approval for an `implement-trd-beads` task
+  without one: `{:implementation_context_failed, :bead_id_missing |
+  :bead_id_malformed}`. An `{{implementation.*}}` placeholder still unresolved
+  after approval rendering refuses the approval
+  (`CommandGateway.assert_implementation_placeholders_resolved/1`) with
+  `{:implementation_placeholder_unresolved, ["{{implementation.bead_id}}"]}`
+  instead of the runtime renderer blanking it into an empty epic id, which
+  `beads-build` would read as a slug pattern and build an unrelated epic.
+- *Outcome check (`Workflow.BeadsTreeCompletion`, after the LAST phase's
+  commit).* beads-build is a prompt with no exit code or machine-readable
+  result, so Foreman reads the graph. The run completes only if EVERY
+  parent-child descendant of the epic is `closed`. The epic's own status is
+  never consulted (an epic left `open` over all-closed children completes;
+  Foreman then closes the epic bead through the task provider as before); a
+  descendant closed by a human mid-run counts as closed; `blocks` edges never
+  widen the tree. Otherwise the phase, run (`RunFailed`) and task fail via the
+  normal failure path: the epic bead goes `blocked` with the usual transition
+  comment `foreman-run:<run_id>:<artifact_path>`, the reason is
+  `:incomplete_children: N descendant bead(s) of <epic> are not closed: <id>
+  (<status>), ...` (first 8 named, then "and K more"), and the full list is
+  appended to the phase artifact under `## Incomplete children of <epic>`.
+  `br show` failing or answering in an unknown shape fails closed:
+  `:beads_tree_unreadable` (`BEADS_TREE_UNREADABLE: ...`);
+  `:beads_tree_unverifiable` if the frozen context has a `bead_id` but no
+  database path. Runs without a frozen `bead_id` are unaffected.
+- *No cache; retry is judged on the graph as it is then.* Reads are fresh every
+  time (one `br show` per tree level), so `run resume`/retry re-issues the same
+  command for the same epic and `beads-build` owns dependency-order resume from
+  the graph. Recovery is: fix the graph or the bead, then retry.
+- *Validation.* `ensemble-beads-build` is an accepted skill for
+  `foreman_workflow_validate` (MCP).
+- *Installed copies are not refreshed automatically.* Run `foreman init
+  --force` after upgrading so `~/.foreman/workflows/implement-trd-beads.yaml`
+  carries the new command; tasks approved earlier keep the old command frozen
+  in their snapshot.
+- *Caveat — id contract not verified live.* The installed ensemble `beads-build`
+  skill (v1.2.0) does not declare `--foreman` (an unrecognised token) and
+  documents its epic argument as `beads-NNN or a numeric ID`, while Foreman
+  bead ids look like `foreman-ab12`. Whether beads-build treats such an id as a
+  bead id (EPIC_ID_MODE) or as a title slug is the ensemble repo's contract and
+  is NOT verified here; TRD-006b (PR 3) does the live end-to-end run.
+- *Caveat — tagging.* Ensemble-side TRD-001 (`implement-trd-beads --plan
+  --foreman` tagging the root epic with `issue_type: implement_trd_beads`,
+  `agent_context.trd_path` and label `foreman-exec`) is a separate
+  ensemble-repo PR; until it ships an operator tags the epic by hand.
+
 **A dispatched task's `prompt` comes from the bead's own title/description,
 not the operator.** `BeadsWatcher`'s `task.create` payload sets `prompt:`
 from the bead's `title` (plus `description` when present, joined with a

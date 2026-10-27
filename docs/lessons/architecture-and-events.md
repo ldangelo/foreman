@@ -501,6 +501,7 @@ providers and exposes `routing_snapshot/0` for capability-aware routing.
 `ForemanServer.Workflow.ImplementationContext` freezes deterministic state at approval time:
 
 - `trd_path`: Normalized project-relative path to the TRD blob
+- `bead_id`: For `implement-trd-beads` workflows, the id of the bead that triggered the task (`task.external_id`); rendered as `{{implementation.bead_id}}`; a task without one fails approval (`:bead_id_missing` / `:bead_id_malformed`)
 - `trd_path_argument`: JSON-quoted shell argument for the skill
 - `project_root`: Absolute project root path
 - `source_revision`: Exact git SHA resolved from `git rev-parse HEAD`

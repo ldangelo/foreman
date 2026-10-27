@@ -129,6 +129,11 @@ needed — Beads validates it as a Beads priority for
 `description` for `FOREMAN_TASK_DESCRIPTION`, passes `prompt` separately for
 `:prompt`-action phases, and defaults `auto_approve: true`.
 
+`implement-trd-beads` tasks are driven by an epic bead: the workflow runs
+`/skill:ensemble-beads-build <epic-bead-id> --foreman` and the run fails unless
+every descendant of that epic is `closed` (see `beads-runtime-and-dispatch.md`
+and the "Executing a Beads epic tree" subsection of `docs/user-guide.md`).
+
 #### 2. Approve a task — REMOVED from the CLI, see TRD-018 note above
 
 Approval transitions `open` → `ready` and triggers workflow dispatch. Was
@@ -302,7 +307,7 @@ Bundled workflows live in `packages/foreman_server/priv/defaults/workflows/`:
 | `fix` | `--workflow-type fix` | Fix an issue via the ensemble fix workflow. |
 | `implement` | `--workflow-type implement` | Generate and refine the code changes required for the task. |
 | `implement-trd` | `--workflow-type implement-trd` | Implement a TRD using the ensemble skill. |
-| `implement-trd-beads` | `--workflow-type implement-trd-beads` | Implement a TRD using Beads-backed ensemble skill with Kata/pi agent. |
+| `implement-trd-beads` | `--workflow-type implement-trd-beads` | Drive a Beads epic tree to completion with the ensemble `beads-build` skill (`/skill:ensemble-beads-build <epic-bead-id> --foreman`); the run fails unless every descendant of the epic is `closed`. |
 | `plan` | `--workflow-type plan` | Run the plan workflow (create-prd → create-trd). |
 | `prd` | `--workflow-type prd` | Full ensemble chain: create-prd, refine-prd, create-trd, refine-trd, implement-trd. |
 | `release` | `--workflow-type release` | Finalize outputs, publish deliverables, and complete release steps. |

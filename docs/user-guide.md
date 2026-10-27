@@ -872,6 +872,61 @@ the bead directly (`br update <id> --agent-context '{"trd_path":"docs/TRD/..."}'
 BeadsWatcher creates and auto-approves the task in one action when the bead
 transitions to `open`.
 
+#### Executing a Beads epic tree (`implement-trd-beads`)
+
+An `implement_trd_beads` bead is the **root epic** of a Beads tree that Foreman
+drives to completion with the ensemble `beads-build` skill. The bundled
+`implement-trd-beads` workflow (name and `task_types: [implement_trd_beads]`
+unchanged) dispatches `/skill:ensemble-beads-build {{implementation.bead_id}}
+--foreman` — the id of the bead that triggered the task — in a single phase in
+a single worktree. It declares no `timeout_minutes`, so a tree that runs for
+hours has no wall-clock deadline. It replaces the earlier
+`/skill:ensemble-full-implement-trd-beads <trd> --foreman` dispatch.
+
+- **Tag an epic to have Foreman pick it up.** BeadsWatcher dispatches a bead
+  only when its status is `open`, it carries the `foreman-exec` label, its
+  `issue_type` is `implement_trd_beads`, and `agent_context.trd_path` is a
+  non-empty project-relative path:
+  `br update <epic-id> --type implement_trd_beads --add-label foreman-exec
+  --agent-context '{"trd_path":"docs/TRD/..."}' --status open`. Until the
+  ensemble-side `implement-trd-beads --plan --foreman` tagging ships, you tag
+  the root epic by hand like this.
+- **Completion is judged on the Beads graph, not on the agent.** `beads-build`
+  has no exit code, so after the run's last phase commits Foreman reads the
+  tree with `br show`. The run completes only if **every** parent-child
+  descendant of the epic is `closed`. The epic's own status is never consulted
+  (an epic left `open` over all-closed children completes; Foreman then closes
+  the epic bead as for any task). A descendant a human closed mid-run counts as
+  closed; `blocks` edges do not widen the tree.
+- **Failure classes.** Otherwise the phase, run and task fail through the
+  normal failure path and the epic bead goes `blocked` with the usual
+  `foreman-run:<run_id>:<artifact_path>` transition comment:
+  - `:incomplete_children` — `N descendant bead(s) of <epic> are not closed:
+    <id> (<status>), ...` (the first 8 are named, then "and K more"); the full
+    list is appended to the phase artifact under `## Incomplete children of
+    <epic>`.
+  - `:beads_tree_unreadable` (`BEADS_TREE_UNREADABLE: ...`) — `br show` failed or
+    answered in an unknown shape; the run fails closed rather than passing.
+  - `:beads_tree_unverifiable` — the frozen context has a bead id but no Beads
+    database path.
+
+  Runs without a frozen bead id are unaffected by this check.
+- **Approval refuses what it cannot render.** Approving an
+  `implement-trd-beads` task without a bead id fails with
+  `{:implementation_context_failed, :bead_id_missing | :bead_id_malformed}`,
+  and any `{{implementation.*}}` placeholder still unresolved after rendering
+  fails with `{:implementation_placeholder_unresolved,
+  ["{{implementation.bead_id}}"]}` instead of becoming an empty epic id.
+- **Recovery.** Fix the graph or the bead (close, unblock or re-scope the
+  listed descendants; repair `br` if the tree was unreadable), then retry the
+  same epic (`task.retry` via `POST /api/commands`, or `run resume` for a
+  paused run). The retry re-issues the same command for the same epic and
+  `beads-build` resumes from the graph; Foreman re-reads the tree fresh, so the
+  retry is judged on the graph as it is then.
+- **After upgrading**, run `foreman init --force`: installed workflow copies in
+  `~/.foreman/workflows/` are not refreshed automatically. Tasks approved
+  earlier keep the command frozen in their snapshot.
+
 ### Runs
 
 A run is one dispatched execution of a task's workflow, in its own
