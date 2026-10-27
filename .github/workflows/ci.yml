@@ -69,7 +69,7 @@ jobs:
     env:
       MIX_ENV: test
       SHELL: /bin/bash
-      MIX_TEST_PARTITION: ${{ matrix.partition }}
+      # Legs are balanced by scripts/ci/partition-tests.sh (test-weights.txt), not mix --partitions.
     steps:
       # Each partition has its own runner and its own Postgres, so the test database needs no
       # per-partition name. Started first and in the background: the image pull and initdb run
@@ -153,7 +153,15 @@ jobs:
       # slow test is visible. Not `--slowest`: that implies `--trace`, which runs everything
       # serially with test timeouts off, a different run from the one this job exists to execute.
       - name: Run tests (partition ${{ matrix.partition }} of 4)
-        run: cd packages/foreman_server && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport
+        run: |
+          set -euo pipefail
+          cd packages/foreman_server
+          # Fail closed: a test file no leg runs must break the build, not pass unseen.
+          ../../scripts/ci/partition-tests.sh --check 4
+          files=$(../../scripts/ci/partition-tests.sh ${{ matrix.partition }} 4)
+          [ -n "$files" ] || { echo "::error::partition ${{ matrix.partition }} has no test files"; exit 1; }
+          # shellcheck disable=SC2086
+          mix test $files --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport
 
   # The REQUIRED `foreman_server` context. `if: always()` makes it report even when a partition
   # failed or was cancelled; the step then fails unless every partition passed.

@@ -595,18 +595,38 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   # process this port spawned is already gone.
   defp terminate_os_process(nil), do: nil
 
+  # Signals the whole tree under `os_pid`, not only `os_pid`: a `br` wrapper's children
+  # (and theirs) inherit the port's stdout pipe, so one that outlives the kill keeps the
+  # port open until the grace in `await_port_exit_after_timeout/3` runs out, and keeps
+  # running afterwards. The tree is snapshotted once, before the first signal (a SIGTERMed
+  # parent re-parents its children to pid 1, after which `pgrep -P` no longer finds them).
+  # A process group would close the race of a fork after the snapshot, but erlang's port
+  # spawn gives the child no group of its own and macOS ships no `setsid`
+  # (same trade-off as `Jobsite.Git`).
   defp terminate_os_process(os_pid) when is_integer(os_pid) do
     if process_exists?(os_pid) do
-      run_kill(os_pid, "-TERM")
+      tree = process_tree(os_pid)
+      Enum.each(tree, &run_kill(&1, "-TERM"))
 
-      if wait_for_exit(os_pid, @max_kill_wait_ms) do
+      if wait_for_all_exit(tree, @max_kill_wait_ms) do
         143
       else
-        run_kill(os_pid, "-KILL")
-        wait_for_exit(os_pid, @max_kill_wait_ms)
+        tree |> Enum.filter(&process_exists?/1) |> Enum.each(&run_kill(&1, "-KILL"))
+        wait_for_all_exit(tree, @max_kill_wait_ms)
         137
       end
     end
+  end
+
+  # `os_pid` followed by all of its descendants, depth first, parents before children.
+  defp process_tree(os_pid) do
+    children =
+      case System.cmd("pgrep", ["-P", Integer.to_string(os_pid)], stderr_to_stdout: true) do
+        {out, 0} -> out |> String.split() |> Enum.map(&String.to_integer/1)
+        _none_or_error -> []
+      end
+
+    [os_pid | Enum.flat_map(children, &process_tree/1)]
   end
 
   defp process_exists?(os_pid) when is_integer(os_pid) do
@@ -621,12 +641,12 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     :ok
   end
 
-  defp wait_for_exit(_os_pid, 0), do: false
+  defp wait_for_all_exit(pids, 0), do: not Enum.any?(pids, &process_exists?/1)
 
-  defp wait_for_exit(os_pid, timeout_ms) when timeout_ms > 0 do
-    if process_exists?(os_pid) do
+  defp wait_for_all_exit(pids, timeout_ms) when timeout_ms > 0 do
+    if Enum.any?(pids, &process_exists?/1) do
       Process.sleep(100)
-      wait_for_exit(os_pid, max(timeout_ms - 100, 0))
+      wait_for_all_exit(pids, max(timeout_ms - 100, 0))
     else
       true
     end

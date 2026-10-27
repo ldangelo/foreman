@@ -588,14 +588,55 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
         assert exit_code in [143, 137]
 
         # No wait needed: cmd/3 reaps the timed-out OS process (wait_for_exit)
-        # before returning, so the lock is already released here.
-
+        # before returning, so the lock is already released here. The second call runs in
+        # ANOTHER process: the `:global` lock is re-entrant for the process that took it, so
+        # a call from this process would pass even if the timeout path leaked the lock.
         assert {:ok, %{exit_code: 0, stdout: _stdout}} =
-                 SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path})
+                 Task.async(fn ->
+                   SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path})
+                 end)
+                 |> Task.await(5_000)
 
         # success_log contains START from both calls (first call ran, second ran)
         assert File.read!(success_log) =~ "START"
         assert File.read!(success_log) =~ "DONE"
+      end)
+    end
+
+    test "a timeout kills the whole process tree, not only the process the port started",
+         %{temp_dir: temp_dir} do
+      # br -> sh (child) -> sleep (grandchild). Not `exec`: the wrapper keeps running, as a
+      # real `br` wrapper script would, and its children keep the port's pipe open.
+      child_pids = Path.join(temp_dir, "child.pids")
+
+      body =
+        [
+          "sh -c 'sleep 30 & echo $! >> \"#{child_pids}\"; wait' &",
+          "echo $! >> \"#{child_pids}\"",
+          "wait"
+        ]
+        |> Enum.join("\n")
+
+      with_fake_br(temp_dir, body, fn ->
+        started = System.monotonic_time(:millisecond)
+
+        assert {:error, %{reason: :timeout}} =
+                 SystemBrRunner.cmd(
+                   {:ready, %{}},
+                   %{database_path: Path.join(temp_dir, "tree.db")},
+                   timeout_ms: 500
+                 )
+
+        elapsed_ms = System.monotonic_time(:millisecond) - started
+        pids = child_pids |> File.read!() |> String.split() |> Enum.map(&String.to_integer/1)
+        assert length(pids) == 2
+
+        survivors = Enum.filter(pids, &os_pid_alive?/1)
+        Enum.each(survivors, &System.cmd("kill", ["-KILL", Integer.to_string(&1)]))
+
+        assert survivors == [], "descendants survived the timeout kill: #{inspect(survivors)}"
+        # A survivor holds the port's pipe open until the 5 s grace expires.
+        assert elapsed_ms < 2_500
       end)
     end
   end
@@ -695,5 +736,9 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     after
       System.put_env("PATH", original_path)
     end
+  end
+
+  defp os_pid_alive?(pid) do
+    match?({_, 0}, System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true))
   end
 end

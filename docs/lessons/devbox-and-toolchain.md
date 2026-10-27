@@ -167,14 +167,27 @@ A required check that is skipped by a job-level `if` counts as passing. A workfl
 `paths:`/`paths-ignore:` filter would leave the required checks pending forever, so it is never
 used for this workflow.
 
-**Partitions.** Each leg runs `mix test --partitions 4` with `MIX_TEST_PARTITION=n`. Mix sorts the
-test files and deals them round-robin by index (index mod 4), not by hash and not by duration, so a
-new file moves the files after it into another leg. Every leg has its own runner AND its own
-Postgres container, which is why `config/test.exs` needs no per-partition database name and
-`reset_event_store/1` empties the right event store. To reproduce leg `n` locally give it a
-private database (`createdb`, then `ecto.migrate` and `event_store.init`) and run
-`MIX_TEST_PARTITION=n DATABASE_URL=... mix test --partitions 4 --seed <seed in the leg's log>`; a
-leg that fails only when partitioned has found a hidden dependency between test files, which is a
+**Partitions.** `scripts/ci/partition-tests.sh <n> 4` (run from `packages/foreman_server`) names
+the test files of leg `n`, and the leg runs `mix test <those files>`; it does not use
+`mix test --partitions` any more. Mix's own split deals the sorted files round-robin by index, which
+ignores duration: with 652 files the legs came out at 65/81/68/84 s of weighted test time and
+partition 4 ended 25-35 s behind (CI, runs on 10-27: legs 99-145 s). The script assigns the files
+heaviest first, each to the leg with the least weight so far (greedy, ties by path and lowest leg
+number), using `scripts/ci/test-weights.txt` (`path weight_ms`, the sum of a file's test times;
+an `async: true` file counts a quarter). It is a pure function of the file list and that file, so
+every leg computes the same split, and a new file only displaces itself (weight 150 ms until it
+has an entry). Every leg first runs `partition-tests.sh --check 4`, which fails the leg unless
+each test file is in exactly one leg: a file no leg runs would keep the required `foreman_server`
+check green without being tested. Regenerate the weights when the balance drifts (the legs'
+`Finished in` lines differ by more than ~20%): on a quiet machine,
+`FOREMAN_TEST_WEIGHTS_OUT=/tmp/w mix test --formatter ForemanServer.TestSupport.FileWeights`,
+then `LC_ALL=C sort /tmp/w > scripts/ci/test-weights.txt` (`ForemanServer.TestSupport.FileWeights`
+writes the file). Stale weights cost only balance, never coverage. Every leg has its own runner
+AND its own Postgres container, which is why `config/test.exs` needs no per-partition database
+name and `reset_event_store/1` empties the right event store. To reproduce leg `n` locally give it
+a private database (`createdb`, then `ecto.migrate` and `event_store.init`) and run
+`DATABASE_URL=... mix test $(../../scripts/ci/partition-tests.sh n 4) --seed <seed in the leg's log>`;
+a leg that fails only when partitioned has found a hidden dependency between test files, which is a
 bug in the tests, never a reason to reshuffle the split. `format`, `credo` and `doctor` run in
 leg 1 only.
 
