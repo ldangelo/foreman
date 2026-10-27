@@ -860,11 +860,14 @@ BeadsWatcher observes the bead (or its later transition to `status:
 open`) and dispatches the internal `task.create` + `task.approve`
 commands automatically — no separate approval step is needed. Use
 `foreman run get <run-id>` / `foreman run list` (see "Runs" below) to
-monitor the resulting run, and re-open the bead (`br update <id>
---status=open`) to retry once its bound run is terminal.
+monitor the resulting run. Re-opening the bead (`br update <id> --status=open`) does
+NOT retry a run: once a task exists past `open` the watcher only reconciles the bead
+(`:reconciled`). The retry path is `task.retry` then a fresh `task.approve` on
+`POST /api/commands`; the steps are under "Recovering from a preflight failure" in §7.2.
 
 Select the workflow via the bead's type (mapped through a manifest's
-`task_types:` declaration — see `foreman doctor`), not a CLI flag. Workflows
+`task_types:` declaration — `foreman doctor` lists the current mapping in its
+`workflows.bead_types` row, and §10 explains the held types), not a CLI flag. Workflows
 requiring `ImplementationContext` (`implement-trd`, `implement-trd-beads`)
 read the TRD path from the bead's own `agent_context.trd_path` field, set on
 the bead directly (`br update <id> --agent-context '{"trd_path":"docs/TRD/..."}'`)
@@ -1381,7 +1384,8 @@ Lifecycle details:
   and failure as `failed`.
 - `task.retry` is only for a task still bound to a terminal run, or
   already `failed` by the terminal invariant. Success clears run-bound
-  fields and returns the task to `open`.
+  fields and returns the task to `open`; it does not dispatch again by itself (a
+  fresh `task.approve` does, §7.2).
 
 Run projections use a separate, wider status vocabulary: `completed`,
 `failed`, `blocked`, `deleted`, `stuck`, or `cancelled`, depending on
@@ -1537,6 +1541,86 @@ An unanswered query is never reported as an absent model — `:catalog_unavailab
 says "we don't know", `:model_not_found` says "it isn't there". The class lands
 in the run record, so a failure is diagnosable from `foreman run get <run-id>`
 without re-running the dispatch.
+
+Each failure also carries `model_source`, the rule that produced the model string
+that was checked: `:phase_declared` (the phase's own `models.default`) or
+`:project_thread_model` (the project's `thread_model` filling a phase that declares
+no model; the precedence is stated once, under "Model and effort precedence" in the
+project settings section). It is part of the `failure_reason` text on both the run and
+its task (e.g. `class: :model_not_found, model: "minimax/MiniMax-M2.7", model_source:
+:phase_declared`), and the server's one-line summary of the refusal names the artifact
+to edit: "the model comes from the phase's models.default" (fix the manifest) or "...the
+project's thread_model" (fix it with `foreman project update --thread-model`). It is
+absent when no model is involved, such as a bare `provider:` that is not installed.
+
+A run that passes the preflight logs one `info` line per phase launch with the model
+that phase was actually handed and why:
+
+```text
+RunExecutor <run-id> phase "<name>" model resolution: provider=pi model="<model>" source=<source> workflow="<name>" manifest="<path>"
+```
+
+(log metadata `operation: "run_executor.phase_model"`). `source` is `phase_declared`,
+`project_thread_model`, or `provider_default` — neither is set, `model=nil`, and the
+provider's own default applies. To answer "which model did this phase run with, and
+which file decides it" for a past run, grep the server log for the run id and
+`model resolution`; the same workflow name, its digest and the manifest path are on
+the run itself (`foreman run get <run-id>`: `workflow_name`, `workflow_digest`,
+`workflow_snapshot.manifest_path`). A refused run launches no phase, so it has no such
+line; its record is the `failure_reason` above. None of this adds an event or changes a
+persisted shape.
+
+**The pi catalog is credential-gated.** `pi --list-models` lists a provider's models
+only when pi can see that provider's credentials, and the preflight asks the question
+with the SERVER process's own environment (`pi --list-models <model>`, 5 s timeout, no
+per-project variables added). On the host this was verified on (pi 1.4.0),
+`pi --list-models "minimax/MiniMax-M2.7"` lists rows from a normal shell but prints
+`No models matching "minimax/MiniMax-M2.7"` when `MINIMAX_API_KEY` is not in the
+process environment. A server started without the key therefore reports
+`:model_not_found` for a model that exists on the host, and a key set with
+`foreman project env set` does not help the preflight, because the catalog query never
+receives project variables. Start the server with the provider's key exported, then
+confirm with `env -i PATH="$PATH" HOME="$HOME" <KEY>=... pi --list-models
+"<provider>/<model>"` that a minimal environment lists it.
+
+### Recovering from a preflight failure
+
+A refused run costs nothing to abandon: it dispatched no phase and created no worktree
+or branch, and nothing about the bead or the failed run's history has to be discarded.
+
+1. Read the cause: `foreman run get <run-id>` shows `failure_reason` (`class`, `phase`,
+   `model`, `model_source`) and `task_id` (`beads:<project-id>:<bead-id>`).
+2. Correct it where `model_source` points: edit the manifest's `models.default` (a
+   qualified `<provider>/<model>` when `provider:` is set) and, for a bundled workflow,
+   run `foreman init --force` to refresh the installed copy; or
+   `foreman project update --thread-model <model> <project-id>`; or start the server
+   with the provider's credential (above), add the provider to `models.json` (§7.3), or
+   install the provider CLI / put `pi` on the server's `PATH` for the other classes.
+3. Re-dispatch. Re-opening the bead (`br update <id> --status=open`) does NOT do it:
+   once a task exists past `open`, BeadsWatcher reconciles the bead (`:reconciled`)
+   instead of dispatching again. `task.retry` alone does not do it either: it returns
+   the task to `open`, but the watcher's re-approval reuses its fixed command id
+   (`beads-cmd:<project>:<bead>:auto-approve`), which replays the original approval and
+   leaves the task `open` with no run bound. Send both commands, in order, to
+   `POST /api/commands` (there is no CLI verb for either; `command_id` may be omitted,
+   the server mints a fresh one, which is what makes the second command a new approval):
+
+   ```bash
+   curl -sS -X POST "${FOREMAN_API_URL:-http://127.0.0.1:4766}/api/commands" -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"type":"task.retry","payload":{"task_id":"beads:<project-id>:<bead-id>","reason":"fixed models.default"}}'
+   curl -sS -X POST "${FOREMAN_API_URL:-http://127.0.0.1:4766}/api/commands" -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"type":"task.approve","payload":{"task_id":"beads:<project-id>:<bead-id>","approved_by":"<you>"}}'
+   ```
+
+   `task.retry` is refused unless the bound run is terminal (§5); the approval's response
+   carries the new `run_id`. The workflow is read from the catalog again at approval, so
+   the corrected manifest is what the new run freezes.
+
+Re-dispatch costs one new run record (a new `run-…` id, since the approval id is new)
+and one new branch (`foreman/<task-id>/<run-id>` by default). The failed run keeps its
+record and failure reason; it is not reused or reset.
 
 ## 7.3 pi provider configuration
 
@@ -1848,11 +1932,33 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   field is counted under the pipeline's existing `...:watcher, :malformed`
   event rather than a bespoke one, tagged with its cause in that event's
   `reason` metadata (e.g. `{:labels_not_a_list, "foreman-exec"}`). Every
-  malformed path in the watcher — bad JSON, blank prompt, missing `issue_type`,
+  malformed path in the watcher — bad JSON, blank prompt, an absent
+  `issue_type` (reason `:issue_type_missing`), an unusable one (`null`, `""`, a
+  number, a list or a map: reason `{:issue_type_unusable, "<inspected value>"}`),
   missing bead id, malformed labels — funnels through that one event, so the
   event name is the malformed total and each cause stays queryable. All carry
   the watcher's configured `project_id`, and the outcome is logged once per
   line at `info`.
+- **Which bead types dispatch.** After the status gate (only `status: open`) and the
+  label gate, a bead dispatches only if some workflow manifest names its `issue_type`
+  in `task_types:`. `foreman doctor` (`GET /api/doctor`) answers this in one row,
+  `workflows.bead_types`, derived from the installed manifests and `br`'s built-in types
+  (`task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`), never from a list kept
+  by hand: `ok` with `dispatched: bug -> fix, feature -> prd, ...; held (no workflow
+  maps them, so a labelled bead of these types is never dispatched): chore, docs, ...`,
+  and `warn` only when no workflow maps any type (`foreman doctor --strict` stays green
+  on a stock install, where several types are held by design). `br` also accepts custom
+  type strings; the row names a custom type only once a manifest maps it, so a custom
+  type that no manifest maps is held without being listed. The categories are:
+  *dispatched* (mapped); *held* (labelled, open, but no manifest maps the type: the bead
+  is never touched, is re-evaluated on every poll, and is reported as the `:unmapped`
+  outcome, counted as `lines_unmapped` on
+  `[:foreman_server, :task_provider, :beads, :watcher, :replay_completed]` and emitted
+  on `[:watcher, :status_gate, :skipped, :unmapped_type]`); and *not Foreman's* (no
+  `foreman-exec` label, so it never reaches the type check). `:transient` now means
+  only that a dispatch itself failed and will be retried; it no longer covers an
+  unmapped type. To dispatch a held type, add it to a manifest's `task_types:` and run
+  `foreman init --force`: the next poll dispatches the bead, with no edit to the bead.
 - **Orphan janitor.** Set `config :foreman_server,
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or
@@ -2255,10 +2361,11 @@ or the `/debug/*` LiveView dashboards in a dev environment.
 
 ### 5. Recover a wedged or failed run
 
-`foreman task retry` is REMOVED (TRD-018, 2026-09-13); re-opening the
-bead (`br update <id> --status=open`) is the closest replacement once
-the run below is terminal, though it goes through the same bead-import
-path as creating a new task rather than a dedicated retry command.
+`foreman task retry` is REMOVED (TRD-018, 2026-09-13), and re-opening the bead
+(`br update <id> --status=open`) is not a replacement: once a task exists past
+`open` BeadsWatcher only reconciles it. Once the run below is terminal, retry with
+`task.retry` followed by a fresh `task.approve` on `POST /api/commands`
+(§7.2, "Recovering from a preflight failure").
 
 ```bash
 foreman run get <run-id>                 # inspect status first

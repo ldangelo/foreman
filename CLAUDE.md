@@ -154,6 +154,14 @@ Workflow phase `models.default` becomes `context.model`, and
 selected provider. Provider selection is explicit (`context.provider`);
 Foreman must not infer a provider from the model string.
 
+`Workflow.ModelResolution` decides that model once per phase and names the rule:
+`:phase_declared` (the phase's `models.default`) > `:project_thread_model` (only for
+a phase that declares none) > `:provider_default` (no model passed). `RunExecutor`
+logs it per phase launch (`operation: "run_executor.phase_model"`), and every
+`PreflightFailure` carries it as `model_source`; both are log/run-state only, with no
+event or persisted-shape change. See `docs/user-guide.md` §7.2 for the operator view
+and the recovery path.
+
 ## 6. `FailurePolicy.resolve/2` precedence
 
 Resolved keys: `:fail_fast`, `:fallback`, `:max_attempts`, `:timeout_ms`.
