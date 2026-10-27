@@ -2002,6 +2002,14 @@ foreman purge runs --dry-run      # Preview
 |--------|-------------|
 | `--dry-run` | Preview without making changes |
 
+### `foreman workflow remove --all`
+
+Deletes workflow manifests (`<name>.yaml`) and prompts (`prompts/<name>.md`) that Foreman shipped in some earlier release but no longer bundles, from `~/.foreman/workflows`. The set is derived at compile time as *ever shipped* minus *bundled now* (`ForemanServer.WorkflowTemplate.Installer.legacy_workflow_names/0`, `legacy_prompt_names/0`), so a workflow in `priv/defaults/workflows` (for example `assess`) is never removed, and a file Foreman never shipped (your own `custom.yaml`) is never touched. Asks `[y/N]` first; `--all` is required. The JSON response lists `paths` (files actually removed) and `absent` (legacy paths that were not present).
+
+```bash
+foreman workflow remove --all
+```
+
 ---
 
 ## GitHub Issues Integration

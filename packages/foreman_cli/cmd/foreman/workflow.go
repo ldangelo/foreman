@@ -96,7 +96,7 @@ func workflowRemove(c *client.Client, args []string) error {
 		return usageError(fs, "foreman workflow remove: --all flag is required")
 	}
 
-	fmt.Print("Remove legacy workflows (discover, assess, implement, verify, release)? [y/N] ")
+	fmt.Print("Remove workflow manifests and prompts Foreman once shipped but no longer bundles (bundled and custom files are kept)? [y/N] ")
 	var response string
 	fmt.Scanln(&response)
 	if response != "y" && response != "Y" {
