@@ -113,7 +113,14 @@ defmodule ForemanServer.Workflow.Catalog do
   @spec prompt_filenames() :: [String.t()]
   def prompt_filenames, do: GenServer.call(server(), :prompt_filenames)
 
-  @doc "Resolve a beads task_type to its mapped workflow name. Returns `{:ok, workflow_name}` or `{:error, :unmapped_type}`."
+  @doc """
+  Resolve a beads task_type to its mapped workflow name. Returns `{:ok, workflow_name}` or `{:error, :unmapped_type}`.
+
+  Fail-closed: only a manifest's own `task_types:` declaration maps a type, so any
+  `issue_type` no manifest declares returns `{:error, :unmapped_type}`. Coverage is
+  deliberately narrow today; see the "Workflow-selection (TRD-005) coverage is currently
+  narrow" paragraph in `docs/lessons/beads-runtime-and-dispatch.md`.
+  """
   @spec type_to_workflow(String.t()) :: {:ok, String.t()} | {:error, :unmapped_type}
   def type_to_workflow(task_type) when is_binary(task_type) do
     case GenServer.call(server(), {:type_to_workflow, task_type}) do
