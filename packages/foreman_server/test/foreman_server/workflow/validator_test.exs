@@ -25,6 +25,7 @@ defmodule ForemanServer.Workflow.ValidatorTest do
         ensemble-full-create-prd ensemble-full-refine-prd
         ensemble-full-create-trd
         ensemble-full-implement-trd ensemble-full-implement-trd-beads
+        ensemble-beads-build
         ensemble-full-refine-trd-foreman
       ]
 

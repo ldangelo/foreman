@@ -1,5 +1,5 @@
 name: implement-trd-beads
-description: Implement a Technical Requirements Document via the Beads-backed ensemble implement-trd-beads skill under Foreman-managed execution.
+description: Drive a Beads epic tree to completion with the ensemble beads-build skill under Foreman-managed execution. The dispatched bead is the tree's root epic.
 task_types: [implement_trd_beads]
 # Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
 # `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
@@ -34,7 +34,19 @@ worktree:
 # This workflow has a single phase, so `false` could not be honored here and is
 # rejected at load: with no later phase to absorb the deferred work it would
 # stay uncommitted, and AutoPR proposes commits only.
+#
+# `command:` hands the run to `ensemble-beads-build` with the id of the bead that
+# triggered it (`{{implementation.bead_id}}`, frozen at approval from the task's
+# `external_id`): the root epic of the tree to execute. Resuming a run re-issues
+# the same command, so beads-build re-reads the bead graph and does only the work
+# still open (REQ-005). The phase is judged on the TREE, not on the agent's exit:
+# `RunExecutor.verify_phase_outcome/3` fails the run when any descendant of that
+# bead is not closed (`Workflow.BeadsTreeCompletion`).
+#
+# Deliberately NO `timeout_minutes:`. A tree of dozens of beads runs for hours;
+# an absent key means no wall-clock deadline (`AgentRuntime.FailurePolicy`,
+# `:infinity`), and that is what this workflow relies on (REQ-004).
 phases:
   - name: implement-trd-beads
-    command: "/skill:ensemble-full-implement-trd-beads {{implementation.trd_path_argument}} --foreman"
+    command: "/skill:ensemble-beads-build {{implementation.bead_id}} --foreman"
     commit: true

@@ -1179,9 +1179,9 @@ defmodule ForemanServer.CommandGateway do
 
     with {:ok, prepared} <-
            Approval.prepare(payload_with_type, approval_id: approval_id),
-         {:ok, snapshot} <- freeze_implementation_context(task_projection, prepared) do
-      rendered_snapshot = render_strict_fields(snapshot)
-
+         {:ok, snapshot} <- freeze_implementation_context(task_projection, prepared),
+         rendered_snapshot = render_strict_fields(snapshot),
+         :ok <- assert_implementation_placeholders_resolved(rendered_snapshot) do
       enriched_payload =
         payload
         |> Map.put(:approval_id, prepared.approval_id)
@@ -1320,6 +1320,10 @@ defmodule ForemanServer.CommandGateway do
             impl && get_value(impl, "trd_path_argument")
           )
           |> substitute(
+            "{{implementation.bead_id}}",
+            impl && get_value(impl, "bead_id")
+          )
+          |> substitute(
             "{{implementation.source_revision}}",
             impl && get_value(impl, "source_revision")
           )
@@ -1328,6 +1332,34 @@ defmodule ForemanServer.CommandGateway do
 
       _ ->
         phase
+    end
+  end
+
+  # An `{{implementation.*}}` placeholder resolves at approval or never:
+  # `RunExecutor`'s runtime renderer has no `implementation` assigns, so a
+  # placeholder that reaches it becomes an empty quoted argument. For
+  # `implement-trd-beads` that is a blank epic id handed to
+  # `ensemble-beads-build`, which reads it as a slug pattern and may build an
+  # unrelated epic. Refuse with a named error instead (PRD-2026-72f477ca AC-003-2).
+  defp assert_implementation_placeholders_resolved(snapshot) do
+    unresolved =
+      (get_value(snapshot, "phases") || get_value(snapshot, :phases) || [])
+      |> Enum.flat_map(fn phase ->
+        case get_value(phase, "command") || get_value(phase, :command) do
+          command when is_binary(command) ->
+            ~r/\{\{\s*implementation\.[A-Za-z0-9_]+\s*\}\}/
+            |> Regex.scan(command)
+            |> List.flatten()
+
+          _no_command ->
+            []
+        end
+      end)
+      |> Enum.uniq()
+
+    case unresolved do
+      [] -> :ok
+      placeholders -> {:error, {:implementation_placeholder_unresolved, placeholders}}
     end
   end
 
