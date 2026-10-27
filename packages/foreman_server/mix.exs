@@ -145,7 +145,11 @@ defmodule ForemanServer.MixProject do
   # ProjectionLeakGuard rides along as a formatter (see its moduledoc). It has to be a task
   # option: `mix test --formatter X` replaces whatever test_helper.exs configured, and
   # options given twice add up. Naming ExUnit.CLIFormatter keeps the default output.
-  @test_args ~w(--cover --color --formatter ExUnit.CLIFormatter
+  #
+  # No `--cover`: ExCoveralls made each CI partition's test step 69-84% slower (92-98 s ->
+  # 161-180 s, same files, same seed) and nothing reads or gates on its table (no threshold, no
+  # coveralls.json). `mix test --cover` still works for whoever wants the numbers.
+  @test_args ~w(--color --formatter ExUnit.CLIFormatter
                 --formatter ForemanServer.TestSupport.ProjectionLeakGuard)
 
   defp run_tests(args) do

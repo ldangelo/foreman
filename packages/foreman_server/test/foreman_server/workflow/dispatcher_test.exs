@@ -19,6 +19,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.MeckScope
   alias ForemanServer.Workflow.Dispatcher
 
   setup_all do
@@ -53,11 +54,13 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       ForemanServer.Workflow.BootReconciliation
     )
 
-    :ok
+    # `:meck.new(ProjectionStore, [:passthrough])` copies a 5.5k-line module (~1.3 s): once per module.
+    MeckScope.new_once!(ProjectionStore)
   end
 
   setup do
     :ok = ForemanServer.DispatcherQuiesce.suspend!()
+    MeckScope.restore_on_exit!(ProjectionStore)
     parent = self()
     boot_name = ForemanServer.Workflow.BootReconciliation
     real_pid = Process.whereis(boot_name)
@@ -247,7 +250,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       on_exit(fn ->
         for mod <-
               [
-                ForemanServer.ProjectionStore,
                 ForemanServer.RunAdmission,
                 ForemanServer.CommandRouter,
                 ForemanServer.Workflow.RunSupervisor
@@ -260,7 +262,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         end
       end)
 
-      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
       :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
       :meck.new(ForemanServer.CommandRouter, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
@@ -329,7 +330,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       on_exit(fn ->
         for mod <-
               [
-                ForemanServer.ProjectionStore,
                 ForemanServer.RunAdmission,
                 ForemanServer.Workflow.RunSupervisor
               ] do
@@ -341,7 +341,6 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         end
       end)
 
-      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
       :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
       :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
@@ -387,19 +386,11 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       # supervisor's restart budget (506 failures in one CI run).
       on_exit(fn ->
         try do
-          :meck.unload(ForemanServer.ProjectionStore)
-        catch
-          :exit, _ -> :ok
-        end
-
-        try do
           :meck.unload(ForemanServer.RunAdmission)
         catch
           :exit, _ -> :ok
         end
       end)
-
-      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
 
       :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn
         ^task_id -> %{status: "in_progress", last_event_at_ms: System.system_time(:millisecond)}

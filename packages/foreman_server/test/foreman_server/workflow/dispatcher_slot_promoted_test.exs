@@ -12,6 +12,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
   use ExUnit.Case, async: false
 
+  alias ForemanServer.TestSupport.MeckScope
   alias ForemanServer.Workflow.Dispatcher
 
   setup_all do
@@ -25,7 +26,10 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
     ensure_started(ForemanServer.EventStore, ForemanServer.EventStore)
     ensure_started(ForemanServer.ProjectionStore, ForemanServer.ProjectionStore)
 
-    :ok
+    # Mocking ProjectionStore copies a 5.5k-line module (~1.3 s): once per module. Passthrough, so
+    # the functions this test does not stub stay real between tests and while the Dispatcher is
+    # resumed at test exit.
+    MeckScope.new_once!(ForemanServer.ProjectionStore)
   end
 
   setup do
@@ -36,7 +40,6 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
     # ForemanServer.DispatcherQuiesce.
     :ok = ForemanServer.DispatcherQuiesce.suspend!()
 
-    :meck.new(ForemanServer.ProjectionStore, [:no_link])
     :meck.new(ForemanServer.RunAdmission, [:no_link])
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
 
@@ -48,13 +51,14 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
     on_exit(fn ->
       for mod <-
             [
-              ForemanServer.ProjectionStore,
               ForemanServer.RunAdmission,
               ForemanServer.Workflow.RunSupervisor
             ] do
         if :meck.validate(mod), do: :meck.unload(mod)
       end
     end)
+
+    MeckScope.restore_on_exit!(ForemanServer.ProjectionStore)
 
     :ok
   end

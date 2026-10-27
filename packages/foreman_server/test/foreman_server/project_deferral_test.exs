@@ -5,8 +5,14 @@ defmodule ForemanServer.ProjectDeferralTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{ProjectionStore, ProjectStore}
+  alias ForemanServer.TestSupport.MeckScope
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.Dispatcher
+
+  # `:meck.new(ProjectionStore, [:passthrough])` copies a 5.5k-line module (~1.3 s): once per module.
+  setup_all do
+    MeckScope.new_once!(ForemanServer.ProjectionStore)
+  end
 
   setup do
     # The app's real Dispatcher stays subscribed to ProjectionStore and handles
@@ -17,13 +23,12 @@ defmodule ForemanServer.ProjectDeferralTest do
     :ok = ForemanServer.DispatcherQuiesce.suspend!()
 
     ProjectionStoreReset.reset!()
-    :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
+
     :meck.new(ForemanServer.RunAdmission, [:no_link])
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
 
     on_exit(fn ->
       for mod <- [
-            ForemanServer.ProjectionStore,
             ForemanServer.RunAdmission,
             ForemanServer.Workflow.RunSupervisor
           ] do
@@ -32,6 +37,9 @@ defmodule ForemanServer.ProjectDeferralTest do
 
       ProjectionStoreReset.reset!()
     end)
+
+    # Registered last so it runs first: later `on_exit`s see the real ProjectionStore.
+    MeckScope.restore_on_exit!(ForemanServer.ProjectionStore)
 
     id = "deferral-#{System.unique_integer([:positive])}"
     assert {:ok, _} = ProjectStore.save(%{project_id: id, path: "/tmp/#{id}"})

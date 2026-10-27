@@ -197,7 +197,10 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   } do
     with_fake_br(
       temp_dir,
-      "echo starting\nsleep 30\necho done\n",
+      # `exec` makes the sleep the OS process the runner signals (a plain
+      # child would be orphaned by SIGTERM and keep the port's pipe open
+      # until it finished on its own).
+      "echo starting\nexec sleep 30\n",
       fn ->
         assert {:error, %{stdout: stdout, reason: :timeout, exit_code: exit_code}} =
                  SystemBrRunner.cmd(
@@ -560,13 +563,18 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
          %{temp_dir: temp_dir} do
       # Strategy: call 1 sleeps and times out (SIGTERM kill). Call 2 succeeds immediately.
       # If the lock is held by call 1, call 2 blocks indefinitely on :global.trans.
-      _marker = Path.join(temp_dir, "timeout.flag")
+      # The first invocation creates the marker and hangs (exec so the signalled
+      # OS process is the sleep itself); later invocations return at once.
+      marker = Path.join(temp_dir, "timeout.flag")
       success_log = Path.join(temp_dir, "success.log")
       # Both calls write to success_log so we can verify both ran.
       fake_br_body =
         [
           "echo START >> \"#{success_log}\"",
-          "sleep 30",
+          "if [ ! -f \"#{marker}\" ]; then",
+          "  touch \"#{marker}\"",
+          "  exec sleep 30",
+          "fi",
           "echo DONE >> \"#{success_log}\""
         ]
         |> Enum.join("\n")
@@ -587,6 +595,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
 
         # success_log contains START from both calls (first call ran, second ran)
         assert File.read!(success_log) =~ "START"
+        assert File.read!(success_log) =~ "DONE"
       end)
     end
   end

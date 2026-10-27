@@ -531,7 +531,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
       holder = start_holder(ctx, "run-holder")
       parent = self()
 
-      # One poll, which finds the holder in place, then a four-second sleep: the lease is
+      # One poll, which finds the holder in place, then a half-second sleep: the lease is
       # released and the waiter promoted during that sleep, after its last look at the lease and
       # before it removes itself from the queue.
       waiter =
@@ -542,7 +542,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
               "run-late",
               "task-late",
               fn -> {:ok, :must_not_run} end,
-              {1, 4_000}
+              {1, 500}
             )
 
           send(parent, {:finished, "run-late", result})

@@ -149,6 +149,81 @@ whole `.env` (that leaked its `ANTHROPIC_API_KEY` into every dev shell and
 overrode the operator's own credentials). It exports only `LITELLM_MASTER_KEY`;
 `test:langfuse`/`test:all` source the stack `.env` themselves.
 
+### CI layout (`.github/workflows/ci.yml`)
+
+`main` requires three status checks, matched by job NAME (non-strict, app github-actions):
+`foreman_server`, `jido_harness`, `foreman_cli`. Each name must be reported by exactly one job
+that is green only when its work was, on every run, or auto-merge waits forever. Read the check
+list like this:
+
+| Check run | Role |
+| --- | --- |
+| `changes` | classifies the change set (`scripts/ci/changed-code.sh`); not required |
+| `foreman_server_p1` … `foreman_server_p4` | the four test partitions; not required, never the name to put in branch protection |
+| `foreman_server` | **required**. Aggregate job: `needs:` every partition, `if: always()`. Fails when any partition failed or was cancelled; passes when all four passed, or when the change set was docs-only and the partitions were skipped on purpose |
+| `jido_harness`, `foreman_cli` | **required**, names unchanged; reported `skipped` for a docs-only change set |
+
+A required check that is skipped by a job-level `if` counts as passing. A workflow-level
+`paths:`/`paths-ignore:` filter would leave the required checks pending forever, so it is never
+used for this workflow.
+
+**Partitions.** Each leg runs `mix test --partitions 4` with `MIX_TEST_PARTITION=n`. Mix sorts the
+test files and deals them round-robin by index (index mod 4), not by hash and not by duration, so a
+new file moves the files after it into another leg. Every leg has its own runner AND its own
+Postgres container, which is why `config/test.exs` needs no per-partition database name and
+`reset_event_store/1` empties the right event store. To reproduce leg `n` locally give it a
+private database (`createdb`, then `ecto.migrate` and `event_store.init`) and run
+`MIX_TEST_PARTITION=n DATABASE_URL=... mix test --partitions 4 --seed <seed in the leg's log>`; a
+leg that fails only when partitioned has found a hidden dependency between test files, which is a
+bug in the tests, never a reason to reshuffle the split. `format`, `credo` and `doctor` run in
+leg 1 only.
+
+**Docs-only change sets** skip the partitions, `jido_harness` and `foreman_cli` (job-level `if`
+on the `changes` output). `scripts/ci/changed-code.sh` decides from an explicit allowlist of trees
+no test or build step reads (`.beads/`, `.coderabbit.yaml`, most of `docs/`, `scripts/e2e/`); any
+other path, an empty diff or a diff it cannot compute means "run everything". The suites DO read
+`README.md`, `CLAUDE.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `docs/ADT/`,
+`docs/spikes/` and `ops/otel-collector/`, so those count as code. A test that starts reading a file
+under an allowlisted tree must take that tree off the list (the script's header says how it was
+checked; `scripts/ci/changed-code.sh --self-test` runs in every `changes` job).
+
+**Caches.** The key starts with the resolved OS image, OTP and Elixir versions (outputs of
+`erlef/setup-beam`) followed by the hash of `mix.lock`; `restore-keys` is the same prefix without
+the hash, so an entry built by another toolchain can neither hit nor be restored. (The key used to
+be the `mix.lock` hash alone: an entry made before the 10-14 toolchain pin hit on every run and 98
+deps were recompiled each time for nine days.) `jido_harness` caches `deps/`, `_build` and its
+dialyzer PLTs (the core and Elixir PLTs live in `~/.mix`, the project PLT in `_build/dev`; dialyxir
+re-checks a restored PLT against the current deps) under an exact key with no `restore-keys`: an
+older `deps/` restored over a checkout whose vendored deps moved on would clobber them. `deps/` is
+vendored in git but its build outputs are not (erlexec's `exec-port`, rebar `_build`s), so a
+restored `_build` without `deps/` cannot start erlexec. One more file is missing from a checkout:
+`.gitignore` keeps `packages/*/deps/**/.credo.exs` out of git on purpose (credo's own config would
+be taken for a project root), yet credo cannot compile without it, so the job drops `deps/credo`
+before `mix deps.get` and Hex supplies it.
+
+**Concurrency.** A newer push to a PR cancels the older run of that PR. Runs on `main` are keyed by
+SHA, so they are never cancelled and never wait behind each other.
+
+**Slow tests.** Every leg ends its log with `SlowestReport` (the slowest 30 tests and 15
+`async: false` modules). It is a formatter, not `mix test --slowest`: `--slowest` implies
+`--trace`, which runs every module one at a time and switches test timeouts off, so it measures a
+different run than the one CI executes. Use it the same way locally:
+`mix test --formatter ForemanServer.TestSupport.SlowestReport`.
+
+**Coverage** is not collected by default (`mix test --cover` still works). Measured on the same
+files and seed, ExCoveralls made a partition's test step 69-84% slower (92-98 s to 161-180 s) and
+nothing reads its table: there is no threshold and no `coveralls.json`.
+
+**Measured effect** (PR runs of #681; the "before" is the median of 93 runs in 10-23..10-26,
+`foreman_server` job 11.1 min, p90 16.7): a fully warm run takes about 2.3 minutes from push to the
+last required check (changes 7 s, partitions 87-120 s each, aggregate 4 s); `jido_harness` `mix
+quality` drops from 132-190 s to 9 s with the PLT cache. A cold-cache run is about 10 minutes (the
+98 deps compile once) and happens on a new toolchain or `mix.lock`. Test work per partition is
+60-90 s (was 525-650 s for the single job, of which ExCoveralls was ~40%); no test waits 5 s or more
+any more (the slowest is about 2 s). Round-robin leaves the legs uneven (partition 4 is
+25-35 s behind the others); see `foreman-iyikt` for the remaining slow tests and a duration-weighted
+split.
+
 ### erlexec is patched in-repo (process-group startup race, macOS)
 
 Symptom: a process started through `Jido.Harness.Process` ends `:failed` with exit status 1 and stderr

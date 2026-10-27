@@ -782,7 +782,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                launch_pid,
                "worker-on-time",
                "run-on-time",
-               deadline_ms
+               deadline_ms,
+               # The launch process stays alive: this is the wait for its DOWN, not the deadline.
+               50
              )
   end
 

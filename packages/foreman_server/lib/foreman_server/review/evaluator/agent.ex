@@ -82,7 +82,7 @@ defmodule ForemanServer.Review.Evaluator.Agent do
   end
 
   defp attempt(dir, request, cfg) do
-    with {:ok, result} <- run(dir, cfg.provider, request, cfg.timeout) do
+    with {:ok, result} <- run(dir, cfg.provider, request, cfg.timeout, cfg.await_slack_ms) do
       archive_transcript(dir, result)
       finish(result, cfg)
     end
@@ -234,10 +234,10 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     end
   end
 
-  defp run(dir, provider, request, timeout) do
+  defp run(dir, provider, request, timeout, slack) do
     case DetachedRun.start_run(provider, request, []) do
       {:ok, run_id} ->
-        await(dir, run_id, provider, timeout)
+        await(dir, run_id, provider, timeout, slack)
 
       {:error, reason} ->
         {:error,
@@ -247,8 +247,8 @@ defmodule ForemanServer.Review.Evaluator.Agent do
     end
   end
 
-  defp await(dir, run_id, provider, timeout) do
-    deadline = timeout + @await_slack_ms
+  defp await(dir, run_id, provider, timeout, slack) do
+    deadline = timeout + slack
 
     case DetachedRun.await_run(run_id, deadline) do
       {:ok, %RunResult{} = result} ->
@@ -437,6 +437,7 @@ defmodule ForemanServer.Review.Evaluator.Agent do
       model: Map.get(agent, :model),
       effort: Map.get(agent, :effort),
       timeout: Keyword.get(review, :evaluator_timeout_ms, 900_000),
+      await_slack_ms: Keyword.get(review, :evaluator_await_slack_ms, @await_slack_ms),
       retry_backoff_ms: Keyword.get(review, :evaluator_retry_backoff_ms, 60_000)
     }
   end

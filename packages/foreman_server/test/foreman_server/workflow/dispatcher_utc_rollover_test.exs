@@ -11,6 +11,7 @@ defmodule ForemanServer.Workflow.DispatcherUtcRolloverTest do
   import ExUnit.CaptureLog
 
   alias ForemanServer.ProjectLimits
+  alias ForemanServer.TestSupport.MeckScope
   alias ForemanServer.Workflow.Dispatcher
 
   @day_ms 86_400_000
@@ -20,15 +21,17 @@ defmodule ForemanServer.Workflow.DispatcherUtcRolloverTest do
     {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
     {:ok, _} = Application.ensure_all_started(:eventstore)
     {:ok, _} = Application.ensure_all_started(:meck)
-    :ok
+
+    # `:meck.new(ProjectionStore, [:passthrough])` copies a 5.5k-line module (~1.3 s): once per module.
+    MeckScope.new_once!(ForemanServer.ProjectionStore)
   end
 
   setup do
     # See `ForemanServer.DispatcherQuiesce`: the app's Dispatcher would otherwise act on events
     # through the mocked modules below and put messages in this test's mailbox.
     :ok = ForemanServer.DispatcherQuiesce.suspend!()
+    MeckScope.restore_on_exit!(ForemanServer.ProjectionStore)
 
-    :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
     :meck.new(ForemanServer.RunAdmission, [:no_link])
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
 
@@ -36,7 +39,6 @@ defmodule ForemanServer.Workflow.DispatcherUtcRolloverTest do
     # and an unloaded-only-if-valid mock would make the NEXT test's `:meck.new` fail.
     on_exit(fn ->
       :meck.unload([
-        ForemanServer.ProjectionStore,
         ForemanServer.RunAdmission,
         ForemanServer.Workflow.RunSupervisor
       ])

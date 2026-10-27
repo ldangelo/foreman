@@ -410,7 +410,13 @@ defmodule ForemanServer.PrMonitorTest do
     test "PRs the per-tick cap left over are polled on the next second, not a full interval later",
          %{runs: runs} do
       Application.put_env(:foreman_server, :pr_monitor_max_per_tick, 1)
-      on_exit(fn -> Application.delete_env(:foreman_server, :pr_monitor_max_per_tick) end)
+      Application.put_env(:foreman_server, :pr_monitor_min_delay_ms, 20)
+
+      on_exit(fn ->
+        Application.delete_env(:foreman_server, :pr_monitor_max_per_tick)
+        Application.delete_env(:foreman_server, :pr_monitor_min_delay_ms)
+      end)
+
       test_pid = self()
 
       PrMonitor.set_fetch_fun(fn url ->
@@ -421,7 +427,7 @@ defmodule ForemanServer.PrMonitorTest do
       send(Process.whereis(PrMonitor), :poll)
 
       # only the first tick is triggered by hand; the rest follow from the schedule
-      for run <- runs, do: assert_receive({:fetched, url} when url == run.pr_url, 20_000)
+      for run <- runs, do: assert_receive({:fetched, url} when url == run.pr_url, 2_000)
     end
   end
 end

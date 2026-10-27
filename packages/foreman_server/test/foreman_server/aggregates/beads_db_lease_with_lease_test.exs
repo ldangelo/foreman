@@ -134,13 +134,17 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseWithLeaseTest do
     # The live holder is watched, and the watch never touches a hold whose caller lives.
     assert [_keeper] = LeaseKeepers.for_caller(holder.pid)
 
-    # This waits out its ~5s poll budget behind the live holder.
+    # This waits out a short poll budget (the production default is ~5s) behind the live holder.
     log =
       capture_log(fn ->
         assert {:error, :lease_timeout} =
-                 BeadsDbLease.with_lease(db_path, "run-late", "task-late", fn ->
-                   {:ok, :must_not_run}
-                 end)
+                 BeadsDbLease.with_lease(
+                   db_path,
+                   "run-late",
+                   "task-late",
+                   fn -> {:ok, :must_not_run} end,
+                   {5, 20}
+                 )
       end)
 
     assert log =~ "run_id=run-late timed out behind holder run_id=watcher:live:1"

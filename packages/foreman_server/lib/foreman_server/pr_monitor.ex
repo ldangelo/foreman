@@ -34,6 +34,7 @@ defmodule ForemanServer.PrMonitor do
     * `:pr_monitor_interval_ms` - the stable interval (default 5 minutes).
     * `:pr_monitor_pending_interval_ms` - default 30 seconds.
     * `:pr_monitor_max_per_tick` - default 25.
+    * `:pr_monitor_min_delay_ms` - the shortest gap between ticks, default 1 second.
 
   The fetch function is not a config key: tests inject one with
   `set_fetch_fun/1`; it receives a `pr_url` and returns
@@ -49,6 +50,7 @@ defmodule ForemanServer.PrMonitor do
 
   @default_interval_ms 5 * 60 * 1000
   @default_pending_interval_ms 30_000
+  @default_min_delay_ms 1_000
   @default_max_per_tick 25
   @recent_change_ms 10 * 60 * 1000
   @recent_interval_ms 60_000
@@ -312,11 +314,14 @@ defmodule ForemanServer.PrMonitor do
   defp paused?(%{paused_until: until}, now), do: until > now
 
   defp next_delay(state, now) do
+    floor_ms =
+      Application.get_env(:foreman_server, :pr_monitor_min_delay_ms, @default_min_delay_ms)
+
     soonest =
       cond do
-        state.backlog > 0 -> 1_000
+        state.backlog > 0 -> floor_ms
         state.due == %{} -> interval_ms()
-        true -> max(Enum.min(Map.values(state.due)) - now, 1_000)
+        true -> max(Enum.min(Map.values(state.due)) - now, floor_ms)
       end
 
     pause = if paused?(state, now), do: state.paused_until - now, else: 0

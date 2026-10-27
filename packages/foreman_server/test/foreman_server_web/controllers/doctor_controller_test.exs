@@ -16,7 +16,23 @@ defmodule ForemanServerWeb.DoctorControllerTest do
     previous = Application.get_env(:foreman_server, :api_bearer_token)
     Application.put_env(:foreman_server, :api_bearer_token, @token)
 
+    # Every /api/doctor request probes each provider CLI (`<cli> --version`, a real node/CLI
+    # start, ~0.5 s each); no assertion here depends on whether pi or claude is installed
+    # (they only check that provider rows exist and carry a typed status), so point the
+    # probe at an instant executable.
+    previous_providers = Application.get_env(:jido_harness, :provider_config, %{})
+
+    Application.put_env(
+      :jido_harness,
+      :provider_config,
+      previous_providers
+      |> Map.put(:pi, %{cli_path: "/usr/bin/true"})
+      |> Map.put(:claude, %{cli_path: "/usr/bin/true"})
+    )
+
     on_exit(fn ->
+      Application.put_env(:jido_harness, :provider_config, previous_providers)
+
       if previous == nil,
         do: Application.delete_env(:foreman_server, :api_bearer_token),
         else: Application.put_env(:foreman_server, :api_bearer_token, previous)
