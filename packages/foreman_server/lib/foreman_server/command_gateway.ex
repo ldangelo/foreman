@@ -223,6 +223,24 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  @doc """
+  Dispatch a `task.retry` command with the operator path's enrichment
+  (`enrich_operator_command/1`: the bound run must be terminal, and its evidence is
+  attached to the payload), without the `dispatch_operator/2` allow-list.
+
+  The sole caller is `BeadsWatcher`: when an operator re-opens a bead whose task's
+  run failed, the watcher retries the task on the operator's behalf. It is system
+  automation, not an operator, so it goes through the trusted path like
+  `dispatch_system_approval/2`, while the aggregate still validates the evidence
+  (`task.retry` on a task whose bound run is not terminal is refused).
+  """
+  @spec dispatch_system_retry(map(), integer()) :: dispatch_result()
+  def dispatch_system_retry(%{type: "task.retry"} = command, timeout \\ 5_000) do
+    with {:ok, enriched} <- enrich_operator_command(command) do
+      dispatch_and_emit_project_telemetry(enriched, timeout)
+    end
+  end
+
   # `merge_approve` pins the head the operator reviewed. That head is read back from GitHub here,
   # before dispatch and never inside the aggregate (a network read, and the actor re-runs
   # `handle_command/2` on a version conflict): an approval naming a head the PR does not have is

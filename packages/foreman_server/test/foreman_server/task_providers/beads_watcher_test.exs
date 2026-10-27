@@ -73,6 +73,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     end
 
     def dispatch_system_approval(command, timeout), do: dispatch_system(command, timeout)
+    def dispatch_system_retry(command, timeout), do: dispatch_system(command, timeout)
   end
 
   defmodule FakeProjectionStore do
@@ -672,6 +673,104 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       assert [{first, _}, {second, _}] = FakeCommandGateway.calls()
       assert first == second
+    end
+
+    # foreman-pfta.1: re-opening a bead whose run failed retries the task.
+    # The reopen guard compares the bead's `updated_at` with the task's last event.
+    @last_event_ms 1_800_000_000_000
+    @after_event "2027-01-15T08:00:01Z"
+    @before_event "2027-01-15T08:00:00Z"
+
+    defp reopen_line(bead_id, updated_at) do
+      Jason.encode!(%{
+        "id" => bead_id,
+        "title" => "again",
+        "issue_type" => "task",
+        "status" => "open",
+        "labels" => ["foreman-exec"],
+        "updated_at" => updated_at
+      })
+    end
+
+    defp stub_task(bead_id, project, status, retry_count) do
+      FakeProjectionStore.stub_external_id(bead_id, %{
+        id: "task:beads:#{project}:#{bead_id}",
+        status: status,
+        retry_count: retry_count,
+        last_event_at_ms: @last_event_ms
+      })
+    end
+
+    test "a failed task whose bead is re-opened after the failure is retried, then re-approved fresh" do
+      assert DateTime.to_unix(elem(DateTime.from_iso8601(@after_event), 1), :millisecond) ==
+               @last_event_ms + 1_000
+
+      stub_task("bead-reopen", "proj-reopen", "failed", 1)
+      state = %BeadsWatcher{project_id: "proj-reopen"}
+
+      assert BeadsWatcher.process_line(state, reopen_line("bead-reopen", @after_event)) ==
+               :imported
+
+      assert [{retry, _}, {approve, _}] = FakeCommandGateway.calls()
+      assert retry.type == "task.retry"
+      assert retry.aggregate_id == "task:beads:proj-reopen:bead-reopen"
+      assert retry.command_id == "beads-cmd:proj-reopen:bead-reopen:retry-2"
+      assert approve.type == "task.approve"
+      assert approve.command_id == "beads-cmd:proj-reopen:bead-reopen:auto-approve:retry-2"
+    end
+
+    test "a bead line not newer than the failure is not a reopen (no hot loop)" do
+      stub_task("bead-stale", "proj-stale", "failed", 0)
+      state = %BeadsWatcher{project_id: "proj-stale"}
+
+      for updated_at <- [@before_event, "2027-01-15T07:59:59.500Z", nil, "garbage"] do
+        assert BeadsWatcher.process_line(state, reopen_line("bead-stale", updated_at)) ==
+                 :reconciled
+      end
+
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "an active or finished task is never retried by a reopen" do
+      for {status, n} <- [{"ready", 1}, {"in_progress", 2}, {"closed", 3}, {"merged", 4}] do
+        bead = "bead-#{status}"
+        stub_task(bead, "proj-active", status, 0)
+        state = %BeadsWatcher{project_id: "proj-active"}
+
+        assert BeadsWatcher.process_line(state, reopen_line(bead, @after_event)) == :reconciled,
+               "#{status} (#{n})"
+      end
+
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "a bead that is not open is not a reopen" do
+      stub_task("bead-closed-bead", "proj-cb", "failed", 0)
+      state = %BeadsWatcher{project_id: "proj-cb"}
+
+      line =
+        Jason.encode!(%{
+          "id" => "bead-closed-bead",
+          "title" => "x",
+          "issue_type" => "task",
+          "status" => "closed",
+          "labels" => ["foreman-exec"],
+          "updated_at" => @after_event
+        })
+
+      assert BeadsWatcher.process_line(state, line) == :reconciled
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "a failed retry is :transient and approves nothing" do
+      stub_task("bead-retry-fails", "proj-rf", "failed", 0)
+      FakeCommandGateway.stub_response({:error, {:run_not_terminal, "in_progress"}})
+      state = %BeadsWatcher{project_id: "proj-rf"}
+
+      assert BeadsWatcher.process_line(state, reopen_line("bead-retry-fails", @after_event)) ==
+               :transient
+
+      assert [{%{type: "task.retry"}, _}] = FakeCommandGateway.calls()
     end
 
     test "an open task whose projection carries no retry_count fails loudly instead of reconciling" do
