@@ -2,11 +2,9 @@ defmodule ForemanServer.TestSupport.ThrowawayProjectionStore do
   @moduledoc false
   # A test that must see `ForemanServer.ProjectionStore` CRASH on an event (a projector that
   # raises on a malformed payload) fires it at a throwaway store, never at the named singleton.
-  # The singleton's subscribers (`Dispatcher`, `RunLifecycleReconciler`, the PR watcher, ...)
-  # subscribe once, at boot, and the supervisor's restart of the store comes back with an empty
-  # subscriber map: every later test that drives the live Dispatcher then waits for a run that
-  # can never start (foreman-0i1s0: `beads_epic_tree_e2e_test.exs` timing out at 60 s after
-  # `projection_store_phase_pr_test.exs` crashed the singleton).
+  # Crashing the singleton restarts every projection (and replays the log to `replay_existing`
+  # subscribers); the restart path itself is covered by `projection_store_restart_test.exs`
+  # (foreman-m75e9: the restarted store re-adopts its subscribers via `SubscriberLedger`).
   #
   # The throwaway rebuilds from the event log like the real one and takes the same
   # `{:apply_events, events, now_ms_fun}` message `ProjectionStore.apply_events/1` sends.

@@ -40,6 +40,9 @@ defmodule ForemanServer.Application do
       ForemanServerWeb.Presence,
       # EventStore must be started first (ProjectionStore subscribes to it).
       ForemanServer.EventStore,
+      # SubscriberLedger outlives a ProjectionStore crash so the restarted store re-adopts every
+      # boot-time subscriber (Dispatcher, watchers, ...) instead of coming back with none.
+      ForemanServer.ProjectionStore.SubscriberLedger,
       # ProjectionStore subscribes to EventStore and maintains read model.
       ForemanServer.ProjectionStore,
       # DedupeTable owns the dedupe ETS table; started before Inbox.Poller
