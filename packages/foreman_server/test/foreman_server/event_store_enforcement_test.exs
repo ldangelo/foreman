@@ -1,8 +1,6 @@
 defmodule ForemanServer.EventStore.EnforcementTest do
   use ExUnit.Case, async: true
 
-  alias ForemanServer.TestSupport.SourceIndex
-
   @lib_root "lib/foreman_server"
 
   # Per-needle allow list. Each call type may ONLY originate from the
@@ -145,15 +143,17 @@ defmodule ForemanServer.EventStore.EnforcementTest do
   end
 
   defp find_calls(file, module_atom, function_atom, basename) do
-    if File.regular?(file) do
-      {_ast, hits} =
-        file
-        |> SourceIndex.quoted!()
-        |> Macro.prewalk([], &collect_calls(&1, &2, module_atom, function_atom))
+    case File.read(file) do
+      {:ok, source} ->
+        {_ast, hits} =
+          source
+          |> Code.string_to_quoted!(lines: true, columns: true)
+          |> Macro.prewalk([], &collect_calls(&1, &2, module_atom, function_atom))
 
-      Enum.map(hits, fn meta -> {basename, file, meta} end)
-    else
-      []
+        Enum.map(hits, fn meta -> {basename, file, meta} end)
+
+      {:error, _} ->
+        []
     end
   end
 

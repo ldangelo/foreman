@@ -1,8 +1,6 @@
 defmodule ForemanServer.AdmissionFacadeEnforcementTest do
   use ExUnit.Case, async: true
 
-  alias ForemanServer.TestSupport.SourceIndex
-
   @server_glob Path.expand("../../lib/foreman_server/**/*.ex", __DIR__)
   @web_glob Path.expand("../../lib/foreman_server_web/**/*.ex", __DIR__)
   @allowed_dispatch_run_start_callers ["run_admission.ex"]
@@ -156,15 +154,16 @@ defmodule ForemanServer.AdmissionFacadeEnforcementTest do
   defp find_matches(file, predicate) do
     basename = Path.basename(file)
 
-    if File.regular?(file) do
-      {_ast, hits} =
-        file
-        |> SourceIndex.quoted!()
-        |> Macro.prewalk([], &collect_matches(&1, &2, predicate))
+    case File.read(file) do
+      {:ok, source} ->
+        {_ast, hits} =
+          Code.string_to_quoted!(source, lines: true, columns: true)
+          |> Macro.prewalk([], &collect_matches(&1, &2, predicate))
 
-      Enum.map(hits, fn line -> {basename, file, line} end)
-    else
-      []
+        Enum.map(hits, fn line -> {basename, file, line} end)
+
+      {:error, _} ->
+        []
     end
   end
 

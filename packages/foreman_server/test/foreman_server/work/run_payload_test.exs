@@ -1,7 +1,6 @@
 defmodule ForemanServer.Work.RunPayloadTest do
   use ExUnit.Case, async: true
 
-  alias ForemanServer.TestSupport.SourceIndex
   alias ForemanServer.Work.RunPayload
 
   describe "from_task_projection/1" do
@@ -58,8 +57,9 @@ defmodule ForemanServer.Work.RunPayloadTest do
 
       offenders =
         Enum.flat_map(files, fn file ->
-          file
-          |> SourceIndex.source!()
+          source = File.read!(file)
+
+          source
           |> String.split("\n")
           |> Enum.with_index(1)
           |> Enum.flat_map(fn {line, line_no} ->

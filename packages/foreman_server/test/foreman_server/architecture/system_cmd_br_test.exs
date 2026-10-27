@@ -11,8 +11,6 @@ defmodule ForemanServer.Architecture.SystemCmdBrTest do
   """
   use ExUnit.Case, async: true
 
-  alias ForemanServer.TestSupport.SourceIndex
-
   @lib_root "lib/foreman_server"
 
   test "AST scan detects System.cmd(\"br\", ...) calls" do
@@ -40,9 +38,11 @@ defmodule ForemanServer.Architecture.SystemCmdBrTest do
 
     offenders =
       Enum.flat_map(files, fn file ->
+        source = File.read!(file)
+
         {_ast, hits} =
-          file
-          |> SourceIndex.quoted!()
+          source
+          |> Code.string_to_quoted!(lines: true, columns: true)
           |> Macro.prewalk([], &collect_system_cmd_br/2)
 
         Enum.map(Enum.reverse(hits), fn line_no ->

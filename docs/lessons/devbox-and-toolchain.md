@@ -167,27 +167,14 @@ A required check that is skipped by a job-level `if` counts as passing. A workfl
 `paths:`/`paths-ignore:` filter would leave the required checks pending forever, so it is never
 used for this workflow.
 
-**Partitions.** `scripts/ci/partition-tests.sh <n> 4` (run from `packages/foreman_server`) names
-the test files of leg `n`, and the leg runs `mix test <those files>`; it does not use
-`mix test --partitions` any more. Mix's own split deals the sorted files round-robin by index, which
-ignores duration: with 652 files the legs came out at 65/81/68/84 s of weighted test time and
-partition 4 ended 25-35 s behind (CI, runs on 10-27: legs 99-145 s). The script assigns the files
-heaviest first, each to the leg with the least weight so far (greedy, ties by path and lowest leg
-number), using `scripts/ci/test-weights.txt` (`path weight_ms`, the sum of a file's test times;
-an `async: true` file counts a quarter). It is a pure function of the file list and that file, so
-every leg computes the same split, and a new file only displaces itself (weight 150 ms until it
-has an entry). Every leg first runs `partition-tests.sh --check 4`, which fails the leg unless
-each test file is in exactly one leg: a file no leg runs would keep the required `foreman_server`
-check green without being tested. Regenerate the weights when the balance drifts (the legs'
-`Finished in` lines differ by more than ~20%): on a quiet machine,
-`FOREMAN_TEST_WEIGHTS_OUT=/tmp/w mix test --formatter ForemanServer.TestSupport.FileWeights`,
-then `LC_ALL=C sort /tmp/w > scripts/ci/test-weights.txt` (`ForemanServer.TestSupport.FileWeights`
-writes the file). Stale weights cost only balance, never coverage. Every leg has its own runner
-AND its own Postgres container, which is why `config/test.exs` needs no per-partition database
-name and `reset_event_store/1` empties the right event store. To reproduce leg `n` locally give it
-a private database (`createdb`, then `ecto.migrate` and `event_store.init`) and run
-`DATABASE_URL=... mix test $(../../scripts/ci/partition-tests.sh n 4) --seed <seed in the leg's log>`;
-a leg that fails only when partitioned has found a hidden dependency between test files, which is a
+**Partitions.** Each leg runs `mix test --partitions 4` with `MIX_TEST_PARTITION=n`. Mix sorts the
+test files and deals them round-robin by index (index mod 4), not by hash and not by duration, so a
+new file moves the files after it into another leg. Every leg has its own runner AND its own
+Postgres container, which is why `config/test.exs` needs no per-partition database name and
+`reset_event_store/1` empties the right event store. To reproduce leg `n` locally give it a
+private database (`createdb`, then `ecto.migrate` and `event_store.init`) and run
+`MIX_TEST_PARTITION=n DATABASE_URL=... mix test --partitions 4 --seed <seed in the leg's log>`; a
+leg that fails only when partitioned has found a hidden dependency between test files, which is a
 bug in the tests, never a reason to reshuffle the split. `format`, `credo` and `doctor` run in
 leg 1 only.
 
@@ -233,9 +220,33 @@ last required check (changes 7 s, partitions 87-120 s each, aggregate 4 s); `jid
 quality` drops from 132-190 s to 9 s with the PLT cache. A cold-cache run is about 10 minutes (the
 98 deps compile once) and happens on a new toolchain or `mix.lock`. Test work per partition is
 60-90 s (was 525-650 s for the single job, of which ExCoveralls was ~40%); no test waits 5 s or more
-any more (the slowest is about 2 s). Round-robin leaves the legs uneven (partition 4 is
-25-35 s behind the others); see `foreman-iyikt` for the remaining slow tests and a duration-weighted
-split.
+any more (the slowest is about 2 s).
+
+**Two things that were tried for balance and did not pay (foreman-iyikt, 10-27).** Round-robin
+leaves the legs uneven on average (test step 53/73/67/91 s on one run, partition 4 slowest in
+three of four warm main runs), but a single run's spread is mostly runner noise: the same
+commit, same split, five runs, gave per-leg test steps of 64-97 s. (1) A size-weighted split
+(greedy by per-file test time, measured on the CI legs; predicted legs equal within 0.1%, round-robin
+would have been 51/53/68/61 s of test time) gave job maxima of 134-150 s over five runs against
+136-145 s for round-robin over four: no gain that the noise does not hide, so it was not kept
+(`mix test --partitions 4` stays). (2) Sharing one parsed copy of `lib/` between the
+source-scanning architecture tests (`:persistent_term` behind a `:global` lock) made those tests
+*slower* (1-1.5 s became 5-9 s: the lock serialises the first parse and every other test waits
+for it on a 4-vCPU runner) and left the async phase at ~11 s per leg. The scanners are CPU
+work on the async phase, not on the critical path: the legs are bound by the `async: false`
+modules (55-85 s of the 65-90 s test step), so only a cut in those modules (real executor,
+worktrees, Postgres) moves the wall time. What is left there is on purpose: `ResumeTest`,
+`RunExecutorTest` and the multi-repo modules drive a real executor, real git worktrees and
+Postgres (0.5-1 s per test, no cheaper honest setup found); `BeadsDbLeaseCallerDeathTest` has a 2 s
+window in which something must NOT happen and `RunExecutorTest`'s 1.1 s is a retry backoff.
+
+**A timed-out `br` kills its whole process tree.** `SystemBrRunner` snapshots the tree below the
+port's OS pid (`pgrep -P`, recursively) before the first signal, sends SIGTERM to all of it, waits,
+then SIGKILLs what is left. Signalling only the pid the port started left the children of a `br`
+wrapper script (one that forks instead of `exec`ing) running, and holding the port's stdout pipe
+open for the 5 s kill grace. There is no process group to signal instead: erlang's port spawn
+gives the child none and macOS has no `setsid` (the same limit as `Jobsite.Git`); a child forked
+after the snapshot can survive.
 
 ### erlexec is patched in-repo (process-group startup race, macOS)
 

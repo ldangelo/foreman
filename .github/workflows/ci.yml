@@ -69,7 +69,7 @@ jobs:
     env:
       MIX_ENV: test
       SHELL: /bin/bash
-      # Legs are balanced by scripts/ci/partition-tests.sh (test-weights.txt), not mix --partitions.
+      MIX_TEST_PARTITION: ${{ matrix.partition }}
     steps:
       # Each partition has its own runner and its own Postgres, so the test database needs no
       # per-partition name. Started first and in the background: the image pull and initdb run
@@ -153,29 +153,7 @@ jobs:
       # slow test is visible. Not `--slowest`: that implies `--trace`, which runs everything
       # serially with test timeouts off, a different run from the one this job exists to execute.
       - name: Run tests (partition ${{ matrix.partition }} of 4)
-        run: |
-          set -euo pipefail
-          cd packages/foreman_server
-          # Fail closed: a test file no leg runs must break the build, not pass unseen.
-          ../../scripts/ci/partition-tests.sh --check 4
-          files=$(../../scripts/ci/partition-tests.sh ${{ matrix.partition }} 4)
-          [ -n "$files" ] || { echo "::error::partition ${{ matrix.partition }} has no test files"; exit 1; }
-          # shellcheck disable=SC2086
-          mix test $files --warnings-as-errors \
-            --formatter ForemanServer.TestSupport.SlowestReport \
-            --formatter ForemanServer.TestSupport.FileWeights
-        env:
-          # Per-file timings of this leg, uploaded below: the input for regenerating
-          # scripts/ci/test-weights.txt from what CI itself measures (see the lessons file).
-          FOREMAN_TEST_WEIGHTS_OUT: ${{ runner.temp }}/test-weights-p${{ matrix.partition }}.txt
-      - name: Upload test weights (partition ${{ matrix.partition }})
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-weights-p${{ matrix.partition }}
-          path: ${{ runner.temp }}/test-weights-p${{ matrix.partition }}.txt
-          if-no-files-found: ignore
-          retention-days: 30
+        run: cd packages/foreman_server && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport
 
   # The REQUIRED `foreman_server` context. `if: always()` makes it report even when a partition
   # failed or was cancelled; the step then fails unless every partition passed.

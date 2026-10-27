@@ -1,8 +1,6 @@
 defmodule ForemanServer.Architecture.AliasBoundaryTest do
   use ExUnit.Case, async: true
 
-  alias ForemanServer.TestSupport.SourceIndex
-
   @lib_root Path.expand("../../../lib/foreman_server", __DIR__)
   @allowed_root Path.join(@lib_root, "task_providers")
   @positive_control_file Path.join(@allowed_root, "beads_adapter.ex")
@@ -44,9 +42,11 @@ defmodule ForemanServer.Architecture.AliasBoundaryTest do
   end
 
   defp find_adapter_aliases(file) do
+    source = File.read!(file)
+
     {_ast, hits} =
-      file
-      |> SourceIndex.quoted!()
+      source
+      |> Code.string_to_quoted!(lines: true, columns: true)
       |> Macro.prewalk([], &collect_adapter_aliases/2)
 
     Enum.map(Enum.reverse(hits), fn {line, module_name} ->
