@@ -142,11 +142,13 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   2026-09-13) — the CLI verb is gone, though the internal
   `task.retry` command it issued still exists (only a task whose bound
   run is already terminal is eligible) and is sent on `POST /api/commands`.
-  Re-opening the bead (`br update <id> --status=open`) does not retry: once a
-  task exists past `open` the watcher only reconciles it. `task.retry` alone is
-  the whole recovery: the watcher re-approves the task under an approval id scoped
-  by its retry count and a NEW run starts; see `docs/user-guide.md` §7.2
-  ("Recovering from a preflight failure").
+  Re-opening the bead (`br update <id> --status=open`) after a failed run is the
+  recovery: the watcher retries the task (`task.retry`) and re-approves it under a
+  fresh approval id scoped by its retry count, so exactly one NEW run starts and the
+  failed run's history is kept. It only acts on a `failed` task whose bead line is
+  newer than the failure (never on an active or finished run, and never in a loop
+  for a bead that fails instantly). An explicit `task.retry` on `POST /api/commands`
+  works too; see `docs/user-guide.md` §7.2 ("Recovering from a preflight failure").
 
 Enablement, the per-project `task_provider` block, the doctor health
 check, and the orphan janitor's opt-in semantics are documented in

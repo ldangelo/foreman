@@ -110,10 +110,25 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   retry's approval delivered twice is a replay of that approval; the next retry
   is a new one.
 
-  Re-opening the bead (`br update <id> --status=open`) does NOT dispatch a
-  retry: a task past `"open"` (`failed`, `closed`, ...) is `:reconciled`
-  whatever its bead says, so a retry is always the operator's explicit
-  `task.retry` and never inferred from a bead's status.
+  ## Re-opening a bead (foreman-pfta.1)
+
+  Re-opening the bead (`br update <id> --status=open`) after its run failed is the
+  operator recovery path (PRD-2026-44b49f94 AC-009-1: correct the cause, re-open
+  the bead, one new run). A task in `failed` whose bead line is `open` with an
+  `updated_at` strictly after the task's last event is retried by the watcher
+  (`CommandGateway.dispatch_system_retry/2`, command id `...:retry-<n+1>`) and
+  re-approved under `...:auto-approve:retry-<n+1>`: a new approval, a new run, the
+  failed history retained.
+
+  Guards, all deliberate: a task that is `ready`/`in_progress` (run active) or
+  `closed` (finished) is never retried, whatever its bead says; a bead line not
+  newer than the failure is the line the watcher already saw, so a bead whose
+  runs fail instantly does not hot-loop (every failure moves the task's last
+  event past the bead's `updated_at`, and a new retry needs a new edit of the
+  bead); and the retry and approval ids are scoped by the retry count, so one
+  reopen seen by two polls is one retry. Any edit of an `open` bead after a
+  failure counts as a reopen (the JSONL carries no transition history).
+  An operator's explicit `task.retry` keeps working and is re-approved as before.
 
   ## Opt-in supervision (TRD §2.2.6 item 9)
 
@@ -942,6 +957,9 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
         {:retry_approval, bead_id, retry_count} ->
           finish_approval(state, bead_id, auto_approve_bead(state, bead_id, retry_count))
 
+        {:retry_reopened, bead_id, retry_count} ->
+          retry_reopened_bead(state, bead_id, retry_count)
+
         {:malformed, reason} ->
           emit_malformed(state, reason, line)
       end
@@ -1053,18 +1071,89 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
             # must fail here rather than fall through to `:reconcile`.
             {:retry_approval, bead_id, Map.fetch!(task, :retry_count)}
 
-          _existing ->
-            TaskProviderTelemetry.emit(
-              @reconciled_event,
-              %{system_time: System.system_time()},
-              %{project_id: state.project_id, bead_id: bead_id}
-            )
+          %{status: "failed"} = task ->
+            # The bead is `open` again (the operator's recovery path, e.g.
+            # PRD AC-009-1) after its run failed: retry, but only for a line
+            # that is NEWER than the failure (see `reopened_after_failure?/2`).
+            if reopened_after_failure?(parsed, task) do
+              {:retry_reopened, bead_id, Map.fetch!(task, :retry_count)}
+            else
+              reconcile(state, bead_id)
+            end
 
-            :reconcile
+          _existing ->
+            reconcile(state, bead_id)
         end
 
       _ ->
         :ok
+    end
+  end
+
+  defp reconcile(state, bead_id) do
+    TaskProviderTelemetry.emit(
+      @reconciled_event,
+      %{system_time: System.system_time()},
+      %{project_id: state.project_id, bead_id: bead_id}
+    )
+
+    :reconcile
+  end
+
+  # A reopen is a bead line whose `status` is `open` and whose `updated_at` is
+  # strictly after the task's last event (the failure, or the acknowledgement of
+  # the failed run). The watcher rescans every line on every trigger, so a line
+  # that is not newer than the failure is the very line it already acted on (or
+  # one written before the run ran): retrying on it would start a new run per
+  # poll for a bead that fails instantly. Each failure moves the task's last
+  # event past the bead's `updated_at`, so a retry needs a fresh edit of the bead.
+  # A missing/unparseable `updated_at` is never a reopen.
+  defp reopened_after_failure?(parsed, task) do
+    with "open" <- Map.get(parsed, "status"),
+         updated_at when is_binary(updated_at) <- Map.get(parsed, "updated_at"),
+         {:ok, at, _offset} <- DateTime.from_iso8601(updated_at),
+         last_event_ms when is_integer(last_event_ms) <- Map.get(task, :last_event_at_ms) do
+      DateTime.to_unix(at, :millisecond) > last_event_ms
+    else
+      _not_a_reopen -> false
+    end
+  end
+
+  # `task.retry` (the run is terminal; the gateway attaches that evidence) and then
+  # the approval of that retry, whose id is scoped by the post-retry count so it is
+  # a new approval with a new run. The retry's id is scoped the same way, so one
+  # reopen delivered twice replays the same `task.retry` rather than retrying again.
+  defp retry_reopened_bead(state, bead_id, retry_count) do
+    next_retry = retry_count + 1
+    task_id = "beads:" <> state.project_id <> ":" <> bead_id
+
+    retry_command = %{
+      command_id:
+        "beads-cmd:" <>
+          state.project_id <> ":" <> bead_id <> ":retry-" <> Integer.to_string(next_retry),
+      type: "task.retry",
+      aggregate_id: "task:" <> task_id,
+      payload: %{task_id: task_id, reason: "bead re-opened"}
+    }
+
+    case command_gateway().dispatch_system_retry(retry_command, 5_000) do
+      {:ok, _result} ->
+        finish_approval(state, bead_id, auto_approve_bead(state, bead_id, next_retry))
+
+      other ->
+        TaskProviderTelemetry.emit(
+          @error_event,
+          %{system_time: System.system_time()},
+          %{
+            project_id: state.project_id,
+            stage: :reopen_retry,
+            bead_id: bead_id,
+            task_id: task_id,
+            result: other
+          }
+        )
+
+        :transient
     end
   end
 
