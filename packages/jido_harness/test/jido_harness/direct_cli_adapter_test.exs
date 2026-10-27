@@ -2,7 +2,7 @@ defmodule Jido.Harness.DirectCLIAdapterTest do
   use ExUnit.Case, async: false
 
   setup do
-    fixture = Jido.Harness.TestHelpers.fixture_path("fake_stream_cli.exs")
+    fixture = Jido.Harness.TestHelpers.fixture_path("fake_stream_cli.py")
     original = Application.get_env(:jido_harness, :provider_config, %{})
 
     provider_config =
