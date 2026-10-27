@@ -1,6 +1,7 @@
 defmodule ForemanServer.Workflow.ErrorReporterTest do
   use ExUnit.Case, async: true
   alias ForemanServer.Workflow.ErrorReporter
+  alias ForemanServer.Workflow.Validator
 
   describe "top-level errors" do
     test "unknown skill includes skill name and known skill list" do
@@ -8,6 +9,14 @@ defmodule ForemanServer.Workflow.ErrorReporterTest do
       assert msg =~ "Unknown skill"
       assert msg =~ "totally-bogus"
       assert msg =~ "ensemble-fix-issue"
+    end
+
+    test "known-skills list in the message is exactly Validator.known_skills/0 (no drift)" do
+      msg = ErrorReporter.report({:unknown_skill, "totally-bogus"})
+      [_, listed] = Regex.run(~r/Known skills: (.*)\.$/, msg)
+
+      assert String.split(listed, ", ") == Validator.known_skills()
+      assert Validator.known_skills() != []
     end
 
     test "missing_name" do

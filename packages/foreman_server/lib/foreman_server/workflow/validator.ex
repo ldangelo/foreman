@@ -10,16 +10,22 @@ defmodule ForemanServer.Workflow.Validator do
 
   TRD-2026-4212be7e / HLW-T003 / TRD-093, updated for HLW-T004 / TRD-094.
   """
+  # Single source of truth for known skills; ErrorReporter renders this list
+  # in its "Unknown skill" message via known_skills/0. Order is user-visible.
   @known_skills ~w(
     create-prd refine-prd create-trd refine-trd
-    implement-trd fix-issue
+    implement-trd fix-issue ensemble-fix-issue
     ensemble-full-create-prd ensemble-full-refine-prd
     ensemble-full-create-trd
     ensemble-full-implement-trd ensemble-full-implement-trd-beads
     ensemble-beads-build
     ensemble-full-refine-trd-foreman
-    ensemble-fix-issue
   )
+
+  @doc "Skill names a workflow command may reference, in operator-facing order."
+  @spec known_skills() :: [String.t()]
+  def known_skills, do: @known_skills
+
   # Regex to extract skill name from a command string, e.g.
   # "/skill:ensemble-full-implement-trd ..." → "ensemble-full-implement-trd"
   @skill_from_command ~r{^/skill:(\S+)}

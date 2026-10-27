@@ -8,6 +8,8 @@ defmodule ForemanServer.Workflow.ErrorReporter do
   the bare `reason` (after the outer `{:error, ...}` wrapper is stripped by
   callers).  Error messages are descriptive and safe to surface to operators.
   """
+  alias ForemanServer.Workflow.Validator
+
   require Logger
 
   @doc "Logs and returns a human-readable message for a workflow validation error reason."
@@ -30,8 +32,7 @@ defmodule ForemanServer.Workflow.ErrorReporter do
 
   # Skill validation
   defp format({:unknown_skill, skill}),
-    do:
-      "Unknown skill: '#{skill}'. Known skills: create-prd, refine-prd, create-trd, refine-trd, implement-trd, fix-issue, ensemble-fix-issue, ensemble-full-create-prd, ensemble-full-refine-prd, ensemble-full-create-trd, ensemble-full-implement-trd, ensemble-full-implement-trd-beads, ensemble-beads-build, ensemble-full-refine-trd-foreman."
+    do: "Unknown skill: '#{skill}'. Known skills: #{Enum.join(Validator.known_skills(), ", ")}."
 
   # Validator.validate_phase/2 errors — bare inner tuples (outer {:error, ..} stripped by caller)
   defp format({:missing_phase_name, index}),
