@@ -40,9 +40,9 @@ defmodule ForemanServerWeb.WorkflowInstallController do
     opts = build_opts(conn.body_params)
 
     case Installer.remove_all(opts) do
-      {:ok, removed_paths} ->
+      {:ok, %{removed: removed, absent: absent}} ->
         conn
-        |> json(%{status: "removed", paths: removed_paths})
+        |> json(%{status: "removed", paths: removed, absent: absent})
 
       {:error, reason} ->
         conn

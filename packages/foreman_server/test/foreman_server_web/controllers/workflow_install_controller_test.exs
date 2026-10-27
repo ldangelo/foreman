@@ -20,7 +20,8 @@ defmodule ForemanServerWeb.WorkflowInstallControllerTest do
 
     File.mkdir_p!(Path.join(dir, "prompts"))
 
-    for file <- ~w(implement.yaml verify.yaml fix.yaml prd.yaml prompts/implement.md) do
+    for file <-
+          ~w(implement.yaml verify.yaml fix.yaml prd.yaml assess.yaml custom.yaml prompts/plan.md prompts/implement.md) do
       File.write!(Path.join(dir, file), "x\n")
     end
 
@@ -43,16 +44,27 @@ defmodule ForemanServerWeb.WorkflowInstallControllerTest do
   } do
     conn = remove(%{remove_all: true, target_dir: dir})
 
-    assert %{"status" => "removed", "paths" => paths} = json_response(conn, 200)
+    assert %{"status" => "removed", "paths" => paths, "absent" => absent} =
+             json_response(conn, 200)
 
     assert Enum.sort(paths) ==
              Enum.sort([
                Path.join(dir, "implement.yaml"),
                Path.join(dir, "verify.yaml"),
-               Path.join([dir, "prompts", "implement.md"])
+               Path.join([dir, "prompts", "plan.md"])
              ])
 
-    assert files(dir) == [Path.join(dir, "fix.yaml"), Path.join(dir, "prd.yaml")]
+    assert Path.join(dir, "default.yaml") in absent
+    refute Path.join(dir, "implement.yaml") in absent
+
+    assert files(dir) ==
+             Enum.sort([
+               Path.join(dir, "assess.yaml"),
+               Path.join(dir, "custom.yaml"),
+               Path.join(dir, "fix.yaml"),
+               Path.join(dir, "prd.yaml"),
+               Path.join([dir, "prompts", "implement.md"])
+             ])
   end
 
   test "POST /workflows/remove without an explicit remove_all: true is a 400 and removes nothing",

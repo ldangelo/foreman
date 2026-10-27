@@ -104,79 +104,101 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
   end
 
   describe "remove_all/1" do
-    @legacy_names ~w(discover assess implement verify release)
+    alias ForemanServer.WorkflowTemplate.Installer
 
-    test "deletes every legacy manifest and prompt and leaves all other files untouched" do
+    # Every manifest/prompt name Foreman shipped historically that is not
+    # bundled now (git log --all over priv/defaults/workflows + src/defaults/workflows).
+    @legacy_workflows ~w(bug chore default discover docs epic feature implement medium plan
+      pr-review-workflow question quick release small smoke task tdd trd verify)
+    @legacy_prompts ~w(create-pr plan)
+
+    test "legacy sets are exactly shipped-before minus bundled-now" do
+      assert Installer.legacy_workflow_names() == Enum.sort(@legacy_workflows)
+      assert Installer.legacy_prompt_names() == Enum.sort(@legacy_prompts)
+
+      bundled_prompts = Enum.map(@prompt_files, &Path.rootname/1)
+      assert Installer.bundled_workflow_names() == Enum.sort(@template_names)
+      assert Installer.bundled_prompt_names() == Enum.sort(bundled_prompts)
+
+      assert Installer.legacy_workflow_names() -- @template_names ==
+               Installer.legacy_workflow_names()
+
+      assert Installer.legacy_prompt_names() -- bundled_prompts == Installer.legacy_prompt_names()
+      assert "assess" in @template_names
+      refute "assess" in Installer.legacy_workflow_names()
+    end
+
+    test "removes every legacy manifest and prompt, keeps bundled files and custom files" do
       {home_dir, dir} = seeded_workflows_dir!()
       before = snapshot(dir)
 
       legacy_paths =
-        Enum.flat_map(@legacy_names, fn name ->
-          [Path.join(dir, "#{name}.yaml"), Path.join([dir, "prompts", "#{name}.md"])]
-        end)
+        Enum.map(@legacy_workflows, &Path.join(dir, "#{&1}.yaml")) ++
+          Enum.map(@legacy_prompts, &Path.join([dir, "prompts", "#{&1}.md"]))
 
-      assert {:ok, removed} =
-               ForemanServer.WorkflowTemplate.Installer.remove_all(home_dir: home_dir)
+      assert {:ok, %{removed: removed, absent: absent}} = Installer.remove_all(home_dir: home_dir)
 
       assert Enum.sort(removed) == Enum.sort(legacy_paths)
-
+      assert absent == []
       refute Enum.any?(legacy_paths, &File.exists?/1)
       assert snapshot(dir) == Map.drop(before, legacy_paths)
+
+      # bundled (assess included) and operator-authored files survive
+      for file <- @template_files, do: assert(File.exists?(Path.join(dir, file)))
+      for file <- @prompt_files, do: assert(File.exists?(Path.join([dir, "prompts", file])))
+      assert File.read!(Path.join(dir, "custom.yaml")) == "name: custom\n"
+      assert File.read!(Path.join([dir, "prompts", "custom.md"])) == "mine\n"
     end
 
-    test "keeps the curated workflows runnable and discoverable after removal" do
+    test "bundled workflows stay loadable after removal" do
       {home_dir, dir} = seeded_workflows_dir!()
+      assert {:ok, _} = Installer.remove_all(home_dir: home_dir)
 
-      assert {:ok, _} = ForemanServer.WorkflowTemplate.Installer.remove_all(home_dir: home_dir)
-
-      remaining = dir |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".yaml")) |> Enum.sort()
-
-      for curated <- ~w(fix.yaml prd.yaml implement-trd.yaml implement-trd-beads.yaml) do
-        assert curated in remaining
-
-        assert {:ok, _workflow} =
-                 ForemanServer.Workflow.Interpreter.load!(Path.join(dir, curated))
+      for file <- @template_files do
+        assert {:ok, _workflow} = ForemanServer.Workflow.Interpreter.load!(Path.join(dir, file))
       end
-
-      for legacy <- @legacy_names, do: refute("#{legacy}.yaml" in remaining)
     end
 
-    test "honours an explicit :target_dir and is idempotent" do
+    test "is idempotent and reports absent legacy paths" do
       {_home_dir, dir} = seeded_workflows_dir!()
 
-      assert {:ok, [_ | _]} = ForemanServer.WorkflowTemplate.Installer.remove_all(target_dir: dir)
-      assert {:ok, []} = ForemanServer.WorkflowTemplate.Installer.remove_all(target_dir: dir)
+      assert {:ok, %{removed: [_ | _]}} = Installer.remove_all(target_dir: dir)
+      assert {:ok, %{removed: [], absent: absent}} = Installer.remove_all(target_dir: dir)
+
+      assert length(absent) ==
+               length(Installer.legacy_workflow_names()) +
+                 length(Installer.legacy_prompt_names())
     end
 
     test "an empty or missing target is not an error" do
       home_dir = make_temp_dir!("workflow-installer-remove-empty")
 
-      assert {:ok, []} = ForemanServer.WorkflowTemplate.Installer.remove_all(home_dir: home_dir)
+      assert {:ok, %{removed: []}} = Installer.remove_all(home_dir: home_dir)
 
       dir = Path.join(home_dir, "bare")
       File.mkdir_p!(dir)
-      assert {:ok, []} = ForemanServer.WorkflowTemplate.Installer.remove_all(target_dir: dir)
+      assert {:ok, %{removed: []}} = Installer.remove_all(target_dir: dir)
     end
   end
 
-  # A workflows dir the way an upgraded install looks: the bundled set from
-  # `install/1`, plus every legacy manifest/prompt (some are no longer
-  # bundled), plus files `remove_all/1` must never touch (plan.yaml, an
-  # operator's own workflow and prompt).
+  # An upgraded install: the bundled set, every legacy manifest/prompt, and
+  # operator-authored files `remove_all/1` must never touch.
   defp seeded_workflows_dir! do
     home_dir = make_temp_dir!("workflow-installer-remove")
     {:ok, _} = ForemanServer.WorkflowTemplate.Installer.install(home_dir: home_dir)
     dir = Path.join([home_dir, ".foreman", "workflows"])
     File.mkdir_p!(Path.join(dir, "prompts"))
 
-    for name <- ~w(discover assess implement verify release) do
+    for name <- ForemanServer.WorkflowTemplate.Installer.legacy_workflow_names() do
       File.write!(Path.join(dir, "#{name}.yaml"), "name: #{name}\n")
+    end
+
+    for name <- ForemanServer.WorkflowTemplate.Installer.legacy_prompt_names() do
       File.write!(Path.join([dir, "prompts", "#{name}.md"]), "prompt #{name}\n")
     end
 
-    File.write!(Path.join(dir, "plan.yaml"), "name: plan\n")
-    File.write!(Path.join(dir, "my-flow.yaml"), "name: my-flow\n")
-    File.write!(Path.join([dir, "prompts", "my-flow.md"]), "my prompt\n")
+    File.write!(Path.join(dir, "custom.yaml"), "name: custom\n")
+    File.write!(Path.join([dir, "prompts", "custom.md"]), "mine\n")
     {home_dir, dir}
   end
 

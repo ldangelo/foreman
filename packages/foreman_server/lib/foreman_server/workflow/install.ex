@@ -3,11 +3,7 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   Installs workflow templates into a Foreman workflows directory.
   """
 
-  # Legacy workflows removed by remove_all/1 — discover, assess, implement, verify,
-  # release.  plan.yaml remains (active as of this phase).  Curated workflows
-  # (implement-trd, implement-trd-beads) are also preserved.
-  @legacy_workflow_names ~w(discover assess implement verify release)
-  @legacy_workflow_files Enum.map(@legacy_workflow_names, &"#{&1}.yaml")
+  # The legacy sets are derived below from the bundled directory.
 
   # The bundled manifest filenames, discovered from the actual source
   # directory at compile time rather than hand-maintained — a hardcoded list
@@ -61,6 +57,28 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
 
   @bundled_prompt_files Enum.map(@bundled_prompt_sources, &Path.basename/1)
 
+  @bundled_workflow_names @bundled_template_files |> Enum.map(&Path.rootname/1) |> Enum.sort()
+  @bundled_prompt_names @bundled_prompt_files |> Enum.map(&Path.rootname/1) |> Enum.sort()
+
+  # Legacy = shipped before minus bundled now, so a bundled name can never be
+  # removed. Evidence is `git log --all --name-only` over
+  # packages/foreman_server/priv/defaults/workflows and src/defaults/workflows
+  # (TS-era): every `*.yaml` name ever added there. Names are added here only,
+  # never guessed; one still bundled drops out of the legacy set automatically.
+  @ever_shipped_workflow_names ~w(assess bug chore default discover docs epic feature fix
+    implement implement-trd implement-trd-beads medium plan pr-review-workflow prd question
+    quick release review small smoke task tdd trd verify)
+  # Flat `prompts/<name>.md` files ever shipped under
+  # priv/defaults/workflows/prompts (the installed `<target>/prompts` layout).
+  @ever_shipped_prompt_names ~w(assess create-pr discover fix implement plan release
+    review-coderabbit review-repo-rules verify)
+  @legacy_workflow_names @ever_shipped_workflow_names
+                         |> Kernel.--(@bundled_workflow_names)
+                         |> Enum.sort()
+  @legacy_prompt_names @ever_shipped_prompt_names
+                       |> Kernel.--(@bundled_prompt_names)
+                       |> Enum.sort()
+
   # Sorted as one combined list, not `sort(a) ++ sort(b)` — the two are not
   # equivalent once workflow and prompt paths interleave (e.g. `prompts/*`
   # sorts between `prd.yaml` and `review.yaml`), and `__mix_recompile__?/0`
@@ -113,60 +131,55 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   end
 
   @doc """
-  Removes all legacy workflow manifests and their prompts from the target
-  directory. Curated workflows (`implement-trd`, `implement-trd-beads`) are
-  preserved.
+  Removes the workflow manifests and prompts Foreman once shipped but no longer
+  bundles (`legacy_workflow_names/0`, `legacy_prompt_names/0`) from the target
+  directory. Bundled files and anything Foreman never shipped (an operator's own
+  workflow) are never touched.
 
-  Returns `{:ok, removed_paths}` on success.
+  Returns `{:ok, %{removed: paths, absent: paths}}`: `removed` are the files
+  deleted, `absent` the legacy paths that were not there (idempotent).
   """
-  @spec remove_all([option()]) :: {:ok, [Path.t()]} | {:error, term()}
+  @spec remove_all([option()]) ::
+          {:ok, %{removed: [Path.t()], absent: [Path.t()]}} | {:error, term()}
   def remove_all(opts) when is_list(opts) do
     td = target_dir(opts)
 
-    with {:ok, manifest_paths} <- remove_manifests(td),
-         {:ok, prompt_paths} <- remove_prompts(td) do
-      {:ok, manifest_paths ++ prompt_paths}
-    end
-  end
+    candidates =
+      Enum.map(@legacy_workflow_names, &Path.join(td, "#{&1}.yaml")) ++
+        Enum.map(@legacy_prompt_names, &Path.join([td, "prompts", "#{&1}.md"]))
 
-  defp remove_manifests(target_dir) do
-    Enum.reduce_while(@legacy_workflow_files, {:ok, []}, fn filename, {:ok, paths} ->
-      path = Path.join(target_dir, filename)
-
+    candidates
+    |> Enum.reduce_while({:ok, [], []}, fn path, {:ok, removed, absent} ->
       case File.rm(path) do
-        :ok -> {:cont, {:ok, [path | paths]}}
-        # already absent — idempotent
-        {:error, :enoent} -> {:cont, {:ok, paths}}
+        :ok -> {:cont, {:ok, [path | removed], absent}}
+        {:error, :enoent} -> {:cont, {:ok, removed, [path | absent]}}
         {:error, reason} -> {:halt, {:error, {:remove_failed, path, reason}}}
       end
     end)
     |> case do
-      {:ok, paths} -> {:ok, Enum.reverse(paths)}
-      err -> err
+      {:ok, removed, absent} ->
+        {:ok, %{removed: Enum.reverse(removed), absent: Enum.reverse(absent)}}
+
+      err ->
+        err
     end
   end
 
-  defp remove_prompts(target_dir) do
-    prompts_dir = Path.join(target_dir, "prompts")
+  @doc "Manifest names Foreman shipped before and no longer bundles (sorted)."
+  @spec legacy_workflow_names() :: [String.t()]
+  def legacy_workflow_names, do: @legacy_workflow_names
 
-    if File.dir?(prompts_dir) do
-      Enum.reduce_while(@legacy_workflow_names, {:ok, []}, fn name, {:ok, paths} ->
-        path = Path.join(prompts_dir, "#{name}.md")
+  @doc "Prompt names (flat `prompts/<name>.md`) Foreman shipped before and no longer bundles (sorted)."
+  @spec legacy_prompt_names() :: [String.t()]
+  def legacy_prompt_names, do: @legacy_prompt_names
 
-        case File.rm(path) do
-          :ok -> {:cont, {:ok, [path | paths]}}
-          {:error, :enoent} -> {:cont, {:ok, paths}}
-          {:error, reason} -> {:halt, {:error, {:remove_failed, path, reason}}}
-        end
-      end)
-      |> case do
-        {:ok, paths} -> {:ok, Enum.reverse(paths)}
-        err -> err
-      end
-    else
-      {:ok, []}
-    end
-  end
+  @doc "Bundled manifest names (sorted)."
+  @spec bundled_workflow_names() :: [String.t()]
+  def bundled_workflow_names, do: @bundled_workflow_names
+
+  @doc "Bundled prompt names (sorted)."
+  @spec bundled_prompt_names() :: [String.t()]
+  def bundled_prompt_names, do: @bundled_prompt_names
 
   @spec fetch_remote([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def fetch_remote(opts) when is_list(opts) do
