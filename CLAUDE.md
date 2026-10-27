@@ -362,7 +362,11 @@ frozen id of the tagged root epic bead (`task.external_id`), and it declares no
 agent: after the last phase's commit `RunExecutor.verify_run_outcome/2`
 (`Workflow.BeadsTreeCompletion`) fails the run unless every parent-child
 descendant of the epic is `closed` (`:incomplete_children`,
-`:beads_tree_unreadable`, `:beads_tree_unverifiable`). Mechanics and caveats:
+`:beads_tree_unreadable`, `:beads_tree_unverifiable`). The same hook runs
+`Workflow.CheckoutGuard` first (foreman-koas6): an empty run branch while the main checkout
+gained files fails the run with `:checkout_written_instead_of_worktree`. A worktree cleanup
+refuses (dirty) is recorded as `RunWorktreeRetained` (`run.worktree_retained`, foreman-gr27) on the
+run projection's `retained_worktrees`. Mechanics and caveats:
 `docs/lessons/beads-runtime-and-dispatch.md`; operator view: `docs/user-guide.md`
 ("Executing a Beads epic tree").
 

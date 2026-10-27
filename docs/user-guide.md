@@ -88,6 +88,27 @@ on success so a failed run's checkout survives for inspection. The default is
 `foreman run remove --id <run-id>` reclaims it (and the local branch) whenever
 you no longer need it.
 
+Reclaiming never uses `--force`: a worktree that still holds uncommitted or
+untracked files is **kept**, never destroyed. When that happens the run records
+`RunWorktreeRetained` and the run projection (`GET /api/runs/:id`, the
+`ProjectionStore.run/1` read) lists it under `retained_worktrees`
+(`repo_id`, `path`, `reason`), and the server logs a warning naming the same
+path. The run's own status does not change (its work was already proposed).
+Inspect or commit what is there, then `foreman run remove --id <run-id>`.
+
+**Work written to the checkout instead of the worktree.** If a run's last phase
+ends with no commit on its branch and a clean worktree, but the project's own
+checkout gained or changed files since the run's first phase started (a worker
+used the checkout's absolute path), the run **fails** with
+`:checkout_written_instead_of_worktree`, naming the files. The comparison is
+against the checkout's status when the run began, so edits already in progress
+are not blamed. It does not fire when the run committed anything, cannot see
+writes that leave `git status` unchanged (ignored paths), checks only the
+primary repository of a multi-repository run, and stays silent on a resumed
+executor. A no-op run while you edit the checkout in the same window is
+indistinguishable from the real failure and is failed too; the reason lists the
+files so you can judge.
+
 `base` may pin the checkout to a specific ref. For `implement-trd` and
 `implement-trd-beads` it must resolve to the ImplementationContext's frozen
 `source_revision`, and Foreman fails the run if it does not; for every other

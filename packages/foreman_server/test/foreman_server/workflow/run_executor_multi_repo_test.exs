@@ -402,6 +402,30 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
       assert File.exists?(ctx.primary.worktree_path)
     end
 
+    test "a worktree cleanup refuses is recorded on the run with its path (foreman-gr27)", ctx do
+      loaded = put_in(ctx.loaded, [:run_worktree, :cleanup], :always)
+      path = ctx.primary.worktree_path
+      File.write!(Path.join(path, "dirty.txt"), "uncommitted")
+
+      assert {:error, {:worktree_cleanup_failed, [{nil, _reason}]}} =
+               RunExecutor.__cleanup_run_worktree_for_test__(loaded, :success)
+
+      assert File.exists?(path)
+
+      assert %{retained_worktrees: [%{path: ^path, repo_id: "main", reason: reason}]} =
+               ProjectionStore.run(ctx.run_id)
+
+      assert reason =~ "git_worktree_clean_failed"
+    end
+
+    test "a cleanup that succeeds records nothing retained", ctx do
+      loaded = put_in(ctx.loaded, [:run_worktree, :cleanup], :always)
+
+      assert :ok = RunExecutor.__cleanup_run_worktree_for_test__(loaded, :success)
+      refute File.exists?(ctx.primary.worktree_path)
+      refute Map.get(ProjectionStore.run(ctx.run_id) || %{}, :retained_worktrees)
+    end
+
     test "never-cleanup keeps every worktree", ctx do
       assert :ok = RunExecutor.__cleanup_run_worktree_for_test__(ctx.loaded, :success)
 
@@ -413,6 +437,37 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
 
       assert {:error, {:run_worktree_vanished, _}} =
                RunExecutor.__ensure_run_worktree_for_test__(ctx.loaded, 2)
+    end
+  end
+
+  describe "checkout guard through phase_begin/3 and verify_run_outcome/2 (foreman-koas6)" do
+    setup ctx do
+      state = state(ctx)
+      phase = %{name: "work"}
+      assert {:ok, state, record} = RunExecutor.phase_begin(state, phase, 0)
+      %{state: state, record: record}
+    end
+
+    test "the run fails when its worktree is empty and the checkout gained a file", ctx do
+      File.write!(Path.join(ctx.repos["a"], "wrote-here-instead.md"), "oops\n")
+
+      assert {:error, %{code: :checkout_written_instead_of_worktree, detail: detail}} =
+               RunExecutor.verify_run_outcome(ctx.state, nil)
+
+      assert detail =~ "wrote-here-instead.md"
+    end
+
+    test "an operator edit in the checkout does not fail a run that committed", ctx do
+      File.write!(Path.join(ctx.record.worktree_path, "work.txt"), "real work\n")
+      git!(ctx.record.worktree_path, ["add", "."])
+      git!(ctx.record.worktree_path, ["commit", "--no-gpg-sign", "-m", "work", "--quiet"])
+      File.write!(Path.join(ctx.repos["a"], "operator.txt"), "mine\n")
+
+      assert :ok = RunExecutor.verify_run_outcome(ctx.state, nil)
+    end
+
+    test "an untouched checkout passes with an empty branch", ctx do
+      assert :ok = RunExecutor.verify_run_outcome(ctx.state, nil)
     end
   end
 

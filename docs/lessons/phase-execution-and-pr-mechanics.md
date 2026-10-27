@@ -718,3 +718,23 @@ the phase's `approval_mode:` or an approved tool call's override) on `WorkerSess
 approval endpoint, and `--permission-mode default` would override what the host's settings allow.
 An event written with the field is rejected by an older server's strict `EventCodec` (unknown keys
 raise), so that server would not bind the session.
+
+## Silent empty branch and retained worktrees (foreman-koas6, foreman-gr27)
+
+- **Silent empty branch.** foreman-2onq1 (PR #677) fixed the prompt that gave workers the
+  checkout's absolute path; a model can still write there. `Workflow.CheckoutGuard` is the
+  backstop: `RunExecutor.phase_begin/3` snapshots the checkout's `git status` entries (path ->
+  status, size, mtime) when the run's worktree is first provisioned, and
+  `verify_run_outcome/2` (after the last phase's commit) fails the run with
+  `:checkout_written_instead_of_worktree` when the branch has no commit past its base, the
+  worktree is clean, and the checkout gained/changed entries versus the snapshot. `.beads/` is
+  excluded. It cannot see: runs that committed anything (never failed, whatever the operator
+  does), writes leaving status unchanged (ignored paths, identical rewrites), secondary
+  repositories of a multi-repo run, resumed executors (no snapshot; `nil` passes). A genuinely
+  no-op run plus an operator edit in the same window is a false positive by construction; the
+  reason names the files.
+- **Retained worktree.** `clean_worktree` is deliberately unforced, so a dirty worktree
+  survives. `cleanup_run_worktree/3` now dispatches `run.worktree_retained`
+  (`RunWorktreeRetained{run_id, repo_id, path, reason, at}`), folded into the run projection's
+  `retained_worktrees`, and logs a warning with the path. It does not fail the run: cleanup
+  runs after the work was proposed.

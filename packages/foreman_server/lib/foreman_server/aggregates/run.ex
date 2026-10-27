@@ -424,6 +424,11 @@ defmodule ForemanServer.Aggregates.Run do
       "RunRepoPrFailed" ->
         %State{state | run_id: Aggregate.get(payload, :run_id) || state.run_id}
 
+      # foreman-gr27: a worktree cleanup refusal. Like the PR failure it leaves the run's
+      # status alone; the projection folds the retained path.
+      "RunWorktreeRetained" ->
+        %State{state | run_id: Aggregate.get(payload, :run_id) || state.run_id}
+
       # An event type this fold does not know replays as a no-op: a new event type
       # on a run stream must never make `Aggregate.load/2` crash.
       _other ->
@@ -984,6 +989,25 @@ defmodule ForemanServer.Aggregates.Run do
          stream_id: "run:#{run_id}",
          event_type: "RunRepoPrFailed",
          payload: %{run_id: run_id, repo_id: repo_id, reason: reason, at: at}
+       }}
+    end
+  end
+
+  # run.worktree_retained (system, never operator-dispatched) - finalisation reports that
+  # the run's worktree could not be removed and stays on disk (foreman-gr27). Accepted on a
+  # terminal run: cleanup runs after the run's terminal event.
+  def handle_command(state, %{type: "run.worktree_retained", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         {:ok, repo_id} <- Aggregate.required_binary(Aggregate.get(payload, :repo_id), :repo_id),
+         {:ok, path} <- Aggregate.required_binary(Aggregate.get(payload, :path), :path),
+         {:ok, reason} <- Aggregate.required_binary(Aggregate.get(payload, :reason), :reason),
+         {:ok, at} <- required_integer(payload, :at) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunWorktreeRetained",
+         payload: %{run_id: run_id, repo_id: repo_id, path: path, reason: reason, at: at}
        }}
     end
   end
