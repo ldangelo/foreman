@@ -48,6 +48,11 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
 
   test "a cancel after the last phase waits for the stopping agent, then sweeps its tool process",
        %{tmp_dir: dir, run_id: run_id, state: state} do
+    # The harness's own SIGTERM escalation is parked far out of reach: the "agent still stopping"
+    # window must not be a wall-clock race against the two `ps` calls below (a loaded host stretched
+    # them past the 600ms grace, the harness killed the agent first, and `alive?` read false). The
+    # test ends the window itself, by signalling the agent once it has looked at it.
+    StrayAgent.tight_grace!(60_000)
     %{run_id: harness_run_id, agent_os_pid: agent, stray_pid: stray} = StrayAgent.start!(dir)
 
     operator_cancels(run_id, harness_run_id)
@@ -56,6 +61,12 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
     # so its tool process still has a live parent and is no orphan yet.
     assert StrayAgent.alive?(agent)
     assert StrayAgent.ppid(stray) == agent
+
+    # The executor is about to wait for the agent; the SIGTERM that stops it arrives while it waits.
+    Task.start_link(fn ->
+      Process.sleep(200)
+      StrayAgent.terminate!(agent)
+    end)
 
     assert {:stop, :normal, %{status: :cancelled}} = RunExecutor.__finish_phases_for_test__(state)
 

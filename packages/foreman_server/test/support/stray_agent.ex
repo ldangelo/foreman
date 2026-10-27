@@ -109,6 +109,9 @@ defmodule ForemanServer.TestSupport.StrayAgent do
     end
   end
 
+  @doc "Sends SIGTERM to `pid`, whether or not it is running."
+  def terminate!(pid), do: System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
+
   @doc "Kills `pid` with SIGKILL, whether or not it is running."
   def kill!(pid), do: System.cmd("kill", ["-9", Integer.to_string(pid)], stderr_to_stdout: true)
 
