@@ -586,7 +586,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
     test "task exists but status is still open retries approval directly, without a new task.create" do
       FakeProjectionStore.stub_external_id("bead-pending", %{
         id: "task:beads:proj-pending:bead-pending",
-        status: "open"
+        status: "open",
+        retry_count: 0
       })
 
       FakeCommandGateway.stub_response({:ok, %{}})
@@ -599,15 +600,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
       assert BeadsWatcher.process_line(state, line) == :imported
 
       # Only the retried `task.approve` dispatches — no new `task.create`,
-      # since the task already exists.
+      # since the task already exists. A task no `task.retry` has reset keeps
+      # the deterministic approval id its first approval would have had.
       assert [{cmd, _timeout}] = FakeCommandGateway.calls()
       assert cmd.type == "task.approve"
+      assert cmd.command_id == "beads-cmd:proj-pending:bead-pending:auto-approve"
     end
 
     test "task exists but status is still open reports :transient when retried approval also fails" do
       FakeProjectionStore.stub_external_id("bead-stuck", %{
         id: "task:beads:proj-stuck:bead-stuck",
-        status: "open"
+        status: "open",
+        retry_count: 0
       })
 
       FakeCommandGateway.stub_response({:error, :down})
@@ -621,6 +625,68 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       assert [{cmd, _timeout}] = FakeCommandGateway.calls()
       assert cmd.type == "task.approve"
+    end
+
+    # foreman-nfizr: `task.retry` returns a task to `open` so it can be approved
+    # again, and an approval's identity IS its command_id. Re-sending the
+    # original id replays the failed run's approval and the task stays `open`.
+    test "a task the operator retried is re-approved under an id scoped to its retry count" do
+      state = %BeadsWatcher{project_id: "proj-retried"}
+
+      line =
+        ~s({"id":"bead-retried","title":"again","issue_type":"task","status":"open","labels":["foreman-exec"]})
+
+      for retry_count <- 1..3 do
+        FakeProjectionStore.stub_external_id("bead-retried", %{
+          id: "task:beads:proj-retried:bead-retried",
+          status: "open",
+          retry_count: retry_count
+        })
+
+        assert BeadsWatcher.process_line(state, line) == :imported
+      end
+
+      first = "beads-cmd:proj-retried:bead-retried:auto-approve"
+
+      assert [first <> ":retry-1", first <> ":retry-2", first <> ":retry-3"] ==
+               for(
+                 {%{type: "task.approve"} = cmd, _timeout} <- FakeCommandGateway.calls(),
+                 do: cmd.command_id
+               )
+    end
+
+    test "the same retry delivered twice is the same approval command" do
+      FakeProjectionStore.stub_external_id("bead-twice", %{
+        id: "task:beads:proj-twice:bead-twice",
+        status: "open",
+        retry_count: 2
+      })
+
+      state = %BeadsWatcher{project_id: "proj-twice"}
+
+      line =
+        ~s({"id":"bead-twice","title":"again","issue_type":"task","status":"open","labels":["foreman-exec"]})
+
+      assert BeadsWatcher.process_line(state, line) == :imported
+      assert BeadsWatcher.process_line(state, line) == :imported
+
+      assert [{first, _}, {second, _}] = FakeCommandGateway.calls()
+      assert first == second
+    end
+
+    test "an open task whose projection carries no retry_count fails loudly instead of reconciling" do
+      FakeProjectionStore.stub_external_id("bead-shapeless", %{
+        id: "task:beads:proj-shapeless:bead-shapeless",
+        status: "open"
+      })
+
+      state = %BeadsWatcher{project_id: "proj-shapeless"}
+
+      line =
+        ~s({"id":"bead-shapeless","title":"x","issue_type":"task","status":"open","labels":["foreman-exec"]})
+
+      assert_raise KeyError, ~r/:retry_count/, fn -> BeadsWatcher.process_line(state, line) end
+      assert FakeCommandGateway.calls() == []
     end
   end
 

@@ -370,6 +370,64 @@ defmodule ForemanServer.ProjectionStoreTest do
     end
   end
 
+  # foreman-nfizr: `BeadsWatcher` scopes the approval it re-sends after `task.retry` by the
+  # task's retry count, so the read model has to count every reset and nothing else.
+  describe "task retry_count" do
+    test "starts at 0 and counts each TaskRetried, clearing the run binding every time" do
+      task_id = "task-retry-count-#{System.unique_integer([:positive])}"
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "TaskCreated",
+                   payload: %{
+                     task_id: task_id,
+                     project_id: "p",
+                     title: "t",
+                     status: "open",
+                     task_type: "ops"
+                   }
+                 }
+               ])
+
+      assert %{retry_count: 0} = ProjectionStore.task_projection(task_id)
+
+      for attempt <- 1..2 do
+        run_id = "run-retry-count-#{task_id}-#{attempt}"
+
+        assert :ok =
+                 ProjectionStore.apply_events([
+                   %{
+                     event_type: "TaskApproved",
+                     payload: %{
+                       task_id: task_id,
+                       run_id: run_id,
+                       approval_id: "approval-#{attempt}",
+                       approved_by: "tester",
+                       approved_at: "2026-08-10T00:00:00Z",
+                       workflow_snapshot: nil
+                     }
+                   }
+                 ])
+
+        # Approving does not count: only a reset does.
+        assert %{retry_count: count} = ProjectionStore.task_projection(task_id)
+        assert count == attempt - 1
+
+        assert :ok =
+                 ProjectionStore.apply_events([
+                   %{
+                     event_type: "TaskRetried",
+                     payload: %{task_id: task_id, previous_run_id: run_id}
+                   }
+                 ])
+
+        assert %{retry_count: ^attempt, status: "open", run_id: nil, approval_id: nil} =
+                 ProjectionStore.task_projection(task_id)
+      end
+    end
+  end
+
   describe "run_logs/1" do
     test "returns not_found for unknown run and empty success for known run without output" do
       assert {:error, :run_not_found} = ProjectionStore.run_logs("missing-run")
