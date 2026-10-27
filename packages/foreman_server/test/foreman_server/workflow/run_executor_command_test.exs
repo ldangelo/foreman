@@ -15,7 +15,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache}
   alias ForemanServer.Workflow.RunExecutor
-  alias ForemanServer.TestSupport.{DispatcherRestart, RunSlotsReset}
+  alias ForemanServer.TestSupport.{BrFixtures, DispatcherRestart, RunSlotsReset}
   @cache_name :foreman_server_json_schema_cache
   @poll_timeout_ms 8_000
 
@@ -1354,6 +1354,112 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert_receive {:runner_cmd, :close}, @poll_timeout_ms
   end
 
+  # TRD-2026-72f477ca TRD-004 / foreman-9yaz. ensemble-beads-build is a prompt: it
+  # has no exit code, so its agent's turn ending normally says nothing about
+  # whether the epic was built. After the last phase the run reads the Beads graph
+  # (Workflow.BeadsTreeCompletion) and is only as complete as the epic's tree. The
+  # graph is the verbatim `br show` fixtures test/fixtures/br/show_tree_*.json (an
+  # epic, two stories, three tasks); the snapshot carries the fixture epic's id as
+  # the frozen `bead_id`, as ImplementationContext freezes it at approval.
+  describe "an implement-trd-beads epic tree decides the run's outcome" do
+    test "AC-008-1: the agent finishing with unfinished child beads fails the phase, run and task, naming them" do
+      tree = epic_tree("incomplete")
+      assert tree.unfinished != [] and tree.closed != []
+
+      %{run_id: run_id, task_id: task_id, phase_id: phase_id, artifact_path: artifact_path} =
+        start_epic_run!(tree)
+
+      assert_receive {:adapter_execute, prompt, _context}, @poll_timeout_ms
+      assert prompt == "/skill:ensemble-beads-build #{tree.root} --foreman"
+
+      # The agent's turn ended cleanly, yet the phase fails, naming exactly the
+      # beads that are not closed and none of those that are.
+      reason = await_phase_failure!(phase_id)
+      assert reason =~ "incomplete_children"
+      for id <- tree.unfinished, do: assert(reason =~ id)
+      for id <- tree.closed, do: refute(reason =~ id)
+
+      # The run is RunFailed and the epic bead is blocked (transition comment =
+      # run + artifact), never closed.
+      request = await_epic_run_terminal!(run_id, "failed")
+
+      assert {:update,
+              %{flags: [^task_id, "--status", "blocked", "--transition-comment", comment]}} =
+               request
+
+      assert comment == "foreman-run:#{run_id}:#{artifact_path}"
+      refute_received {:runner_cmd, :terminal, _another_terminal_call}
+      refute_received {:unexpected_br_call, _}
+      assert %{status: "failed"} = ProjectionStore.run(run_id)
+      assert %{status: "failed"} = ProjectionStore.phase_projection(phase_id)
+
+      # The full list is in the artifact the transition comment points at.
+      artifact = File.read!(artifact_path)
+      assert artifact =~ "## Incomplete children of #{tree.root}"
+      for id <- tree.unfinished, do: assert(artifact =~ id)
+    end
+
+    test "AC-008-2: every descendant closed completes the run although the epic's own status is still open" do
+      tree = epic_tree("complete")
+      assert tree.root_status == "open"
+
+      %{run_id: run_id, task_id: task_id, phase_id: phase_id} = start_epic_run!(tree)
+
+      assert {:ok, %{status: "completed"}} =
+               poll_until(
+                 fn ->
+                   case ProjectionStore.phase_projection(phase_id) do
+                     %{status: "completed"} = phase -> {:ok, phase}
+                     other -> {:error, other}
+                   end
+                 end,
+                 "epic phase completed"
+               )
+
+      # The task provider, not the agent, closes the epic bead.
+      assert {:close, %{id: ^task_id}} = await_epic_run_terminal!(run_id, "completed")
+      refute_received {:unexpected_br_call, _}
+
+      # One `br show` per level of the tree, nothing else read.
+      for level <- Map.keys(tree.levels), do: assert_received({:br_show, ^level})
+    end
+
+    test "a tree br cannot read fails the run closed: the agent's clean turn is not proof" do
+      tree = epic_tree("complete")
+
+      %{run_id: run_id, task_id: task_id, phase_id: phase_id} =
+        start_epic_run!(tree, show_error: true)
+
+      assert await_phase_failure!(phase_id) =~ "beads_tree_unreadable"
+
+      assert {:update, %{flags: [^task_id, "--status", "blocked" | _]}} =
+               await_epic_run_terminal!(run_id, "failed")
+
+      refute_received {:unexpected_br_call, _}
+    end
+
+    test "AC-005-1/AC-005-2/AC-010-2: a resumed run re-issues the same epic id and judges the graph as it is then, whoever closed the children" do
+      # Foreman keeps no progress state of its own: resuming re-runs the phase
+      # command, which names only the epic (beads-build skips what is closed). A
+      # human closing the remaining children before the resume is
+      # indistinguishable from beads-build having closed them: the resumed run
+      # reads the graph at its end and completes. (Skipping completed children is
+      # beads-build's own behaviour, not observable here.)
+      tree = epic_tree("complete")
+      %{run_id: run_id, task_id: task_id} = start_epic_run!(tree, resume_from: 0)
+
+      assert_receive {:adapter_execute, prompt, _context}, @poll_timeout_ms
+      assert prompt == "/skill:ensemble-beads-build #{tree.root} --foreman"
+
+      assert {:close, %{id: ^task_id}} = await_epic_run_terminal!(run_id, "completed")
+      for level <- Map.keys(tree.levels), do: assert_received({:br_show, ^level})
+
+      # Resuming does not claim the task again.
+      refute_received {:runner_cmd, :claim}
+      refute_received {:unexpected_br_call, _}
+    end
+  end
+
   test "an operator pause landing mid-phase commits the partial work and stops the run without failing it" do
     # The pause arrives as the agent's death with `RunControl` already holding
     # the intent: the observer's `step_failed/4` must fold that into a pause
@@ -2179,5 +2285,180 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
        stderr: "",
        exit_code: 0
      }}
+  end
+
+  defp blocked_payload_json(task_id) do
+    {:ok,
+     %{
+       stdout:
+         Jason.encode!([
+           %{
+             "id" => task_id,
+             "title" => "Feature #{task_id}",
+             "status" => "blocked",
+             "priority" => 2,
+             "dependencies" => [],
+             "assignee" => nil,
+             "description" => nil,
+             "notes" => nil,
+             "design" => nil,
+             "labels" => [],
+             "metadata" => %{}
+           }
+         ]),
+       stderr: "",
+       exit_code: 0
+     }}
+  end
+
+  # The epic tree BrRunnerMock serves as `br show` answers: the verbatim
+  # test/fixtures/br/show_tree_<state>_{epic,stories,tasks}.json. `levels` maps the
+  # sorted ids one `br show` asks for to its answer.
+  defp epic_tree(state) do
+    [epic] = BrFixtures.decode!("show_tree_#{state}_epic.json")
+    stories = BrFixtures.decode!("show_tree_#{state}_stories.json")
+    tasks = BrFixtures.decode!("show_tree_#{state}_tasks.json")
+    ids = fn issues -> issues |> Enum.map(& &1["id"]) |> Enum.sort() end
+    descendants = stories ++ tasks
+
+    %{
+      root: epic["id"],
+      root_status: epic["status"],
+      levels: %{[epic["id"]] => [epic], ids.(stories) => stories, ids.(tasks) => tasks},
+      unfinished: for(issue <- descendants, issue["status"] != "closed", do: issue["id"]),
+      closed: for(issue <- descendants, issue["status"] == "closed", do: issue["id"])
+    }
+  end
+
+  # Drives a real RunExecutor over a one-phase implement-trd-beads snapshot whose
+  # frozen `bead_id` is the tree's root. Every br call goes through ONE stub (a
+  # second `expect` would be consumed out of order): the claim, each `br show`
+  # level (answered from `tree.levels`, or failing with `show_error: true`) and
+  # the terminal call (the epic bead blocked on failure, closed on completion),
+  # which is reported as {:runner_cmd, :terminal, request}; anything else is
+  # reported as {:unexpected_br_call, request} and fails.
+  defp start_epic_run!(tree, opts \\ []) do
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}-implement.md")
+    on_exit(fn -> File.rm_rf(artifact_dir) end)
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      implementation: %{
+        project_root: System.tmp_dir!(),
+        source_revision: "test-#{task_id}",
+        implementation_key: "test-key-#{task_id}",
+        trd_path: "docs/TRD/TRD-EPIC.md",
+        bead_id: tree.root,
+        beads_database_path: database_path
+      },
+      worktree: %{enabled: false},
+      phases: [
+        %{
+          name: :implement_trd_beads,
+          action: :command,
+          command: "/skill:ensemble-beads-build #{tree.root} --foreman",
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-implement.md"])
+          },
+          context: %{"script_key" => script_key}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    show_error? = Keyword.get(opts, :show_error, false)
+
+    stub(BrRunnerMock, :cmd, fn request, _cfg, _opts ->
+      case request do
+        {:update, %{flags: ["--claim", ^task_id]}} ->
+          send(test_pid, {:runner_cmd, :claim})
+          claim_payload_json(task_id)
+
+        {:show, %{flags: flags}} ->
+          level = Enum.sort(flags)
+          send(test_pid, {:br_show, level})
+
+          case Map.fetch(tree.levels, level) do
+            {:ok, answer} when not show_error? ->
+              {:ok, %{stdout: Jason.encode!(answer), stderr: "", exit_code: 0}}
+
+            _unreadable ->
+              {:error, %{stdout: "", stderr: "br: database is locked", exit_code: 1}}
+          end
+
+        {:update, %{flags: [^task_id, "--status", "blocked", "--transition-comment", _comment]}} ->
+          send(test_pid, {:runner_cmd, :terminal, request})
+          blocked_payload_json(task_id)
+
+        {:close, %{id: ^task_id}} ->
+          send(test_pid, {:runner_cmd, :terminal, request})
+          close_payload_json(task_id)
+
+        other ->
+          send(test_pid, {:unexpected_br_call, other})
+          {:error, %{stdout: "", stderr: "unexpected br call", exit_code: 1}}
+      end
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    start_supervised!(%{
+      id: {RunExecutor, run_id},
+      start: {RunExecutor, :start_link, [run_id, task, Keyword.take(opts, [:resume_from])]},
+      restart: :temporary,
+      shutdown: 5_000,
+      type: :worker
+    })
+
+    %{
+      run_id: run_id,
+      task_id: task_id,
+      phase_id: Identity.phase_id(run_id, 1),
+      artifact_path: artifact_path
+    }
+  end
+
+  # Waits for the run's terminal state and for the one provider call it triggers
+  # (see await_run_failure!/1), and returns that call's request.
+  defp await_epic_run_terminal!(run_id, status) do
+    assert {:ok, %{status: ^status}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: ^status} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run #{status}"
+             )
+
+    assert_receive {:runner_cmd, :terminal, request}, @poll_timeout_ms
+    request
   end
 end

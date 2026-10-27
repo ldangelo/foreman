@@ -38,6 +38,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.AgentRuntime.JidoHarness.{ForkSession, ModelCatalog, ReadinessCheck}
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Workflow.BeadsTreeCompletion
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.LiveSteer
   alias ForemanServer.RunControl
@@ -1218,6 +1219,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
        }}
     end
   end
+
+  # The run's outcome, judged on the world rather than on the agent's exit: a run
+  # whose frozen implementation context names a bead (`implement-trd-beads`) was
+  # handed a Beads tree to finish, and `BeadsTreeCompletion` reads that tree. Any
+  # other run has nothing to check. `Workflow.JobsiteObserver` calls this after
+  # the LAST phase's commit and before that phase is recorded complete, so an
+  # unfinished tree fails the phase — and with it the run and the task — through
+  # `emit_phase_failure/4`, exactly as any other failed phase does.
+  @doc false
+  @spec verify_run_outcome(state(), String.t() | nil) :: :ok | {:error, FailureCause.t()}
+  def verify_run_outcome(state, artifact_path),
+    do: BeadsTreeCompletion.verify(state.plan_context || %{}, artifact_path)
 
   defp emit_phase_start(state, phase_spec, phase_index) do
     phase_id = Identity.phase_id(state.run_id, phase_index)

@@ -110,6 +110,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.CommandRouter
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+  alias ForemanServer.Workflow.ImplementationContext
 
   @runner Application.compile_env(
             :foreman_server,
@@ -1158,17 +1159,48 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     if workflow_type in @trd_path_required_workflows do
       case extract_trd_path(parsed) do
         trd_path when is_binary(trd_path) and trd_path != "" ->
-          {:ok, trd_path}
+          check_trd_path_at_head(state, parsed, trd_path)
 
         _empty_or_missing ->
           bead_id = Map.get(parsed, "id")
-          block_missing_trd_path(state, bead_id)
+          block_missing_trd_path(state, bead_id, %{})
           {:error, :missing_trd_path}
       end
     else
       {:ok, nil}
     end
   end
+
+  # A `trd_path` that names no regular tracked file at the registered
+  # project's HEAD is blocked exactly like a missing one (PRD REQ-006,
+  # AC-006-2): `task.approve` would otherwise reject it in
+  # `ImplementationContext.build/1` and the watcher, which only sees an
+  # approval failure, would hold the line `:transient` forever. The check is
+  # `ImplementationContext.validate_trd_path/2` — the same boundary
+  # `task.approve` runs. Only a fault of the PATH (`trd_path_*`) blocks the
+  # bead; a fault of the project or its checkout (`:project_not_found`,
+  # `:project_root_*`, `:not_a_git_repo`, `:source_revision_invalid`, an
+  # unresolvable root) is not the bead's, so the line proceeds to `task.create`
+  # and approval as before.
+  defp check_trd_path_at_head(state, parsed, trd_path) do
+    case ImplementationContext.validate_trd_path(state.project_id, trd_path) do
+      :ok ->
+        {:ok, trd_path}
+
+      {:error, {:implementation_context_failed, reason}} when is_atom(reason) ->
+        if trd_path_fault?(reason) do
+          block_missing_trd_path(state, Map.get(parsed, "id"), %{reason: reason})
+          {:error, :missing_trd_path}
+        else
+          {:ok, trd_path}
+        end
+
+      :error ->
+        {:ok, trd_path}
+    end
+  end
+
+  defp trd_path_fault?(reason), do: String.starts_with?(Atom.to_string(reason), "trd_path_")
 
   defp extract_trd_path(parsed) do
     case Map.get(parsed, "agent_context") do
@@ -1182,7 +1214,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
   # doc's `<id>` placeholder so the re-run command is copy-paste ready;
   # the trd_path JSON shape stays illustrative since only the operator
   # knows the real path to supply.
-  defp block_missing_trd_path(state, bead_id) when is_binary(bead_id) and bead_id != "" do
+  defp block_missing_trd_path(state, bead_id, extra_metadata)
+       when is_binary(bead_id) and bead_id != "" do
     # The cursor no longer halts on an earlier held :transient line
     # (see `apply_3_way_cursor/3`), so this line can be re-scanned on a
     # later poll while the earlier line is still unresolved. Without a
@@ -1193,7 +1226,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     # "open" — the file's own cached `status` field is exactly the
     # stale value this check exists to not trust.
     case current_bead_status(state, bead_id) do
-      {:ok, "open"} -> do_block_missing_trd_path(state, bead_id)
+      {:ok, "open"} -> do_block_missing_trd_path(state, bead_id, extra_metadata)
       {:ok, _already_transitioned} -> :ok
       # A `:show` failure (transient runner/CLI error, or output this
       # watcher cannot decode) does not mean the bead is already
@@ -1204,18 +1237,18 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
       # propagate here without also restructuring that caller; the
       # worst case on a rare runner error is one redundant `br update`,
       # not the every-poll spam this guard exists to prevent.
-      {:error, _reason} -> do_block_missing_trd_path(state, bead_id)
+      {:error, _reason} -> do_block_missing_trd_path(state, bead_id, extra_metadata)
     end
   end
 
-  defp block_missing_trd_path(state, _bead_id) do
+  defp block_missing_trd_path(state, _bead_id, extra_metadata) do
     # No `id` to target with `br update` — nothing to block. Still emit
     # telemetry so the missing-trd_path outcome is observable; the line
     # advances via :skipped either way (this bead cannot be acted on).
     TaskProviderTelemetry.emit(
       @status_gate_skipped_missing_trd_path_event,
       %{system_time: System.system_time()},
-      %{project_id: state.project_id, bead_id: nil}
+      Map.merge(%{project_id: state.project_id, bead_id: nil}, extra_metadata)
     )
 
     :ok
@@ -1238,7 +1271,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     end
   end
 
-  defp do_block_missing_trd_path(state, bead_id) do
+  defp do_block_missing_trd_path(state, bead_id, extra_metadata) do
     comment =
       "Blocked: workflow requires trd_path in agent_context. Re-run: br update #{bead_id} --agent-context '{\"trd_path\":\"docs/TRD/...\"}' --status open"
 
@@ -1279,7 +1312,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
     TaskProviderTelemetry.emit(
       @status_gate_skipped_missing_trd_path_event,
       %{system_time: System.system_time()},
-      %{project_id: state.project_id, bead_id: bead_id}
+      Map.merge(%{project_id: state.project_id, bead_id: bead_id}, extra_metadata)
     )
 
     update_result
