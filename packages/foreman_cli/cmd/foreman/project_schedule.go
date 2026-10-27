@@ -238,8 +238,7 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 		}
 	}
 
-	_, err = fmt.Fprintf(os.Stdout, "created schedule %s in project %s\n", createdID, *projectID)
-	return err
+	return printCommandOutcome(os.Stdout, out, fmt.Sprintf("created schedule %s in project %s\n", createdID, *projectID))
 }
 
 // scheduleCreateIdentity derives the deterministic command id and schedule id of a

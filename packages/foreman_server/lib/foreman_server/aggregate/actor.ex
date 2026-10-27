@@ -160,7 +160,7 @@ defmodule ForemanServer.Aggregate.Actor do
       binary when is_binary(binary) ->
         case find_event_by_id(aggregate_id, event_id) do
           {:ok, event_spec} ->
-            {:reply, {:ok, event_spec}, state}
+            {:reply, {:ok, mark_replayed(event_spec)}, state}
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}
@@ -847,11 +847,30 @@ defmodule ForemanServer.Aggregate.Actor do
   defp handle_duplicate_event(state, aggregate_id, event_id, append_latency_ms) do
     with {:ok, persisted} <- lookup_persisted_event_spec(aggregate_id, event_id),
          {:ok, %{state: rehydrated}} <- reload_after_conflict(state) do
-      {:reply, {:telemetry, {:ok, persisted}, %{append_latency_ms: append_latency_ms}},
+      {:reply,
+       {:telemetry, {:ok, mark_replayed(persisted)}, %{append_latency_ms: append_latency_ms}},
        rehydrated}
     else
       {:error, reason} ->
         {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
     end
   end
+
+  @replayed_key "replayed"
+
+  @doc """
+  Marks an event spec returned for an already-recorded command id.
+
+  A duplicate command id never appends: the actor answers with the event the first
+  command recorded. That answer is otherwise indistinguishable from a fresh success, so
+  it carries `replayed: true` (the single definition of the key; `replayed?/1` reads it).
+  """
+  @spec mark_replayed(map()) :: map()
+  def mark_replayed(event_spec) when is_map(event_spec),
+    do: Map.put(event_spec, @replayed_key, true)
+
+  @doc "True when `result` is the recorded answer to a repeated command id (see `mark_replayed/1`)."
+  @spec replayed?(term()) :: boolean()
+  def replayed?(%{@replayed_key => true}), do: true
+  def replayed?(_result), do: false
 end

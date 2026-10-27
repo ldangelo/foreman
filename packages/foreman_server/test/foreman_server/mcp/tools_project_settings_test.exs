@@ -92,8 +92,12 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
     writes(true)
     args = %{project_id: id, goal: "ship it", max_concurrent_runs: 2, idempotency_key: "k1"}
 
-    assert {:ok, _} = Tools.call_tool("foreman_project_settings_update", args)
-    assert {:ok, _} = Tools.call_tool("foreman_project_settings_update", args)
+    # The MCP door shares the gateway result: a repeated command id is marked replayed
+    # (same `Actor.replayed?/1` the HTTP controller serialises), a fresh one is not.
+    assert {:ok, first} = Tools.call_tool("foreman_project_settings_update", args)
+    assert {:ok, second} = Tools.call_tool("foreman_project_settings_update", args)
+    refute ForemanServer.Aggregate.Actor.replayed?(first)
+    assert ForemanServer.Aggregate.Actor.replayed?(second)
     assert length(events(id, "ProjectUpdated")) == 1
 
     assert %{goal: "ship it", max_concurrent_runs: 2} = ProjectionStore.project_settings(id)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -120,8 +121,7 @@ func projectCreate(c *client.Client, args []string) error {
 
 	switch *format {
 	case "":
-		_, err = fmt.Fprintf(os.Stdout, "registered project %s at %s with task provider %s\n", *projectID, *path, *taskProvider)
-		return err
+		return printCommandOutcome(os.Stdout, out, fmt.Sprintf("registered project %s at %s with task provider %s\n", *projectID, *path, *taskProvider))
 	case "json":
 		return printJSON(out)
 	default:
@@ -312,8 +312,8 @@ func projectUpdate(c *client.Client, args []string) error {
 		if *taskProvider != "" {
 			summary += " with task provider " + *taskProvider
 		}
-		_, err = fmt.Fprintln(os.Stdout, summary)
-		return err
+
+		return printCommandOutcome(os.Stdout, out, summary+"\n")
 	case "json":
 		return printJSON(out)
 	default:
@@ -348,12 +348,12 @@ func projectPause(c *client.Client, args []string) error {
 		commandID = sha256Hex("project.pause." + *idempotencyKey)
 	}
 
-	if _, err := postCommandWithResponse(c, commandEnvelope{Type: "project.pause", CommandID: commandID, Payload: payload}); err != nil {
+	out, err := postCommandWithResponse(c, commandEnvelope{Type: "project.pause", CommandID: commandID, Payload: payload})
+	if err != nil {
 		return err
 	}
 
-	_, err := fmt.Fprintf(os.Stdout, "paused project %s; resume with `foreman project resume %s`\n", projectID, projectID)
-	return err
+	return printCommandOutcome(os.Stdout, out, fmt.Sprintf("paused project %s; resume with `foreman project resume %s`\n", projectID, projectID))
 }
 
 func projectLifecycle(c *client.Client, name, commandType, verb string, args []string) error {
@@ -373,12 +373,12 @@ func projectLifecycle(c *client.Client, name, commandType, verb string, args []s
 	}
 
 	body := commandEnvelope{Type: commandType, CommandID: commandID, Payload: map[string]any{"project_id": projectID}}
-	if _, err := postCommandWithResponse(c, body); err != nil {
+	out, err := postCommandWithResponse(c, body)
+	if err != nil {
 		return err
 	}
 
-	_, err := fmt.Fprintf(os.Stdout, "%s project %s\n", verb, projectID)
-	return err
+	return printCommandOutcome(os.Stdout, out, fmt.Sprintf("%s project %s\n", verb, projectID))
 }
 
 func projectSettings(c *client.Client, args []string) error {
@@ -521,7 +521,8 @@ func projectDelete(c *client.Client, args []string) error {
 		},
 	}
 
-	if _, err := postCommandWithResponse(c, body); err != nil {
+	out, err := postCommandWithResponse(c, body)
+	if err != nil {
 		if *force {
 			printProjectDeleteConflictDetails(err)
 		}
@@ -529,8 +530,7 @@ func projectDelete(c *client.Client, args []string) error {
 		return err
 	}
 
-	_, err := fmt.Fprintf(os.Stdout, "archived project %s (soft delete: runs, tasks and event history are kept); reactivate with `foreman project reactivate %s`\n", projectID, projectID)
-	return err
+	return printCommandOutcome(os.Stdout, out, fmt.Sprintf("archived project %s (soft delete: runs, tasks and event history are kept); reactivate with `foreman project reactivate %s`\n", projectID, projectID))
 }
 
 type projectListResponse struct {
@@ -918,11 +918,35 @@ func postProjectRepoCommand(c *client.Client, commandType string, payload map[st
 		commandID = sha256Hex(commandType + "." + string(encoded))
 	}
 
-	if _, err := postCommandWithResponse(c, commandEnvelope{Type: commandType, CommandID: commandID, Payload: payload}); err != nil {
+	out, err := postCommandWithResponse(c, commandEnvelope{Type: commandType, CommandID: commandID, Payload: payload})
+	if err != nil {
 		return err
 	}
 
-	_, err := fmt.Fprint(os.Stdout, summary)
+	return printCommandOutcome(os.Stdout, out, summary)
+}
+
+// commandReplayed reports whether the server answered a command with the event recorded by an
+// EARLIER command carrying the same command id (`result.replayed`) instead of applying it.
+func commandReplayed(out map[string]any) bool {
+	result, _ := out["result"].(map[string]any)
+	replayed, _ := result["replayed"].(bool)
+
+	return replayed
+}
+
+// printCommandOutcome is the one success line of every state-toggling command whose id is
+// derived from its payload: `applied` when the server applied it, an honest no-change notice
+// when the id was already recorded. A replay is not an error (the recorded effect stands), so
+// the exit code stays 0.
+func printCommandOutcome(w io.Writer, out map[string]any, applied string) error {
+	if commandReplayed(out) {
+		_, err := fmt.Fprintln(w, "no change: this exact command was already recorded under the same command id, so it was not applied again (the project may have changed since); pass --idempotency-key <new-key> to apply it again")
+		return err
+	}
+
+	_, err := fmt.Fprint(w, applied)
+
 	return err
 }
 

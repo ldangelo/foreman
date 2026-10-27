@@ -68,7 +68,9 @@ defmodule ForemanServerWeb.CommandControllerScheduleTest do
     first = post_command("schedule.create", payload, extra) |> json_response(201)
     second = post_command("schedule.create", payload, extra) |> json_response(201)
 
-    assert first == second
+    assert first["result"]["replayed"] == false
+    assert second["result"]["replayed"] == true
+    assert put_in(first, ["result", "replayed"], true) == second
     assert %{"result" => %{"schedule_id" => "sch-0123456789ab"}} = first
     assert [%{schedule_id: "sch-0123456789ab"}] = ProjectionStore.schedules(p)
   end

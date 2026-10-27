@@ -123,7 +123,8 @@ defmodule ForemanServer.ProjectDeferralTest do
     end
 
     assert {:ok, first} = command.()
-    assert {:ok, ^first} = command.()
+    assert {:ok, replay} = command.()
+    assert replay == ForemanServer.Aggregate.Actor.mark_replayed(first)
 
     {:ok, events} = ForemanServer.EventStore.read_stream_forward("project:#{id}", 0, 1_000)
     assert Enum.count(events, &(&1.event_type =~ "ProjectAdmissionDeferred")) == 1

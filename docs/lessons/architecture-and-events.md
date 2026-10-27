@@ -319,6 +319,15 @@ produce no additional events. Domain idempotency (e.g. rejecting a second
 `run.complete` on an already-completed run) is implemented in each aggregate's
 `handle_command/2`.
 
+**A replayed command id is marked, not hidden (foreman-pfta.2).** `Aggregate.Actor` answers a
+repeated `command_id` with the originally recorded event spec and appends nothing, which used to be
+indistinguishable from a fresh success. The actor now stamps that answer (`Actor.mark_replayed/1`, read
+by `Actor.replayed?/1`: the one definition of the key) and `CommandController` serialises it as
+`result.replayed` (`false` on a fresh command). The Go CLI derives deterministic ids ON PURPOSE (identical
+retries collapse), so `update X`, `--clear`, `update X` again is a replay: the CLI prints a `no change`
+notice naming the cause and `--idempotency-key <new-key>` as the remedy (exit 0) instead of `updated
+project`. MCP tools get the same marker on the event they return because they share the gateway result.
+
 **A `task.approve` command_id is also the approval's identity.** `CommandGateway` makes it the
 `approval_id` and `Identity.run_id/2` derives the run id from it, so re-sending a command_id after
 `task.retry` (which returns the task to `open` to be approved *again*) is answered from the event

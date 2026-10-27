@@ -87,7 +87,8 @@ defmodule ForemanServer.CommandGatewayToolCallTest do
     command = operator("tool.deny", run_id, "tc-1")
 
     assert {:ok, first} = CommandGateway.dispatch_operator(command)
-    assert {:ok, ^first} = CommandGateway.dispatch_operator(command)
+    assert {:ok, replay} = CommandGateway.dispatch_operator(command)
+    assert replay == ForemanServer.Aggregate.Actor.mark_replayed(first)
 
     {:ok, events} = EventStore.read_stream_forward(ToolCall.stream_id(run_id, "tc-1"), 0, 100)
     assert Enum.count(events, &(&1.event_type == "ToolCallDenied")) == 1

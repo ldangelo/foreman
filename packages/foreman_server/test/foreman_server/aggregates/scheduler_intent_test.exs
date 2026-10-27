@@ -53,7 +53,8 @@ defmodule ForemanServer.Aggregates.SchedulerIntentTest do
     test "an identical retry (same command id) is a router-level no-op, not an error" do
       id = fresh_id()
       assert {:ok, first} = Recovery.record_intent(id, fire(id))
-      assert {:ok, ^first} = Recovery.record_intent(id, fire(id))
+      assert {:ok, replay} = Recovery.record_intent(id, fire(id))
+      assert replay == ForemanServer.Aggregate.Actor.mark_replayed(first)
     end
 
     test "the event carries schedule, project and slot and drops unknown keys" do
