@@ -1,12 +1,17 @@
 # CodeRabbit review configuration.
 #
-# Why this file exists: review behavior was previously set only in the
-# Repository/Organization web UI, so it was invisible to the repo and could not
-# be reviewed or changed alongside the code it governs. `@coderabbitai
-# configuration` on a PR prints the resolved settings and their source if you
-# need to see what the UI still supplies.
+# 2026-10-27: automatic review and the changes-requested gate are OFF. Main's merge gate is
+# the three CI jobs (foreman_server, jido_harness, foreman_cli) as REQUIRED status checks plus
+# GitHub auto-merge; a bot review round after every push cost a full CI cycle per round and
+# its CHANGES_REQUESTED blocked merges until dismissed by hand. A review can still be asked for
+# on demand with `@coderabbitai review` on a PR; the profile and path instructions below apply
+# to that. To turn CodeRabbit off entirely, remove this repository from the CodeRabbit app's
+# repository access in the GitHub UI (not possible from the API with a user token).
 #
-# `inheritance: true` is REQUIRED here, not decorative. It is what makes this
+# Earlier history of this file: review behavior was previously set only in the
+# Repository/Organization web UI. `inheritance: true` keeps this file a narrow override of
+# the UI settings instead of a full replacement.
+inheritance: true` is REQUIRED here, not decorative. It is what makes this
 # file a narrow override instead of a full replacement: every value not named
 # below continues to come from the Repository/Organization UI. Without it, the
 # `inheritance` schema default of `false` would silently reset unlisted settings
@@ -18,6 +23,12 @@ inheritance: true
 language: "en-US"
 
 reviews:
+  # No automatic review on PR open/push and never a CHANGES_REQUESTED review (that review state
+  # blocks merging on this repository even with zero required approvals).
+  request_changes_workflow: false
+  auto_review:
+    enabled: false
+
   # Raised from `chill` (the schema default, and what the UI supplied) after a
   # direct comparison on PR #423: the GitHub app at `chill` reported 4 findings,
   # all cosmetic prose, while `coderabbit review` from the CLI over the same
