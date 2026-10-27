@@ -16,7 +16,6 @@ defmodule ForemanServer.Workflow.ErrorReporterTest do
       [_, listed] = Regex.run(~r/Known skills: (.*)\.$/, msg)
 
       assert String.split(listed, ", ") == Validator.known_skills()
-      assert Validator.known_skills() != []
     end
 
     test "missing_name" do
