@@ -276,3 +276,15 @@ Mechanics, because the dep is a hex copy and easy to revert silently:
 - A new `erlexec` version means a new base file: re-port the patch or drop it once `saleyn/erlexec` carries the fix.
 
 ---
+
+## Unbundling a default workflow or prompt (foreman-q6jlf)
+
+`ForemanServer.Workflow.Install` finds the manifests and prompts that `workflow remove --all`
+must clean up from two hand-kept lists, `@ever_shipped_workflow_names` and
+`@ever_shipped_prompt_names` in `packages/foreman_server/lib/foreman_server/workflow/install.ex`
+(legacy = ever shipped minus still bundled). When you delete or rename a file under
+`packages/foreman_server/priv/defaults/workflows` (`*.yaml`, or `prompts/*.md`), add its name to
+the matching list in the same PR. `scripts/ci/ever-shipped-names.sh` re-derives the names from
+`git log --all` and the `ever_shipped_names` CI job (full history, not a required check) fails
+when one is missing; locally it skips on a shallow clone. Run it before pushing; `--self-test`
+checks its comparison logic without history.

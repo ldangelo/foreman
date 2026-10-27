@@ -10,6 +10,8 @@ name: ci
 #   foreman_server      REQUIRED. Aggregate of the four partitions: fails if any partition
 #                       failed or was cancelled, passes only when all four passed (or the
 #                       change set was docs-only and none were meant to run)
+#   ever_shipped_names  not required: guards install.ex's ever-shipped workflow/prompt lists
+#                       against git history (scripts/ci/ever-shipped-names.sh)
 #   jido_harness        REQUIRED
 #   foreman_cli         REQUIRED
 #
@@ -107,10 +109,13 @@ jobs:
           BR_INSTALLER_SHA: 6c8283c43773212ad1509c2caa4f400674674a50
           BR_INSTALLER_SHA256: b2b3ed0ae2712e53a72d48afd5a980a7c1d346bb6e6b9fb9e4f3b20566726c2f
         run: |
+          # The installer script is pinned by commit + SHA-256 above; the br release it fetches
+          # is the separate --version below. Keep it equal to the br the real ledger runs
+          # (`br --version`), so br-shape differences between releases show up here.
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --max-time 30 \
             "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/${BR_INSTALLER_SHA}/install.sh" -o /tmp/br-install.sh
           echo "${BR_INSTALLER_SHA256}  /tmp/br-install.sh" | shasum -a 256 -c -
-          timeout 300 bash /tmp/br-install.sh --version v0.5.10 --quiet
+          timeout 300 bash /tmp/br-install.sh --version v0.6.0 --quiet
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify Jido fork pins
         run: echo "JRM-T003 reading pins from JIDO_FORKS.md"
@@ -180,6 +185,21 @@ jobs:
           else
             echo "::error::foreman_server failed: partitions=$PARTITIONS (code=$CODE)"; exit 1
           fi
+
+  # NOT a required check. Fails when a workflow or prompt that was ever bundled and no longer is
+  # is missing from the ever-shipped lists in workflow/install.ex. Needs full history, so it has
+  # its own checkout; the other jobs keep their shallow ones.
+  ever-shipped-names:
+    name: ever_shipped_names
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the ever-shipped lists against git history
+        run: |
+          scripts/ci/ever-shipped-names.sh --self-test
+          scripts/ci/ever-shipped-names.sh
 
   jido-harness:
     name: jido_harness
