@@ -416,6 +416,153 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
     end
   end
 
+  describe "validate_trd_path/2 (the TRD-path boundary shared with build/1)" do
+    setup do
+      suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+      repo = Path.join(System.tmp_dir!(), "ic-validate-#{suffix}")
+      File.rm_rf!(repo)
+      File.mkdir_p!(Path.join(repo, "docs/TRD"))
+      File.write!(Path.join([repo, "docs", "TRD", "x.md"]), "# TRD\n")
+      File.write!(Path.join([repo, "docs", "TRD", "deleted.md"]), "# soon gone\n")
+      {_, 0} = System.cmd("git", ["init", "-q", "-b", "main"], cd: repo)
+      {_, 0} = System.cmd("git", ["config", "user.email", "t@t"], cd: repo)
+      {_, 0} = System.cmd("git", ["config", "user.name", "t"], cd: repo)
+      {_, 0} = System.cmd("git", ["add", "."], cd: repo)
+      {_, 0} = System.cmd("git", ["commit", "-q", "-m", "init"], cd: repo)
+      {_, 0} = System.cmd("git", ["rm", "-q", "docs/TRD/deleted.md"], cd: repo)
+      {_, 0} = System.cmd("git", ["commit", "-q", "-m", "delete"], cd: repo)
+      File.write!(Path.join([repo, "docs", "TRD", "untracked.md"]), "# u\n")
+
+      on_exit(fn -> File.rm_rf(repo) end)
+
+      register_project("proj-validate", repo)
+      %{repo: repo}
+    end
+
+    test "returns :ok for a tracked regular blob, and build/1 accepts the same path" do
+      assert :ok = ImplementationContext.validate_trd_path("proj-validate", "docs/TRD/x.md")
+
+      assert {:ok, %ImplementationContext{trd_path: "docs/TRD/x.md"}} =
+               ImplementationContext.build(%{
+                 project_id: "proj-validate",
+                 workflow_type: "implement-trd",
+                 trd_path: "docs/TRD/x.md"
+               })
+    end
+
+    test "every trd_path_* failure carries the reason build/1 gives for the same input" do
+      expected = [
+        {"docs/TRD/nonexistent.md", :trd_path_missing},
+        {"docs/TRD/deleted.md", :trd_path_missing},
+        {"docs/TRD", :trd_path_is_directory},
+        {"../x", :trd_path_not_project_relative},
+        {"docs/../../x", :trd_path_not_project_relative},
+        {"/etc/passwd", :trd_path_not_project_relative},
+        {"docs/TRD/untracked.md", :trd_path_not_tracked_blob},
+        {"docs/TRD/x.md/below.md", :trd_path_intermediate_not_directory},
+        {"", :trd_path_blank},
+        {".", :trd_path_blank},
+        {"docs/\0/x.md", :trd_path_invalid},
+        {nil, :trd_path_missing}
+      ]
+
+      for {trd_path, reason} <- expected do
+        assert {:error, {:implementation_context_failed, ^reason}} =
+                 ImplementationContext.validate_trd_path("proj-validate", trd_path),
+               "validate_trd_path(#{inspect(trd_path)}) should fail with #{reason}"
+
+        assert {:error, {:implementation_context_failed, ^reason}} =
+                 ImplementationContext.build(%{
+                   project_id: "proj-validate",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path
+                 }),
+               "build(#{inspect(trd_path)}) must keep failing with #{reason}"
+      end
+    end
+
+    test "a tracked symlink fails as trd_path_is_symlink, like build/1", %{repo: repo} do
+      File.write!(Path.join(repo, "target.md"), "# t\n")
+      :ok = File.ln_s(Path.join(repo, "target.md"), Path.join([repo, "docs", "TRD", "link.md"]))
+      {_, 0} = System.cmd("git", ["add", "."], cd: repo)
+      {_, 0} = System.cmd("git", ["commit", "-q", "-m", "link"], cd: repo)
+
+      assert {:error, {:implementation_context_failed, :trd_path_is_symlink}} =
+               ImplementationContext.validate_trd_path("proj-validate", "docs/TRD/link.md")
+
+      assert {:error, {:implementation_context_failed, :trd_path_is_symlink}} =
+               ImplementationContext.build(%{
+                 project_id: "proj-validate",
+                 workflow_type: "implement-trd",
+                 trd_path: "docs/TRD/link.md"
+               })
+    end
+
+    test "a project-level failure is returned unchanged, never as a trd_path_* reason" do
+      assert {:error, {:implementation_context_failed, :project_not_found}} =
+               ImplementationContext.validate_trd_path("no-such-project", "docs/TRD/x.md")
+
+      assert {:error, {:implementation_context_failed, :project_id_missing}} =
+               ImplementationContext.validate_trd_path("", "docs/TRD/x.md")
+
+      assert {:error, {:implementation_context_failed, :project_id_missing}} =
+               ImplementationContext.validate_trd_path(nil, "docs/TRD/x.md")
+
+      :sys.replace_state(ProjectionStore, fn state ->
+        put_in(state.projects["proj-no-root"], %{project_id: "proj-no-root", status: "active"})
+      end)
+
+      assert {:error, {:implementation_context_failed, :project_root_missing}} =
+               ImplementationContext.validate_trd_path("proj-no-root", "docs/TRD/x.md")
+    end
+
+    test "a project root that is not a git repo fails as :not_a_git_repo, like build/1" do
+      suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+      nongit = Path.join(System.tmp_dir!(), "ic-validate-nongit-#{suffix}")
+      File.rm_rf!(nongit)
+      File.mkdir_p!(Path.join(nongit, "docs/TRD"))
+      File.write!(Path.join([nongit, "docs", "TRD", "x.md"]), "# t\n")
+      on_exit(fn -> File.rm_rf(nongit) end)
+      register_project("proj-nongit", nongit)
+
+      assert {:error, {:implementation_context_failed, :not_a_git_repo}} =
+               ImplementationContext.validate_trd_path("proj-nongit", "docs/TRD/x.md")
+
+      assert {:error, {:implementation_context_failed, :not_a_git_repo}} =
+               ImplementationContext.build(%{
+                 project_id: "proj-nongit",
+                 workflow_type: "implement-trd",
+                 trd_path: "docs/TRD/x.md"
+               })
+    end
+
+    test "an unresolvable project root is the same bare :error build/1 has always returned" do
+      register_project("proj-gone", Path.join(System.tmp_dir!(), "ic-validate-does-not-exist"))
+
+      assert :error = ImplementationContext.validate_trd_path("proj-gone", "docs/TRD/x.md")
+
+      assert :error =
+               ImplementationContext.build(%{
+                 project_id: "proj-gone",
+                 workflow_type: "implement-trd",
+                 trd_path: "docs/TRD/x.md"
+               })
+    end
+
+    test "validate_trd_path/2 does not need the bead-side inputs build/1 also checks" do
+      # build/1 goes on to require a bead id for implement-trd-beads; the
+      # path validation must not.
+      assert :ok = ImplementationContext.validate_trd_path("proj-validate", "docs/TRD/x.md")
+
+      assert {:error, {:implementation_context_failed, :bead_id_missing}} =
+               ImplementationContext.build(%{
+                 project_id: "proj-validate",
+                 workflow_type: "implement-trd-beads",
+                 trd_path: "docs/TRD/x.md"
+               })
+    end
+  end
+
   describe "to_payload/1" do
     test "always includes the five required fields" do
       ctx = %ImplementationContext{
@@ -472,5 +619,15 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
   defp canonical(path) do
     {out, 0} = System.cmd("realpath", [path])
     String.trim(out)
+  end
+
+  defp register_project(project_id, path) do
+    :sys.replace_state(ProjectionStore, fn state ->
+      put_in(state.projects[project_id], %{
+        project_id: project_id,
+        path: path,
+        status: "active"
+      })
+    end)
   end
 end

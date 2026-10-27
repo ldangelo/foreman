@@ -98,12 +98,8 @@ defmodule ForemanServer.Workflow.ImplementationContext do
     trd_path = Map.get(input, :trd_path)
     external_id = Map.get(input, :external_id)
 
-    with {:ok, project} <- fetch_project(project_id),
-         {:ok, canonical_root} <- canonicalize_root(project),
-         {:ok, normalized} <- normalize_trd_path(trd_path),
-         {:ok, source_revision} <- resolve_source_revision(canonical_root),
-         :ok <- assert_regular_file_under(canonical_root, normalized),
-         :ok <- assert_tracked_regular_blob(source_revision, canonical_root, normalized),
+    with {:ok, {canonical_root, normalized, source_revision}} <-
+           validate_trd(project_id, trd_path),
          {:ok, key} <- implementation_key(project_id, normalized),
          {:ok, bead_id} <- bead_id_for(workflow_type, external_id),
          {:ok, beads_db} <- beads_database_path_for(workflow_type, project_id) do
@@ -121,6 +117,29 @@ defmodule ForemanServer.Workflow.ImplementationContext do
   end
 
   def build(_), do: {:error, {:implementation_context_failed, :project_id_missing}}
+
+  @doc """
+  Validate only the TRD-path part of `build/1`: the registered project, its
+  root, the normalized path, the source revision, and a regular tracked blob at
+  that revision. It runs the very same checks `build/1` runs at approval
+  (one shared helper), so a path this accepts cannot fail those checks there,
+  and every failure carries the reason `build/1` would give.
+
+  Failures whose reason starts with `trd_path_` are faults of the path itself;
+  the others (`:project_not_found`, `:project_root_*`, `:not_a_git_repo`,
+  `:source_revision_invalid`, ...) are faults of the project or its checkout.
+  A project root that cannot be resolved to a canonical directory surfaces as
+  the bare `:error` `canonicalize_root/1` has always returned to `build/1`.
+  """
+  @spec validate_trd_path(String.t(), String.t() | nil) ::
+          :ok | :error | {:error, {:implementation_context_failed, atom()}}
+  def validate_trd_path(project_id, trd_path)
+      when is_binary(project_id) and project_id != "" do
+    with {:ok, _validated} <- validate_trd(project_id, trd_path), do: :ok
+  end
+
+  def validate_trd_path(_project_id, _trd_path),
+    do: {:error, {:implementation_context_failed, :project_id_missing}}
 
   @doc "Render the context as a payload map for inclusion in a snapshot."
   @spec to_payload(t()) :: map()
@@ -159,6 +178,20 @@ defmodule ForemanServer.Workflow.ImplementationContext do
   # ------------------------------------------------------------------
   # Validation helpers
   # ------------------------------------------------------------------
+
+  # The TRD-path checks shared by `build/1` and `validate_trd_path/2`.
+  # Returns the canonical root, the normalized path and the source revision
+  # `build/1` goes on to freeze.
+  defp validate_trd(project_id, trd_path) do
+    with {:ok, project} <- fetch_project(project_id),
+         {:ok, canonical_root} <- canonicalize_root(project),
+         {:ok, normalized} <- normalize_trd_path(trd_path),
+         {:ok, source_revision} <- resolve_source_revision(canonical_root),
+         :ok <- assert_regular_file_under(canonical_root, normalized),
+         :ok <- assert_tracked_regular_blob(source_revision, canonical_root, normalized) do
+      {:ok, {canonical_root, normalized, source_revision}}
+    end
+  end
 
   defp fetch_project(project_id) do
     case ProjectionStore.project_projection(project_id) do
