@@ -50,6 +50,73 @@ defmodule ForemanServer.Jobsite.GitTest do
     end
   end
 
+  describe "commit_all/3 .beads hygiene" do
+    @runtime_files ~w(beads.db beads.db-wal beads.db-shm beads.db-wal-cert beads.db.bak
+                      .br-wal-index-1 .write.lock bd.sock last-touched)
+
+    defp beads_repo!(opts \\ []) do
+      path = tmp_repo!()
+      beads = Path.join(path, ".beads")
+      File.mkdir_p!(beads)
+      File.cp!("test/fixtures/beads_gitignore", Path.join(beads, ".gitignore"))
+      File.write!(Path.join(beads, "config.yaml"), "a: 1\n")
+      File.write!(Path.join(beads, "issues.jsonl"), "")
+      {_, 0} = System.cmd("git", ["-C", path, "add", "-A"])
+      {_, 0} = System.cmd("git", ["-C", path, "commit", "-q", "-m", "beads"])
+      if opts[:no_gitignore], do: File.rm!(Path.join(beads, ".gitignore"))
+      for f <- @runtime_files, do: File.write!(Path.join(beads, f), "runtime")
+      path
+    end
+
+    defp committed_files(path) do
+      {out, 0} = System.cmd("git", ["-C", path, "show", "--name-status", "--format=", "HEAD"])
+      out
+    end
+
+    test "never stages runtime files even when the agent deleted .beads/.gitignore" do
+      path = beads_repo!(no_gitignore: true)
+      File.write!(Path.join(path, "work.txt"), "x")
+
+      assert {:ok, :committed} = Git.commit_all(path, "msg")
+
+      out = committed_files(path)
+      assert out =~ "work.txt"
+      refute out =~ ".beads/beads.db"
+      refute out =~ ".br-wal-index"
+      refute out =~ "last-touched"
+      # the deletion of .beads/.gitignore is not committed; the file is restored
+      refute out =~ ".beads/.gitignore"
+      assert File.exists?(Path.join(path, ".beads/.gitignore"))
+    end
+
+    test "never stages a modification of .beads/.gitignore" do
+      path = beads_repo!()
+      File.write!(Path.join(path, ".beads/.gitignore"), "")
+      File.write!(Path.join(path, "work.txt"), "x")
+
+      assert {:ok, :committed} = Git.commit_all(path, "msg")
+      refute committed_files(path) =~ ".beads/.gitignore"
+    end
+
+    test "runtime files alone are nothing to commit, not a failed commit" do
+      path = beads_repo!(no_gitignore: true)
+      {:ok, before} = Git.head_sha(path)
+
+      assert {:ok, :nothing_to_commit} = Git.commit_all(path, "msg")
+      assert {:ok, ^before} = Git.head_sha(path)
+    end
+
+    test "the exported ledger (issues.jsonl) and config.yaml are still committed" do
+      path = beads_repo!()
+      File.write!(Path.join(path, ".beads/issues.jsonl"), "{\"id\":\"x\"}\n")
+
+      assert {:ok, :committed} = Git.commit_all(path, "msg")
+      out = committed_files(path)
+      assert out =~ ".beads/issues.jsonl"
+      refute out =~ "beads.db"
+    end
+  end
+
   describe "dirty?/1" do
     test "a status that cannot run is dirty, never clean" do
       path = tmp_repo!()
