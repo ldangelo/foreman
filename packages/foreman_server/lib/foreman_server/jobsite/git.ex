@@ -185,16 +185,32 @@ defmodule ForemanServer.Jobsite.Git do
   # commit cannot fail on a checkout with no `user.email`/`user.name` set;
   # `--no-verify` so a repository pre-commit hook cannot fail the commit or
   # rewrite the agent's output.
-  @doc "Stage and commit everything in `path`. A clean tree is `{:ok, :nothing_to_commit}` and creates no commit."
+  # `.beads` hygiene. `git add -A` used to sweep beads runtime state (beads.db,
+  # -wal/-shm, locks, sockets, `.br-wal-index-*`, `beads.db.bak`, `last-touched`) into
+  # agent commits, and an agent that deleted `.beads/.gitignore` made every one of
+  # them untracked-and-unignored. Foreman therefore stages `.beads` by ALLOWLIST: only
+  # `@beads_committable` (the exported ledger and project config) is ever staged from
+  # there; everything else under `.beads` is excluded by pathspec whatever the local
+  # `.gitignore` says. `.beads/.gitignore` is never staged (neither edited nor
+  # deleted) and a deleted copy is restored from HEAD so the working tree keeps
+  # protecting itself. `issues.jsonl` stays committable on purpose: a jobsite's bead
+  # closes reach the host only through that exported file (agents produce it with
+  # `br sync --flush-only`, never by hand-editing).
+  @beads_committable ~w(.beads/issues.jsonl .beads/config.yaml .beads/metadata.json)
+
+  @doc "Stage and commit everything in `path` except `.beads` runtime state (see `@beads_committable`). A tree with nothing stageable is `{:ok, :nothing_to_commit}` and creates no commit."
   @spec commit_all(String.t(), String.t(), keyword()) ::
           {:ok, :nothing_to_commit} | {:ok, :committed} | {:error, Error.t()}
   def commit_all(path, message, opts \\ []) do
     name = Keyword.get(opts, :name, "Foreman")
     email = Keyword.get(opts, :email, "foreman@localhost")
 
-    with {:ok, dirty?} <- status_dirty(path),
+    with :ok <- restore_beads_gitignore(path),
+         {:ok, dirty?} <- status_dirty(path),
          true <- dirty? || {:clean, :nothing_to_commit},
-         :ok <- git_step(["-C", path, "add", "-A"], :add, :git_add_failed),
+         :ok <- stage(path),
+         {:ok, staged?} <- staged?(path),
+         true <- staged? || {:clean, :nothing_to_commit},
          :ok <-
            git_step(
              [
@@ -216,6 +232,57 @@ defmodule ForemanServer.Jobsite.Git do
     else
       {:clean, :nothing_to_commit} -> {:ok, :nothing_to_commit}
       {:error, %Error{}} = error -> error
+    end
+  end
+
+  defp restore_beads_gitignore(path) do
+    ignore = ".beads/.gitignore"
+
+    if File.exists?(Path.join(path, ignore)) or not tracked?(path, ignore) do
+      :ok
+    else
+      git_step(["-C", path, "checkout", "HEAD", "--", ignore], :add, :git_add_failed)
+    end
+  end
+
+  defp tracked?(path, file) do
+    match?(
+      {_, 0},
+      System.cmd("git", ["-C", path, "ls-files", "--error-unmatch", "--", file],
+        stderr_to_stdout: true
+      )
+    )
+  end
+
+  defp stage(path) do
+    allowed =
+      Enum.filter(@beads_committable, fn file ->
+        File.exists?(Path.join(path, file)) and
+          not match?(
+            {_, 0},
+            System.cmd("git", ["-C", path, "check-ignore", "-q", "--", file],
+              stderr_to_stdout: true
+            )
+          )
+      end)
+
+    with :ok <-
+           git_step(
+             ["-C", path, "add", "-A", "--", ".", ":(exclude,glob).beads/**"],
+             :add,
+             :git_add_failed
+           ) do
+      if allowed == [],
+        do: :ok,
+        else: git_step(["-C", path, "add", "-A", "--" | allowed], :add, :git_add_failed)
+    end
+  end
+
+  defp staged?(path) do
+    case System.cmd("git", ["-C", path, "diff", "--cached", "--quiet"], stderr_to_stdout: true) do
+      {_, 0} -> {:ok, false}
+      {_, 1} -> {:ok, true}
+      {output, code} -> {:error, commit_error(:add, {:git_add_failed, code, String.trim(output)})}
     end
   end
 

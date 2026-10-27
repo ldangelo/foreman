@@ -279,3 +279,7 @@ br sync --status --json       # VERIFY: `coverage_drift` must be false
 
 <!-- end-bv-agent-instructions -->
 
+
+## Agent commits and `.beads` runtime files (foreman-okaf)
+
+`Jobsite.Git.commit_all/3` used `git add -A`, and the `iterate` prompt only said "commit". Runtime files that `.beads/.gitignore` does not cover (`.br-wal-index-*`, `beads.db.bak`) were committed even with the file intact, and an agent that deleted `.beads/.gitignore` ("untrack runtime files") exposed every runtime file. Lesson: a `.gitignore` the agent can edit is not a guard. `commit_all/3` now stages `.beads` by allowlist (`issues.jsonl`, `config.yaml`, `metadata.json`), never stages `.beads/.gitignore` and restores it from HEAD if deleted; the prompt carries the same rules (explicit paths, `br sync --flush-only`, commit only `issues.jsonl`). A commit made by the agent itself inside the sandbox is covered by the prompt only.

@@ -2109,6 +2109,13 @@ fails the jobsite with `:agent_failed`; it does not report a completed run.
 If `ANTHROPIC_API_KEY` is set in the environment it takes precedence over a
 `claude` login, so an exhausted API key fails the run even when the login works.
 
+Foreman's own commits (`:commit` steps, the end-of-run commit) stage `.beads` by
+allowlist: only `.beads/issues.jsonl`, `config.yaml` and `metadata.json` are ever
+committed from there. Runtime state (`beads.db*`, `*.bak`, `.br-wal-index-*`,
+locks, sockets, `last-touched`) is never staged even if `.beads/.gitignore` is
+missing, and `.beads/.gitignore` is never staged (a deleted copy is restored from
+HEAD). The shipped `iterate` template prompt tells the agent the same rules.
+
 Workflow phases run on this same engine. `ForemanServer.Workflow.RunExecutor`
 no longer has a phase loop of its own: `ForemanServer.Workflow.Lowering`
 compiles a manifest's phase list into a `Program` (a `:worktree` step for the

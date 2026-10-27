@@ -24,6 +24,16 @@ Each turn:
    and `br close <id> --reason "<what you did>"`. A story or epic is complete once
    its plan and child beads exist. Never close an issue whose work is incomplete
    or whose tests fail: leave it open and say why.
+   Commit hygiene (never break these):
+   - Stage explicit paths only (`git add <file>...`). Never `git add -A`,
+     `git add .` or `git commit -a`.
+   - Never stage or commit anything under `.beads/` except `.beads/issues.jsonl`:
+     `beads.db*`, `*.bak`, `.br-wal-index-*`, locks, sockets and `last-touched`
+     are local runtime state.
+   - Never edit, delete or `git rm` `.beads/.gitignore` (or untrack other `.beads`
+     files). It is what keeps runtime state out of git.
+   - Persist your bead closes by running `br sync --flush-only` after `br close`,
+     then commit only `.beads/issues.jsonl` (never hand-edit it).
 4. Stop the turn. The next turn picks the next issue, so dependents only start
    after their blockers are closed.
 
