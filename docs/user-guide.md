@@ -1825,6 +1825,14 @@ Defaults and env vars:
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.
 
+The server's own operational log is also written to
+`~/.foreman/logs/foreman-server.log` (a mirror of the console output, rotated
+at 10 MB keeping 5 files; configured by `config :foreman_server, :server_log`,
+off under `MIX_ENV=test`). This is the server log, not per-run logs (those are
+served by the MCP tool `foreman_run_get_logs`). The older
+`~/.foreman/logs/<uuid>.*` files are from the retired Node.js daemon and are no
+longer written.
+
 SigNoz operational logs are separate from the Langfuse LLM-trace path.
 Foreman keeps Langfuse traces on `OTEL_EXPORTER_OTLP_ENDPOINT` and adds an
 opt-in Phoenix Logger bridge for operational logs only:
