@@ -951,6 +951,13 @@ defmodule ForemanServer.CommandGatewayTest do
           command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
       """)
 
+      # The REAL bundled manifest: a hand-written copy here would keep passing
+      # after the shipped one regressed (TRD-003-TEST, PRD-2026-72f477ca AC-003-1).
+      File.cp!(
+        Application.app_dir(:foreman_server, "priv/defaults/workflows/implement-trd-beads.yaml"),
+        Path.join(workflow_root, "implement-trd-beads.yaml")
+      )
+
       prev_poll = Application.get_env(:foreman_server, :workflow_catalog_poll_ms)
       Application.put_env(:foreman_server, :workflow_catalog_poll_ms, 60_000)
 
@@ -1059,6 +1066,73 @@ defmodule ForemanServer.CommandGatewayTest do
       assert phase["command"] == expected_command
       refute phase["command"] =~ "{trd_path_argument}"
       refute Map.has_key?(phase, :command)
+    end
+
+    test "AC-003-1: implement-trd-beads dispatches beads-build with the triggering bead's id, not a TRD path",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd-beads",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement",
+                   external_id: "foreman-bead-1"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      phase = hd(payload["workflow_snapshot"]["phases"])
+
+      assert phase["command"] == "/skill:ensemble-beads-build foreman-bead-1 --foreman"
+      refute phase["command"] =~ "{{"
+      refute phase["command"] =~ trd_path
+      refute Map.has_key?(phase, "timeout_minutes")
+      refute Map.has_key?(phase, "timeoutMinutes")
+    end
+
+    test "AC-003-2: an implementation placeholder that cannot be resolved refuses the approval by name",
+         %{project_id: project_id, task_id: task_id} do
+      # Manifest selected by `task_type` alone: no `workflow_type`, so no
+      # implementation context is frozen and `{{implementation.bead_id}}` would
+      # reach the runtime renderer, which blanks it (a blank epic id for
+      # beads-build). `provider_tracked: false` keeps the registered Beads
+      # provider from minting a backing bead for the task.
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "implement-trd-beads",
+                   priority: 2,
+                   title: "implement",
+                   provider_tracked: false
+                 }
+               })
+
+      assert {:error, {:implementation_placeholder_unresolved, ["{{implementation.bead_id}}"]}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
     end
 
     test "worktree.base is materialized to the concrete source revision",
