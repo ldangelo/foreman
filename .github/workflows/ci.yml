@@ -161,7 +161,21 @@ jobs:
           files=$(../../scripts/ci/partition-tests.sh ${{ matrix.partition }} 4)
           [ -n "$files" ] || { echo "::error::partition ${{ matrix.partition }} has no test files"; exit 1; }
           # shellcheck disable=SC2086
-          mix test $files --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport
+          mix test $files --warnings-as-errors \
+            --formatter ForemanServer.TestSupport.SlowestReport \
+            --formatter ForemanServer.TestSupport.FileWeights
+        env:
+          # Per-file timings of this leg, uploaded below: the input for regenerating
+          # scripts/ci/test-weights.txt from what CI itself measures (see the lessons file).
+          FOREMAN_TEST_WEIGHTS_OUT: ${{ runner.temp }}/test-weights-p${{ matrix.partition }}.txt
+      - name: Upload test weights (partition ${{ matrix.partition }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-weights-p${{ matrix.partition }}
+          path: ${{ runner.temp }}/test-weights-p${{ matrix.partition }}.txt
+          if-no-files-found: ignore
+          retention-days: 30
 
   # The REQUIRED `foreman_server` context. `if: always()` makes it report even when a partition
   # failed or was cancelled; the step then fails unless every partition passed.
