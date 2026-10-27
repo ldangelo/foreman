@@ -261,20 +261,86 @@ defmodule ForemanServer.Integration.BeadsEpicTreeE2ETest do
     assert_receive {:stand_in_prompt, _prompt}, @terminal_timeout_ms
 
     assert %{status: "failed"} = await_terminal_run!(run_id)
-    # Not completed: the task is never closed, whatever else the failure path
-    # manages to do (see the moduledoc: the hand-back of the epic bead is racy).
-    refute ProjectionStore.task_projection(task_id).status in ["closed", "completed"]
+    assert %{status: "failed"} =
+             Eventually.await(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "failed"} = task -> task
+                   _ -> nil
+                 end
+               end,
+               message: "task #{task_id} failed after the run"
+             )
 
     statuses = BeadsTreeFixture.statuses!(fixture)
     assert statuses[task_a] == "closed"
     assert statuses[task_b] != "closed"
-    # The epic is not closed by Foreman: its tree is not finished.
-    assert statuses[fixture.epic_id] != "closed"
+    # The epic is handed back as blocked, never closed: its tree is not finished.
+    assert statuses[fixture.epic_id] == "blocked"
 
     phase_reason = failed_phase_reason!(run_id)
     assert phase_reason =~ "incomplete_children"
     assert phase_reason =~ task_b
     refute phase_reason =~ task_a
+  end
+
+  # foreman-echpv. The provider's `fail` (the `br update <epic> --status blocked`) takes
+  # the epic DB's `BeadsDbLease`; the Dispatcher's reaction to `RunFailed` releases that
+  # run's lease. If `run.fail` is dispatched first, the two race and a release landing
+  # after the provider's acquire strands it (`:lease_timeout`: epic never handed back,
+  # task stuck `in_progress`). So the ordering is the contract: the provider's `fail`
+  # completes BEFORE the run is failed. The blocked `br update` is held open here and
+  # the run's event stream is read while it is: no `RunFailed` may exist yet. Nothing
+  # is suspended: the real Dispatcher is live.
+  test "echpv: the epic is handed back to the tracker before the run is failed", ctx do
+    %{fixture: fixture} = ctx
+    [task_a, _task_b] = fixture.task_ids
+    StandInAgent.configure(%{test_pid: self(), fixture: fixture, closes: [task_a]})
+
+    test_pid = self()
+    gate = spawn(fn -> receive(do: (:open -> :ok)) end)
+
+    stub(BrRunnerMock, :cmd, fn
+      {:update, %{flags: flags}} = request, config, opts ->
+        if "blocked" in flags do
+          ref = Process.monitor(gate)
+          send(test_pid, {:handing_back, self()})
+
+          receive do
+            {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+          end
+        end
+
+        SystemBrRunner.cmd(request, config, opts)
+
+      request, config, opts ->
+        SystemBrRunner.cmd(request, config, opts)
+    end)
+
+    {task_id, run_id} = dispatch_epic!(ctx)
+
+    assert_receive {:handing_back, _executor}, @terminal_timeout_ms
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:" <> run_id)
+
+    refute Enum.any?(events, &(&1.event_type == "RunFailed")),
+           "the run was failed before the provider's fail ran"
+
+    send(gate, :open)
+
+    assert %{status: "failed"} = await_terminal_run!(run_id)
+
+    assert %{status: "failed"} =
+             Eventually.await(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "failed"} = task -> task
+                   _ -> nil
+                 end
+               end,
+               message: "task #{task_id} failed after the run"
+             )
+
+    assert BeadsTreeFixture.statuses!(fixture)[fixture.epic_id] == "blocked"
   end
 
   # --- driving the chain ---------------------------------------------------
