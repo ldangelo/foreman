@@ -11,7 +11,7 @@ This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) 
 creation, but it dispatches only if it also carries the `foreman-exec` label
 (label gate) and its `issue_type` maps to a workflow via a manifest's
 `task_types:` (see the workflow-selection paragraph below): otherwise the
-watcher skips it (`:skip_labels`) or holds it `:transient` (`:unmapped_type`)
+watcher skips it (`:skip_labels`) or holds it as `:unmapped` (telemetry bucket `:unmapped_type`)
 and no task is created. When all gates pass, BeadsWatcher's status gate
 (TRD-004), workflow-selection wiring (TRD-005), and
 auto-approval (TRD-007) dispatch the internal `task.create` + `task.approve`
@@ -35,8 +35,16 @@ A bead whose `issue_type` is anything else
 — including `task`, `epic`, or any other bundled workflow's own
 name (`assess.yaml` and `review.yaml` declare
 no `task_types:` at all) — resolves to `{:error, :unmapped_type}` and the
-watcher returns `:transient` for that line (the line is re-processed on later
-polls) rather than ever creating a task. This is not a bug: it is the intended
+watcher returns `:unmapped` for that line (its own outcome, counted as
+`lines_unmapped` on `[:watcher, :replay_completed]`; it used to share
+`:transient`, which now means only that a dispatch itself failed). The
+bead is left untouched and re-evaluated on every poll, so it dispatches on the
+first poll after the installed catalog maps its type; no task is created until then.
+`foreman doctor`'s `workflows.bead_types` row lists which types are mapped and
+which are held. An `issue_type` key that is absent is `:malformed` with reason
+`:issue_type_missing`; one that is present but not a non-empty string (`null`,
+`""`, a number) is `:malformed` with `{:issue_type_unusable, <inspected value>}`.
+This is not a bug: it is the intended
 fail-closed behavior (TRD-005 REQ), but it means adding a new issue type to
 the auto-dispatch surface requires an explicit `task_types:` entry in the
 target workflow's manifest (and a matching `foreman init --force` to refresh
@@ -187,9 +195,9 @@ br sync --status --json       # VERIFY: `coverage_drift` must be false
 ### Workflow Pattern
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Create via `br create` (or `br update <id> --status=open` on an existing draft bead) — the bead also needs the `foreman-exec` label and a mapped `issue_type` (`implement_trd`, `implement_trd_beads`, `bug`, `feature`); BeadsWatcher then dispatches `task.create` internally
+2. **Claim**: Create via `br create` (or `br update <id> --status=open` on an existing draft bead) — the bead also needs the `foreman-exec` label and a mapped `issue_type` (`implement_trd`, `implement_trd_beads`, `bug`, `feature`, or any type a manifest's `task_types:` names; `foreman doctor` row `workflows.bead_types` shows the current mapping); BeadsWatcher then dispatches `task.create` internally
 3. **Dispatch**: Auto-approval (TRD-007) dispatches `task.approve` internally the moment the task is created; no separate operator action
-4. **Complete**: Task auto-closes when run completes. To retry a cancelled run, submit `task.retry` via `POST /api/commands`: `CommandGateway` validates that the task's bound run is terminal and attaches `acknowledged_run_id`. Re-opening the bead (`br update <id> --status=open`) does not retry: once the task is past `"open"`, `BeadsWatcher` dedupes and reconciles it (`check_dedupe/2` → `:reconcile`) instead of dispatching again
+4. **Complete**: Task auto-closes when run completes. To retry a failed or cancelled run, submit `task.retry` via `POST /api/commands`: `CommandGateway` validates that the task's bound run is terminal and attaches `acknowledged_run_id`. Re-opening the bead (`br update <id> --status=open`) does not retry: once the task is past `"open"`, `BeadsWatcher` dedupes and reconciles it (`check_dedupe/2` → `:reconcile`) instead of dispatching again. `task.retry` alone does not dispatch either: it returns the task to `open`, and the watcher's re-approval then reuses the deterministic `beads-cmd:<project>:<bead>:auto-approve` command id, which replays the original approval (verified 2026-10-26: the task stays `open` with no run bound). Send a fresh `task.approve` (new `command_id`, `approved_by`) after `task.retry` to mint a new run; `docs/user-guide.md` §7.2 "Recovering from a preflight failure" has the exact steps
 5. **Sync**: Run the **Session Protocol** block as a single fail-closed script
    (`set -euo pipefail`), not as separate steps — the coverage gate must run
    ONLY after a flush that actually succeeded, since a failed flush leaves an

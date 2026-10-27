@@ -3310,11 +3310,214 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute run.failure_reason =~ "class: :model_not_found"
     assert run.failure_reason =~ "catalog registry unreachable"
 
+    # The model string came from the phase's own `models.default`, and the run's
+    # record says so (AC-005-1, AC-006-2): the fix is an edit to the manifest.
+    assert run.failure_reason =~ "model_source: :phase_declared"
+
     refute File.exists?(Path.join(artifact_dir, "#{run_id}-#{task_id}.md"))
     refute_received {:adapter_execute, _, _}
 
     assert {:error, :stream_not_found} =
              EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99)
+  end
+
+  # TRD-007-TEST / AC-006-2, end to end. A phase that declares no model is filled
+  # from the project's `thread_model`; when the catalog refuses that string the
+  # run's terminal record must say the PROJECT supplied it, because the fix is
+  # `foreman project update`, not an edit to the workflow manifest.
+  test "a refused gap-filling model is recorded on the run as the project's thread_model" do
+    start_schema_cache!()
+    original_path = System.get_env("PATH")
+    bin_dir = Path.join(System.tmp_dir!(), unique_id("preflight-pm-bin"))
+    File.mkdir_p!(bin_dir)
+
+    # `pi --list-models X` answers "not found"; anything else is a version probe.
+    File.write!(Path.join(bin_dir, "pi"), """
+    #!/bin/sh
+    if [ "$1" = "--list-models" ]; then
+      echo "No models matching \\"$2\\""
+      exit 0
+    fi
+    echo "1.2.0"
+    """)
+
+    File.chmod!(Path.join(bin_dir, "pi"), 0o755)
+    System.put_env("PATH", bin_dir <> ":" <> (original_path || ""))
+
+    on_exit(fn ->
+      case original_path do
+        nil -> System.delete_env("PATH")
+        path -> System.put_env("PATH", path)
+      end
+
+      File.rm_rf!(bin_dir)
+    end)
+
+    project_id = unique_id("preflight-pm-project")
+    task_id = unique_id("preflight-pm-task")
+    run_id = unique_id("preflight-pm-run")
+    script_key = unique_id("preflight-pm-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("preflight-pm-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    # Declares a provider but NO model, so `phase_model/2` falls to the project.
+    phase = Map.put(phase_spec(script_key, artifact_dir), :provider, "pi")
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      snapshot([phase]),
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    dispatch_system!("project.update", "project:#{project_id}", %{
+      project_id: project_id,
+      thread_model: "ghost/model"
+    })
+
+    LifecycleStore.put(script_key, %{test_pid: self()})
+    start_run_executor!(run_id, task_id)
+
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{status: "failed", terminal?: true} = r -> {:ok, r}
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed + terminal"
+      )
+
+    assert run.failure_reason =~ ":provider_model_preflight_failed"
+    assert run.failure_reason =~ "class: :model_not_found"
+    assert run.failure_reason =~ ~s(model: "ghost/model")
+    assert run.failure_reason =~ "model_source: :project_thread_model"
+    refute run.failure_reason =~ "model_source: :phase_declared"
+
+    refute_received {:adapter_execute, _, _}
+  end
+
+  # TRD-007-TEST / AC-005-2, AC-006-1, AC-006-2: the record survives a whole run.
+  # Every phase of a COMPLETED run has its own line naming the model its launch
+  # was handed and the rule that chose it, next to the workflow manifest the run
+  # was frozen from — and that logged model is the one the driver received.
+  test "every phase of a completed run records the model it ran with and the rule that chose it" do
+    start_schema_cache!()
+    test_pid = self()
+    original_path = System.get_env("PATH")
+    bin_dir = Path.join(System.tmp_dir!(), unique_id("record-bin"))
+    File.mkdir_p!(bin_dir)
+
+    # A catalog that lists both models the run uses, so the preflight passes.
+    File.write!(Path.join(bin_dir, "pi"), """
+    #!/bin/sh
+    if [ "$1" = "--list-models" ]; then
+      echo "provider  model  context  max-out  thinking  images"
+      echo "pi-prov  declared-model  1K  1K  yes  no"
+      echo "pi-prov  project-model  1K  1K  yes  no"
+      exit 0
+    fi
+    echo "1.2.0"
+    """)
+
+    File.chmod!(Path.join(bin_dir, "pi"), 0o755)
+    System.put_env("PATH", bin_dir <> ":" <> (original_path || ""))
+
+    on_exit(fn ->
+      case original_path do
+        nil -> System.delete_env("PATH")
+        path -> System.put_env("PATH", path)
+      end
+
+      File.rm_rf!(bin_dir)
+    end)
+
+    project_id = unique_id("record-project")
+    task_id = unique_id("record-task")
+    run_id = unique_id("record-run")
+    declared_key = unique_id("record-declared")
+    filled_key = unique_id("record-filled")
+    database_path = unique_database_path(declared_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("record-artifacts"))
+    File.mkdir_p!(artifact_dir)
+    manifest_path = "/home/operator/.foreman/workflows/record.yaml"
+
+    declared_phase =
+      phase_spec(declared_key, artifact_dir)
+      |> Map.merge(%{
+        name: "declares",
+        provider: "pi",
+        models: %{"default" => "pi-prov/declared-model"},
+        artifact_template: %{path: Path.join([artifact_dir, "{run_id}-declares.md"])}
+      })
+
+    filled_phase =
+      phase_spec(filled_key, artifact_dir)
+      |> Map.merge(%{
+        name: "gap-filled",
+        provider: "pi",
+        artifact_template: %{path: Path.join([artifact_dir, "{run_id}-gap-filled.md"])}
+      })
+
+    workflow_snapshot =
+      Map.merge(snapshot([declared_phase, filled_phase]), %{
+        workflow_name: "record",
+        manifest_path: manifest_path
+      })
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path),
+      nil,
+      System.tmp_dir!(),
+      %{provider_tracked: false}
+    )
+
+    register_project!(project_id, database_path)
+
+    dispatch_system!("project.update", "project:#{project_id}", %{
+      project_id: project_id,
+      thread_model: "pi-prov/project-model"
+    })
+
+    LifecycleStore.put(declared_key, %{test_pid: test_pid, probe_driver_opts: true})
+    LifecycleStore.put(filled_key, %{test_pid: test_pid, probe_driver_opts: true})
+
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+
+    log =
+      ExUnit.CaptureLog.capture_log([level: :info], fn ->
+        start_run_executor!(run_id, task_id)
+        poll_run_completion!(run_id)
+      end)
+
+    # What each phase's driver was actually handed.
+    assert_received {:adapter_driver_opts, declared_opts}
+    assert_received {:adapter_driver_opts, filled_opts}
+    assert declared_opts[:model] == "pi-prov/declared-model"
+    assert filled_opts[:model] == "pi-prov/project-model"
+
+    # The record names, per phase, that same model and the rule that chose it —
+    # the declared model won over the project's, the other was gap-filled by it.
+    assert log =~
+             ~s(phase "declares" model resolution: provider=pi ) <>
+               ~s(model="pi-prov/declared-model" source=phase_declared ) <>
+               ~s(workflow="record" manifest="#{manifest_path}")
+
+    assert log =~
+             ~s(phase "gap-filled" model resolution: provider=pi ) <>
+               ~s(model="pi-prov/project-model" source=project_thread_model ) <>
+               ~s(workflow="record" manifest="#{manifest_path}")
   end
 
   test "provider-facing lifecycle calls use the task's external_id, not the Foreman task_id" do

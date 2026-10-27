@@ -51,6 +51,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
   alias ForemanServer.Workflow.PreflightFailure
+  alias ForemanServer.Workflow.ModelResolution
   alias ForemanServer.Jobsite.Context, as: JobsiteContext
   alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
   alias ForemanServer.Jobsite.Git, as: JobsiteGit
@@ -802,7 +803,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp phase_provider_and_model_check(phase_spec, state, cache) do
     declared_provider = Map.get(phase_spec, :provider)
-    model = phase_model(phase_spec, state)
+    %ModelResolution{model: model, source: model_source} = resolve_phase_model(phase_spec, state)
 
     if is_nil(declared_provider) and is_nil(model) do
       {:ok, cache}
@@ -817,6 +818,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               phase: name,
               provider: provider,
               model: model,
+              model_source: model_source,
               class: :provider_unsupported
             }}, cache}
 
@@ -826,6 +828,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
               phase: name,
               provider: provider,
               model: model,
+              model_source: model_source,
               class: :provider_not_installed,
               detail: ReadinessCheck.install_hint(provider)
             }}, cache}
@@ -846,6 +849,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
                   phase: name,
                   provider: provider,
                   model: model,
+                  model_source: model_source,
                   class: :model_not_found
                 }}, cache}
 
@@ -858,6 +862,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
                   phase: name,
                   provider: provider,
                   model: model,
+                  model_source: model_source,
                   class: :catalog_unavailable,
                   detail: detail
                 }}, cache}
@@ -868,6 +873,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
                   phase: name,
                   provider: provider,
                   model: model,
+                  model_source: model_source,
                   class: :catalog_unavailable,
                   detail: {:unrecognized_catalog_result, other}
                 }}, cache}
@@ -1431,8 +1437,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     policy = AgentRuntime.FailurePolicy.resolve(task_type, phase_timeout_opts(phase_spec))
     timeout_ms = Map.fetch!(policy, :timeout_ms)
 
-    model = phase_model(phase_spec, state)
+    %ModelResolution{model: model} = resolution = resolve_phase_model(phase_spec, state)
     cwd = working_directory_for(state, worktree_record)
+
+    log_phase_model(
+      state,
+      phase_spec,
+      phase_index,
+      JidoHarness.request_provider(request),
+      resolution
+    )
 
     foreman_env =
       foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index), model)
@@ -2302,6 +2316,40 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp log_project_context(_state, _bundle), do: :ok
 
+  # The evidence AC-005-2 / AC-006-1 ask for, log-only (TRD OTD-2): the model THIS
+  # phase's driver is handed, the rule that chose it, and the workflow manifest
+  # the phase came from. Emitted where `build_agent_launch/8` hands the value to
+  # the driver, so the line cannot describe a different model than the launch
+  # uses. The workflow name and manifest path are read from the frozen
+  # `workflow_snapshot` (`Approval.resolve_workflow_snapshot/2`), the same record
+  # `RunStarted` persists on the run.
+  defp log_phase_model(state, phase_spec, phase_index, provider, %ModelResolution{} = resolution) do
+    snapshot = state_task_workflow_snapshot(state)
+    workflow = snapshot_text(snapshot, :workflow_name)
+    manifest_path = snapshot_text(snapshot, :manifest_path)
+    phase = phase_spec_name(phase_spec)
+
+    Logger.info(
+      "RunExecutor #{state.run_id} phase #{inspect(phase)} model resolution: " <>
+        "provider=#{provider} model=#{inspect(resolution.model)} source=#{resolution.source} " <>
+        "workflow=#{inspect(workflow)} manifest=#{inspect(manifest_path)}",
+      run_id: state.run_id,
+      task_id: task_id(state),
+      phase_index: phase_index,
+      operation: "run_executor.phase_model"
+    )
+  end
+
+  # The snapshot is atom-keyed while the approving process still holds it and
+  # string-keyed once the projection is rebuilt from the event log (see
+  # `extract_phase_specs/1`); this one reader takes either. Blank is absent.
+  defp snapshot_text(snapshot, key) when is_atom(key) do
+    case Map.get(snapshot, key) || Map.get(snapshot, Atom.to_string(key)) do
+      value when is_binary(value) and value != "" -> value
+      _absent -> nil
+    end
+  end
+
   # Context first, then any later source, separated by a blank line.
   defp append_system_prompt(driver_opts, text) when text in [nil, ""], do: driver_opts
 
@@ -2619,10 +2667,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `models.default` lookup.
   #
   # Precedence: the phase's `models.default` > the project's `thread_model` >
-  # provider default (no model). The project value comes from the settings
-  # latched in executor state (`latch_project_settings/1`).
-  defp phase_model(phase_spec, state) do
-    phase_declared_model(phase_spec) || project_setting(state, :thread_model)
+  # provider default (no model), decided once in `ModelResolution.resolve/2`.
+  # The project value comes from the settings latched in executor state
+  # (`latch_project_settings/1`). `resolve_phase_model/2` also names the rule
+  # that won (`:source`), which the launch log and every `PreflightFailure`
+  # record next to the model; `phase_model/2` is just its value.
+  defp phase_model(phase_spec, state), do: resolve_phase_model(phase_spec, state).model
+
+  defp resolve_phase_model(phase_spec, state) do
+    ModelResolution.resolve(
+      phase_declared_model(phase_spec),
+      project_setting(state, :thread_model)
+    )
   end
 
   defp phase_declared_model(phase_spec) do

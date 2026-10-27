@@ -446,13 +446,60 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherTest do
 
       {_state, counters} = BeadsWatcher.rescan(state)
 
-      assert counters.lines_transient == 1
+      assert counters.lines_unmapped == 1
+      assert counters.lines_transient == 0
       assert counters.lines_imported == 1
       assert counters.lines_processed == 2
 
       calls = FakeCommandGateway.calls()
       dispatched_ids = Enum.map(calls, fn {command, _timeout} -> command.aggregate_id end)
       assert Enum.any?(dispatched_ids, &String.contains?(&1, "routable"))
+    end
+
+    # TRD-008-TEST (REQ-002, AC-001-2): the replay counters separate a bead that is
+    # inert until a manifest declares its type (`lines_unmapped`) from one whose
+    # dispatch failed and is simply retried (`lines_transient`), so an operator
+    # sizing the boot-replay storm can tell "waiting for a mapping" from "failing".
+    test "boot replay counts an unmapped bead under lines_unmapped, never lines_transient",
+         %{tmp: tmp} do
+      FakeCommandGateway.stub_response({:ok, nil})
+
+      FakeWorkflowCatalog.stub_response_for_type(
+        "nonexistent_unmapped_type",
+        {:error, :unmapped_type}
+      )
+
+      body =
+        ~s({"id":"stuck","title":"s","issue_type":"nonexistent_unmapped_type","status":"open","labels":["foreman-exec"]}\n{"id":"routable","title":"r","issue_type":"task","status":"open","labels":["foreman-exec"]}\n)
+
+      state = state_for(tmp, body)
+      parent = self()
+      handler_id = unique_handler("replay-unmapped")
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :watcher, :replay_completed],
+        fn _event, _measurements, metadata, _config ->
+          send(parent, {:replay_completed, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn ->
+        try do
+          :telemetry.detach(handler_id)
+        rescue
+          _ -> :ok
+        end
+      end)
+
+      BeadsWatcher.boot_replay(state)
+
+      assert_receive {:replay_completed, metadata}, 500
+      assert metadata.lines_unmapped == 1
+      assert metadata.lines_transient == 0
+      assert metadata.lines_imported == 1
+      assert metadata.lines_processed == 2
     end
 
     test "replay counter placement: [:watcher, :replay_completed] carries all four required counters",

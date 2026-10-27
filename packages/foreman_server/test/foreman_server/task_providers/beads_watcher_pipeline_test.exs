@@ -698,8 +698,8 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
   # --- Workflow selection (TRD-005-TEST, REQ-001) -------------------------
 
-  describe "workflow selection holds transient on unmapped type" do
-    test "unmapped issue_type holds transient, emits telemetry, and never dispatches" do
+  describe "workflow selection holds an unmapped type" do
+    test "unmapped issue_type is its own outcome, emits telemetry, and never dispatches" do
       FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
 
       handler_id = unique_handler("unmapped")
@@ -737,7 +737,7 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
 
       outcome = BeadsWatcher.process_line(state, line)
 
-      assert outcome == :transient
+      assert outcome == :unmapped
 
       assert FakeCommandGateway.calls() == []
 
@@ -851,6 +851,156 @@ defmodule ForemanServer.TaskProviders.BeadsWatcherPipelineTest do
       assert outcome == :imported
       [{cmd, _timeout}, _approve_call] = FakeCommandGateway.calls()
       assert cmd.payload.prompt == "padded title\n\npadded desc"
+    end
+  end
+
+  # --- Eligibility outcomes (TRD-008-TEST, REQ-002, AC-001-2, AC-002-1, AC-002-2) ---
+  #
+  # A labelled, open bead that cannot be routed to a workflow has three causes,
+  # and each needs a different operator action: it carries no type at all
+  # (`br update --type`), its type field holds something that is not a type
+  # (`br update --type`, after finding what wrote the bad value), or its type is a
+  # real one that no manifest maps (a manifest `task_types:` entry, or retype the
+  # bead). They must not share one recorded outcome, and none may read as a
+  # transient dispatch failure.
+
+  describe "a labelled bead that cannot be routed to a workflow" do
+    @absent_type ~s({"id":"b-absent","title":"x","status":"open","labels":["foreman-exec"]})
+    @unusable_type ~s({"id":"b-unusable","title":"x","status":"open","issue_type":42,"labels":["foreman-exec"]})
+    @unmapped_type ~s({"id":"b-unmapped","title":"x","status":"open","issue_type":"custom_research","labels":["foreman-exec"]})
+
+    # Processes one line and returns its outcome with every cause-bearing telemetry
+    # event it emitted: the pipeline's one `malformed` event (tagged with a reason)
+    # and the `unmapped_type` skip bucket.
+    defp record_line(line) do
+      handler_id = unique_handler("eligibility")
+      ref = make_ref()
+      parent = self()
+
+      :telemetry.attach_many(
+        handler_id,
+        [
+          [:foreman_server, :task_provider, :beads, :watcher, :malformed],
+          [
+            :foreman_server,
+            :task_provider,
+            :beads,
+            :watcher,
+            :status_gate,
+            :skipped,
+            :unmapped_type
+          ]
+        ],
+        fn event, _measurements, metadata, _config ->
+          send(parent, {:recorded, ref, List.last(event), metadata})
+        end,
+        nil
+      )
+
+      outcome = BeadsWatcher.process_line(%BeadsWatcher{project_id: "proj-eligibility"}, line)
+      :telemetry.detach(handler_id)
+
+      {outcome, drain_recorded(ref, [])}
+    end
+
+    defp drain_recorded(ref, acc) do
+      receive do
+        {:recorded, ^ref, kind, metadata} -> drain_recorded(ref, [{kind, metadata} | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "absent type, unusable type and unmapped type are three distinct recorded outcomes" do
+      FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
+
+      absent = record_line(@absent_type)
+      unusable = record_line(@unusable_type)
+      unmapped = record_line(@unmapped_type)
+
+      assert {:malformed, [{:malformed, %{reason: :issue_type_missing}}]} = absent
+
+      assert {:malformed, [{:malformed, %{reason: {:issue_type_unusable, "42"}}}]} = unusable
+
+      assert {:unmapped,
+              [{:unmapped_type, %{bead_id: "b-unmapped", issue_type: "custom_research"}}]} =
+               unmapped
+
+      # No two causes share a recorded outcome: AC-002-1's "unique to that cause".
+      recorded = Enum.map([absent, unusable, unmapped], &inspect/1)
+      assert length(Enum.uniq(recorded)) == 3
+    end
+
+    test "a present-but-unusable type is reported as unusable, never as 'no workflow exists'" do
+      # The catalog would answer "unmapped" if it were ever asked. An unusable
+      # field must be refused BEFORE routing, so that answer never leaves the
+      # watcher: no `unmapped_type` event, and the outcome is the data class.
+      FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
+
+      for {label, fragment} <- [
+            {"null", "null"},
+            {"empty string", ~s("")},
+            {"number", "42"},
+            {"list", ~s(["bug"])},
+            {"object", ~s({"k":"v"})}
+          ] do
+        line =
+          ~s({"id":"b-#{String.replace(label, " ", "-")}","title":"x","status":"open",) <>
+            ~s("issue_type":#{fragment},"labels":["foreman-exec"]})
+
+        assert {:malformed, [{:malformed, %{reason: {:issue_type_unusable, _}}}]} =
+                 record_line(line),
+               "#{label} must be reported as an unusable type field"
+      end
+
+      assert FakeCommandGateway.calls() == []
+    end
+
+    test "an absent type key is not the same cause as a null one" do
+      # `Map.get/2` cannot tell a JSON null from a missing key; `Map.fetch/2` can,
+      # and the two are different operator problems (§5.3).
+      null_type =
+        ~s({"id":"b-null","title":"x","status":"open","issue_type":null,"labels":["foreman-exec"]})
+
+      {_, [{:malformed, absent_meta}]} = record_line(@absent_type)
+      {_, [{:malformed, null_meta}]} = record_line(null_type)
+
+      assert absent_meta.reason == :issue_type_missing
+      assert null_meta.reason == {:issue_type_unusable, "nil"}
+      refute absent_meta.reason == null_meta.reason
+    end
+
+    test "none of the three causes is a transient failure, and a real dispatch failure still is" do
+      FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
+
+      for line <- [@absent_type, @unusable_type, @unmapped_type] do
+        {outcome, _recorded} = record_line(line)
+        refute outcome == :transient
+      end
+
+      # `:transient` keeps meaning "the dispatch itself failed; the next poll
+      # retries it". The same bead, mapped, with a gateway that is down:
+      FakeWorkflowCatalog.stub_response({:ok, "fix"})
+      FakeCommandGateway.stub_response({:error, :down})
+
+      assert {:transient, []} = record_line(@unmapped_type)
+    end
+
+    test "an unmapped bead stays held, untouched, and dispatches once its type is mapped" do
+      state = %BeadsWatcher{project_id: "proj-held"}
+
+      # Every poll re-evaluates it: still unmapped, still no task and no bead
+      # mutation (the retry-forever fail-closed hold is unchanged by the split).
+      FakeWorkflowCatalog.stub_response({:error, :unmapped_type})
+      assert BeadsWatcher.process_line(state, @unmapped_type) == :unmapped
+      assert BeadsWatcher.process_line(state, @unmapped_type) == :unmapped
+      assert FakeCommandGateway.calls() == []
+
+      # A manifest now declares the type: the very next evaluation dispatches.
+      FakeWorkflowCatalog.stub_response({:ok, "research"})
+      assert BeadsWatcher.process_line(state, @unmapped_type) == :imported
+      assert [{create, _timeout}, _approve] = FakeCommandGateway.calls()
+      assert create.payload.workflow_type == "research"
     end
   end
 

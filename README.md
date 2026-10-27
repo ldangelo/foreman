@@ -119,7 +119,11 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   `task.create` for new Beads that Foreman doesn't yet own. Dispatch is
   opt-IN by label: only Beads tagged `foreman-exec`
   (`br update <id> --add-label foreman-exec`) route to Foreman; untagged
-  Beads are skipped for external processing. See `docs/user-guide.md`
+  Beads are skipped for external processing. A tagged, open Bead also needs
+  an `issue_type` that some workflow manifest maps in `task_types:`; one that
+  none maps is held untouched (outcome `:unmapped`) and re-checked every poll,
+  and `foreman doctor`'s `workflows.bead_types` row lists which types dispatch
+  and which are held. See `docs/user-guide.md`
   and `docs/lessons/beads-runtime-and-dispatch.md` ("Beads Dispatch Partitioning via Label Gate").
 - **Orphan janitor.** Opt in with
   `config :foreman_server, :start_beads_orphan_janitor?, true`. After a
@@ -136,10 +140,12 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   invoke it today.
 - **Operator remediation.** `foreman task retry` is REMOVED (TRD-018,
   2026-09-13) — the CLI verb is gone, though the internal
-  `task.retry` command it issued still exists and is exercised the
-  same way (only a task whose bound run is already terminal is
-  eligible). The current remediation path is re-opening the bead
-  (`br update <id> --status=open`); see `docs/user-guide.md` §4.
+  `task.retry` command it issued still exists (only a task whose bound
+  run is already terminal is eligible) and is sent on `POST /api/commands`.
+  Re-opening the bead (`br update <id> --status=open`) does not retry: once a
+  task exists past `open` the watcher only reconciles it. After `task.retry`,
+  send a fresh `task.approve` to mint the new run; see `docs/user-guide.md` §7.2
+  ("Recovering from a preflight failure").
 
 Enablement, the per-project `task_provider` block, the doctor health
 check, and the orphan janitor's opt-in semantics are documented in

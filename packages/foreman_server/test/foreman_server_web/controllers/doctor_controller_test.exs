@@ -280,4 +280,102 @@ defmodule ForemanServerWeb.DoctorControllerTest do
       assert detail =~ "missing_field"
     end
   end
+
+  # TRD-009 / REQ-008: `foreman doctor` is where the user guide sends an operator to
+  # see which bead types dispatch, so the answer must be on it — derived from the
+  # catalog's own manifests, informational (an unmapped type is by design), and a
+  # warning only when nothing maps at all.
+  describe "the bead types row (TRD-009)" do
+    setup %{tmp_dir: tmp} do
+      File.mkdir_p!(Path.join(tmp, "prompts"))
+
+      server = :"doctor_types_catalog_#{System.unique_integer([:positive])}"
+      previous = Application.get_env(:foreman_server, :workflow_catalog)
+      Application.put_env(:foreman_server, :workflow_catalog, server)
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:foreman_server, :workflow_catalog, previous),
+          else: Application.delete_env(:foreman_server, :workflow_catalog)
+      end)
+
+      {:ok, server: server}
+    end
+
+    defp start_types_catalog(server, tmp) do
+      ExUnit.CaptureLog.capture_log(fn ->
+        start_supervised!(
+          {ForemanServer.Workflow.Catalog,
+           name: server,
+           catalog: ForemanServer.Workflow.AssetCatalog.new(tmp),
+           skills_target_dir: Path.join(tmp, "skills")}
+        )
+      end)
+    end
+
+    defp bead_types_row do
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+      Enum.find(checks, &(&1["id"] == "workflows.bead_types"))
+    end
+
+    test "lists each mapped type with its workflow and each held type, as an ok row",
+         %{server: server, tmp_dir: tmp} do
+      File.write!(
+        Path.join(tmp, "fixer.yaml"),
+        "name: fixer\ntask_types: [bug, implement_trd]\nphases:\n  - name: p1\n    command: /skill:x\n"
+      )
+
+      start_types_catalog(server, tmp)
+
+      assert %{"status" => "ok", "title" => title, "detail" => detail} = bead_types_row()
+      assert title == "Bead types: 2 mapped to a workflow, 6 held"
+      assert detail =~ "dispatched: bug -> fixer, implement_trd -> fixer"
+      assert detail =~ "chore, docs, epic, feature, question, task"
+    end
+
+    test "follows the manifests: a type a manifest declares leaves the held list",
+         %{server: server, tmp_dir: tmp} do
+      File.write!(
+        Path.join(tmp, "fixer.yaml"),
+        "name: fixer\ntask_types: [bug]\nphases:\n  - name: p1\n    command: /skill:x\n"
+      )
+
+      start_types_catalog(server, tmp)
+      assert %{"detail" => before_detail} = bead_types_row()
+      assert before_detail =~ "chore"
+
+      File.write!(
+        Path.join(tmp, "housekeeping.yaml"),
+        "name: housekeeping\ntask_types: [chore]\nphases:\n  - name: p1\n    command: /skill:x\n"
+      )
+
+      ExUnit.CaptureLog.capture_log(fn -> :ok = ForemanServer.Workflow.Catalog.reload() end)
+
+      assert %{"detail" => after_detail} = bead_types_row()
+      assert after_detail =~ "chore -> housekeeping"
+
+      refute after_detail =~
+               "held (no workflow maps them, so a labelled bead of these types is never dispatched): chore"
+    end
+
+    test "is a warning only when no manifest maps any type",
+         %{server: server, tmp_dir: tmp} do
+      File.write!(
+        Path.join(tmp, "plain.yaml"),
+        "name: plain\nphases:\n  - name: p1\n    command: /skill:x\n"
+      )
+
+      start_types_catalog(server, tmp)
+
+      assert %{
+               "status" => "warn",
+               "title" => "No workflow maps any bead type",
+               "detail" => detail
+             } =
+               bead_types_row()
+
+      assert detail =~ "BeadsWatcher can dispatch no bead"
+      assert detail =~ "dispatched: none"
+    end
+  end
 end

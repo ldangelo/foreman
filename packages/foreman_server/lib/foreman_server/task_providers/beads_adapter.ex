@@ -69,6 +69,18 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   @valid_task_types ~w(task bug feature epic chore docs question)
 
   @doc """
+  The built-in issue types the Beads tracker (`br`) produces: the closed enum
+  `create/2` validates `task_type` against. `br` also accepts custom type
+  strings, so this is the vocabulary Foreman knows about, not an exhaustive
+  bound on what a bead's `issue_type` can hold.
+
+  `BeadTypeEligibility` reads it to report which of these no workflow manifest
+  maps (and so which labelled beads BeadsWatcher will hold).
+  """
+  @spec task_types() :: [String.t(), ...]
+  def task_types, do: @valid_task_types
+
+  @doc """
   Creates a new bead in the upstream `br` database linked back to the
   dispatching Foreman task via the `--agent-context` JSON envelope.
 

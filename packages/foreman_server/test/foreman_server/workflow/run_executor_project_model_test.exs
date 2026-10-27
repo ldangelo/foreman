@@ -8,7 +8,7 @@ defmodule ForemanServer.Workflow.RunExecutorProjectModelTest do
 
   alias ForemanServer.{ProjectionStore, ProjectSettings}
   alias ForemanServer.TestSupport.ProjectionStoreReset
-  alias ForemanServer.Workflow.RunExecutor
+  alias ForemanServer.Workflow.{PreflightFailure, RunExecutor}
 
   setup do
     ProjectionStoreReset.reset!()
@@ -71,6 +71,102 @@ defmodule ForemanServer.Workflow.RunExecutorProjectModelTest do
 
     refute Keyword.has_key?(driver_opts(launch), :model)
     refute Keyword.has_key?(driver_opts(launch), :reasoning_effort)
+  end
+
+  # TRD-007-TEST (AC-005-2, AC-006-1, AC-006-2). Where the launch hands the driver
+  # its model, one log line records WHICH model and WHICH rule chose it, plus the
+  # workflow manifest the phase came from — so a later mismatch ("the run used a
+  # model nobody declared") is attributable from the record instead of guessed.
+  describe "per-phase model resolution record" do
+    setup do
+      previous_level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: previous_level) end)
+    end
+
+    defp launch_with_log(state, phase_spec) do
+      parent = self()
+
+      log =
+        capture_log([level: :info], fn -> send(parent, {:launch, launch(state, phase_spec)}) end)
+
+      assert_received {:launch, launch}
+      {launch, log}
+    end
+
+    defp logged_model(log) do
+      [_whole, model] = Regex.run(~r/ model=(\S+) source=/, log)
+      model
+    end
+
+    test "a declared model beats the project's, and the record names the phase as the winner" do
+      {launch, log} =
+        launch_with_log(state(%ProjectSettings{thread_model: "proj-m"}), %{
+          provider: "pi",
+          models: %{default: "phase-m"}
+        })
+
+      assert driver_opts(launch)[:model] == "phase-m"
+      assert log =~ ~s(model resolution: provider=pi model="phase-m" source=phase_declared)
+      refute log =~ "proj-m"
+    end
+
+    test "a phase that declares none is filled from the project's thread_model, and says so" do
+      {launch, log} = launch_with_log(state(%ProjectSettings{thread_model: "proj-m"}), %{})
+
+      assert driver_opts(launch)[:model] == "proj-m"
+      assert log =~ ~s(model="proj-m" source=project_thread_model)
+    end
+
+    test "with no declared and no project model nothing is passed, and the record says so" do
+      {launch, log} = launch_with_log(state(%ProjectSettings{}), %{})
+
+      refute Keyword.has_key?(driver_opts(launch), :model)
+      assert log =~ "model=nil source=provider_default"
+    end
+
+    test "an unscoped run (no project settings) still records its resolution" do
+      {launch, log} = launch_with_log(state(nil, nil), %{})
+
+      refute Keyword.has_key?(driver_opts(launch), :model)
+      assert log =~ "model=nil source=provider_default"
+    end
+
+    test "the recorded model is the model the driver and the agent environment received" do
+      for {settings, phase} <- [
+            {%ProjectSettings{thread_model: "proj-m"}, %{models: %{default: "phase-m"}}},
+            {%ProjectSettings{thread_model: "proj-m"}, %{}},
+            {%ProjectSettings{}, %{models: %{default: "phase-m"}}},
+            {%ProjectSettings{}, %{}}
+          ] do
+        {launch, log} = launch_with_log(state(settings), phase)
+
+        assert logged_model(log) == inspect(driver_opts(launch)[:model])
+        assert logged_model(log) == inspect(env(launch)["FOREMAN_MODEL"])
+      end
+    end
+
+    test "the record names the workflow and manifest from the frozen snapshot, in either key convention" do
+      path = "/home/u/.foreman/workflows/fix.yaml"
+
+      for snapshot <- [
+            %{"workflow_name" => "fix", "manifest_path" => path},
+            %{workflow_name: "fix", manifest_path: path}
+          ] do
+        state = state(%ProjectSettings{})
+        state = %{state | task: Map.put(state.task, :workflow_snapshot, snapshot)}
+
+        {_launch, log} = launch_with_log(state, %{})
+
+        assert log =~ ~s(workflow="fix" manifest="#{path}")
+      end
+    end
+
+    test "a run with no frozen snapshot still launches and records the workflow as unknown" do
+      {_launch, log} = launch_with_log(state(%ProjectSettings{}), %{})
+
+      assert log =~ "workflow=nil manifest=nil"
+    end
   end
 
   test "thread_effort is delivered as reasoning_effort for a provider that declares it" do
@@ -155,8 +251,14 @@ defmodule ForemanServer.Workflow.RunExecutorProjectModelTest do
         | phase_specs: [%{name: :implement}]
       }
 
-      assert {:error, [%{class: :model_not_found, model: "ghost/model"}]} =
-               RunExecutor.__preflight_for_test__(state)
+      assert {:error,
+              [
+                %{
+                  class: :model_not_found,
+                  model: "ghost/model",
+                  model_source: :project_thread_model
+                }
+              ]} = RunExecutor.__preflight_for_test__(state)
     end
 
     test "a phase's own models.default is still what gets checked when declared" do
@@ -165,7 +267,42 @@ defmodule ForemanServer.Workflow.RunExecutorProjectModelTest do
         | phase_specs: [%{name: :implement, models: %{default: "other/model"}}]
       }
 
-      assert {:error, [%{model: "other/model"}]} = RunExecutor.__preflight_for_test__(state)
+      assert {:error, [%{model: "other/model", model_source: :phase_declared}]} =
+               RunExecutor.__preflight_for_test__(state)
+    end
+
+    # AC-005-1 / AC-006-2: the refusal names the rule that chose the string, so the
+    # fix lands on the right artifact (the manifest, or `foreman project update`).
+    test "the refusal's one-line summary names where the model came from" do
+      declared = %{
+        state(%ProjectSettings{thread_model: "ghost/model"})
+        | phase_specs: [%{name: :implement, models: %{default: "other/model"}}]
+      }
+
+      filled = %{
+        state(%ProjectSettings{thread_model: "ghost/model"})
+        | phase_specs: [%{name: :implement}]
+      }
+
+      assert {:error, [declared_failure]} = RunExecutor.__preflight_for_test__(declared)
+      assert {:error, [filled_failure]} = RunExecutor.__preflight_for_test__(filled)
+
+      assert PreflightFailure.summarize(declared_failure) =~
+               "the model comes from the phase's models.default"
+
+      assert PreflightFailure.summarize(filled_failure) =~
+               "the model comes from the project's thread_model"
+    end
+
+    test "a provider-level refusal for a phase with no model records the provider default" do
+      state = %{
+        state(%ProjectSettings{})
+        | phase_specs: [%{name: :implement, provider: "kimi"}]
+      }
+
+      assert {:error,
+              [%{class: :provider_unsupported, model: nil, model_source: :provider_default}]} =
+               RunExecutor.__preflight_for_test__(state)
     end
   end
 
