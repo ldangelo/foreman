@@ -727,6 +727,13 @@ gh_public_scan_file() {
 # gh_account_identity: the authenticated account's own PUBLIC profile identity as git prints it (`name <email>`), or
 # nothing when the profile shows no name or no public email (gh api user answers `email: null` unless the owner
 # published one; the harness token has no `user` scope, so nothing private is read).
+# gh_printable [max]: stdin -> one safe line on stdout. Commit authors, committers and tagger names are free text from the
+# repository under scan; echoing them raw would let a newline or escape sequence forge lines in the evidence/notes we keep.
+# Control characters (incl. ESC, CR, NUL) become '?', newlines become ';', the result is capped at <max> (default 400) chars.
+gh_printable() {
+  LC_ALL=C tr '\n' ';' | LC_ALL=C tr -c '[:print:]' '?' | cut -c "1-${1:-400}"
+}
+
 gh_account_identity() {
   gai_json=$(gh api user 2>/dev/null) || return 0
   gai_name=$(printf '%s' "$gai_json" | jq -r '.name // empty' 2>/dev/null)
@@ -833,15 +840,15 @@ gh_public_scan_history() {
   # 3. commit and tag identities: authors and committers of every commit on every ref, and the tagger of every annotated tag
   { git -C "$GH_OP" log --all --format='%an <%ae>%n%cn <%ce>'
     git -C "$GH_OP" for-each-ref --format='%(if:equals=tag)%(objecttype)%(then)%(taggername) %(taggeremail)%(end)' | grep -v '^$'; } | sort -u > "$EVID/identities.txt"
-  note "commit and tag identities: $(tr '\n' ';' < "$EVID/identities.txt")"
+  note "commit and tag identities: $(gh_printable 1000 < "$EVID/identities.txt")"
   gsh_account=$(gh_account_identity)
   if [ -n "$gsh_account" ]; then
-    note "the account's own public profile identity is allowed in the commit identity fields (and nowhere else): $gsh_account"
+    note "the account's own public profile identity is allowed in the commit identity fields (and nowhere else): $(printf '%s' "$gsh_account" | gh_printable 200)"
   else
     note "the account profile publishes no name and email: its identity is allowed nowhere"
   fi
   gsh_ident=$(gh_public_foreign_identities "$EVID/identities.txt" "$gsh_account")
-  [ -z "$gsh_ident" ] && pass "every commit author and committer is synthetic (@example.com), GitHub's own, Foreman's phase-commit default or the account's own public profile identity" || { fail "commit identity outside the allowlist in the history: $(printf '%s' "$gsh_ident" | tr '\n' ';')"; gsh_bad=1; }
+  [ -z "$gsh_ident" ] && pass "every commit author and committer is synthetic (@example.com), GitHub's own, Foreman's phase-commit default or the account's own public profile identity" || { fail "commit identity outside the allowlist in the history: $(printf '%s' "$gsh_ident" | gh_printable 600)"; gsh_bad=1; }
   # the identity fields are free text: the token/path/env/transcript classes and this run's exact secrets still apply to
   # them, minus the one allowed account identity itself (its email is an exact secret everywhere else)
   if [ -n "$gsh_account" ]; then grep -Fvx -e "$gsh_account" "$EVID/identities.txt" > "$EVID/identities-scan.txt"; else cp "$EVID/identities.txt" "$EVID/identities-scan.txt"; fi
