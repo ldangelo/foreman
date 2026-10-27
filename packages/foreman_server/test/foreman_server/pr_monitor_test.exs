@@ -4,7 +4,7 @@ defmodule ForemanServer.PrMonitorTest do
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.PrAssociate
   alias ForemanServer.PrMonitor
-  alias ForemanServer.TestSupport.Eventually
+  alias ForemanServer.TestSupport.{Eventually, ProjectionStoreReset}
 
   setup do
     :persistent_term.erase({PrMonitor, :fetch_fun})
@@ -211,6 +211,15 @@ defmodule ForemanServer.PrMonitorTest do
 
   describe "scheduled ticks" do
     setup do
+      # A sweep reads the PRs the whole process-wide `ProjectionStore` watches, not only this
+      # test's, and a capped tick takes the first `max_per_tick` of them: the PRs that earlier
+      # tests of this VM left open (an association nobody merged or closed) are fetched, one
+      # tick each, before a PR sorted behind them (run ids carry a random token). How many ticks
+      # these tests wait for would be the number of leftovers, which no test controls
+      # (foreman-p7123). So the store starts empty, and holds only this test's PRs.
+      ProjectionStoreReset.reset!()
+      on_exit(&ProjectionStoreReset.reset!/0)
+
       token = Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
 
       runs =
