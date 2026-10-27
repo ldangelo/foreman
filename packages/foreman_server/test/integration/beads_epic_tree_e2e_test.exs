@@ -207,32 +207,48 @@ defmodule ForemanServer.Integration.BeadsEpicTreeE2ETest do
     assert line["labels"] == ["foreman-exec"]
   end
 
-  test "AC-011-1: every bead of the tree closed -> the run completes with no manual step", ctx do
-    %{fixture: fixture} = ctx
-    StandInAgent.configure(%{test_pid: self(), fixture: fixture, closes: fixture.task_ids})
+  for shape <- [:as_exported, :object] do
+    test "AC-011-1: every bead of the tree closed -> the run completes with no manual step (agent_context #{shape})",
+         ctx do
+      %{fixture: fixture} = ctx
+      StandInAgent.configure(%{test_pid: self(), fixture: fixture, closes: fixture.task_ids})
 
-    {task_id, run_id} = dispatch_epic!(ctx)
+      {task_id, run_id} = dispatch_epic!(ctx, unquote(shape))
 
-    assert_receive {:stand_in_prompt, prompt}, @terminal_timeout_ms
-    assert prompt == "/skill:ensemble-beads-build #{fixture.epic_id} --foreman"
+      assert_receive {:stand_in_prompt, prompt}, @terminal_timeout_ms
+      assert prompt == "/skill:ensemble-beads-build #{fixture.epic_id} --foreman"
 
-    assert %{status: "completed"} = await_terminal_run!(run_id)
+      assert %{status: "completed"} = await_terminal_run!(run_id)
 
-    assert %{status: "closed"} =
-             Eventually.await(
-               fn ->
-                 case ProjectionStore.task_projection(task_id) do
-                   %{status: "closed"} = task -> task
-                   _ -> nil
-                 end
-               end,
-               message: "task #{task_id} closed after the completed run"
-             )
+      assert %{status: "closed"} =
+               Eventually.await(
+                 fn ->
+                   case ProjectionStore.task_projection(task_id) do
+                     %{status: "closed"} = task -> task
+                     _ -> nil
+                   end
+                 end,
+                 message: "task #{task_id} closed after the completed run"
+               )
 
-    statuses = BeadsTreeFixture.statuses!(fixture)
-    assert Enum.all?(fixture.task_ids, &(statuses[&1] == "closed"))
-    # The task provider, not the agent, closes the epic bead once the run completed.
-    assert statuses[fixture.epic_id] == "closed"
+      statuses = BeadsTreeFixture.statuses!(fixture)
+      assert Enum.all?(fixture.task_ids, &(statuses[&1] == "closed"))
+      # The task provider, not the agent, closes the epic bead once the run completed.
+      assert statuses[fixture.epic_id] == "closed"
+    end
+  end
+
+  test "a tagged epic whose agent_context is not valid JSON is blocked for its missing trd_path",
+       %{fixture: fixture, watcher: watcher} do
+    line =
+      fixture
+      |> BeadsTreeFixture.epic_line!()
+      |> Jason.decode!()
+      |> Map.put("agent_context", "{\"trd_path\": ")
+      |> Jason.encode!()
+
+    assert :skipped = BeadsWatcher.process_line(watcher, line)
+    assert BeadsTreeFixture.statuses!(fixture)[fixture.epic_id] == "blocked"
   end
 
   test "AC-008-1: a task left open fails the run although the agent finished cleanly", ctx do
@@ -265,8 +281,12 @@ defmodule ForemanServer.Integration.BeadsEpicTreeE2ETest do
 
   # Feeds the epic's own `br` export line to the real watcher and returns the
   # task id and the run id the real Dispatcher started for it.
-  defp dispatch_epic!(%{fixture: fixture, watcher: watcher, project_id: project_id}) do
-    assert :imported = BeadsWatcher.process_line(watcher, BeadsTreeFixture.epic_line!(fixture))
+  defp dispatch_epic!(
+         %{fixture: fixture, watcher: watcher, project_id: project_id},
+         shape \\ :as_exported
+       ) do
+    line = BeadsTreeFixture.epic_line!(fixture, agent_context: shape)
+    assert :imported = BeadsWatcher.process_line(watcher, line)
 
     task_id = "beads:#{project_id}:#{fixture.epic_id}"
 

@@ -101,12 +101,10 @@ defmodule ForemanServer.TestSupport.BeadsTreeFixture do
 
   `agent_context:`
 
-    * `:object` (default) - `agent_context` decoded into a JSON object, the shape
-      `BeadsWatcher` reads `trd_path` from (`extract_trd_path/1` accepts only a map);
-    * `:as_exported` - verbatim, as `br` 0.6.0 writes it: a JSON-ENCODED STRING.
-      `BeadsWatcher` skips such a tagged epic as `missing_trd_path`, so the default
-      is what lets the chain run. This difference is a finding, see the
-      `BeadsEpicTreeE2ETest` moduledoc and docs/user-guide.md.
+    * `:as_exported` (default) - verbatim, as `br` 0.6.0 writes it: `agent_context`
+      is a JSON-ENCODED STRING;
+    * `:object` - `agent_context` decoded into a JSON object, the shape a producer
+      that embeds the object would write.
   """
   @spec epic_line!(t(), keyword()) :: String.t()
   def epic_line!(%{jsonl_path: jsonl, epic_id: epic_id}, opts \\ []) do
@@ -119,7 +117,7 @@ defmodule ForemanServer.TestSupport.BeadsTreeFixture do
         line -> String.trim_trailing(line, "\n")
       end
 
-    case Keyword.get(opts, :agent_context, :object) do
+    case Keyword.get(opts, :agent_context, :as_exported) do
       :as_exported ->
         line
 

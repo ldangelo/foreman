@@ -1321,10 +1321,28 @@ defmodule ForemanServer.TaskProviders.BeadsWatcher do
 
   defp trd_path_fault?(reason), do: String.starts_with?(Atom.to_string(reason), "trd_path_")
 
+  # `br` 0.6.0 exports `agent_context` as a JSON-ENCODED STRING (`br show --json`
+  # and `issues.jsonl` alike); an object is read as is. The string is decoded here,
+  # once, for the one field this module reads from it. A string that is not a JSON
+  # object yields no path, so the bead is blocked with the missing-`trd_path`
+  # remediation comment instead of being dispatched (or silently skipped).
+  #
+  # `foreman_tag?/1` deliberately does NOT decode: a Foreman-created gap bead carries
+  # its `foreman` envelope as such a string and must be dispatched
+  # (`BeadsWatcherGapBeadTest`).
   defp extract_trd_path(parsed) do
     case Map.get(parsed, "agent_context") do
-      agent_context when is_map(agent_context) -> Map.get(agent_context, "trd_path")
-      _other -> nil
+      agent_context when is_map(agent_context) ->
+        Map.get(agent_context, "trd_path")
+
+      raw when is_binary(raw) ->
+        case Jason.decode(raw) do
+          {:ok, %{"trd_path" => trd_path}} -> trd_path
+          _not_an_object_with_a_path -> nil
+        end
+
+      _other ->
+        nil
     end
   end
 
