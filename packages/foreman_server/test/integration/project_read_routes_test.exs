@@ -86,7 +86,7 @@ defmodule ForemanServer.Integration.ProjectReadRoutesTest do
 
     assert register_body == %{
              "status" => "accepted",
-             "result" => %{"project_id" => project_id}
+             "result" => %{"project_id" => project_id, "replayed" => false}
            }
 
     poll_until(

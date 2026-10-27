@@ -114,7 +114,8 @@ defmodule ForemanServer.RecoveryTest do
         Enum.filter(ProjectionStore.list_scheduler_intents(), &(&1.intent_id == intent_id))
 
       assert {:ok, first} = Recovery.mark_interrupted(intent)
-      assert {:ok, ^first} = Recovery.mark_interrupted(intent)
+      assert {:ok, replay} = Recovery.mark_interrupted(intent)
+      assert replay == ForemanServer.Aggregate.Actor.mark_replayed(first)
 
       {:ok, events} =
         ForemanServer.EventStore.read_stream_forward("scheduler_intent:" <> intent_id, 0, 99)

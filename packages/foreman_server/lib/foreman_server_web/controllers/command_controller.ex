@@ -17,6 +17,7 @@ defmodule ForemanServerWeb.CommandController do
 
   use ForemanServerWeb, :controller
 
+  alias ForemanServer.Aggregate.Actor
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
@@ -33,7 +34,7 @@ defmodule ForemanServerWeb.CommandController do
           {:ok, result} ->
             conn
             |> put_status(:created)
-            |> json(%{status: "accepted", result: serialize(result)})
+            |> json(%{status: "accepted", result: serialize_result(result)})
 
           {:error, {:command_not_allowed, type}} ->
             conn
@@ -326,6 +327,11 @@ defmodule ForemanServerWeb.CommandController do
   rescue
     ArgumentError -> Map.get(map, key)
   end
+
+  # `replayed` is part of every accepted result: true when the command id was already
+  # recorded and the recorded event is being returned instead of a fresh effect.
+  defp serialize_result(result),
+    do: Map.put(serialize(result), :replayed, Actor.replayed?(result))
 
   defp serialize(result) when is_map(result) do
     payload = get_value(result, :payload)

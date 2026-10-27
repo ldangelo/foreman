@@ -348,7 +348,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
 | `--clear <setting>` | Clear a setting (repeatable) |
-| `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update) |
+| `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update; an identical update re-sent after a `--clear` is a replay and is reported as `no change`, see [Repeating an identical command](#foreman-project-pause-id--resume-id--reactivate-id)) |
 | `--format json` | Print the raw command response as JSON |
 
 ### `foreman project recommend <id>`
@@ -432,6 +432,8 @@ foreman project repo remove --id api project-123
 ### `foreman project pause <id>` / `resume <id>` / `reactivate <id>`
 
 `pause [--reason <text>]` refuses new work (`task.create`, run reservation, jobsite start, BeadsWatcher imports) with `{:project_paused, id}` while in-flight runs continue; it is reversible. `resume` restores admission and re-admits held work. `reactivate` un-archives an archived project. Each takes `--idempotency-key <key>`.
+
+**Repeating an identical command.** `project create|update|pause|resume|reactivate|delete`, `project repo add|remove` and `project schedule create` derive the command id from the command itself, so an identical retry collapses into one command. The consequence: after `update --thread-model X`, `update --clear thread_model`, an identical `update --thread-model X` carries the first command's id and is NOT applied again (same for pause → resume → pause, delete → reactivate → delete, repo add → remove → add). The server marks such an answer `"replayed": true` in the `POST /api/commands` result and the CLI prints `no change: this exact command was already recorded under the same command id, so it was not applied again ...; pass --idempotency-key <new-key> to apply it again` instead of the usual success line. A replay is not an error: the exit code stays 0, and `--format json` passes the `replayed` flag through. Re-apply with a fresh `--idempotency-key <new-key>`.
 
 ### `foreman project schedule list|create|pause|resume|delete`
 

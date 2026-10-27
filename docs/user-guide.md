@@ -1100,7 +1100,7 @@ family, `review.record` and the PR observation commands.
 
 Response shapes:
 
-- Success: `201` with `{"status": "accepted", "result": {...}}`.
+- Success: `201` with `{"status": "accepted", "result": {..., "replayed": false}}`. `result.replayed` is `true` when the `command_id` was already recorded: the recorded event is returned and nothing is applied again, even if the aggregate changed since (a client that derives deterministic ids, like the CLI, can re-send an earlier `A` after `B` and get `replayed: true`).
 - Refused command type: `403` with `{"error": "command_not_allowed", "type": "..."}`.
 - Malformed envelope: `400` with `{"error": "invalid_envelope", "reason": "..."}`.
 - Optimistic-concurrency conflict: `409` with `{"code": "version_conflict", "current_version": N}`.
