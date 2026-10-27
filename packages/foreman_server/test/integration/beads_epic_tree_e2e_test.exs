@@ -261,6 +261,7 @@ defmodule ForemanServer.Integration.BeadsEpicTreeE2ETest do
     assert_receive {:stand_in_prompt, _prompt}, @terminal_timeout_ms
 
     assert %{status: "failed"} = await_terminal_run!(run_id)
+
     assert %{status: "failed"} =
              Eventually.await(
                fn ->
