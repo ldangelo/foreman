@@ -55,7 +55,7 @@ dozens of beads runs for hours).
   status is `open`, it carries label `foreman-exec`, `issue_type:
   implement_trd_beads` maps to the workflow, and `agent_context.trd_path` is a
   non-empty project-relative path (a missing/empty `trd_path` blocks the bead
-  with a remediation comment).
+  with a remediation comment). Also: a `trd_path` that is not a tracked regular file at the project's HEAD inside the project root (missing, deleted, a directory, absolute or escaping the project, or untracked) is treated like a missing `trd_path`: the bead is moved to `blocked` with the same remediation comment, instead of being retried forever (previously it was held transient and `task.approve` kept failing). Project-level faults (project not registered, root not a git repo) are not blamed on the bead and still proceed to `task.create`. The check re-runs every time the watcher sees the bead as `open`, so after fixing the path (commit the TRD, or `br update` the `trd_path`) reopen it as the comment says (`--status open`, or re-label) and it dispatches on the next scan. The telemetry event for this block, `[:foreman_server, :task_provider, :beads, :watcher, :status_gate, :skipped, :missing_trd_path]`, now carries a `reason` metadata key (the `trd_path_*` validation reason) for the invalid-path case and no `reason` for the missing case.
 - *Bead id.* `implementation.bead_id` is the frozen id of the bead that
   triggered the task (`task.external_id`, set by BeadsWatcher).
   `ImplementationContext` fails approval for an `implement-trd-beads` task

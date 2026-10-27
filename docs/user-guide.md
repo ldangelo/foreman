@@ -886,7 +886,7 @@ hours has no wall-clock deadline. It replaces the earlier
 - **Tag an epic to have Foreman pick it up.** BeadsWatcher dispatches a bead
   only when its status is `open`, it carries the `foreman-exec` label, its
   `issue_type` is `implement_trd_beads`, and `agent_context.trd_path` is a
-  non-empty project-relative path:
+  non-empty project-relative path; a `trd_path` that is not a tracked regular file at the project's HEAD inside the project root (missing, deleted, a directory, absolute or escaping the project, or untracked) is treated like a missing `trd_path`: the bead is moved to `blocked` with the same remediation comment, instead of being retried forever (previously it was held transient and `task.approve` kept failing). Project-level faults (project not registered, root not a git repo) are not blamed on the bead and still proceed to `task.create`. The check re-runs every time the watcher sees the bead as `open`, so after fixing the path (commit the TRD, or `br update` the `trd_path`) reopen it as the comment says (`--status open`, or re-label) and it dispatches on the next scan. Tagging command:
   `br update <epic-id> --type implement_trd_beads --add-label foreman-exec
   --agent-context '{"trd_path":"docs/TRD/..."}' --status open`. Until the
   ensemble-side `implement-trd-beads --plan --foreman` tagging ships, you tag
