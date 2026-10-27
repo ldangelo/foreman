@@ -27,6 +27,26 @@ defmodule ForemanServer.Review.BeadSink do
   @exec_label "foreman-exec"
   @truncation_marker "\n\n[…truncated]"
 
+  @gap_task_id_prefix "review:"
+
+  @doc """
+  The synthetic `agent_context.foreman.task_id` every gap bead is created with.
+
+  No task ever has this id: a gap bead gets a task (`external_id == bead id`)
+  only once `BeadsWatcher` dispatches it. `gap_task_id?/1` is the discriminator
+  `BeadsOrphanJanitor` uses to leave undispatched gap beads alone.
+  """
+  @spec gap_task_id(Subject.t()) :: String.t()
+  def gap_task_id(%Subject{kind: kind, subject_id: subject_id}),
+    do: "#{@gap_task_id_prefix}#{kind}:#{subject_id}"
+
+  @doc "True when `task_id` is a gap bead's synthetic task id (see `gap_task_id/1`)."
+  @spec gap_task_id?(term()) :: boolean()
+  def gap_task_id?(task_id) when is_binary(task_id),
+    do: String.starts_with?(task_id, @gap_task_id_prefix)
+
+  def gap_task_id?(_other), do: false
+
   @spec publish(Subject.t(), Verdict.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def publish(%Subject{bead_id: nil} = subject, %Verdict{}) do
     Logger.info(
@@ -232,7 +252,7 @@ defmodule ForemanServer.Review.BeadSink do
       description: gap_description(subject, gap),
       priority: priority(gap.severity),
       task_type: task_type(gap.severity),
-      task_id: "review:#{subject.kind}:#{subject.subject_id}",
+      task_id: gap_task_id(subject),
       command_id: "review:#{subject.subject_id}:gap:#{index}",
       labels: [@exec_label, @gap_label]
     }

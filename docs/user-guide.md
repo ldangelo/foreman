@@ -2096,6 +2096,8 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
   which closes Beads whose matching Foreman task never landed or
   already terminated, after a grace window.
+  Review gap beads (`foreman-gap`) that no task has been created for yet are
+  never closed; one that is never dispatched stays open until an operator acts.
 - **Health check.** `ForemanServer.CLI.DoctorTaskProvider.run/1`
   (dispatched via `ForemanServer.CLI.run(["doctor", "task_provider"])`)
   reports per-project provider health and the janitor's cached
