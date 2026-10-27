@@ -1454,8 +1454,9 @@ Lifecycle details:
   and failure as `failed`.
 - `task.retry` is only for a task still bound to a terminal run, or
   already `failed` by the terminal invariant. Success clears run-bound
-  fields and returns the task to `open`; it does not dispatch again by itself (a
-  fresh `task.approve` does, §7.2).
+  fields and returns the task to `open`; for a bead-backed task BeadsWatcher then
+  re-approves it on its next rescan and a new run starts (§7.2); a task from
+  another source needs a fresh `task.approve`.
 
 Run projections use a separate, wider status vocabulary: `completed`,
 `failed`, `blocked`, `deleted`, `stuck`, or `cancelled`, depending on
@@ -2433,7 +2434,7 @@ or the `/debug/*` LiveView dashboards in a dev environment.
 `foreman task retry` is REMOVED (TRD-018, 2026-09-13), and re-opening the bead
 (`br update <id> --status=open`) is not a replacement: once a task exists past
 `open` BeadsWatcher only reconciles it. Once the run below is terminal, retry with
-`task.retry` followed by a fresh `task.approve` on `POST /api/commands`
+`task.retry` on `POST /api/commands`; the watcher re-approves the task itself
 (§7.2, "Recovering from a preflight failure").
 
 ```bash
