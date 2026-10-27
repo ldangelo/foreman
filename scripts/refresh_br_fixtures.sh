@@ -51,4 +51,32 @@ b sync --status --json > "$OUT/sync_status.json"
 b where --json > "$OUT/where.json"
 for s in ready-issue issue-details error commands; do b schema "$s" --json > "$OUT/schema_${s//-/_}.json" || true; done
 # `br schema` embeds a timestamp and a version; they are kept verbatim.
+
+# A parent-child tree for Workflow.BeadsTreeCompletion (TRD-2026-72f477ca TRD-004):
+# epic -> 2 stories -> 3 tasks. T3 (under S2) is also blocked by T1 (under S1): a `blocks`
+# edge BETWEEN tree members. OUTSIDE is not in the tree and is blocked by T2: a `blocks`
+# edge OUT of it. The completion check issues one `br show <ids...>` per tree level.
+# Created last so the captures above never see these issues.
+mk() { b create --title "$1" --type "$2" --priority 2 --json | id_of; }
+EPIC=$(mk "Tree epic" epic); S1=$(mk "Tree story one" feature); S2=$(mk "Tree story two" feature)
+T1=$(mk "Tree task one" task); T2=$(mk "Tree task two" task); T3=$(mk "Tree task three" task)
+OUTSIDE=$(mk "Outside the tree" task)
+for pair in "$S1 $EPIC" "$S2 $EPIC" "$T1 $S1" "$T2 $S1" "$T3 $S2"; do
+  b dep add $pair --type parent-child --json > /dev/null
+done
+b dep add "$T3" "$T1" --json > /dev/null
+b dep add "$OUTSIDE" "$T2" --json > /dev/null
+# incomplete: T1 closed, T2 in_progress, T3 open, both stories open
+b close "$T1" --reason "fixture" --json > /dev/null
+b update "$T2" --status in_progress --json > /dev/null
+b show "$EPIC" --json > "$OUT/show_tree_incomplete_epic.json"
+b show "$S1" "$S2" --json > "$OUT/show_tree_incomplete_stories.json"
+b show "$T1" "$T2" "$T3" --json > "$OUT/show_tree_incomplete_tasks.json"
+b show "$EPIC" nope-0 --json > "$OUT/show_tree_missing_id.json" || true   # exit 3, error envelope on STDOUT
+# complete: every descendant closed, the root epic itself still open
+b close "$T2" "$T3" --reason "fixture" --json > /dev/null
+b close "$S1" "$S2" --reason "fixture" --json > /dev/null
+b show "$EPIC" --json > "$OUT/show_tree_complete_epic.json"
+b show "$S1" "$S2" --json > "$OUT/show_tree_complete_stories.json"
+b show "$T1" "$T2" "$T3" --json > "$OUT/show_tree_complete_tasks.json"
 echo "fixtures written to $OUT (br $(br --version))"

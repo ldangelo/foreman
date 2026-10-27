@@ -16,6 +16,8 @@ Argv mirrors what `TaskProviders.SystemBrRunner` builds (`--db <path>` omitted b
 | `show_labels_with_dependency.json` | `br show <id> --json` (labels + one dependency; no `dependents` key) |
 | `show_with_dependent.json` | `br show <id> --json` (one dependent; no `dependencies` key) |
 | `show_with_comments.json` | `br show <id> --json` (two comments) |
+| `show_tree_{incomplete,complete}_{epic,stories,tasks}.json` | `br show <ids…> --json` for ONE LEVEL of a parent-child tree (epic → 2 stories → 3 tasks), exactly what `Workflow.BeadsTreeCompletion` issues per level: `epic` the root, `stories` its two children, `tasks` their three. `incomplete`: one task closed, one `in_progress`, one `open`, stories and epic `open`. `complete`: every descendant `closed`, the root epic still `open`. A `blocks` edge joins two tasks of different stories and another leaves the tree to an `open` bead that is not a descendant |
+| `show_tree_missing_id.json` | `br show <id> nope-0 --json`: exit 3 and an `ISSUE_NOT_FOUND` error envelope on STDOUT |
 | `comments_add.json` | `br comments add <id> --message … --json` |
 | `dep_add.json` | `br dep add <dependent> <dependency> --json` |
 | `dep_add_exists.json` | the same `br dep add` repeated: exit 0, `status: "exists"`, `action: "already_exists"` |

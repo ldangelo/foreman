@@ -23,7 +23,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   | `step_started` on `:agent` (iteration 1) | asserts the plan subject and builds the `launch` the Overwatch runner dispatches |
   | `step_completed` on `:agent` | `ArtifactTemplate.write/4`; sets `ctx.artifact_path` |
   | `step_completed` on `:gate` | `enforce_required_file/4`; a captured planning document is written back into the run's plan context |
-  | `step_completed` on `:commit` | logs the commit outcome (`committed`, `nothing to commit`, `deferring`), then the phase PR record when `stack_pr: true`, then `phase.complete` |
+  | `step_completed` on `:commit` | logs the commit outcome (`committed`, `nothing to commit`, `deferring`), then — after the LAST phase only — `verify_run_outcome/2` (an `implement-trd-beads` run's Beads tree must be closed), then the phase PR record when `stack_pr: true`, then `phase.complete` |
   | `step_failed` | `phase.fail`, or — for a failure inside the phase body while the operator has asked to pause or cancel — the pause/cancel handling below |
 
   **Pause and cancel.** A request landing between phases is the engine's own
@@ -110,15 +110,19 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
     log_commit_outcome(executor, phase, outcome)
 
-    case RunExecutor.phase_finish(
-           executor,
-           phase.spec,
-           phase.idx,
-           phase.record,
-           phase.artifact_path
-         ) do
-      {:ok, executor} ->
-        {:ok, ctx, %{state | executor: executor, phase: nil}}
+    with :ok <- verify_outcome(executor, phase),
+         {:ok, executor} <-
+           RunExecutor.phase_finish(
+             executor,
+             phase.spec,
+             phase.idx,
+             phase.record,
+             phase.artifact_path
+           ) do
+      {:ok, ctx, %{state | executor: executor, phase: nil}}
+    else
+      {:outcome_failed, reason} ->
+        {:error, failure(:phase_outcome_failed, "the run's outcome check failed", reason)}
 
       {:error, reason} ->
         {:error, failure(:phase_finish_failed, "recording the phase's completion failed", reason)}
@@ -170,6 +174,19 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
   defp log_commit_outcome(_executor, _phase, :deferred), do: :ok
   defp log_commit_outcome(_executor, _phase, :no_worktree), do: :ok
+
+  # The run's outcome is judged once: after its last phase's commit, before that
+  # phase is recorded complete.
+  defp verify_outcome(executor, %{idx: idx, artifact_path: artifact_path}) do
+    if idx == length(executor.phase_specs) - 1 do
+      case RunExecutor.verify_run_outcome(executor, artifact_path) do
+        :ok -> :ok
+        {:error, reason} -> {:outcome_failed, reason}
+      end
+    else
+      :ok
+    end
+  end
 
   # ---------------------------------------------------------------------
   # Phase entry

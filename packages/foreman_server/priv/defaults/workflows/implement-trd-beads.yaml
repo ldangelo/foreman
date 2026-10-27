@@ -39,9 +39,9 @@ worktree:
 # triggered it (`{{implementation.bead_id}}`, frozen at approval from the task's
 # `external_id`): the root epic of the tree to execute. Resuming a run re-issues
 # the same command, so beads-build re-reads the bead graph and does only the work
-# still open (REQ-005). The phase is judged on the TREE, not on the agent's exit:
-# `RunExecutor.verify_phase_outcome/3` fails the run when any descendant of that
-# bead is not closed (`Workflow.BeadsTreeCompletion`).
+# still open (REQ-005). The run is judged on the TREE, not on the agent's exit:
+# after the last phase `RunExecutor.verify_run_outcome/2` fails the run when any
+# descendant of that bead is not closed (`Workflow.BeadsTreeCompletion`).
 #
 # Deliberately NO `timeout_minutes:`. A tree of dozens of beads runs for hours;
 # an absent key means no wall-clock deadline (`AgentRuntime.FailurePolicy`,
