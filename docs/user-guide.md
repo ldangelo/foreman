@@ -928,6 +928,29 @@ hours has no wall-clock deadline. It replaces the earlier
 - **After upgrading**, run `foreman init --force`: installed workflow copies in
   `~/.foreman/workflows/` are not refreshed automatically. Tasks approved
   earlier keep the command frozen in their snapshot.
+- **What is verified, and what is not.** `test/integration/beads_epic_tree_e2e_test.exs`
+  drives the whole Foreman side against a synthetic tree built with the real `br`
+  (`test/support/beads_tree_fixture.ex`: an epic and two tasks, one blocked by the
+  other): the epic's own `issues.jsonl` line -> BeadsWatcher -> `task.create` and
+  auto-approve -> the real Dispatcher and RunExecutor -> the rendered
+  `/skill:ensemble-beads-build <epic> --foreman` phase -> tree verification -> run
+  and task outcome, with the epic bead closed (tree finished) or handed back
+  `blocked` (a task left open, naming it). `br` is real throughout. The agent is the
+  one fake: a stand-in worker that runs `br close` on the beads its scenario says it
+  finishes. That proves Foreman acts on the **tree**, not on the agent's exit, in
+  both directions, and that a `br`-exported tagged epic is dispatched. It does
+  **not** prove that the real `ensemble-beads-build` skill accepts `--foreman`,
+  resolves an epic id like `fx-ab1`, builds the tree or closes its beads, nor that
+  an LLM follows the command. As of this writing the installed skill (v1.2.0) does
+  not declare `--foreman` and documents epic ids as `beads-NNN` or numeric, and an
+  8-minute attempt to run it for real against the fixture tree through the local
+  LiteLLM proxy (model `smart_router`) closed no bead and produced no output, so no
+  live end-to-end run of the real skill has been demonstrated. Treat the first
+  production epic as the live test: watch it with `foreman run get <run-id>`.
+- **`agent_context` as `br` writes it.** `br` 0.6.0 stores `agent_context` as a
+  JSON-encoded string, not an object. BeadsWatcher decodes that string when it reads
+  `trd_path`; a string that is not a JSON object is treated like a missing
+  `trd_path` (the bead is blocked with the remediation comment).
 
 ### Runs
 

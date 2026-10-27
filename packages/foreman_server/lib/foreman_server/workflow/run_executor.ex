@@ -155,15 +155,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   def fail(_project_id, _task_id, _run_id, _reason), do: {:error, :invalid_failure}
-  # TRD-015: Retry helper for fail/4 dispatch on transient errors.
+  # TRD-015: Retry helper for the task provider's `fail` on transient errors.
   #
-  # Foreman's `run.fail` has ALREADY been dispatched by the time
-  # `maybe_fail_task/4` reaches this helper (see the dispatch-order comment
-  # on `emit_phase_failure/4`), so this task-provider notification (e.g.
-  # Beads `--status blocked`) is best-effort relative to run termination —
-  # its outcome must never gate whether the run is terminal.
+  # Attempt 1 ran synchronously in `attempt_task_fail/4`, BEFORE `run.fail` (see
+  # `emit_phase_failure/4`); this runs after `run.fail`, with that attempt's outcome.
+  # The provider notification (e.g. Beads `--status blocked`) is best-effort relative
+  # to run termination - its outcome never gates whether the run is terminal.
   #
-  # `maybe_fail_task/4` is called synchronously from this GenServer's
+  # This is called synchronously from this GenServer's
   # `handle_cast`/`handle_info` path, and `finalize_terminal_and_stop/2`
   # normally runs immediately after it returns. The full retry schedule
   # (1s, 5s, 15s-settle backoff — up to ~21s) previously ran inline via
@@ -180,36 +179,35 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # not need to outlive as a live GenServer" reason — and returns `:ok`
   # immediately. The eventual outcome is reported via
   # `dispatch_task_execution_fail/2` (success) or `Logger.error/1`
-  # (retries exhausted) from inside that task.
-  defp fail_with_retry(state, project_id, task_id, run_id, reason, failure_reason) do
-    case fail(project_id, task_id, run_id, failure_reason) do
-      {:ok, _issue} ->
+  # (retries exhausted) from inside that task. Those retries start at least a
+  # second after `run.fail`, so they never overlap the Dispatcher's lease release.
+  defp finish_task_failure(state, reason, attempt) do
+    case attempt do
+      done when done in [:untracked, :provider_failed] ->
         dispatch_task_execution_fail(state, reason)
 
-      {:error, error_reason} ->
-        case classify_fail_reason(error_reason) do
-          :permanent ->
-            {:error, error_reason}
+      {:permanent, error_reason} ->
+        {:error, error_reason}
 
-          :transient ->
-            Task.start(fn ->
-              case fail_retry_loop(project_id, task_id, run_id, failure_reason, 2) do
-                {:ok, _issue} ->
-                  report_retry_dispatch_result(
-                    dispatch_task_execution_fail(state, reason),
-                    run_id
-                  )
+      {:retry, failure_reason} ->
+        project_id = project_id(state)
+        task_id = provider_task_id(state)
+        run_id = state.run_id
 
-                {:error, final_reason} ->
-                  Logger.error(
-                    "RunExecutor #{run_id} task-provider fail notification exhausted retries: " <>
-                      inspect(final_reason)
-                  )
-              end
-            end)
+        Task.start(fn ->
+          case fail_retry_loop(project_id, task_id, run_id, failure_reason, 2) do
+            {:ok, _issue} ->
+              report_retry_dispatch_result(dispatch_task_execution_fail(state, reason), run_id)
 
-            :ok
-        end
+            {:error, final_reason} ->
+              Logger.error(
+                "RunExecutor #{run_id} task-provider fail notification exhausted retries: " <>
+                  inspect(final_reason)
+              )
+          end
+        end)
+
+        :ok
     end
   end
 
@@ -1811,12 +1809,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
     # A failed phase is a failed run: no later phase can satisfy the
     # workflow contract, and downstream consumers (projection,
     # task.retry, BootReconciliation) all key off `run.terminal?`.
-    # Dispatch order matters: `run.fail` happens before the task-level
-    # failure so the run flips terminal even if the task dispatch
-    # surfaces a transport error — a nonterminal run blocks retry.
+    #
+    # Dispatch order matters, twice over:
+    #
+    #   * The task provider's `fail` (Beads: `br update --status blocked` under the
+    #     epic DB's `BeadsDbLease`) runs BEFORE `run.fail`. `RunFailed` makes the
+    #     Dispatcher release this run's lease (`terminate_lease/2`); published first,
+    #     that release races the provider's own acquire and, landing after it,
+    #     strands the call until `:lease_timeout` - the bead is never handed back and
+    #     the task stays `in_progress` (foreman-echpv). The attempt's outcome never
+    #     gates the run: it is returned as a value (`attempt_task_fail/4` does not
+    #     raise) and `run.fail` follows whatever it was.
+    #   * `run.fail` happens before the task-LEVEL failure (`task.execution_fail`)
+    #     so the run flips terminal even if that dispatch surfaces a transport error
+    #     - a nonterminal run blocks retry.
+    #
     # The Run aggregate's `reject_terminal_mutation` returns
     # `{:error, {:run_terminal, _}}` for an already-terminal run, so
     # this is idempotent w.r.t. supervisor reentry / duplicates.
+    provider_attempt = attempt_task_fail(state, phase_spec, phase_index, reason)
+
     with {:ok, _} <-
            dispatch_system(
              "phase.fail",
@@ -1826,7 +1838,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
              "phase:#{state.run_id}:#{phase_id}"
            ),
          :ok <- emit_run_failure(state, reason),
-         :ok <- maybe_fail_task(state, phase_spec, phase_index, reason) do
+         :ok <- finish_task_failure(state, reason, provider_attempt) do
       :ok
     else
       {:error, reason} ->
@@ -4864,7 +4876,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp maybe_fail_task(state, phase_spec, index, reason) do
+  # Attempt 1 of the task provider's `fail` (e.g. Beads `--status blocked`), run by
+  # `emit_phase_failure/4` BEFORE `run.fail` (see the dispatch-order comment there).
+  # Never raises and never gates the run: whatever happens is returned as a value
+  # for `finish_task_failure/3`, so `run.fail` is dispatched either way.
+  @typep provider_fail_attempt ::
+           :untracked
+           | :provider_failed
+           | {:retry, map()}
+           | {:permanent, term()}
+
+  @spec attempt_task_fail(state(), map(), non_neg_integer(), FailureCause.t() | term()) ::
+          provider_fail_attempt()
+  defp attempt_task_fail(state, phase_spec, index, reason) do
     case provider_tracked?(state) and provider_enabled?(project_id(state)) do
       true ->
         failure_reason =
@@ -4872,17 +4896,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
             artifact_path: ArtifactTemplate.path(state, phase_spec, index)
           })
 
-        fail_with_retry(
-          state,
-          project_id(state),
-          provider_task_id(state),
-          state.run_id,
-          reason,
-          failure_reason
-        )
+        try do
+          case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
+            {:ok, _issue} ->
+              :provider_failed
+
+            {:error, error_reason} ->
+              case classify_fail_reason(error_reason) do
+                :permanent -> {:permanent, error_reason}
+                :transient -> {:retry, failure_reason}
+              end
+          end
+        rescue
+          exception -> {:permanent, {:provider_fail_raised, Exception.message(exception)}}
+        catch
+          :exit, exit_reason -> {:permanent, {:provider_fail_exited, exit_reason}}
+        end
 
       false ->
-        dispatch_task_execution_fail(state, reason)
+        :untracked
     end
   end
 
