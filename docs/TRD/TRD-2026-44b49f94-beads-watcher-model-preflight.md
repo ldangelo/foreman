@@ -33,9 +33,96 @@ affected_components:
 
 ## Root Cause (determined, not hypothesized)
 
+> **Corrected (TRD-010, 2026-10-27).** The headline below, items 5 and 6, "Why
+> the run was dispatched at all" and "Confidence" are **superseded**. They are
+> kept exactly as written, each marked, so the reasoning that failed stays
+> auditable. The reproduction record (commands, run ids, recorded strings, log
+> lines) is the 2026-10-27 entry in the Changelog.
+>
+> **Corrected root cause.** `run-0381b5267615e9673ca0352252f4c709` (bead
+> `foreman-8qge`, 2026-10-12 15:36:52–15:36:55 -05:00) was refused because the
+> model catalog the *server process* consulted did not list
+> `minimax/MiniMax-M2.7` — a correctly qualified string, which the matcher then
+> in force (#491, `699d45cc`) matches correctly. `pi --list-models` lists a
+> provider's models only when pi can see that provider's credential (pi 1.4.0 on
+> the reproduction host: `MINIMAX_API_KEY` in the process environment, nothing in
+> `~/.pi/agent/auth.json`), so a server started without the variable is refused
+> on a model the operator's own shell lists. It is **not** a value-shape defect —
+> the declaration was already qualified — and the run did **not** come from an
+> unusual workflow.
+>
+> **Proven**, from the original run's own durable record (event store, streams
+> `run:run-0381b526…`, `task:beads:foreman:foreman-8qge`, `project:foreman`):
+>
+> - The bead was `type: bug`: `TaskCreated` carries `task_type: "bug"` and
+>   `workflow_type: "fix"`. The bundled `fix.yaml` has declared
+>   `task_types: [bug]` since #496 (`b536d771`, 2026-09-15).
+> - `RunStarted.workflow_snapshot` (also on `TaskApproved` and
+>   `ProjectRunReserved`) names workflow `fix`, manifest
+>   `/Users/ldangelo/.foreman/workflows/fix.yaml`, digest `4add29fb36377b36`, and
+>   three phases: `fix` (a `command:` phase with no provider and no model) and
+>   `coderabbit-review` / `repo-rules-review`, each `provider: pi` with
+>   `models: {default: "minimax/MiniMax-M2.7"}`. Every recorded field matches the
+>   bundled `fix.yaml` of `13b1563a` (2026-09-17, the last revision before the
+>   run): the installed copy declared the **qualified** string, not `MiniMax`.
+> - The project `foreman` had no `thread_model` (its stream holds only
+>   `ProjectRegistered` before the run), so the string can only have come from the
+>   phase's own `models.default` — `model_source: :phase_declared` in TRD-007's
+>   vocabulary.
+> - `RunFailed.reason`, 2.9 s after `RunStarted`, with no `phase:`, `worker:` or
+>   `vcs` stream for the run (zero phases started):
+>   `{:provider_model_preflight_failed, [{:phase_model_invalid,
+>   "coderabbit-review", :pi, "minimax/MiniMax-M2.7", {:model_not_found,
+>   "minimax/MiniMax-M2.7"}}, {:phase_model_invalid, "repo-rules-review", :pi,
+>   "minimax/MiniMax-M2.7", {:model_not_found, "minimax/MiniMax-M2.7"}}]}`. The
+>   command phase is absent because it declares neither provider nor model.
+> - The #491 `ModelCatalog`, run against pi 1.4.0: `:ok` for
+>   `minimax/MiniMax-M2.7` with `MINIMAX_API_KEY` in the VM's environment and
+>   `{:error, {:model_not_found, "minimax/MiniMax-M2.7"}}` without it. The matcher
+>   did not refuse this string; the catalog's answer did.
+>
+> **Reproduced** on a scratch server running this branch (TRD-007's recording in
+> place); one variable, `MINIMAX_API_KEY` in the server's environment, separates
+> refusal from pass:
+>
+> - original `fix.yaml`, key absent → refused with the same two phases, `:pi`,
+>   the same string and class, and `model_source: :phase_declared`; zero phases;
+> - the same manifest, key present → preflight passes and the run starts;
+> - current `fix.yaml` plus a project `thread_model` of `minimax/MiniMax-M2.7`:
+>   key absent → same class and string with `model_source:
+>   :project_thread_model`; key present → passes, and the launch line reads
+>   `model="minimax/MiniMax-M2.7" source=project_thread_model`.
+>
+> **Inferred, not proven.** That the 2026-10-12 server lacked `MINIMAX_API_KEY`
+> in its environment. Nothing durable records the server's environment, the pi
+> version, or the catalog's raw answer, and the host no longer has the pi of that
+> day (the only version on record is the 0.84.2 the #491 moduledoc was written
+> against on 2026-09-10; the reproduction ran pi 1.4.0). A pi that did not yet
+> list the model under `minimax` would give the same refusal and is not
+> excluded. The credential mechanism is the only one that reproduced the report.
+>
+> **What this changes.** The shape defects in items 3-4 and the unqualified
+> installed manifests in item 5 are real (the matcher half was repaired by #553,
+> `121a9196`, 2026-10-16; the load-time refusal is TASK-001), but neither
+> explains this run, so "Revised PRD Interpretation" below rests on a superseded
+> premise: its "dominant real defect" claim is not supported by the run that
+> prompted it. The PRD's Context claim that
+> the bead type "cannot be read back from any durable record today" is superseded
+> for the same reason (`TaskCreated.task_type` and `workflow_snapshot` were
+> durable). TASK-005's recording answers *where the string came from*; it cannot
+> say *why the catalog refused it*. Escalated, not implemented here: a
+> `:model_not_found` for a qualified value whose provider has no rows at all in
+> the catalog looks like an unseen credential, yet the failure text points at the
+> manifest or `thread_model`; a later change could report "provider absent from
+> the catalog" apart from "provider listed, model absent".
+
 **The failure is a `models.default` value-shape defect against a column-scoped
 catalog matcher, and the observed run was dispatched from a bead whose
 workflow was an installed runtime copy, not the bundled one.**
+
+*Superseded (TRD-010, 2026-10-27) — see the Corrected block above. The reported
+run's declaration was already qualified, and its workflow was `fix`, whose
+manifest at that time matched the bundled one.*
 
 Chain of evidence, each item independently reproducible:
 
@@ -73,6 +160,12 @@ Chain of evidence, each item independently reproducible:
    The *bundled* workflows in this repo that declare a model use the qualified
    form `minimax/MiniMax-M2.7` (`assess.yaml`, `fix.yaml`, `prd.yaml`,
    `review.yaml`), which verifies `:ok` against the live catalog on this host.
+
+   **Superseded (TRD-010):** the legacy installed manifests do declare `MiniMax`
+   (the ten files named above, dated Aug 4–Sep 5, none with `task_types:` — no
+   bead type reaches them), but the reported run used `fix.yaml`, whose pi
+   phases declare the qualified string. "Verifies `:ok`" held in a shell that
+   carried `MINIMAX_API_KEY`; it does not hold for a process that does not.
 6. Live verification on this host (pi CLI at `~/.local/bin/pi`):
    `pi --list-models MiniMax` returns 3 `minimax` rows — `MiniMax-M2.7`,
    `MiniMax-M2.7-highspeed`, `MiniMax-M3` — so the model exists; rows whose
@@ -80,6 +173,13 @@ Chain of evidence, each item independently reproducible:
    `minimax/MiniMax-M2.7`: **1**. Running the verbatim `parse_result/2` logic
    against that table reproduces `:ok` for `minimax/MiniMax-M2.7`,
    `{:error, {:model_not_found, …}}` for `MiniMax`.
+
+   **Superseded (TRD-010):** true of a shell that holds the credential. With
+   `MINIMAX_API_KEY` removed from the environment the same command lists **0**
+   `minimax` rows on pi 1.4.0 (only `openrouter` rows, whose model ids differ),
+   and the verbatim #491 logic returns `{:error, {:model_not_found,
+   "minimax/MiniMax-M2.7"}}`. The check ran in an environment that cannot show
+   the failure.
 
 **Why the run was dispatched at all:** BeadsWatcher resolves `issue_type` to a
 workflow through `Catalog.type_to_workflow/1`, which reads each manifest's own
@@ -90,6 +190,13 @@ declaration is the *unqualified* shape in item 5. That reconciles the reported
 `minimax/MiniMax-M2.7` string (the bundled/legacy qualified form) with a
 `model_not_found` outcome without needing the model to be genuinely absent.
 
+> **Superseded (TRD-010):** `bug` does map in the bundled set: `fix.yaml` has
+> declared `task_types: [bug]` since #496 (`b536d771`, 2026-09-15), and the run's
+> `TaskCreated` records `task_type: "bug"`, `workflow_type: "fix"`. The run's
+> manifest was the installed `fix.yaml`, whose recorded phases match the bundled
+> `13b1563a` copy and declare the *qualified* string, so there was no unqualified
+> declaration to reconcile with the reported one.
+
 **Confidence:** the matcher's column-scoping defect (items 3-4) and the
 `MiniMax`-vs-`minimax/MiniMax-M2.7` declaration divergence (item 5) are proven
 by code plus live command output. The exact declaration string in
@@ -98,6 +205,15 @@ copy or which `models.default` that run loaded — which is AC-005-1's gap, and
 TASK-006 closes it. The PRD's C2 branch (an unmapped bead type) is real but is
 a *different* symptom (a bead that never produces a run at all) and is scoped
 to TASK-008/TASK-009.
+
+> **Superseded (TRD-010):** the declaration string in run-0381b526… was not
+> inferred, it was recorded: `RunStarted.workflow_snapshot` already carried the
+> workflow name, manifest path, digest and every phase's `provider` and `models`
+> (the same data is on `TaskApproved` and `ProjectRunReserved`). What nothing
+> recorded was the rule that chose the model (TRD-007 now records it), the
+> catalog's raw answer, the server's environment and the pi version. The
+> matcher's column-scoping defect (items 3-4) and the unqualified installed
+> copies (item 5) are proven by code plus live output, but neither is what ran.
 
 ## Revised PRD Interpretation
 
@@ -312,6 +428,14 @@ REQ-009 asks for (correct the cause → re-open the bead → one new run, failed
 history retained) and the "declares `models.default` must be qualified" rule
 where operators author workflows.
 
+> **Forward pointer (2026-10-27, preflight PR 3):** the "re-open the bead" recovery
+> above does NOT re-dispatch (BeadsWatcher dedupes a task that is past `open`, and
+> `task.retry` alone has the watcher replay the original approval through its fixed
+> command id). The path that works is `task.retry` followed by a fresh `task.approve`
+> on `POST /api/commands`; it is documented, with its cost, in `docs/user-guide.md`
+> section 7.2 "Recovering from a preflight failure". The defect is tracked as
+> `foreman-pfta.1`. This task's claims are left as written (point-in-time spec).
+
 ## Master Task List
 
 Task ids are stable across the restructure: TASK-NNN below maps to TRD-NNN for
@@ -455,6 +579,142 @@ TASK-002's unqualified-hit row in the test matrix.
 
 ## Changelog
 
+- 2026-10-27 — TRD-010 / TRD-010-TEST reproduction record. Root Cause corrected
+  in place (original claims kept and marked superseded); task list, scope and
+  `version` unchanged. **Verdict: reproduced** — same failure class
+  (`:provider_model_preflight_failed` / `:model_not_found`), same model string
+  (`minimax/MiniMax-M2.7`) and same two phases, from the original run's own
+  manifest, and the recorded evidence now names the string and the rule that
+  chose it. **The original root cause (a value-shape defect in an unqualified
+  installed copy) is falsified for this run.** The reproduced mechanism is a pi
+  catalog that does not list the provider because the *server's* environment
+  lacks its credential; that the 2026-10-12 server lacked it is inferred, not
+  recorded.
+  - **Host.** macOS 27.0.1 (Darwin 27.0.0, arm64); pi 1.4.0
+    (`/opt/homebrew/bin/pi`, Homebrew `pi-coding-agent` 1.4.0; `~/.local/bin/pi`
+    is a wrapper that execs it); `br` 0.6.0; Elixir 1.20.4 / OTP 28 via devbox;
+    Go 1.27.3; Postgres on :55432. Server: branch `foreman/preflight-pr3` at
+    `c6c179af` plus the then-uncommitted TRD-009 change (committed since as
+    `3f94c569`), `MIX_ENV=dev`. The pi of 2026-10-12 is recorded nowhere (the
+    only version on record is the 0.84.2 the #491 moduledoc was written against
+    on 2026-09-10) and no older pi is installed. In the boot self-check pi
+    printed an extension notice (`bili: rotating stale proxy …`) on stdout ahead
+    of the table.
+  - **Original run** (event store `foreman_eventstore_dev`, read-only):
+    `run-0381b5267615e9673ca0352252f4c709`, task `beads:foreman:foreman-8qge`,
+    `RunStarted` 2026-10-12 15:36:52.844 -05:00, `RunFailed` 15:36:55.790;
+    workflow `fix`, manifest `/Users/ldangelo/.foreman/workflows/fix.yaml`,
+    digest `4add29fb36377b36`; `RunFailed.reason` verbatim:
+    ```text
+    {:provider_model_preflight_failed, [{:phase_model_invalid, "coderabbit-review", :pi, "minimax/MiniMax-M2.7", {:model_not_found, "minimax/MiniMax-M2.7"}}, {:phase_model_invalid, "repo-rules-review", :pi, "minimax/MiniMax-M2.7", {:model_not_found, "minimax/MiniMax-M2.7"}}]}
+    ```
+  - **Method.** One scratch server per credential state; nothing else differs
+    between them.
+    ```sh
+    S=/tmp/preflight-pr3-live   # scratch: repo/, origin.git, bin/gh (fake), bin/pi (test double), workflows/, logs/
+    git init -b main $S/repo && (cd $S/repo && br init --prefix pf)   # plus bare origin.git, initial commit pushed
+    createdb foreman_live_preflight_pr3   # private DB: MIX_ENV=dev mix event_store.create && mix event_store.init
+    env -u MINIMAX_API_KEY devbox run -- bash $S/start.sh   # Cases A and O (key absent)
+    devbox run -- bash $S/start.sh                          # Cases B, O-control, C-pass (key present)
+    #   start.sh: PATH=$S/bin:$PATH DATABASE_URL=postgres://postgres:postgres@localhost:55432/foreman_live_preflight_pr3
+    #   FOREMAN_API_TOKEN=livetoken FOREMAN_START_BEADS_WATCHER=true FOREMAN_HTTP_PORT=4777 MIX_ENV=dev, then
+    #   mix do run --no-start -e 'Application.put_env(:foreman_server, :workflow_root, "/tmp/preflight-pr3-live/workflows"); <boot self-check>' + phx.server
+    export FOREMAN_API_URL=http://127.0.0.1:4777 FOREMAN_API_TOKEN=livetoken   # CLI: go build ./cmd/foreman
+    foreman project create -id pfx -path $S/repo -task-provider beads -task-provider-database-path $S/repo/.beads/beads.db
+    foreman project update --thread-model minimax/MiniMax-M2.7 pfx   # '--clear thread_model pfx' for the original-manifest cases
+    br create -t bug -l foreman-exec -p 2 "<title>" -d "Scratch bead for TRD-010. Reply OK; change nothing."   # BeadsWatcher dispatches
+    foreman run list --project-id pfx; foreman run get <run-id>; foreman run cancel --id <run-id>
+    ```
+    The scratch workflow root holds the bundled `priv/defaults/workflows`
+    (`fix.yaml` pins no model); for Cases O and O-control `fix.yaml` was swapped
+    for `git show 13b1563a:…/fix.yaml` (the Catalog hot-reloads), and
+    `scratch-declared.yaml` (`task_types: [chore]`, one `provider: pi` phase
+    declaring `models.default: minimax/MiniMax-M2.7`) was added for C-pass. Each
+    server printed a self-check from its own VM before starting: key absent →
+    `PF-BOOT MINIMAX_API_KEY_in_server_env=false`, `pi_version=1.4.0` and a
+    catalog query whose only model row is `openrouter  minimax/minimax-m2.7`; key
+    present → `MINIMAX_API_KEY_in_server_env=true` and the row
+    `minimax     MiniMax-M2.7            204.8K   131.1K   yes       no`.
+  - **Case O — original manifest, no project `thread_model`, key absent.**
+    `run-eb5a28dca67559476ca0633b871f2b28` (bead `pf-7vs`, type bug) `failed`
+    after 4.0 s with `phase_ids: []`. `foreman run get` `failure_reason`:
+    ```text
+    {:provider_model_preflight_failed, [%ForemanServer.Workflow.PreflightFailure{phase: "coderabbit-review", provider: :pi, class: :model_not_found, model: "minimax/MiniMax-M2.7", model_source: :phase_declared, detail: nil}, %ForemanServer.Workflow.PreflightFailure{phase: "repo-rules-review", provider: :pi, class: :model_not_found, model: "minimax/MiniMax-M2.7", model_source: :phase_declared, detail: nil}]}
+    ```
+    Server log:
+    ```text
+    [warning] RunExecutor provider/model preflight for run-eb5a28dca67559476ca0633b871f2b28 rejected: phase "coderabbit-review": model_not_found - the :pi model catalog answered that "minimax/MiniMax-M2.7" is not present; the model comes from the phase's models.default; phase "repo-rules-review": model_not_found - the :pi model catalog answered that "minimax/MiniMax-M2.7" is not present; the model comes from the phase's models.default
+    ```
+    `run.workflow_snapshot`: `workflow_name: fix`, `manifest_path:
+    /tmp/preflight-pr3-live/workflows/fix.yaml`, `manifest_digest:
+    b08f72b4507da6e4` (differs from the original's because prompt paths sit under
+    the scratch root). This is the original refusal, phase for phase.
+  - **Case A — current manifest plus project `thread_model`, key absent.**
+    `run-608c31b1d626c91c9818601192b10675` (bead `pf-s1v`, type bug) `failed`
+    after 4.9 s with `phase_ids: []`; three `PreflightFailure` entries — phases
+    `fix`, `coderabbit-review`, `repo-rules-review` — each `provider: :pi,
+    class: :model_not_found, model: "minimax/MiniMax-M2.7", model_source:
+    :project_thread_model, detail: nil`. Log:
+    ```text
+    [warning] RunExecutor provider/model preflight for run-608c31b1d626c91c9818601192b10675 rejected: phase "fix": model_not_found - the :pi model catalog answered that "minimax/MiniMax-M2.7" is not present; the model comes from the project's thread_model; phase "coderabbit-review": model_not_found - … is not present; the model comes from the project's thread_model; phase "repo-rules-review": model_not_found - … is not present; the model comes from the project's thread_model
+    ```
+    Phase `fix` declares no provider; pi is the default provider, so a model
+    resolved from `thread_model` gets it checked too.
+  - **Case B — as A, key present.** `run-ebb55754239f51ca76e9c331602d02e5` (bead
+    `pf-il4`): preflight passed, phase 1 launched, then cancelled:
+    ```text
+    [info] RunExecutor run-ebb55754239f51ca76e9c331602d02e5 phase "fix" model resolution: provider=pi model="minimax/MiniMax-M2.7" source=project_thread_model workflow="fix" manifest="/tmp/preflight-pr3-live/workflows/fix.yaml"
+    ```
+    The agent launch argv was `--mode rpc --model minimax/MiniMax-M2.7`: the
+    model in the log is the model handed to the driver.
+  - **Case O-control — original manifest, no `thread_model`, key present.**
+    `run-4426ec45e9c1ed3d7fbf40a22341fd8c` (bead `pf-a33`): the two phases that
+    failed in Case O passed preflight; phase 1 launched with `phase "fix" model
+    resolution: provider=pi model=nil source=provider_default
+    workflow="fix" manifest="/tmp/preflight-pr3-live/workflows/fix.yaml"`;
+    cancelled before the declared-model phases ran.
+  - **Case C-pass — phase-declared source, key present.**
+    `run-ba20f61d20a12e10282d426691fc8284` (bead `pf-lka`, type chore →
+    `scratch-declared`, project `thread_model` also set):
+    ```text
+    [info] RunExecutor run-ba20f61d20a12e10282d426691fc8284 phase "declared-model-review" model resolution: provider=pi model="minimax/MiniMax-M2.7" source=phase_declared workflow="scratch-declared" manifest="/tmp/preflight-pr3-live/workflows/scratch-declared.yaml"
+    ```
+    Launch argv `--mode rpc --model minimax/MiniMax-M2.7`; cancelled.
+  - **Catalog probes.** `pi --list-models MiniMax`: key present → 4 `minimax`
+    rows (`MiniMax-M2.7`, `MiniMax-M2.7-highspeed`, `MiniMax-M3`,
+    `MiniMax-M3.1-Flash`) plus 7 `openrouter` rows; `env -u MINIMAX_API_KEY` → 0
+    `minimax` rows, the 7 `openrouter minimax/minimax-*` rows only. `env -i
+    PATH=… HOME=… pi --list-models "minimax/MiniMax-M2.7"` → `No models matching
+    "minimax/MiniMax-M2.7"` (exit 0). `~/.pi/agent/auth.json` lists `anthropic`,
+    `openai`, `openai-codex`, `xai` — no `minimax` — so the credential reaches pi
+    only through the environment. The #491 `ModelCatalog` (`git show
+    699d45cc:…/model_catalog.ex`, `Telemetry` stubbed) against the same pi: key
+    present → `check(:pi, "minimax/MiniMax-M2.7")` is `:ok` and
+    `check(:pi, "MiniMax")` is `{:error, {:model_not_found, "MiniMax"}}`; key
+    absent (`env -u` and `env -i`) → `check(:pi, "minimax/MiniMax-M2.7")` is
+    `{:error, {:model_not_found, "minimax/MiniMax-M2.7"}}`.
+  - **Limits and disclosures.** (1) In the key-present cases a `pi` test double
+    sat first on PATH: `--list-models`, `--version` and `--help` pass through to
+    the real pi with the caller's unchanged environment, so the preflight's
+    catalog answer is genuine; any other invocation (an agent launch) logged its
+    argv and idled, so no model was called and "the phase started" means the
+    launch was issued with the logged model, not that a model answered. (2) Each
+    case used a fresh bead, because BeadsWatcher dedupes a bead that already has
+    a task; the refused beads stayed `open` and unmodified. (3) One discarded
+    run, `run-0494a52987ca1a0b3042290b48f66fc1` (key present, current manifest),
+    logged `model=nil source=provider_default` because `foreman project update`
+    derives its command id from the payload, so re-sending `--thread-model
+    minimax/MiniMax-M2.7` after `--clear thread_model` was an idempotent no-op;
+    Case B was redone with `--idempotency-key pf-b1`. (4) Recomputing the digest
+    of `13b1563a`'s `fix.yaml` with today's `canonical_digest`, prompt paths
+    re-rooted at `~/.foreman/workflows`, gave `a2f31c9541147b38`, not the
+    recorded `4add29fb36377b36`; inconclusive (the phase shape and resolver have
+    changed since), so the equivalence rests on the field-for-field phase
+    comparison alone. (5) Cleanup: servers stopped, DB dropped,
+    `~/.foreman/worktrees/pfx` and the four launched runs' `~/.foreman/runs/<run>`
+    directories removed; the scratch tree stays at `/tmp/preflight-pr3-live`
+    (decoded original events, `run get` JSON and full server logs in
+    `evidence/`).
 - 2026-10-15 — v1.0.1 (`trd_refine`, Foreman mode): 4 findings auto-applied —
   (1) TASK-006 reordered to precede TASK-001, since the load-time refusal is the
   breaking change and the inventory is its warning; (2) TASK-001 given the

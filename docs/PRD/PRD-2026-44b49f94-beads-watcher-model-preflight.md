@@ -228,6 +228,12 @@ statement about the workflow, and pushes debugging toward the wrong artifact.
 
 - AC-009-1: Given a run that failed preflight, when the operator corrects the cause, then the documented recovery does not require discarding the bead or the run's recorded history, and states what re-dispatch costs. Auto-resolved under Foreman mode to the recovery the system already supports without new machinery: correct the cause, then re-open the owning bead so dispatch re-enters through the normal path. Re-dispatch costs one new run record and one new branch; the failed run's history is retained and not reused.
 
+> **Forward pointer (2026-10-27, preflight PR 3):** the auto-resolved recovery in AC-009-1
+> ("re-open the owning bead") was verified not to re-dispatch; see
+> `docs/user-guide.md` section 7.2 "Recovering from a preflight failure" for the path that
+> does (`task.retry` then a fresh `task.approve`) and bead `foreman-pfta.1` for the defect.
+> The requirement text is left as written (point-in-time spec).
+
 ### REQ-010: Preflight remains a hard gate
 
 **Priority:** Could

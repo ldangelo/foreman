@@ -1564,9 +1564,10 @@ RunExecutor <run-id> phase "<name>" model resolution: provider=pi model="<model>
 `project_thread_model`, or `provider_default` — neither is set, `model=nil`, and the
 provider's own default applies. To answer "which model did this phase run with, and
 which file decides it" for a past run, grep the server log for the run id and
-`model resolution`; the same workflow name, its digest and the manifest path are on
-the run itself (`foreman run get <run-id>`: `workflow_name`, `workflow_digest`,
-`workflow_snapshot.manifest_path`). A refused run launches no phase, so it has no such
+`model resolution`; the same workflow name, manifest path and digest are on the run
+itself (`foreman run get <run-id>`: `run.workflow_snapshot.workflow_name`,
+`.manifest_path` and `.manifest_digest`; the run's top-level `workflow_name` and
+`workflow_digest` are null). A refused run launches no phase, so it has no such
 line; its record is the `failure_reason` above. None of this adds an event or changes a
 persisted shape.
 
