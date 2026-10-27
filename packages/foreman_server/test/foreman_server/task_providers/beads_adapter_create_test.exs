@@ -217,6 +217,40 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
     end
   end
 
+  describe "create/2 agent_context handling (foreman-yqgvw)" do
+    test "a malformed agent_context string in the br response is a contract error" do
+      register_project!("proj-bad-ctx", "/abs/x.db")
+
+      expect(BrRunnerMock, :cmd, 1, fn _request, _cfg, _opts ->
+        {:ok,
+         %{
+           stdout: Jason.encode!(create_response_payload(%{"agent_context" => "{not json"})),
+           stderr: "",
+           exit_code: 0
+         }}
+      end)
+
+      assert {:error, %ProviderError{context: %{id: "BR_CONTRACT_MISMATCH"}}} =
+               BeadsAdapter.create("proj-bad-ctx", base_attrs())
+    end
+
+    test "an absent agent_context yields no source_repo" do
+      register_project!("proj-no-ctx", "/abs/x.db")
+
+      expect(BrRunnerMock, :cmd, 1, fn _request, _cfg, _opts ->
+        {:ok,
+         %{
+           stdout: Jason.encode!(create_response_payload(%{})),
+           stderr: "",
+           exit_code: 0
+         }}
+      end)
+
+      assert {:ok, %Issue{metadata: %{source_repo: nil}}} =
+               BeadsAdapter.create("proj-no-ctx", base_attrs())
+    end
+  end
+
   describe "create/2 pre-emptive validation" do
     test "rejects empty :title as INVALID_TITLE (non-retryable)" do
       register_project!("proj-no-title", "/abs/x.db")

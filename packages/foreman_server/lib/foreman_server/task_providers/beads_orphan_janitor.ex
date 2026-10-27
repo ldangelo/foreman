@@ -438,6 +438,17 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
   # Returns `{:tagged, tag_map}` when `agent_context.foreman` is present;
   # `:untagged` otherwise. The foreman-tag check is the architectural
   # invariant: the janitor NEVER touches untagged beads.
+  # INTENTIONALLY map-only (foreman-yqgvw). Real `br` 0.6.0 emits `agent_context` as
+  # a JSON STRING, so against real data this matches nothing: every bead is
+  # `:untagged` and the janitor never closes anything. That is load-bearing, not an
+  # oversight: decoding the string would make every Foreman-created bead eligible,
+  # including `Review.BeadSink` gap beads whose tag `task_id` is the synthetic
+  # `review:<kind>:<id>` (no task ever has that id) and which only get a task
+  # (`external_id == bead id`) once `BeadsWatcher` dispatches them. A gap bead not
+  # yet dispatched after `grace_ms` (watcher off, dispatch held) would be closed as
+  # `foreman-orphan:no-task`. Making the janitor live on real data is a product
+  # decision (it needs a gap-bead exemption first); see
+  # docs/lessons/beads-runtime-and-dispatch.md and BeadsOrphanJanitorRealShapeTest.
   defp foreman_tag_classify(parsed) when is_map(parsed) do
     case parsed do
       %{"agent_context" => %{"foreman" => tag}} when is_map(tag) ->

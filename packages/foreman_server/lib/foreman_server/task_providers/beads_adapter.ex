@@ -9,6 +9,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
+  alias ForemanServer.TaskProviders.BeadsAgentContext
   alias ForemanServer.Aggregates.BeadsDbLease
   require Logger
 
@@ -2973,7 +2974,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   defp build_issue_from_create_payload(payload, project_id) do
     with {:ok, id} <- fetch_required_create_string(payload, :id),
          {:ok, title} <- fetch_required_create_string(payload, :title),
-         {:ok, priority} <- parse_create_priority(payload_value(payload, :priority)) do
+         {:ok, priority} <- parse_create_priority(payload_value(payload, :priority)),
+         {:ok, source_repo} <- derive_source_repo(payload) do
       status = to_string(payload_value(payload, :status) || "open")
       description = payload_string(payload, :description)
       now_ms = System.system_time(:millisecond)
@@ -2982,7 +2984,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         foreman_project_id: project_id,
         foreman_created_at_ms: now_ms,
         foreman_origin: "foreman",
-        source_repo: derive_source_repo(payload),
+        source_repo: source_repo,
         issue_type: payload_value(payload, :issue_type) || payload_value(payload, :type),
         labels: extract_labels(payload)
       }
@@ -3040,13 +3042,25 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   defp parse_create_priority(_other), do: {:ok, 2}
 
+  # `br` returns `agent_context` as a JSON string; decode it once via
+  # `BeadsAgentContext`. Absent -> no source_repo; malformed -> contract error.
   defp derive_source_repo(payload) do
-    case Map.get(payload, :agent_context) || Map.get(payload, "agent_context") do
-      %{"foreman" => %{"task_id" => task_id}} when is_binary(task_id) ->
-        "foreman:#{task_id}"
+    case BeadsAgentContext.decode(payload_value(payload, :agent_context)) do
+      {:ok, %{"foreman" => %{"task_id" => task_id}}} when is_binary(task_id) ->
+        {:ok, "foreman:#{task_id}"}
 
-      _ ->
-        nil
+      {:ok, _context_without_foreman_task} ->
+        {:ok, nil}
+
+      :absent ->
+        {:ok, nil}
+
+      {:error, :malformed} ->
+        {:error,
+         build_create_contract_error(
+           "Beads create payload agent_context must be a JSON object.",
+           nil
+         )}
     end
   end
 

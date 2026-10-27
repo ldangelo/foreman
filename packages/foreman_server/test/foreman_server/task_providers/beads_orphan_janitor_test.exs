@@ -508,6 +508,46 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
     end
   end
 
+  describe "run_scan/2 against the real br export shape (foreman-yqgvw)" do
+    # Real `br` 0.6.0 emits `agent_context` as a JSON STRING (issues.jsonl and
+    # `br show --json` alike). The janitor is intentionally map-only: a
+    # Foreman-created bead, including a Review.BeadSink gap bead (synthetic
+    # `review:...` task_id, task only appears once BeadsWatcher dispatches it),
+    # is NOT classified as tagged and is NEVER closed, however old. If this
+    # starts failing the janitor has begun closing undispatched gap beads; see
+    # docs/lessons/beads-runtime-and-dispatch.md before changing it.
+    test "a bead with a string agent_context is untagged and never closed", %{
+      state: state,
+      now_ms: now_ms
+    } do
+      linked_at = DateTime.from_unix!(now_ms - 600_000, :millisecond) |> DateTime.to_iso8601()
+
+      line =
+        Jason.encode!(%{
+          id: "gap-bead-1",
+          title: "gap",
+          agent_context:
+            Jason.encode!(%{
+              foreman: %{
+                task_id: "review:run:r1",
+                command_id: "review:r1:gap:0",
+                origin: "foreman",
+                linked_at: linked_at
+              }
+            })
+        })
+
+      state = put_jsonl(state, [line])
+
+      counters = BeadsOrphanJanitor.run_scan(state, now_ms: now_ms)
+
+      assert counters.lines_untagged == 1
+      assert counters.lines_tagged == 0
+      assert counters.lines_closed == 0
+      refute_received {:complete_called, _, _}
+    end
+  end
+
   # ---------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------
