@@ -2,14 +2,15 @@ defmodule ForemanServer.ProjectionStorePhasePrTest do
   use ForemanServerWeb.ConnCase, async: false
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.{ProjectionStoreReset, ThrowawayProjectionStore}
 
   @phase_pr_url "https://github.com/ldangelo/foreman/pull/501"
 
   setup do
-    ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
+    ProjectionStoreReset.reset!(keep_subscribers: true)
 
     on_exit(fn ->
-      ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
+      ProjectionStoreReset.reset!(keep_subscribers: true)
     end)
 
     :ok
@@ -53,14 +54,16 @@ defmodule ForemanServer.ProjectionStorePhasePrTest do
     run_id = unique_run_id()
     phase_id = "#{run_id}-phase-1"
 
-    assert {{%ArgumentError{message: message}, _stack}, _call} =
-             catch_exit(
-               ProjectionStore.apply_events([phase_pr_event(run_id, phase_id, "created", nil)])
-             )
+    # Crashing the named singleton would restart it with no subscribers and silence the live
+    # Dispatcher (and every other subscriber) for the rest of the run: foreman-0i1s0.
+    assert {%ArgumentError{message: message}, _stack} =
+             ThrowawayProjectionStore.crash_on_apply!([
+               phase_pr_event(run_id, phase_id, "created", nil)
+             ])
 
     assert message =~ "PhasePrRecorded created missing usable pr_url"
 
-    wait_until(fn -> is_pid(Process.whereis(ForemanServer.ProjectionStore)) end, 2_000)
+    assert ProjectionStoreReset.subscribed?(ForemanServer.Workflow.Dispatcher)
   end
 
   test "GET /api/runs/:id includes phase_prs in JSON" do
@@ -110,24 +113,5 @@ defmodule ForemanServer.ProjectionStorePhasePrTest do
         recorded_at: "2026-09-01T00:00:00Z"
       }
     }
-  end
-
-  defp wait_until(fun, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_until(fun, deadline)
-  end
-
-  defp do_wait_until(fun, deadline) do
-    cond do
-      fun.() ->
-        :ok
-
-      System.monotonic_time(:millisecond) >= deadline ->
-        flunk("condition not met before deadline")
-
-      true ->
-        Process.sleep(10)
-        do_wait_until(fun, deadline)
-    end
   end
 end
