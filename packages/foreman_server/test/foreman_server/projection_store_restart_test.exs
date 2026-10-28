@@ -84,15 +84,16 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
     flush_forwarded()
 
     id = register_project()
-    assert_receive {:projection_event, _}
-    drain_events()
+    assert :ok = await_event_mentioning(id, 5_000)
 
     crash_store!()
 
-    # Live-only: no replay, but the next event reaches it.
-    refute_receive {:projection_event, _}, 200
+    # Live-only: no replay of what was committed before the crash, but the next event reaches
+    # it. Both checks look only at events naming THIS test's projects: the store is a
+    # process-wide stream, and another test's leaked executor can emit events at any moment.
+    assert :timeout = await_event_mentioning(id, 200)
     id2 = register_project()
-    assert_receive {:projection_event, _}, 5_000
+    assert :ok = await_event_mentioning(id2, 5_000)
 
     # Replaying: the whole committed log, both projects, came through the restart.
     assert_forwarded_mentioning(id)
@@ -114,11 +115,22 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
     refute ProjectionStoreReset.subscribed?(pid)
   end
 
-  defp drain_events do
+  # Consumes `{:projection_event, _}` messages until one mentions `id` (`:ok`) or `timeout_ms`
+  # elapse (`:timeout`). Events naming other projects are somebody else's and are skipped.
+  defp await_event_mentioning(id, timeout_ms) do
+    await_event_mentioning_until(id, System.monotonic_time(:millisecond) + timeout_ms)
+  end
+
+  defp await_event_mentioning_until(id, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
     receive do
-      {:projection_event, _} -> drain_events()
+      {:projection_event, event} ->
+        if inspect(event) =~ id,
+          do: :ok,
+          else: await_event_mentioning_until(id, deadline)
     after
-      200 -> :ok
+      remaining -> :timeout
     end
   end
 
