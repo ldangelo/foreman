@@ -98,6 +98,69 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     end
   end
 
+  describe "do_reconcile_ambiguous_keys/1 orphaned started keys (foreman-dyppr)" do
+    alias ForemanServer.RunExecutorLiveness
+
+    setup do
+      RunExecutorLiveness.clear_all()
+      on_exit(fn -> RunExecutorLiveness.clear_all() end)
+      :ok
+    end
+
+    defp no_effects(_key), do: true
+
+    test "a started key whose run is not live becomes ambiguous and is then reconciled" do
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {"orphan-1", :started, %{run_id: "run-dead", task_id: "t1"}}
+      )
+
+      BootReconciliation.do_reconcile_ambiguous_keys(&no_effects/1)
+
+      # Marked ambiguous by the orphan step, then picked up by the existing
+      # reconcile path in the same scan (no side effects -> retry, which
+      # leaves the key ambiguous for the retried dispatch to resolve).
+      assert_receive {@ambiguous_event, _, %{skipped: 0, retried: 1}, _}, 5_000
+      assert KeyStore.status("orphan-1") == {:ok, :ambiguous}
+      assert {:ok, %{metadata: %{reason: "orphaned_started_key"}}} = KeyStore.get("orphan-1")
+    end
+
+    test "a started key whose run is live stays started" do
+      :ok = RunExecutorLiveness.record("run-live", self(), :infinity)
+
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {"live-1", :started, %{run_id: "run-live", task_id: "t2"}}
+      )
+
+      BootReconciliation.do_reconcile_ambiguous_keys(&no_effects/1)
+
+      assert_receive {@ambiguous_event, _, %{skipped: 0, retried: 0}, _}, 5_000
+      assert KeyStore.status("live-1") == {:ok, :started}
+    end
+
+    test "a started key without a run_id is left started" do
+      :ets.insert(:foreman_idempotency_keys, {"norun-1", :started, %{}})
+
+      BootReconciliation.do_reconcile_ambiguous_keys(&no_effects/1)
+
+      assert_receive {@ambiguous_event, _, %{retried: 0}, _}, 5_000
+      assert KeyStore.status("norun-1") == {:ok, :started}
+    end
+
+    test "keys of other statuses are untouched by the orphan step" do
+      for {key, status} <- [{"done-1", :completed}, {"fail-1", :failed}] do
+        :ets.insert(:foreman_idempotency_keys, {key, status, %{run_id: "run-dead"}})
+      end
+
+      BootReconciliation.do_reconcile_ambiguous_keys(&no_effects/1)
+
+      assert_receive {@ambiguous_event, _, %{skipped: 0, retried: 0}, _}, 5_000
+      assert KeyStore.status("done-1") == {:ok, :completed}
+      assert KeyStore.status("fail-1") == {:ok, :failed}
+    end
+  end
+
   describe "reconcile_ambiguous_keys/1 (deferral when CommandRouter absent)" do
     test "defers when command_router_ready? returns false" do
       # CommandRouter is a real supervised singleton that the full app

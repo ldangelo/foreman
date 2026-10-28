@@ -26,7 +26,15 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   require Logger
 
-  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.{
+    Aggregate,
+    CommandGateway,
+    CommandRouter,
+    ProjectionStore,
+    RunExecutorLiveness,
+    Telemetry
+  }
+
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
   alias ForemanServer.Idempotency.{CrashRecovery, KeyStore, RestartBackoff}
   alias ForemanServer.Incarnation
@@ -692,6 +700,14 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @doc false
   def do_reconcile_ambiguous_keys(side_effects_check \\ &CrashRecovery.has_no_side_effects?/1) do
+    orphaned = mark_orphaned_started_keys()
+
+    if orphaned > 0 do
+      Logger.warning(
+        "BootReconciliation: #{orphaned} orphaned started idempotency key(s) marked ambiguous"
+      )
+    end
+
     {skipped, retried} =
       :ambiguous
       |> KeyStore.list_by_status()
@@ -712,6 +728,69 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       end)
 
     emit_ambiguous_reconciled(skipped, retried)
+  end
+
+  # A `started` key is only ever written by `HeartbeatLease.acquire/5`, whose
+  # expiry timer lives inside the HeartbeatLease GenServer and dies with the
+  # app. After a restart nothing resolves such a key, so it stays `started`
+  # forever. Turn the orphans into `ambiguous` so the reconcile path below
+  # inspects them.
+  #
+  # A key is an orphan only when its owning run has no executor alive in this
+  # node: `RunExecutorLiveness` is an in-memory table owned by the supervised
+  # app, so an entry (active or expired) means a live executor process in the
+  # current boot is still blocked on the phase. The scan can be re-armed
+  # after a new run has already taken a lease, so `started` alone is not
+  # evidence of orphanhood. Keys without a run_id cannot be attributed to a
+  # run, so they are left untouched and logged.
+  defp mark_orphaned_started_keys do
+    :started
+    |> KeyStore.list_by_status()
+    |> Enum.count(&orphaned_started_key?/1)
+  end
+
+  defp orphaned_started_key?(key) do
+    case KeyStore.get(key) do
+      {:ok, %{status: :started, metadata: metadata}} ->
+        case started_key_run_id(metadata) do
+          {:ok, run_id} -> mark_if_run_not_live(key, run_id)
+          :none -> skip_unattributable_started_key(key)
+        end
+
+      _changed_or_missing ->
+        false
+    end
+  end
+
+  defp started_key_run_id(%{run_id: run_id}) when is_binary(run_id) and run_id != "",
+    do: {:ok, run_id}
+
+  defp started_key_run_id(%{"run_id" => run_id}) when is_binary(run_id) and run_id != "",
+    do: {:ok, run_id}
+
+  defp started_key_run_id(_metadata), do: :none
+
+  defp mark_if_run_not_live(key, run_id) do
+    case RunExecutorLiveness.lookup(run_id, System.system_time(:millisecond)) do
+      :none ->
+        :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+        true
+
+      {:active, _owner, _deadline} ->
+        false
+
+      {:expired, _owner, _deadline} ->
+        false
+    end
+  end
+
+  defp skip_unattributable_started_key(key) do
+    Logger.warning(
+      "BootReconciliation: started idempotency key #{inspect(key)} has no run_id; leaving it started",
+      key: key
+    )
+
+    false
   end
 
   defp emit_ambiguous_reconciled(skipped, retried) do
