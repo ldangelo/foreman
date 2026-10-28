@@ -122,10 +122,13 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   # expiry, which marks the key `ambiguous`. A successful result intentionally overwrites an `ambiguous` left by lease
   # expiry: the outcome is now known.
   defp dispatch_with_lease(%{lease: %{} = lease} = launch) do
-    HeartbeatLease.acquire(lease.key, lease.budget_ms, lease.task_id, launch.run_id)
+    # Liveness is recorded BEFORE the key is marked `started`: boot
+    # reconciliation treats a `started` key whose run has no liveness entry as
+    # an orphan, so the entry must already exist when the key appears.
     RunExecutorLiveness.record(launch.run_id, self(), launch.deadline_ms)
 
     try do
+      HeartbeatLease.acquire(lease.key, lease.budget_ms, lease.task_id, launch.run_id)
       result = dispatch(launch)
       record_outcome(lease.key, result)
       result
