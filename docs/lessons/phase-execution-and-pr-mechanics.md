@@ -756,7 +756,7 @@ error; may have left side effects; the run's failure path owns it) with `KeyStor
 body (an `after` block cannot see the body's bindings), `{:ok, _}` -> `completed`,
 `{:error, _}` -> `failed` (except `:worker_timeout` / `:worker_died_no_result`, where no result was observed: those are `ambiguous`, the status crash recovery inspects), before releasing. A raise/throw/exit out of dispatch also marks the key `failed` and is re-raised with its
 original stacktrace (release cancels the expiry timer, so leaving it `started` would be
-permanent; only a hard process kill is left to lease expiry -> `ambiguous`). A success intentionally overwrites an `ambiguous` left by lease expiry (outcome now
+permanent; only a hard kill of the runner process leaves the lease timer to fire -> `ambiguous`. A server restart kills the timer too and leaves the key `started`, which no boot scan reads: foreman-dyppr). A success intentionally overwrites an `ambiguous` left by lease expiry (outcome now
 known). `CrashRecovery.reconcile/2` returns `{:retry, :previously_failed}` for `:failed`
 without a side-effect check or status change; `BootReconciliation` still scans `:ambiguous`
 only. Lesson: a release/cleanup hook must never encode an outcome it cannot observe.
