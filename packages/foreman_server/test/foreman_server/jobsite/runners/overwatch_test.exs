@@ -94,6 +94,11 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
       {:noreply, state}
     end
 
+    def handle_info(:fail, state) do
+      send(Keyword.fetch!(state.opts, :result_recipient), {:worker_result, {:error, :boom}})
+      {:noreply, state}
+    end
+
     def handle_info(_msg, state), do: {:noreply, state}
   end
 
@@ -134,5 +139,99 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
              Task.await(runner, 10_000)
 
     assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
+  end
+
+  defp start_leased_run do
+    Application.put_env(:foreman_server, :worker_adapter, HeartbeatingWorkerAdapter)
+
+    run_id = "run-overwatch-lease-#{System.unique_integer([:positive])}"
+    key = "lease-test-#{run_id}-1"
+
+    launch = %{
+      run_id: run_id,
+      phase: "jobsite:#{run_id}",
+      phase_index: 1,
+      deadline_ms: System.system_time(:millisecond) + 60_000,
+      timeout_ms: 60_000,
+      activation_timeout_ms: 5_000,
+      lease: %{key: key, budget_ms: 30_000, task_id: "task-lease-test"},
+      driver_opts: fn _remaining_ms -> [] end,
+      launch_opts: [provider: :claude, prompt: "x", prompt_path: "/dev/null"]
+    }
+
+    runner =
+      Task.async(fn ->
+        Runners.Overwatch.run(%Agent{provider: :claude, model: "m"}, "x", nil, launch: launch)
+      end)
+
+    worker = await_worker(run_id)
+    {key, runner, worker}
+  end
+
+  defp await_worker(run_id, attempts \\ 200) do
+    case Process.whereis(:"lease_test_worker_#{run_id}") do
+      nil when attempts > 0 ->
+        Process.sleep(10)
+        await_worker(run_id, attempts - 1)
+
+      nil ->
+        flunk("worker for #{run_id} never activated")
+
+      pid ->
+        pid
+    end
+  end
+
+  test "a failed dispatch leaves its idempotency key failed, not completed" do
+    {key, runner, worker} = start_leased_run()
+    assert {:ok, :started} = ForemanServer.Idempotency.KeyStore.status(key)
+
+    send(worker, :fail)
+
+    assert {:error, %Error{code: :agent_failed}} = Task.await(runner, 10_000)
+    assert {:ok, :failed} = ForemanServer.Idempotency.KeyStore.status(key)
+    assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status(key)
+  end
+
+  test "a successful dispatch overwrites an ambiguous left by lease expiry" do
+    {key, runner, worker} = start_leased_run()
+
+    # Lease expiry marks the key ambiguous while the worker is still running.
+    :ok = ForemanServer.Idempotency.KeyStore.mark_ambiguous(key, "heartbeat_timeout")
+    assert {:ok, :ambiguous} = ForemanServer.Idempotency.KeyStore.status(key)
+
+    send(worker, :finish)
+
+    assert {:ok, %ForemanServer.Jobsite.IterationResult{status: :completed}} =
+             Task.await(runner, 10_000)
+
+    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
+  end
+
+  test "a dispatch that raises leaves its key failed and the exception still propagates" do
+    run_id = "run-overwatch-raise-#{System.unique_integer([:positive])}"
+    key = "lease-test-#{run_id}-1"
+
+    launch = %{
+      run_id: run_id,
+      phase: "jobsite:#{run_id}",
+      phase_index: 1,
+      deadline_ms: System.system_time(:millisecond) + 60_000,
+      timeout_ms: 60_000,
+      activation_timeout_ms: 5_000,
+      lease: %{key: key, budget_ms: 30_000, task_id: "task-lease-test"},
+      driver_opts: fn _remaining_ms -> raise "driver exploded" end,
+      launch_opts: [provider: :claude, prompt: "x", prompt_path: "/dev/null"]
+    }
+
+    assert_raise RuntimeError, "driver exploded", fn ->
+      Runners.Overwatch.run(%Agent{provider: :claude, model: "m"}, "x", nil, launch: launch)
+    end
+
+    assert {:ok, %{status: :failed, metadata: %{reason: reason}}} =
+             ForemanServer.Idempotency.KeyStore.get(key)
+
+    assert reason =~ "driver exploded"
+    assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status(key)
   end
 end

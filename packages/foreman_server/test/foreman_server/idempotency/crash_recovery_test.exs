@@ -24,6 +24,17 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
     assert {:retry, :unknown_state} = ForemanServer.Idempotency.CrashRecovery.reconcile("k4")
   end
 
+  test "failed key -> previously_failed, no side-effect check, status unchanged" do
+    :ok = ForemanServer.Idempotency.KeyStore.mark_failed("k-failed", "boom")
+
+    assert {:retry, :previously_failed} =
+             ForemanServer.Idempotency.CrashRecovery.reconcile("k-failed", fn _ ->
+               flunk("side-effect check must not run for a failed key")
+             end)
+
+    assert {:ok, :failed} = ForemanServer.Idempotency.KeyStore.status("k-failed")
+  end
+
   # --- ambiguous -> side effects check ---
 
   test "ambiguous, legacy key with no metadata -> no_side_effects (safe fallback)" do

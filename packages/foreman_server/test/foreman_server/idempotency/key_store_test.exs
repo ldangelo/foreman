@@ -53,6 +53,17 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       assert {:ok, :ambiguous} = KeyStore.status("k2")
     end
 
+    test "lifecycle started -> failed records the reason" do
+      :ok = KeyStore.mark_started("k2f", %{run_id: "r1"})
+      :ok = KeyStore.mark_failed("k2f", "worker_timeout")
+      assert {:ok, :failed} = KeyStore.status("k2f")
+
+      assert {:ok, %{status: :failed, metadata: %{run_id: "r1", reason: "worker_timeout"}}} =
+               KeyStore.get("k2f")
+
+      assert ["k2f"] = KeyStore.list_by_status(:failed)
+    end
+
     test "status of unknown key is :not_found" do
       assert :not_found = KeyStore.status("unknown")
     end

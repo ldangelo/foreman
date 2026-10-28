@@ -1,6 +1,6 @@
 defmodule ForemanServer.Idempotency.CrashRecovery do
   @moduledoc """
-  Crash recovery reconciliation: completed -> skip; ambiguous -> check side effects before retry.
+  Crash recovery reconciliation: completed -> skip; failed -> retry; ambiguous -> check side effects before retry.
 
   When an ambiguous key has side effects, `reconcile/1,2` returns
   `{:retry, :side_effects_present}` and marks the key `completed` before
@@ -31,12 +31,18 @@ defmodule ForemanServer.Idempotency.CrashRecovery do
     - `{:skip, :already_completed}` — key is completed; skip (no retry)
     - `{:retry, :no_side_effects}` — ambiguous/fresh; no side effects; safe to retry
     - `{:retry, :side_effects_present}` — ambiguous; side effects detected; mark completed, allow retry
+    - `{:retry, :previously_failed}` — key failed with an observed error; retry allowed, no side-effect check, status unchanged
     - `{:retry, :fresh}` — key not found; treat as new
     - `{:retry, :unknown_state}` — unexpected status; allow retry
   """
   @spec reconcile(key :: String.t(), side_effects_check :: (String.t() -> boolean())) ::
           {:skip, :already_completed}
-          | {:retry, :no_side_effects | :side_effects_present | :fresh | :unknown_state}
+          | {:retry,
+             :no_side_effects
+             | :side_effects_present
+             | :previously_failed
+             | :fresh
+             | :unknown_state}
   def reconcile(key, side_effects_check \\ &has_no_side_effects?/1)
 
   def reconcile(key, side_effects_check)
@@ -45,6 +51,12 @@ defmodule ForemanServer.Idempotency.CrashRecovery do
       {:ok, :completed} ->
         Logger.info("CrashRecovery: key=#{key} completed; skipping")
         {:skip, :already_completed}
+
+      {:ok, :failed} ->
+        # Observed error: the run's failure path owns it. No side-effect check
+        # and no status mutation.
+        Logger.info("CrashRecovery: key=#{key} previously failed; retry allowed")
+        {:retry, :previously_failed}
 
       {:ok, :ambiguous} ->
         Logger.warning("CrashRecovery: key=#{key} ambiguous; checking side effects")

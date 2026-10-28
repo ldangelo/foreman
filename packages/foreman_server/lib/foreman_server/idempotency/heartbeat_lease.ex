@@ -72,8 +72,11 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
     do: GenServer.call(__MODULE__, {:renew, key, lease_ms})
 
   @doc """
-  Release a heartbeat lease, marking the key as `completed` in `KeyStore`.
-  Idempotent: if no lease exists for `key`, returns `:not_found`.
+  Release a heartbeat lease: cancel its expiry timer and drop its worker
+  mapping. Cleanup only — it does NOT change the key's `KeyStore` status; the
+  dispatcher records the outcome (`mark_completed/2` or `mark_failed/2`)
+  before releasing, and an unreleased-by-outcome key stays `started`.
+  Always returns `:ok`.
   """
   @spec release(key :: String.t()) :: :ok | :not_found
   def release(key), do: GenServer.call(__MODULE__, {:release, key})
@@ -174,7 +177,6 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
     # Also remove any worker mapping for this key so the Tracker cannot
     # spuriously trigger ambiguity after a clean completion.
     worker_key = worker_key_for_key(state.workers, key)
-    :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
     state = remove_worker_mapping(state, worker_key)
     state = remove_lease(state, key)
     {:reply, :ok, state}
