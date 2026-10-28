@@ -87,13 +87,17 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   # is correct here by construction, for every key present or future,
   # with no special-casing of non-map shapes (e.g. `run_slots`) required.
   defp empty_initial_state(opts, current_state) do
-    subscribers =
+    {subscribers, subscriber_replay} =
       if Keyword.get(opts, :keep_subscribers, true) do
-        Map.get(current_state, :subscribers, %{})
+        {Map.get(current_state, :subscribers, %{}), Map.get(current_state, :subscriber_replay, %{})}
       else
-        %{}
+        {%{}, %{}}
       end
 
-    %{ForemanServer.ProjectionStore.initial_state() | subscribers: subscribers}
+    %{
+      ForemanServer.ProjectionStore.initial_state()
+      | subscribers: subscribers,
+        subscriber_replay: subscriber_replay
+    }
   end
 end

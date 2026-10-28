@@ -628,6 +628,17 @@ must not depend on every subscriber noticing it.
   (restarts the Aggregator, CommandRouter and run executors, and re-fires Dispatcher/boot
   reconciliation side effects for a read-model crash).
 
+**The ledger itself can die too (foreman-z2tld).** A restarted ledger has an empty table, so a
+later store crash would restart the store with no subscribers (Dispatcher alive but deaf). The
+store keeps each subscriber's `replay_existing` flag in its state (`subscriber_replay`), the
+ledger's `init/1` sends a running store `:subscriber_ledger_restarted`, and the store re-puts
+every current subscriber. This also covers subscribes made while the ledger was down (the
+ledger silently dropped them). Known limit: only ONE failure is covered. If the ledger dies
+while the store is itself restarting, the notification is lost and `restore_subscribers/1`
+reads an empty table; closing that needs a table that outlives both processes. Tests that kill
+the ledger/store must pace themselves: the application supervisor gives up after 3 restarts
+in 5s and a kill costs more than one restart (see `projection_store_restart_test.exs`).
+
 <!-- bv-agent-instructions-v3 -->
 
 ---

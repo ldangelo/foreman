@@ -13,7 +13,31 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
     :ok
   end
 
+  # The application supervisor gives up (and takes the app down) after more than 3 restarts
+  # in 5s. A kill costs more than one restart (dependents of the store/ledger restart too), so
+  # allow one kill per window: before each, wait - deterministically - for the previous to age out.
+  @restart_window_ms 5_000
+  @max_kills_in_window 1
+
+  defp await_restart_budget! do
+    now = System.monotonic_time(:millisecond)
+
+    recent =
+      for t <- :persistent_term.get({__MODULE__, :kills}, []),
+          now - t < @restart_window_ms + 250,
+          do: t
+
+    if length(recent) >= @max_kills_in_window do
+      oldest = Enum.min(recent)
+      Process.sleep(max(oldest + @restart_window_ms + 250 - now, 0))
+      await_restart_budget!()
+    else
+      :persistent_term.put({__MODULE__, :kills}, [now | recent])
+    end
+  end
+
   defp crash_store! do
+    await_restart_budget!()
     old = Process.whereis(ProjectionStore)
     ref = Process.monitor(old)
     Process.exit(old, :kill)
@@ -113,6 +137,102 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
 
     crash_store!()
     refute ProjectionStoreReset.subscribed?(pid)
+  end
+
+  defp crash_ledger! do
+    await_restart_budget!()
+    old = Process.whereis(ProjectionStore.SubscriberLedger)
+    ref = Process.monitor(old)
+    Process.exit(old, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^old, :killed}
+    old
+  end
+
+  # Bounded wait (no fixed sleep) until `fun` returns true.
+  defp await_until(fun, tries \\ 250) do
+    cond do
+      fun.() -> :ok
+      tries == 0 -> flunk("condition not reached in time")
+      true -> Process.sleep(20) && await_until(fun, tries - 1)
+    end
+  end
+
+  defp await_ledger_resynced(old_ledger, pid) do
+    await_until(fn ->
+      new = Process.whereis(ProjectionStore.SubscriberLedger)
+
+      is_pid(new) and new != old_ledger and
+        Enum.any?(ProjectionStore.SubscriberLedger.list(), &(&1.pid == pid))
+    end)
+  end
+
+  test "a subscriber survives the ledger being killed and then the store crashing" do
+    :ok = ProjectionStore.subscribe(replay_existing: false)
+    ProjectionStoreReset.assert_subscribed!(ForemanServer.Workflow.Dispatcher)
+
+    old = crash_ledger!()
+    # The store re-puts its live subscribers into the fresh ledger.
+    await_ledger_resynced(old, self())
+
+    assert Enum.any?(
+             ProjectionStore.SubscriberLedger.list(),
+             &(&1.pid == Process.whereis(ForemanServer.Workflow.Dispatcher))
+           )
+
+    crash_store!()
+
+    id = register_project()
+    assert :ok = await_event_mentioning(id, 5_000)
+  end
+
+  test "a replaying subscriber keeps its replay flag through a ledger kill and a store crash" do
+    parent = self()
+
+    replayer =
+      spawn_link(fn ->
+        :ok = ProjectionStore.subscribe(replay_existing: true)
+        send(parent, :replayer_ready)
+        replay_loop(parent)
+      end)
+
+    assert_receive :replayer_ready
+    flush_forwarded()
+
+    id = register_project()
+    assert_forwarded_mentioning(id)
+
+    old = crash_ledger!()
+
+    await_until(fn ->
+      new = Process.whereis(ProjectionStore.SubscriberLedger)
+
+      is_pid(new) and new != old and
+        Enum.any?(
+          ProjectionStore.SubscriberLedger.list(),
+          &(&1.pid == replayer and &1.replay_existing)
+        )
+    end)
+
+    # Drop everything delivered so far: only a replay can bring `id` back after the crash.
+    flush_forwarded()
+    crash_store!()
+
+    id2 = register_project()
+    assert_forwarded_mentioning(id)
+    assert_forwarded_mentioning(id2)
+
+    send(replayer, :stop)
+  end
+
+  test "a subscribe made while the ledger is down reaches the ledger after it restarts" do
+    old = crash_ledger!()
+    # The ledger may already be back; either way the subscriber must end up recorded.
+    :ok = ProjectionStore.subscribe(replay_existing: false)
+    await_ledger_resynced(old, self())
+
+    crash_store!()
+    id = register_project()
+    assert :ok = await_event_mentioning(id, 5_000)
   end
 
   # Consumes `{:projection_event, _}` messages until one mentions `id` (`:ok`) or `timeout_ms`
