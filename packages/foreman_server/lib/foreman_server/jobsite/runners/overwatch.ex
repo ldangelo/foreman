@@ -115,7 +115,6 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   # composite key. Released on every exit path.
   defp dispatch_with_lease(%{lease: %{} = lease} = launch) do
     HeartbeatLease.acquire(lease.key, lease.budget_ms, lease.task_id, launch.run_id)
-    HeartbeatLease.register_worker(launch.run_id, launch.run_id, lease.key)
     RunExecutorLiveness.record(launch.run_id, self(), launch.deadline_ms)
 
     try do
@@ -127,6 +126,11 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   end
 
   defp dispatch_with_lease(launch), do: dispatch(launch)
+
+  defp register_lease_worker(%{lease: %{key: key}, run_id: run_id}, worker_id),
+    do: HeartbeatLease.register_worker(worker_id, run_id, key)
+
+  defp register_lease_worker(_launch, _worker_id), do: :ok
 
   defp dispatch(launch) do
     remaining_ms = remaining_from(launch.deadline_ms)
@@ -162,6 +166,13 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
 
       case Overwatch.start_phase(launch.phase, launch_opts) do
         {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
+          # The Tracker renews a lease by the id the WORKER heartbeats under, which
+          # `start_phase/2` generates (`wkr-...`), not the run id. Registering the
+          # mapping under anything else leaves every heartbeat's `renew/1` a miss, so a
+          # phase outliving the lease TTL (30 s with no phase deadline) expires its own
+          # key to `ambiguous` while the worker is alive and heartbeating.
+          register_lease_worker(launch, worker_id)
+
           # Always enter the wait, even when the budget is exhausted at the
           # receive boundary: a result can already be queued after the worker
           # completed but before the final lifecycle dispatch returned, and

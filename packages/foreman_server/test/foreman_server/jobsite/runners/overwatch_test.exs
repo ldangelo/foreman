@@ -62,4 +62,77 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
 
     assert error.details.timeout_ms == idle_timeout_ms
   end
+
+  defmodule HeartbeatingWorkerAdapter do
+    # Heartbeats under the id the overwatch GENERATES (it arrives in the activate message), the
+    # way `JidoHarnessWorker` does, and delivers its result only when the test says so.
+    use GenServer
+
+    alias ForemanServer.Overwatch.WorkerProtocol
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+    @impl true
+    def init(opts), do: {:ok, %{opts: opts, worker: nil}}
+
+    @impl true
+    def handle_info({:overwatch_activate, worker_id, run_id, parent}, state) do
+      Process.register(self(), :"lease_test_worker_#{run_id}")
+      send(parent, {:overwatch_activated, self()})
+      send(self(), :beat)
+      {:noreply, %{state | worker: {worker_id, run_id}}}
+    end
+
+    def handle_info(:beat, %{worker: {worker_id, run_id}} = state) do
+      _ = WorkerProtocol.emit(:heartbeat, %{worker_id: worker_id, run_id: run_id})
+      Process.send_after(self(), :beat, 20)
+      {:noreply, state}
+    end
+
+    def handle_info(:finish, state) do
+      send(Keyword.fetch!(state.opts, :result_recipient), {:worker_result, {:ok, "done"}})
+      {:noreply, state}
+    end
+
+    def handle_info(_msg, state), do: {:noreply, state}
+  end
+
+  test "a heartbeating worker keeps its phase's idempotency key started past the lease TTL" do
+    Application.put_env(:foreman_server, :worker_adapter, HeartbeatingWorkerAdapter)
+
+    run_id = "run-overwatch-lease-#{System.unique_integer([:positive])}"
+    key = "lease-test-#{run_id}-1"
+    lease_ms = 1_000
+
+    launch = %{
+      run_id: run_id,
+      phase: "jobsite:#{run_id}",
+      phase_index: 1,
+      deadline_ms: System.system_time(:millisecond) + 60_000,
+      timeout_ms: 60_000,
+      activation_timeout_ms: 5_000,
+      lease: %{key: key, budget_ms: lease_ms, task_id: "task-lease-test"},
+      driver_opts: fn _remaining_ms -> [] end,
+      launch_opts: [provider: :claude, prompt: "x", prompt_path: "/dev/null"]
+    }
+
+    runner =
+      Task.async(fn ->
+        Runners.Overwatch.run(%Agent{provider: :claude, model: "m"}, "x", nil, launch: launch)
+      end)
+
+    # Two full lease TTLs of heartbeats later the lease must still be live. Unrenewed it expires
+    # after `lease_ms` and the key is `ambiguous` while the worker is alive.
+    Process.sleep(lease_ms * 2)
+    assert {:ok, :started} = ForemanServer.Idempotency.KeyStore.status(key)
+
+    worker = Process.whereis(:"lease_test_worker_#{run_id}")
+    assert is_pid(worker)
+    send(worker, :finish)
+
+    assert {:ok, %ForemanServer.Jobsite.IterationResult{status: :completed}} =
+             Task.await(runner, 10_000)
+
+    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
+  end
 end
