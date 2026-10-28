@@ -2,7 +2,7 @@ defmodule ForemanServer.Idempotency.IdempotencyKey do
   @moduledoc """
   Ecto schema for durable idempotency key records.
   Each record tracks a `{workflow}-{taskId}-{step}` key with status
-  {started, completed, ambiguous} and associated metadata.
+  {started, completed, ambiguous, failed} and associated metadata.
 
   TRD-2026-4212be7e / RTE-T001 / TRD-075.
   Extends the TRD-014 idempotency key contract (REQ-017, REQ-026).
@@ -11,7 +11,7 @@ defmodule ForemanServer.Idempotency.IdempotencyKey do
   import Ecto.Changeset
 
   @primary_key {:key, :string, autogenerate: false}
-  @statuses [:started, :completed, :ambiguous]
+  @statuses [:started, :completed, :ambiguous, :failed]
 
   schema "idempotency_keys" do
     field(:status, Ecto.Enum, values: @statuses)
@@ -21,7 +21,7 @@ defmodule ForemanServer.Idempotency.IdempotencyKey do
 
   @type t :: %__MODULE__{
           key: String.t(),
-          status: :started | :completed | :ambiguous,
+          status: :started | :completed | :ambiguous | :failed,
           metadata: map(),
           inserted_at: DateTime.t()
         }

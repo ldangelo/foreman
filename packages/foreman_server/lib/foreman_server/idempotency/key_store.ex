@@ -1,6 +1,13 @@
 defmodule ForemanServer.Idempotency.KeyStore do
   @moduledoc """
-  Durable idempotency key records with status {started, completed, ambiguous}.
+  Durable idempotency key records with status {started, completed, ambiguous, failed}.
+
+  - `started`: phase in flight (lease live).
+  - `completed`: phase finished successfully.
+  - `ambiguous`: outcome unknown (lease expired / worker died); crash recovery
+    inspects side effects before retry.
+  - `failed`: phase ended in an observed error and may have left side effects;
+    its run's failure path owns it. Crash recovery does not re-inspect it.
 
   Uses `ForemanServer.Agents.JidoCheckpointStore.Repo` as the backing
   Postgres store when the repo is configured (production). Falls back to
@@ -61,6 +68,15 @@ defmodule ForemanServer.Idempotency.KeyStore do
   """
   def mark_ambiguous(key, reason \\ "timeout") do
     GenServer.call(__MODULE__, {:record, key, :ambiguous, %{reason: reason}})
+  end
+
+  @doc """
+  Mark an idempotency key as failed with a reason (default: "failed").
+  The phase ended in an observed error and may have left side effects; the
+  run's failure path owns it. Returns `:ok` on success.
+  """
+  def mark_failed(key, reason \\ "failed") do
+    GenServer.call(__MODULE__, {:record, key, :failed, %{reason: reason}})
   end
 
   @doc """

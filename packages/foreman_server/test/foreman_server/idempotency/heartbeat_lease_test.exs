@@ -8,7 +8,7 @@ defmodule ForemanServer.Idempotency.HeartbeatLeaseTest do
     assert is_binary(lease.lease_id)
   end
 
-  test "release marks completed" do
+  test "release is cleanup only: drops the lease and leaves the key status untouched" do
     {:ok, _pid} = ForemanServer.Idempotency.HeartbeatLease.ensure_started()
     {:ok, _pid2} = ForemanServer.Idempotency.KeyStore.ensure_started()
     {:ok, _lease} = ForemanServer.Idempotency.HeartbeatLease.acquire("k2", 60_000)
@@ -20,8 +20,8 @@ defmodule ForemanServer.Idempotency.HeartbeatLeaseTest do
 
     # HeartbeatLease lease is removed
     assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status("k2")
-    # KeyStore key transitions to completed so crash-recovery skips side-effect inspection
-    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status("k2")
+    # The dispatcher owns the outcome; release must not decide completed vs failed.
+    assert {:ok, :started} = ForemanServer.Idempotency.KeyStore.status("k2")
   end
 
   test "status of unknown key is :not_found" do

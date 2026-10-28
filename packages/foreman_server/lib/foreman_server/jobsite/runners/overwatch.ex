@@ -69,7 +69,7 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
 
   @behaviour ForemanServer.Jobsite.Runner
 
-  alias ForemanServer.Idempotency.HeartbeatLease
+  alias ForemanServer.Idempotency.{HeartbeatLease, KeyStore}
   alias ForemanServer.Jobsite.{Error, IterationResult}
   alias ForemanServer.Overwatch
   alias ForemanServer.RunExecutorLiveness
@@ -109,16 +109,30 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   end
 
   # TRD-076/077: the heartbeat lease keeps the idempotency key `started` (or
-  # moves it to `ambiguous` on expiry) whether the agent completes, crashes
-  # or hangs, and `task_id`/`run_id` ride in KeyStore metadata so
+  # moves it to `ambiguous` on expiry) while the agent runs, and
+  # `task_id`/`run_id` ride in KeyStore metadata so
   # `CrashRecovery.has_no_side_effects?` can look them up without parsing the
-  # composite key. Released on every exit path.
+  # composite key. The OUTCOME is recorded here, before the lease is released:
+  # `{:ok, _}` -> `completed`, `{:error, _}` -> `failed`. A raise/throw/exit
+  # out of `dispatch/1` is a known failure too: the key is marked `failed` and
+  # the exception is re-raised with its original stacktrace, so the run's
+  # failure path still sees the crash. `release/1` is cleanup only and runs on
+  # every exit; it cancels the expiry timer, so only a hard kill of this
+  # process (the `after` never runs, the timer survives) is left to lease
+  # expiry, which marks the key `ambiguous`. A successful result intentionally overwrites an `ambiguous` left by lease
+  # expiry: the outcome is now known.
   defp dispatch_with_lease(%{lease: %{} = lease} = launch) do
     HeartbeatLease.acquire(lease.key, lease.budget_ms, lease.task_id, launch.run_id)
     RunExecutorLiveness.record(launch.run_id, self(), launch.deadline_ms)
 
     try do
-      dispatch(launch)
+      result = dispatch(launch)
+      record_outcome(lease.key, result)
+      result
+    catch
+      kind, reason ->
+        :ok = KeyStore.mark_failed(lease.key, Exception.format_banner(kind, reason))
+        :erlang.raise(kind, reason, __STACKTRACE__)
     after
       HeartbeatLease.release(lease.key)
       RunExecutorLiveness.clear(launch.run_id, self())
@@ -126,6 +140,11 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   end
 
   defp dispatch_with_lease(launch), do: dispatch(launch)
+
+  defp record_outcome(key, {:ok, _output}), do: :ok = KeyStore.mark_completed(key)
+
+  defp record_outcome(key, {:error, reason}),
+    do: :ok = KeyStore.mark_failed(key, inspect(reason))
 
   defp register_lease_worker(%{lease: %{key: key}, run_id: run_id}, worker_id),
     do: HeartbeatLease.register_worker(worker_id, run_id, key)

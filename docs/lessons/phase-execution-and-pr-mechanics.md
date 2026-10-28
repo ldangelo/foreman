@@ -745,3 +745,18 @@ raise), so that server would not bind the session.
   (`RunWorktreeRetained{run_id, repo_id, path, reason, at}`), folded into the run projection's
   `retained_worktrees`, and logs a warning with the path. It does not fail the run: cleanup
   runs after the work was proposed.
+
+## Failed dispatch left its idempotency key `completed` (foreman-vmmxk)
+
+`HeartbeatLease.release/1` unconditionally called `KeyStore.mark_completed/1`, and
+`Runners.Overwatch.dispatch_with_lease/1` released from an `after` block, so a dispatch that
+returned `{:error, _}` was recorded as `completed`. Fix: new key status `:failed` (observed
+error; may have left side effects; the run's failure path owns it) with `KeyStore.mark_failed/2`;
+`release/1` is now cleanup only; `dispatch_with_lease/1` records the outcome inside the `try`
+body (an `after` block cannot see the body's bindings), `{:ok, _}` -> `completed`,
+`{:error, _}` -> `failed`, before releasing. A raise/throw/exit out of dispatch also marks the key `failed` and is re-raised with its
+original stacktrace (release cancels the expiry timer, so leaving it `started` would be
+permanent; only a hard process kill is left to lease expiry -> `ambiguous`). A success intentionally overwrites an `ambiguous` left by lease expiry (outcome now
+known). `CrashRecovery.reconcile/2` returns `{:retry, :previously_failed}` for `:failed`
+without a side-effect check or status change; `BootReconciliation` still scans `:ambiguous`
+only. Lesson: a release/cleanup hook must never encode an outcome it cannot observe.
