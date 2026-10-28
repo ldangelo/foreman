@@ -193,6 +193,18 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
     assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status(key)
   end
 
+  test "a worker that dies without a result leaves its key ambiguous: the outcome is unknown" do
+    {key, runner, worker} = start_leased_run()
+
+    Process.exit(worker, :kill)
+
+    assert {:error, %Error{details: %{reason: :worker_died_no_result}}} =
+             Task.await(runner, 10_000)
+
+    assert {:ok, %{status: :ambiguous, metadata: %{reason: "worker_died_no_result"}}} =
+             ForemanServer.Idempotency.KeyStore.get(key)
+  end
+
   test "a successful dispatch overwrites an ambiguous left by lease expiry" do
     {key, runner, worker} = start_leased_run()
 
