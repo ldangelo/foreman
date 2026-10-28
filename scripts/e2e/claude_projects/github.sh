@@ -560,6 +560,18 @@ gh_restore_repo() {
     && note "scratch repo main restored to $GH_BASE_SHA" || note "WARNING: could not restore main of $GH_REPO"
   GH_BASE_SHA=""
   if [ -n "${GH_BRANCH:-}" ]; then gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$GH_BRANCH" >/dev/null 2>&1; fi
+  # Foreman can open PRs the harness never asked for: the auto-review of a finished run files a gap bead
+  # and the beads watcher dispatches it as a run of its own, which opens its own PR (run 2026-10-28: PR #3,
+  # "Run the test suite and record the result"). gh_prepare refuses a repository with an open PR, so one
+  # left behind failed the next run before it started. The repository had no open PR when this run began,
+  # so every PR still open now is this run's: close it and drop every foreman/* branch.
+  for pr in $(gh pr list -R "$GH_REPO" --state open --json number -q '.[].number' 2>/dev/null); do
+    gh pr close "$pr" -R "$GH_REPO" --delete-branch >/dev/null 2>&1 \
+      && note "closed PR #$pr left open by this run on $GH_REPO" || note "WARNING: could not close PR #$pr on $GH_REPO"
+  done
+  for ref in $(gh api "repos/$GH_REPO/git/matching-refs/heads/foreman/" -q '.[].ref' 2>/dev/null); do
+    gh api -X DELETE "repos/$GH_REPO/git/$ref" >/dev/null 2>&1
+  done
 }
 
 step_github() {
