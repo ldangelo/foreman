@@ -185,6 +185,45 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
     assert :ok = await_event_mentioning(id, 5_000)
   end
 
+  test "a replaying subscriber keeps its replay flag through a ledger kill and a store crash" do
+    parent = self()
+
+    replayer =
+      spawn_link(fn ->
+        :ok = ProjectionStore.subscribe(replay_existing: true)
+        send(parent, :replayer_ready)
+        replay_loop(parent)
+      end)
+
+    assert_receive :replayer_ready
+    flush_forwarded()
+
+    id = register_project()
+    assert_forwarded_mentioning(id)
+
+    old = crash_ledger!()
+
+    await_until(fn ->
+      new = Process.whereis(ProjectionStore.SubscriberLedger)
+
+      is_pid(new) and new != old and
+        Enum.any?(
+          ProjectionStore.SubscriberLedger.list(),
+          &(&1.pid == replayer and &1.replay_existing)
+        )
+    end)
+
+    # Drop everything delivered so far: only a replay can bring `id` back after the crash.
+    flush_forwarded()
+    crash_store!()
+
+    id2 = register_project()
+    assert_forwarded_mentioning(id)
+    assert_forwarded_mentioning(id2)
+
+    send(replayer, :stop)
+  end
+
   test "a subscribe made while the ledger is down reaches the ledger after it restarts" do
     old = crash_ledger!()
     # The ledger may already be back; either way the subscriber must end up recorded.
