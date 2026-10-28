@@ -202,6 +202,7 @@ cleanup() {
     ( evidence_keep "$cl_rc" ) || out "   evidence: keeping it failed (status $?); the teardown goes on"
   fi
   stop_server
+  if type gh_sweep_strays >/dev/null 2>&1; then gh_sweep_strays; fi
   stop_pid "$HOOK_PID"
   sweep_strays
   if [ -f "$WORK/.e2e-claude-projects" ]; then
