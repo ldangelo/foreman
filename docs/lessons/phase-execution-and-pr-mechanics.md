@@ -754,7 +754,7 @@ returned `{:error, _}` was recorded as `completed`. Fix: new key status `:failed
 error; may have left side effects; the run's failure path owns it) with `KeyStore.mark_failed/2`;
 `release/1` is now cleanup only; `dispatch_with_lease/1` records the outcome inside the `try`
 body (an `after` block cannot see the body's bindings), `{:ok, _}` -> `completed`,
-`{:error, _}` -> `failed`, before releasing. A raise/throw/exit out of dispatch also marks the key `failed` and is re-raised with its
+`{:error, _}` -> `failed` (except `:worker_timeout` / `:worker_died_no_result`, where no result was observed: those are `ambiguous`, the status crash recovery inspects), before releasing. A raise/throw/exit out of dispatch also marks the key `failed` and is re-raised with its
 original stacktrace (release cancels the expiry timer, so leaving it `started` would be
 permanent; only a hard process kill is left to lease expiry -> `ambiguous`). A success intentionally overwrites an `ambiguous` left by lease expiry (outcome now
 known). `CrashRecovery.reconcile/2` returns `{:retry, :previously_failed}` for `:failed`

@@ -143,6 +143,12 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
 
   defp record_outcome(key, {:ok, _output}), do: :ok = KeyStore.mark_completed(key)
 
+  # No result was observed for these two: the worker may still have run to completion or left side
+  # effects, so the outcome is unknown, not failed. `ambiguous` is what crash recovery inspects.
+  defp record_outcome(key, {:error, reason})
+       when reason in [:worker_timeout, :worker_died_no_result],
+       do: :ok = KeyStore.mark_ambiguous(key, Atom.to_string(reason))
+
   defp record_outcome(key, {:error, reason}),
     do: :ok = KeyStore.mark_failed(key, inspect(reason))
 
