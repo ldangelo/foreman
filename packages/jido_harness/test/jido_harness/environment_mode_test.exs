@@ -215,7 +215,12 @@ defmodule Jido.Harness.EnvironmentModeTest do
     put_ambient_credentials()
 
     zai_overlay = capture_managed_turn_spec(:zai, %{env_mode: :overlay})
-    assert zai_overlay.env["ANTHROPIC_AUTH_TOKEN"] == "ambient-zai"
+    # foreman-2sz3o: this assertion failed once in CI (nil, not "ambient-zai") and never reproduced
+    # locally. The message records what decides it, so the next occurrence names the cause: the
+    # process env at assertion time, the whole captured spec env, and anything left in the mailbox.
+    assert zai_overlay.env["ANTHROPIC_AUTH_TOKEN"] == "ambient-zai",
+           "foreman-2sz3o: ZAI_API_KEY now=#{inspect(System.get_env("ZAI_API_KEY"))} " <>
+             "spec env=#{inspect(zai_overlay.env)} mailbox=#{inspect(Process.info(self(), :messages))}"
 
     kimi_overlay = capture_managed_turn_spec(:kimi, %{env_mode: :overlay})
     assert kimi_overlay.env["KIMI_MODEL_NAME"] == "ambient-kimi-model"
