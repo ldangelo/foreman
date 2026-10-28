@@ -12,6 +12,10 @@ defmodule ForemanServer.ProjectionStore.SubscriberLedger do
   a public ETS table of `{subscriber_pid, replay_existing?}`. The store writes to it on
   `subscribe` and reads it back in `init/1`, so subscribers never have to notice a store
   restart. Entries whose process died are dropped on read.
+
+  If the *ledger* dies instead, the supervisor restarts it with an empty table. The store keeps
+  its current subscribers (and replay flags) in its own state, so `init/1` here tells a running
+  store `:subscriber_ledger_restarted` and the store re-puts every subscriber (foreman-z2tld).
   """
 
   use GenServer
@@ -65,6 +69,15 @@ defmodule ForemanServer.ProjectionStore.SubscriberLedger do
   @impl true
   def init(:ok) do
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+
+    # A restarted ledger has an empty table; the live store knows its current subscribers and
+    # writes them back (foreman-z2tld). At first boot the store is not up yet: nothing to do.
+    # Limitation: this covers ONE failure (ledger dies, store alive). If the ledger dies while the
+    # store is itself restarting, this message is lost and the store's `restore_subscribers/1`
+    # read an empty table; closing that needs a table that outlives both processes (out of scope).
+    if store = Process.whereis(ForemanServer.ProjectionStore),
+      do: send(store, :subscriber_ledger_restarted)
+
     {:ok, :ok}
   end
 end

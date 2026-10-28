@@ -1479,6 +1479,7 @@ defmodule ForemanServer.ProjectionStore do
         new_state =
           rebuilt_state
           |> Map.put(:subscribers, state.subscribers)
+          |> Map.put(:subscriber_replay, state.subscriber_replay)
           |> broadcast_events(recovered_events)
 
         {:reply, :ok, new_state}
@@ -1559,9 +1560,19 @@ defmodule ForemanServer.ProjectionStore do
           {ref, Map.put(state.subscribers, pid, ref), true}
       end
 
+    replay_existing = Keyword.get(opts, :replay_existing, false)
+    # Sticky once true, mirroring `SubscriberLedger.put/2`.
+    sticky_replay = replay_existing or Map.get(state.subscriber_replay, pid, false)
+
     Process.put(:projection_subscribers, subscribers)
-    state = %{state | subscribers: subscribers}
-    if singleton?(), do: SubscriberLedger.put(pid, Keyword.get(opts, :replay_existing, false))
+
+    state = %{
+      state
+      | subscribers: subscribers,
+        subscriber_replay: Map.put(state.subscriber_replay, pid, sticky_replay)
+    }
+
+    if singleton?(), do: SubscriberLedger.put(pid, replay_existing)
 
     if Keyword.get(opts, :replay_existing, false) do
       case EventStore.read_all_streams_forward(0, 99_999_999) do
@@ -1575,7 +1586,13 @@ defmodule ForemanServer.ProjectionStore do
             if singleton?(), do: SubscriberLedger.delete(pid)
             remaining = Map.delete(subscribers, pid)
             Process.put(:projection_subscribers, remaining)
-            {:reply, {:error, reason}, %{state | subscribers: remaining}}
+
+            {:reply, {:error, reason},
+             %{
+               state
+               | subscribers: remaining,
+                 subscriber_replay: Map.delete(state.subscriber_replay, pid)
+             }}
           else
             {:reply, {:error, reason}, state}
           end
@@ -1947,7 +1964,26 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     if singleton?(), do: SubscriberLedger.delete(pid)
-    {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+
+    {:noreply,
+     %{
+       state
+       | subscribers: Map.delete(state.subscribers, pid),
+         subscriber_replay: Map.delete(state.subscriber_replay, pid)
+     }}
+  end
+
+  # The ledger process (re)started with an empty table: this store is the source of truth for
+  # its current subscribers, so write them all back (foreman-z2tld). Also covers subscribes
+  # that happened while the ledger was down and were dropped by `SubscriberLedger.put/2`.
+  @impl true
+  def handle_info(:subscriber_ledger_restarted, state) do
+    if singleton?() do
+      for {pid, replay_existing} <- state.subscriber_replay,
+          do: SubscriberLedger.put(pid, replay_existing)
+    end
+
+    {:noreply, state}
   end
 
   # Only the named singleton keeps a durable subscriber ledger; a throwaway store started with
@@ -1976,7 +2012,11 @@ defmodule ForemanServer.ProjectionStore do
           end
       end
 
-      %{state | subscribers: subscribers}
+      %{
+        state
+        | subscribers: subscribers,
+          subscriber_replay: Map.new(entries, &{&1.pid, &1.replay_existing})
+      }
     else
       state
     end
@@ -2055,6 +2095,7 @@ defmodule ForemanServer.ProjectionStore do
       run_logs: %{},
       scheduler_intents: %{},
       subscribers: %{},
+      subscriber_replay: %{},
       project_active_runs: %{},
       project_thread_days: %{},
       project_deferrals: %{},
