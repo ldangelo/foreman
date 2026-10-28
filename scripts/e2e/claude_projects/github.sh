@@ -424,6 +424,27 @@ gh_stage_review() {
     fail "no commit addressing the review comment within 900s"; return 1
   fi
   gh_wait 300 "ci green" gh_ci_is success && pass "CI green after addressing comments" || fail "CI not green after addressing comments"
+  # The agent's fix commit does not resolve the thread: GitHub keeps it unresolved until a reviewer
+  # does, and since foreman-v8wqe (#647) an unresolved review thread keeps the PR's thread in Waiting
+  # on you (reason review_threads). This stage used to leave the thread open and stage 8i then expected
+  # Ready for review, which the contract no longer gives (run 2026-10-28: 8i FAIL with review_threads).
+  # So assert the held state, resolve the thread the way the reviewer would, and assert the release.
+  if gh_wait_card "$GH_THREAD" '.group == "waiting_on_you" and .reason == "review_threads"' 120; then
+    pass "Overview: Waiting on you for reason review_threads while the thread is unresolved: $(gh_card_line "$GH_CARD")"
+  else
+    fail "an unresolved review thread did not hold the thread in Waiting on you: $(gh_card_line "$GH_CARD")"
+  fi
+  thread_id=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:20){nodes{id isResolved}}}}}' -f o="${GH_REPO%%/*}" -f r="${GH_REPO##*/}" -F n="$GH_PR" -q '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)][0].id' 2>/dev/null)
+  if [ -n "$thread_id" ] && gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t="$thread_id" >"$WORK/resolve-thread.out" 2>&1; then
+    pass "the reviewer resolved the review thread on GitHub"
+    if gh_wait_card "$GH_THREAD" '.group == "ready_for_review"' 420; then
+      pass "Overview: Ready for review once the review thread is resolved: $(gh_card_line "$GH_CARD")"
+    else
+      fail "the thread stayed out of Ready for review after the review thread was resolved: $(gh_card_line "$GH_CARD")"
+    fi
+  else
+    fail "could not resolve the review thread (id '${thread_id:-none}'): $(cut -c1-300 "$WORK/resolve-thread.out" 2>/dev/null)"
+  fi
   return 0
 }
 
