@@ -114,4 +114,8 @@ packages/*/deps/**/*.credo.exs
 # .ensemble/local-ci-runs/<sha> and keeps a failing step's full output in
 # .ensemble/local-ci-runs/logs. Machine-local, and a nested clone must never be added.
 /.ensemble/local-ci-runs/
+# Ensemble tooling scratch, machine-local: the merge skill's per-run state and the
+# review cycle's report (committing it would move the head it describes).
+/.ensemble/state/
+/.ensemble/pr-review/
 *.coverdata

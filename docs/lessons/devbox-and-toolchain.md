@@ -261,8 +261,9 @@ and making `ensemble/local-ci` a required check is a separate owner step (`RUNBO
 
 It covers what `main` requires and a little more: `foreman_server` (compile with warnings as errors, format, credo, doctor and
 the four `mix test --partitions 4` legs, each on a fresh database of its own throwaway `postgres` container), `jido_harness`
-(`mix quality`, `mix test`) and `foreman_cli` (gofmt, vet, build, test), plus `changed-code.sh --self-test` and
-`ever-shipped-names.sh`. A step checks the devbox Elixir/OTP and the `br` on PATH against the pins in `ci.yml`.
+(`mix quality`, `mix test`) and `foreman_cli` (gofmt, vet, build, test), plus `changed-code.sh --self-test`. It does not run
+`ever-shipped-names.sh`: that check reads `git log --all`, which in the gate's clone includes the maintainer's local branches,
+so it can fail for names GitHub never saw; hosted CI keeps running it. A step checks the devbox Elixir/OTP and the `br` on PATH against the pins in `ci.yml`.
 
 Try a head without posting anything (`config` and `run` never post; do not use `gate` or `post` for a trial):
 

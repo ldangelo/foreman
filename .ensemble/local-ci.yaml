@@ -23,7 +23,6 @@ workflows:
         matrix:
           node-version: [22]
       - id: foreman-server-tests
-      - id: ever-shipped-names
       - id: jido-harness
       - id: foreman-cli
 
@@ -33,6 +32,11 @@ excluded:
     reason: >-
       Aggregates the hosted results of the four partition legs (needs.*.result), which only exist on GitHub. The gate's
       verdict already requires every partition step and every other step to pass, which is this job's condition.
+  - workflow: .github/workflows/ci.yml
+    job: ever-shipped-names
+    reason: >-
+      Not a required check, and it re-derives names from `git log --all`. The gate's clone carries the maintainer's local
+      branches, so a local-only branch could fail the gate for a name GitHub has never seen. Hosted CI still runs it.
 
 # TRUSTED COMMANDS, run in this order. Elixir 1.20.4 on OTP 28 comes from devbox (`devbox run -- bash -c '...'`, with no
 # `$` inside the quoted string: devbox expands it); `go`, `br` and `docker` come from the maintainer's PATH. A step gets
@@ -44,10 +48,7 @@ steps:
   - name: changed-code-self-test
     cmd: scripts/ci/changed-code.sh --self-test
 
-  - name: ever-shipped-names
-    cmd: |
-      scripts/ci/ever-shipped-names.sh --self-test
-      scripts/ci/ever-shipped-names.sh
+  # `ever-shipped-names` is deliberately NOT mirrored: see `excluded` below.
 
   # Hosted CI never runs this as a check: it is an echo today. Mirrored word for word so that the day it becomes a real
   # check the step text changes and the gate refuses until this file is updated.
