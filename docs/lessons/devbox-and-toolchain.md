@@ -248,6 +248,45 @@ open for the 5 s kill grace. There is no process group to signal instead: erlang
 gives the child none and macOS has no `setsid` (the same limit as `Jobsite.Git`); a child forked
 after the snapshot can survive.
 
+### Local CI gate (`.ensemble/local-ci.yaml`)
+
+The ensemble `local-ci-gate` skill attests a PR head from the maintainer's machine, so `ensemble-pr-merge` need not wait for
+hosted CI. It clones the head into `.ensemble/local-ci-runs/<sha>` (gitignored), runs the trusted commands of
+`.ensemble/local-ci.yaml` there and only then posts the status `ensemble/local-ci`. The file is read from the PR's **base** ref
+only: a PR that edits it, or a `ci.yml` step it mirrors, is graded by the previous copy and the change applies after it merges,
+so change a mirrored `ci.yml` step in two PRs (the config first, so that it accepts the new text, then `ci.yml`). A `ci.yml`
+step of an approved job that is not word for word a trusted command, mapped under `equivalents` or listed under
+`excluded_steps` fails the gate as unmirrored. Branch protection is unchanged: `main` still requires the three hosted contexts,
+and making `ensemble/local-ci` a required check is a separate owner step (`RUNBOOK.md` of the skill).
+
+It covers what `main` requires and a little more: `foreman_server` (compile with warnings as errors, format, credo, doctor and
+the four `mix test --partitions 4` legs, each on a fresh database of its own throwaway `postgres` container), `jido_harness`
+(`mix quality`, `mix test`) and `foreman_cli` (gofmt, vet, build, test), plus `changed-code.sh --self-test` and
+`ever-shipped-names.sh`. A step checks the devbox Elixir/OTP and the `br` on PATH against the pins in `ci.yml`.
+
+Try a head without posting anything (`config` and `run` never post; do not use `gate` or `post` for a trial):
+
+```bash
+git fetch origin main
+printf '{"repoRoot":"%s","headSha":"%s","baseRef":"origin/main"}' "$PWD" "$(git rev-parse HEAD)" | node "$LOCAL_CI_CLI" run
+```
+
+`LOCAL_CI_CLI` is `vendor/lib/local-ci-cli.js` of the installed ensemble plugin. A run takes about 12 minutes and is cold every
+time (scratch HOME: hex/rebar, deps, `_build` and the dialyzer PLTs are rebuilt). A failing step's full output is
+kept in `.ensemble/local-ci-runs/logs/`. A change to the config cannot be graded by itself: commit it, point a scratch
+remote-tracking ref at that commit (`git update-ref refs/remotes/origin/localci-scratch <sha>`), run with that `baseRef` and a
+descendant as `headSha`, then delete the ref. A killed run leaves its container: `docker rm -f foreman-localci-pg-<sha12>`.
+
+Limits of the runner, not of Foreman:
+
+- It runs every step once per `node-version` of the approval set and refuses without one, so the `changes` job carries
+  `node-version: [22]`. Nothing uses it; it needs `npx` and, the first time, the network.
+- A step is killed after 10 minutes and that cannot be set, so the work is split into many steps.
+- Every step runs, even after a failure, and a step may leave untracked files only under `output_paths` (plain paths, no
+  globs): a new build output needs its path there, and the failure names it.
+- Nothing is skipped for a docs-only change set; the gate always runs everything.
+- `go` is whatever is on PATH: hosted CI installs the Go that `packages/foreman_cli/go.mod` names, the maintainer's may be newer.
+
 ### erlexec is patched in-repo (process-group startup race, macOS)
 
 Symptom: a process started through `Jido.Harness.Process` ends `:failed` with exit status 1 and stderr
