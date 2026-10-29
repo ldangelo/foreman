@@ -32,7 +32,7 @@ Verdicts: **DONE** every behaviour the capability names ships, is tested and has
 
 ## Parity table
 
-Current verdicts (C1-C13 and R, re-graded against `main` on 2026-10-29) are in [Re-grade 2026-10-29](#re-grade-2026-10-29); the table below is the audit as written and is not edited.
+Current verdicts (C1-C13 and R, re-graded against `main` on 2026-10-29) are in [Re-grade 2026-10-29](#re-grade-2026-10-29); the table below is the audit as written at `126ff019` (2026-10-23) and is not edited.
 
 | Cap | Shipped behaviour (file:line / PR) | Automated tests | Live evidence | Verdict |
 |---|---|---|---|---|
