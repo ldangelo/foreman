@@ -157,12 +157,21 @@ defmodule ForemanServer.MixProject do
     Mix.Task.run("test", @test_args ++ args)
   end
 
+  # The advisory lock a `mix test` run holds on its database for the life of its VM ("FRMNTEST" read
+  # as a big-endian integer: below 2^63, so a valid Postgres bigint). A one-argument advisory lock
+  # is a different lock space from the two-int4 locks eventstore takes per subscription, so the
+  # two cannot collide.
+  @suite_lock_key :binary.decode_unsigned("FRMNTEST")
+
   # `mix test` boots the application before it requires test_helper.exs. ProjectionStore rebuilds
   # its read model from the event log on boot and the Dispatcher re-admits every run the log says is
   # in flight, so a log left by the previous run has to be emptied BEFORE that boot: emptied
   # afterwards (as test_helper.exs used to) the in-memory projection, the aggregate actors and the
   # boot-time run executors still carry the previous run (foreman-a4ec2). Needs only the deps
   # (`loadpaths`), so the project is still compiled by `mix test` itself with its own flags.
+  #
+  # The log is emptied only by the run that holds the database (`claim_database!/2`); the connection
+  # that took the lock is not stopped, it keeps the lock until this VM exits.
   defp reset_event_store(args) do
     if Mix.env() != :test do
       Mix.raise(
@@ -176,8 +185,32 @@ defmodule ForemanServer.MixProject do
     config = EventStore.Config.parsed(ForemanServer.EventStore, :foreman_server)
     opts = config |> EventStore.Config.default_postgrex_opts() |> Keyword.put(:pool_size, 1)
     {:ok, conn} = Postgrex.start_link(opts)
+    claim_database!(conn, config)
     EventStore.Storage.Initializer.reset!(conn, config)
-    GenServer.stop(conn)
+  end
+
+  # Two `mix test` runs on one database corrupt each other: the later one empties the event log
+  # under the earlier one, whose tests then fail on state they did not create. A session-level
+  # advisory lock turns that into an immediate, readable refusal, before anything is emptied.
+  # `conn`'s session holds it, so Postgres drops it when the connection ends: on a clean exit and
+  # on a kill alike. Advisory locks are per database, so runs on their own DATABASE_URL (each CI
+  # partition has its own Postgres) never meet it. If the connection drops mid-run it reconnects as
+  # a new session without the lock: the guard is lost, the run is not.
+  #
+  # The result is matched as a plain map: this file is evaluated before the deps are loaded, so a
+  # `%Postgrex.Result{}` pattern would warn on every `mix` command.
+  defp claim_database!(conn, config) do
+    case Postgrex.query!(conn, "SELECT pg_try_advisory_lock($1::bigint)", [@suite_lock_key]) do
+      %{rows: [[true]]} ->
+        :ok
+
+      %{rows: [[false]]} ->
+        Mix.raise(
+          "another `mix test` run already holds the database #{inspect(config[:database])} " <>
+            "(advisory lock): use a separate DATABASE_URL per concurrent run, and do not run " <>
+            "two suites in one checkout - packages/foreman_server/tmp is shared"
+        )
+    end
   end
 
   def application do
