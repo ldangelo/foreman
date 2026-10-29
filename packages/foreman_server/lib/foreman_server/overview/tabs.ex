@@ -4,14 +4,15 @@ defmodule ForemanServer.Overview.Tabs do
 
   Each tab is `%{available: boolean(), rows: [map()]}` (plus `error: String.t()`
   when its provider failed). `pull_requests` is provided by
-  `Overview.Tabs.PullRequests`; `library` by `Overview.Tabs.Library`. `scheduled`
-  is served by another epic (E11) that registers through `config :foreman_server,
-  :overview, tab_providers: [...]`; until then it reports `available: false`.
+  `Overview.Tabs.PullRequests`; `library` by `Overview.Tabs.Library`; `scheduled`
+  by `Overview.Tabs.Scheduled` (the schedule read model). Further tabs register
+  through `config :foreman_server, :overview, tab_providers: [...]`; a tab with no
+  provider reports `available: false`.
   """
 
   require Logger
 
-  alias ForemanServer.Overview.Tabs.{Library, PullRequests}
+  alias ForemanServer.Overview.Tabs.{Library, PullRequests, Scheduled}
 
   @tab_names [:pull_requests, :library, :scheduled]
 
@@ -26,13 +27,13 @@ defmodule ForemanServer.Overview.Tabs do
   @spec names() :: [atom()]
   def names, do: @tab_names
 
-  @doc "Providers: the built-in Pull requests and Library providers plus configured ones."
+  @doc "Providers: the built-in Pull requests, Library and Scheduled providers plus configured ones."
   @spec providers() :: [module()]
   def providers do
     configured =
       Application.get_env(:foreman_server, :overview, []) |> Keyword.get(:tab_providers, [])
 
-    [PullRequests, Library | List.wrap(configured)]
+    [PullRequests, Library, Scheduled | List.wrap(configured)]
   end
 
   @doc """

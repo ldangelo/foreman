@@ -1196,6 +1196,32 @@ func TestProjectScheduleCreateAllFlags(t *testing.T) {
 	assertScheduleCommand(t, (*seen)[0], `{"type":"schedule.create","command_id":"`+sha256HexTest("schedule.create."+seed)+`","payload":{"schedule_id":"mine","project_id":"p","name":"n","spec":{"cron":"0 9 * * 1-5","timezone":"Etc/UTC"},"prompt":"from file\n","workflow":"implement","auto_approve":false,"overlap":"allow"}}`)
 }
 
+// `create` carries --misfire-grace-seconds like `update`: sent only when given (the server's
+// default applies otherwise, and an absent flag keeps the pre-flag derived command id), 0 is a
+// real value, and the value is part of the retry identity.
+func TestProjectScheduleCreateMisfireGraceSeconds(t *testing.T) {
+	base := []string{"--project-id", "p", "--name", "n", "--every", "1h", "--prompt", "x", "--workflow", "implement"}
+	with := func(extra ...string) []string { return append(append([]string{}, base...), extra...) }
+
+	got := scheduleCreateEnvelopes(t, base, with("--misfire-grace-seconds", "120"), with("--misfire-grace-seconds", "0"), with("--misfire-grace-seconds", "60"))
+	if _, present := got[0].Payload["misfire_grace_seconds"]; present {
+		t.Fatalf("absent flag must not be sent: %v", got[0].Payload)
+	}
+	if v, ok := got[1].Payload["misfire_grace_seconds"].(float64); !ok || v != 120 {
+		t.Fatalf("misfire_grace_seconds = %v, want 120", got[1].Payload["misfire_grace_seconds"])
+	}
+	if v, ok := got[2].Payload["misfire_grace_seconds"].(float64); !ok || v != 0 {
+		t.Fatalf("explicit 0 must be sent as 0, got %v", got[2].Payload["misfire_grace_seconds"])
+	}
+	ids := map[string]bool{}
+	for _, e := range got {
+		ids[e.CommandID] = true
+	}
+	if len(ids) != len(got) {
+		t.Fatalf("different grace values must be different commands: %v", ids)
+	}
+}
+
 // scheduleEnvelope is the part of a `schedule.create` command the idempotency tests inspect.
 type scheduleEnvelope struct {
 	CommandID string         `json:"command_id"`
@@ -1298,6 +1324,7 @@ func TestProjectScheduleCreateUsageErrorsSendNothing(t *testing.T) {
 		"no prompt":               {"schedule", "create", "--project-id", "p", "--name", "n", "--every", "1h", "--workflow", "implement"},
 		"prompt and prompt-file":  append(append([]string{}, base...), "--every", "1h", "--prompt-file", "/nonexistent"),
 		"invalid overlap":         append(append([]string{}, base...), "--every", "1h", "--overlap", "queue"),
+		"non-numeric misfire":     append(append([]string{}, base...), "--every", "1h", "--misfire-grace-seconds", "soon"),
 		"missing project id":      {"schedule", "create", "--name", "n", "--every", "1h", "--prompt", "x"},
 	}
 

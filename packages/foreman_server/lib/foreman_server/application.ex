@@ -51,7 +51,14 @@ defmodule ForemanServer.Application do
       ForemanServer.Inbox.DedupeTable,
       # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
       ForemanServer.Inbox.Poller,
-      # Aggregator starts the Registry and supervises Actor children.
+      # The Registry the aggregate Actors register in is the application's own child, not the
+      # Aggregator's. A restart storm among the actors (more than the Aggregator's 100 restarts in
+      # 5 s) takes the Aggregator down with every actor; a Registry that was its child went down
+      # with it, so every `Registry.lookup/2` raised `unknown registry` until the Aggregator was
+      # back. Out here the Registry outlives the Aggregator, which restarts empty and refills on
+      # demand. It starts just before the Aggregator: an Actor registers in it the moment it starts.
+      {Registry, keys: :unique, name: ForemanServer.AggregateRegistry},
+      # Aggregator supervises the aggregate Actor children, started on demand.
       ForemanServer.Aggregator,
       # One keeper per BeadsDbLease.with_lease/4 call in flight gives the lease back when its
       # caller dies without running its `after` (foreman-8qge). It lives outside the subtree
@@ -179,14 +186,33 @@ defmodule ForemanServer.Application do
       ]
   end
 
+  @doc """
+  The options `start/2` hands to `Supervisor.start_link/2`, restart intensity included.
+
+  Public so a test can pin it. OTP's default (3 restarts in 5 s) ends the whole application on the
+  fourth restart of any child inside five seconds: a few restart storms in a row (each costs one
+  restart of the `Aggregator`, the subtree that exhausts its own budget at 100 in 5 s) and every
+  process of the server is gone. 50 restarts in 10 s absorbs storms confined to a subtree and the
+  children that restart around them, while a child that crashes again as fast as it is restarted (a
+  crash-looping boot) uses the budget up within a moment and still stops the application.
+  """
+  @spec supervisor_opts() :: [
+          strategy: :one_for_one,
+          name: module(),
+          max_restarts: pos_integer(),
+          max_seconds: pos_integer()
+        ]
+  def supervisor_opts do
+    [strategy: :one_for_one, name: __MODULE__, max_restarts: 50, max_seconds: 10]
+  end
+
   @impl true
   def start(_type, _args) do
     # Fixed before any child can take a BeadsDbLease hold, so every hold of
     # this VM carries the same incarnation (see `ForemanServer.Incarnation`).
     _ = ForemanServer.Incarnation.id()
 
-    opts = [strategy: :one_for_one, name: __MODULE__]
-    {:ok, pid} = Supervisor.start_link(children(), opts)
+    {:ok, pid} = Supervisor.start_link(children(), supervisor_opts())
 
     # TRD-004: register the Jido.Harness backend adapter with the
     # AgentRuntime.AdapterCatalog after the supervisor tree is alive.

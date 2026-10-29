@@ -7,7 +7,8 @@ defmodule ForemanServer.Questions.Deliverer do
 
     * a question tied to a live workflow run is delivered as an E6 steering
       message (`run.steer`, `message_id` `question:<question_id>`, text
-      `"Answer to your question <id>: ..."`). A run that was paused when the answer
+      `OperatorQuestion.steer_text/2`: `"Answer to your question <id>: ..."`, which
+      `question.answer` guarantees fits the steer cap). A run that was paused when the answer
       arrived is then resumed, while it still holds the message; a running run is
       left to the dispatcher, which pauses and resumes it for the steer. The steer's
       idempotent message id makes a repeated delivery a no-op.
@@ -147,7 +148,7 @@ defmodule ForemanServer.Questions.Deliverer do
       payload: %{
         run_id: run_id,
         message_id: steer_message_id(question_id),
-        text: "Answer to your question #{question_id}: #{text}",
+        text: ForemanServer.Aggregates.OperatorQuestion.steer_text(question_id, text),
         steered_by: "question",
         resume: true
       }

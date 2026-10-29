@@ -71,6 +71,40 @@ defmodule ForemanServer.Messaging.ConfigResolverTest do
              )
   end
 
+  describe "a literal Slack webhook URL is held to the generic webhook's rules" do
+    defp resolve_slack(url) do
+      ConfigResolver.resolve(
+        workflow_config: %{
+          notifications: %{enabled: true, provider: :slack, slack: %{webhook_url: url}}
+        }
+      )
+    end
+
+    test "an https public URL and a {:system, env} reference resolve" do
+      assert {:ok, %{destination: %{webhook_url: "https://hooks.slack.com/services/T/B/C"}}} =
+               resolve_slack("https://hooks.slack.com/services/T/B/C")
+
+      assert {:ok, %{destination: %{webhook_url: {:system, "SLACK_URL"}}}} =
+               resolve_slack({:system, "SLACK_URL"})
+    end
+
+    test "http, userinfo, a private host and a non-URL are refused without echoing the URL" do
+      assert {:error, {:unsafe_url, :slack_destination, :insecure_http}} =
+               resolve_slack("http://hooks.slack.com/services/T/B/SECRET")
+
+      assert {:error, {:unsafe_url, :slack_destination, :userinfo}} =
+               resolve_slack("https://u:p@hooks.slack.com/services/T/B/SECRET")
+
+      assert {:error, {:unsafe_url, :slack_destination, :private_host}} =
+               resolve_slack("https://127.0.0.1/services/T/B/SECRET")
+
+      assert {:error, {:invalid_field, :slack_destination, :webhook_url} = error} =
+               resolve_slack("hooks.slack.com/services/T/B/SECRET")
+
+      refute inspect(error) =~ "SECRET"
+    end
+  end
+
   test "string-keyed project overrides are not silently discarded by defaults" do
     assert {:ok, config} =
              ConfigResolver.resolve(

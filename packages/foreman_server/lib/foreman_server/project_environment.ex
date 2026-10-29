@@ -15,6 +15,11 @@ defmodule ForemanServer.ProjectEnvironment do
       over `env`, de-duplicated, never empty strings. This list feeds log
       redaction (`WorkerLogPolicy`).
 
+  `secrets/1` is that list on its own: the one every text persisted about a project is
+  redacted with (the standing context, project memory, the coordinator conversation).
+  A name pattern never decides alone: a value stored as `DB_URL` is a secret too, unless it
+  is shorter than `min_stored_secret_chars/0` (a 1-character value would corrupt the text).
+
   `environment/1,2` returns the full normalised record (adds `setup_script` and
   `network`). Resolution never raises: an unknown project yields an empty env;
   an unavailable secret store is logged (project id + error code only) and the
@@ -25,6 +30,8 @@ defmodule ForemanServer.ProjectEnvironment do
 
   alias ForemanServer.Aggregates.Project.Environment
   alias ForemanServer.{ProjectionStore, SecretStore, WorkerEnvironment}
+
+  @min_stored_secret_chars 8
 
   @type resolved :: %{
           env: %{optional(String.t()) => String.t()},
@@ -38,24 +45,58 @@ defmodule ForemanServer.ProjectEnvironment do
   """
   @spec resolve(String.t(), keyword()) :: {:ok, resolved()} | {:error, resolve_error()}
   def resolve(project_id, opts \\ []) when is_binary(project_id) and is_list(opts) do
+    with {:ok, env, stored, named} <- resolve_parts(project_id, opts) do
+      {:ok, %{env: env, secrets: dedupe(stored ++ named)}}
+    end
+  end
+
+  defp resolve_parts(project_id, opts) do
     %{"vars" => vars} = environment(project_id, opts)
 
     case reserved_keys(vars) do
       [] ->
         secret_pairs = secret_pairs(project_id)
         env = Map.merge(vars, secret_pairs)
-
-        secrets =
-          (Map.values(secret_pairs) ++ WorkerEnvironment.extract_secrets(env))
-          |> Enum.reject(&(&1 == ""))
-          |> Enum.uniq()
-
-        {:ok, %{env: env, secrets: secrets}}
+        {:ok, env, Map.values(secret_pairs), WorkerEnvironment.extract_secrets(env)}
 
       keys ->
         {:error, {:reserved_project_env_keys, keys}}
     end
   end
+
+  defp dedupe(values), do: values |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
+  @doc """
+  The project's redaction list for persisted TEXT: `resolve/2`'s `secrets`, values only (never
+  a name), minus secret-store values shorter than `min_stored_secret_chars/0` whose NAME does
+  not look secret. Redaction is verbatim substring replacement, so a stored value like `"1"`
+  or `"ok"` would rewrite those characters across every memory topic, coordinator message and
+  standing context, corrupting knowledge without hiding anything. A value whose name looks
+  secret (`API_TOKEN=ab`) is still listed at any length, as are longer stored values; log
+  redaction (`resolve/2`) is unchanged. Raises `ArgumentError` for an environment `resolve/2`
+  refuses, as `WorkerEnvironment.build/2` does: a text is never persisted under a partial
+  list. An unavailable secret store degrades as in `resolve/2` (logged, without the store's
+  values).
+  """
+  @spec secrets(String.t()) :: [String.t()]
+  def secrets(project_id) when is_binary(project_id) do
+    case resolve_parts(project_id, []) do
+      {:ok, _env, stored, named} ->
+        dedupe(Enum.filter(stored, &(String.length(&1) >= @min_stored_secret_chars)) ++ named)
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "project #{inspect(project_id)} environment is invalid: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Shortest secret-store value (characters) used to redact persisted text when its name does
+  not look secret. Eight is the floor of a plausible credential (shorter ones are flags,
+  ports, digits, short words) and keeps incidental collisions with prose rare.
+  """
+  @spec min_stored_secret_chars() :: pos_integer()
+  def min_stored_secret_chars, do: @min_stored_secret_chars
 
   @doc "Sorted `FOREMAN_*` names present in `vars` (reserved for Foreman's own env)."
   @spec reserved_keys(%{optional(String.t()) => term()}) :: [String.t()]

@@ -471,6 +471,113 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       assert [%{status: "active"}] = ProjectionStore.schedules(other)
     end
+
+    defp seed_schedule(project, sid, name) do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "sched-#{project}-#{sid}",
+                 type: "schedule.create",
+                 aggregate_id: "schedule:#{project}:#{sid}",
+                 payload: %{
+                   project_id: project,
+                   schedule_id: sid,
+                   name: name,
+                   spec: %{"every" => "1h", "anchor" => "2026-01-01T00:00:00Z"},
+                   prompt: "p",
+                   workflow: "implement"
+                 }
+               })
+    end
+
+    defp schedule_event_types(project, sid) do
+      {:ok, events} =
+        ForemanServer.EventStore.read_stream_forward("schedule:#{project}:#{sid}", 0, 100)
+
+      Enum.map(events, & &1.event_type)
+    end
+
+    test "scheduled rows delete only after a confirm step, active or paused alike", %{
+      id: id,
+      other: other
+    } do
+      uniq = System.unique_integer([:positive])
+      {nightly, weekly, foreign} = {"s-n-#{uniq}", "s-w-#{uniq}", "s-f-#{uniq}"}
+      seed_schedule(id, nightly, "nightly")
+      seed_schedule(id, weekly, "weekly")
+      seed_schedule(other, foreign, "foreign")
+
+      {view, _} = mount_view(id)
+      view |> element("#tab-scheduled") |> render_click()
+
+      assert has_element?(view, "#panel-scheduled button", "Delete nightly")
+      assert has_element?(view, "#panel-scheduled button", "Delete weekly")
+      refute has_element?(view, "#panel-scheduled button", "Delete foreign")
+
+      # the first click only asks: confirm + cancel for THAT row, nothing dispatched
+      view |> element("#panel-scheduled button", "Delete nightly") |> render_click()
+
+      assert has_element?(view, "#panel-scheduled button", "Confirm delete nightly")
+      assert has_element?(view, "#panel-scheduled button", "Cancel")
+      refute has_element?(view, "#panel-scheduled button", "Confirm delete weekly")
+      refute has_element?(view, "#panel-scheduled button", "Delete nightly")
+      assert has_element?(view, "#panel-scheduled button", "Delete weekly")
+
+      assert Enum.map(ProjectionStore.schedules(id), & &1.schedule_id) |> Enum.sort() ==
+               Enum.sort([nightly, weekly])
+
+      assert schedule_event_types(id, nightly) == ["ScheduleCreated"]
+
+      # Cancel backs out without dispatching
+      view |> element("#panel-scheduled button", "Cancel") |> render_click()
+      refute has_element?(view, "#panel-scheduled button", "Confirm delete")
+      refute has_element?(view, "#panel-scheduled button", "Cancel")
+      assert has_element?(view, "#panel-scheduled button", "Delete nightly")
+      assert schedule_event_types(id, nightly) == ["ScheduleCreated"]
+      assert %{status: "active"} = ProjectionStore.schedule(id, nightly)
+
+      # a paused schedule is deletable too
+      view |> element("#panel-scheduled button", "Pause weekly") |> render_click()
+
+      await_until(view, fn _ -> has_element?(view, "#panel-scheduled button", "Resume weekly") end)
+
+      assert has_element?(view, "#panel-scheduled button", "Delete weekly")
+
+      view |> element("#panel-scheduled button", "Delete weekly") |> render_click()
+      assert schedule_event_types(id, weekly) == ["ScheduleCreated", "SchedulePaused"]
+      view |> element("#panel-scheduled button", "Confirm delete weekly") |> render_click()
+
+      refute has_element?(view, "#panel-scheduled td", "weekly")
+      assert has_element?(view, "#panel-scheduled td", "nightly")
+      assert render(view) =~ "Done: schedule.delete #{weekly}."
+      refute has_element?(view, "#panel-scheduled button", "Confirm delete")
+      assert Enum.map(ProjectionStore.schedules(id), & &1.schedule_id) == [nightly]
+      assert %{status: "deleted"} = ProjectionStore.schedule(id, weekly)
+      assert Enum.count(schedule_event_types(id, weekly), &(&1 == "ScheduleDeleted")) == 1
+
+      # the other schedule of the project is untouched
+      assert %{status: "active"} = ProjectionStore.schedule(id, nightly)
+      assert schedule_event_types(id, nightly) == ["ScheduleCreated"]
+
+      # a forged foreign id and an unknown id are refused and touch nothing
+      assert render_click(view, "schedule_delete", %{"id" => foreign}) =~
+               "Schedule not found in this project."
+
+      assert %{status: "active"} = ProjectionStore.schedule(other, foreign)
+      assert schedule_event_types(other, foreign) == ["ScheduleCreated"]
+
+      # a pending confirm on another row does not linger once any delete is attempted
+      view |> element("#panel-scheduled button", "Delete nightly") |> render_click()
+      assert has_element?(view, "#panel-scheduled button", "Confirm delete nightly")
+
+      assert render_click(view, "schedule_delete", %{"id" => "s-unknown-#{uniq}"}) =~
+               "Schedule not found in this project."
+
+      refute has_element?(view, "#panel-scheduled button", "Confirm delete")
+      assert has_element?(view, "#panel-scheduled button", "Delete nightly")
+
+      assert Process.alive?(view.pid)
+      assert schedule_event_types(id, nightly) == ["ScheduleCreated"]
+    end
   end
 
   describe "conversation pane" do

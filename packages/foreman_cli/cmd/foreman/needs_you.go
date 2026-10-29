@@ -129,7 +129,7 @@ func runQuestions(c *client.Client, args []string) error {
 		fs := newFlagSet("questions answer")
 		run := fs.String("run", "", "Run id, or global (required)")
 		question := fs.String("question", "", "Question id (required)")
-		text := fs.String("text", "", "Answer text (required, max 8000 chars)")
+		text := fs.String("text", "", "Answer text (required; at most 8000 chars counting the \"Answer to your question <id>: \" prefix the agent receives)")
 		by := fs.String("by", "", "Answerer name")
 		fs.Usage = func() { fmt.Fprint(fs.Output(), questionsHelp) }
 		if err := fs.parse(args[1:]); err != nil {

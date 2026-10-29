@@ -397,3 +397,107 @@ func TestProjectSettingsShowsPrAutoFixAsCompactJSON(t *testing.T) {
 		t.Fatalf("stdout missing unset pr_auto_fix:\n%s", unset)
 	}
 }
+
+func TestProjectUpdateRepoPolicyPayload(t *testing.T) {
+	t.Run("both flags", func(t *testing.T) {
+		env, err := runUpdate(t, "--repo-allowlist", "/srv/b", "--repo-allowlist", "/srv/a", "--max-repos-per-run", "3", "p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"project_id": "p1", "repo_allowlist": []any{"/srv/b", "/srv/a"}, "max_repos_per_run": float64(3)}
+		if env.Type != "project.update" || !reflect.DeepEqual(env.Payload, want) {
+			t.Fatalf("type = %q payload = %v, want project.update %v", env.Type, env.Payload, want)
+		}
+	})
+
+	t.Run("each flag alone is a change", func(t *testing.T) {
+		env, err := runUpdate(t, "--repo-allowlist", "/srv/a", "p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := (map[string]any{"project_id": "p1", "repo_allowlist": []any{"/srv/a"}}); !reflect.DeepEqual(env.Payload, want) {
+			t.Fatalf("payload = %v, want %v", env.Payload, want)
+		}
+		env, err = runUpdate(t, "--max-repos-per-run", "1000", "p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := (map[string]any{"project_id": "p1", "max_repos_per_run": float64(1000)}); !reflect.DeepEqual(env.Payload, want) {
+			t.Fatalf("payload = %v, want %v", env.Payload, want)
+		}
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		env, err := runUpdate(t, "--clear", "repo_allowlist", "--clear", "max_repos_per_run", "p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"project_id": "p1", "cleared_settings": []any{"repo_allowlist", "max_repos_per_run"}}
+		if !reflect.DeepEqual(env.Payload, want) {
+			t.Fatalf("payload = %v, want %v", env.Payload, want)
+		}
+	})
+
+	t.Run("non-numeric max is a usage error and sends nothing", func(t *testing.T) {
+		_, err := runUpdate(t, "--max-repos-per-run", "many", "p1")
+		if err == nil {
+			t.Fatal("want usage error")
+		}
+		if client.ExitCode(err) != 1 {
+			t.Fatalf("exit code = %d, want 1", client.ExitCode(err))
+		}
+	})
+
+	for _, tc := range []struct{ name, arg, refusal string }{
+		{"allowlist", "--repo-allowlist=relative/path", `{:invalid_repo_allowlist, "relative/path"}`},
+		{"max", "--max-repos-per-run=0", `{:max_repos_per_run_invalid, 0, 1..1000}`},
+	} {
+		t.Run("server refusal "+tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]string{"error": tc.refusal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, rec := recordingServer(t, http.StatusUnprocessableEntity, string(body))
+			var runErr error
+			stdout := captureStdout(t, func() { runErr = projectUpdate(c, []string{tc.arg, "p1"}) })
+			if rec.calls != 1 {
+				t.Fatalf("calls = %d, want the request to reach the server", rec.calls)
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), string(body)) {
+				t.Fatalf("err = %v, want the server response %s", runErr, body)
+			}
+			if client.ExitCode(runErr) == 0 || strings.Contains(stdout, "updated project") {
+				t.Fatalf("exit code = %d stdout = %q, want non-zero and no success line", client.ExitCode(runErr), stdout)
+			}
+		})
+	}
+}
+
+func TestProjectSettingsPrintsRepoPolicy(t *testing.T) {
+	show := func(t *testing.T, settings string) string {
+		t.Helper()
+		c, _ := recordingServer(t, http.StatusOK, `{"project_id":"p1","status":"active","settings":`+settings+`,"limits":{}}`)
+		return captureStdout(t, func() {
+			if err := runProject(c, []string{"settings", "p1"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	set := show(t, `{"repo_allowlist":["/srv/a","/srv/b"],"max_repos_per_run":3}`)
+	for _, want := range []string{`  repo_allowlist: ["/srv/a","/srv/b"]` + "\n", "  max_repos_per_run: 3\n"} {
+		if !strings.Contains(set, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, set)
+		}
+	}
+
+	empty := show(t, `{"repo_allowlist":[]}`)
+	if !strings.Contains(empty, "  repo_allowlist: []\n") || !strings.Contains(empty, "  max_repos_per_run: (unset)\n") {
+		t.Fatalf("empty list / absent max not rendered:\n%s", empty)
+	}
+
+	null := show(t, `{"repo_allowlist":null,"max_repos_per_run":null}`)
+	if !strings.Contains(null, "  repo_allowlist: (unset)\n") || !strings.Contains(null, "  max_repos_per_run: (unset)\n") {
+		t.Fatalf("null not rendered as (unset):\n%s", null)
+	}
+}

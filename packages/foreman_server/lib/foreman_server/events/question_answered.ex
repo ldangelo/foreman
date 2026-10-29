@@ -1,7 +1,8 @@
 defmodule ForemanServer.Events.QuestionAnswered do
   @moduledoc """
-  An operator answered an open question. `text` is the answer (<= 8000
-  characters); it is delivered to the asking agent by
+  An operator answered an open question. `text` is the answer (at most
+  `ForemanServer.Aggregates.OperatorQuestion.max_answer_chars/1` characters: what the steer
+  cap leaves after the delivery prefix); it is delivered to the asking agent by
   `ForemanServer.Questions.Deliverer` and is the only event that carries it.
   """
   @enforce_keys [:run_id, :question_id, :text, :at]

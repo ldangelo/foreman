@@ -171,7 +171,9 @@ used for this workflow.
 test files and deals them round-robin by index (index mod 4), not by hash and not by duration, so a
 new file moves the files after it into another leg. Every leg has its own runner AND its own
 Postgres container, which is why `config/test.exs` needs no per-partition database name and
-`reset_event_store/1` empties the right event store. To reproduce leg `n` locally give it a
+`reset_event_store/1` empties the right event store. Two runs on one database would empty each
+other's log, so `reset_event_store/1` first takes a Postgres advisory lock on it: a run that finds
+the database held stops with `another mix test run already holds the database`. To reproduce leg `n` locally give it a
 private database (`createdb`, then `ecto.migrate` and `event_store.init`) and run
 `MIX_TEST_PARTITION=n DATABASE_URL=... mix test --partitions 4 --seed <seed in the leg's log>`; a
 leg that fails only when partitioned has found a hidden dependency between test files, which is a

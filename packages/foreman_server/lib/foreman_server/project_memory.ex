@@ -23,10 +23,10 @@ defmodule ForemanServer.ProjectMemory do
   """
 
   alias ForemanServer.CommandGateway
+  alias ForemanServer.ProjectEnvironment
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectMemory.{Drift, Error, Store, SyncReport, Topic}
   alias ForemanServer.Telemetry
-  alias ForemanServer.WorkerEnvironment
 
   require Logger
 
@@ -118,7 +118,7 @@ defmodule ForemanServer.ProjectMemory do
   defp do_write(project_id, path, attrs, author) do
     with :ok <- Store.validate_name(attrs.name),
          {:ok, previous} <- previous_bytes(path, attrs.name),
-         {:ok, entry} <- Store.write(path, secrets_for(project_id), attrs) do
+         {:ok, entry} <- Store.write(path, ProjectEnvironment.secrets(project_id), attrs) do
       command = write_command(project_id, entry, author)
 
       case dispatch(command) do
@@ -260,7 +260,7 @@ defmodule ForemanServer.ProjectMemory do
   defp do_sync(project_id, path, author) do
     with {:ok, disk} <- Store.list(path) do
       drift = drift(disk, ProjectionStore.project_memory(project_id))
-      secrets = secrets_for(project_id)
+      secrets = ProjectEnvironment.secrets(project_id)
 
       {recorded, failed} =
         (drift.untracked_on_disk ++ drift.sha_mismatch)
@@ -341,10 +341,6 @@ defmodule ForemanServer.ProjectMemory do
     do:
       {:error,
        Error.new(:project_path_unknown, "project has no path on disk", %{project_id: project_id})}
-
-  # The one seam for project secret values; E4 extends it with secret-store values.
-  defp secrets_for(project_id),
-    do: project_id |> WorkerEnvironment.build_env_map() |> WorkerEnvironment.extract_secrets()
 
   defp locked(project_id, fun) do
     case :global.trans({{:project_memory, project_id}, self()}, fun, [node()]) do

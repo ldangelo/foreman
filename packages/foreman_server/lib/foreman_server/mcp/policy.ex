@@ -20,6 +20,7 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_project_memory_write",
     "foreman_project_memory_forget",
     "foreman_schedule_create",
+    "foreman_schedule_update",
     "foreman_schedule_pause",
     "foreman_schedule_resume",
     "foreman_schedule_delete",

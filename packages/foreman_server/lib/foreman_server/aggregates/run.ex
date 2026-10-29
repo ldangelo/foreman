@@ -1358,6 +1358,14 @@ defmodule ForemanServer.Aggregates.Run do
 
   @steer_text_max_chars 8000
 
+  @doc """
+  The longest `run.steer` text, in characters (`String.length/1`). The one number: a sender
+  that frames its own text in a steer (`ForemanServer.Aggregates.OperatorQuestion`) derives
+  its limit from it, so no second constant can drift from this one.
+  """
+  @spec steer_text_max_chars() :: pos_integer()
+  def steer_text_max_chars, do: @steer_text_max_chars
+
   defp require_steer_text_length(text) do
     case String.length(text) do
       n when n <= @steer_text_max_chars -> :ok

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,7 +14,8 @@ import (
 
 const projectScheduleUsageText = "Usage:\n" +
 	"  foreman project schedule list --project-id <id> [--json]\n" +
-	"  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--id <schedule-id>] [--idempotency-key <key>]\n" +
+	"  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--misfire-grace-seconds <n>] [--id <schedule-id>] [--idempotency-key <key>]\n" +
+	"  foreman project schedule update --project-id <id> --id <schedule-id> [--name <name>] [--every <30m> | --cron \"<expr>\"] [--timezone UTC] [--prompt <text> | --prompt-file <path>] [--workflow <workflow>] [--auto-approve[=false]] [--overlap skip|allow] [--misfire-grace-seconds <n>] [--idempotency-key <key>]\n" +
 	"  foreman project schedule pause --project-id <id> --id <schedule-id>\n" +
 	"  foreman project schedule resume --project-id <id> --id <schedule-id>\n" +
 	"  foreman project schedule delete --project-id <id> --id <schedule-id>"
@@ -22,7 +24,7 @@ const projectScheduleUsageText = "Usage:\n" +
 func projectSchedule(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman project schedule: missing subcommand (list|create|pause|resume|delete)",
+			"foreman project schedule: missing subcommand (list|create|update|pause|resume|delete)",
 			projectScheduleUsageText,
 		)
 	}
@@ -32,6 +34,8 @@ func projectSchedule(c *client.Client, args []string) error {
 		return projectScheduleList(c, args[1:])
 	case "create":
 		return projectScheduleCreate(c, args[1:])
+	case "update":
+		return projectScheduleUpdate(c, args[1:])
 	case "pause":
 		return projectScheduleLifecycle(c, "pause", "paused", args[1:])
 	case "resume":
@@ -155,10 +159,11 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 	workflow := fs.String("workflow", "", "Workflow to run")
 	autoApprove := fs.Bool("auto-approve", true, "Auto-approve created tasks (use --auto-approve=false to disable)")
 	overlap := fs.String("overlap", "skip", "Overlap policy: skip|allow")
+	misfireGraceSeconds := fs.Int("misfire-grace-seconds", 0, "Seconds after a missed slot during which it still fires (0..604800; enforced by the server; the server default applies when omitted)")
 	scheduleID := fs.String("id", "", "Schedule ID (derived from the idempotency key or the request payload when omitted)")
 	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key: a retry with the same key returns the same schedule instead of creating a second one")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage of project schedule create:\n  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--id <schedule-id>] [--idempotency-key <key>]\n\nCreate a schedule that submits a task on a recurring spec.\nThe command id (and, without --id, the schedule id) is derived from --idempotency-key, or from the request\npayload when no key is given, so retrying an identical create never produces a second schedule. To create\ntwo otherwise identical schedules pass different --idempotency-key values (or different --id values).\n\nFlags:\n")
+		fmt.Fprint(fs.Output(), "Usage of project schedule create:\n  foreman project schedule create --project-id <id> --name <name> (--every <30m> | --cron \"<expr>\") [--timezone UTC] (--prompt <text> | --prompt-file <path>) --workflow <workflow> [--auto-approve[=false]] [--overlap skip|allow] [--misfire-grace-seconds <n>] [--id <schedule-id>] [--idempotency-key <key>]\n\nCreate a schedule that submits a task on a recurring spec.\nThe command id (and, without --id, the schedule id) is derived from --idempotency-key, or from the request\npayload when no key is given, so retrying an identical create never produces a second schedule. To create\ntwo otherwise identical schedules pass different --idempotency-key values (or different --id values).\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.parse(args); err != nil {
@@ -166,6 +171,8 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 	}
 
 	const cmd = "foreman project schedule create"
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	switch {
 	case fs.NArg() != 0:
 		return usageError(fs, "%s: expected no positional arguments", cmd)
@@ -214,6 +221,9 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 	if *workflow != "" {
 		payload["workflow"] = *workflow
 	}
+	if set["misfire-grace-seconds"] {
+		payload["misfire_grace_seconds"] = *misfireGraceSeconds
+	}
 	if *scheduleID != "" {
 		payload["schedule_id"] = *scheduleID
 	}
@@ -239,6 +249,124 @@ func projectScheduleCreate(c *client.Client, args []string) error {
 	}
 
 	return printCommandOutcome(os.Stdout, out, fmt.Sprintf("created schedule %s in project %s\n", createdID, *projectID))
+}
+
+// projectScheduleUpdate sends `schedule.update`. Only the flags actually passed enter the
+// payload (the server treats an absent field as "no change"); a spec is replaced wholesale,
+// so --every/--cron build a complete spec and --timezone is only valid beside one of them.
+// The server validates every value and its refusal text is returned verbatim.
+func projectScheduleUpdate(c *client.Client, args []string) error {
+	fs := newFlagSet("project schedule update")
+	projectID := fs.String("project-id", "", "Project ID (required)")
+	scheduleID := fs.String("id", "", "Schedule ID (required)")
+	name := fs.String("name", "", "New schedule name")
+	every := fs.String("every", "", "Replace the spec with a fixed interval, e.g. 30m or 1h (exclusive with --cron; restarts the schedule clock)")
+	cron := fs.String("cron", "", "Replace the spec with a cron expression, e.g. \"0 9 * * 1-5\" (exclusive with --every; restarts the schedule clock)")
+	timezone := fs.String("timezone", "", "Timezone for the new spec; the server accepts only UTC or Etc/UTC (requires --every or --cron)")
+	prompt := fs.String("prompt", "", "New prompt for the scheduled task (or --prompt-file)")
+	promptFile := fs.String("prompt-file", "", "Read the new prompt from this file (or --prompt)")
+	workflow := fs.String("workflow", "", "New workflow to run")
+	autoApprove := fs.Bool("auto-approve", false, "Auto-approve created tasks (--auto-approve=false to disable)")
+	overlap := fs.String("overlap", "", "Overlap policy: skip|allow")
+	misfireGraceSeconds := fs.Int("misfire-grace-seconds", 0, "Seconds after a missed slot during which it still fires (0..604800; enforced by the server)")
+	idempotencyKey := fs.String("idempotency-key", "", "Idempotency key: a retry with the same key is the same command, even when the flags differ")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), "Usage of project schedule update:\n  foreman project schedule update --project-id <id> --id <schedule-id> [--name <name>] [--every <30m> | --cron \"<expr>\"] [--timezone UTC] [--prompt <text> | --prompt-file <path>] [--workflow <workflow>] [--auto-approve[=false]] [--overlap skip|allow] [--misfire-grace-seconds <n>] [--idempotency-key <key>]\n\nChange a schedule. Only the flags given are changed and at least one is required.\n--every/--cron replace the whole spec (and restart the schedule clock); --timezone only qualifies them.\nThe server validates values and its errors are shown verbatim.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	const cmd = "foreman project schedule update"
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	switch {
+	case fs.NArg() != 0:
+		return usageError(fs, "%s: expected no positional arguments", cmd)
+	case *projectID == "" || *scheduleID == "":
+		return usageError(fs, "%s: --project-id and --id are required", cmd)
+	case !(set["name"] || set["every"] || set["cron"] || set["prompt"] || set["prompt-file"] || set["workflow"] || set["auto-approve"] || set["overlap"] || set["misfire-grace-seconds"]):
+		return usageError(fs, "%s: at least one of --name, --every, --cron, --prompt, --prompt-file, --workflow, --auto-approve, --overlap, --misfire-grace-seconds is required", cmd)
+	case set["every"] && set["cron"]:
+		return usageError(fs, "%s: --every and --cron are mutually exclusive", cmd)
+	case set["prompt"] && set["prompt-file"]:
+		return usageError(fs, "%s: --prompt and --prompt-file are mutually exclusive", cmd)
+	case set["timezone"] && !set["every"] && !set["cron"]:
+		return usageError(fs, "%s: --timezone requires --every or --cron (a spec is replaced as a whole)", cmd)
+	case set["overlap"] && *overlap != "skip" && *overlap != "allow":
+		return usageError(fs, "%s: --overlap must be skip or allow, got %q", cmd, *overlap)
+	}
+
+	payload := map[string]any{"project_id": *projectID, "schedule_id": *scheduleID}
+	if set["name"] {
+		payload["name"] = *name
+	}
+	if set["every"] || set["cron"] {
+		spec := map[string]any{}
+		if set["every"] {
+			spec["every"] = *every
+		} else {
+			spec["cron"] = *cron
+		}
+		if set["timezone"] {
+			spec["timezone"] = *timezone
+		}
+		payload["spec"] = spec
+	}
+	if set["prompt"] {
+		payload["prompt"] = *prompt
+	}
+	if set["prompt-file"] {
+		data, err := os.ReadFile(*promptFile)
+		if err != nil {
+			return fmt.Errorf("%s: read --prompt-file: %w", cmd, err)
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			return usageError(fs, "%s: --prompt-file %s is empty", cmd, *promptFile)
+		}
+		payload["prompt"] = string(data)
+	}
+	if set["workflow"] {
+		payload["workflow"] = *workflow
+	}
+	if set["auto-approve"] {
+		payload["auto_approve"] = *autoApprove
+	}
+	if set["overlap"] {
+		payload["overlap"] = *overlap
+	}
+	if set["misfire-grace-seconds"] {
+		payload["misfire_grace_seconds"] = *misfireGraceSeconds
+	}
+
+	out, err := postCommandWithResponse(c, commandEnvelope{
+		Type:      "schedule.update",
+		CommandID: scheduleUpdateCommandID(*projectID, *scheduleID, *idempotencyKey, payload),
+		Payload:   payload,
+	})
+	if err != nil {
+		return err
+	}
+
+	return printCommandOutcome(os.Stdout, out, fmt.Sprintf("updated schedule %s in project %s\n", *scheduleID, *projectID))
+}
+
+// scheduleUpdateCommandID derives the deterministic command id of a `schedule.update`: with
+// a key it is scoped by project and schedule (so the key alone decides, whatever the flags);
+// without one it is the JSON-encoded payload (json.Marshal sorts map keys), so an identical
+// retry is the same command and a different change is a new one.
+func scheduleUpdateCommandID(projectID, scheduleID, idempotencyKey string, payload map[string]any) string {
+	if idempotencyKey != "" {
+		return sha256Hex("schedule.update." + projectID + "\x00" + scheduleID + "\x00" + idempotencyKey)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("schedule.update payload is not JSON-encodable: %v", err))
+	}
+
+	return sha256Hex("schedule.update." + string(encoded))
 }
 
 // scheduleCreateIdentity derives the deterministic command id and schedule id of a
