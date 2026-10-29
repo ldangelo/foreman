@@ -19,7 +19,7 @@
 //	project list        GET /api/projects
 //	project memory      list|read|write|forget|sync a project's memory (/api/projects/:id/memory)
 //	project library     list|add|replace|remove the project library (/api/projects/:id/library)
-//	project schedule list|create|pause|resume|delete  scheduled tasks (GET /api/projects/:id/schedules, POST /api/commands schedule.*)
+//	project schedule list|create|update|pause|resume|delete  scheduled tasks (GET /api/projects/:id/schedules, POST /api/commands schedule.*)
 //	project chat <id>   POST/GET /api/projects/:id/coordinator/messages (long-poll), /coordinator, /coordinator/restart
 //	commands           Generate/install agent command assets
 //	run list            List run projections
@@ -76,7 +76,7 @@ Commands:
   project list        List project projections
   project memory      list|read|write|forget|sync project memory topics
   project library     list|add|replace|remove project library files
-  project schedule list|create|pause|resume|delete  Manage scheduled tasks (--project-id <id>)
+  project schedule list|create|update|pause|resume|delete  Manage scheduled tasks (--project-id <id>)
   project repo        add|remove|list a project's repositories (add --id --path <abs-path> <project-id>)
   project chat <id> [message...] Chat with a project's coordinator (--no-wait --since --history --format --restart)
   approvals list|approve|deny  Agent tool-permission requests (list --project|--run, approve/deny --run --call)

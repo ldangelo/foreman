@@ -7,9 +7,9 @@ defmodule ForemanServer.Overview.TabsTest do
   alias ForemanServer.Overview.Tabs
   alias ForemanServer.TestSupport.{ProjectionStoreReset, Tmp}
 
-  defmodule CrashingScheduled do
+  defmodule CrashingExtra do
     @behaviour ForemanServer.Overview.TabProvider
-    def tab, do: :scheduled
+    def tab, do: :extra
     def rows(_project_id), do: raise("provider exploded")
   end
 
@@ -19,15 +19,21 @@ defmodule ForemanServer.Overview.TabsTest do
     def rows(_project_id), do: []
   end
 
+  defmodule ShadowingScheduled do
+    @behaviour ForemanServer.Overview.TabProvider
+    def tab, do: :scheduled
+    def rows(_project_id), do: []
+  end
+
   defmodule RaisingTab do
     @behaviour ForemanServer.Overview.TabProvider
     def tab, do: raise("tab exploded")
     def rows(_project_id), do: []
   end
 
-  defmodule WorkingScheduled do
+  defmodule WorkingExtra do
     @behaviour ForemanServer.Overview.TabProvider
-    def tab, do: :scheduled
+    def tab, do: :extra
     def rows(project_id), do: [%{"project_id" => project_id, "name" => "nightly"}]
   end
 
@@ -70,11 +76,48 @@ defmodule ForemanServer.Overview.TabsTest do
            } = row
   end
 
-  test "scheduled is unavailable until a provider is registered" do
-    assert Tabs.build("p").scheduled == %{available: false, rows: []}
+  test "scheduled lists the project's schedules from the schedule read model" do
+    assert Tabs.build("p").scheduled == %{available: true, rows: []}
 
-    Application.put_env(:foreman_server, :overview, tab_providers: [WorkingScheduled])
-    assert %{available: true, rows: [%{"name" => "nightly"}]} = Tabs.build("p").scheduled
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ScheduleCreated",
+          payload: %{
+            schedule_id: "s1",
+            project_id: "p",
+            name: "nightly triage",
+            spec: %{"every" => "1h", "timezone" => "UTC", "anchor" => "2026-01-01T00:00:00Z"},
+            prompt: "triage",
+            workflow: "implement",
+            created_at: "2026-01-01T00:00:00Z"
+          }
+        },
+        %{
+          event_type: "ScheduleCreated",
+          payload: %{
+            schedule_id: "s2",
+            project_id: "other",
+            name: "elsewhere",
+            spec: %{"every" => "1h", "timezone" => "UTC", "anchor" => "2026-01-01T00:00:00Z"},
+            prompt: "triage",
+            workflow: "implement",
+            created_at: "2026-01-01T00:00:00Z"
+          }
+        }
+      ])
+
+    assert %{available: true, rows: [row]} = Tabs.build("p").scheduled
+    assert %{"schedule_id" => "s1", "name" => "nightly triage", "status" => "active"} = row
+    assert is_binary(row["next_fire_at"])
+    assert %{available: true, rows: [%{"schedule_id" => "s2"}]} = Tabs.build("other").scheduled
+  end
+
+  test "a custom provider can add a tab beyond the built-in three" do
+    assert Map.keys(Tabs.build("p")) |> Enum.sort() == [:library, :pull_requests, :scheduled]
+
+    Application.put_env(:foreman_server, :overview, tab_providers: [WorkingExtra])
+    assert %{available: true, rows: [%{"name" => "nightly"}]} = Tabs.build("p").extra
   end
 
   # Found by the live acceptance run: a project with library files showed
@@ -112,22 +155,20 @@ defmodule ForemanServer.Overview.TabsTest do
   end
 
   test "a crashing provider is isolated: its tab is unavailable, pull_requests still renders" do
-    Application.put_env(:foreman_server, :overview, tab_providers: [CrashingScheduled])
+    Application.put_env(:foreman_server, :overview, tab_providers: [CrashingExtra])
 
     log = capture_log(fn -> send(self(), {:tabs, Tabs.build("p")}) end)
     assert_received {:tabs, tabs}
 
     assert log =~ "provider exploded"
-    assert %{available: false, rows: [], error: "provider_failed"} = tabs.scheduled
+    assert %{available: false, rows: [], error: "provider_failed"} = tabs.extra
     assert %{available: true, rows: [_]} = tabs.pull_requests
   end
 
   test "two providers naming one tab is a configuration error, not a silent override" do
-    Application.put_env(:foreman_server, :overview,
-      tab_providers: [WorkingScheduled, CrashingScheduled]
-    )
+    Application.put_env(:foreman_server, :overview, tab_providers: [WorkingExtra, CrashingExtra])
 
-    assert_raise ArgumentError, ~r/:scheduled.*WorkingScheduled.*CrashingScheduled/s, fn ->
+    assert_raise ArgumentError, ~r/:extra.*WorkingExtra.*CrashingExtra/s, fn ->
       Tabs.build("p")
     end
   end
@@ -138,16 +179,22 @@ defmodule ForemanServer.Overview.TabsTest do
     assert_raise ArgumentError, ~r/:library.*Tabs\.Library.*ShadowingLibrary/s, fn ->
       Tabs.build("p")
     end
+
+    Application.put_env(:foreman_server, :overview, tab_providers: [ShadowingScheduled])
+
+    assert_raise ArgumentError, ~r/:scheduled.*Tabs\.Scheduled.*ShadowingScheduled/s, fn ->
+      Tabs.build("p")
+    end
   end
 
   test "a provider whose tab/0 raises is isolated: the other tabs still build" do
-    Application.put_env(:foreman_server, :overview, tab_providers: [RaisingTab, WorkingScheduled])
+    Application.put_env(:foreman_server, :overview, tab_providers: [RaisingTab, WorkingExtra])
 
     log = capture_log(fn -> send(self(), {:tabs, Tabs.build("p")}) end)
     assert_received {:tabs, tabs}
 
     assert log =~ "tab/0 failed: tab exploded"
-    assert %{available: true, rows: [%{"name" => "nightly"}]} = tabs.scheduled
+    assert %{available: true, rows: [%{"name" => "nightly"}]} = tabs.extra
     assert %{available: true, rows: [_]} = tabs.pull_requests
   end
 

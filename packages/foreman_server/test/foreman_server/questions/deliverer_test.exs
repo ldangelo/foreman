@@ -16,6 +16,7 @@ defmodule ForemanServer.Questions.DelivererTest do
 
   alias ForemanServer.Agents.JidoSignalTopics
   alias ForemanServer.Aggregates.OperatorQuestion
+  alias ForemanServer.Aggregates.Run
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Questions.Deliverer
   alias ForemanServer.TestSupport.{Eventually, ProjectionStoreReset, UniqueIds}
@@ -157,6 +158,102 @@ defmodule ForemanServer.Questions.DelivererTest do
                  field(data, :reason) == "question_answered",
                  do: data
                )
+    end
+  end
+
+  # An answer reaches a run as a `run.steer` message and a steer is capped, so the limit on an
+  # answer is what the cap leaves after the delivery prefix. 8000 characters used to be accepted
+  # by `question.answer` and then refused by the steer: recorded, never delivered, nobody told.
+  describe "the answer length limit" do
+    test "the longest answer is delivered whole, as a steering message that fills the cap exactly" do
+      start_deliverer!()
+      {project_id, run_id} = start_run!()
+      pause!(run_id)
+      question_id = open_question!(run_id, project_id)
+      prefix = "Answer to your question #{question_id}: "
+      answer = String.duplicate("a", Run.steer_text_max_chars() - String.length(prefix))
+
+      answer!(run_id, question_id, answer)
+
+      steer = await("RunSteerQueued", run_id)
+      assert field(steer, :text) == prefix <> answer
+      assert String.length(field(steer, :text)) == Run.steer_text_max_chars()
+      await("RunResumed", run_id, &(field(&1, :reason) == "question_answered"))
+    end
+
+    test "one character more is refused at question.answer, naming the limit: nothing is recorded or steered and a shorter answer still works" do
+      start_deliverer!()
+      {project_id, run_id} = start_run!()
+      pause!(run_id)
+      question_id = open_question!(run_id, project_id)
+
+      limit =
+        Run.steer_text_max_chars() -
+          String.length("Answer to your question #{question_id}: ")
+
+      too_long = answer_command(run_id, question_id, String.duplicate("a", limit + 1))
+
+      assert {:error, {:answer_too_long, over, ^limit}} =
+               CommandGateway.dispatch_operator(%{
+                 too_long
+                 | command_id: "too-long:" <> question_id
+               })
+
+      assert over == limit + 1
+      assert %{status: "open"} = ProjectionStore.question(run_id, question_id)
+
+      assert [%{event_type: "QuestionOpened"}] =
+               stream_events(OperatorQuestion.stream_id(run_id, question_id))
+
+      assert run_events(run_id, "RunSteerQueued") == []
+
+      answer!(run_id, question_id, "use postgres")
+      steer = await("RunSteerQueued", run_id)
+      assert field(steer, :text) == "Answer to your question #{question_id}: use postgres"
+    end
+
+    # Whatever the asker's own question id (it is in the prefix, and unbounded), the longest answer
+    # `question.answer` takes is one the run aggregate takes as the steer the deliverer sends.
+    for {label, question_id} <- [
+          short: "q1",
+          uuid: "q-6f1c2d9e-3b7a-4c58-9a10-2e8d5b7c4f31",
+          multibyte: String.duplicate("日", 40),
+          emoji: String.duplicate("👨‍👩‍👧‍👦", 10),
+          very_long: String.duplicate("x", 3_000)
+        ] do
+      test "the steer sent for the longest answer to a #{label} question id is accepted by the run aggregate" do
+        question_id = unquote(question_id)
+        run_id = projected_run(:running)
+        # multibyte on purpose: both limits count characters, not bytes
+        answer = String.duplicate("é", OperatorQuestion.max_answer_chars(question_id))
+        assert answer != ""
+
+        open =
+          OperatorQuestion.apply_event(OperatorQuestion.initial_state(), %{
+            event_type: "QuestionOpened",
+            payload: %{}
+          })
+
+        assert {:ok, %{event_type: "QuestionAnswered"}} =
+                 OperatorQuestion.handle_command(
+                   open,
+                   answer_command(run_id, question_id, answer)
+                 )
+
+        assert :delivered =
+                 Deliverer.deliver(run_id, question_id, answer, gateway: RecordingGateway)
+
+        assert_received {:dispatched, %{type: "run.steer", payload: payload}}
+
+        started =
+          Run.apply_event(Run.initial_state(), %{
+            event_type: "RunStarted",
+            payload: %{run_id: run_id, task_id: "t", project_id: "p"}
+          })
+
+        assert {:ok, %{event_type: "RunSteerQueued"}} =
+                 Run.handle_command(started, %{type: "run.steer", payload: payload})
+      end
     end
   end
 
@@ -663,14 +760,23 @@ defmodule ForemanServer.Questions.DelivererTest do
     question_id
   end
 
+  defp answer_command(run_id, question_id, text, extra \\ %{}) do
+    %{
+      type: "question.answer",
+      command_id: "answer:" <> question_id,
+      aggregate_id: OperatorQuestion.stream_id(run_id, question_id),
+      payload: Map.merge(%{run_id: run_id, question_id: question_id, text: text}, extra)
+    }
+  end
+
   defp answer!(run_id, question_id, text, extra \\ %{}) do
     {:ok, _} =
-      CommandGateway.dispatch_operator(%{
-        type: "question.answer",
-        command_id: "answer:" <> question_id,
-        aggregate_id: OperatorQuestion.stream_id(run_id, question_id),
-        payload: Map.merge(%{run_id: run_id, question_id: question_id, text: text}, extra)
-      })
+      CommandGateway.dispatch_operator(answer_command(run_id, question_id, text, extra))
+  end
+
+  defp stream_events(stream) do
+    {:ok, events} = Store.read_stream_forward(stream, 0, 1_000)
+    events
   end
 
   defp run_events(run_id, type) do

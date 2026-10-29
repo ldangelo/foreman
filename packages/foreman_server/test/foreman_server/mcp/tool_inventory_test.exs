@@ -24,6 +24,7 @@ defmodule ForemanServer.MCP.ToolInventoryTest do
                  "foreman_project_memory_write",
                  "foreman_project_memory_forget",
                  "foreman_schedule_create",
+                 "foreman_schedule_update",
                  "foreman_schedule_pause",
                  "foreman_schedule_resume",
                  "foreman_schedule_delete",
@@ -78,7 +79,7 @@ defmodule ForemanServer.MCP.ToolInventoryTest do
   def unclassified(advertised, read, write), do: advertised -- (read ++ write)
 
   test "every advertised tool is classified read or write, and the inventory is complete" do
-    assert length(names()) == 61
+    assert length(names()) == 62
     assert Enum.sort(names()) == Enum.sort(@read_tools ++ @write_tools)
     assert unclassified(names(), @read_tools, @write_tools) == []
     assert @read_tools -- @write_tools == @read_tools

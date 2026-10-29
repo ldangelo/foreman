@@ -3,7 +3,14 @@ defmodule ForemanServer.Aggregator do
   Supervisor that manages aggregate `Actor` children.
 
   Uses `restart: :permanent` — every actor is critical and must be restarted
-  immediately on exit. Children are started on-demand via `start_aggregate/2`.
+  immediately on exit. Children are started on-demand via `start_aggregate/3`.
+
+  The `ForemanServer.AggregateRegistry` the actors register in is a sibling of this supervisor,
+  not a child: `ForemanServer.Application` starts it just ahead of this one. The restart budget
+  below (100 in 5 s) can be exhausted by a storm of actor crashes, and the Aggregator then dies
+  with every actor; the application supervisor starts it again empty and it refills on demand. A
+  registry owned by the Aggregator died with it, and every `Registry.lookup/2` raised
+  `unknown registry` until the Aggregator was back.
   """
 
   use Supervisor
@@ -15,14 +22,12 @@ defmodule ForemanServer.Aggregator do
 
   @impl true
   def init(_init_arg) do
-    children = [
-      # Registry must be started before any actor tries to register.
-      {Registry, keys: :unique, name: ForemanServer.AggregateRegistry}
-    ]
-
+    # No static children: actors are added on demand by `start_aggregate/3`, and the registry
+    # they register in is the application's (see the moduledoc).
+    #
     # Explicit intensity: tests rapidly kill multiple actors in succession
     # (e.g. AC1.3 kills 5 types, AC1.6 kills 1). Default of 3/5s is exceeded.
-    Supervisor.init(children,
+    Supervisor.init([],
       strategy: :one_for_one,
       max_restarts: 100,
       max_seconds: 5

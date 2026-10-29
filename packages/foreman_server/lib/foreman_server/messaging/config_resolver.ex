@@ -137,7 +137,8 @@ defmodule ForemanServer.Messaging.ConfigResolver do
 
   defp destination(raw, :slack) do
     with {:ok, cfg} <- provider_config(raw, :slack, :slack_destination),
-         {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination) do
+         {:ok, webhook_url} <- required_secret_ref(cfg, :webhook_url, :slack_destination),
+         :ok <- slack_url(webhook_url) do
       {:ok, %{provider: :slack, webhook_url: webhook_url}}
     end
   end
@@ -166,6 +167,20 @@ defmodule ForemanServer.Messaging.ConfigResolver do
          allow_insecure_http: insecure,
          allow_private_hosts: private
        }}
+    end
+  end
+
+  # A Slack incoming-webhook URL is held to the generic webhook's rules, with no
+  # opt-outs (Slack serves https from public hosts only). The URL IS the credential
+  # (its path carries the token), so no refusal ever echoes it. A `{:system, env}`
+  # URL is checked by the provider when it is read, before each send.
+  defp slack_url({:system, _name}), do: :ok
+
+  defp slack_url(url) do
+    case WebhookUrl.check(url, []) do
+      :ok -> :ok
+      {:error, :not_http_url} -> {:error, {:invalid_field, :slack_destination, :webhook_url}}
+      {:error, reason} -> {:error, {:unsafe_url, :slack_destination, reason}}
     end
   end
 

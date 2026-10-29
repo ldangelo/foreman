@@ -14,6 +14,7 @@ defmodule ForemanServer.ApplicationChildrenTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{
+    AggregateRegistry,
     Aggregator,
     CommandRouter,
     EventStore,
@@ -165,6 +166,33 @@ defmodule ForemanServer.ApplicationChildrenTest do
       for caller <- callers do
         assert_started_after(ids, caller, [KeeperSupervisor])
       end
+    end
+  end
+
+  describe "AggregateRegistry" do
+    test "is the application's own child, started before the Aggregator whose actors register in it" do
+      ids = child_ids()
+
+      # Not a child of the Aggregator: a restart storm that exhausts the Aggregator's budget takes
+      # it down with every actor, and a registry inside it went down too (aggregator_churn_test.exs
+      # proves the registry survives that).
+      assert AggregateRegistry in ids
+      assert_started_after(ids, Aggregator, [AggregateRegistry])
+    end
+  end
+
+  describe "the application supervisor" do
+    test "tolerates 50 restarts in 10 s, not OTP's default of 3 in 5 s" do
+      # What `start/2` hands to `Supervisor.start_link/2`. The running supervisor's intensity has
+      # no public reader (`:sys.get_state/1` returns its internal state record, which OTP neither
+      # documents nor promises to keep), so the options are pinned where they are defined;
+      # `start/2` takes them from here.
+      assert ForemanServer.Application.supervisor_opts() == [
+               strategy: :one_for_one,
+               name: ForemanServer.Application,
+               max_restarts: 50,
+               max_seconds: 10
+             ]
     end
   end
 

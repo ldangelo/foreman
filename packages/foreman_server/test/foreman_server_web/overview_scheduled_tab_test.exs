@@ -1,11 +1,9 @@
 defmodule ForemanServerWeb.OverviewScheduledTabTest do
-  # foreman-q9zzo C6: the Scheduled tab is NOT served through the Overview. `Overview.Tabs`
-  # has no provider for `scheduled` (docs/user-guide.md, "Project Overview": the tab reads
-  # `{"available": false, "rows": []}` until a provider registers), so `GET
-  # /api/projects/:id/overview` and the MCP `foreman_overview` tool report it unavailable
-  # whatever schedules exist. The schedules themselves are read from the schedule read
-  # model (`Schedule.DTO`: "the data behind the Scheduled tab"), which is what the
-  # workspace's Scheduled tab lists. One real schedule, three surfaces.
+  # foreman-q9zzo C6: the Scheduled tab is served through the Overview by
+  # `Overview.Tabs.Scheduled`, so `GET /api/projects/:id/overview` and the MCP
+  # `foreman_overview` tool report `tabs.scheduled` available with the project's schedules
+  # (the same `Schedule.DTO` rows `GET /api/projects/:id/schedules` and the workspace's
+  # Scheduled tab list). One real schedule, three surfaces.
   use ExUnit.Case, async: false
 
   import Plug.Conn
@@ -19,7 +17,6 @@ defmodule ForemanServerWeb.OverviewScheduledTabTest do
 
   @endpoint ForemanServerWeb.Endpoint
   @token "overview-scheduled-tab-token"
-  @unavailable %{"available" => false, "rows" => []}
 
   setup do
     Eventually.put_env_for_test(:foreman_server, :api_bearer_token, @token)
@@ -69,12 +66,17 @@ defmodule ForemanServerWeb.OverviewScheduledTabTest do
     Jason.decode!(json)
   end
 
-  test "GET /api/projects/:id/overview reports tabs.scheduled unavailable although a schedule exists",
-       %{id: id} do
+  test "GET /api/projects/:id/overview reports tabs.scheduled available with the schedule",
+       %{id: id, schedule_id: schedule_id} do
     body = api_conn() |> get("/api/projects/#{id}/overview") |> json_response(200)
 
-    assert body["tabs"]["scheduled"] == @unavailable
-    # The other tabs are served by their providers: only `scheduled` lacks one.
+    assert %{
+             "available" => true,
+             "rows" => [
+               %{"schedule_id" => ^schedule_id, "name" => "nightly triage", "status" => "active"}
+             ]
+           } = body["tabs"]["scheduled"]
+
     assert body["tabs"] |> Map.keys() |> Enum.sort() == ~w(library pull_requests scheduled)
     assert %{"available" => true} = body["tabs"]["library"]
     assert %{"available" => true} = body["tabs"]["pull_requests"]
@@ -86,10 +88,13 @@ defmodule ForemanServerWeb.OverviewScheduledTabTest do
   } do
     overview = mcp_call("foreman_overview", %{"project_id" => id})
 
-    assert overview["tabs"]["scheduled"] == @unavailable
+    assert %{
+             "available" => true,
+             "rows" => [%{"schedule_id" => ^schedule_id, "status" => "active"}]
+           } = overview["tabs"]["scheduled"]
+
     assert overview["tabs"] |> Map.keys() |> Enum.sort() == ~w(library pull_requests scheduled)
 
-    # Agents find the schedule through the schedule tool instead.
     assert %{"schedules" => [%{"schedule_id" => ^schedule_id, "status" => "active"}]} =
              mcp_call("foreman_schedule_list", %{"project_id" => id})
   end

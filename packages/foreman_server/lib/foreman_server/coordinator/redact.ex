@@ -3,24 +3,22 @@ defmodule ForemanServer.Coordinator.Redact do
   Persist-time redaction of coordinator conversation text.
 
   Pasted bug reports, model replies and thread briefs pass the run-log
-  redactor (`WorkerLogPolicy.redact/2`) with the project's configured secrets
-  (`WorkerEnvironment.extract_secrets/1`) before they are written to an event,
-  so a secret pasted into the conversation never lands in the event log.
+  redactor (`WorkerLogPolicy.redact/2`) with the project's redaction list
+  (`ProjectEnvironment.secrets/1`: every secret-store value, whatever its name, plus
+  the env values whose names look secret) before they are written to an event, so a
+  secret pasted into the conversation never lands in the event log.
   """
 
   alias ForemanServer.Overwatch.WorkerLogPolicy
-  alias ForemanServer.WorkerEnvironment
+  alias ForemanServer.ProjectEnvironment
 
-  @doc "The project's secret values (for repeated redaction of several texts)."
-  @spec secrets(String.t()) :: [String.t()]
-  def secrets(project_id) when is_binary(project_id) do
-    project_id |> WorkerEnvironment.build_env_map() |> WorkerEnvironment.extract_secrets()
-  end
-
-  @doc "Redact `text` with the project's secrets (or an explicit `:secrets` option)."
+  @doc """
+  Redact `text` with the project's redaction list, or an explicit `:secrets` option (the
+  list of one `ProjectEnvironment.secrets/1` call, for redacting several texts).
+  """
   @spec text(String.t(), String.t(), keyword()) :: String.t()
   def text(project_id, text, opts \\ []) when is_binary(text) do
-    secrets = Keyword.get_lazy(opts, :secrets, fn -> secrets(project_id) end)
+    secrets = Keyword.get_lazy(opts, :secrets, fn -> ProjectEnvironment.secrets(project_id) end)
     WorkerLogPolicy.redact(text, secrets)
   end
 end

@@ -341,30 +341,11 @@ defmodule ForemanServer.ProjectContext do
 
   defp secrets_for(nil, _opts), do: []
 
-  defp secrets_for(project_id, opts) do
-    case Keyword.fetch(opts, :secrets) do
-      {:ok, secrets} ->
-        secrets
-
-      :error ->
-        resolved_secrets(project_id)
-    end
-  end
-
-  # The redaction list every door uses (`ProjectEnvironment.resolve/1`): every secret-store
-  # VALUE, whatever its name, plus the env values whose names look secret. An invalid
-  # environment raises, as `WorkerEnvironment.build/2` did: a context is never built with a
-  # partial list.
-  defp resolved_secrets(project_id) do
-    case ProjectEnvironment.resolve(project_id) do
-      {:ok, %{secrets: secrets}} ->
-        secrets
-
-      {:error, reason} ->
-        raise ArgumentError,
-              "project #{inspect(project_id)} environment is invalid: #{inspect(reason)}"
-    end
-  end
+  # The project's redaction list, the one every door and every persisted text uses
+  # (`ProjectEnvironment.secrets/1`); an invalid environment raises there, so a context is never
+  # built with a partial list.
+  defp secrets_for(project_id, opts),
+    do: Keyword.get_lazy(opts, :secrets, fn -> ProjectEnvironment.secrets(project_id) end)
 
   defp redact(body, secrets) do
     redacted = WorkerLogPolicy.redact(body, secrets)

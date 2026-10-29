@@ -98,6 +98,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             proposals: [],
             schedules: [],
             confirm_remove: nil,
+            confirm_delete: nil,
             library_name: "",
             library_folder_name: "",
             replace_entry: nil,
@@ -274,6 +275,19 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
          Refresh.intent(socket)
        )
      )}
+  end
+
+  def handle_event("schedule_confirm_delete", %{"id" => id}, socket) when is_binary(id),
+    do: {:noreply, assign(socket, :confirm_delete, id)}
+
+  def handle_event("schedule_cancel_delete", _params, socket),
+    do: {:noreply, assign(socket, :confirm_delete, nil)}
+
+  def handle_event("schedule_delete", %{"id" => id}, socket) when is_binary(id) do
+    result =
+      Actions.schedule_control(socket.assigns.project_id, id, :delete, Refresh.intent(socket))
+
+    {:noreply, socket |> assign(:confirm_delete, nil) |> notify(result) |> load_state()}
   end
 
   def handle_event("library_validate", %{"name" => name}, socket) when is_binary(name),
@@ -678,6 +692,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             library_name={@library_name}
             library_folder_name={@library_folder_name}
             confirm_remove={@confirm_remove}
+            confirm_delete={@confirm_delete}
             replace_entry={@replace_entry}
             open_entry={@open_entry}
             library_limits={@library_limits}

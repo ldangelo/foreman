@@ -73,6 +73,13 @@ Actor calls aggregate_module.apply_event/2  ◄── state updated after confir
 - **Crash + eager restart**: `Aggregator` supervisor restarts the actor immediately
   (`restart: :permanent`). Restarted actor rehydrates via `Aggregate.load/2` before
   processing the next command.
+- **Restart storm**: the `Aggregator` allows 100 restarts in 5 s. Past that (a storm of more than 100
+  actor restarts) it dies with every actor; the application supervisor (50 restarts in 10 s,
+  `Application.supervisor_opts/0`) starts it again empty and `Aggregator.start_aggregate/3` rebuilds
+  actors on demand. `ForemanServer.AggregateRegistry` is a child of the application, started just
+  before the `Aggregator`, so it outlives the storm (`aggregator_churn_test.exs`). Owned by the
+  `Aggregator` it died with it and every `Registry.lookup/2` raised `unknown registry`; storms in a
+  row inside OTP's default 3 restarts in 5 s stopped the application itself.
 
 ### Aggregate State Design
 

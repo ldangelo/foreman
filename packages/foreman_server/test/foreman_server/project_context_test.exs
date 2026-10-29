@@ -178,6 +178,26 @@ defmodule ForemanServer.ProjectContextTest do
       refute bundle.system_text =~ "sk-literal-secret-1234"
       assert bundle.redactions == 2
     end
+
+    # The redaction list is the project's own (`ProjectEnvironment.secrets/1`), not the caller's:
+    # a stored value is a secret whatever its name, and `DB_URL` looks like none.
+    @tag :tmp_dir
+    test "a stored secret value never reaches the text, whatever the secret's name",
+         %{tmp_dir: dir} do
+      store = Application.get_env(:foreman_server, :secret_store)
+      Application.put_env(:foreman_server, :secret_store, Keyword.put(store, :dir, dir))
+      on_exit(fn -> Application.put_env(:foreman_server, :secret_store, store) end)
+
+      db_url = "postgres://svc:hunter2pw@db.internal:5432/app"
+      register("c6b", %{instructions: "connect with #{db_url}, not the replica"})
+      assert {:ok, :stored} = ForemanServer.SecretStore.put("c6b", "DB_URL", db_url)
+
+      {:ok, bundle} = ProjectContext.build("c6b", section_providers: [])
+
+      refute bundle.system_text =~ db_url
+      assert bundle.system_text =~ "connect with [REDACTED], not the replica"
+      assert bundle.redactions == 1
+    end
   end
 
   describe "assemble/3 budget" do

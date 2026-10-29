@@ -45,7 +45,7 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
         extra
       )
 
-  @write_tools ~w(foreman_schedule_create foreman_schedule_pause foreman_schedule_resume foreman_schedule_delete)
+  @write_tools ~w(foreman_schedule_create foreman_schedule_update foreman_schedule_pause foreman_schedule_resume foreman_schedule_delete)
 
   test "list is a read tool and returns the HTTP DTOs in a ScheduleListResult", %{id: id} do
     writes(true)
@@ -205,5 +205,195 @@ defmodule ForemanServer.MCP.ScheduleToolsTest do
 
     assert {:error, %ToolError{code: "schedule_deleted"}} =
              Tools.call_tool("foreman_schedule_resume", ids)
+  end
+
+  defp event_count(project_id, schedule_id, event_type) do
+    case EventStore.read_stream_forward("schedule:#{project_id}:#{schedule_id}", 0, 1_000) do
+      {:ok, events} -> Enum.count(events, &(&1.event_type == event_type))
+      {:error, :stream_not_found} -> 0
+    end
+  end
+
+  defp list_schedules(project_id) do
+    {:ok, %ScheduleListResult{schedules: schedules}} =
+      Tools.call_tool("foreman_schedule_list", %{project_id: project_id})
+
+    schedules
+  end
+
+  defp create_schedule(project_id, extra \\ %{}) do
+    writes(true)
+
+    {:ok, %ScheduleCommandResult{schedule_id: sid}} =
+      Tools.call_tool("foreman_schedule_create", args(project_id, extra))
+
+    sid
+  end
+
+  test "update changes only the named fields and returns the three-key result", %{id: id} do
+    secret = "UPDATE-PROMPT-#{System.unique_integer([:positive])}"
+    sid = create_schedule(id, %{prompt: secret})
+    [before] = list_schedules(id)
+
+    assert {:ok,
+            %ScheduleCommandResult{project_id: ^id, schedule_id: ^sid, status: "updated"} =
+              result} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: sid,
+               name: "renamed",
+               overlap: "allow",
+               auto_approve: false
+             })
+
+    assert [%DTO{} = after_update] = list_schedules(id)
+    assert %DTO{name: "renamed", overlap: "allow", auto_approve: false} = after_update
+    assert after_update.spec == before.spec
+    assert after_update.workflow == before.workflow
+    assert after_update.prompt == secret
+    assert after_update.misfire_grace_seconds == before.misfire_grace_seconds
+    assert event_count(id, sid, "ScheduleUpdated") == 1
+
+    assert result |> Jason.encode!() |> Jason.decode!() ==
+             %{"project_id" => id, "schedule_id" => sid, "status" => "updated"}
+
+    refute Jason.encode!(result) =~ secret
+  end
+
+  test "update changes prompt, workflow and misfire grace", %{id: id} do
+    sid = create_schedule(id)
+
+    assert {:ok, %ScheduleCommandResult{status: "updated"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: sid,
+               prompt: "new prompt",
+               misfire_grace_seconds: 30
+             })
+
+    assert [%DTO{prompt: "new prompt", misfire_grace_seconds: 30, name: "daily"}] =
+             list_schedules(id)
+  end
+
+  test "every and cron replace the whole spec; a no-spec update leaves it identical", %{id: id} do
+    sid = create_schedule(id)
+    [%DTO{spec: interval_spec}] = list_schedules(id)
+    assert %{"every" => "1h"} = interval_spec
+
+    assert {:ok, %ScheduleCommandResult{status: "updated"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: sid,
+               cron: "0 9 * * 1-5"
+             })
+
+    assert [%DTO{spec: cron_spec}] = list_schedules(id)
+    assert %{"cron" => "0 9 * * 1-5"} = cron_spec
+    refute Map.has_key?(cron_spec, "every")
+    refute Map.has_key?(cron_spec, "anchor")
+
+    assert {:ok, %ScheduleCommandResult{status: "updated"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: sid,
+               name: "still cron"
+             })
+
+    assert [%DTO{spec: ^cron_spec, name: "still cron"}] = list_schedules(id)
+
+    assert {:ok, %ScheduleCommandResult{status: "updated"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: sid,
+               every: "2h",
+               timezone: "UTC"
+             })
+
+    assert [%DTO{spec: every_spec}] = list_schedules(id)
+    assert %{"every" => "2h"} = every_spec
+    refute Map.has_key?(every_spec, "cron")
+  end
+
+  test "update refusals carry the aggregate's typed code and change nothing", %{id: id} do
+    sid = create_schedule(id)
+    before = list_schedules(id)
+    ids = %{project_id: id, schedule_id: sid}
+
+    refusals = [
+      {%{}, "missing_or_invalid", nil},
+      {%{every: "1m"}, "invalid_schedule_spec",
+       "{:invalid_schedule_spec, :every, :below_minimum}"},
+      {%{every: "1h", cron: "0 * * * *"}, "invalid_schedule_spec", nil},
+      {%{timezone: "UTC"}, "invalid_schedule_spec", nil},
+      {%{every: "1h", timezone: "Europe/Paris"}, "invalid_schedule_spec", nil},
+      {%{workflow: "does-not-exist"}, "unknown_workflow", nil},
+      {%{overlap: "queue"}, "invalid_overlap", nil},
+      {%{auto_approve: "yes"}, "missing_or_invalid", nil}
+    ]
+
+    for {change, code, message} <- refusals do
+      assert {:error, %ToolError{code: ^code, message: got}} =
+               Tools.call_tool("foreman_schedule_update", Map.merge(ids, change)),
+             "update #{inspect(change)} should be refused with #{code}"
+
+      if message, do: assert(got == message)
+      assert event_count(id, sid, "ScheduleUpdated") == 0
+      assert list_schedules(id) == before
+    end
+  end
+
+  test "updating an unknown, foreign or deleted schedule is refused without an event", %{id: id} do
+    sid = create_schedule(id)
+    other = "mcp-sched-other-#{System.unique_integer([:positive])}"
+    assert {:ok, _} = ProjectStore.save(%{project_id: other, path: "/tmp/#{other}"})
+    other_sid = create_schedule(other)
+
+    assert {:error, %ToolError{code: "schedule_not_found"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: "sch-nope",
+               name: "x"
+             })
+
+    # a schedule id that exists, but in another project
+    assert {:error, %ToolError{code: "schedule_not_found"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: other_sid,
+               name: "x"
+             })
+
+    assert event_count(other, other_sid, "ScheduleUpdated") == 0
+    assert event_count(id, other_sid, "ScheduleUpdated") == 0
+
+    assert {:ok, %ScheduleCommandResult{status: "deleted"}} =
+             Tools.call_tool("foreman_schedule_delete", %{project_id: id, schedule_id: sid})
+
+    assert {:error, %ToolError{code: "schedule_deleted"}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               project_id: id,
+               schedule_id: sid,
+               name: "x"
+             })
+
+    assert event_count(id, sid, "ScheduleUpdated") == 0
+  end
+
+  test "update argument errors are INVALID_PARAMS", %{id: id} do
+    writes(true)
+
+    assert {:error, %ToolError{code: "INVALID_PARAMS", message: missing}} =
+             Tools.call_tool("foreman_schedule_update", %{project_id: id, name: "x"})
+
+    assert missing =~ "schedule_id"
+
+    assert {:error, %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: " <> unknown}} =
+             Tools.call_tool("foreman_schedule_update", %{
+               :project_id => id,
+               :schedule_id => "sch-x",
+               "status" => "paused"
+             })
+
+    assert unknown =~ "status"
   end
 end

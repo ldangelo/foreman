@@ -12,6 +12,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
   import Plug.Conn
 
   alias ForemanServer.Aggregates.OperatorQuestion
+  alias ForemanServer.Aggregates.Run
   alias ForemanServer.Approvals.Dispatch
   alias ForemanServer.Questions.Deliverer
   alias ForemanServer.TelemetryTest.Handler
@@ -201,6 +202,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
     })
   end
 
+  # The longest answer a question takes: the steer cap (an answer reaches the asking run as a
+  # `run.steer` message) minus the prefix naming the question.
+  defp answer_limit(q),
+    do: Run.steer_text_max_chars() - String.length("Answer to your question #{q.question_id}: ")
+
   describe "the questions pane" do
     test "lists the project's open question with its text, asker and a labelled answer form",
          %{id: id, other: other, run: run} do
@@ -222,7 +228,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
 
       assert has_element?(
                view,
-               "#{answer_form(q)} textarea[name=text][required][maxlength='8000']"
+               "#{answer_form(q)} textarea[name=text][required][maxlength='#{answer_limit(q)}']"
              )
 
       assert has_element?(view, "#{answer_form(q)} input[type=hidden][name=run_id]")
@@ -419,6 +425,48 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
       assert has_element?(view, card(q))
       assert has_element?(view, answer_form(q))
       assert %{status: "open"} = ProjectionStore.question(q.run_id, q.question_id)
+      assert event_types(q) == ["QuestionOpened"]
+    end
+
+    test "an answer too long to be delivered to the agent is refused naming the limit: nothing is recorded",
+         %{id: id, run: run} do
+      q = open_question!(id, run.run_id)
+      {view, _html} = mount_view(id)
+      limit = answer_limit(q)
+
+      # past the textarea's maxlength, as a script or a stale page could send it
+      html = submit_event(view, q, String.duplicate("a", limit + 1))
+
+      assert html =~
+               "the answer is #{limit + 1} characters; at most #{limit} can be delivered to the agent"
+
+      assert has_element?(view, "#notice.ws-error")
+      refute html =~ "answer_too_long"
+      assert has_element?(view, card(q))
+      assert %{status: "open"} = ProjectionStore.question(q.run_id, q.question_id)
+      assert event_types(q) == ["QuestionOpened"]
+    end
+
+    test "POST /api/commands refuses an answer too long to be delivered: 422 naming the limit, nothing recorded",
+         %{id: id, run: run} do
+      q = open_question!(id, run.run_id)
+      limit = answer_limit(q)
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{@token}")
+        |> post("/api/commands", %{
+          "type" => "question.answer",
+          "command_id" => "http-too-long-" <> q.question_id,
+          "payload" => %{
+            "run_id" => q.run_id,
+            "question_id" => q.question_id,
+            "text" => String.duplicate("a", limit + 1)
+          }
+        })
+
+      assert %{"error" => error} = json_response(conn, 422)
+      assert error == "{:answer_too_long, #{limit + 1}, #{limit}}"
       assert event_types(q) == ["QuestionOpened"]
     end
 

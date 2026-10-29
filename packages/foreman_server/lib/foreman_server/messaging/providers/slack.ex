@@ -1,15 +1,31 @@
 defmodule ForemanServer.Messaging.Providers.Slack do
-  @moduledoc "Slack incoming-webhook provider adapter behind `ForemanServer.Messaging.Provider`."
+  @moduledoc """
+  Slack incoming-webhook provider adapter behind `ForemanServer.Messaging.Provider`.
+
+  The webhook URL (a literal or `{:system, env}`) is the credential, and is held to the
+  generic webhook's rules without its opt-outs: `https`, no userinfo, no private host
+  (`ForemanServer.Messaging.WebhookUrl.check_resolved/3`, the DNS lookup going through
+  `config :foreman_server, :messaging, host_resolver:` like the webhook provider's). A
+  refusal never carries the URL.
+  """
 
   @behaviour ForemanServer.Messaging.Provider
 
-  alias ForemanServer.Messaging.{DeliveryResult, HttpResponse, Notification, Redactor, Renderer}
+  alias ForemanServer.Messaging.{
+    DeliveryResult,
+    HttpResponse,
+    Notification,
+    Redactor,
+    Renderer,
+    WebhookUrl
+  }
 
   @timeout_ms 5_000
 
   @impl true
   def send(%Notification{} = notification, destination) when is_map(destination) do
     with {:ok, webhook_url} <- required_binary(destination, :webhook_url, :slack_destination),
+         :ok <- check_url(webhook_url),
          {:ok, text} <- Renderer.render(notification) do
       {url, body, headers, timeout} = build_request(webhook_url, text)
 
@@ -34,8 +50,24 @@ defmodule ForemanServer.Messaging.Providers.Slack do
           {:error, result(notification, :failed, true, inspect(reason), %{})}
       end
     else
+      # A lookup that failed may succeed next time: redelivered, like a transport error.
+      {:error, {:unresolvable_host, _error_key} = reason} ->
+        {:error, result(notification, :failed, true, inspect(reason), %{})}
+
       {:error, reason} ->
         {:error, result(notification, :failed, false, inspect(reason), %{})}
+    end
+  end
+
+  # The same rules as the generic webhook with none of its opt-outs: https, no userinfo,
+  # no private host, and the name's addresses looked up now (DNS can change after the
+  # config was accepted). Not echoed: the URL is the secret.
+  defp check_url(url) do
+    case WebhookUrl.check_resolved(url, [], host_resolver()) do
+      :ok -> :ok
+      {:error, :unresolvable_host} -> {:error, {:unresolvable_host, :slack_destination}}
+      {:error, :not_http_url} -> {:error, {:invalid_field, :slack_destination, :webhook_url}}
+      {:error, reason} -> {:error, {:unsafe_url, :slack_destination, reason}}
     end
   end
 
@@ -96,5 +128,10 @@ defmodule ForemanServer.Messaging.Providers.Slack do
   defp http_client do
     Application.get_env(:foreman_server, :messaging, [])
     |> Keyword.get(:http_client, ForemanServer.Messaging.HttpClient)
+  end
+
+  defp host_resolver do
+    Application.get_env(:foreman_server, :messaging, [])
+    |> Keyword.get(:host_resolver, WebhookUrl)
   end
 end

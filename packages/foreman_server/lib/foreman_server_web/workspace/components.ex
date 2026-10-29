@@ -9,6 +9,7 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   use Phoenix.Component
 
+  alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Library
   alias ForemanServer.Overview.{Group, ThreadCard}
   alias ForemanServerWeb.Workspace.LibraryUpload
@@ -200,7 +201,7 @@ defmodule ForemanServerWeb.Workspace.Components do
                the browser until it is submitted or the question leaves the pane. --%>
           <label>
             <span>Your answer</span>
-            <textarea id={question_dom_id(q) <> "-answer"} name="text" rows="3" maxlength="8000" required phx-update="ignore" aria-describedby={question_dom_id(q) <> "-text"}></textarea>
+            <textarea id={question_dom_id(q) <> "-answer"} name="text" rows="3" maxlength={OperatorQuestion.max_answer_chars(q.question_id)} required phx-update="ignore" aria-describedby={question_dom_id(q) <> "-text"}></textarea>
           </label>
           <button type="submit">Answer</button>
         </form>
@@ -333,6 +334,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:library_name, :string, default: "")
   attr(:library_folder_name, :string, default: "")
   attr(:confirm_remove, :string, default: nil)
+  attr(:confirm_delete, :string, default: nil)
   attr(:replace_entry, :map, default: nil)
   attr(:open_entry, :map, default: nil)
   attr(:library_limits, :map, required: true)
@@ -357,6 +359,7 @@ defmodule ForemanServerWeb.Workspace.Components do
           library_name={@library_name}
           library_folder_name={@library_folder_name}
           confirm_remove={@confirm_remove}
+          confirm_delete={@confirm_delete}
           replace_entry={@replace_entry}
           open_entry={@open_entry}
           library_limits={@library_limits}
@@ -380,6 +383,12 @@ defmodule ForemanServerWeb.Workspace.Components do
           <td>
             <button :if={s.status == "active"} type="button" phx-click="schedule" phx-value-op="pause" phx-value-id={s.schedule_id}>Pause {s.name}</button>
             <button :if={s.status == "paused"} type="button" phx-click="schedule" phx-value-op="resume" phx-value-id={s.schedule_id}>Resume {s.name}</button>
+            <%= if @confirm_delete == s.schedule_id do %>
+              <button type="button" phx-click="schedule_delete" phx-value-id={s.schedule_id}>Confirm delete {s.name}</button>
+              <button type="button" phx-click="schedule_cancel_delete">Cancel</button>
+            <% else %>
+              <button type="button" phx-click="schedule_confirm_delete" phx-value-id={s.schedule_id}>Delete {s.name}</button>
+            <% end %>
           </td>
         </tr>
       </tbody>

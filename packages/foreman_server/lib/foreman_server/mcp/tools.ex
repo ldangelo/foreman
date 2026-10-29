@@ -100,10 +100,10 @@ defmodule ForemanServer.MCP.Tools do
 
   defmodule ScheduleCommandResult do
     @moduledoc """
-    Result of `foreman_schedule_create|pause|resume|delete`. Key convention for the
+    Result of `foreman_schedule_create|update|pause|resume|delete`. Key convention for the
     schedule tools' MCP output: snake_case atom keys (the struct fields), JSON-encoded
     as-is. The accepted event (which carries the full prompt) is internal and never
-    returned. `status` is the command outcome: `created`, `paused`, `resumed` or `deleted`.
+    returned. `status` is the command outcome: `created`, `updated`, `paused`, `resumed` or `deleted`.
     """
     @enforce_keys [:project_id, :schedule_id, :status]
     @type t :: %__MODULE__{project_id: String.t(), schedule_id: String.t(), status: String.t()}
@@ -635,6 +635,48 @@ defmodule ForemanServer.MCP.Tools do
         request_id: %{type: "string", description: "Caller supplied retry key"}
       },
       required: ["project_id", "name", "prompt", "workflow"],
+      additionalProperties: false
+    }
+  }
+
+  @schema_foreman_schedule_update %{
+    name: "foreman_schedule_update",
+    description:
+      "Change fields of an existing schedule. Only the fields you pass change, and at least one is required. " <>
+        "`every` OR `cron` (UTC; give `timezone` only together with one of them) replaces the whole schedule spec and restarts its slot clock from now; " <>
+        "the other fields keep their values. Typed errors are returned by code. Requires allow_workflow_writes.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"},
+        schedule_id: %{type: "string", description: "The schedule ID"},
+        name: %{type: "string", description: "New schedule name"},
+        every: %{
+          type: "string",
+          description: "New interval such as 30m, 6h, 1d (use this OR cron; replaces the spec)"
+        },
+        cron: %{
+          type: "string",
+          description: "New 5-field cron expression (use this OR every; replaces the spec)"
+        },
+        timezone: %{type: "string", description: "UTC only; only together with every or cron"},
+        prompt: %{type: "string", description: "New task prompt (max 16000 characters)"},
+        workflow: %{type: "string", description: "Installed workflow name"},
+        auto_approve: %{
+          type: "boolean",
+          description: "Approve each task as it is created"
+        },
+        overlap: %{
+          type: "string",
+          enum: ["skip", "allow"],
+          description: "skip a fire while the previous task is unfinished"
+        },
+        misfire_grace_seconds: %{
+          type: "integer",
+          description: "How late a due slot may still fire"
+        }
+      },
+      required: ["project_id", "schedule_id"],
       additionalProperties: false
     }
   }
@@ -1259,6 +1301,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_resume,
     @schema_foreman_schedule_list,
     @schema_foreman_schedule_create,
+    @schema_foreman_schedule_update,
     @schema_foreman_schedule_pause,
     @schema_foreman_schedule_resume,
     @schema_foreman_schedule_delete,
@@ -2495,14 +2538,7 @@ defmodule ForemanServer.MCP.Tools do
             {"sch-" <> random, "mcp:#{tool}:#{project_id}:#{random}"}
         end
 
-      spec =
-        [
-          every: Map.get(args, :every),
-          cron: Map.get(args, :cron),
-          timezone: Map.get(args, :timezone)
-        ]
-        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-        |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      spec = schedule_spec(args)
 
       payload =
         args
@@ -2518,6 +2554,46 @@ defmodule ForemanServer.MCP.Tools do
         payload
       )
     end
+  end
+
+  # No pre-validation here: the Schedule aggregate is the single validator, and
+  # an update with no change fields is its typed `missing_or_invalid :changes`.
+  # `spec` is sent only when the caller passed every/cron/timezone, because the
+  # aggregate replaces the whole spec (and restarts the slot clock) when it is present.
+  defp tool_foreman_schedule_update(%{project_id: project_id, schedule_id: schedule_id} = args) do
+    tool = "foreman_schedule_update"
+
+    with :ok <- authorize_write(tool) do
+      payload =
+        args
+        |> Map.take([:name, :prompt, :workflow, :auto_approve, :overlap, :misfire_grace_seconds])
+        |> Map.merge(%{project_id: project_id, schedule_id: schedule_id})
+
+      payload =
+        case schedule_spec(args) do
+          spec when map_size(spec) == 0 -> payload
+          spec -> Map.put(payload, :spec, spec)
+        end
+
+      dispatch_schedule_command(
+        tool,
+        "schedule.update",
+        project_id,
+        schedule_id,
+        "mcp:#{tool}:#{project_id}:#{schedule_id}:#{System.unique_integer([:positive])}",
+        payload
+      )
+    end
+  end
+
+  defp schedule_spec(args) do
+    [
+      every: Map.get(args, :every),
+      cron: Map.get(args, :cron),
+      timezone: Map.get(args, :timezone)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
   end
 
   for verb <- ~w(pause resume delete) do
@@ -2574,6 +2650,7 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp schedule_command_status("schedule.create"), do: "created"
+  defp schedule_command_status("schedule.update"), do: "updated"
   defp schedule_command_status("schedule.pause"), do: "paused"
   defp schedule_command_status("schedule.resume"), do: "resumed"
   defp schedule_command_status("schedule.delete"), do: "deleted"

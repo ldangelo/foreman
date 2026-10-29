@@ -173,6 +173,43 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
     refute "env" in schema_properties("foreman_project_settings_update")
   end
 
+  # repo_allowlist and max_repos_per_run are operator-only policy: an agent holding the
+  # MCP write gate must not be able to widen its own foreman_run_request_repo allowlist.
+  test "repo_allowlist and max_repos_per_run are not settable over MCP", %{id: id} do
+    writes(true)
+    properties = schema_properties("foreman_project_settings_update")
+    refute "repo_allowlist" in properties
+    refute "max_repos_per_run" in properties
+
+    for key <- ["repo_allowlist", "max_repos_per_run"] do
+      value = if key == "repo_allowlist", do: ["/"], else: 1000
+
+      assert {:error, %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: " <> named}} =
+               Tools.call_tool("foreman_project_settings_update", %{
+                 :project_id => id,
+                 :goal => "g",
+                 key => value
+               })
+
+      assert named =~ key
+    end
+
+    assert events(id, "ProjectUpdated") == []
+  end
+
+  # The whitelist (`Aggregates.Project.Settings`) and this tool's schema must not drift apart: a
+  # new setting is either settable over MCP or named here as operator-only, never silently neither.
+  test "every project setting is either settable over MCP or declared operator-only" do
+    operator_only = ~w(repo_allowlist max_repos_per_run)
+
+    settable =
+      schema_properties("foreman_project_settings_update") --
+        ~w(project_id clear idempotency_key)
+
+    assert Enum.sort(settable ++ operator_only) ==
+             Enum.sort(ForemanServer.Aggregates.Project.Settings.string_keys())
+  end
+
   test "no merge or approve tool is exposed" do
     names = Enum.map(Tools.list_tools(), & &1.name)
     refute Enum.any?(names, &String.contains?(&1, "merge"))

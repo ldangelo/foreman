@@ -71,6 +71,12 @@ later test. Rules that keep the suite order-independent:
   is no such state to reset. This does not contradict the 2026-09-02 note below: the log reset itself is sound. Give every
   concurrent `mix test` its own database (`DATABASE_URL`, then `mix event_store.create && mix event_store.init`): one shared
   database is emptied under the other run.
+  `mix test` holds you to that: `reset_event_store/1` first takes a session-level Postgres advisory lock on the
+  database (`claim_database!/2` in `mix.exs`, held by a connection that stays open until the VM exits or is killed),
+  and a run that finds the database held stops at once with `another mix test run already holds the database ...`
+  before it empties the first run's log. The lock is per database, so runs on their own `DATABASE_URL` (each CI
+  partition has its own Postgres) never meet it. It cannot see `packages/foreman_server/tmp` (ExUnit `tmp_dir`), which
+  every run of one checkout shares: concurrent runs need their own checkout as well as their own database.
 - A run projected into the real store gets a unique id (`ForemanServer.TestSupport.UniqueIds.unique_run_id/1`),
   not `"run-1"`: `Dispatcher.crash_resume_opts/2`, `PrWatcher`, `Overview` and `Messaging` read runs back by
   id, and a live run left behind turns another test's fresh start into a resume (foreman-b8qjy).
