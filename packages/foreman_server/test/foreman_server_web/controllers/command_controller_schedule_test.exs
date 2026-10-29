@@ -270,4 +270,95 @@ defmodule ForemanServerWeb.CommandControllerScheduleTest do
       assert %{"every" => "2h", "timezone" => "UTC"} = ProjectionStore.schedule(p, "s-up").spec
     end
   end
+
+  # `foreman project schedule update` sends only the flags it was given, as the JSON bodies
+  # below (`cmd/foreman/project_schedule_update_test.go` pins the Go side). The server applies
+  # exactly those fields: nothing the CLI did not send moves, a spec replaces the whole spec,
+  # and the refusals are the typed reasons the CLI prints verbatim.
+  describe "schedule.update, as the CLI hits it" do
+    test "only the fields sent change; the others, the status and the ids stay", %{project_id: p} do
+      assert %{"status" => "accepted"} =
+               json_response(cli_create(p, "s-up", %{"every" => "1h"}), 201)
+
+      before = ProjectionStore.schedule(p, "s-up")
+
+      body = %{
+        "project_id" => p,
+        "schedule_id" => "s-up",
+        "name" => "renamed",
+        "prompt" => "y",
+        "auto_approve" => false,
+        "overlap" => "allow",
+        "misfire_grace_seconds" => 120
+      }
+
+      assert %{
+               "status" => "accepted",
+               "result" => %{"project_id" => ^p, "schedule_id" => "s-up"}
+             } = json_response(cli_post("schedule.update", body), 201)
+
+      assert stream_types(p, "s-up") == ["ScheduleCreated", "ScheduleUpdated"]
+
+      assert %{
+               name: "renamed",
+               prompt: "y",
+               auto_approve: false,
+               overlap: "allow",
+               misfire_grace_seconds: 120
+             } = updated = ProjectionStore.schedule(p, "s-up")
+
+      keep = [:schedule_id, :project_id, :spec, :workflow, :status]
+      assert Map.take(updated, keep) == Map.take(before, keep)
+    end
+
+    test "a spec replaces the whole spec", %{project_id: p} do
+      assert %{"status" => "accepted"} =
+               json_response(cli_create(p, "s-sp", %{"every" => "1h"}), 201)
+
+      swapped =
+        cli_post("schedule.update", %{
+          "project_id" => p,
+          "schedule_id" => "s-sp",
+          "spec" => %{"cron" => "0 9 * * 1-5"}
+        })
+
+      assert %{"status" => "accepted"} = json_response(swapped, 201)
+
+      assert ProjectionStore.schedule(p, "s-sp").spec ==
+               %{"cron" => "0 9 * * 1-5", "timezone" => "UTC"}
+    end
+
+    test "an update naming no field is refused and records nothing", %{project_id: p} do
+      assert %{"status" => "accepted"} =
+               json_response(cli_create(p, "s-none", %{"every" => "1h"}), 201)
+
+      refused = cli_post("schedule.update", %{"project_id" => p, "schedule_id" => "s-none"})
+
+      assert response(refused, 422) == ~s({"error":"{:missing_or_invalid, :changes, %{}}"})
+      assert stream_types(p, "s-none") == ["ScheduleCreated"]
+    end
+
+    test "an unknown or a deleted schedule is refused with its typed reason", %{project_id: p} do
+      unknown =
+        cli_post("schedule.update", %{"project_id" => p, "schedule_id" => "nope", "name" => "x"})
+
+      assert json_response(unknown, 422)["error"] == ~s({:schedule_not_found, "nope"})
+      assert stream_types(p, "nope") == []
+
+      assert %{"status" => "accepted"} =
+               json_response(cli_create(p, "s-del", %{"every" => "1h"}), 201)
+
+      assert %{"status" => "accepted"} =
+               json_response(
+                 cli_post("schedule.delete", %{"project_id" => p, "schedule_id" => "s-del"}),
+                 201
+               )
+
+      deleted =
+        cli_post("schedule.update", %{"project_id" => p, "schedule_id" => "s-del", "name" => "x"})
+
+      assert json_response(deleted, 422)["error"] == ~s({:schedule_deleted, "s-del"})
+      assert stream_types(p, "s-del") == ["ScheduleCreated", "ScheduleDeleted"]
+    end
+  end
 end

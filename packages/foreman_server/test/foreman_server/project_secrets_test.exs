@@ -120,4 +120,73 @@ defmodule ForemanServer.ProjectSecretsTest do
     assert log =~ "secret store unavailable"
     refute log =~ @value
   end
+
+  test "secrets/1 is the redaction list: every stored value whatever its name, plus the values of secret-looking env vars, never a name" do
+    id = "project-#{Elixir.EventStore.UUID.uuid4()}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{
+          project_id: id,
+          path: "/tmp/#{id}",
+          config: %{env: %{"LEGACY_API_KEY" => "legacy-key-value", "REGION" => "us"}}
+        },
+        aggregate_id: "project:#{id}"
+      })
+
+    # `DB_URL` looks like no secret by name; the store holds it all the same
+    {:ok, _} = ProjectSecrets.set(id, "DB_URL", @value, "t")
+
+    assert Enum.sort(ProjectEnvironment.secrets(id)) == Enum.sort([@value, "legacy-key-value"])
+    assert ProjectEnvironment.secrets("unknown-project-id-zzz") == []
+  end
+
+  test "secrets/1 leaves out short stored values whose names look like no secret; resolve/2 (log redaction) keeps them" do
+    id = "project-#{Elixir.EventStore.UUID.uuid4()}"
+    min = ProjectEnvironment.min_stored_secret_chars()
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{
+          project_id: id,
+          path: "/tmp/#{id}",
+          config: %{env: %{"LEGACY_API_KEY" => "k"}}
+        },
+        aggregate_id: "project:#{id}"
+      })
+
+    short = String.duplicate("s", min - 1)
+    exact = String.duplicate("e", min)
+    {:ok, _} = ProjectSecrets.set(id, "RETRY_COUNT", "1", "t")
+    {:ok, _} = ProjectSecrets.set(id, "SHORT_NAME", short, "t")
+    {:ok, _} = ProjectSecrets.set(id, "EXACT_NAME", exact, "t")
+    {:ok, _} = ProjectSecrets.set(id, "SHORT_TOKEN", "ab", "t")
+
+    assert Enum.sort(ProjectEnvironment.secrets(id)) == Enum.sort([exact, "ab", "k"])
+
+    assert {:ok, %{secrets: all}} = ProjectEnvironment.resolve(id)
+    assert Enum.sort(all) == Enum.sort(["1", short, exact, "ab", "k"])
+  end
+
+  test "secrets/1 raises for an environment resolve/2 refuses: a partial list is never returned" do
+    id = "project-#{Elixir.EventStore.UUID.uuid4()}"
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ProjectRegistered",
+          payload: %{
+            project_id: id,
+            path: "/tmp/#{id}",
+            config: %{env: %{"FOREMAN_RUN_ID" => "evil"}}
+          }
+        }
+      ])
+
+    assert_raise ArgumentError, ~r/environment is invalid.*FOREMAN_RUN_ID/, fn ->
+      ProjectEnvironment.secrets(id)
+    end
+  end
 end

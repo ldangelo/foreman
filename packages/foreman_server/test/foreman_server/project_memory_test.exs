@@ -3,7 +3,9 @@ defmodule ForemanServer.ProjectMemoryTest do
 
   @moduletag :tmp_dir
 
-  alias ForemanServer.{CommandRouter, EventStore, ProjectionStore, ProjectMemory}
+  import ExUnit.CaptureLog
+
+  alias ForemanServer.{CommandRouter, EventStore, ProjectionStore, ProjectMemory, ProjectSecrets}
   alias ForemanServer.ProjectMemory.{Drift, Error, SyncReport}
 
   @agent %{kind: :agent, ref: "run-1"}
@@ -248,6 +250,90 @@ defmodule ForemanServer.ProjectMemoryTest do
       assert {:ok,
               %SyncReport{recorded: [], failed: [{"dump", %Error{code: :content_not_durable}}]}} =
                ProjectMemory.sync(p, @operator)
+    end
+  end
+
+  # Memory is redacted with the project's ONE redaction list (`ProjectEnvironment.secrets/1`):
+  # every secret-store value whatever its name, plus the env values whose names look secret. A
+  # value stored as `DB_URL` looks like no secret by name, so name patterns alone let it through.
+  describe "a stored project secret whose name does not look secret" do
+    @db_url "postgres://svc:hunter2pw@db.internal:5432/app"
+
+    setup %{project_id: p, dir: dir} do
+      store = Application.get_env(:foreman_server, :secret_store)
+
+      Application.put_env(
+        :foreman_server,
+        :secret_store,
+        Keyword.put(store, :dir, Path.join(dir, "secrets"))
+      )
+
+      on_exit(fn -> Application.put_env(:foreman_server, :secret_store, store) end)
+
+      assert {:ok, %{name: "DB_URL"}} = ProjectSecrets.set(p, "DB_URL", @db_url, "test")
+      :ok
+    end
+
+    test "never reaches the topic bytes, the index, the audit event or the log",
+         %{project_id: p, dir: dir} do
+      log =
+        capture_log(fn ->
+          assert {:ok, topic} =
+                   ProjectMemory.write(
+                     p,
+                     attrs("db", "The app connects with #{@db_url} in prod.", "via #{@db_url}"),
+                     @agent
+                   )
+
+          # one span in the content, one in the description
+          assert topic.redactions == 2
+        end)
+
+      for file <- ["db.md", "MEMORY.md"] do
+        refute File.read!(mem(dir, file)) =~ @db_url
+        assert File.read!(mem(dir, file)) =~ "[REDACTED]"
+      end
+
+      assert {:ok, %{description: description}, content} = ProjectMemory.read(p, "db")
+      assert content == "The app connects with [REDACTED] in prod."
+      assert description == "via [REDACTED]"
+
+      refute inspect(stream_events(p)) =~ @db_url
+      refute inspect(ProjectionStore.project_memory(p)) =~ @db_url
+      # values only: neither the value nor the secret's name is logged
+      refute log =~ @db_url
+      refute log =~ "DB_URL"
+    end
+
+    test "is redacted from a hand-edited topic when sync records it", %{project_id: p, dir: dir} do
+      File.mkdir_p!(Path.dirname(mem(dir, "hand.md")))
+      File.write!(mem(dir, "hand.md"), "connect with #{@db_url} directly\n")
+
+      assert {:ok, %SyncReport{recorded: ["hand"], failed: []}} =
+               ProjectMemory.sync(p, @operator)
+
+      refute File.read!(mem(dir, "hand.md")) =~ @db_url
+      refute inspect(stream_events(p)) =~ @db_url
+    end
+
+    # Verbatim redaction of a value like "1" would rewrite those characters in every topic, so
+    # short values (whose names look like no secret) are not used; longer ones still are.
+    test "a short stored value leaves the topic unchanged while an 8+ character one is redacted",
+         %{project_id: p, dir: dir} do
+      assert {:ok, _} = ProjectSecrets.set(p, "RETRY_COUNT", "1", "test")
+      assert {:ok, _} = ProjectSecrets.set(p, "LONG_ONE", "exactly8", "test")
+
+      assert {:ok, topic} =
+               ProjectMemory.write(
+                 p,
+                 attrs("retry", "Retry 1 time, build 1001 passes; key exactly8 is secret."),
+                 @agent
+               )
+
+      assert topic.redactions == 1
+
+      assert File.read!(mem(dir, "retry.md")) =~
+               "Retry 1 time, build 1001 passes; key [REDACTED] is secret."
     end
   end
 end

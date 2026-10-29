@@ -49,7 +49,10 @@ Open `http://127.0.0.1:4766/dashboard/runs` with the configured browser bearer t
 
 `foreman project update` also sets `--goal`, `--instructions`/`--instructions-file`
 (<= 16000 chars), `--thread-model`/`--thread-effort`, `--coordinator-*`,
-`--max-concurrent-runs` and `--daily-thread-cap`; `--clear <setting>` removes one.
+`--max-concurrent-runs` and `--daily-thread-cap`; `--repo-allowlist <abs-path-prefix>`
+(repeatable, replaces the list; `--clear repo_allowlist` turns it off) and
+`--max-repos-per-run <n>` (1..1000, default 4) are operator-only containment settings
+(not settable over MCP); `--clear <setting>` removes one.
 `project pause|resume|reactivate <id>` change lifecycle (`status` is not settable via
 update); a paused project refuses task.create, run reservation, jobsite start and
 BeadsWatcher imports with `{:project_paused, id}` while in-flight work continues.

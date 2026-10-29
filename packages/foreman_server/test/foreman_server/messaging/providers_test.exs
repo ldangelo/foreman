@@ -213,6 +213,50 @@ defmodule ForemanServer.Messaging.ProvidersTest do
         refute_received {:provider_request, _, _, _, _}
       end
     end
+
+    test "an unsafe webhook URL is refused before any request, and the refusal never carries it",
+         %{notification: notification} do
+      secret = "SLACKSECRETTOKEN"
+
+      for {url, reason, retryable?} <- [
+            {"http://hooks.slack.com/services/T/B/#{secret}", :insecure_http, false},
+            {"https://user:pw@hooks.slack.com/services/T/B/#{secret}", :userinfo, false},
+            {"https://127.0.0.1/services/T/B/#{secret}", :private_host, false},
+            {"https://localhost/services/T/B/#{secret}", :private_host, false},
+            {"https://internal.test/services/T/B/#{secret}", :private_host, false},
+            {"https://mixed.test/services/T/B/#{secret}", :private_host, false},
+            {"hooks.slack.com/services/T/B/#{secret}", :not_http_url, false},
+            {"https://down.test/services/T/B/#{secret}", :unresolvable_host, true}
+          ] do
+        assert {:error, failed} = Slack.send(notification, %{webhook_url: url})
+        assert %{status: :failed, retryable?: ^retryable?} = failed
+        refute inspect(failed) =~ secret
+        refute inspect(failed) =~ "hooks.slack.com/services"
+        refute_received {:provider_request, _, _, _, _}
+
+        case reason do
+          :not_http_url ->
+            assert failed.reason == "{:invalid_field, :slack_destination, :webhook_url}"
+
+          :unresolvable_host ->
+            assert failed.reason == "{:unresolvable_host, :slack_destination}"
+
+          _ ->
+            assert failed.reason == "{:unsafe_url, :slack_destination, #{inspect(reason)}}"
+        end
+      end
+    end
+
+    test "a {:system, env} URL is checked when it is read", %{notification: notification} do
+      var = "FOREMAN_TEST_SLACK_UNSAFE_URL"
+      System.put_env(var, "http://hooks.slack.com/services/T/B/ENVSECRET")
+      on_exit(fn -> System.delete_env(var) end)
+
+      assert {:error, failed} = Slack.send(notification, %{webhook_url: {:system, var}})
+      assert failed.reason == "{:unsafe_url, :slack_destination, :insecure_http}"
+      refute inspect(failed) =~ "ENVSECRET"
+      refute_received {:provider_request, _, _, _, _}
+    end
   end
 
   describe "telegram adapter" do

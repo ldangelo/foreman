@@ -19,6 +19,12 @@ import Config
 #   FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true
 #   FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true
 #                                            accept an http:// URL / a loopback or private-network host for that webhook
+#   FOREMAN_NOTIFY_TELEGRAM_BOT_TOKEN=<token> + FOREMAN_NOTIFY_TELEGRAM_CHAT_ID=<id>
+#                                            send notifications through a Telegram bot (both required together)
+#   FOREMAN_NOTIFY_SLACK_WEBHOOK_URL=<url>   send notifications to a Slack incoming webhook (https, public host, no opt-outs)
+#
+# At most one of the webhook, Telegram and Slack variables may be set: the node
+# has one notification provider, so a mix aborts boot instead of picking one.
 #
 # Only the exact string `true` enables a flag. The test environment is left
 # alone so a developer's shell cannot change a test's outcome.
@@ -99,30 +105,88 @@ if config_env() != :test do
       :ok
   end
 
-  # Outbound notifications to one generic webhook (E10). Sets provider
-  # `webhook`, enables delivery for every event class and takes the URL from
-  # the variable; unset leaves any `config :foreman_server, :messaging` alone.
-  # The URL must be https and name a public host. A receiver on plain http or on
-  # the operator's own network (loopback included) needs the matching opt-in,
-  # honoured only as the exact string `true`:
+  # Outbound notifications (E10): one provider, chosen by which variables are set.
+  # Each enables delivery for every event class with no run-update rate limit;
+  # none set leaves any `config :foreman_server, :messaging` alone. Empty counts
+  # as unset. Secrets (the bot token, the Slack URL) go into config only and are
+  # never logged: a refusal names the variable, never its value.
+  #
+  # webhook: the URL must be https and name a public host. A receiver on plain
+  # http or on the operator's own network (loopback included) needs the matching
+  # opt-in, honoured only as the exact string `true`:
   # FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP, FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS.
-  case System.get_env("FOREMAN_NOTIFY_WEBHOOK_URL") do
-    url when url in [nil, ""] ->
+  # slack: the URL is held to the same https/public-host rules with no opt-outs
+  # (`ConfigResolver` at resolve time, the Slack provider before each send).
+  non_empty_env = fn name ->
+    case System.get_env(name) do
+      value when value in [nil, ""] -> nil
+      value -> value
+    end
+  end
+
+  notify_all = [
+    enabled: true,
+    event_classes: [:collab_url, :action_needed, :stall, :failure, :run_update],
+    run_update_rate_limit_ms: 0
+  ]
+
+  telegram_token_var = "FOREMAN_NOTIFY_TELEGRAM_BOT_TOKEN"
+  telegram_chat_var = "FOREMAN_NOTIFY_TELEGRAM_CHAT_ID"
+
+  notify_providers =
+    for {provider, vars} <- [
+          webhook: ["FOREMAN_NOTIFY_WEBHOOK_URL"],
+          telegram: [telegram_token_var, telegram_chat_var],
+          slack: ["FOREMAN_NOTIFY_SLACK_WEBHOOK_URL"]
+        ],
+        Enum.any?(vars, &non_empty_env.(&1)),
+        do: {provider, vars}
+
+  case notify_providers do
+    [] ->
       :ok
 
-    url ->
-      config :foreman_server, :messaging,
-        enabled: true,
-        provider: :webhook,
-        event_classes: [:collab_url, :action_needed, :stall, :failure, :run_update],
-        run_update_rate_limit_ms: 0,
-        webhook: %{
-          url: url,
-          allow_insecure_http:
-            System.get_env("FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP") == "true",
-          allow_private_hosts:
-            System.get_env("FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS") == "true"
-        }
+    [_, _ | _] = several ->
+      vars = several |> Enum.flat_map(&elem(&1, 1)) |> Enum.filter(&non_empty_env.(&1))
+
+      raise "notification variables for more than one provider are set (#{Enum.join(vars, ", ")}); " <>
+              "the node has one notification provider - unset all but one provider's variables"
+
+    [{:webhook, _}] ->
+      config :foreman_server,
+             :messaging,
+             notify_all ++
+               [
+                 provider: :webhook,
+                 webhook: %{
+                   url: non_empty_env.("FOREMAN_NOTIFY_WEBHOOK_URL"),
+                   allow_insecure_http:
+                     System.get_env("FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP") == "true",
+                   allow_private_hosts:
+                     System.get_env("FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS") == "true"
+                 }
+               ]
+
+    [{:telegram, _}] ->
+      token = non_empty_env.(telegram_token_var)
+      chat_id = non_empty_env.(telegram_chat_var)
+
+      if is_nil(token) or is_nil(chat_id) do
+        raise "#{telegram_token_var} and #{telegram_chat_var} must be set together"
+      end
+
+      config :foreman_server,
+             :messaging,
+             notify_all ++ [provider: :telegram, telegram: %{token: token, chat_id: chat_id}]
+
+    [{:slack, _}] ->
+      config :foreman_server,
+             :messaging,
+             notify_all ++
+               [
+                 provider: :slack,
+                 slack: %{webhook_url: non_empty_env.("FOREMAN_NOTIFY_SLACK_WEBHOOK_URL")}
+               ]
   end
 
   # The fixed reviewer agent (`config :foreman_server, :review, agent:`). Only

@@ -756,6 +756,10 @@ defmodule ForemanServerWeb.Workspace.Actions do
 
   def describe({:invalid_text, :blank}), do: "the message is empty"
   def describe({:invalid_text, :too_long}), do: "the message is too long"
+
+  def describe({:answer_too_long, length, max}),
+    do: "the answer is #{length} characters; at most #{max} can be delivered to the agent"
+
   def describe(:rate_limited), do: "rate limited"
   def describe(:no_head_branch), do: "the run has no pushed branch to open a pull request from"
   def describe(:no_base_branch), do: "the run has no base branch"

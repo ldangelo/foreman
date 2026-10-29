@@ -27,6 +27,7 @@ var replayCases = []struct {
 	{"repo add", []string{"repo", "add", "--id", "api", "--path", "/srv/api", "p1"}, "added repository api to project p1"},
 	{"repo remove", []string{"repo", "remove", "--id", "api", "p1"}, "removed repository api from project p1"},
 	{"schedule create", timezoneCreateArgs(), "created schedule"},
+	{"schedule update", []string{"schedule", "update", "--project-id", "p1", "--id", "s1", "--name", "n"}, "updated schedule s1"},
 }
 
 func TestProjectCommandsPrintHonestMessageOnReplay(t *testing.T) {
