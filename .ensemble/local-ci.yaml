@@ -1,0 +1,285 @@
+# Local CI gate for ldangelo/foreman (ensemble `local-ci-gate` skill).
+#
+# Read from the PR's BASE ref only, so a PR that edits this file, or a ci.yml step it mirrors, is graded by the previous
+# copy and the change applies after it merges. How to run it and what it cannot do: docs/lessons/devbox-and-toolchain.md.
+#
+# Scope: the three hosted checks `main` requires (foreman_server, jido_harness, foreman_cli) and the two cheap
+# scripts of ci.yml that are not required. Every step runs once, in order, even after an earlier failure, in a clean
+# clone with a throwaway HOME, so each run is cold: hex/rebar, deps, _build and the dialyzer PLTs are rebuilt.
+# The runner kills a step after 10 minutes and cannot be told otherwise, hence the many small steps.
+
+status_context: ensemble/local-ci
+
+# CodeRabbit etc. are told apart from humans by GitHub's account type, not by login.
+bot_reviewers: []
+
+workflows:
+  - file: .github/workflows/ci.yml
+    jobs:
+      # RUNNER LIMITATION, not a Foreman requirement: the runner refuses to run unless an included job has a numeric
+      # `node-version` matrix, and then runs the whole step list once per such major with that Node first on PATH.
+      # Foreman has no Node code and nothing below uses it; hosted `changes` has no matrix either.
+      - id: changes
+        matrix:
+          node-version: [22]
+      - id: foreman-server-tests
+      - id: ever-shipped-names
+      - id: jido-harness
+      - id: foreman-cli
+
+excluded:
+  - workflow: .github/workflows/ci.yml
+    job: foreman-server
+    reason: >-
+      Aggregates the hosted results of the four partition legs (needs.*.result), which only exist on GitHub. The gate's
+      verdict already requires every partition step and every other step to pass, which is this job's condition.
+
+# TRUSTED COMMANDS, run in this order. Elixir 1.20.4 on OTP 28 comes from devbox (`devbox run -- bash -c '...'`, with no
+# `$` inside the quoted string: devbox expands it); `go`, `br` and `docker` come from the maintainer's PATH. A step gets
+# only a minimal environment, so what the hosted jobs set (MIX_ENV, SHELL, MIX_TEST_PARTITION) is set inline. HOME is
+# made physical first: the runner's scratch HOME lives under /var/folders, a symlink on macOS, and a test that compares
+# $HOME/.foreman/... with the real path git prints fails otherwise (RunExecutorTest "project setup script runs once").
+steps:
+  # ---- cheap scripts ------------------------------------------------------------------------------------------------
+  - name: changed-code-self-test
+    cmd: scripts/ci/changed-code.sh --self-test
+
+  - name: ever-shipped-names
+    cmd: |
+      scripts/ci/ever-shipped-names.sh --self-test
+      scripts/ci/ever-shipped-names.sh
+
+  # Hosted CI never runs this as a check: it is an echo today. Mirrored word for word so that the day it becomes a real
+  # check the step text changes and the gate refuses until this file is updated.
+  - name: jido-fork-pins
+    cmd: echo "JRM-T003 reading pins from JIDO_FORKS.md"
+
+  # ---- toolchain: the parts of ci.yml the runner cannot compare are checked against the machine ----------------------
+  # erlef/setup-beam is replaced by devbox, and `br` is not installed but taken from PATH. Both are only honest if they
+  # are the versions ci.yml pins, so read the pins from ci.yml and compare. A toolchain bump (devbox.json + ci.yml) needs
+  # no change here.
+  - name: toolchain
+    cmd: |
+      ci=.github/workflows/ci.yml
+      pin() {
+        vals=$(sed -n "$1" "$ci" | sort -u)
+        if [ -z "$vals" ] || [ "$(printf '%s\n' "$vals" | wc -l)" -ne 1 ]; then
+          echo "$ci: expected exactly one $2 pin, found: ${vals:-none}" >&2
+          exit 1
+        fi
+        printf '%s\n' "$vals"
+      }
+      ex=$(pin "s/^ *elixir-version: '\(.*\)'.*/\1/p" elixir-version)
+      otp=$(pin "s/^ *otp-version: '\(.*\)'.*/\1/p" otp-version)
+      br=$(pin "s/.*install\.sh --version v\([0-9][0-9.]*\).*/\1/p" "br version")
+      out=$(devbox run -- bash -c 'elixir --version')
+      printf '%s\n' "$out"
+      printf '%s\n' "$out" | grep -q "^Erlang/OTP ${otp} " || { echo "devbox runs another OTP than ci.yml (${otp})" >&2; exit 1; }
+      printf '%s\n' "$out" | grep -q "^Elixir ${ex} (compiled with Erlang/OTP ${otp})" || { echo "devbox runs another Elixir than ci.yml (${ex})" >&2; exit 1; }
+      have=$(br --version)
+      echo "$have"
+      [ "$have" = "br ${br}" ] || { echo "br on PATH is '${have}', ci.yml pins ${br}" >&2; exit 1; }
+
+  - name: hex-rebar
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash devbox run -- bash -c 'mix local.hex --force && mix local.rebar --force'
+
+  # ---- foreman_cli (Go): word for word what ci.yml runs --------------------------------------------------------------
+  - name: cli-gofmt
+    cmd: |
+      cd packages/foreman_cli
+      unformatted=$(gofmt -l .)
+      if [ -n "$unformatted" ]; then
+        echo "$unformatted"
+        echo "Run gofmt -w on the files listed above."
+        exit 1
+      fi
+  - name: cli-vet
+    cmd: cd packages/foreman_cli && go vet ./...
+  - name: cli-build
+    cmd: cd packages/foreman_cli && go build ./...
+  - name: cli-test
+    cmd: cd packages/foreman_cli && go test ./... -cover
+
+  # ---- foreman_server: everything before the tests (hosted env: MIX_ENV=test) ---------------------------------------
+  - name: server-deps
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test devbox run -- bash -c 'cd packages/foreman_server && mix deps.get'
+  - name: server-compile
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test devbox run -- bash -c 'cd packages/foreman_server && mix compile --warnings-as-errors'
+  - name: server-format
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test devbox run -- bash -c 'cd packages/foreman_server && mix format --check-formatted'
+  - name: server-credo
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test devbox run -- bash -c 'cd packages/foreman_server && mix credo --min-priority higher'
+  - name: server-doctor
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test devbox run -- bash -c 'cd packages/foreman_server && mix doctor --raise'
+
+  # ---- foreman_server tests: Postgres of its own, then the four partitions of `mix test --partitions 4` -------------
+  # Like a hosted leg, each partition gets a fresh database in a throwaway container (`mix test` empties the event store
+  # of whatever DATABASE_URL names, so never point it at the dev database). The container is named after the head, on a
+  # random loopback port that each step reads back; host `localhost` is what ForemanServer.ConfigTest expects.
+  # A run that is killed leaves the container behind: `docker rm -f foreman-localci-pg-<sha12>`.
+  - name: postgres-up
+    cmd: |
+      image=$(sed -n 's/.* \(postgres:[0-9][0-9.]*\) .*/\1/p' .github/workflows/ci.yml | sort -u)
+      if [ "$(printf '%s\n' "$image" | grep -c .)" -ne 1 ]; then
+        echo ".github/workflows/ci.yml: expected exactly one postgres image, found: ${image:-none}" >&2
+        exit 1
+      fi
+      name="foreman-localci-pg-$(git rev-parse --short=12 HEAD)"
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      docker run -d --name "$name" -p 127.0.0.1::5432 \
+        -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=foreman_test "$image" >/dev/null
+      for i in $(seq 1 120); do
+        if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+          echo "postgres ready (poll $i)"
+          for n in 1 2 3 4; do docker exec "$name" createdb -U postgres "foreman_test_p$n"; done
+          exit 0
+        fi
+        sleep 1
+      done
+      docker logs "$name" || true
+      echo "postgres did not become ready"; exit 1
+
+  - name: server-tests-p1
+    cmd: |
+      name="foreman-localci-pg-$(git rev-parse --short=12 HEAD)"
+      port=$(docker port "$name" 5432/tcp | sed -n 's/^127\.0\.0\.1://p')
+      HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test MIX_TEST_PARTITION=1 \
+      DATABASE_URL="postgres://postgres:postgres@localhost:${port}/foreman_test_p1" \
+      devbox run -- bash -c 'cd packages/foreman_server && mix ecto.create && mix ecto.migrate && mix event_store.init && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport'
+  - name: server-tests-p2
+    cmd: |
+      name="foreman-localci-pg-$(git rev-parse --short=12 HEAD)"
+      port=$(docker port "$name" 5432/tcp | sed -n 's/^127\.0\.0\.1://p')
+      HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test MIX_TEST_PARTITION=2 \
+      DATABASE_URL="postgres://postgres:postgres@localhost:${port}/foreman_test_p2" \
+      devbox run -- bash -c 'cd packages/foreman_server && mix ecto.create && mix ecto.migrate && mix event_store.init && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport'
+  - name: server-tests-p3
+    cmd: |
+      name="foreman-localci-pg-$(git rev-parse --short=12 HEAD)"
+      port=$(docker port "$name" 5432/tcp | sed -n 's/^127\.0\.0\.1://p')
+      HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test MIX_TEST_PARTITION=3 \
+      DATABASE_URL="postgres://postgres:postgres@localhost:${port}/foreman_test_p3" \
+      devbox run -- bash -c 'cd packages/foreman_server && mix ecto.create && mix ecto.migrate && mix event_store.init && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport'
+  - name: server-tests-p4
+    cmd: |
+      name="foreman-localci-pg-$(git rev-parse --short=12 HEAD)"
+      port=$(docker port "$name" 5432/tcp | sed -n 's/^127\.0\.0\.1://p')
+      HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash MIX_ENV=test MIX_TEST_PARTITION=4 \
+      DATABASE_URL="postgres://postgres:postgres@localhost:${port}/foreman_test_p4" \
+      devbox run -- bash -c 'cd packages/foreman_server && mix ecto.create && mix ecto.migrate && mix event_store.init && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport'
+
+  - name: postgres-down
+    cmd: docker rm -f "foreman-localci-pg-$(git rev-parse --short=12 HEAD)"
+
+  # ---- jido_harness (hosted env: none, so dev for deps/quality and test for `mix test`) ------------------------------
+  - name: jido-deps
+    cmd: |
+      HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash devbox run -- bash -c 'cd packages/jido_harness && { [ -f deps/credo/.credo.exs ] || rm -rf deps/credo; } && mix deps.get'
+  - name: jido-quality
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash devbox run -- bash -c 'cd packages/jido_harness && mix quality'
+  - name: jido-tests
+    cmd: HOME=$(cd "$HOME" && pwd -P) SHELL=/bin/bash devbox run -- bash -c 'cd packages/jido_harness && mix test'
+
+# A ci.yml step that is not word for word a command above must be listed here (by its text, so that a change to what it
+# runs is refused) or under excluded_steps. One workflow step maps to one trusted step: the hosted matrix legs 1-4 are
+# server-tests-p1..p4, named after p1; the database setup is part of each of them.
+equivalents:
+  - workflowStep: mix local.hex --force && mix local.rebar --force
+    runs: hex-rebar
+  - workflowStep: cd packages/foreman_server && mix deps.get
+    runs: server-deps
+  - workflowStep: cd packages/foreman_server && mix compile --warnings-as-errors
+    runs: server-compile
+  - workflowStep: cd packages/foreman_server && mix format --check-formatted
+    runs: server-format
+  - workflowStep: cd packages/foreman_server && mix credo --min-priority higher
+    runs: server-credo
+  - workflowStep: cd packages/foreman_server && mix doctor --raise
+    runs: server-doctor
+  - workflowStep: cd packages/foreman_server && mix ecto.create && mix ecto.migrate && mix event_store.init
+    runs: server-tests-p1
+  - workflowStep: cd packages/foreman_server && mix test --partitions 4 --warnings-as-errors --formatter ForemanServer.TestSupport.SlowestReport
+    runs: server-tests-p1
+  - workflowStep: |
+      cd packages/jido_harness
+      [ -f deps/credo/.credo.exs ] || rm -rf deps/credo
+      mix deps.get
+    runs: jido-deps
+  - workflowStep: cd packages/jido_harness && mix quality
+    runs: jido-quality
+  - workflowStep: cd packages/jido_harness && mix test
+    runs: jido-tests
+  # Provisioning, by name: the gate starts its own Postgres (postgres-up) instead of `docker run ... -p 55432`.
+  - workflowStep: Start Postgres
+    runs: postgres-up
+  - workflowStep: Wait for Postgres
+    runs: postgres-up
+
+# Steps that cannot run locally, each with the reason. A hosted step that is neither mirrored, mapped nor listed here
+# fails the gate. (actions/checkout and actions/setup-node are the runner's own.)
+excluded_steps:
+  - workflow: .github/workflows/ci.yml
+    job: changes
+    step: Classify the change set
+    reason: >-
+      Picks a diff from the GitHub event (PR merge-commit parents or push `before`) to decide which jobs hosted CI may
+      skip. The gate always runs every approved job on the exact head, so there is nothing to classify; the script's
+      --self-test half runs as changed-code-self-test.
+  - workflow: .github/workflows/ci.yml
+    job: foreman-server-tests
+    step: erlef/setup-beam@v1
+    reason: Elixir/OTP come from devbox; step `toolchain` fails unless they are the versions this action is given.
+  - workflow: .github/workflows/ci.yml
+    job: foreman-server-tests
+    step: Toolchain id
+    reason: Writes a cache key from /etc/os-release for actions/cache; the gate has no cache.
+  - workflow: .github/workflows/ci.yml
+    job: foreman-server-tests
+    step: Install inotify-tools
+    reason: Linux package for the file watcher; macOS uses FSEvents.
+  - workflow: .github/workflows/ci.yml
+    job: foreman-server-tests
+    step: Install br (Beads CLI)
+    reason: The gate uses the br on PATH; step `toolchain` fails unless its version is the one this step installs.
+  - workflow: .github/workflows/ci.yml
+    job: foreman-server-tests
+    step: Cache deps and build
+    reason: No cross-run cache; every gate run starts from a clean clone and a throwaway HOME.
+  - workflow: .github/workflows/ci.yml
+    job: jido-harness
+    step: erlef/setup-beam@v1
+    reason: Elixir/OTP come from devbox; step `toolchain` fails unless they are the versions this action is given.
+  - workflow: .github/workflows/ci.yml
+    job: jido-harness
+    step: Toolchain id
+    reason: Writes a cache key from /etc/os-release for actions/cache; the gate has no cache.
+  - workflow: .github/workflows/ci.yml
+    job: jido-harness
+    step: Cache deps, build and PLTs
+    reason: No cross-run cache; the dialyzer PLTs are built cold on every gate run.
+  - workflow: .github/workflows/ci.yml
+    job: foreman-cli
+    step: actions/setup-go@v5
+    reason: Go comes from the maintainer's PATH; packages/foreman_cli/go.mod is its floor and `go build` enforces it.
+
+# Untracked files the steps may leave behind (plain paths, no globs; tracked files under them are still verified byte
+# for byte). Setting this replaces the defaults, so they are listed again.
+output_paths:
+  - node_modules
+  - coverage
+  - .cache
+  - dist
+  # devbox's environment and its Python venv, created by the first `devbox run` in a checkout.
+  - .devbox
+  - .venv
+  # Tests that call the real `br` leave .beads/.write.lock and a randomly named .beads/.br-db-write-*.lock (gitignored).
+  - .beads
+  - packages/foreman_server/_build
+  - packages/foreman_server/deps
+  - packages/foreman_server/.fetch
+  - packages/foreman_server/tmp
+  - packages/jido_harness/_build
+  # `mix test` writes cover/cov.coverdata (gitignored).
+  - packages/jido_harness/cover
+  # deps/ is vendored here: the build writes into it (erlexec's port, rebar _builds, credo's .credo.exs).
+  - packages/jido_harness/deps

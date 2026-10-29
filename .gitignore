@@ -110,4 +110,8 @@ packages/*/deps/**/*.credo.exs
 # jobsite run js-b6e1438582585cf6 committed three such files into a feature
 # branch as a side effect of writing the PRD/TRD the run was asked for.
 /.ensemble/new-feature/
+# Local CI gate (.ensemble/local-ci.yaml): each run clones the PR head into
+# .ensemble/local-ci-runs/<sha> and keeps a failing step's full output in
+# .ensemble/local-ci-runs/logs. Machine-local, and a nested clone must never be added.
+/.ensemble/local-ci-runs/
 *.coverdata
