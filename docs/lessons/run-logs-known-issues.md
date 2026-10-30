@@ -148,6 +148,31 @@ Each rule names the failure it removed and how it was reproduced, so it can be t
   seeded the old test failed 3 of 3 with the CI message; the new one passes, and still fails when a capped tick is
   scheduled a full interval out instead of at the floor.
 
+### A short timeout around a fresh fake executable (`SystemBrRunnerTest`, 2026-10-29)
+
+"lock is released after command times out; second call succeeds" failed once in the local gate's partition 3 (seed
+413717, `Task.await(5_000)` exit, 5.25 s) and in 1 of the first 5 local partition-3 runs of unmodified `main` (same seed,
+same message); hosted CI (Linux) never showed it. **It is not the lock.** `:global.del_lock/2` is synchronous in the
+pinned OTP 28 (a `gen_server:multi_call` to `global_name_server`), and across 7,022 traced `:global.trans` entries the wait
+for the lock was 0.09 ms at the median and 12.5 ms at worst. In both failures caught with a trace, call 2 HELD the lock and
+sat in `receive_port_messages`, `timeout.flag` did not exist when call 1 returned, and the only `START` in the log was
+call 2's: call 1 had been killed before the fake `br` ran its first line, so call 2 was "the first invocation" and ran the
+`exec sleep 30` meant for call 1.
+
+- **The marker raced the timeout.** Call 1 had `timeout_ms: 200` plus the ~45 ms the runner needs to signal and reap, and
+  the script was to `touch` a marker inside that. Every test's fake `br` embeds its own temp path, so it is a script whose
+  bytes macOS has never executed, and the first exec of those takes ~90 ms on an idle machine (p99 150-230 ms, worst seen
+  290 ms), against 15 ms for a known script copied to a new path and 6 ms for a second exec of the same file. The marker
+  showed up at 241 ms in one of 14 instrumented in-suite runs. Under 36 CPU hogs the test, and an instrumented copy of
+  it, failed 3 of 4,513 runs; with 64 shells exec-ing fresh scripts, 26 of 60 (the CI message each time).
+- **A fake that a timeout can kill takes its behaviour from state the TEST owns, never from state the fake writes about
+  itself.** The test creates `hang.flag` for call 1 and removes it before call 2, so which call hangs no longer depends
+  on how far call 1 got. A second test pins the interleaving that failed (`sleep 1` ahead of the hang, so the 200 ms
+  timeout always lands first): the old test body failed it 12 of 12, the new tests pass it 21 of 21, and under the 64-shell
+  load the new tests passed all 202 runs. The module's other short timeouts have more room: `Port.info captures OS PID...`
+  asserts only that the call timed out (true wherever the kill lands), and `a timeout kills the whole process tree` has a
+  500 ms budget (101 of 101 under the same load), which a first exec past ~500 ms would still exhaust.
+
 ### Elixir Test Suite Non-Determinism (2026-09-02)
 
 `mix test` produces 38-43 failures on identical `--seed 1234` runs. **Hypothesis:**
