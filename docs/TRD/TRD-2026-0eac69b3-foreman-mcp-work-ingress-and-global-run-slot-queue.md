@@ -412,6 +412,7 @@ Each `### PR N:` heading is followed by a `**Shippable State:**` line. Task IDs 
   Validates PRD ACs: AC-016-1, AC-016-4
 - [ ] **TRD-039**: Implement `foreman_work_submit` and `foreman_work_cancel` tools dispatching through `CommandGateway.dispatch_operator/2`; map gateway error tuples to MCP tool errors carrying the structured reason, never to transport-level JSON-RPC errors [satisfies REQ-016] [depends: TRD-038, TRD-028] (5h)
   Validates PRD ACs: AC-016-2, AC-016-3
+  - *Superseded in part (2026-10-30):* "never to transport-level JSON-RPC errors" does not describe the shipped server. A typed tool failure is a JSON-RPC error with an integer `error.code` and the typed reason in `error.data.code` (`Dispatch.error/2`, foreman-n2eh3); see "9. MCP tool integration" in `docs/user-guide.md`.
 - [ ] **TRD-040**: Implement `ForemanServerWeb.MCPRouter`: a dedicated `:mcp` pipeline (`:accepts json` + `MCP.Auth` plug) and a `/mcp` scope mounted outside the `:api` scope so it does not inherit `Plugs.BearerAuth`'s permissive-when-unset behaviour [satisfies REQ-017] [depends: TRD-035, TRD-039] (4h)
   Validates PRD ACs: AC-017-2
 - [ ] **TRD-041**: Implement `ForemanServer.MCP.Stdio` and a `mix foreman.mcp.stdio` entrypoint: JSON-RPC 2.0 framing on stdin/stdout, all diagnostics routed to Logger's stderr backend so stdout carries protocol bytes only, auth verified at `initialize` and again before each tool call [satisfies REQ-017] [depends: TRD-035, TRD-039] (5h)
