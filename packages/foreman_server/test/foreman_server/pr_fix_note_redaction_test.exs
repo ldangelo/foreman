@@ -96,6 +96,28 @@ defmodule ForemanServer.PrFixNoteRedactionTest do
       assert event.data.note == nil
     end
 
+    # The real operator path is string-keyed JSON (`POST /api/commands`, the CLI's `--note`):
+    # the gateway atomises the payload keys before the redaction clause runs. Pin THAT path.
+    test "a string-keyed payload (the HTTP/CLI shape) is redacted too", %{tmp_dir: tmp} do
+      %{run_id: run_id, pr_url: pr_url} = watched_run!(tmp)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 type: "run.pr.fix_ci",
+                 command_id: "fix:#{run_id}",
+                 aggregate_id: "run:#{run_id}",
+                 payload: %{
+                   "run_id" => run_id,
+                   "pr_url" => pr_url,
+                   "note" => "retry with #{@secret} as the database"
+                 }
+               })
+
+      assert [event] = fix_requested(run_id)
+      refute stored(event) =~ "hunter2pw"
+      assert event.data.note == "retry with [REDACTED] as the database"
+    end
+
     test "a note on an unknown run is refused, not stored unredacted" do
       assert {:error, {:not_found, :run, "run-no-such-run"}} =
                CommandGateway.dispatch_operator(%{

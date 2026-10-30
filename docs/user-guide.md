@@ -2968,6 +2968,7 @@ cannot edit a file or run a command, so the fix would end `no_change`; a phase t
 `prompt` (a fix thread has nobody to answer a per-call approval), leaves the harness default. A
 run with no recorded provider session uses `config :foreman_server, :pr_fix, agent:` (no approval
 mode). Verified live with a real claude on a real PR: `docs/acceptance/live-claude-prfix-resume.md`.
+The `--note` text is redacted of the project's secret values (every secret-store value of 8 or more characters, whatever its name, plus secret-named environment variable values) before it is stored and before the agent sees it, like the coordinator's conversation text. Redaction lengthens the text, so a note close to the 2000-character cap that contains a secret can be refused as `invalid_note`; notes stored before this change are not rewritten.
 `foreman run create-pr <run-id>` (or the workspace Create PR button) opens the PR when the run has none and puts it
 in the merge gate like a run's own PR (`run.pr.ready`): approve it with `approve-merge` and merge it with `merge`;
 `foreman run watch-stop|watch-start <run-id> [--pr <url>]` pauses or resumes

@@ -201,4 +201,31 @@ defmodule ForemanServer.Coordinator.TurnDiagnosticsTest do
     refute failed =~ "straddlepw99"
     assert failed =~ "[REDACTED]"
   end
+
+  test "a rejected action's logged reason is redacted: a secret echoed in an unknown key leaks nothing",
+       %{project_id: p, script: script, tmp_dir: dir} do
+    store = Application.get_env(:foreman_server, :secret_store)
+
+    Application.put_env(
+      :foreman_server,
+      :secret_store,
+      Keyword.put(store, :dir, Path.join(dir, "secrets"))
+    )
+
+    on_exit(fn -> Application.put_env(:foreman_server, :secret_store, store) end)
+
+    secret = "postgres://svc:keyleakpw77@db.internal:5432/app"
+    assert {:ok, _} = ProjectSecrets.set(p, "DB_URL", secret, "test")
+
+    action = %{"kind" => "answer", "text" => "hi", secret => 1}
+    Stub.push(script, [{:ok, %Turn{reply: "ok", actions: [action]}}])
+    say(p, "m1", "do something odd", "cli")
+
+    done = p |> coordinator_lines(script) |> one("turn m1:a1 completed")
+
+    assert done =~ "answer=rejected ("
+    refute done =~ "postgres"
+    refute done =~ "keyleakpw77"
+    assert done =~ "[REDACTED]"
+  end
 end

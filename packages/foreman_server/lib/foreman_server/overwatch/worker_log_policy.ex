@@ -71,8 +71,15 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
   defp stringify(data) when is_binary(data), do: data
   defp stringify(data), do: inspect(data)
 
+  # The ONE place a secret value is replaced (`Coordinator.Redact.text/3` and `data/3` land
+  # here too). Longest value first, whatever order the caller's list has: a value that is a
+  # substring of another, replaced first, would leave the longer value's remainder in the text.
+  # Overlap by a shared fragment only (a suffix of one is a prefix of another) cannot be fixed
+  # by ordering: the guarantee is that no listed value appears verbatim.
   defp redact_configured_secrets(line, secrets) do
-    Enum.reduce(List.wrap(secrets), line, fn
+    ordered = Enum.sort_by(List.wrap(secrets), &secret_length/1, :desc)
+
+    Enum.reduce(ordered, line, fn
       secret, acc when is_binary(secret) and secret != "" ->
         String.replace(acc, secret, @redacted)
 
@@ -80,6 +87,9 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
         acc
     end)
   end
+
+  defp secret_length(secret) when is_binary(secret), do: byte_size(secret)
+  defp secret_length(_secret), do: 0
 
   # Handles JSON-style: {"token": "secret", "api_key": "value"}
   defp redact_json_quoted_keys(line) do

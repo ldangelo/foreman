@@ -200,17 +200,14 @@ defmodule ForemanServer.ProjectSecretsTest do
       text = "short=#{short} long=#{long} named=#{named_long} short-named=#{named_short}"
       expected = "short=[REDACTED] long=[REDACTED] named=[REDACTED] short-named=[REDACTED]"
 
-      by_length = fn list -> list == Enum.sort_by(list, &(-byte_size(&1))) end
-
       assert {:ok, list} = ProjectEnvironment.fetch_secrets(id)
-      assert by_length.(list)
       assert Enum.sort(list) == Enum.sort([short, long, named_short, named_long])
       assert ProjectEnvironment.secrets(id) == list
 
       assert {:ok, %{secrets: all}} = ProjectEnvironment.resolve(id)
-      assert by_length.(all)
 
-      for secrets <- [list, all] do
+      # Order-independent: the redactor orders the list itself, so any caller's list works.
+      for secrets <- [list, Enum.reverse(list), Enum.sort(list), all, Enum.reverse(all)] do
         assert ForemanServer.Overwatch.WorkerLogPolicy.redact(text, secrets) == expected
       end
 

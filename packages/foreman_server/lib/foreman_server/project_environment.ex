@@ -67,13 +67,7 @@ defmodule ForemanServer.ProjectEnvironment do
     end
   end
 
-  # The one choke point every redaction list passes through (`resolve/2`, `fetch_secrets/1`,
-  # hence `secrets/1`). Redactors replace the values in list order, so a value that is a
-  # substring of another must come after it: replaced first, it would leave the longer value's
-  # remainder in the text. Longest first (stable for equal sizes) makes that order irrelevant.
-  defp dedupe(values) do
-    values |> Enum.reject(&(&1 == "")) |> Enum.uniq() |> Enum.sort_by(&(-byte_size(&1)))
-  end
+  defp dedupe(values), do: values |> Enum.reject(&(&1 == "")) |> Enum.uniq()
 
   @doc """
   The project's redaction list for persisted TEXT: `resolve/2`'s `secrets`, values only (never
