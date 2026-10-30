@@ -48,11 +48,16 @@ defmodule ForemanServer.Threads.Transcript do
   `omitted_entries` does not grow. `omitted_entries` counts raw log entries,
   not turns.
 
-  Text is passed through `Overwatch.WorkerLogPolicy.redact/1`, the redactor
-  that already scrubs worker log lines before `run_logs` stores them.
+  Text is passed through `Coordinator.Redact`: the built-in patterns of
+  `Overwatch.WorkerLogPolicy.redact/2` (the redactor that already scrubs worker log lines
+  before `run_logs` stores them) AND every secret value of the thread's project
+  (`ProjectEnvironment.secrets/1`, whatever the secret's name), so a value an agent echoed into
+  its output, or an event recorded before the redaction existed, is covered at read time. The
+  list is resolved ONCE per `page/2`, never per entry; a thread with no project, or a project
+  whose list cannot be built, is redacted by the patterns alone.
   """
 
-  alias ForemanServer.Overwatch.WorkerLogPolicy
+  alias ForemanServer.Coordinator.Redact
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Turn
@@ -414,7 +419,7 @@ defmodule ForemanServer.Threads.Transcript do
 
       true ->
         with {:ok, thread} <- Threads.get(thread_id),
-             {:ok, inputs} <- gather(thread, opts) do
+             {:ok, inputs} <- gather(thread, Redact.redactor(thread.project_id), opts) do
           built = build_turns(inputs)
           turns = built.turns |> Enum.filter(&(&1.seq > cursor)) |> Enum.take(limit)
 
@@ -430,7 +435,7 @@ defmodule ForemanServer.Threads.Transcript do
     end
   end
 
-  defp gather(%Threads.Thread{door: :workflow, id: "run:" <> run_id}, opts) do
+  defp gather(%Threads.Thread{door: :workflow, id: "run:" <> run_id}, redact, opts) do
     # Read the run (and so `terminal?`) FIRST. Each ProjectionStore call is a
     # separate GenServer call, so a terminal event can land between them. The
     # projection only ever grows, so logs/events read after the status are a
@@ -440,16 +445,16 @@ defmodule ForemanServer.Threads.Transcript do
     with %{} = run <- ProjectionStore.run(run_id),
          {:ok, logs} <- ProjectionStore.run_logs(run_id),
          {:ok, events} <- ProjectionStore.run_events(run_id) do
-      {steer, system} = split_events(events)
+      {steer, system} = split_events(events, redact)
 
       {:ok,
        %{
          door: :workflow,
-         log_entries: Enum.map(logs.entries, &log_entry/1),
+         log_entries: Enum.map(logs.entries, &log_entry(&1, redact)),
          phases: run_id |> ProjectionStore.phases_for_run() |> Enum.map(&phase/1),
          run_events: system,
          steer: steer,
-         review: run_review(ProjectionStore.review("run", run_id)),
+         review: run_review(ProjectionStore.review("run", run_id), redact),
          omitted_entries: logs.omitted_entries,
          terminal?: fetch(run, :status) in @terminal_run_statuses
        }
@@ -461,7 +466,7 @@ defmodule ForemanServer.Threads.Transcript do
     end
   end
 
-  defp gather(%Threads.Thread{door: :jobsite, id: "jobsite:" <> jobsite_id}, opts) do
+  defp gather(%Threads.Thread{door: :jobsite, id: "jobsite:" <> jobsite_id}, redact, opts) do
     case ProjectionStore.jobsite(jobsite_id) do
       nil ->
         {:error, :thread_not_found}
@@ -471,9 +476,9 @@ defmodule ForemanServer.Threads.Transcript do
          %{
            door: :jobsite,
            jobsite_iterations:
-             jobsite |> fetch(:iterations) |> List.wrap() |> Enum.map(&iteration/1),
-           jobsite_output: jobsite_output(fetch(jobsite, :output)),
-           review: run_review(ProjectionStore.review("jobsite", jobsite_id)),
+             jobsite |> fetch(:iterations) |> List.wrap() |> Enum.map(&iteration(&1, redact)),
+           jobsite_output: jobsite_output(fetch(jobsite, :output), redact),
+           review: run_review(ProjectionStore.review("jobsite", jobsite_id), redact),
            omitted_entries: 0,
            terminal?: fetch(jobsite, :terminal?) == true
          }
@@ -487,11 +492,11 @@ defmodule ForemanServer.Threads.Transcript do
     |> Enum.reduce(inputs, fn {key, value}, acc -> Map.put(acc, key, value) end)
   end
 
-  defp log_entry(entry) do
+  defp log_entry(entry, redact) do
     %{
       channel: fetch(entry, :channel),
       at: parse_time(fetch(entry, :timestamp)),
-      content: redact(fetch(entry, :content) || "")
+      content: redact.(fetch(entry, :content) || "")
     }
   end
 
@@ -505,7 +510,7 @@ defmodule ForemanServer.Threads.Transcript do
     }
   end
 
-  defp split_events(events) do
+  defp split_events(events, redact) do
     {steer, system} =
       Enum.reduce(events, {[], []}, fn event, {steer, system} ->
         type = fetch(event, :event_type)
@@ -514,7 +519,7 @@ defmodule ForemanServer.Threads.Transcript do
 
         case type do
           "RunSteerQueued" ->
-            {[%{at: at, text: redact(to_text(fetch(data, :text)))} | steer], system}
+            {[%{at: at, text: redact.(to_text(fetch(data, :text)))} | steer], system}
 
           _ ->
             reason = fetch(data, :reason) || fetch(data, :mode) || fetch(data, :delivery)
@@ -522,7 +527,7 @@ defmodule ForemanServer.Threads.Transcript do
             entry = %{
               event_type: type,
               at: at,
-              reason: if(is_binary(reason), do: redact(reason), else: nil)
+              reason: if(is_binary(reason), do: redact.(reason), else: nil)
             }
 
             {steer, [entry | system]}
@@ -532,39 +537,38 @@ defmodule ForemanServer.Threads.Transcript do
     {Enum.reverse(steer), Enum.reverse(system)}
   end
 
-  defp iteration(record) do
+  defp iteration(record, redact) do
     %{
       index: fetch(record, :index) || 0,
       status: fetch(record, :status),
-      text: record |> fetch(:text) |> maybe_redact(),
+      text: record |> fetch(:text) |> maybe_redact(redact),
       text_truncated?: fetch(record, :text_truncated?) == true,
-      message: record |> fetch(:message) |> maybe_redact()
+      message: record |> fetch(:message) |> maybe_redact(redact)
     }
   end
 
-  defp jobsite_output(%{} = output) do
+  defp jobsite_output(%{} = output, redact) do
     case fetch(output, :value) do
-      value when is_binary(value) -> redact(value)
+      value when is_binary(value) -> redact.(value)
       nil -> nil
-      value -> value |> inspect(limit: 50, printable_limit: 4_000) |> redact()
+      value -> value |> inspect(limit: 50, printable_limit: 4_000) |> redact.()
     end
   end
 
-  defp jobsite_output(_), do: nil
+  defp jobsite_output(_, _redact), do: nil
 
-  defp run_review(nil), do: nil
+  defp run_review(nil, _redact), do: nil
 
-  defp run_review(review) do
+  defp run_review(review, redact) do
     %{
       verdict: fetch(review, :verdict),
-      summary: review |> fetch(:summary) |> maybe_redact(),
+      summary: review |> fetch(:summary) |> maybe_redact(redact),
       at: parse_time(fetch(review, :at))
     }
   end
 
-  defp redact(text) when is_binary(text), do: WorkerLogPolicy.redact(text)
-  defp maybe_redact(text) when is_binary(text), do: redact(text)
-  defp maybe_redact(_), do: nil
+  defp maybe_redact(text, redact) when is_binary(text), do: redact.(text)
+  defp maybe_redact(_, _redact), do: nil
   defp to_text(text) when is_binary(text), do: text
   defp to_text(_), do: ""
 

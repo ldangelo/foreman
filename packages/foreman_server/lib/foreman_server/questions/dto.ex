@@ -6,6 +6,9 @@ defmodule ForemanServer.Questions.DTO do
   `actions` is `["question.answer"]` only while the question is `open`;
   `command_hints` carries the payload skeleton (the `text` is the operator's to
   fill in) for `POST /api/commands`. Answering is never an MCP tool.
+  `undelivered_reason` is set only on an `answered` question whose answer can never reach the
+  agent (it was recorded before the answer limit and is too long to steer the run with): the
+  operator steers the run with a shorter message instead.
   """
 
   alias ForemanServer.ProjectionStore
@@ -22,6 +25,7 @@ defmodule ForemanServer.Questions.DTO do
           decided_at: String.t() | nil,
           answered_by: String.t() | nil,
           reason: String.t() | nil,
+          undelivered_reason: String.t() | nil,
           actions: [String.t()],
           command_hints: %{String.t() => map()}
         }
@@ -38,6 +42,7 @@ defmodule ForemanServer.Questions.DTO do
     :decided_at,
     :answered_by,
     :reason,
+    :undelivered_reason,
     :actions,
     :command_hints
   ]
@@ -58,6 +63,7 @@ defmodule ForemanServer.Questions.DTO do
       decided_at: question.decided_at,
       answered_by: question.answered_by,
       reason: question.reason,
+      undelivered_reason: question.undelivered_reason,
       actions: if(open?, do: ["question.answer"], else: []),
       command_hints: if(open?, do: hints(question), else: %{})
     }

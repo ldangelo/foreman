@@ -189,4 +189,43 @@ defmodule ForemanServer.ProjectSecretsTest do
       ProjectEnvironment.secrets(id)
     end
   end
+
+  test "fetch_secrets/1 is secrets/1 as a typed result: the same list, or the refusal instead of a raise" do
+    id = "project-#{Elixir.EventStore.UUID.uuid4()}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{
+          project_id: id,
+          path: "/tmp/#{id}",
+          config: %{env: %{"LEGACY_API_KEY" => "legacy-key-value"}}
+        },
+        aggregate_id: "project:#{id}"
+      })
+
+    {:ok, _} = ProjectSecrets.set(id, "DB_URL", @value, "t")
+
+    assert {:ok, list} = ProjectEnvironment.fetch_secrets(id)
+    assert list == ProjectEnvironment.secrets(id)
+    assert Enum.sort(list) == Enum.sort([@value, "legacy-key-value"])
+    assert {:ok, []} = ProjectEnvironment.fetch_secrets("unknown-project-id-zzz")
+
+    refused = "project-#{Elixir.EventStore.UUID.uuid4()}"
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ProjectRegistered",
+          payload: %{
+            project_id: refused,
+            path: "/tmp/#{refused}",
+            config: %{env: %{"FOREMAN_RUN_ID" => "evil"}}
+          }
+        }
+      ])
+
+    assert {:error, {:reserved_project_env_keys, ["FOREMAN_RUN_ID"]}} =
+             ProjectEnvironment.fetch_secrets(refused)
+  end
 end

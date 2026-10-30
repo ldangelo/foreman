@@ -506,7 +506,9 @@ defmodule ForemanServer.ProjectionStore do
   @typedoc """
   One projected operator question. `status` is `open`, `answered` or `expired`.
   The answer text is never projected (it is delivered to the agent and lives only
-  in the `QuestionAnswered` event).
+  in the `QuestionAnswered` event). `undelivered_reason` is set on an `answered` question whose
+  answer can never reach the agent (`QuestionAnswerUndelivered`); `reason` is why a question
+  expired.
   """
   @type question :: %{
           run_id: String.t(),
@@ -520,7 +522,8 @@ defmodule ForemanServer.ProjectionStore do
           opened_at_ms: integer() | nil,
           decided_at: String.t() | nil,
           answered_by: String.t() | nil,
-          reason: String.t() | nil
+          reason: String.t() | nil,
+          undelivered_reason: String.t() | nil
         }
 
   @doc """
@@ -560,7 +563,10 @@ defmodule ForemanServer.ProjectionStore do
   @spec undelivered_tool_calls() :: [tool_call()]
   def undelivered_tool_calls, do: GenServer.call(__MODULE__, :undelivered_tool_calls)
 
-  @doc "Answered operator questions (the question deliverer's startup recovery input)."
+  @doc """
+  Answered operator questions (the question deliverer's startup recovery input), including the
+  ones marked undelivered (`undelivered_reason`): the deliverer skips those.
+  """
   @spec answered_questions() :: [question()]
   def answered_questions, do: GenServer.call(__MODULE__, :answered_questions)
 
@@ -3265,7 +3271,8 @@ defmodule ForemanServer.ProjectionStore do
           opened_at_ms: iso_to_ms(e.at),
           decided_at: nil,
           answered_by: nil,
-          reason: nil
+          reason: nil,
+          undelivered_reason: nil
         }
 
         %{state | questions: Map.put_new(state.questions, {run_id, id}, entry)}
@@ -3285,6 +3292,19 @@ defmodule ForemanServer.ProjectionStore do
 
       _ ->
         Logger.warning("ProjectionStore skipped malformed QuestionAnswered")
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "QuestionAnswerUndelivered", payload) do
+    case decode_or_skip("QuestionAnswerUndelivered", payload) do
+      {:ok, %ForemanServer.Events.QuestionAnswerUndelivered{} = e} ->
+        update_question(state, e.run_id, e.question_id, fn question ->
+          %{question | undelivered_reason: e.reason}
+        end)
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed QuestionAnswerUndelivered")
         state
     end
   end

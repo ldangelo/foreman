@@ -187,6 +187,75 @@ defmodule ForemanServer.ProjectionStoreToolCallsTest do
     assert ProjectionStore.tool_call("r1", "ghost") == nil
   end
 
+  # `QuestionAnswerUndelivered` marks an answered question whose answer can never be delivered:
+  # the question stays answered and nothing else changes, so a log without the event rebuilds
+  # exactly as it did.
+  test "an undelivered answer marks the answered question and changes nothing else" do
+    question = fn id, at ->
+      ev("QuestionOpened", %{run_id: "r1", question_id: id, text: "?", at: at})
+    end
+
+    answered = fn id, at ->
+      ev("QuestionAnswered", %{
+        run_id: "r1",
+        question_id: id,
+        text: "a",
+        answered_by: "me",
+        at: at
+      })
+    end
+
+    :ok =
+      ProjectionStore.apply_events([
+        question.("qa", "2026-10-21T00:02:00Z"),
+        question.("qb", "2026-10-21T00:02:01Z"),
+        answered.("qa", "2026-10-21T00:03:00Z"),
+        answered.("qb", "2026-10-21T00:03:01Z"),
+        ev("QuestionAnswerUndelivered", %{
+          run_id: "r1",
+          question_id: "qa",
+          reason: "answer too long to deliver",
+          at: "2026-10-21T00:04:00Z"
+        })
+      ])
+
+    assert %{
+             status: "answered",
+             answered_by: "me",
+             decided_at: "2026-10-21T00:03:00Z",
+             reason: nil,
+             undelivered_reason: "answer too long to deliver"
+           } = ProjectionStore.question("r1", "qa")
+
+    assert %{status: "answered", undelivered_reason: nil} = ProjectionStore.question("r1", "qb")
+
+    # the deliverer's recovery input still lists both; the marker is what tells it to skip qa
+    assert Enum.sort(
+             for %{question_id: id, undelivered_reason: reason} <-
+                   ProjectionStore.answered_questions(),
+                 do: {id, reason}
+           ) == [{"qa", "answer too long to deliver"}, {"qb", nil}]
+
+    # neither open nor expired: nothing is waiting on the operator by this count
+    assert ProjectionStore.needs_you_counts(["r1"]).questions == %{}
+  end
+
+  test "a marker for an unknown question and a malformed marker are ignored, not fatal" do
+    :ok =
+      ProjectionStore.apply_events([
+        ev("QuestionAnswerUndelivered", %{
+          run_id: "r1",
+          question_id: "ghost",
+          reason: "r",
+          at: "2026-10-21T00:04:00Z"
+        }),
+        ev("QuestionAnswerUndelivered", %{run_id: "r1", bogus: true})
+      ])
+
+    assert ProjectionStore.question("r1", "ghost") == nil
+    assert ProjectionStore.answered_questions() == []
+  end
+
   test "the limit bounds a read and replay rebuilds the same projection" do
     events = for n <- 1..5, do: requested("r1", "c#{n}", "2026-10-21T00:0#{n}:00Z")
     :ok = ProjectionStore.apply_events(events)

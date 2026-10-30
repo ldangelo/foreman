@@ -15,10 +15,13 @@ defmodule ForemanServer.ProjectEnvironment do
       over `env`, de-duplicated, never empty strings. This list feeds log
       redaction (`WorkerLogPolicy`).
 
-  `secrets/1` is that list on its own: the one every text persisted about a project is
-  redacted with (the standing context, project memory, the coordinator conversation).
-  A name pattern never decides alone: a value stored as `DB_URL` is a secret too, unless it
-  is shorter than `min_stored_secret_chars/0` (a 1-character value would corrupt the text).
+  `secrets/1` is that list on its own: the one every text persisted or derived about a project
+  is redacted with (the standing context, project memory, the coordinator conversation, its
+  recorded actions and turn failures, question and approval summaries, thread transcripts and
+  PR-fix prompts; the persist paths that must not raise resolve it through
+  `ForemanServer.Coordinator.Redact.secrets/1`). A name pattern never decides alone: a value
+  stored as `DB_URL` is a secret too, unless it is shorter than `min_stored_secret_chars/0`
+  (a 1-character value would corrupt the text).
 
   `environment/1,2` returns the full normalised record (adds `setup_script` and
   `network`). Resolution never raises: an unknown project yields an empty env;
@@ -76,17 +79,32 @@ defmodule ForemanServer.ProjectEnvironment do
   redaction (`resolve/2`) is unchanged. Raises `ArgumentError` for an environment `resolve/2`
   refuses, as `WorkerEnvironment.build/2` does: a text is never persisted under a partial
   list. An unavailable secret store degrades as in `resolve/2` (logged, without the store's
-  values).
+  values). `fetch_secrets/1` is the same list as a typed result, for a persist path that must
+  not raise.
   """
   @spec secrets(String.t()) :: [String.t()]
   def secrets(project_id) when is_binary(project_id) do
-    case resolve_parts(project_id, []) do
-      {:ok, _env, stored, named} ->
-        dedupe(Enum.filter(stored, &(String.length(&1) >= @min_stored_secret_chars)) ++ named)
+    case fetch_secrets(project_id) do
+      {:ok, secrets} ->
+        secrets
 
       {:error, reason} ->
         raise ArgumentError,
               "project #{inspect(project_id)} environment is invalid: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  `secrets/1` without the raise: `{:ok, list}`, or `{:error, reason}` for an environment
+  `resolve/2` refuses (the one case `secrets/1` raises on). The caller decides what an
+  unusable list means; `ForemanServer.Coordinator.Redact.secrets/1` degrades to the built-in
+  patterns and logs.
+  """
+  @spec fetch_secrets(String.t()) :: {:ok, [String.t()]} | {:error, resolve_error()}
+  def fetch_secrets(project_id) when is_binary(project_id) do
+    with {:ok, _env, stored, named} <- resolve_parts(project_id, []) do
+      {:ok,
+       dedupe(Enum.filter(stored, &(String.length(&1) >= @min_stored_secret_chars)) ++ named)}
     end
   end
 

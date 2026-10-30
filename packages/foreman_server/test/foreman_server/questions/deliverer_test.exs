@@ -18,7 +18,7 @@ defmodule ForemanServer.Questions.DelivererTest do
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.Questions.Deliverer
+  alias ForemanServer.Questions.{Deliverer, DTO}
   alias ForemanServer.TestSupport.{Eventually, ProjectionStoreReset, UniqueIds}
   alias ForemanServer.{CommandGateway, CommandRouter, ProjectionStore}
 
@@ -44,6 +44,21 @@ defmodule ForemanServer.Questions.DelivererTest do
     def dispatch_system(%{type: "run.resume"} = command) do
       send(Process.whereis(:questions_deliverer_test), {:dispatched, command})
       {:error, :resume_refused}
+    end
+
+    def dispatch_system(command) do
+      send(Process.whereis(:questions_deliverer_test), {:dispatched, command})
+      {:ok, nil}
+    end
+  end
+
+  # Refuses only the undelivered marker: the answer cannot be delivered and that cannot be
+  # recorded either.
+  defmodule MarkerRefusingGateway do
+    @moduledoc false
+    def dispatch_system(%{type: "question.answer.undeliver"} = command) do
+      send(Process.whereis(:questions_deliverer_test), {:dispatched, command})
+      {:error, :marker_refused}
     end
 
     def dispatch_system(command) do
@@ -254,6 +269,138 @@ defmodule ForemanServer.Questions.DelivererTest do
         assert {:ok, %{event_type: "RunSteerQueued"}} =
                  Run.handle_command(started, %{type: "run.steer", payload: payload})
       end
+    end
+  end
+
+  # `question.answer` refuses an answer over the limit now, but one recorded before the limit
+  # existed is in the log (`QuestionAnswered`) and no retry can steer it: the run aggregate
+  # refuses its text on every attempt. It used to be logged as `text_too_long` at every start and
+  # never delivered, with nobody told. It is now marked undelivered once (a typed outcome, a
+  # durable event the operator can read) and not attempted again.
+  describe "an answer recorded before the answer limit existed" do
+    setup do
+      {project_id, run_id} = start_run!()
+      pause!(run_id)
+      question_id = "q-legacy-#{System.unique_integer([:positive])}"
+      limit = OperatorQuestion.max_answer_chars(question_id)
+
+      {:ok,
+       project_id: project_id,
+       run_id: run_id,
+       question_id: question_id,
+       limit: limit,
+       too_long: String.duplicate("a", limit + 5)}
+    end
+
+    test "recovery marks it undelivered once: nothing is steered, the log and the read model say why, the next start repeats nothing",
+         %{project_id: p, run_id: run_id, question_id: question_id, limit: limit, too_long: text} do
+      legacy_answer!(run_id, p, question_id, text)
+      stream = OperatorQuestion.stream_id(run_id, question_id)
+
+      log = capture_log(fn -> assert Deliverer.recover([]) == 1 end)
+
+      assert log =~ question_id
+      assert log =~ "undeliverable"
+      assert log =~ "the limit is #{limit}"
+      refute log =~ text
+
+      assert run_events(run_id, "RunSteerQueued") == []
+      assert run_events(run_id, "RunResumed") == []
+
+      assert [
+               %{event_type: "QuestionOpened"},
+               %{event_type: "QuestionAnswered"},
+               %{event_type: "QuestionAnswerUndelivered", data: marker}
+             ] = stream_events(stream)
+
+      assert field(marker, :run_id) == run_id
+      assert field(marker, :question_id) == question_id
+      assert field(marker, :reason) =~ "#{limit + 5} characters, the limit is #{limit}"
+
+      # still answered, now flagged: what `foreman questions list --all` and the API show
+      question =
+        Eventually.await(fn ->
+          case ProjectionStore.question(run_id, question_id) do
+            %{undelivered_reason: reason} = question when is_binary(reason) -> question
+            _ -> nil
+          end
+        end)
+
+      assert %{status: "answered", reason: nil} = question
+      assert DTO.build(question).undelivered_reason == question.undelivered_reason
+      assert DTO.build(question).status == "answered"
+
+      # the next start: nothing is attempted, logged or recorded again
+      log = capture_log(fn -> assert Deliverer.recover([]) == 0 end)
+      refute log =~ question_id
+      assert length(stream_events(stream)) == 3
+    end
+
+    test "deliver/4 reports it undeliverable, not failed: the marker is sent and no steer is",
+         %{run_id: run_id, question_id: question_id, limit: limit} do
+      text = String.duplicate("é", limit + 1)
+
+      capture_log(fn ->
+        assert {:undeliverable, {:answer_too_long, over, ^limit}} =
+                 Deliverer.deliver(run_id, question_id, text, gateway: RecordingGateway)
+
+        assert over == limit + 1
+      end)
+
+      assert_received {:dispatched,
+                       %{
+                         type: "question.answer.undeliver",
+                         command_id: "question-undeliver:" <> _,
+                         payload: %{run_id: ^run_id, question_id: ^question_id, reason: reason}
+                       }}
+
+      assert reason =~ "#{limit + 1} characters"
+      refute_received {:dispatched, %{type: "run.steer"}}
+    end
+
+    test "a marker that cannot be recorded is logged and the outcome is still undeliverable",
+         %{run_id: run_id, question_id: question_id, limit: limit, too_long: text} do
+      log =
+        capture_log(fn ->
+          assert {:undeliverable, {:answer_too_long, _, ^limit}} =
+                   Deliverer.deliver(run_id, question_id, text, gateway: MarkerRefusingGateway)
+        end)
+
+      assert log =~ "could not record that the answer to #{question_id} is undeliverable"
+      assert log =~ "marker_refused"
+      refute_received {:dispatched, %{type: "run.steer"}}
+    end
+
+    test "an answer that arrives while the deliverer runs is marked the same way",
+         %{run_id: run_id, question_id: question_id, too_long: text} do
+      deliverer = start_deliverer!(gateway: RecordingGateway)
+
+      capture_log(fn ->
+        send(
+          deliverer,
+          {:projection_event,
+           %{
+             event_type: "QuestionAnswered",
+             data: %{run_id: run_id, question_id: question_id, text: text}
+           }}
+        )
+
+        _ = :sys.get_state(deliverer)
+      end)
+
+      assert_received {:dispatched, %{type: "question.answer.undeliver"}}
+      refute_received {:dispatched, %{type: "run.steer"}}
+    end
+
+    test "an answer of exactly the limit is still steered, not marked",
+         %{run_id: run_id, question_id: question_id, limit: limit} do
+      assert :delivered =
+               Deliverer.deliver(run_id, question_id, String.duplicate("a", limit),
+                 gateway: RecordingGateway
+               )
+
+      assert_received {:dispatched, %{type: "run.steer"}}
+      refute_received {:dispatched, %{type: "question.answer.undeliver"}}
     end
   end
 
@@ -772,6 +919,45 @@ defmodule ForemanServer.Questions.DelivererTest do
   defp answer!(run_id, question_id, text, extra \\ %{}) do
     {:ok, _} =
       CommandGateway.dispatch_operator(answer_command(run_id, question_id, text, extra))
+  end
+
+  # An answer as an old event log holds it: written straight to the stream (the aggregate
+  # refuses such text now) and folded into the read model.
+  defp legacy_answer!(run_id, project_id, question_id, text) do
+    stream = OperatorQuestion.stream_id(run_id, question_id)
+    at = DateTime.to_iso8601(DateTime.utc_now())
+
+    opened = %{
+      run_id: run_id,
+      question_id: question_id,
+      agent_id: "agent-qd",
+      project_id: project_id,
+      text: "which database?",
+      timeout_ms: 300_000,
+      at: at
+    }
+
+    answered = %{
+      run_id: run_id,
+      question_id: question_id,
+      text: text,
+      answered_by: "operator",
+      at: at
+    }
+
+    :ok =
+      Store.append_to_stream(stream, 0, [
+        %EventStore.EventData{event_type: "QuestionOpened", data: opened, metadata: %{}},
+        %EventStore.EventData{event_type: "QuestionAnswered", data: answered, metadata: %{}}
+      ])
+
+    on_exit(fn -> Store.delete_stream(stream, :any_version, :hard) end)
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "QuestionOpened", payload: opened},
+        %{event_type: "QuestionAnswered", payload: answered}
+      ])
   end
 
   defp stream_events(stream) do

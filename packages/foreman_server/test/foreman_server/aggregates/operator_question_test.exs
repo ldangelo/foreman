@@ -168,4 +168,55 @@ defmodule ForemanServer.Aggregates.OperatorQuestionTest do
     assert {:error, {:question_not_open, "answered"}} =
              Q.handle_command(fold(["question.open", "question.answer"]), cmd("question.expire"))
   end
+
+  # An answer recorded before the answer limit existed can be too long to deliver. The deliverer
+  # marks it, once (it stays answered), so it is neither retried at every start nor silent.
+  describe "marking an answer undelivered (question.answer.undeliver)" do
+    test "an answered question is marked once, marking again is a no-op, and it stays answered" do
+      answered = fold(["question.open", "question.answer"])
+
+      assert {:ok,
+              %{
+                event_type: "QuestionAnswerUndelivered",
+                stream_id: "question:r1:q1",
+                payload: %{run_id: "r1", question_id: "q1", reason: "too long", at: at}
+              } = spec} =
+               Q.handle_command(answered, cmd("question.answer.undeliver", %{reason: "too long"}))
+
+      assert is_binary(at)
+
+      marked = Q.apply_event(answered, %{event_type: spec.event_type, payload: spec.payload})
+
+      assert {:ok, nil} =
+               Q.handle_command(marked, cmd("question.answer.undeliver", %{reason: "again"}))
+
+      # still answered: nothing re-opens it, and it cannot expire
+      assert {:error, {:question_not_open, "answered"}} =
+               Q.handle_command(marked, cmd("question.answer", %{text: "x"}))
+
+      assert {:error, {:question_not_open, "answered"}} =
+               Q.handle_command(marked, cmd("question.expire"))
+    end
+
+    test "only an answered question can be marked" do
+      for {types, status} <- [
+            {[], nil},
+            {["question.open"], "open"},
+            {["question.open", "question.expire"], "expired"}
+          ] do
+        assert {:error, {:question_not_answered, ^status}} =
+                 Q.handle_command(
+                   fold(types),
+                   cmd("question.answer.undeliver", %{reason: "too long"})
+                 )
+      end
+    end
+
+    test "the reason is required" do
+      answered = fold(["question.open", "question.answer"])
+
+      assert {:error, {:missing_or_invalid, :reason}} =
+               Q.handle_command(answered, cmd("question.answer.undeliver"))
+    end
+  end
 end
