@@ -134,7 +134,7 @@ The 7-character rows are informational: below the floor the value is not redacte
 | `foreman-mw5rz` | P2 bug, open (owner decision: not fixed in this change) | The 22-character value is in the server log, stdout and `~/.foreman/logs/foreman-server.log`: 11 occurrences in 3 Phoenix debug `Parameters:` lines (the same lines in both files): 2 MCP `tools/call` arguments (the agent's memory write) and 1 chat `text` (the operator message). The events table, the whole-database dump, memory, archive, runs dir and webhook capture are clean. |
 | `foreman-4ohex` | P3, INFO | The `jido_harness` cache (`$WORK/home/Library/Caches/jido_harness`) holds the agent's own event stream, including the value the agent read: 38 occurrences in 2 files. Reported as an INFO line, not a PASS/FAIL. |
 | `foreman-6u1s0` | P3 | Found while building the script: a workflow phase with `commit: true` whose agent only writes project memory fails with `checkout_written_instead_of_worktree`, because the guard ignores only `.beads/` (the files it named in run 1: `.foreman/.gitignore`, and `.foreman/sessions/run/<run>/manifest.json` + `project-context.md`). The script uses a valid `commit: false` workflow. |
-| `foreman-n2eh3` | P4 | String JSON-RPC `error.code` for typed MCP errors (section 2). |
+| `foreman-n2eh3` | P4 | ~~String JSON-RPC `error.code` for typed MCP errors (section 2).~~ Resolved: integer `error.code`, typed code in `error.data.code`. |
 
 PR #764 carries these beads (`foreman-mw5rz`, `foreman-6u1s0`, `foreman-4ohex`, `foreman-n2eh3`), closes `foreman-5fqso` and adds comments
 to `foreman-7c191`, `foreman-ngky4` and `foreman-azc2o`.
