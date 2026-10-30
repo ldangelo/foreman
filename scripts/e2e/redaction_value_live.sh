@@ -192,8 +192,13 @@ write_workflows() {
   # `task_types` must be unique across the catalog (the harness's `edit` workflow owns task/bug/chore/feature).
   {
     printf 'name: rv-memory-call\ndescription: E2E workflow of scripts/e2e/redaction_value_live.sh\ntask_types: [rv-memory-call]\n'
-    printf 'worktree:\n  enabled: true\n  branch: foreman/{task_id}/{run_id}\n  path: workspace\n  cleanup: on_success\nphases:\n'
-    printf '  - name: call\n    prompt: rv-memory-call-call.md\n    provider: pi\n    models:\n      default: %s\n    commit: true\n' "$E2E_AGENT_MODEL"
+    # The agent only calls an MCP tool and edits nothing, so the phase declares `commit: false`. The manifest validator then
+    # REQUIRES `worktree.cleanup: never` (with `cleanup: on_success` a commit:false phase with no later committing phase is
+    # INVALID and the workflow is not loaded, so every bead stays :unmapped: that is what a first attempt at this script hit).
+    # With `commit: true` instead, Workflow.CheckoutGuard fails the run because Foreman's own .foreman/ writes (memory
+    # .gitignore, the run archive) appear in the main checkout (a foreman bead is filed from that finding).
+    printf 'worktree:\n  enabled: true\n  branch: foreman/{task_id}/{run_id}\n  path: workspace\n  cleanup: never\nphases:\n'
+    printf '  - name: call\n    prompt: rv-memory-call-call.md\n    provider: pi\n    models:\n      default: %s\n    commit: false\n' "$E2E_AGENT_MODEL"
   } > "$WORK/workflows/rv-memory-call.yaml"
   cat > "$WORK/workflows/prompts/rv-memory-call-call.md" <<'MD'
 {{workflow_name}} :: {{phase_name}}
@@ -543,10 +548,11 @@ check_loc() {
 check_other() {
   co_tag=$1; co_v=$2; co_e=$3
   count_stream "$co_v" < <(find "$WORK" \( -path "$SECRET_DIR" -o -path "$WORK/pi-agent/sessions" -o -path "$WORK/home/.pi" -o -path "$OUT" \
-      -o -path "$SERVER_FILE_LOGS" -o -path "$RUNS_DIR" -o -path "$MEMORY_DIR" -o -path "$ARCHIVE_DIR" \) -prune \
+      -o -path "$SERVER_FILE_LOGS" -o -path "$RUNS_DIR" -o -path "$MEMORY_DIR" -o -path "$ARCHIVE_DIR" \
+      -o -path "$WORK/home/Library/Caches/jido_harness" \) -prune \
       -o -type f ! -path "$SERVER_LOG" ! -path "$HOOK_CAPTURE" -print0)
   report_loc "$co_tag" "$co_v" "$co_e" "every other file under $WORK" \
-    "find $WORK (pruned: secret store, pi session dirs, harness out/, the locations above) -type f | xargs grep -aoF -- '$co_v' | wc -l"
+    "find $WORK (pruned: secret store, pi session dirs, jido_harness cache (INFO line above), harness out/, the locations above) -type f | xargs grep -aoF -- '$co_v' | wc -l"
 }
 
 DB_DATA_TYPE=""
@@ -613,6 +619,17 @@ step_byte_search() {
   say "5. byte search, before cleanup removes the database and the work dir"
   note "excluded because they legitimately hold the value: the 0600 secret store ($SECRET_DIR) and the agent's own session files ($WORK/pi-agent/sessions, $WORK/home/.pi)"
   note "counts are occurrences per file (grep -aoF | wc -l); the events table counts rows"
+  # The jido_harness cache holds the AGENT'S OWN event stream (proc_*/run_*/00000000.jsonl). The agent was given the value by
+  # design (stored secrets are injected into its env), so the stream legitimately contains it, like the pi session files. It
+  # is reported as INFO with counts, not PASS/FAIL; whether that cache should be redacted is a product question (bead).
+  jc_dir="$WORK/home/Library/Caches/jido_harness"
+  if [ -d "$jc_dir" ]; then
+    jc_n=$(grep -raoF -- "$V22" "$jc_dir" 2>/dev/null | wc -l | tr -d ' ')
+    jc_f=$(grep -rlaF -- "$V22" "$jc_dir" 2>/dev/null | wc -l | tr -d ' ')
+    note "INFO (not PASS/FAIL): the jido_harness cache ($jc_dir) holds the agent's own event stream: the 22-char value occurs $jc_n time(s) in $jc_f file(s); cmd: grep -rlaF -- <V22> $jc_dir"
+  else
+    note "INFO: no jido_harness cache directory at $jc_dir"
+  fi
   t22="22-char value"
   t7="7-char value"
 
