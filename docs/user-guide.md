@@ -2871,6 +2871,7 @@ the run produced), `evaluator_retry_backoff_ms`, `max_concurrent_analyses`,
 
 - Command syntax: [CLI Reference](./cli-reference.md)
 - Adding a Jido Harness provider: [docs/guides/adding-a-jido-harness-provider.md](./guides/adding-a-jido-harness-provider.md)
+- Trying out Claude Projects (order, no-model checks, known issues): [docs/guides/testing-claude-projects.md](./guides/testing-claude-projects.md)
 
 ## Phase stall detection
 

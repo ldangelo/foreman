@@ -32,13 +32,13 @@ foreman doctor --project try-it
 
 ## Checks that need no model
 
-Each boots its own throwaway server and database, so run them one at a time. Observed on `main` at `096e29d3` (2026-10-30):
+Each boots its own throwaway server and database, so run them one at a time. The first two rows were observed on `main` at `096e29d3` (2026-10-30); the third on the branch that added the two failing-paste scenarios:
 
 | Script | Result |
 |---|---|
 | `devbox run -- bash scripts/e2e/mcp_schedule_update.sh` | 84 passed, 0 failed (18 s) |
 | `E2E_TICK_SLOTS=0 devbox run -- bash scripts/e2e/scheduled_tab_flow.sh` (headless Chromium) | 86 passed, 0 failed, 1 UNVERIFIED: the ~10 min wait that proves the ticker does not fire a deleted schedule is skipped (32 s) |
-| `bash scripts/e2e/claude_projects/overlap.sh` (self-test, no stack) | 28 passed, 0 failed |
+| `bash scripts/e2e/claude_projects/overlap.sh` (self-test, no stack) | 28 passed, 0 failed (`main` at `096e29d3` ran 26, before those two scenarios existed) |
 
 The scripts that run a real agent (`claude_projects_flow.sh`, `project_archive_flow.sh`, `coordinator_live_actions.sh`, ...) and their recorded evidence are indexed in `docs/acceptance/README.md`.
 
