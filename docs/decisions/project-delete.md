@@ -24,6 +24,34 @@ later, memory/library files. `Aggregates.Task` requires a project projection, an
 - `pause` (reversible, new admissions refused, in-flight work continues) and
   `archive` (hidden, refuses new work, needs no active runs) are distinct states.
 
+## Archive while a jobsite runs
+
+Status: accepted (owner decision, `foreman-msgf8` closed as not a bug); verified live on 2026-10-30.
+
+### Context
+
+`project.archive` is refused only while workflow runs hold a run reservation
+(`Aggregates.Project`). A jobsite holds no run reservation, so archiving a project
+whose jobsite is running is accepted.
+
+### Decision
+
+- The archive is accepted while a jobsite runs. That jobsite keeps running and
+  completes normally inside the archived project, exactly as in-flight work does
+  for a pause.
+- Only NEW jobsites are refused (`POST /api/jobsites` answers 422
+  `spec_project_unavailable`); after `foreman project reactivate <id>` a new
+  jobsite starts again.
+- Pinned by `test/foreman_server/jobsite/project_archive_test.exs` and run live on
+  2026-10-30 (`scripts/e2e/project_archive_flow.sh`, `docs/acceptance/e2e-live-verify-2026-10-30.md`):
+  the archive was accepted, the jobsite stayed `running` with its agent alive, a
+  second jobsite was refused 422 `spec_project_unavailable`, the released jobsite
+  completed, and a jobsite started after the reactivate completed.
+- The stricter reading (an archive needs no active work at all, jobsites
+  included) was considered and rejected by the owner.
+- Not covered: a multi-iteration jobsite's later iterations or PR creation inside an
+  archived project (`foreman-7p068`).
+
 ## Alternatives considered
 
 1. **Hard delete (drop the stream).** Orphans every run/task/jobsite referencing the
