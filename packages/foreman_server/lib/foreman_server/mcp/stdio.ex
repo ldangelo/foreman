@@ -20,7 +20,6 @@ defmodule ForemanServer.MCP.Stdio do
 
   alias ForemanServer.MCP.Auth
   alias ForemanServer.MCP.Dispatch
-  alias Anubis.MCP.Error
   alias Anubis.Server.Context
 
   # -------------------------------------------------------------------
