@@ -21,8 +21,10 @@
 #       schedule_id and an unknown argument are INVALID_PARAMS.
 #   (e) after `foreman project schedule delete` the update is refused `schedule_deleted`; an unknown schedule id is
 #       refused `schedule_not_found`.
-# JSON-RPC `error.code` is an integer for protocol errors but the tool errors carry the typed code as a STRING
-# (Dispatch.wrap puts it in error.code as is). The checks accept the typed code in error.code OR anywhere else in the
+# ~~JSON-RPC `error.code` is an integer for protocol errors but the tool errors carry the typed code as a STRING
+# (Dispatch.wrap puts it in error.code as is).~~ Resolved (foreman-n2eh3): Dispatch.error/2 now sends an INTEGER
+# error.code (-32602 / -32601 / -32001 / -32003, else -32000) and the typed code string in error.data.code. The
+# checks accept the typed code in error.code OR anywhere else in the
 # error object (message, data) and print the raw error body whenever one does not match.
 #
 # Run (devbox shell, like the other live harnesses):   devbox run -- bash scripts/e2e/mcp_schedule_update.sh

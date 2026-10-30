@@ -79,8 +79,10 @@ iteration): bead `foreman-7p068` stays open.
 - After `foreman project schedule delete` the update is refused `schedule_deleted` and the schedule does not come back; an unknown id is
   refused `schedule_not_found` and creates nothing.
 
-Observation (bead `foreman-n2eh3`, P4): these typed errors reach the client as a STRING JSON-RPC `error.code` (`"missing_or_invalid"`,
-`"INVALID_PARAMS"`, `"schedule_deleted"`), HTTP 200, not the integer codes JSON-RPC defines. The script accepts either form.
+~~Observation (bead `foreman-n2eh3`, P4): these typed errors reach the client as a STRING JSON-RPC `error.code` (`"missing_or_invalid"`,
+`"INVALID_PARAMS"`, `"schedule_deleted"`), HTTP 200, not the integer codes JSON-RPC defines.~~ Resolved (`foreman-n2eh3`): the error now carries an
+integer `error.code` (`-32602` for `missing_or_invalid`/`INVALID_PARAMS`, `-32000` for `schedule_deleted`/`schedule_not_found`) and the typed string in `error.data.code`
+(`mcp/dispatch.ex` `error/2`, `wire_code/1`; pinned in `mcp_transport_test.exs`). The script accepts either form.
 
 **Not run:** part 2 of the bead, the `question.answer` boundary with a real claude and a browser. `foreman-7c191` stays open for it.
 

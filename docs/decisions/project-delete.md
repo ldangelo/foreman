@@ -49,8 +49,12 @@ whose jobsite is running is accepted.
   completed, and a jobsite started after the reactivate completed.
 - The stricter reading (an archive needs no active work at all, jobsites
   included) was considered and rejected by the owner.
-- Not covered: a multi-iteration jobsite's later iterations or PR creation inside an
-  archived project (`foreman-7p068`).
+- ~~Not covered: a multi-iteration jobsite's later iterations or PR creation inside an
+  archived project (`foreman-7p068`).~~ Later iterations are decided: archive or pause
+  between iterations does not stop a multi-iteration jobsite (the loop does not re-read
+  the project; only new jobsites are refused), pinned by `project_archive_test.exs`
+  ("between iterations does not stop a multi-iteration jobsite"). Still not covered: PR
+  creation inside an archived project.
 
 ## Alternatives considered
 
