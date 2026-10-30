@@ -53,6 +53,7 @@ Make the compiler catch it; if it can't, fail loudly. Never degrade to a plausib
 
 - **A failing test is a failed build, full stop.** No "expected" or "known" failures, including the seed-dependent suite non-determinism (a bug to fix, not a threshold). A red `main` is a regression to fix immediately.
 - Before re-running a task to validate a fix, the fix must be committed on the branch under test. Don't benchmark from a dirty/ambiguous workspace; checkpoint (commit or patch) before any reset or cleanup.
+- **Never create a git worktree or scratch checkout under `/tmp` (or `/private/tmp`).** A reboot wipes it and any unpushed work dies with it. Use `/Users/ldangelo/Development/worktrees/<name>`, and push a WIP checkpoint of the branch early.
 - Toolchain is Elixir 1.20.4 / OTP 28 via devbox, mirrored in CI — change `devbox.json`, `ci.yml` and `jido-upstream-upgrade.yml` together. Verify with `devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'`.
 - `br` never commits or pushes. Follow this repo's git rules (commit only when asked) over generic workflow advice.
 
