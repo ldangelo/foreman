@@ -402,9 +402,9 @@ read paths of those system actors never raise: no project id (a global or legacy
 project whose environment `resolve/2` refuses is redacted by the built-in patterns only, with
 a warning naming the project id and error code (never a name or value); `Redact.text/3` and
 `data/3` WITHOUT an explicit `:secrets` list keep `secrets/1`'s strict contract (a refused
-environment raises). Known limits: a secret that is a substring of another secret is
-order-dependent; `PrFixRequested.note` is stored as the operator typed it (only the prompt built
-from it is redacted); `TurnRunner`'s own log line of a failed turn is not value-redacted. New text
+environment raises). Known limits: a shared FRAGMENT between two secrets (a suffix of one is a
+prefix of another) cannot be fixed by ordering, so the guarantee is that no listed value appears
+verbatim (`WorkerLogPolicy.redact/2` replaces the longest value first, whatever the caller's list order); `PrFixRequested` events stored before PR #761 are not rewritten (the operator's note is value-redacted in `CommandGateway` now, and `TurnRunner`'s failed-turn and action-reason log lines are redacted before they are cut); an unreadable secret store degrades redaction to the other values; redaction can lengthen a note near the 2000-character cap into `invalid_note`. Observed live 2026-10-30 (`scripts/e2e/redaction_value_live.sh`, `foreman-mw5rz`, open): the server's debug request log (Phoenix `Parameters:` lines, stdout and `foreman-server.log`) carries the arguments of an MCP `tools/call` and the text of a chat request before redaction, so a stored value an agent or operator sends through them is in the server log; every other durable surface searched was clean (`docs/acceptance/e2e-live-verify-2026-10-30.md`). New text
 persisted about a project MUST use `secrets/1` (through `Coordinator.Redact`), not
 `WorkerLogPolicy.redact/1` alone.
 Secret VALUES live only in `ForemanServer.SecretStore` (file backend, dir from

@@ -445,7 +445,7 @@ MCP `foreman_schedule_update` (write-gated) is the `schedule.update` command; th
 
 ### `foreman project delete <id>`
 
-Archive a project (**not** a purge: runs, tasks and event history are kept; reactivate with `foreman project reactivate <id>`). The server rejects the archive while active runs remain.
+Archive a project (**not** a purge: runs, tasks and event history are kept; reactivate with `foreman project reactivate <id>`). The server rejects the archive while active workflow runs remain (HTTP 409 `project_has_active_runs` naming the run ids); a running jobsite does not block it: the jobsite keeps running and completes inside the archived project, and new jobsites are refused (422 `spec_project_unavailable`) until `reactivate` (`docs/decisions/project-delete.md`).
 
 ```
 foreman project delete --force project-123
