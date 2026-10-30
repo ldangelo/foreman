@@ -561,46 +561,16 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   describe "lock release after timeout — global trans releases lock after SIGTERM" do
     test "lock is released after command times out; second call succeeds",
          %{temp_dir: temp_dir} do
-      # Strategy: call 1 sleeps and times out (SIGTERM kill). Call 2 succeeds immediately.
-      # If the lock is held by call 1, call 2 blocks indefinitely on :global.trans.
-      # The first invocation creates the marker and hangs (exec so the signalled
-      # OS process is the sleep itself); later invocations return at once.
-      marker = Path.join(temp_dir, "timeout.flag")
-      success_log = Path.join(temp_dir, "success.log")
-      # Both calls write to success_log so we can verify both ran.
-      fake_br_body =
-        [
-          "echo START >> \"#{success_log}\"",
-          "if [ ! -f \"#{marker}\" ]; then",
-          "  touch \"#{marker}\"",
-          "  exec sleep 30",
-          "fi",
-          "echo DONE >> \"#{success_log}\""
-        ]
-        |> Enum.join("\n")
+      # `exec`: the OS process the runner signals is then the sleep itself.
+      assert_lock_released_after_timeout(temp_dir, "exec sleep 30")
+    end
 
-      with_fake_br(temp_dir, fake_br_body, fn ->
-        db_path = Path.join(temp_dir, "timeout_unlock.db")
-
-        assert {:error, %{exit_code: exit_code, reason: :timeout}} =
-                 SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path}, timeout_ms: 200)
-
-        assert exit_code in [143, 137]
-
-        # No wait needed: cmd/3 reaps the timed-out OS process (wait_for_exit)
-        # before returning, so the lock is already released here. The second call runs in
-        # ANOTHER process: the `:global` lock is re-entrant for the process that took it, so
-        # a call from this process would pass even if the timeout path leaked the lock.
-        assert {:ok, %{exit_code: 0, stdout: _stdout}} =
-                 Task.async(fn ->
-                   SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path})
-                 end)
-                 |> Task.await(5_000)
-
-        # success_log contains START from both calls (first call ran, second ran)
-        assert File.read!(success_log) =~ "START"
-        assert File.read!(success_log) =~ "DONE"
-      end)
+    test "lock is released when the timeout kills the command before it got going; second call succeeds",
+         %{temp_dir: temp_dir} do
+      # The slow first exec described at `assert_lock_released_after_timeout/2`, forced: the
+      # fake br is still in its first second when the 200 ms timeout kills it, so it never
+      # reaches `exec sleep 30` (nor does it do anything else observable).
+      assert_lock_released_after_timeout(temp_dir, "sleep 1\n  exec sleep 30")
     end
 
     test "a timeout kills the whole process tree, not only the process the port started",
@@ -721,6 +691,58 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
       true ->
         Process.sleep(5) && do_await_condition(description, fun, deadline)
     end
+  end
+
+  # Call 1 hangs and its 200 ms timeout kills it; call 2 then runs in ANOTHER process against
+  # the same database_path and must return at once. If call 1 leaked the `:global` lock,
+  # call 2 blocks on it. It is another process because the lock is re-entrant for the process
+  # that took it: a call from this one would pass even if the timeout path leaked the lock.
+  # `hang` is the shell snippet call 1 runs.
+  #
+  # `hang.flag`, which THIS test creates for call 1 and removes before call 2, decides whether
+  # the fake br hangs, never "which invocation came first". The timeout kills call 1 wherever
+  # the script has got to by then, and on macOS that is not far: a script whose bytes were
+  # never executed before (every test's fake br embeds its own temp path) takes ~90 ms to
+  # start, and was seen to take 240 ms inside the suite and over 250 ms under load. A script
+  # that marked "I was first" itself (a marker it `touch`ed before hanging) was then killed
+  # before it did, call 2 became the first invocation and hung, and `Task.await/2` exited
+  # after 5 s. See docs/lessons/run-logs-known-issues.md, "A short timeout around a fresh
+  # fake executable".
+  defp assert_lock_released_after_timeout(temp_dir, hang) do
+    hang_flag = Path.join(temp_dir, "hang.flag")
+    success_log = Path.join(temp_dir, "success.log")
+
+    fake_br_body =
+      [
+        "if [ -f \"#{hang_flag}\" ]; then",
+        "  #{hang}",
+        "fi",
+        "echo DONE >> \"#{success_log}\""
+      ]
+      |> Enum.join("\n")
+
+    with_fake_br(temp_dir, fake_br_body, fn ->
+      db_path = Path.join(temp_dir, "timeout_unlock.db")
+      File.write!(hang_flag, "")
+
+      assert {:error, %{exit_code: exit_code, reason: :timeout}} =
+               SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path}, timeout_ms: 200)
+
+      assert exit_code in [143, 137]
+
+      # No wait needed: cmd/3 reaps the timed-out process tree before returning, so the lock
+      # is already released here.
+      File.rm!(hang_flag)
+
+      assert {:ok, %{exit_code: 0, stdout: _stdout}} =
+               Task.async(fn ->
+                 SystemBrRunner.cmd({:ready, %{}}, %{database_path: db_path})
+               end)
+               |> Task.await(5_000)
+
+      # Only a call that runs to the end writes DONE; call 1 never does.
+      assert File.read!(success_log) == "DONE\n"
+    end)
   end
 
   defp with_fake_br(temp_dir, body, fun) when is_binary(body) do
