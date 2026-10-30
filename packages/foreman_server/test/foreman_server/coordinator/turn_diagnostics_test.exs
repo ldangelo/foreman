@@ -13,6 +13,7 @@ defmodule ForemanServer.Coordinator.TurnDiagnosticsTest do
   @moduletag :tmp_dir
 
   alias ForemanServer.Coordinator.{Agent.Stub, Commands, Error, ProjectWorker, Turn}
+  alias ForemanServer.ProjectSecrets
   alias ForemanServer.Coordinator.Supervisor, as: CoordinatorSupervisor
   alias ForemanServer.CommandGateway
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
@@ -171,5 +172,33 @@ defmodule ForemanServer.Coordinator.TurnDiagnosticsTest do
     assert one(lines, "turn m1:a2 started") =~ "attempt=2"
     assert one(lines, "turn m1:a2 completed") =~ "actions: none"
     refute Enum.any?(lines, &String.contains?(&1, "SECRET"))
+  end
+
+  test "a failed turn's log line is redacted before it is cut: a secret straddling char 200 leaks no prefix",
+       %{project_id: p, script: script, tmp_dir: dir} do
+    store = Application.get_env(:foreman_server, :secret_store)
+
+    Application.put_env(
+      :foreman_server,
+      :secret_store,
+      Keyword.put(store, :dir, Path.join(dir, "secrets"))
+    )
+
+    on_exit(fn -> Application.put_env(:foreman_server, :secret_store, store) end)
+
+    secret = "postgres://svc:straddlepw99@db.internal:5432/app"
+    assert {:ok, _} = ProjectSecrets.set(p, "DB_URL", secret, "test")
+
+    # The secret starts 10 characters before the cut: unredacted, 10 of its characters are logged.
+    message = String.duplicate("y", 190) <> secret <> " tail"
+    Stub.push(script, [{:error, Error.new(:agent_failed, message)}])
+    say(p, "m1", "hello", "cli")
+
+    lines = coordinator_lines(p, script)
+    failed = one(lines, "turn m1:a1 failed")
+
+    refute failed =~ "postgres"
+    refute failed =~ "straddlepw99"
+    assert failed =~ "[REDACTED]"
   end
 end

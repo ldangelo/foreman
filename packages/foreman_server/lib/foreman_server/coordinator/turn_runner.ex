@@ -35,6 +35,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     Error,
     Executor,
     Runtime,
+    Redact,
     Tuning,
     Turn
   }
@@ -282,6 +283,9 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   end
 
   defp fail_turn(project_id, rt, turn_id, attempt, code, message) do
+    # One list for the log line and the persisted failure: the message is redacted BEFORE it
+    # is cut to 200 characters, so a secret straddling the cut leaves no prefix in the log.
+    message = Redact.text(project_id, to_string(message), secrets: Redact.secrets(project_id))
     log_turn_failed(project_id, turn_id, attempt, code, message)
 
     Commands.turn_fail(
