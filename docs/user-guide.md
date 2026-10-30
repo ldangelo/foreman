@@ -104,7 +104,9 @@ project's own checkout gained or changed files since the run's first phase
 started (a worker used the checkout's absolute path), the run **fails** with
 `:checkout_written_instead_of_worktree`, naming the files. The comparison is
 against the checkout's status when the run began, so edits already in progress
-are not blamed. It does not fire when the run committed anything, cannot see
+are not blamed, and Foreman's own writes (`.beads/`, `.foreman/.gitignore` and
+`.foreman/sessions/`) are not counted, so a committing workflow whose agent only
+writes project memory completes. It does not fire when the run committed anything, cannot see
 writes that leave `git status` unchanged (ignored paths), checks only the
 primary repository of a multi-repository run, and stays silent on a resumed
 executor. A committing workflow whose agent legitimately changed nothing (a
