@@ -55,3 +55,6 @@ redirect
 
 # Database backups (br writes these next to the DB; never track)
 *.db.bak
+
+# br WAL index sidecars: runtime state (see jobsite/git.ex; iterate.md)
+.br-wal-index-*
