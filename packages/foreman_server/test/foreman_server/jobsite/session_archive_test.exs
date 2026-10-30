@@ -247,8 +247,8 @@ defmodule ForemanServer.Jobsite.SessionArchiveTest do
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 2 end)
     assert :ok = Jobsite.pause(id, "pause for resume")
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
-    # `paused` is projected before the executor process exits: resuming in that
-    # gap is correctly refused as :already_running, so wait for it to be gone.
+    # `paused` is projected before the executor process exits; wait for the
+    # executor to be gone so its pause-time work is finished before asserting.
     wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
 
     dir = Path.join([root, "jobsite", id])

@@ -238,8 +238,8 @@ defmodule ForemanServer.Jobsite.PushAndMergeTest do
       ForemanServer.TestSupport.JobsiteSession.await!(id)
       assert :ok = Jobsite.pause(id, "pause before push")
       wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
-      # `paused` is projected before the executor process exits: resuming in that
-      # gap is correctly refused as :already_running, so wait for it to be gone.
+      # `paused` is projected before the executor process exits; wait for the
+      # executor to be gone so its pause-time work is finished before asserting.
       wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
       assert origin_branch(bare, "agent/resumed") == nil
 

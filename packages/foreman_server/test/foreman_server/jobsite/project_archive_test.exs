@@ -59,7 +59,23 @@ defmodule ForemanServer.Jobsite.ProjectArchiveTest do
     def run(request, _context) do
       pid = Application.fetch_env!(:jido_harness, :jobsite_archive_test_pid)
 
-      if request.prompt == "hold" do
+      send(pid, {:ran, request.prompt})
+
+      # "hold-first" holds only the first run, so a later iteration passes straight through.
+      first? =
+        request.prompt == "hold-first" and
+          :counters.get(Application.fetch_env!(:jido_harness, :jobsite_archive_test_counter), 1) ==
+            0
+
+      if request.prompt == "hold" or first? do
+        if first?,
+          do:
+            :counters.add(
+              Application.fetch_env!(:jido_harness, :jobsite_archive_test_counter),
+              1,
+              1
+            )
+
         send(pid, {:held, self()})
 
         receive do
@@ -75,8 +91,11 @@ defmodule ForemanServer.Jobsite.ProjectArchiveTest do
     end
   end
 
+  def held_counter, do: Application.fetch_env!(:jido_harness, :jobsite_archive_test_counter)
+
   setup %{tmp_dir: tmp_dir} do
     ProjectionStoreReset.reset!()
+    Application.put_env(:jido_harness, :jobsite_archive_test_counter, :counters.new(1, []))
     providers = Application.get_env(:jido_harness, :providers, %{})
     Application.put_env(:jido_harness, :providers, %{pi: Recorder})
     Application.put_env(:jido_harness, :jobsite_archive_test_pid, self())
@@ -84,6 +103,7 @@ defmodule ForemanServer.Jobsite.ProjectArchiveTest do
     on_exit(fn ->
       Application.put_env(:jido_harness, :providers, providers)
       Application.delete_env(:jido_harness, :jobsite_archive_test_pid)
+      Application.delete_env(:jido_harness, :jobsite_archive_test_counter)
       ProjectionStoreReset.reset!()
     end)
 
@@ -185,5 +205,33 @@ defmodule ForemanServer.Jobsite.ProjectArchiveTest do
     assert {:ok, %{jobsite_id: id}} = Jobsite.run(jobsite_opts(ctx, "after reactivation"))
     assert Jobsite.get(id).status == "completed"
     assert Jobsite.get(id).project_id == ctx.project_id
+  end
+
+  # foreman-7p068. "In-flight work continues" (docs/decisions/project-delete.md, CLAUDE.md
+  # section 26) is pinned to cover later iterations of a running jobsite: the iteration loop
+  # does not re-read the project, so archive or pause between iterations changes nothing for it.
+  # Only NEW jobsites are refused. If the policy ever becomes "a new iteration is new work",
+  # this test must change together with an iteration-boundary check in the engine.
+  for action <- ["project.archive", "project.pause"] do
+    test "#{action} between iterations does not stop a multi-iteration jobsite", ctx do
+      {:ok, id} =
+        Jobsite.run_async(jobsite_opts(ctx, "hold-first") ++ [max_iterations: 3])
+
+      assert_receive {:held, held_pid}, 5_000
+      assert_receive {:ran, "hold-first"}, 1_000
+
+      assert %{"status" => "accepted"} = command(unquote(action), ctx.project_id)
+
+      send(held_pid, :release)
+      await("the jobsite completes", fn -> Jobsite.get(id).status == "completed" end)
+
+      # All three iterations ran after the project left the active state.
+      assert_receive {:ran, "hold-first"}, 1_000
+      assert_receive {:ran, "hold-first"}, 1_000
+      assert length(Jobsite.get(id).iterations) == 3
+
+      assert {:error, %Error{code: :spec_project_unavailable}} =
+               Jobsite.run(jobsite_opts(ctx, "refused"))
+    end
   end
 end

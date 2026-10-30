@@ -77,7 +77,7 @@ defmodule ForemanServer.MCP.Stdio do
         {:ok, Anubis.Server.Frame.assign(frame, :auth_token, raw_token)}
 
       {:error, reason} ->
-        {:error, %Error{code: "UNAUTHORIZED", message: inspect(reason)}}
+        {:error, Dispatch.error("UNAUTHORIZED", inspect(reason))}
     end
   end
 

@@ -156,8 +156,9 @@ defmodule ForemanServer.Jobsite.ResumeTest do
 
     wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
 
-    # `paused` is projected before the executor process exits; resuming in that
-    # gap is correctly refused as :already_running, so wait for it to be gone.
+    # `paused` is projected before the executor process exits; wait for it to be
+    # gone so this resume does not depend on the grace wait (that gap is covered
+    # by the "projected paused" test below).
     wait_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
 
     paused = Jobsite.get(id)
@@ -238,6 +239,91 @@ defmodule ForemanServer.Jobsite.ResumeTest do
 
     assert {:ok, ^id} = Jobsite.resume_async(id)
     wait_until(fn -> Jobsite.get(id).status == "running" end)
+
+    assert :ok = Jobsite.cancel(id, "stop")
+    wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 15_000)
+  end
+
+  defp start_paused_jobsite! do
+    repo = tmp_repo!()
+
+    fake_agent =
+      Agents.pi("x",
+        binary: @fake_agent,
+        env: %{
+          "FAKE_AGENT_TEXT" => "did some work",
+          "FAKE_AGENT_SESSION_FIRST" => "1",
+          "FAKE_AGENT_SLEEP_ON_RUN" => "1",
+          "FAKE_AGENT_SLEEP_SECS" => "5"
+        }
+      )
+
+    {:ok, id} =
+      Jobsite.run_async(
+        repo_path: repo,
+        strategy: :merge_to_head,
+        sandbox: Sandboxes.host(),
+        agent: fake_agent,
+        prompt: "go",
+        max_iterations: 3,
+        completion_signal: "NEVER"
+      )
+
+    wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
+    ForemanServer.TestSupport.JobsiteSession.await!(id)
+    assert :ok = Jobsite.pause(id, "pause")
+    wait_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
+    wait_until(fn -> Executor.pid_for(id) == nil end)
+    id
+  end
+
+  test "resume waits for the executor to exit when the jobsite is projected paused" do
+    id = start_paused_jobsite!()
+
+    # Stand-in for the pausing executor that has not exited yet: registered under
+    # the jobsite id, alive until released. Status still reads `paused`.
+    test_pid = self()
+
+    standin =
+      spawn(fn ->
+        {:ok, _} = Registry.register(ForemanServer.Jobsite.Registry, id, nil)
+        send(test_pid, :standin_registered)
+
+        receive do
+          :exit -> :ok
+        end
+      end)
+
+    assert_receive :standin_registered
+    assert Executor.pid_for(id) == standin
+    assert Jobsite.get(id).status == "paused"
+
+    task = Task.async(fn -> Jobsite.resume_async(id) end)
+
+    # Still waiting while the stand-in lives (the old behaviour returned
+    # {:error, :already_running} immediately).
+    assert Task.yield(task, 300) == nil
+
+    ref = Process.monitor(standin)
+    send(standin, :exit)
+    assert_receive {:DOWN, ^ref, :process, ^standin, _}
+
+    assert {:ok, {:ok, ^id}} = Task.yield(task, 5_000)
+    wait_until(fn -> Jobsite.get(id).status == "running" end)
+    assert :ok = Jobsite.cancel(id, "stop")
+    wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 15_000)
+  end
+
+  test "resume refuses a genuinely running jobsite at once instead of waiting" do
+    id = start_paused_jobsite!()
+    assert {:ok, ^id} = Jobsite.resume_async(id)
+    wait_until(fn -> Jobsite.get(id).status == "running" end)
+
+    {micros, result} = :timer.tc(fn -> Jobsite.resume_async(id) end)
+
+    assert {:error, %Jobsite.Error{code: :already_running}} = result
+    # The paused grace wait is 2s; a running jobsite must not incur it.
+    assert micros < 1_000_000
 
     assert :ok = Jobsite.cancel(id, "stop")
     wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 15_000)

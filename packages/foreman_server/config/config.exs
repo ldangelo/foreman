@@ -358,15 +358,14 @@ config :foreman_server, :schedule,
 # external tee is needed; the console handler is unchanged). Disabled in test.
 config :foreman_server, :server_log,
   enabled: true,
-  path: Path.join(System.user_home!(), ".foreman/logs/foreman-server.log"),
+  # `path` is set in runtime.exs (home dir must be the runtime host's, not the builder's).
   max_bytes: 10_000_000,
   max_files: 5
 
 # Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
 # Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
-config :foreman_server, :secret_store,
-  backend: ForemanServer.SecretStore.File,
-  dir: Path.join(System.user_home!(), ".foreman/secrets")
+config :foreman_server, :secret_store, backend: ForemanServer.SecretStore.File
+# `dir` is set in runtime.exs (home dir resolved at boot, not at release build).
 
 # Secret values arrive as `value` in PUT /api/projects/:id/secrets/:name; Phoenix
 # must never log them (E4-S6).
