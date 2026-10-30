@@ -56,7 +56,7 @@ Make the compiler catch it; if it can't, fail loudly. Never degrade to a plausib
 - **Never create a git worktree or scratch checkout under `/tmp` (or `/private/tmp`).** A reboot wipes it and any unpushed work dies with it. Use `/Users/ldangelo/Development/worktrees/<name>`, and push a WIP checkpoint of the branch early.
 - Toolchain is Elixir 1.20.4 / OTP 28 via devbox, mirrored in CI — change `devbox.json`, `ci.yml` and `jido-upstream-upgrade.yml` together. Verify with `devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'`.
 - `br` never commits or pushes. Follow this repo's git rules (commit only when asked) over generic workflow advice.
-- **Breaking a big task into step beads** (details: `docs/lessons/beads-runtime-and-dispatch.md`): create the steps with `--parent <epic> --estimate <min> --status deferred`, chain them with `br dep add <step N> <step N-1>`, and NEVER give a step the `foreman-exec` label (BeadsWatcher would auto-dispatch it). Flush the ledger once per task.
+- **Step beads for a big task** (`docs/lessons/beads-runtime-and-dispatch.md`): `--parent <epic> --estimate <min> --status deferred`, chained with `br dep add`; NEVER the `foreman-exec` label. Commit the ledger once per task, gated per foreman-kq4nr.
 
 ## Commands
 
