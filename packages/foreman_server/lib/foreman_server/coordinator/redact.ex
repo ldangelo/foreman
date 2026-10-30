@@ -81,7 +81,9 @@ defmodule ForemanServer.Coordinator.Redact do
   @doc """
   `text/3` over JSON-shaped data: every string inside the maps and lists of `data` is redacted
   (the list is resolved as `text/3` does, including for `nil` and for a refused environment);
-  keys, structs and every other value are returned as they are.
+  keys, structs and every other value are returned as they are. That includes TUPLES, so a keyword
+  list (a list of `{atom, string}` tuples) is NOT scrubbed: pass maps, lists and strings (what
+  decoded JSON gives, the only shape its caller `Coordinator.Commands` has), or convert first.
   """
   @spec data(String.t() | nil, term(), keyword()) :: term()
   def data(project_id, data, opts \\ []), do: scrub(data, secrets_option(project_id, opts))
