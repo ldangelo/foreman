@@ -178,6 +178,7 @@ defmodule ForemanServer.ProjectSecretsTest do
       id = "project-#{Elixir.EventStore.UUID.uuid4()}"
       short = "abcdefgh"
       long = "abcdefghIJKLMNOP"
+
       # a short named value (no length floor) inside a stored one, and a stored value under the floor
       named_short = "ab"
       named_long = "abXYZ-named-secret"
