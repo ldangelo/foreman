@@ -129,6 +129,24 @@ defmodule ForemanServer.Notifier.MappingTest do
     assert match == %{}
   end
 
+  # foreman-a7i30: an answer recorded before the answer limit existed that no steer can carry is
+  # marked undelivered; the operator is told, because the run is still waiting for it.
+  test "an answer that can never be delivered is a warning that blocks the thread" do
+    assert {:ok,
+            %Rule{
+              class: :action_needed,
+              severity: :warning,
+              level: :blocked,
+              subject: "Answer could not be delivered",
+              body_fields: ["run_id", "reason"],
+              key_fields: ["question_id"],
+              url_field: nil,
+              match: match
+            }} = lookup("QuestionAnswerUndelivered", %{question_id: "q", run_id: "r"})
+
+    assert match == %{}
+  end
+
   test "an event the table does not know is ignored" do
     assert :ignore = lookup("RunStarted", %{run_id: "r"})
     assert :ignore = lookup("WorkerStdout", %{})

@@ -16,7 +16,7 @@ defmodule ForemanServerWeb.QuestionControllerTest do
   @endpoint ForemanServerWeb.Endpoint
   @token "question-controller-test-token"
 
-  @keys ~w(actions agent_id answered_by command_hints decided_at opened_at project_id question_id reason run_id status text)
+  @keys ~w(actions agent_id answered_by command_hints decided_at opened_at project_id question_id reason run_id status text undelivered_reason)
 
   setup do
     previous_token = Application.get_env(:foreman_server, :api_bearer_token)
@@ -131,6 +131,7 @@ defmodule ForemanServerWeb.QuestionControllerTest do
              "decided_at" => nil,
              "answered_by" => nil,
              "reason" => nil,
+             "undelivered_reason" => nil,
              "actions" => ["question.answer"],
              "command_hints" => %{
                "question.answer" => %{

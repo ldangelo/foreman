@@ -63,6 +63,11 @@ defmodule ForemanServer.Coordinator.Commands do
     )
   end
 
+  @doc """
+  Record a failed turn (`coordinator.turn.fail`). The failure message is redacted with the
+  project's list (`Redact`) BEFORE it is cut to 500 characters: a provider error can quote a
+  secret, and a cut before the redaction could leave half of one behind.
+  """
   @spec turn_fail(
           module(),
           String.t(),
@@ -74,6 +79,8 @@ defmodule ForemanServer.Coordinator.Commands do
         ) ::
           Dispatch.result()
   def turn_fail(gateway, project_id, turn_id, attempt, code, message, unhealthy_after) do
+    message = Redact.text(project_id, to_string(message), secrets: Redact.secrets(project_id))
+
     send_command(
       gateway,
       project_id,
@@ -84,17 +91,35 @@ defmodule ForemanServer.Coordinator.Commands do
         turn_id: turn_id,
         attempt: attempt,
         error_code: to_string(code),
-        message: message |> to_string() |> String.slice(0, 500),
+        message: String.slice(message, 0, 500),
         unhealthy_after: unhealthy_after
       }
     )
   end
 
+  # The parts of a recorded action that carry model- or operator-authored text.
+  @action_text_fields [:params, :reason, :result_ref]
+
+  @doc """
+  Record one action outcome (`coordinator.action.record`). Its `params` (the model's own
+  words: a brief, a note, a memory), `reason` and `result_ref` (thread titles) are redacted
+  with the project's list, resolved once for the whole record: the event never carries a
+  stored secret that was pasted into, or echoed by, the conversation.
+  """
   @spec record_action(module(), String.t(), String.t(), map()) :: Dispatch.result()
   def record_action(gateway, project_id, turn_id, %{action_id: action_id, status: status} = attrs) do
+    secrets = Redact.secrets(project_id)
+
     payload =
       attrs
       |> Map.take([:action_id, :kind, :params, :status, :reason, :result_ref])
+      |> Map.new(fn
+        {key, value} when key in @action_text_fields ->
+          {key, Redact.data(project_id, value, secrets: secrets)}
+
+        {key, value} ->
+          {key, value}
+      end)
       |> Map.merge(%{project_id: project_id, turn_id: turn_id})
 
     send_command(

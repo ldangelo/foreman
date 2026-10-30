@@ -12,15 +12,19 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
+  @db_url "postgres://svc:hunter2pw@db.internal:5432/app"
+
   alias ForemanServer.Agents.OperatorQuestionDispatcher
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted}
   alias ForemanServer.Agents.OperatorTimeout
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.TestSupport.{Eventually, UniqueIds}
+  alias ForemanServer.TestSupport.{Eventually, SecretStoreDir, UniqueIds}
   alias ForemanServer.Workflow.{AssetCatalog, Catalog}
-  alias ForemanServer.{Overview, ProjectionStore}
+  alias ForemanServer.{Overview, ProjectEnvironment, ProjectionStore}
 
   # Meck helper — calls :meck.new/2 before :meck.expect so passthrough stubs
   # are established for all three modules before the test runs.
@@ -268,6 +272,85 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
 
       assert %{timeout_ms: 123_456} =
                Eventually.await(fn -> ProjectionStore.question(run_id, question_id) end)
+    end
+
+    # The question is the agent's own words: it can quote a secret of the project. The
+    # aggregate redacts by name pattern only, so the project's stored values are redacted
+    # before the command reaches it. `DB_URL` looks like no secret by name.
+    @tag :tmp_dir
+    test "a stored project secret the agent quotes never reaches the event or the read model, whatever its name",
+         %{tmp_dir: tmp, n: n, question_id: question_id, agent_id: agent_id} do
+      SecretStoreDir.use_tmp_dir!(tmp)
+      run_id = UniqueIds.unique_run_id("qsecret")
+      project_id = "p-qsecret-#{n}"
+      SecretStoreDir.put!(project_id, "DB_URL", @db_url)
+      seed_task!(agent_id, project_id, run_id, %{})
+
+      assert {:ok, :started, _item} =
+               OperatorQuestionDispatcher.dispatch(
+                 question_signal(question_id, agent_id, "may I connect to #{@db_url} directly?")
+               )
+
+      assert {:ok, events} =
+               Store.read_stream_forward(OperatorQuestion.stream_id(run_id, question_id), 0, 10)
+
+      refute inspect(events) =~ @db_url
+      assert [%{event_type: "QuestionOpened", data: data}] = events
+      assert %{text: "may I connect to [REDACTED] directly?"} = atomized(data)
+
+      assert %{text: "may I connect to [REDACTED] directly?"} =
+               Eventually.await(fn -> ProjectionStore.question(run_id, question_id) end)
+    end
+
+    @tag :tmp_dir
+    test "a stored value shorter than the floor is not rewritten in the question",
+         %{tmp_dir: tmp, n: n, question_id: question_id, agent_id: agent_id} do
+      SecretStoreDir.use_tmp_dir!(tmp)
+      run_id = UniqueIds.unique_run_id("qshort")
+      project_id = "p-qshort-#{n}"
+      seven = String.duplicate("a", ProjectEnvironment.min_stored_secret_chars() - 1)
+      SecretStoreDir.put!(project_id, "SEVEN_CHR", seven)
+      SecretStoreDir.put!(project_id, "RETRY_COUNT", "1")
+      seed_task!(agent_id, project_id, run_id, %{})
+
+      assert {:ok, :started, _item} =
+               OperatorQuestionDispatcher.dispatch(
+                 question_signal(question_id, agent_id, "retry 1 time with #{seven}?")
+               )
+
+      assert [%{event_type: "QuestionOpened", data: data}] = question_events(run_id, question_id)
+      assert %{text: text} = atomized(data)
+      assert text == "retry 1 time with #{seven}?"
+    end
+
+    test "a question of a project whose environment is refused is recorded with the patterns alone, and the dispatch does not raise",
+         %{n: n, question_id: question_id, agent_id: agent_id} do
+      run_id = UniqueIds.unique_run_id("qrefused")
+      project_id = "p-qrefused-#{n}"
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRegistered",
+            payload: %{
+              project_id: project_id,
+              path: "/tmp/#{project_id}",
+              config: %{env: %{"FOREMAN_RUN_ID" => "sneaky"}}
+            }
+          }
+        ])
+
+      seed_task!(agent_id, project_id, run_id, %{})
+
+      capture_log(fn ->
+        assert {:ok, :started, _item} =
+                 OperatorQuestionDispatcher.dispatch(
+                   question_signal(question_id, agent_id, "token=abc123 ok?")
+                 )
+      end)
+
+      assert [%{event_type: "QuestionOpened", data: data}] = question_events(run_id, question_id)
+      assert %{text: "token=[REDACTED] ok?"} = atomized(data)
     end
   end
 

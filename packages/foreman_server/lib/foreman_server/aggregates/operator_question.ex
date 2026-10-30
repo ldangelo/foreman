@@ -3,7 +3,9 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
   An operator question (`question:<run_id|global>:<question_id>`), the first-class
   state behind the agent -> inbox -> operator flow.
 
-  State machine: `open -> answered | expired`; answered and expired are terminal.
+  State machine: `open -> answered | expired`; answered and expired are terminal. An answered
+  question whose answer can never be delivered is MARKED (`question.answer.undeliver`) and stays
+  answered.
 
   Commands:
 
@@ -19,6 +21,10 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
       too long to be delivered is refused: `{:error, {:answer_too_long, length, max}}`.
     * `question.expire` (system) - payload `run_id`, `question_id`, optional
       `reason`. Only an open question expires.
+    * `question.answer.undeliver` (system) - payload `run_id`, `question_id`, `reason`.
+      Records `QuestionAnswerUndelivered`: the recorded answer is too long to be delivered (see
+      below) and the deliverer will not retry it. Only an answered question can be marked
+      (`{:error, {:question_not_answered, status}}` otherwise); marking twice is `{:ok, nil}`.
 
   ## The answer limit
 
@@ -34,6 +40,10 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
   recorded before the bound existed must stay answerable. A question of no run is answered
   on the signal bus, a path with no cap of its own; it gets the same limit, so one rule holds
   for every question.
+
+  An answer recorded BEFORE this limit existed can exceed it. Such an answer can never be
+  delivered, so `ForemanServer.Questions.Deliverer` marks it (`question.answer.undeliver`,
+  `QuestionAnswerUndelivered`) instead of retrying and logging it at every start.
   """
   @behaviour ForemanServer.Aggregate
 
@@ -48,7 +58,7 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
   defmodule State do
     @moduledoc "Lifecycle state of one operator question."
     @enforce_keys [:status]
-    defstruct [:status]
+    defstruct [:status, undelivered?: false]
   end
 
   @doc "Stream id for a question; `:` in either id is escaped."
@@ -92,6 +102,7 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
       "QuestionOpened" -> %State{state | status: "open"}
       "QuestionAnswered" -> %State{state | status: "answered"}
       "QuestionExpired" -> %State{state | status: "expired"}
+      "QuestionAnswerUndelivered" -> %State{state | undelivered?: true}
       _ -> state
     end
   end
@@ -159,6 +170,23 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
     end
   end
 
+  def handle_command(%State{} = state, %{type: "question.answer.undeliver", payload: payload}) do
+    with {:ok, run_id, question_id} <- ids(payload),
+         {:ok, reason} <- Aggregate.required_binary(Aggregate.get(payload, :reason), :reason),
+         :ok <- require_answered(state) do
+      if state.undelivered? do
+        {:ok, nil}
+      else
+        {:ok,
+         %{
+           stream_id: stream_id(run_id, question_id),
+           event_type: "QuestionAnswerUndelivered",
+           payload: %{run_id: run_id, question_id: question_id, reason: reason, at: now(payload)}
+         }}
+      end
+    end
+  end
+
   def handle_command(_state, _command), do: :unhandled
 
   defp ids(payload) do
@@ -219,6 +247,9 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
 
   defp require_open(%State{status: "open"}), do: :ok
   defp require_open(%State{status: status}), do: {:error, {:question_not_open, status}}
+
+  defp require_answered(%State{status: "answered"}), do: :ok
+  defp require_answered(%State{status: status}), do: {:error, {:question_not_answered, status}}
 
   defp escape(value), do: String.replace(value, ":", "%3A")
 end

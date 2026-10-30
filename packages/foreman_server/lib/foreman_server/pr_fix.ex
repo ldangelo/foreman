@@ -26,14 +26,19 @@ defmodule ForemanServer.PrFix do
       is taken by something else, or no session id was persisted, no session is resumed and
       the prompt carries the context instead - `resumed_session: false`.
 
+  The prompt is redacted with the run's project's secret values (`Coordinator.Redact`: every
+  stored secret of 8 or more characters whatever its name, plus the env values whose names
+  look secret) as well as the built-in patterns: the check output, comment bodies and
+  operator note, resolved once per plan. A run with no resolvable project keeps the patterns.
+
   Typed errors: `{:pr_not_watched, url}`, `{:pr_not_open, status}`, `:branch_unknown`,
   `{:branch_unsafe, name}`, `{:project_unresolved, id}`, `{:fetch_failed, reason}`,
   and whatever `Jobsite.Spec.from_json/2` rejects (`%Jobsite.Error{}`).
   """
 
+  alias ForemanServer.Coordinator.Redact
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.Jobsite.{Error, Git, Spec}
-  alias ForemanServer.Overwatch.WorkerLogPolicy
   alias ForemanServer.PrFix.Prompt
   alias ForemanServer.ProjectionStore
 
@@ -74,7 +79,8 @@ defmodule ForemanServer.PrFix do
          worktree = original_worktree(run_id, record, head),
          {:ok, attach} <- attach(repo_path, head, worktree),
          agent = agent(run, attach.resume?),
-         prompt = render(kind, record, status, head, base, pr_url, opts),
+         redact = Redact.redactor(run.project_id),
+         prompt = render(kind, record, status, head, base, pr_url, redact, opts),
          {:ok, spec_opts} <- spec_opts(run, repo_path, head, prompt, agent, attach, kind) do
       {:ok,
        %{
@@ -213,23 +219,26 @@ defmodule ForemanServer.PrFix do
 
   # -- prompt ------------------------------------------------------------------
 
-  defp render(kind, record, status, head, base, pr_url, opts) do
-    {values, data} = prompt_data(kind, status, record, pr_url, opts)
+  defp render(kind, record, status, head, base, pr_url, redact, opts) do
+    {values, data} = prompt_data(kind, status, record, pr_url, redact, opts)
 
+    # Everything the agent reads is redacted with the project's secret values, whatever the
+    # secret's name: the untrusted data BEFORE it is cut to its byte limit (a cut first could
+    # leave half of a secret behind) and the operator's note, which may have pasted one.
     Prompt.render(
       Map.fetch!(@templates, kind),
       %{
         "head_branch" => head,
         "base_branch" => base,
         "pr_url" => pr_url,
-        "note" => Keyword.get(opts, :note) || "",
-        "data" => truncate(data, @max_data_bytes)
+        "note" => redact.(Keyword.get(opts, :note) || ""),
+        "data" => data |> redact.() |> truncate(@max_data_bytes)
       }
       |> Map.merge(values)
     )
   end
 
-  defp prompt_data("ci", %PrStatus{} = status, _record, pr_url, opts) do
+  defp prompt_data("ci", %PrStatus{} = status, _record, pr_url, redact, opts) do
     failing = Enum.filter(status.checks, &(&1.state == :failing))
 
     lines =
@@ -237,14 +246,14 @@ defmodule ForemanServer.PrFix do
         "- #{check.name} [#{check.conclusion || "failed"}] #{check.url || ""}"
       end)
 
-    logs = failing |> Enum.map(&log_excerpt(pr_url, &1, opts)) |> Enum.reject(&is_nil/1)
+    logs = failing |> Enum.map(&log_excerpt(pr_url, &1, redact, opts)) |> Enum.reject(&is_nil/1)
 
     lines = if lines == [], do: ["(none reported failing at fetch time)"], else: lines
 
     {%{}, Enum.join(["Failing checks:" | lines] ++ ["" | logs], "\n")}
   end
 
-  defp prompt_data("comments", %PrStatus{} = status, _record, _pr_url, _opts) do
+  defp prompt_data("comments", %PrStatus{} = status, _record, _pr_url, _redact, _opts) do
     threads =
       for %{resolved: false} = thread <- status.threads || [] do
         comments =
@@ -271,19 +280,21 @@ defmodule ForemanServer.PrFix do
      )}
   end
 
-  defp prompt_data("conflicts", %PrStatus{} = status, _record, _pr_url, _opts) do
+  defp prompt_data("conflicts", %PrStatus{} = status, _record, _pr_url, _redact, _opts) do
     {%{}, "Merge state reported by GitHub: #{status.merge_state_status || "unknown"}"}
   end
 
   defp empty_as_none([]), do: ["(none)"]
   defp empty_as_none(list), do: list
 
-  defp log_excerpt(pr_url, check, opts) do
+  # The log is redacted whole BEFORE the tail is cut: a secret that straddles the cut would
+  # otherwise survive as its own tail.
+  defp log_excerpt(pr_url, check, redact, opts) do
     fetcher = Keyword.get(opts, :log_fetcher, &default_log/2)
 
     case fetcher.(pr_url, check) do
       {:ok, text} when is_binary(text) and text != "" ->
-        "Log excerpt for #{check.name} (tail):\n" <> tail(text)
+        "Log excerpt for #{check.name} (tail):\n" <> tail(redact.(text))
 
       _unavailable ->
         nil
@@ -303,12 +314,11 @@ defmodule ForemanServer.PrFix do
   end
 
   # Log text is untrusted: valid UTF-8 first (the regex raises on invalid bytes), then
-  # ASCII only, then redacted.
+  # ASCII only. It was redacted before the cut (`log_excerpt/4`).
   defp scrub_log(bytes) do
     bytes
     |> String.replace_invalid("?")
     |> String.replace(~r/[^\x00-\x7F]|\x00/u, "?")
-    |> WorkerLogPolicy.redact()
   end
 
   # A byte slice can start inside a multibyte character: drop the orphaned

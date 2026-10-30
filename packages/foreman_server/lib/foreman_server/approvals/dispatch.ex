@@ -13,7 +13,7 @@ defmodule ForemanServer.Approvals.Dispatch do
 
   @command_types ~w(
     tool.request tool.deny tool.finish tool.expire
-    question.open question.expire
+    question.open question.expire question.answer.undeliver
     run.pause run.resume run.steer
   )
 

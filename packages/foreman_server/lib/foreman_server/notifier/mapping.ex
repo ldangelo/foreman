@@ -17,7 +17,8 @@ defmodule ForemanServer.Notifier.Mapping do
     * run or jobsite completed -> `:run_update` (`:progress`)
     * review verdict: `not_met` -> `:action_needed` (`:blocked`), any other
       verdict -> `:run_update` (`:progress`)
-    * agent needs input (`QuestionOpened`, `QuestionExpired`) and approval
+    * agent needs input (`QuestionOpened`, `QuestionExpired`), an operator answer that can never
+      reach the agent (`QuestionAnswerUndelivered`) and approval
       requested (`ToolCallRequested`, `ToolCallExpired`) -> `:action_needed`
     * PR ready for review (`PrReady`) -> `:run_update`; CI failing -> `:failure`;
       changes requested or exhausted PR fix attempts -> `:action_needed`
@@ -141,6 +142,15 @@ defmodule ForemanServer.Notifier.Mapping do
       severity: :warning,
       level: :blocked,
       subject: "Question expired unanswered",
+      body_fields: ~w(run_id reason),
+      key_fields: ~w(question_id)
+    },
+    %{
+      event_type: "QuestionAnswerUndelivered",
+      class: :action_needed,
+      severity: :warning,
+      level: :blocked,
+      subject: "Answer could not be delivered",
       body_fields: ~w(run_id reason),
       key_fields: ~w(question_id)
     },

@@ -38,6 +38,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   alias ForemanServer.Agents.OperatorTimeout
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Approvals.Dispatch
+  alias ForemanServer.Coordinator.Redact
   alias ForemanServer.Inbox.SharedInbox
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.Catalog
@@ -92,9 +93,15 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   # the asking task's run (`"global"` when the question belongs to no run).
   # Idempotent on the question id, so a re-ingested signal opens it once. A
   # failure is logged, never raised: the inbox item already exists.
+  #
+  # The question is the agent's own words and may quote a secret. The aggregate is pure and
+  # redacts by name pattern only, so the project's secret VALUES are redacted here, before the
+  # text can reach the event (`Redact.secrets/1` does not raise: no project, or a list that
+  # cannot be built, leaves the patterns alone).
   defp record_question(data, question_id, agent_id, timeout_ms) do
     task = ProjectionStore.task_projection(agent_id)
     run_id = (task && Map.get(task, :run_id)) || "global"
+    project_id = task && Map.get(task, :project_id)
 
     command = %{
       type: "question.open",
@@ -104,8 +111,8 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
         run_id: run_id,
         question_id: question_id,
         agent_id: agent_id,
-        project_id: task && Map.get(task, :project_id),
-        text: question_text(data),
+        project_id: project_id,
+        text: data |> question_text() |> redact(project_id),
         timeout_ms: timeout_ms
       }
     }
@@ -127,6 +134,12 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
       _ -> nil
     end
   end
+
+  # One resolution of the project's list for this one text.
+  defp redact(nil, _project_id), do: nil
+
+  defp redact(text, project_id),
+    do: Redact.text(project_id, text, secrets: Redact.secrets(project_id))
 
   # Resolve operator_timeout_ms from the workflow manifest, falling back to the
   # default.  The lookup chain is: task_id → task projection → workflow_snapshot

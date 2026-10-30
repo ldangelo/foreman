@@ -6,11 +6,14 @@ defmodule ForemanServer.Approvals.Requester do
   The request is idempotent: its `command_id` is derived from the run and tool
   call ids, so the same permission need reported twice appends one
   `ToolCallRequested`. The raw tool input is never stored: `input` is rendered to
-  a short string here and redacted and cut to 500 characters by the aggregate.
+  a string, redacted with the project's secret VALUES (`ForemanServer.Coordinator.Redact`,
+  whatever the secret's name), cut to 2000 characters here, and redacted by name
+  pattern again and cut to 500 characters by the aggregate.
   """
 
   alias ForemanServer.Aggregates.ToolCall
   alias ForemanServer.Approvals.{Capability, Dispatch}
+  alias ForemanServer.Coordinator.Redact
 
   @type context :: %{
           required(:run_id) => String.t(),
@@ -34,6 +37,7 @@ defmodule ForemanServer.Approvals.Requester do
       when is_binary(run_id) and run_id != "" and is_binary(tool_name) do
     tool_call_id = Keyword.get(opts, :tool_call_id) || derived_id(tool_name, opts)
     provider = context |> Map.get(:provider) |> provider_name()
+    project_id = Map.get(context, :project_id)
 
     command = %{
       type: "tool.request",
@@ -43,8 +47,8 @@ defmodule ForemanServer.Approvals.Requester do
         run_id: run_id,
         tool_call_id: tool_call_id,
         tool_name: tool_name,
-        input_summary: render(input),
-        project_id: Map.get(context, :project_id),
+        input_summary: summarize(input, project_id),
+        project_id: project_id,
         provider: provider,
         requested_by: "agent",
         delivery:
@@ -73,17 +77,24 @@ defmodule ForemanServer.Approvals.Requester do
   defp provider_name(provider) when is_atom(provider), do: Atom.to_string(provider)
   defp provider_name(provider) when is_binary(provider), do: provider
 
-  defp render(nil), do: nil
-  defp render(input) when is_binary(input), do: String.slice(input, 0, @raw_input_limit)
+  # The input as text, redacted with the project's secret values and only THEN bounded: a cut
+  # first could leave half of a secret behind. The list is resolved once, for this one input.
+  defp summarize(nil, _project_id), do: nil
+
+  defp summarize(input, project_id) do
+    input
+    |> render()
+    |> then(&Redact.text(project_id, &1, secrets: Redact.secrets(project_id)))
+    |> String.slice(0, @raw_input_limit)
+  end
+
+  defp render(input) when is_binary(input), do: input
 
   # JSON first: the aggregate's redaction understands `"key": "value"` pairs.
   defp render(input) do
-    text =
-      case Jason.encode(input) do
-        {:ok, json} -> json
-        {:error, _} -> inspect(input, limit: 20, printable_limit: @raw_input_limit)
-      end
-
-    String.slice(text, 0, @raw_input_limit)
+    case Jason.encode(input) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(input, limit: 20, printable_limit: @raw_input_limit)
+    end
   end
 end
