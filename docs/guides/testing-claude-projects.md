@@ -4,9 +4,10 @@ A short front door for someone testing the Projects feature set (epics E0-E16). 
 
 ## Prerequisites
 
-- A checkout of `main`, and `devbox run --` for every command (it pins Elixir 1.20.4 / OTP 28, `go`, `jq`, `br`, `pi`).
+- A checkout of `main`, and `devbox run --` for every server and script command. Devbox pins Elixir 1.20.4 / OTP 28, Postgres, `jq`, `git` and `gh`; it does NOT provide `go`, `br` or `pi`, which must already be on your `PATH` (the e2e scripts check and exit 1 when one is missing).
+- The `foreman` CLI: build it with `cd packages/foreman_cli && go build -o foreman ./cmd/foreman` and put the binary on `PATH` (or call it by path). Do not trust an old binary: rebuild after pulling.
 - Postgres on `localhost:55432` (user and password `postgres`): `docker start foreman-postgres` (see `docs/dev-setup.md`).
-- For anything that runs an agent: a provider credential for `pi` (the acceptance runs used minimax) or an authenticated `claude` CLI. Without one, everything below the "no model needed" line still works.
+- For anything that runs an agent: a provider credential for `pi` (the acceptance runs used minimax) or an authenticated `claude` CLI. The checks under "Checks that need no model" run without one.
 - Use a scratch repository and **throwaway secrets**. See "Known issues", first bullet.
 
 ## Start
