@@ -52,3 +52,6 @@ redirect
 *-fsqlite-ns-use
 *.vacuum-wal-cert*
 *.fsqlite-migration-state
+
+# Database backups (br writes these next to the DB; never track)
+*.db.bak
