@@ -170,6 +170,53 @@ defmodule ForemanServer.ProjectSecretsTest do
     assert Enum.sort(all) == Enum.sort(["1", short, exact, "ab", "k"])
   end
 
+  for {label, short_name, long_name} <- [
+        {"shorter secret listed first", "A_SHORT_VALUE", "B_LONG_VALUE"},
+        {"longer secret listed first", "B_SHORT_VALUE", "A_LONG_VALUE"}
+      ] do
+    test "a secret that is a substring of another never leaves a remainder of the longer one (#{label})" do
+      id = "project-#{Elixir.EventStore.UUID.uuid4()}"
+      short = "abcdefgh"
+      long = "abcdefghIJKLMNOP"
+      # a short named value (no length floor) inside a stored one, and a stored value under the floor
+      named_short = "ab"
+      named_long = "abXYZ-named-secret"
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          type: "project.register",
+          payload: %{
+            project_id: id,
+            path: "/tmp/#{id}",
+            config: %{env: %{"LEGACY_API_KEY" => named_short, "LEGACY_TOKEN" => named_long}}
+          },
+          aggregate_id: "project:#{id}"
+        })
+
+      {:ok, _} = ProjectSecrets.set(id, unquote(short_name), short, "t")
+      {:ok, _} = ProjectSecrets.set(id, unquote(long_name), long, "t")
+
+      text = "short=#{short} long=#{long} named=#{named_long} short-named=#{named_short}"
+      expected = "short=[REDACTED] long=[REDACTED] named=[REDACTED] short-named=[REDACTED]"
+
+      by_length = fn list -> list == Enum.sort_by(list, &(-byte_size(&1))) end
+
+      assert {:ok, list} = ProjectEnvironment.fetch_secrets(id)
+      assert by_length.(list)
+      assert Enum.sort(list) == Enum.sort([short, long, named_short, named_long])
+      assert ProjectEnvironment.secrets(id) == list
+
+      assert {:ok, %{secrets: all}} = ProjectEnvironment.resolve(id)
+      assert by_length.(all)
+
+      for secrets <- [list, all] do
+        assert ForemanServer.Overwatch.WorkerLogPolicy.redact(text, secrets) == expected
+      end
+
+      assert ForemanServer.Coordinator.Redact.text(id, text) == expected
+    end
+  end
+
   test "secrets/1 raises for an environment resolve/2 refuses: a partial list is never returned" do
     id = "project-#{Elixir.EventStore.UUID.uuid4()}"
 
