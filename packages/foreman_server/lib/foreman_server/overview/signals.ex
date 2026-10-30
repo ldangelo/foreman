@@ -2,8 +2,8 @@ defmodule ForemanServer.Overview.Signals do
   @moduledoc """
   Per-thread "needs you" counts that do not come from the thread read model:
   pending tool-call approvals (E8-S2), open operator questions (E8-S4) and, for a
-  paused thread, the expired requests and undelivered approvals that explain why
-  it is still waiting (E8-S5).
+  paused thread, the expired requests, undelivered approvals and undelivered question
+  answers that explain why it is still waiting (E8-S5).
 
   All of them are read from `ForemanServer.ProjectionStore`, keyed by the thread's
   owning ids: a workflow thread's `run_ids`, or the jobsite id for a jobsite
@@ -21,11 +21,12 @@ defmodule ForemanServer.Overview.Signals do
           open_questions: non_neg_integer(),
           expired_approvals: non_neg_integer(),
           expired_questions: non_neg_integer(),
+          undelivered_answers: non_neg_integer(),
           failed_approval_deliveries: non_neg_integer()
         }
 
   @no_approvals %{pending: 0, expired: 0, failed_deliveries: 0}
-  @no_questions %{open: 0, expired: 0}
+  @no_questions %{open: 0, expired: 0, undelivered: 0}
 
   @doc """
   Pending approval and open question counts for each of `threads`, as
@@ -53,14 +54,16 @@ defmodule ForemanServer.Overview.Signals do
     end)
   end
 
-  # Expired requests and undelivered approvals matter only while the thread is
-  # still stuck (`paused`): once it resumes they are history, not "waiting on you".
+  # Expired requests, undelivered approvals and answers that never reached the agent
+  # matter only while the thread is still stuck (`paused`): once it resumes (the
+  # operator steers it with a deliverable message) they are history, not "waiting on you".
   defp signals(stuck?, approvals, questions) do
     %{
       pending_approvals: approvals.pending,
       open_questions: questions.open,
       expired_approvals: if(stuck?, do: approvals.expired, else: 0),
       expired_questions: if(stuck?, do: questions.expired, else: 0),
+      undelivered_answers: if(stuck?, do: questions.undelivered, else: 0),
       failed_approval_deliveries: if(stuck?, do: approvals.failed_deliveries, else: 0)
     }
   end

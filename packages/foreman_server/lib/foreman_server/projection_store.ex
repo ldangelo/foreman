@@ -460,7 +460,11 @@ defmodule ForemanServer.ProjectionStore do
         }
 
   @typedoc "Operator-question counts of one subject (`needs_you_counts/1`)."
-  @type question_counts :: %{open: non_neg_integer(), expired: non_neg_integer()}
+  @type question_counts :: %{
+          open: non_neg_integer(),
+          expired: non_neg_integer(),
+          undelivered: non_neg_integer()
+        }
 
   @doc """
   Tool-call and question counts for each of `subject_ids` (the run ids of a thread, or
@@ -1285,7 +1289,7 @@ defmodule ForemanServer.ProjectionStore do
   def handle_call({:needs_you_counts, subject_ids}, _from, state) do
     wanted = MapSet.new(subject_ids)
     no_approvals = %{pending: 0, expired: 0, failed_deliveries: 0}
-    no_questions = %{open: 0, expired: 0}
+    no_questions = %{open: 0, expired: 0, undelivered: 0}
 
     approvals =
       count_by_subject(state.tool_calls, wanted, no_approvals, fn call ->
@@ -1301,6 +1305,7 @@ defmodule ForemanServer.ProjectionStore do
       count_by_subject(state.questions, wanted, no_questions, fn
         %{status: "open"} -> :open
         %{status: "expired"} -> :expired
+        %{status: "answered", undelivered_reason: reason} when is_binary(reason) -> :undelivered
         _answered -> nil
       end)
 

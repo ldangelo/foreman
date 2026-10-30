@@ -20,6 +20,8 @@ defmodule ForemanServer.Overview.Input do
       undecided while the thread is still paused
     * `failed_approval_deliveries` - approved calls whose decision never reached
       the agent
+    * `undelivered_answers` - answered questions whose answer can never reach the
+      agent (`QuestionAnswerUndelivered`) while the thread is still paused
     * `failure_reason` - run failure detail, nil when none
     * `review_verdict` - `"met" | "partially_met" | "not_met" | "undetermined" | nil`
     * `paused_reason` - `"steer"` when a pause is only an operator steer, else nil
@@ -40,6 +42,7 @@ defmodule ForemanServer.Overview.Input do
           open_questions: non_neg_integer(),
           expired_approvals: non_neg_integer(),
           expired_questions: non_neg_integer(),
+          undelivered_answers: non_neg_integer(),
           failed_approval_deliveries: non_neg_integer(),
           failure_reason: String.t() | nil,
           review_verdict: String.t() | nil,
@@ -61,6 +64,7 @@ defmodule ForemanServer.Overview.Input do
     open_questions: 0,
     expired_approvals: 0,
     expired_questions: 0,
+    undelivered_answers: 0,
     failed_approval_deliveries: 0,
     idle_ms: 0
   ]

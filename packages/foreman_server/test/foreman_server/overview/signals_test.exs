@@ -61,6 +61,25 @@ defmodule ForemanServer.Overview.SignalsTest do
   defp question_expired(run_id, id),
     do: ev("QuestionExpired", %{run_id: run_id, question_id: id, reason: "timeout", at: @at})
 
+  defp answered(run_id, id) do
+    ev("QuestionAnswered", %{
+      run_id: run_id,
+      question_id: id,
+      text: "a",
+      answered_by: "me",
+      at: @at
+    })
+  end
+
+  defp undelivered(run_id, id) do
+    ev("QuestionAnswerUndelivered", %{
+      run_id: run_id,
+      question_id: id,
+      reason: "answer too long to deliver",
+      at: @at
+    })
+  end
+
   defp workflow(run_ids, status) do
     %Thread{
       id: "run:" <> hd(run_ids),
@@ -88,6 +107,7 @@ defmodule ForemanServer.Overview.SignalsTest do
       open_questions: 0,
       expired_approvals: 0,
       expired_questions: 0,
+      undelivered_answers: 0,
       failed_approval_deliveries: 0
     }
   end
@@ -116,7 +136,13 @@ defmodule ForemanServer.Overview.SignalsTest do
               approved("r2", "ok"),
               finished("r2", "ok", "delivered"),
               asked("r2", "q2"),
-              question_expired("r2", "q2")
+              question_expired("r2", "q2"),
+              # an answer that never reached the agent, and one that did
+              asked("r2", "q3"),
+              answered("r2", "q3"),
+              undelivered("r2", "q3"),
+              asked("r2", "q4"),
+              answered("r2", "q4")
             ] ++
             [requested("js1", "j"), asked("js1", "qj")]
         )
@@ -140,6 +166,7 @@ defmodule ForemanServer.Overview.SignalsTest do
                zero()
                | expired_approvals: 1,
                  expired_questions: 1,
+                 undelivered_answers: 1,
                  failed_approval_deliveries: 2
              }
 
