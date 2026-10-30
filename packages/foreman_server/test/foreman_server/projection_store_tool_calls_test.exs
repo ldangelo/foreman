@@ -122,8 +122,8 @@ defmodule ForemanServer.ProjectionStoreToolCallsTest do
                "r2" => %{pending: 1, expired: 0, failed_deliveries: 0}
              },
              questions: %{
-               "r1" => %{open: 1, expired: 0},
-               "r2" => %{open: 0, expired: 1}
+               "r1" => %{open: 1, expired: 0, undelivered: 0},
+               "r2" => %{open: 0, expired: 1, undelivered: 0}
              }
            }
 
@@ -236,8 +236,11 @@ defmodule ForemanServer.ProjectionStoreToolCallsTest do
                  do: {id, reason}
            ) == [{"qa", "answer too long to deliver"}, {"qb", nil}]
 
-    # neither open nor expired: nothing is waiting on the operator by this count
-    assert ProjectionStore.needs_you_counts(["r1"]).questions == %{}
+    # only the answer with the undelivered marker counts (as `undelivered`); `qb` was
+    # delivered, so nothing is waiting on the operator for it
+    assert ProjectionStore.needs_you_counts(["r1"]).questions == %{
+             "r1" => %{open: 0, expired: 0, undelivered: 1}
+           }
   end
 
   test "a marker for an unknown question and a malformed marker are ignored, not fatal" do

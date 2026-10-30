@@ -257,6 +257,7 @@ defmodule ForemanServer.Overview do
       open_questions: signals.open_questions,
       expired_approvals: signals.expired_approvals,
       expired_questions: signals.expired_questions,
+      undelivered_answers: signals.undelivered_answers,
       failed_approval_deliveries: signals.failed_approval_deliveries,
       failure_reason: pr && pr.failure_reason,
       review_verdict: thread.last_report && thread.last_report.verdict,

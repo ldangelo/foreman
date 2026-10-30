@@ -1080,6 +1080,35 @@ defmodule ForemanServer.CommandGateway do
     {:ok, %{command | payload: payload}}
   end
 
+  # The note of a PR fix is the operator's own words and can paste a secret. The aggregate is
+  # pure and cannot read the secret store, so the project's secret VALUES are redacted here,
+  # before the command reaches it (the question surface does the same). This is the one
+  # operator path (HTTP, CLI, MCP and the workspace all arrive here); a system-authored fix
+  # (`dispatch_system/2`, the auto-fix) carries no note. The project is the run's: a note on
+  # a run that has no projection cannot be redacted, so it is refused (the aggregate would
+  # refuse the run too), never stored as typed.
+  @pr_fix_types ForemanServer.Aggregates.Run.PrWatch.fix_types()
+
+  defp enrich_operator_command(%{type: type, payload: payload} = command)
+       when type in @pr_fix_types do
+    case get_value(payload, :note) do
+      note when is_binary(note) ->
+        run_id = get_value(payload, :run_id)
+
+        case ProjectionStore.run(run_id) do
+          %{project_id: project_id} when is_binary(project_id) ->
+            redacted = ForemanServer.Coordinator.Redact.text(project_id, note)
+            {:ok, %{command | payload: Map.put(payload, :note, redacted)}}
+
+          _unknown_run ->
+            {:error, {:not_found, :run, run_id}}
+        end
+
+      _no_note_or_invalid ->
+        {:ok, command}
+    end
+  end
+
   # Secrets pasted into the coordinator conversation never reach the event log.
   defp enrich_operator_command(%{type: "coordinator.message", payload: payload} = command) do
     project_id = get_value(payload, :project_id)

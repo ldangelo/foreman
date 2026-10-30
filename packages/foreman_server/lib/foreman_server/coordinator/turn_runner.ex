@@ -35,6 +35,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     Error,
     Executor,
     Runtime,
+    Redact,
     Tuning,
     Turn
   }
@@ -282,6 +283,9 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   end
 
   defp fail_turn(project_id, rt, turn_id, attempt, code, message) do
+    # One list for the log line and the persisted failure: the message is redacted BEFORE it
+    # is cut to 200 characters, so a secret straddling the cut leaves no prefix in the log.
+    message = Redact.text(project_id, to_string(message), secrets: Redact.secrets(project_id))
     log_turn_failed(project_id, turn_id, attempt, code, message)
 
     Commands.turn_fail(
@@ -328,21 +332,27 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   defp log_turn_completed(project_id, turn_id, authority, reply, outcomes) do
     Logger.info(
       "coordinator #{project_id}: turn #{turn_id} completed authority=#{authority} " <>
-        "reply_bytes=#{byte_size(reply)} #{outcome_summary(outcomes)}"
+        "reply_bytes=#{byte_size(reply)} #{outcome_summary(project_id, outcomes)}"
     )
   end
 
-  defp outcome_summary([]), do: "actions: none"
+  defp outcome_summary(_project_id, []), do: "actions: none"
 
-  defp outcome_summary(outcomes),
-    do: "actions: " <> Enum.map_join(outcomes, ", ", &outcome_label/1)
+  # An action's reason can quote what the model or operator wrote (`invalid action: ...` echoes
+  # the offending key or value), so it is redacted BEFORE it is cut to 120 characters, with the
+  # list resolved once for the whole line.
+  defp outcome_summary(project_id, outcomes) do
+    redact = Redact.redactor(project_id)
+    "actions: " <> Enum.map_join(outcomes, ", ", &outcome_label(&1, redact))
+  end
 
-  defp outcome_label(%{kind: kind, status: "executed"}), do: "#{kind}=executed"
+  defp outcome_label(%{kind: kind, status: "executed"}, _redact), do: "#{kind}=executed"
 
-  defp outcome_label(%{kind: kind, status: status, reason: reason}) when is_binary(reason),
-    do: "#{kind}=#{status} (#{one_line(reason, 120)})"
+  defp outcome_label(%{kind: kind, status: status, reason: reason}, redact)
+       when is_binary(reason),
+       do: "#{kind}=#{status} (#{one_line(redact.(reason), 120)})"
 
-  defp outcome_label(%{kind: kind, status: status}), do: "#{kind}=#{status}"
+  defp outcome_label(%{kind: kind, status: status}, _redact), do: "#{kind}=#{status}"
 
   defp log_turn_failed(project_id, turn_id, attempt, code, message) do
     Logger.warning(
