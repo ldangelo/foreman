@@ -91,6 +91,10 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @spec operator_types() :: [String.t()]
   def operator_types, do: @operator_types
 
+  @doc "The fix commands (`run.pr.fix_ci | address_comments | resolve_conflicts`): the ones that may carry an operator `note`."
+  @spec fix_types() :: [String.t()]
+  def fix_types, do: Map.keys(@kinds)
+
   @doc "Fix kinds, `ci | comments | conflicts`."
   @spec kinds() :: [String.t()]
   def kinds, do: Map.values(@kinds)
