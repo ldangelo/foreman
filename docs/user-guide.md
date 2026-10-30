@@ -533,6 +533,8 @@ worker logs, but `config.env` itself is still stored in project event payloads;
 a real secret store is a separate, later feature. Jobsite `agent.env` is a
 different mechanism (an operator-allowlisted per-request map) and is unchanged.
 
+**Context window for gateway models.** The claude CLI assumes a 200k window for a model name it does not recognise (e.g. a LiteLLM alias such as `Minimax-M3`) and may compact or refuse near 200k. Declare the real window in the project environment, e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS=512000` (the LiteLLM entry's `max_input_tokens`). Foreman never infers it from the model name. The agent images pin the CLI via the `CLAUDE_CODE_VERSION` build arg (>= 2.1.308). Unverified live: a real run over 200k tokens through the proxy (foreman-gppjx).
+
 **Base branch.** A run's base branch is the registered checkout's `HEAD` at the
 moment the run's first phase starts, latched for the run. There is no
 per-project `default_branch` setting: `project update`/`register` payloads that
@@ -2024,8 +2026,13 @@ After editing bundled prompts or workflows, run `npm run build` if assets
 need regeneration and `foreman init --force` to install fresh runtime
 copies.
 
-Tool call failures are MCP tool errors carrying the gateway's
-structured reason, never transport-level JSON-RPC errors.
+Tool call failures are JSON-RPC errors on the MCP transport with an integer
+`error.code` and the typed reason in `error.data.code`. Wire codes: `-32602`
+(`INVALID_PARAMS`, `missing_or_invalid`), `-32601` (`METHOD_NOT_FOUND`),
+`-32001` (`UNAUTHORIZED`), `-32003` (`POLICY_REFUSED`), and `-32000` for every
+other domain failure, so distinct outcomes such as `schedule_deleted` and
+`schedule_not_found` share `-32000` and clients MUST branch on `error.data.code`.
+The catch-all is a known limit: the typed code lives only in `data.code`.
 
 - `foreman_task_list` lists all tasks, optionally filtered by
   `project_id` and canonical `status` (`open`, `ready`, `in_progress`,

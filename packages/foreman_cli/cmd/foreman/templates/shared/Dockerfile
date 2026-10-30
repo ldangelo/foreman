@@ -12,6 +12,9 @@ FROM elixir:1.18-otp-27-slim
 
 ARG AGENT_UID=1000
 ARG AGENT_GID=1000
+# Claude Code CLI >= 2.1.308 (the version checked in foreman-gppjx). Older CLIs
+# can reject gateway-named models near 200k tokens ("Prompt is too long"). Bump deliberately.
+ARG CLAUDE_CODE_VERSION=2.1.308
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git curl ca-certificates gnupg \
@@ -19,7 +22,7 @@ RUN apt-get update \
   && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
   && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y --no-install-recommends gh nodejs \
-  && npm install -g @earendil-works/pi-coding-agent @anthropic-ai/claude-code \
+  && npm install -g @earendil-works/pi-coding-agent "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   && rm -rf /var/lib/apt/lists/*
 
 # The default iterate prompt drives beads, so the image carries `br` and `bv`

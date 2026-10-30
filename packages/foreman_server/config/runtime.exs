@@ -29,6 +29,13 @@ import Config
 # Only the exact string `true` enables a flag. The test environment is left
 # alone so a developer's shell cannot change a test's outcome.
 if config_env() != :test do
+  # Home-relative defaults resolve at boot so a compiled release uses the
+  # runtime host's home, not the builder's. Tests set their own paths.
+  config :foreman_server, :server_log,
+    path: Path.join(System.user_home!(), ".foreman/logs/foreman-server.log")
+
+  config :foreman_server, :secret_store, dir: Path.join(System.user_home!(), ".foreman/secrets")
+
   case System.get_env("FOREMAN_API_TOKEN") do
     token when token in [nil, ""] -> :ok
     token -> config :foreman_server, :api_bearer_token, token

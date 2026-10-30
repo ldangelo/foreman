@@ -20,7 +20,6 @@ defmodule ForemanServer.MCP.Stdio do
 
   alias ForemanServer.MCP.Auth
   alias ForemanServer.MCP.Dispatch
-  alias Anubis.MCP.Error
   alias Anubis.Server.Context
 
   # -------------------------------------------------------------------
@@ -77,7 +76,7 @@ defmodule ForemanServer.MCP.Stdio do
         {:ok, Anubis.Server.Frame.assign(frame, :auth_token, raw_token)}
 
       {:error, reason} ->
-        {:error, %Error{code: "UNAUTHORIZED", message: inspect(reason)}}
+        {:error, Dispatch.error("UNAUTHORIZED", inspect(reason))}
     end
   end
 

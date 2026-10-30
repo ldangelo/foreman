@@ -64,10 +64,10 @@ defmodule ForemanServer.MCP.Dispatch do
   def call(name, arguments, token, frame) do
     cond do
       Auth.verify_request(token, name, arguments) != :ok ->
-        {:error, %Error{code: "UNAUTHORIZED", message: "Authentication required"}, frame}
+        {:error, error("UNAUTHORIZED", "Authentication required"), frame}
 
       not Policy.authorized?(name) ->
-        {:error, %Error{code: "POLICY_REFUSED", message: "Tool #{name} is not permitted"}, frame}
+        {:error, error("POLICY_REFUSED", "Tool #{name} is not permitted"), frame}
 
       true ->
         name |> Tools.call_tool(arguments) |> wrap(frame)
@@ -125,8 +125,29 @@ defmodule ForemanServer.MCP.Dispatch do
   end
 
   defp wrap({:error, %ToolError{code: code, message: message}}, frame) do
-    {:error, %Error{code: code, message: message}, frame}
+    {:error, error(code, message), frame}
   end
+
+  @doc """
+  Builds the JSON-RPC error for a typed tool failure.
+
+  JSON-RPC 2.0 requires an integer `error.code`, so the wire code is an integer
+  (`-32602` invalid params, `-32601` unknown tool, `-32001` unauthorized,
+  `-32003` policy refused, `-32000` for every other domain failure) and the
+  typed string (`"schedule_deleted"`, `"NOT_FOUND"`, ...) is carried in
+  `error.data.code` for clients that branch on it.
+  """
+  @spec error(String.t(), String.t()) :: Error.t()
+  def error(code, message) when is_binary(code) do
+    %Error{code: wire_code(code), reason: :execution_error, message: message, data: %{code: code}}
+  end
+
+  defp wire_code("INVALID_PARAMS"), do: -32_602
+  defp wire_code("missing_or_invalid"), do: -32_602
+  defp wire_code("METHOD_NOT_FOUND"), do: -32_601
+  defp wire_code("UNAUTHORIZED"), do: -32_001
+  defp wire_code("POLICY_REFUSED"), do: -32_003
+  defp wire_code(_domain), do: -32_000
 
   # Converts JSON arguments (string keys) into the atom keys the
   # `Tools.call_tool/2` clauses pattern-match. Only keys declared in the tool's

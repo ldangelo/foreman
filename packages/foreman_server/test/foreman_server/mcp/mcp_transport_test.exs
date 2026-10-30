@@ -84,11 +84,26 @@ defmodule ForemanServer.MCP.TransportTest do
       end
     end
 
+    test "typed errors carry an integer JSON-RPC code plus the typed code in data" do
+      assert %Anubis.MCP.Error{code: -32_602, data: %{code: "missing_or_invalid"}} =
+               ForemanServer.MCP.Dispatch.error("missing_or_invalid", "m")
+
+      assert %Anubis.MCP.Error{code: -32_000, data: %{code: "schedule_deleted"}} =
+               ForemanServer.MCP.Dispatch.error("schedule_deleted", "gone")
+
+      assert {:ok, json} =
+               Anubis.MCP.Error.to_json_rpc(ForemanServer.MCP.Dispatch.error("NOT_FOUND", "x"), 1)
+
+      assert %{"error" => %{"code" => -32_000, "data" => %{"code" => "NOT_FOUND"}}} =
+               Jason.decode!(json)
+    end
+
     test "an unknown tool yields a typed error, never a successful reply" do
       # The old permissive wrap_tool_result/3 catch-all reported unmatched
       # returns to the client as isError: false.
       for {label, mod} <- [http: MCP, stdio: Stdio] do
-        assert {:error, %Anubis.MCP.Error{code: "METHOD_NOT_FOUND"}, _frame} =
+        assert {:error, %Anubis.MCP.Error{code: -32_601, data: %{code: "METHOD_NOT_FOUND"}},
+                _frame} =
                  mod.handle_tool_call("no_such_tool", %{}, Frame.new()),
                "#{label} transport must surface unknown tools as an error"
       end
@@ -153,10 +168,10 @@ defmodule ForemanServer.MCP.TransportTest do
         | context: %Context{headers: %{"authorization" => "Bearer wrong"}}
       }
 
-      assert {:error, %Anubis.MCP.Error{code: "UNAUTHORIZED"}, _} =
+      assert {:error, %Anubis.MCP.Error{code: -32_001, data: %{code: "UNAUTHORIZED"}}, _} =
                MCP.handle_tool_call("foreman_workflow_list", %{}, http_frame)
 
-      assert {:error, %Anubis.MCP.Error{code: "UNAUTHORIZED"}} =
+      assert {:error, %Anubis.MCP.Error{code: -32_001, data: %{code: "UNAUTHORIZED"}}} =
                Stdio.init(nil, %{
                  Frame.new()
                  | context: %Context{init_meta: %{"authorization" => "Bearer wrong"}}

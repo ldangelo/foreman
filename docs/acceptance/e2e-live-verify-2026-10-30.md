@@ -79,8 +79,10 @@ iteration): bead `foreman-7p068` stays open.
 - After `foreman project schedule delete` the update is refused `schedule_deleted` and the schedule does not come back; an unknown id is
   refused `schedule_not_found` and creates nothing.
 
-Observation (bead `foreman-n2eh3`, P4): these typed errors reach the client as a STRING JSON-RPC `error.code` (`"missing_or_invalid"`,
-`"INVALID_PARAMS"`, `"schedule_deleted"`), HTTP 200, not the integer codes JSON-RPC defines. The script accepts either form.
+~~Observation (bead `foreman-n2eh3`, P4): these typed errors reach the client as a STRING JSON-RPC `error.code` (`"missing_or_invalid"`,
+`"INVALID_PARAMS"`, `"schedule_deleted"`), HTTP 200, not the integer codes JSON-RPC defines.~~ Resolved (`foreman-n2eh3`): the error now carries an
+integer `error.code` (`-32602` for `missing_or_invalid`/`INVALID_PARAMS`, `-32000` for `schedule_deleted`/`schedule_not_found`) and the typed string in `error.data.code`
+(`mcp/dispatch.ex` `error/2`, `wire_code/1`; pinned in `mcp_transport_test.exs`). The script accepts either form.
 
 **Not run:** part 2 of the bead, the `question.answer` boundary with a real claude and a browser. `foreman-7c191` stays open for it.
 
@@ -132,7 +134,7 @@ The 7-character rows are informational: below the floor the value is not redacte
 | `foreman-mw5rz` | P2 bug, open (owner decision: not fixed in this change) | The 22-character value is in the server log, stdout and `~/.foreman/logs/foreman-server.log`: 11 occurrences in 3 Phoenix debug `Parameters:` lines (the same lines in both files): 2 MCP `tools/call` arguments (the agent's memory write) and 1 chat `text` (the operator message). The events table, the whole-database dump, memory, archive, runs dir and webhook capture are clean. |
 | `foreman-4ohex` | P3, INFO | The `jido_harness` cache (`$WORK/home/Library/Caches/jido_harness`) holds the agent's own event stream, including the value the agent read: 38 occurrences in 2 files. Reported as an INFO line, not a PASS/FAIL. |
 | `foreman-6u1s0` | P3 | Found while building the script: a workflow phase with `commit: true` whose agent only writes project memory fails with `checkout_written_instead_of_worktree`, because the guard ignores only `.beads/` (the files it named in run 1: `.foreman/.gitignore`, and `.foreman/sessions/run/<run>/manifest.json` + `project-context.md`). The script uses a valid `commit: false` workflow. |
-| `foreman-n2eh3` | P4 | String JSON-RPC `error.code` for typed MCP errors (section 2). |
+| `foreman-n2eh3` | P4 | ~~String JSON-RPC `error.code` for typed MCP errors (section 2).~~ Resolved: integer `error.code`, typed code in `error.data.code`. |
 
 PR #764 carries these beads (`foreman-mw5rz`, `foreman-6u1s0`, `foreman-4ohex`, `foreman-n2eh3`), closes `foreman-5fqso` and adds comments
 to `foreman-7c191`, `foreman-ngky4` and `foreman-azc2o`.

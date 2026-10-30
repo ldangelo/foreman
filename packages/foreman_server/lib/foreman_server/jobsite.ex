@@ -123,7 +123,8 @@ defmodule ForemanServer.Jobsite do
   """
   @spec resume(String.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def resume(jobsite_id) do
-    with {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id) do
+    with {:ok, _state} <- ForemanServer.Jobsite.Executor.check_resumable(jobsite_id),
+         :ok <- require_not_running(jobsite_id) do
       start_and_await(jobsite_id, reply_to: self(), resume?: true)
     end
   end
@@ -261,7 +262,15 @@ defmodule ForemanServer.Jobsite do
     end
   end
 
+  # `jobsite.pause` is dispatched before the Executor process exits, so a jobsite
+  # projected `paused` can still have a live Executor for a few milliseconds. Wait
+  # briefly for it to go; a jobsite that is not paused is genuinely running and is
+  # refused at once.
+  @executor_exit_wait_ms 2_000
+
   defp require_not_running(jobsite_id) do
+    if paused?(jobsite_id), do: await_executor_exit(jobsite_id, @executor_exit_wait_ms)
+
     if ForemanServer.Jobsite.Executor.pid_for(jobsite_id) == nil do
       :ok
     else
@@ -269,6 +278,37 @@ defmodule ForemanServer.Jobsite do
        Error.new(:already_running, "jobsite #{jobsite_id} is already running", %{
          jobsite_id: jobsite_id
        })}
+    end
+  end
+
+  defp paused?(jobsite_id) do
+    match?(%{status: status} when status in [:paused, "paused"], get(jobsite_id))
+  end
+
+  # The Registry drops a dead process's entry asynchronously, so `:DOWN` does not
+  # yet guarantee `pid_for/1` is nil: re-check until the deadline.
+  defp await_executor_exit(jobsite_id, remaining_ms) do
+    case ForemanServer.Jobsite.Executor.pid_for(jobsite_id) do
+      nil ->
+        :ok
+
+      _pid when remaining_ms <= 0 ->
+        :ok
+
+      pid ->
+        started = System.monotonic_time(:millisecond)
+        ref = Process.monitor(pid)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} ->
+            Process.sleep(1)
+            elapsed = System.monotonic_time(:millisecond) - started
+            await_executor_exit(jobsite_id, remaining_ms - elapsed)
+        after
+          remaining_ms ->
+            Process.demonitor(ref, [:flush])
+            :ok
+        end
     end
   end
 

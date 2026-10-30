@@ -217,7 +217,12 @@ defmodule ForemanServer.MCP.ToolsProjectMemoryTest do
       ]
 
       for {tool, arguments, field} <- cases do
-        assert {:error, %Anubis.MCP.Error{code: "INVALID_PARAMS", message: message}, _frame} =
+        assert {:error,
+                %Anubis.MCP.Error{
+                  code: -32_602,
+                  data: %{code: "INVALID_PARAMS"},
+                  message: message
+                }, _frame} =
                  mcp_call(tool, arguments)
 
         assert message == "Tool #{tool} arguments must be strings: #{field}"
