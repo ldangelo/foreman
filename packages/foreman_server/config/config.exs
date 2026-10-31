@@ -362,6 +362,14 @@ config :foreman_server, :server_log,
   max_bytes: 10_000_000,
   max_files: 5
 
+# Stored secret VALUES are redacted from every log event, whatever key or text they arrive in
+# (foreman-25sqf.1.1; `ForemanServer.Observability.SecretValueLogFilter`). A `:logger` primary
+# filter, so it covers the console, the server log file and the SigNoz export. The list (every
+# project's stored and secret-named env values of 8+ characters) is refreshed every `refresh_ms`
+# and right after `SecretStore.put/3` and `delete/2`. `enabled: false` removes both the filter
+# and its refresher.
+config :foreman_server, :secret_log_filter, enabled: true, refresh_ms: 30_000
+
 # Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
 # Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
 config :foreman_server, :secret_store, backend: ForemanServer.SecretStore.File
@@ -377,9 +385,10 @@ config :foreman_server, :secret_store, backend: ForemanServer.SecretStore.File
 # filtered too: chat `text`, memory `content`/`description`, `prompt`, `message`,
 # `instructions`, `goal`, `body`, the MCP JSON-RPC `params` envelope (every tool argument,
 # whatever it is named) and `token` (the dashboard's `?token=`). Keys are matched by
-# SUBSTRING (`text` also hides `context`, `message` also hides `message_id`), and a
-# free-text key added later is NOT covered until it is added here; the fail-closed
-# follow-up is foreman-25sqf.1.1. Pinned by test/foreman_server_web/log_filter_test.exs.
+# SUBSTRING (`text` also hides `context`, `message` also hides `message_id`). This list is
+# the by-name layer: a stored secret under ANY other key is caught by value by
+# `Observability.SecretValueLogFilter` (foreman-25sqf.1.1, `:secret_log_filter` below).
+# Pinned by test/foreman_server_web/log_filter_test.exs.
 config :phoenix, :filter_parameters, [
   "password",
   "value",

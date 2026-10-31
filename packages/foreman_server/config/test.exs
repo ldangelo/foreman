@@ -58,6 +58,10 @@ config :foreman_server, :agent_runtime,
   adapters: []
 
 config :foreman_server, :stuck_run_check_interval_seconds, 3_600
+# Off in tests: its refresher reads every project's secret store from a background process,
+# which races tests that count `SecretStore` calls (PrFixRedactionTest). The filter's own tests
+# start the refresher and install the filter explicitly.
+config :foreman_server, :secret_log_filter, enabled: false
 # foreman_server: br_runner test override (TRD-030)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 

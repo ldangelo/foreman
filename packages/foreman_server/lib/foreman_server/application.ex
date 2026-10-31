@@ -179,11 +179,31 @@ defmodule ForemanServer.Application do
       maybe_overwatch_child() ++
       maybe_vfs_isolation_child() ++
       maybe_mcp_allowlist_child() ++
+      maybe_secret_log_filter_child() ++
       maybe_mcp_child() ++
       [
         # Endpoint exposes dev-only debug LiveViews.
         ForemanServerWeb.Endpoint
       ]
+  end
+
+  # The stored-secret-value log filter (foreman-25sqf.1.1): a `:logger` primary filter plus the
+  # process that keeps its value list current. `config :foreman_server, :secret_log_filter,
+  # enabled: true, refresh_ms: 30_000`. Placed after the projection in `children/0` because the
+  # refresher lists projects.
+  defp secret_log_filter_config,
+    do: Application.get_env(:foreman_server, :secret_log_filter, [])
+
+  defp secret_log_filter_enabled?,
+    do: Keyword.get(secret_log_filter_config(), :enabled, true)
+
+  defp maybe_secret_log_filter_child do
+    if secret_log_filter_enabled?() do
+      interval = Keyword.get(secret_log_filter_config(), :refresh_ms, 30_000)
+      [{ForemanServer.Observability.SecretValueLogFilter.Refresher, [interval_ms: interval]}]
+    else
+      []
+    end
   end
 
   @doc """
@@ -211,6 +231,23 @@ defmodule ForemanServer.Application do
     # Fixed before any child can take a BeadsDbLease hold, so every hold of
     # this VM carries the same incarnation (see `ForemanServer.Incarnation`).
     _ = ForemanServer.Incarnation.id()
+
+    # Redacts stored secret VALUES from every log event, whatever key they arrive under. Installed
+    # before the supervisor so boot logs pass through it too (it passes everything until the
+    # refresher publishes values). A failed install is loud and never aborts boot, the same
+    # policy as the log handlers below.
+    if secret_log_filter_enabled?() do
+      case ForemanServer.Observability.SecretValueLogFilter.install() do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error(
+            "secret value log filter failed to install; logs are not redacted by value: " <>
+              inspect(reason)
+          )
+      end
+    end
 
     {:ok, pid} = Supervisor.start_link(children(), supervisor_opts())
 

@@ -31,7 +31,7 @@ defmodule ForemanServer.ApplicationChildrenTest do
   @config_dir Path.expand("../../config", __DIR__)
 
   # Every key a test below writes; restored after each test, deleting a key that was unset.
-  @app_env_keys [:pr_watcher, :pr_monitor_enabled, :schedule]
+  @app_env_keys [:pr_watcher, :pr_monitor_enabled, :schedule, :secret_log_filter]
 
   # The operator switches `config/runtime.exs` reads. Cleared before a config is evaluated so a
   # developer's shell cannot change a test's outcome.
@@ -103,6 +103,28 @@ defmodule ForemanServer.ApplicationChildrenTest do
       watcher(false)
 
       refute PrWatcher in child_ids()
+    end
+  end
+
+  describe "SecretValueLogFilter.Refresher (foreman-25sqf.1.1)" do
+    alias ForemanServer.Observability.SecretValueLogFilter.Refresher
+
+    test "is supervised, after the ProjectionStore whose projects it lists, while enabled" do
+      Application.put_env(:foreman_server, :secret_log_filter, enabled: true)
+
+      assert_started_after(child_ids(), Refresher, [ProjectionStore])
+    end
+
+    test "is not supervised once it is disabled, which is how the test environment runs" do
+      Application.put_env(:foreman_server, :secret_log_filter, enabled: false)
+
+      refute Refresher in child_ids()
+    end
+
+    test "is on by default: an unset key is the production configuration" do
+      Application.delete_env(:foreman_server, :secret_log_filter)
+
+      assert Refresher in child_ids()
     end
   end
 
