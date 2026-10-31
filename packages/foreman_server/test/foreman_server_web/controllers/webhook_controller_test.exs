@@ -121,7 +121,9 @@ defmodule ForemanServerWeb.WebhookControllerTest do
       assert conn.status == 422
 
       assert Jason.decode!(conn.resp_body) == %{
-               "error" => inspect({:question_id_too_long, max + 1, max})
+               "error" => "question_id_too_long",
+               "length" => max + 1,
+               "max" => max
              }
 
       assert :miss = DedupeTable.lookup(OperatorQuestionSource, id)
@@ -157,8 +159,10 @@ defmodule ForemanServerWeb.WebhookControllerTest do
       conn = ingest(String.duplicate("é", max + 1), unique_agent())
       assert conn.status == 422
 
-      assert Jason.decode!(conn.resp_body)["error"] ==
-               inspect({:question_id_too_long, max + 1, max})
+      assert %{"error" => "question_id_too_long", "length" => len, "max" => ^max} =
+               Jason.decode!(conn.resp_body)
+
+      assert len == max + 1
     end
   end
 end
