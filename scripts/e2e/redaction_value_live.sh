@@ -29,9 +29,9 @@
 #                ($WORK/home/.foreman/secrets) and the agent's own session files ($WORK/pi-agent/sessions, $WORK/home/.pi).
 #                The 7-character value must be FOUND in the secret store and in the unredacted persisted text (events table,
 #                memory dir). Every location is reported and the script keeps going: a hit where the value must not be is a
-#                FAIL printed with file and count. NOTE: a hit in the server log is a real, expected-to-be-possible finding
-#                (chat `text` and memory `content` HTTP params are not in Phoenix filter_parameters, which only has
-#                "password" and "value"); it is reported as it is, never hidden or special-cased.
+#                FAIL printed with file and count. NOTE: a hit in the server log is a real finding (it was one until
+#                foreman-mw5rz: free-text params reached the Phoenix debug log; `config :phoenix, :filter_parameters` now
+#                hides them, see docs/user-guide.md "Secrets"); it is reported as it is, never hidden or special-cased.
 #
 # Provider: pi only (owner-approved scope; claude follows later). E2E_PROVIDER=claude exits 2 with a message.
 #
@@ -430,6 +430,12 @@ step_chat() {
 
 step_thread_context() {
   say "4. a thread started afterwards sees the redacted standing context; hand edit + 'memory sync'"
+  # The coordinator is a real model: it answers step 3's chat and may rewrite the memory topic before this thread
+  # starts (observed 2026-10-31: a ProjectMemoryWritten v2 by author coordinator:<project> with a clean description and
+  # 0 redactions). Then MEMORY.md has no marker left and the standing context has nothing to redact, so the marker
+  # checks below only discriminate when the index still carries one; otherwise they are UNVERIFIED, never a false FAIL.
+  CTX_MARK_EXPECTED=0
+  case "$(cat "$MEMORY_DIR/MEMORY.md" 2>/dev/null)" in *"$MARK"*) CTX_MARK_EXPECTED=1 ;; esac
   new_bead "e2e-$SUFFIX hello" "Create a file named hello.txt in the current directory containing the single word hello."
   [ -n "${BEAD_ID:-}" ] || die "br create returned no bead id" 2
   thread_for_bead "$BEAD_ID" 180
@@ -452,7 +458,11 @@ step_thread_context() {
         ctxmd=$(cat "$pf")
         assert_clean "project-context.md of the later run" "$V22" "$ctxmd"
         if [ "$MEM_DELIVERED" = 1 ]; then
-          assert_marked "project-context.md of the later run (standing memory index)" "$ctxmd"
+          if [ "$CTX_MARK_EXPECTED" = 1 ]; then
+            assert_marked "project-context.md of the later run (standing memory index)" "$ctxmd"
+          else
+            unverified "marker in project-context.md" "the MEMORY.md index no longer carried $MARK when this thread started: the coordinator rewrote the topic after step 2 (a later ProjectMemoryWritten by another author), so the context has no value-bearing text to redact; absence of the value is still asserted above"
+          fi
           assert_has "project-context.md lists the memory topic" "$ctxmd" "$MEM_TOPIC"
         else
           unverified "marker in project-context.md" "no agent-written memory exists (step 2 UNVERIFIED), so there is no value-bearing memory text for the context to redact; absence of the value is still asserted above"
@@ -470,7 +480,7 @@ step_thread_context() {
   stext=$(printf '%s' "$pcj" | jq -r '.system_text // empty' 2>/dev/null)
   if [ -n "$stext" ]; then pass "foreman project context --format json returns the standing context"; else fail "foreman project context --format json has no system_text: $(printf '%s' "$pcj" | cut -c1-200)"; fi
   assert_clean "foreman project context --format json" "$V22" "$pcj"
-  if [ "$MEM_DELIVERED" = 1 ]; then assert_marked "foreman project context system_text" "$stext"; fi
+  if [ "$MEM_DELIVERED" = 1 ] && [ "$CTX_MARK_EXPECTED" = 1 ]; then assert_marked "foreman project context system_text" "$stext"; fi
 
   # hand edit: the value lands in a memory topic file by hand, redaction happens at 'memory sync'
   mkdir -p "$MEMORY_DIR"
