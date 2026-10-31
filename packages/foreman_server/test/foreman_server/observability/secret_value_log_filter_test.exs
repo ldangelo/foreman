@@ -184,5 +184,76 @@ defmodule ForemanServer.Observability.SecretValueLogFilterTest do
       log = capture_log([level: :error], fn -> Logger.error("code abc123 is fine") end)
       assert log =~ "abc123"
     end
+
+    # The project list is read through `ProjectStore.list/0`, a call into the projection, which a
+    # test must not stop. The refresher's `:project_ids` option replaces that read with a function
+    # whose outcome the test controls.
+    defp start_with_lister(mode_agent) do
+      stop_supervised!(Refresher)
+
+      lister = fn ->
+        case Agent.get(mode_agent, & &1) do
+          {:ids, ids} -> ids
+          {:raise, message} -> raise message
+          :exit -> exit(:projection_down)
+        end
+      end
+
+      start_supervised!({Refresher, interval_ms: 3_600_000, project_ids: lister})
+      :ok = Refresher.refresh_sync()
+    end
+
+    for kind <- [:raise, :exit] do
+      test "an unreadable project list (#{kind}) keeps the previous values and warns once",
+           %{value: value} do
+        register("slf-down")
+        {:ok, :stored} = SecretStore.put("slf-down", "DEPLOY_TARGET", value)
+        mode = start_supervised!({Agent, fn -> {:ids, ["slf-down"]} end})
+        start_with_lister(mode)
+        assert Filter.count() == 1
+
+        # A raise message that carries the secret must not reach the log either.
+        failure = if unquote(kind) == :raise, do: {:raise, "boom #{value}"}, else: :exit
+        Agent.update(mode, fn _ -> failure end)
+
+        log = capture_log([level: :warning], fn -> :ok = Refresher.refresh_sync() end)
+
+        leaked = capture_log([level: :error], fn -> Logger.error("leak #{value}") end)
+        refute leaked =~ value
+        assert leaked =~ "[REDACTED]"
+        assert Filter.count() == 1
+
+        assert log =~ "cannot list projects"
+        assert length(String.split(log, "cannot list projects")) == 2
+        # The filter is installed, so a leaked value would show as "[REDACTED]", and the raise
+        # message ("boom ...") must not be in the warning at all: only the error class is.
+        refute log =~ value
+        refute log =~ "[REDACTED]"
+        refute log =~ "boom"
+
+        repeated =
+          capture_log([level: :warning], fn ->
+            :ok = Refresher.refresh_sync()
+            :ok = Refresher.refresh_sync()
+          end)
+
+        refute repeated =~ "cannot list projects"
+        assert Filter.count() == 1
+
+        stale = capture_log([level: :error], fn -> Logger.error("still #{value}") end)
+        refute stale =~ value
+
+        # Recovery: the list updates again (here the project is gone, so the value stops being
+        # redacted), and a later failure is reported afresh.
+        Agent.update(mode, fn _ -> {:ids, []} end)
+        :ok = Refresher.refresh_sync()
+        assert Filter.count() == 0
+
+        again =
+          capture_log([level: :error], fn -> Logger.error("after recovery #{value}") end)
+
+        assert again =~ value
+      end
+    end
   end
 end
