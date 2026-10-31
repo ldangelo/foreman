@@ -1,0 +1,34 @@
+{
+  "name": "loop-until-the-failing",
+  "spec": {
+    "project_id": "proj-1",
+    "name": "loop-until-the-failing",
+    "prompt": "Loop until the failing test passes, then push it\n\nWhen \u2014 and only when \u2014 all work is complete and verified, end your final message with exactly:\n\n    <promise>COMPLETE</promise>\n\nDo not emit that text early; the jobsite stops iterating the moment it appears.\n",
+    "agent": {
+      "provider": "pi",
+      "model": "minimax",
+      "approval_mode": "auto_approve"
+    },
+    "strategy": {
+      "branch": "agent/loop-until-the-failing"
+    },
+    "sandbox": "docker",
+    "max_iterations": 5,
+    "completion_signal": "<promise>COMPLETE</promise>",
+    "push": true
+  },
+  "features": ["loop", "review-and-fix", "push-to-origin"],
+  "notes": [
+    "worktree reclamation is not a remote spec key: merge the branch, then delete it in the repository checkout"
+  ],
+  "files": [
+    {
+      "path": "loop-until-the-failing.exs",
+      "content": "# .foreman/loop-until-the-failing.exs - a Foreman Jobsite generated from a prompt by `foreman jobsite template`.\n#\nspec = %{}\n"
+    },
+    {
+      "path": "prompts/loop-until-the-failing.md",
+      "content": "Loop until the failing test passes, then push it\n"
+    }
+  ]
+}

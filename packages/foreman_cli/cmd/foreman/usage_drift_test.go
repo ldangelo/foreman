@@ -20,6 +20,7 @@ var subcommandDispatchers = map[string]string{
 	"project":   "runProject",
 	"run":       "runRun",
 	"thread":    "runThread",
+	"jobsite":   "runJobsite",
 	"workflow":  "runWorkflow",
 	"approvals": "runApprovals",
 	"questions": "runQuestions",

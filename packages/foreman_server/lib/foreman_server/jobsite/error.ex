@@ -35,6 +35,9 @@ defmodule ForemanServer.Jobsite.Error do
     * `:runner_capability` / `:unsupported_phase_action` — `Workflow.Lowering`
     * `:executor_lost` / `:boot_recovery_failed` — `Jobsite.BootRecovery` (`:executor_lost`: no
       worktree, or no provider session, was ever recorded for the orphan)
+    * `:template_option_unsupported` — `Jobsite.Template` (a key the template generator does not
+      set; `Spec.from_json/2` may well accept it). Every other template failure carries the
+      `:spec_*` code `Spec.from_json/2` gave it.
   """
   @enforce_keys [:code, :message]
   @type t :: %__MODULE__{code: atom(), message: String.t(), details: map()}
