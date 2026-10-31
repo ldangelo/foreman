@@ -797,7 +797,9 @@ stage_realgit_body() {
   assert_eq "Foreman: the per-repository PR state after a's merge (a,b)" "$(printf '%s' "$probe" | jq -r '[.repositories[].pr_state] | join(",")')" "merged,open"
   note "monitor sweep: $(poll_prs)"
   card=$(overview_card "$RG_RUN"); note "Overview card after a merged, b still failing: $card"
-  assert_eq "Overview: b's failing check still puts the work Waiting on you after a merged (bead foreman-w0tnj, acceptance 3)" "$(printf '%s' "$card" | jq -r .group)" "waiting_on_you"
+  assert_eq "Overview: b's failing check still puts the work Waiting on you (ci_failing) after a merged (bead foreman-w0tnj, acceptance 3)" "$(printf '%s' "$card" | jq -r '[.group, .reason] | join("/")')" "waiting_on_you/ci_failing"
+  rows=$(overview_pr_rows "$RG_RUN"); note "Overview 'Pull requests' tab rows after a merged: $rows"
+  assert_eq "Overview: the Pull requests tab still lists both PRs, one merged and one open" "$(printf '%s' "$rows" | jq -r '[.[].pr_state] | sort | join(",")')" "merged,open"
   assert_eq "Foreman still watches b's PR as failing" "$(api_get "/api/runs/$RG_RUN/prs" | jq -r --arg u "$RG_URL_B" '[.prs[]? | select(.pr_url == $u)][0].checks_state')" "failing"
 
   # --- 5. Fix CI on b's PR: a real fix agent works in b's repository and pushes to b's origin
@@ -839,6 +841,10 @@ stage_realgit_body() {
   assert_eq "REAL: ...and the fix agent's CI_OK" "$(origin_file b "$main_b1" CI_OK | tr -d '\n')" "ok"
   assert_eq "REAL: repo a's origin main did not move again" "$(origin_branch_sha a main)" "$main_a1"
   assert_eq "gh pr view: both PRs MERGED" "$(gh_view a "$RG_URL_A" | jq -r .state)/$(gh_view b "$RG_URL_B" | jq -r .state)" "MERGED/MERGED"
+  note "monitor sweep: $(poll_prs)"
+  card=$(overview_card "$RG_RUN"); note "Overview card with both merged: $card"
+  assert_eq "Overview: with every PR merged the thread is Resolved" "$(printf '%s' "$card" | jq -r .group)" "resolved"
+  assert_eq "Overview: the Pull requests tab lists both PRs, both merged" "$(overview_pr_rows "$RG_RUN" | jq -r '[.[].pr_state] | sort | join(",")')" "merged,merged"
   assert_eq "fake gh: unsupported invocations in real-git mode" "$(count_lines "$GH_STATE/unsupported.log")" "0"
 }
 
