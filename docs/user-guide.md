@@ -1888,6 +1888,10 @@ message is rewritten, not log metadata; a value set by hand in the secrets direc
 secret-named env variable, is covered after at most one refresh interval; a value shorter than 8
 characters, or a transformed copy of one (split, encoded), is not matched. This sits on top of
 `config :phoenix, :filter_parameters`, which hides common free-text request params by key name.
+Verified live on 2026-10-31 (`scripts/e2e/redaction_value_live.sh`, a real pi agent and coordinator)
+with that by-name list reverted to `["password", "value"]`, so that only this filter protected the
+log: the 22-character test secret had 0 hits in the server stdout log and in `foreman-server.log`
+(11 before any fix); a 7-character secret, below the floor, still appeared once in each.
 
 SigNoz operational logs are separate from the Langfuse LLM-trace path.
 Foreman keeps Langfuse traces on `OTEL_EXPORTER_OTLP_ENDPOINT` and adds an
