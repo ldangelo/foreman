@@ -6,6 +6,7 @@ defmodule ForemanServerWeb.CoordinatorControllerTest do
 
   import Plug.Conn
   import Phoenix.ConnTest
+  import ExUnit.CaptureLog
 
   alias ForemanServer.{CommandGateway, CommandRouter, EventStore, ProjectionStore}
 
@@ -67,6 +68,21 @@ defmodule ForemanServerWeb.CoordinatorControllerTest do
         type: "coordinator.message",
         payload: %{project_id: p, message_id: id, text: text, source: "cli"}
       })
+  end
+
+  test "the posted message text is not written to the server log (foreman-mw5rz)", %{
+    project_id: p
+  } do
+    canary = "LOGCANARY-#{System.unique_integer([:positive])}"
+
+    log =
+      capture_log([level: :debug], fn ->
+        post_message(p, %{"text" => canary}) |> json_response(202)
+      end)
+
+    # Control: the router dispatch line is emitted (so the refute below can fail).
+    assert log =~ "Parameters:"
+    refute log =~ canary
   end
 
   test "POST accepts a message: 202, generated id, source defaults to http", %{project_id: p} do
