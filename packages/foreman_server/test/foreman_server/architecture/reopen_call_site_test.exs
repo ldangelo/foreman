@@ -10,9 +10,14 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
 
     expected_hit = positive_control_signature()
 
-    assert Enum.map(reopen_call_sites(files), &signature/1) == [expected_hit],
+    # `assert`'s message argument is evaluated eagerly, even when the assertion holds, so the hits
+    # are computed once and shared: scanning twice doubled this test's reads of the whole lib tree
+    # through the one VM-wide file server (foreman-83cf1).
+    hits = reopen_call_sites(files)
+
+    assert Enum.map(hits, &signature/1) == [expected_hit],
            "Unexpected reopen/3 call sites outside BootReconciliation:\n" <>
-             format_hits(reopen_call_sites(files))
+             format_hits(hits)
   end
 
   test "scanner finds the BootReconciliation reopen/3 positive control" do

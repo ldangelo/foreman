@@ -16,6 +16,10 @@ defmodule ForemanServer.Observability.SecretValueLogFilter.Refresher do
   published: an outage must not switch the protection off. Each failure is logged once when it
   starts, with the project id and the error code only, never a name or a value, and again only
   after it has cleared and recurred.
+
+  Options: `:interval_ms` (default 30 s; 0 or less disables the timer) and `:project_ids` (a
+  zero-arity function returning the project ids; defaults to `ProjectStore.list/0`; tests use it
+  to make the list unreadable without stopping the projection).
   """
   use GenServer
 
@@ -68,7 +72,8 @@ defmodule ForemanServer.Observability.SecretValueLogFilter.Refresher do
   @impl true
   def init(opts) do
     interval = Keyword.get(opts, :interval_ms, @default_interval_ms)
-    {:ok, %{interval: interval, failing: MapSet.new()}, {:continue, :load}}
+    lister = Keyword.get(opts, :project_ids, &default_project_ids/0)
+    {:ok, %{interval: interval, lister: lister, failing: MapSet.new()}, {:continue, :load}}
   end
 
   @impl true
@@ -99,7 +104,7 @@ defmodule ForemanServer.Observability.SecretValueLogFilter.Refresher do
   defp schedule(_state), do: :ok
 
   defp load(state) do
-    case project_ids() do
+    case project_ids(state.lister) do
       {:ok, ids} ->
         results = Enum.map(ids, &{&1, project_values(&1)})
         values = Enum.flat_map(results, &contributed/1)
@@ -115,8 +120,12 @@ defmodule ForemanServer.Observability.SecretValueLogFilter.Refresher do
   defp contributed({_id, {:error, _code}}), do: []
 
   # `ProjectStore.list/0` is a call into the projection: it exits when the projection is down.
-  defp project_ids do
-    {:ok, Enum.map(ProjectStore.list(), & &1.project_id)}
+  # The `:project_ids` option (a zero-arity function returning the ids) replaces it so a test can
+  # make the list unreadable without stopping the real projection.
+  defp default_project_ids, do: Enum.map(ProjectStore.list(), & &1.project_id)
+
+  defp project_ids(lister) do
+    {:ok, lister.()}
   rescue
     error -> {:error, {:project_list, error.__struct__}}
   catch
