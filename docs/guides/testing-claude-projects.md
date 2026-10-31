@@ -33,13 +33,14 @@ foreman doctor --project try-it
 
 ## Checks that need no model
 
-Each boots its own throwaway server and database, so run them one at a time. The first two rows were observed on `main` at `096e29d3` (2026-10-30); the third on the branch that added the two failing-paste scenarios:
+Each boots its own throwaway server and database, so run them one at a time. The first two rows were observed on `main` at `096e29d3` (2026-10-30); the third on the branch that added the two failing-paste scenarios; the fourth on `main` at `78b75fc3` plus the script itself (2026-10-30):
 
 | Script | Result |
 |---|---|
 | `devbox run -- bash scripts/e2e/mcp_schedule_update.sh` | 84 passed, 0 failed (18 s) |
 | `E2E_TICK_SLOTS=0 devbox run -- bash scripts/e2e/scheduled_tab_flow.sh` (headless Chromium) | 86 passed, 0 failed, 1 UNVERIFIED: the ~10 min wait that proves the ticker does not fire a deleted schedule is skipped (32 s) |
 | `bash scripts/e2e/claude_projects/overlap.sh` (self-test, no stack) | 28 passed, 0 failed (`main` at `096e29d3` ran 26, before those two scenarios existed) |
+| `devbox run -- bash scripts/e2e/notifier_live_negative.sh` (outbound HTTPS to `api.telegram.org` and `hooks.slack.com`; no model) | 82 passed, 0 failed, 0 UNVERIFIED (58 s) on `main` at `78b75fc3` plus the script; run once. Real Telegram and Slack hosts, deliberately fake credentials: **this proves no delivery**, see the C12 bullet below and `docs/acceptance/notifier-live-negative-run.md` |
 
 The scripts that run a real agent (`claude_projects_flow.sh`, `project_archive_flow.sh`, `coordinator_live_actions.sh`, ...) and their recorded evidence are indexed in `docs/acceptance/README.md`.
 
@@ -49,7 +50,8 @@ The scripts that run a real agent (`claude_projects_flow.sh`, `project_archive_f
 - **Related redaction gaps:** the `jido_harness` cache stores the agent's event stream on disk unredacted, including injected stored secret values; this is accepted by policy, like the agent's own session files (`foreman-4ohex`, see the Secrets row of the user guide). In the live redaction run the real coordinator may rewrite the memory topic before the later thread starts; then the "standing context carries the marker" check is UNVERIFIED rather than passed.
 - **Coordinator live actions** (setup proposal, `apply N`, honest refusal) are proven live with `claude` (haiku). The `pi`/minimax leg and the invented-quote case are not (`foreman-fas1b`).
 - **Context over 200k tokens** has not been exercised live (`foreman-gppjx`).
-- **Not built:** Telegram and Slack delivery of notifications (C12, `foreman-mivo7`) and remote execution on your own machine (C13, `foreman-zn7de`). Do not test them; the audit marks them as gaps, not as verification debt.
+- **Telegram and Slack delivery (C12, `foreman-mivo7`): built, tested with fakes, NOT verified live.** The providers, the Slack URL rules and the `FOREMAN_NOTIFY_TELEGRAM_BOT_TOKEN` / `_CHAT_ID` and `FOREMAN_NOTIFY_SLACK_WEBHOOK_URL` wiring exist and are covered by tests against fake HTTP clients. `scripts/e2e/notifier_live_negative.sh` adds a live NEGATIVE-path check with fake credentials against the real hosts: Telegram answers a fake token 401 and Slack a fake webhook 404 (`no_team`), each recorded as a non-retryable `NotificationDeliveryFailed` (`telegram_http_401`, `slack_http_404`), the fake secrets are found nowhere in the event store, logs or `/api/doctor`, and a half-set Telegram pair aborts boot naming the variables. That shows real TLS, DNS, URL shape, status classification and redaction on the failure path. It does **not** show a message arriving: a first delivery with a real bot token and chat id, or a real Slack webhook, is still unproven and needs your own credentials (the audit keeps C12 PARTIAL until then). To try it yourself, set exactly one provider's variables on the server (a mix, or half of the Telegram pair, aborts boot) and read the outcome from the `NotificationDeliverySucceeded` / `NotificationDeliveryFailed` events (`foreman doctor` only counts what was enqueued).
+- **Not built:** remote execution on your own machine (C13, `foreman-zn7de`). Do not test it; the audit marks it as a gap, not as verification debt.
 - **By decision:** archiving or pausing a project between iterations does not stop a multi-iteration jobsite already running (`foreman-7p068`, `docs/decisions/project-delete.md`).
 - **MCP errors:** a typed tool failure is a JSON-RPC error with an integer `error.code` and the typed reason in `error.data.code`. Domain failures without a dedicated code share `-32000` ([MCP tool integration](../user-guide.md#9-mcp-tool-integration)).
 
