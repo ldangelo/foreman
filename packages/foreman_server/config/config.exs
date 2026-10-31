@@ -369,7 +369,31 @@ config :foreman_server, :secret_store, backend: ForemanServer.SecretStore.File
 
 # Secret values arrive as `value` in PUT /api/projects/:id/secrets/:name; Phoenix
 # must never log them (E4-S6).
-config :phoenix, :filter_parameters, ["password", "value"]
+#
+# Phoenix logs request params at :debug, in two places that share this list: the router
+# dispatch line ("Parameters:") and Phoenix.LiveView.Logger ("HANDLE EVENT ... Parameters:").
+# A stored secret can reach the log inside free text a user or agent submits, under a key
+# that has nothing secret-looking about it (foreman-mw5rz), so the free-text keys are
+# filtered too: chat `text`, memory `content`/`description`, `prompt`, `message`,
+# `instructions`, `goal`, `body`, the MCP JSON-RPC `params` envelope (every tool argument,
+# whatever it is named) and `token` (the dashboard's `?token=`). Keys are matched by
+# SUBSTRING (`text` also hides `context`, `message` also hides `message_id`), and a
+# free-text key added later is NOT covered until it is added here; the fail-closed
+# follow-up is foreman-25sqf.1.1. Pinned by test/foreman_server_web/log_filter_test.exs.
+config :phoenix, :filter_parameters, [
+  "password",
+  "value",
+  "token",
+  "text",
+  "content",
+  "description",
+  "prompt",
+  "message",
+  "instructions",
+  "goal",
+  "body",
+  "params"
+]
 
 # Project library (E5): limits mirror Claude Projects. `folder_*` apply to a folder add;
 # `produced_*` bound thread-produced files registered by `Library.Collector`;

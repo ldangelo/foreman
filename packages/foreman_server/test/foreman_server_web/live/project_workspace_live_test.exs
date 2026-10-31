@@ -581,6 +581,28 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   end
 
   describe "conversation pane" do
+    test "composer text and the dashboard URL token are not written to the server log (foreman-mw5rz)",
+         %{id: id} do
+      canary = "LOGCANARY-#{System.unique_integer([:positive])}"
+
+      mount_log =
+        capture_log([level: :debug], fn -> send(self(), {:mounted, mount_view(id)}) end)
+
+      assert_received {:mounted, {view, _}}
+      # Controls: the router dispatch line is emitted (so the refute below can fail) ...
+      assert mount_log =~ "Parameters:"
+      # ... and the token the page was opened with, a query parameter, is filtered from it.
+      refute mount_log =~ @token
+
+      event_log =
+        capture_log([level: :debug], fn ->
+          view |> form("#composer", %{"text" => canary}) |> render_submit()
+        end)
+
+      assert event_log =~ "HANDLE EVENT"
+      refute event_log =~ canary
+    end
+
     test "posting a message shows it, escaped, and an HTTP-posted one arrives via PubSub", %{
       id: id
     } do
