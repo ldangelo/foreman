@@ -535,7 +535,7 @@ worker logs, but `config.env` itself is still stored in project event payloads;
 a real secret store is a separate, later feature. Jobsite `agent.env` is a
 different mechanism (an operator-allowlisted per-request map) and is unchanged.
 
-**Context window for gateway models.** The claude CLI assumes a 200k window for a model name it does not recognise (e.g. a LiteLLM alias such as `Minimax-M3`) and may compact or refuse near 200k. Declare the real window in the project environment, e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS=512000` (the LiteLLM entry's `max_input_tokens`). Foreman never infers it from the model name. The agent images pin the CLI via the `CLAUDE_CODE_VERSION` build arg (>= 2.1.308). Unverified live: a real run over 200k tokens through the proxy (foreman-gppjx).
+**Context window for gateway models.** The claude CLI assumes a 200k window for a model name it does not recognise (e.g. a LiteLLM alias such as `Minimax-M3`) and may compact or refuse near 200k. Declare the real window in the project environment, e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS=512000` (the LiteLLM entry's `max_input_tokens`). Foreman never infers it from the model name. The agent images pin the CLI via the `CLAUDE_CODE_VERSION` build arg (>= 2.1.308). Measured 2026-10-31 against a stand-in gateway with no provider (`docs/acceptance/context-window-probe.md`): CLI 2.1.308 auto-compacts at about 176k claimed tokens for such a name and at about 488k with the variable set to 512000. Unverified live: a real run over 200k tokens through the proxy (foreman-gppjx).
 
 **Base branch.** A run's base branch is the registered checkout's `HEAD` at the
 moment the run's first phase starts, latched for the run. There is no
