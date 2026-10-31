@@ -58,6 +58,8 @@ config :foreman_server, :agent_runtime,
   adapters: []
 
 config :foreman_server, :stuck_run_check_interval_seconds, 3_600
+# No periodic refresh in tests: they publish through `Refresher.refresh_sync/0`.
+config :foreman_server, :secret_log_filter, refresh_ms: 3_600_000
 # foreman_server: br_runner test override (TRD-030)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 

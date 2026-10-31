@@ -8,7 +8,10 @@ defmodule ForemanServerWeb.CoordinatorControllerTest do
   import Phoenix.ConnTest
   import ExUnit.CaptureLog
 
-  alias ForemanServer.{CommandGateway, CommandRouter, EventStore, ProjectionStore}
+  alias ForemanServer.{CommandGateway, CommandRouter, EventStore, ProjectionStore, SecretStore}
+  alias ForemanServer.Observability.SecretValueLogFilter
+  alias ForemanServer.Observability.SecretValueLogFilter.Refresher
+  alias ForemanServer.TestSupport.SecretStoreDir
 
   @token "coordinator-controller-test-token"
 
@@ -83,6 +86,27 @@ defmodule ForemanServerWeb.CoordinatorControllerTest do
     # Control: the router dispatch line is emitted (so the refute below can fail).
     assert log =~ "Parameters:"
     refute log =~ canary
+  end
+
+  test "a stored secret under a param key nobody listed is redacted from the request log by value (foreman-25sqf.1.1)",
+       %{project_id: p, tmp_dir: dir} do
+    SecretStoreDir.use_tmp_dir!(dir)
+    on_exit(fn -> SecretValueLogFilter.publish([]) end)
+    value = "LOGSECRET-#{System.unique_integer([:positive])}-zzzz"
+    {:ok, :stored} = SecretStore.put(p, "DEPLOY_TARGET", value)
+    :ok = Refresher.refresh_sync()
+
+    log =
+      capture_log([level: :debug], fn ->
+        post_message(p, %{"text" => "hello", "unlisted_note" => value}) |> json_response(202)
+      end)
+
+    # Controls: the dispatch line is emitted and the key was NOT hidden by name, so it is the
+    # value-based filter alone that removed the secret.
+    assert log =~ "Parameters:"
+    assert log =~ "unlisted_note"
+    assert log =~ "[REDACTED]"
+    refute log =~ value
   end
 
   test "POST accepts a message: 202, generated id, source defaults to http", %{project_id: p} do

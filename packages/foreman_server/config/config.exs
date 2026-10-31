@@ -362,6 +362,14 @@ config :foreman_server, :server_log,
   max_bytes: 10_000_000,
   max_files: 5
 
+# Stored secret VALUES are redacted from every log event, whatever key or text they arrive in
+# (foreman-25sqf.1.1; `ForemanServer.Observability.SecretValueLogFilter`). A `:logger` primary
+# filter, so it covers the console, the server log file and the SigNoz export. The list (every
+# project's stored and secret-named env values of 8+ characters) is refreshed every `refresh_ms`
+# and right after `SecretStore.put/3` and `delete/2`. `enabled: false` removes both the filter
+# and its refresher.
+config :foreman_server, :secret_log_filter, enabled: true, refresh_ms: 30_000
+
 # Per-project secret VALUES live only here, never in events (E4, spike E4-SP1).
 # Default: 0600 files under ~/.foreman/secrets (dir 0700), outside any repo.
 config :foreman_server, :secret_store, backend: ForemanServer.SecretStore.File

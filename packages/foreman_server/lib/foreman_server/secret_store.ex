@@ -52,7 +52,12 @@ defmodule ForemanServer.SecretStore do
     with :ok <- check_project(project_id),
          :ok <- check_name(name),
          :ok <- check_value(value) do
-      backend().put(project_id, name, value)
+      with {:ok, _} = stored <- backend().put(project_id, name, value) do
+        # The log filter redacts stored values by value: tell it a new one exists (a cast; a
+        # no-op when the filter is disabled), so the window is milliseconds, not its interval.
+        ForemanServer.Observability.SecretValueLogFilter.Refresher.refresh()
+        stored
+      end
     end
   end
 
@@ -70,7 +75,10 @@ defmodule ForemanServer.SecretStore do
   def delete(project_id, name) do
     with :ok <- check_project(project_id),
          :ok <- check_name(name) do
-      backend().delete(project_id, name)
+      with {:ok, _} = deleted <- backend().delete(project_id, name) do
+        ForemanServer.Observability.SecretValueLogFilter.Refresher.refresh()
+        deleted
+      end
     end
   end
 
