@@ -18,6 +18,21 @@
 #   gh pr merge URL --squash --match-head-commit SHA       refuses on a head mismatch, else MERGED
 #   gh api graphql ...                                     no review threads
 #   gh auth status | gh --version
+#
+# REAL-GIT MODE (foreman-w0tnj): while the file $E2E_GH_STATE/real-git exists (the `realgit` stage of multi_repo.sh creates it
+# and removes it again) the PRs are backed by the real bare origins instead of by the stored files, so what Foreman does through
+# `gh` has real effects on real remotes:
+#   pr create   the head branch must exist on the ORIGIN of the checkout it runs in, with commits ahead of the base (what GitHub
+#               answers "No commits between ..." for); the origin path is kept with the PR
+#   pr view     headRefOid is the CURRENT tip of the head branch on that origin (it moves when a fix is pushed), mergeable comes
+#               from `git merge-tree --write-tree` (CONFLICTING on a real conflict), and statusCheckRollup is a REAL check: while
+#               $E2E_GH_STATE/ci/<repo> exists, the check `e2e-ci` of that repository is SUCCESS only when the file CI_OK of the
+#               PR's head commit contains `ok`, else FAILURE (no marker: no checks)
+#   pr merge    refuses unless --match-head-commit equals the branch's real tip, then SQUASH-merges the head into the base ON THE
+#               ORIGIN (scratch clone, one commit with one parent, pushed); only then is the PR MERGED
+#   run view    `gh run view <id> --log-failed -R <owner/repo>` prints why e2e-ci failed (what a failing GitHub Actions log is to
+#               the PR fix prompt)
+# Nothing outside the harness's own bare origins is ever touched.
 set -u
 
 state=${E2E_GH_STATE:?E2E_GH_STATE must name the fake gh state directory}
@@ -25,6 +40,9 @@ mkdir -p "$state/pr"
 
 args_line=$(printf '%s ' "$@" | tr '\n\t' '  ' | cut -c1-1500)
 printf '%s\t%s\t%s\n' "$$" "$PWD" "$args_line" >> "$state/calls.log"
+
+real=0
+[ -f "$state/real-git" ] && real=1
 
 pr_dir() { printf '%s/pr/%s' "$state" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"; }
 
@@ -35,6 +53,41 @@ unsupported() {
 }
 
 field() { cat "$1/$2" 2>/dev/null || true; }
+
+# ---- real-git mode helpers
+real_tip() { git --git-dir="$1" rev-parse --verify -q "refs/heads/$2^{commit}" 2>/dev/null; } # <origin> <branch>
+
+# real_checks <pr dir> <head sha>: the statusCheckRollup JSON of the PR
+real_checks() {
+  rc_repo=$(field "$1" repo)
+  if [ ! -f "$state/ci/$rc_repo" ]; then printf '[]'; return 0; fi
+  if [ "$(git --git-dir="$(field "$1" origin)" show "$2:CI_OK" 2>/dev/null | tr -d '\n')" = ok ]; then rc_c=SUCCESS; else rc_c=FAILURE; fi
+  printf '[{"__typename":"CheckRun","name":"e2e-ci","status":"COMPLETED","conclusion":"%s","workflowName":"e2e","detailsUrl":"https://github.com/e2e-owner/%s/actions/runs/%s"}]' \
+    "$rc_c" "$rc_repo" "$(field "$1" num)"
+}
+
+# real_merge <pr dir> <pinned head sha or empty>: the squash merge on the origin; 0 only when it was pushed
+real_merge() {
+  rm_origin=$(field "$1" origin); rm_head=$(field "$1" head); rm_base=$(field "$1" base)
+  rm_tip=$(real_tip "$rm_origin" "$rm_head") || { echo "real-git gh: head branch '$rm_head' is gone from $rm_origin" >&2; return 1; }
+  if [ -n "$2" ] && [ "$2" != "$rm_tip" ]; then
+    echo "real-git gh: head commit changed since the merge was approved (pinned $2, the branch is at $rm_tip)" >&2
+    return 1
+  fi
+  rm_scratch="$state/scratch/merge-$$"
+  rm -rf "$rm_scratch"; mkdir -p "$state/scratch"
+  git clone -q "$rm_origin" "$rm_scratch" >/dev/null 2>&1 || { echo "real-git gh: cannot clone $rm_origin" >&2; return 1; }
+  git -C "$rm_scratch" config user.name "e2e gh"
+  git -C "$rm_scratch" config user.email "e2e-gh@example.com"
+  git -C "$rm_scratch" config commit.gpgsign false
+  git -C "$rm_scratch" checkout -q "$rm_base" >/dev/null 2>&1 || { echo "real-git gh: base branch '$rm_base' missing" >&2; rm -rf "$rm_scratch"; return 1; }
+  git -C "$rm_scratch" merge --squash -q "origin/$rm_head" >/dev/null 2>&1 || { echo "real-git gh: the merge conflicts" >&2; rm -rf "$rm_scratch"; return 1; }
+  git -C "$rm_scratch" commit -q -m "$(field "$1" title) (#$(field "$1" num))" >/dev/null 2>&1 || { echo "real-git gh: nothing to merge" >&2; rm -rf "$rm_scratch"; return 1; }
+  git -C "$rm_scratch" push -q origin "$rm_base" >/dev/null 2>&1 || { echo "real-git gh: push to $rm_origin refused" >&2; rm -rf "$rm_scratch"; return 1; }
+  git -C "$rm_scratch" rev-parse HEAD > "$1/merge_commit"
+  rm -rf "$rm_scratch"
+  return 0
+}
 
 [ $# -ge 1 ] || unsupported
 
@@ -49,6 +102,25 @@ case "$1" in
     ;;
   api)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+    exit 0
+    ;;
+  run)
+    # gh run view <id> --log-failed -R <owner/repo>: real-git mode only
+    [ "$real" = 1 ] && [ "${2:-}" = view ] && [ $# -ge 3 ] || unsupported "$@"
+    rv_id=${3:-}; rv_repo=""
+    shift 3
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -R) rv_repo=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    rv_dir=$(pr_dir "https://github.com/$rv_repo/pull/$rv_id")
+    [ -d "$rv_dir" ] || { echo "fake gh: no run $rv_id in $rv_repo" >&2; exit 1; }
+    rv_tip=$(real_tip "$(field "$rv_dir" origin)" "$(field "$rv_dir" head)")
+    echo "e2e-ci	Run e2e-ci	failing at commit $rv_tip"
+    echo "e2e-ci	Run e2e-ci	::error::CI_OK is missing from the repository root, or it does not contain the single word ok."
+    echo "e2e-ci	Run e2e-ci	Fix: create a file named CI_OK in the repository root containing exactly: ok"
     exit 0
     ;;
   pr) ;;
@@ -79,6 +151,14 @@ case "$sub" in
     seen=$(ls -1 "$state/pr" 2>/dev/null | grep -c "_e2e-owner_${repo}_pull_" || true)
     n=$((seen + 1))
     url="https://github.com/e2e-owner/${repo}/pull/${n}"
+    if [ "$real" = 1 ]; then
+      origin=$(git remote get-url origin 2>/dev/null || true)
+      [ -n "$origin" ] && [ -d "$origin" ] || { echo "real-git gh: no usable origin remote in $PWD" >&2; exit 1; }
+      real_tip "$origin" "$base" >/dev/null || { echo "real-git gh: base branch '$base' is not on $origin" >&2; exit 1; }
+      sha=$(real_tip "$origin" "$head") || { echo "real-git gh: head branch '$head' is not on $origin (was it pushed?)" >&2; exit 1; }
+      ahead=$(git --git-dir="$origin" rev-list --count "refs/heads/$base..refs/heads/$head" 2>/dev/null || echo 0)
+      [ "$ahead" -ge 1 ] || { echo "real-git gh: No commits between $base and $head" >&2; exit 1; }
+    fi
     dir=$(pr_dir "$url")
     mkdir -p "$dir"
     printf '%s' "$url" > "$dir/url"
@@ -87,8 +167,14 @@ case "$sub" in
     printf '%s' "$title" > "$dir/title"
     printf '%s' "$body" > "$dir/body"
     printf 'OPEN' > "$dir/state"
-    # The branch was pushed from this checkout by AutoPR just before this call.
-    sha=$(git rev-parse --verify "${head}^{commit}" 2>/dev/null || true)
+    printf '%s' "$repo" > "$dir/repo"
+    printf '%s' "$n" > "$dir/num"
+    if [ "$real" = 1 ]; then
+      printf '%s' "$origin" > "$dir/origin"
+    else
+      # The branch was pushed from this checkout by AutoPR just before this call.
+      sha=$(git rev-parse --verify "${head}^{commit}" 2>/dev/null || true)
+    fi
     printf '%s' "$sha" > "$dir/headsha"
     echo "$url"
     exit 0
@@ -108,6 +194,17 @@ case "$sub" in
     if [ "$json" = "body" ] && [ "$jq_expr" = ".body" ]; then
       field "$dir" body
       echo
+      exit 0
+    fi
+    if [ "$real" = 1 ] && [ -n "$(field "$dir" origin)" ]; then
+      v_origin=$(field "$dir" origin); v_head=$(field "$dir" head); v_base=$(field "$dir" base)
+      v_sha=$(real_tip "$v_origin" "$v_head") || v_sha=$(field "$dir" headsha)
+      v_mergeable=MERGEABLE
+      if [ "$(field "$dir" state)" = OPEN ] && ! git --git-dir="$v_origin" merge-tree --write-tree "refs/heads/$v_base" "refs/heads/$v_head" >/dev/null 2>&1; then
+        v_mergeable=CONFLICTING
+      fi
+      printf '{"state":"%s","mergeable":"%s","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","statusCheckRollup":%s,"reviewDecision":"","reviews":[],"comments":[],"mergeStateStatus":"CLEAN"}\n' \
+        "$(field "$dir" state)" "$v_mergeable" "$v_sha" "$v_head" "$v_base" "$(real_checks "$dir" "$v_sha")"
       exit 0
     fi
     printf '{"state":"%s","mergeable":"MERGEABLE","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","statusCheckRollup":[],"reviewDecision":"","reviews":[],"comments":[],"mergeStateStatus":"CLEAN"}\n' \
@@ -138,6 +235,13 @@ case "$sub" in
         *) shift ;;
       esac
     done
+    if [ "$real" = 1 ] && [ -n "$(field "$dir" origin)" ]; then
+      [ "$(field "$dir" state)" = OPEN ] || { echo "real-git gh: $url is not open" >&2; exit 1; }
+      real_merge "$dir" "$match" || exit 1
+      printf 'MERGED' > "$dir/state"
+      echo "Merged $url (real git: squash commit $(field "$dir" merge_commit))"
+      exit 0
+    fi
     if [ -n "$match" ] && [ "$match" != "$(field "$dir" headsha)" ]; then
       echo "fake gh: head commit changed since the merge was approved" >&2
       exit 1
