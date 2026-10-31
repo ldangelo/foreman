@@ -5,3 +5,9 @@ Licensed under the Apache License, Version 2.0; see the LICENSE file.
 
 packages/jido_harness is third-party software under the Apache License,
 Version 2.0, and keeps its own copyright notice in packages/jido_harness/LICENSE.
+
+This distribution includes the vendored Hex dependency telemetry
+(packages/jido_harness/deps/telemetry), which carries this notice in its own
+NOTICE file:
+
+    Copyright (c) 2018, Chris McCord and Erlang Solutions
