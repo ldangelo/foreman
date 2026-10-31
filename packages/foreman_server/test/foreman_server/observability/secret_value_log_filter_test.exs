@@ -17,15 +17,19 @@ defmodule ForemanServer.Observability.SecretValueLogFilterTest do
   alias ForemanServer.{ProjectionStore, SecretStore}
   alias ForemanServer.TestSupport.{ProjectionStoreReset, SecretStoreDir}
 
+  # The application does not run the filter in the test environment (`config/test.exs`: its
+  # refresher reads every secret store from a background process, which races tests that count
+  # `SecretStore` calls), so each test installs the filter and starts the refresher itself.
   setup %{tmp_dir: tmp} do
     ProjectionStoreReset.reset!()
     SecretStoreDir.use_tmp_dir!(tmp)
-    Filter.publish([])
+    :ok = Filter.install()
+    start_supervised!({Refresher, interval_ms: 3_600_000})
     Refresher.refresh_sync()
 
     on_exit(fn ->
       ProjectionStoreReset.reset!()
-      Filter.publish([])
+      Filter.uninstall()
     end)
 
     {:ok, value: "LOGSECRET-#{System.unique_integer([:positive])}-zzzz"}

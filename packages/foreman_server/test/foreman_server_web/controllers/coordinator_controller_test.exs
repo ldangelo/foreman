@@ -91,7 +91,10 @@ defmodule ForemanServerWeb.CoordinatorControllerTest do
   test "a stored secret under a param key nobody listed is redacted from the request log by value (foreman-25sqf.1.1)",
        %{project_id: p, tmp_dir: dir} do
     SecretStoreDir.use_tmp_dir!(dir)
-    on_exit(fn -> SecretValueLogFilter.publish([]) end)
+    # The application does not run the filter in the test environment (config/test.exs).
+    :ok = SecretValueLogFilter.install()
+    start_supervised!({Refresher, interval_ms: 3_600_000})
+    on_exit(fn -> SecretValueLogFilter.uninstall() end)
     value = "LOGSECRET-#{System.unique_integer([:positive])}-zzzz"
     {:ok, :stored} = SecretStore.put(p, "DEPLOY_TARGET", value)
     :ok = Refresher.refresh_sync()
