@@ -21,6 +21,10 @@
 //            meanwhile to force a refresh) and print whether the typed text survived
 //   gone     wait for a question to leave the pane with no click here (answered over the CLI/HTTP,
 //            or expired) and print how long the refresh took
+//   limit    (foreman-7c191) wait for a question, print its answer box's `maxlength`, fill the box with the first <maxlength>
+//            characters of --text (the exact limit), type ONE more character as a user would (the browser must stop it),
+//            then set the value of the box to the whole --text (max+1 characters: a client that ignores the attribute),
+//            click Answer and print the server's refusal; the question must stay
 //
 // Uses the Playwright + Chromium of scripts/e2e/ui-a11y (`cd scripts/e2e/ui-a11y && npm ci`).
 // Open the page on `localhost`, not 127.0.0.1: the dev endpoint's origin check refuses the
@@ -48,12 +52,12 @@ const waitMs = Number(args["wait-secs"] ?? 60) * 1000;
 const holdMs = Number(args["hold-secs"] ?? 8) * 1000;
 const shotDir = args["shot-dir"];
 const label = args.label ?? action;
-const actions = ["state", "watch", "answer", "blank", "keep", "gone"];
+const actions = ["state", "watch", "answer", "blank", "keep", "gone", "limit"];
 if (!actions.includes(action) || !base || !project) {
   console.error(`usage: questions_ui.mjs ${actions.join("|")} --base URL --token T --project ID [--question ID] [--text ANSWER]`);
   process.exit(2);
 }
-if (["answer", "keep"].includes(action) && !args.text) {
+if (["answer", "keep", "limit"].includes(action) && !args.text) {
   console.error(`questions_ui.mjs ${action} needs --text`);
   process.exit(2);
 }
@@ -85,6 +89,7 @@ async function snapshot() {
       text: a.querySelector(".ws-msg")?.textContent?.trim(),
       meta: a.querySelector("p.ws-muted")?.textContent?.replace(/\s+/g, " ").trim(),
       answer_box: a.querySelector("textarea")?.value ?? null,
+      maxlength: a.querySelector("textarea")?.getAttribute("maxlength") ?? null,
       buttons: [...a.querySelectorAll("button")].map((b) => b.textContent.trim()),
     })),
     waiting_on_you: [...document.querySelectorAll('#group-waiting_on_you article.ws-card[id^="thread-"]')].map(
@@ -118,7 +123,7 @@ try {
 
     if (action === "answer") {
       await row.getByLabel("Your answer").fill(args.text);
-      log({ event: "typed", row: rowId, text: args.text });
+      log({ event: "typed", row: rowId, text: args.text.length > 200 ? `${args.text.slice(0, 80)}... (${args.text.length} characters)` : args.text, text_length: args.text.length, box_length: (await row.getByLabel("Your answer").inputValue()).length });
       await row.getByRole("button", { name: "Answer", exact: true }).click();
       log({ event: "clicked", button: "Answer", row: rowId });
       await page.waitForFunction(() => (document.querySelector("#notice")?.textContent ?? "").trim() !== "", null, { timeout: 20000 });
@@ -149,6 +154,33 @@ try {
       await page.waitForTimeout(holdMs);
       const survivors = (await snapshot()).questions.map((q) => ({ id: q.id, answer_box: q.answer_box }));
       log({ event: "after-hold", hold_ms: holdMs, kept: survivors.find((q) => q.id === rowId)?.answer_box === args.text, questions: survivors });
+      await shot("after");
+    } else if (action === "limit") {
+      const box = row.getByLabel("Your answer");
+      const attr = await box.getAttribute("maxlength");
+      const limit = Number(attr);
+      log({ event: "limit-attribute", row: rowId, maxlength: attr, text_length: args.text.length });
+      await box.fill(args.text.slice(0, limit));
+      log({ event: "typed-exact-limit", row: rowId, length: (await box.inputValue()).length });
+      await box.focus();
+      await box.evaluate((el) => el.setSelectionRange(el.value.length, el.value.length));
+      await page.keyboard.type("Z");
+      log({ event: "typed-one-more-character", row: rowId, length: (await box.inputValue()).length });
+      await box.evaluate((el, t) => {
+        el.value = t;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, args.text);
+      log({ event: "value-set-past-limit", row: rowId, length: (await box.inputValue()).length });
+      await row.getByRole("button", { name: "Answer", exact: true }).click();
+      log({ event: "clicked", button: "Answer", row: rowId, text_length: args.text.length });
+      await page.waitForFunction(() => (document.querySelector("#notice")?.textContent ?? "").trim() !== "", null, { timeout: 20000 });
+      log({
+        event: "notice",
+        text: await noticeText(),
+        error_styled: await page.evaluate(() => document.querySelector("#notice")?.classList.contains("ws-error") ?? false),
+        row_still_present: (await page.locator(`[id="${rowId}"]`).count()) > 0,
+        answer_box_length: await box.inputValue().then((v) => v.length).catch(() => null),
+      });
       await shot("after");
     } else if (action === "gone") {
       const waitedFrom = Date.now();

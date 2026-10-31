@@ -9,8 +9,9 @@ Bead `foreman-fas1b` (C5, C10 setup proposal, C11 coordinator usage). Harness: `
 
 | Provider | Result |
 |---|---|
-| claude `haiku` (real CLI, private HOME, OAuth through the symlinked Keychains) | **PASS**: `passed=31 failed=0 unverified=0` (267 s) |
-| pi `minimax/MiniMax-M2.7-highspeed` | **UNVERIFIED**: `pi --list-models` on this host lists no MiniMax model (only anthropic, litellm, openai, xai providers), so the harness records UNVERIFIED and stops. Run the same command with `COORD_PROVIDER=pi` on a host that has the model. |
+| claude `haiku` (real CLI, private HOME, OAuth through the symlinked Keychains), 2026-10-30 script | **PASS**: `passed=31 failed=0 unverified=0` (267 s) |
+| claude `haiku`, extended script (2026-10-31, see the last section) | **PASS**: `passed=41 failed=0 unverified=0` (482 s) |
+| pi `minimax/MiniMax-M2.7-highspeed`, extended script (2026-10-31) | **PASS**: attempt 2 `passed=48 failed=0 unverified=0` (511 s); attempt 1 `passed=45 failed=0 unverified=1` (407 s), the one UNVERIFIED being a model that quoted the operator verbatim when asked to leave the quote out (a guard working, not a pass of the no-quote case) |
 
 ## What was observed (claude haiku)
 
@@ -39,12 +40,49 @@ Bead `foreman-fas1b` (C5, C10 setup proposal, C11 coordinator usage). Harness: `
 
 ## UNVERIFIED / limits
 
-- pi/minimax leg (above).
-- An **invented quote** is not reproduced live: the real model never invented one, so the refusal of an unverified quote
-  (`Policy.quote_verified?/2`) stays covered by tests only. The machine-turn refusal (source `mcp`) is live.
-- **Cost unknown (null instead of 0)** is not reproduced: claude reports a cost on every turn. Covered by tests only.
+- ~~pi/minimax leg~~ Run 2026-10-31 (last section): `pi --list-models` on this host now lists `MiniMax-M2.7-highspeed`, `MiniMax-M3`, `MiniMax-M2.7` and `MiniMax-M3.1-Flash`, so the old "no MiniMax model" blocker is gone.
+- ~~An invented quote is not reproduced live~~ Reproduced 2026-10-31 on both providers, but **the alteration is instructed by the operator in the chat message, not hallucinated by the model unprompted** (last section). A model that invents a quote on its own initiative has not been observed.
+- **Cost unknown (null instead of 0)** is still not reproduced live: both providers report a cost on every turn (pi's `cost(0)` is `0.0`, never nil). Covered by tests only.
 - The tokens were compared with Foreman's own `CoordinatorUsageRecorded` events, not with the provider's transcript: claude's
   session files under the private HOME (175 files, output-token sum 6162) hold more than the coordinator turns (readiness
   probe, repair retries, other sessions), so they cannot be reconciled one to one with the 2913 recorded.
 - The first harness run (before the 1b step) failed one assertion that expected "apply 1" to fix AGENTS.md; that was the wrong
   premise above, not a server defect. A later run failed on a harness bug (usage events summed over two projects); fixed.
+
+## 2026-10-31: the pi leg, the invented quote, the no-quote case and pi usage against pi's own stream (`foreman-fas1b`)
+
+Script changes (`scripts/e2e/coordinator_live_actions.sh`, new shim `scripts/e2e/coordinator_live_actions/pi-capture.sh`):
+a step 2b with two **invented-quote** attempts (the operator asks the coordinator to write `please register the fifth repository`
+with underscores in the `quote` field), a **no-quote** step (two attempts: the operator asks it to leave `quote` out) and a
+**positive control** (the same request asking it to quote the operator's words); a `dump_events` helper; and, for pi, a transparent `pi`
+shim first on the server's PATH that tees the stdout of every `pi --mode json` run to `$WORK/pi-capture/` and keeps pi's exit status.
+A coordinator turn runs pi with `no_session: true`, so there is no pi session file: the shim is the only independent record of what pi
+itself reported. Whether the quote is verbatim is judged by the harness restating `Policy.quote_verified?/2` (lowercase, collapse whitespace,
+trim, substring) on the recorded `CoordinatorActionRecorded` params; a model that quotes verbatim is recorded UNVERIFIED, never a pass.
+
+Commands: `COORD_PROVIDER=pi COORD_MODEL=minimax/MiniMax-M2.7-highspeed devbox run -- bash scripts/e2e/coordinator_live_actions.sh` (pi attempt 1:
+`passed=45 failed=0 unverified=1 wall=407s`; attempt 2 after a stronger no-quote phrasing: `passed=48 failed=0 unverified=0 wall=511s`) and
+`COORD_PROVIDER=claude COORD_MODEL=haiku ...` (`passed=41 failed=0 unverified=0 wall=482s`). Provider spend: roughly $0.03 to $0.06 per pi leg
+(from the recorded usage) and about $0.04 for the claude coordinator turns.
+
+Observed on both providers:
+
+1. **Invented quote.** The model emitted `add_repo` with `quote: please_register_the_fifth_repository`, which is not in the operator's message. The
+   action was recorded `rejected` with the reason `this needs the operator's exact words (quote) from their message`; the conversation carries
+   `I did not run add_repo: ...`; the repository was not registered. The positive control (same request, "Quote my words.") was `executed`
+   and `foreman project repo list` shows it with `added_by coordinator:<project>`.
+2. **No quote.** `quote: null` was `rejected` with the same exact-words reason and nothing was registered. With the first, weaker phrasing the
+   model quoted anyway and the action was `executed` (correct guard behaviour, so that attempt is UNVERIFIED for the no-quote case); the stronger
+   phrasing produced `quote: null` on both providers.
+3. **pi usage against pi's own raw stream (pi leg, attempt 2).** 10 `CoordinatorUsageRecorded` events and 10 captured pi runs (37 assistant messages): the sum
+   of the `usage` pi itself printed (input 50878, output 8554, cacheRead 156047, cacheWrite 0, total 215479, cost 0.060419) equals the sum of
+   the recorded events field by field. Attempt 1 matched on the totals too (9 events against 10 captured runs: the tenth run was not investigated).
+   pi's `totalTokens` includes cache reads, while claude's `total_tokens` is input + output only: the same field means different things per provider
+   (claude leg: `usage --by role` coordinator total 7008, 9 turns, cost 0.0419).
+4. **Other pi results.** "apply 2" on the AGENTS.md item was refused honestly (`not_appliable`, nothing written); "apply 1" on `task_provider.wire_beads`
+   was applied, `recommend` no longer lists it and `/setup` posted a fresh proposal; the machine turn (source `mcp`) added nothing; the 15 minute
+   schedule was created with `auto_approve: false`; the 1 minute schedule was refused (`below_minimum`) with the reason in the conversation.
+   pi coordinator turns used pi's read-only tools (up to 12 tool calls in one turn): an observation, not a failure.
+
+Not proven: a model inventing a quote unprompted (here the operator instructs the change); a null cost (tests only); the claude token numbers against
+claude's own transcript (the private HOME's session files hold more than the coordinator turns, as above). No Elixir code changed.

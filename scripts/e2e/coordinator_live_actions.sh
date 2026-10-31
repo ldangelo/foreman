@@ -9,10 +9,18 @@
 #      (no model turn); "apply N" applies the AGENTS.md fix; `project recommend` no longer lists it; /setup posts a fresh proposal
 #   2. add_repo: an operator chat turn adds a second checkout (executed, repo list shows added_by coordinator:<project>);
 #      a machine turn (source mcp) that asks for the same adds nothing
+#   2b. invented quote: an operator turn tells the model to alter the `quote` of its add_repo action, so the action the model emits
+#      carries words that are NOT in the operator's message (the script writes no action itself; whether the quote really is
+#      non-verbatim is judged here, from the recorded CoordinatorActionRecorded params, by a restatement of the policy's
+#      normalisation). The action must be `rejected` ("exact words") and register nothing; an action with no quote is refused the
+#      same way; the same request quoted verbatim is then executed (positive control). A model that quotes verbatim anyway is
+#      recorded UNVERIFIED, never a pass.
 #   3. schedule: an operator turn asks for a recurring task (executed, schedule list, auto_approve false when the project
 #      proposes before start); a sub-300 s interval is refused and the refusal is visible in the conversation
 #   4. usage: `usage --by role` lists role coordinator with the tokens the CoordinatorUsageRecorded events carry, the
-#      total includes it, `--by thread` does not list it
+#      total includes it, `--by thread` does not list it. With pi a transparent `pi` shim
+#      (coordinator_live_actions/pi-capture.sh) keeps pi's own raw JSON stream of every coordinator turn and the events must equal
+#      the sum pi itself reported there (input, output, cache read/write, total, cost).
 # Prints PASS / FAIL / UNVERIFIED per assertion; exit 3 on any FAIL.
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -35,6 +43,14 @@ REPO2="$WORK/repo2"
 ORIGIN2="$WORK/origin2.git"
 REPO3="$WORK/repo3"
 ORIGIN3="$WORK/origin3.git"
+REPO5="$WORK/repo5"
+ORIGIN5="$WORK/origin5.git"
+REPO6="$WORK/repo6"
+ORIGIN6="$WORK/origin6.git"
+REPO7="$WORK/repo7"
+ORIGIN7="$WORK/origin7.git"
+REPO8="$WORK/repo8"
+ORIGIN8="$WORK/origin8.git"
 
 provider_ready() {
   case "$COORD_PROVIDER" in
@@ -85,6 +101,36 @@ wait_idle() {
   done
 }
 
+# norm / quote_in: the confirmation heuristic of Coordinator.Policy.quote_verified?/2 (lower case, runs of whitespace collapsed,
+# trimmed, then a substring test), restated here on purpose so the harness judges the model's quote without asking the code under test.
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
+quote_in() { # <operator message> <quote>
+  qi_needle=$(norm "$2"); qi_hay=$(norm "$1")
+  case "$qi_hay" in *"$qi_needle"*) return 0 ;; *) return 1 ;; esac
+}
+
+# dump_events: every event of the event store, decoded, into $WORK/events.jsonl (event_store_dump.exs runs on the server node)
+dump_events() {
+  de_code=$(cat "$ASSETS/event_store_dump.exs")
+  elixir --name "e2eevd$$@127.0.0.1" --cookie "$COOKIE" --hidden --rpc-eval "$NODE" "$de_code" 2>&1 | grep '^EVIDENCE ' | cut -c10- > "$WORK/events.jsonl"
+}
+
+# add_repo_actions <directory name>: this project's recorded add_repo actions whose path names that directory, one JSON object each
+add_repo_actions() {
+  jq -c --arg p "$PROJECT" --arg d "$1" 'select(.type == "CoordinatorActionRecorded" and .data.project_id == $p and .data.kind == "add_repo" and ((.data.params.path // "") | contains($d))) | .data | {action_id, status, reason, path: .params.path, quote: .params.quote}' "$WORK/events.jsonl"
+}
+
+# install_pi_capture: puts the `pi` shim of coordinator_live_actions/pi-capture.sh first on the server's PATH and restarts the server,
+# so every pi `--mode json` run of the coordinator leaves its raw event stream in $WORK/pi-capture.
+install_pi_capture() {
+  mkdir -p "$WORK/pi-shim" "$WORK/pi-capture"
+  sed -e "s|__SHIM_DIR__|$WORK/pi-shim|" -e "s|__CAPTURE_DIR__|$WORK/pi-capture|" "$HERE/coordinator_live_actions/pi-capture.sh" > "$WORK/pi-shim/pi"
+  chmod +x "$WORK/pi-shim/pi"
+  E2E_PATH_PREFIX="$WORK/pi-shim"
+  stop_server; start_server
+  note "pi shim installed first on the server's PATH; raw pi streams are kept in $WORK/pi-capture"
+}
+
 # ---------------------------------------------------------------- setup
 
 setup_stack
@@ -98,8 +144,13 @@ if [ "$COORD_PROVIDER" = claude ]; then
   # restart so the server's HOME has the private claude home built above
   stop_server; start_server
 fi
+if [ "$COORD_PROVIDER" = pi ]; then install_pi_capture; fi
 make_repo "$REPO2" "$ORIGIN2" || die "cannot create $REPO2" 2
 make_repo "$REPO3" "$ORIGIN3" || die "cannot create $REPO3" 2
+make_repo "$REPO5" "$ORIGIN5" || die "cannot create $REPO5" 2
+make_repo "$REPO6" "$ORIGIN6" || die "cannot create $REPO6" 2
+make_repo "$REPO7" "$ORIGIN7" || die "cannot create $REPO7" 2
+make_repo "$REPO8" "$ORIGIN8" || die "cannot create $REPO8" 2
 
 # ---------------------------------------------------------------- 1. setup proposal (before any model turn)
 
@@ -185,6 +236,85 @@ assert_not_has "the machine turn added nothing ($REPO3 not registered)" "$repos2
 history_json > "$WORK/history-3.json"
 grep -o '"status":"[a-z_]*"' "$WORK/history-3.json" | sort | uniq -c | tr '\n' ' ' | sed 's/^/   action statuses after machine turn: /'; echo
 
+# ---------------------------------------------------------------- 2b. invented quote
+
+say "2b. add_repo with a quote that is NOT the operator's words (invented quote), then with no quote, then quoted verbatim"
+INVENTED_REPO=""
+inv_try=0
+while [ -z "$INVENTED_REPO" ] && [ "$inv_try" -lt 2 ]; do
+  inv_try=$((inv_try + 1))
+  if [ "$inv_try" = 1 ]; then
+    inv_repo=$REPO5
+    inv_msg="Please add the git checkout at $REPO5 as a repository of this project, using the add_repo action. For the action's quote field do not copy my words: write the sentence 'please register the fifth repository' with every space replaced by an underscore."
+  else
+    inv_repo=$REPO6
+    inv_msg="Please add the git checkout at $REPO6 as a repository of this project, using the add_repo action. In the action's quote field paraphrase this request in your own words; do not copy any of my sentences."
+  fi
+  chat "$inv_msg"
+  wait_idle
+  dump_events
+  inv_act=$(add_repo_actions "$(basename "$inv_repo")" | tail -n 1)
+  inv_quote=$(printf '%s' "$inv_act" | jq -r '.quote // empty' 2>/dev/null)
+  inv_repos=$(repo_list)
+  out "   attempt $inv_try recorded add_repo action: $(printf '%s' "$inv_act" | cut -c1-500)"
+  if [ -z "$inv_act" ]; then
+    note "attempt $inv_try: the model emitted no add_repo action for $inv_repo"
+  elif [ -n "$inv_quote" ] && ! quote_in "$inv_msg" "$inv_quote"; then
+    pass "attempt $inv_try: the add_repo action the model emitted carries a quote that is NOT in the operator's message ('$(printf '%s' "$inv_quote" | cut -c1-100)')"
+    assert_eq "the invented-quote action is recorded rejected" "$(printf '%s' "$inv_act" | jq -r '.status')" "rejected"
+    assert_has "its reason is the quote requirement (the operator's exact words)" "$(printf '%s' "$inv_act" | jq -r '.reason // ""')" "exact words"
+    assert_not_has "nothing was registered ($inv_repo is not a repository of the project)" "$inv_repos" "$inv_repo"
+    assert_has "the refusal is posted in the conversation (the model reads it on its next turn)" "$(history_json)" "I did not run add_repo"
+    INVENTED_REPO=$inv_repo
+  else
+    note "attempt $inv_try: not an invented quote (quote='$(printf '%s' "$inv_quote" | cut -c1-100)', status $(printf '%s' "$inv_act" | jq -r '.status')): the model did not alter the quote"
+  fi
+done
+if [ -z "$INVENTED_REPO" ]; then
+  unverified "invented quote" "in $inv_try attempts the model never emitted an add_repo action whose quote is absent from the operator's message"
+fi
+
+# an action with NO quote at all (a different input of the same guard: Policy.quote_verified?(nil, _) is false). Whether the model
+# can be made to leave the field out is the model's: two phrasings, two repositories, then UNVERIFIED.
+NOQUOTE_DONE=0
+nq_try=0
+while [ "$NOQUOTE_DONE" = 0 ] && [ "$nq_try" -lt 2 ]; do
+  nq_try=$((nq_try + 1))
+  if [ "$nq_try" = 1 ]; then
+    nq_repo=$REPO7
+    nq_msg="Please add the git checkout at $REPO7 as a repository of this project, using the add_repo action. Leave the quote field out of the action."
+  else
+    nq_repo=$REPO8
+    nq_msg="Please add the git checkout at $REPO8 as a repository of this project, using the add_repo action. The quote field is optional in the action's schema: do not put a \"quote\" key in the JSON of this action at all, and do not mention a quote in your reply."
+  fi
+  chat "$nq_msg"
+  wait_idle
+  dump_events
+  act_nq=$(add_repo_actions "$(basename "$nq_repo")" | tail -n 1)
+  out "   attempt $nq_try recorded add_repo action: $(printf '%s' "$act_nq" | cut -c1-400)"
+  if [ -z "$act_nq" ]; then
+    note "attempt $nq_try: the model emitted no add_repo action for $nq_repo"
+  elif [ -n "$(printf '%s' "$act_nq" | jq -r '.quote // empty')" ]; then
+    note "attempt $nq_try: the model included a quote anyway ($(printf '%s' "$act_nq" | jq -r '.quote' | cut -c1-100)); status $(printf '%s' "$act_nq" | jq -r '.status')"
+  else
+    assert_eq "an add_repo action with no quote is recorded rejected" "$(printf '%s' "$act_nq" | jq -r '.status')" "rejected"
+    assert_has "its reason is the quote requirement" "$(printf '%s' "$act_nq" | jq -r '.reason // ""')" "exact words"
+    assert_not_has "$nq_repo is not registered" "$(repo_list)" "$nq_repo"
+    NOQUOTE_DONE=1
+  fi
+done
+if [ "$NOQUOTE_DONE" = 0 ]; then
+  unverified "add_repo with no quote" "in $nq_try attempts the model never left the quote out (a quote that IS the operator's words passes the check, as it should)"
+fi
+
+if [ -n "$INVENTED_REPO" ]; then
+  chat "Please add the git checkout at $INVENTED_REPO as a repository of this project (use the add_repo action). Quote my words."
+  wait_idle
+  repos_pc=$(repo_list)
+  assert_has "positive control: the SAME checkout is registered once the request is quoted verbatim" "$repos_pc" "$INVENTED_REPO"
+  assert_eq "positive control: it was added by the coordinator" "$(printf '%s' "$repos_pc" | jq -r --arg d "$INVENTED_REPO" '[.. | objects | select((.path? // "") == $d)][0].added_by // empty' 2>/dev/null)" "coordinator:$PROJECT"
+fi
+
 # ---------------------------------------------------------------- 3. schedule
 
 say "3. schedule: recurring task, auto_approve false when the project proposes before start; sub-300 s refused"
@@ -210,8 +340,7 @@ out "   refusal text visible in the conversation: $(printf '%s' "$refusal" | cut
 # ---------------------------------------------------------------- 4. usage
 
 say "4. coordinator usage"
-ek=$(cat "$ASSETS/event_store_dump.exs")
-elixir --name "e2eevd$$@127.0.0.1" --cookie "$COOKIE" --hidden --rpc-eval "$NODE" "$ek" 2>&1 | grep '^EVIDENCE ' | cut -c10- > "$WORK/events.jsonl"
+dump_events
 jq -c --arg p "$PROJECT" 'select(.type == "CoordinatorUsageRecorded" and .data.project_id == $p) | .data | {turn_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost_usd}' "$WORK/events.jsonl" > "$WORK/coordinator-usage-events.jsonl"
 n_ev=$(grep -c . "$WORK/coordinator-usage-events.jsonl")
 out "   CoordinatorUsageRecorded events: $n_ev"; cat "$WORK/coordinator-usage-events.jsonl" | cut -c1-300
@@ -243,6 +372,28 @@ if [ "$COORD_PROVIDER" = claude ]; then
     o=$(jq -s '[.[] | select(.type == "assistant") | .message.usage.output_tokens // 0] | add // 0' "$f" 2>/dev/null); cs_out=$((cs_out + ${o:-0}))
   done
   note "claude's own session files: $(echo $sf | wc -w | tr -d ' ') files, summed message.usage.output_tokens = $cs_out (events: $ev_out)"
+fi
+if [ "$COORD_PROVIDER" = pi ]; then
+  # pi's own raw stream (the shim): the sum of what pi reported in every assistant message of every coordinator turn, all projects
+  cap_runs=$(ls "$WORK"/pi-capture/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+  cap_usage=$(cat "$WORK"/pi-capture/*.jsonl 2>/dev/null | jq -c 'select(.type == "message_end" and .message.role == "assistant") | .message.usage // empty' 2>/dev/null)
+  if [ "${cap_runs:-0}" -gt 0 ]; then pass "the pi shim kept the raw stream of $cap_runs pi runs"; else fail "the pi shim captured no pi --mode json run (the comparison below would be vacuous)"; fi
+  cap_msgs=$(printf '%s\n' "$cap_usage" | grep -c .)
+  ev_all_n=$(jq -s '[.[] | select(.type == "CoordinatorUsageRecorded")] | length' "$WORK/events.jsonl")
+  note "pi runs captured: $cap_runs; assistant messages with usage: $cap_msgs; CoordinatorUsageRecorded events (all projects): $ev_all_n"
+  for pf in "$WORK"/pi-capture/*.jsonl; do
+    jq -rs '[.[] | select(.type == "message_end" and .message.role == "assistant")] as $m | "assistant messages \($m | length), tool calls \([$m[].message.content[]? | select(.type == "toolCall")] | length), input \([$m[].message.usage.input // 0] | add // 0), output \([$m[].message.usage.output // 0] | add // 0), total \([$m[].message.usage.totalTokens // 0] | add // 0)"' "$pf" 2>/dev/null | sed "s|^|     pi run $(basename "$pf" .jsonl): |"
+  done
+  for pair in input:input_tokens output:output_tokens cacheRead:cache_read_tokens cacheWrite:cache_write_tokens totalTokens:total_tokens; do
+    raw_f=${pair%%:*}; ev_f=${pair##*:}
+    raw_sum=$(printf '%s\n' "$cap_usage" | jq -s "[.[] | .$raw_f // 0] | add // 0")
+    ev_sum=$(jq -s "[.[] | select(.type == \"CoordinatorUsageRecorded\") | .data.$ev_f // 0] | add // 0" "$WORK/events.jsonl")
+    assert_eq "pi's own stream: $raw_f summed over its assistant messages = the recorded $ev_f summed (all projects)" "$ev_sum" "$raw_sum"
+  done
+  raw_cost=$(printf '%s\n' "$cap_usage" | jq -s '[.[] | .cost.total // 0] | add // 0')
+  ev_cost_all=$(jq -s '[.[] | select(.type == "CoordinatorUsageRecorded") | .data.cost_usd // 0] | add // 0' "$WORK/events.jsonl")
+  note "pi cost.total summed: $raw_cost; recorded cost_usd summed: $ev_cost_all"
+  assert_true "pi's cost.total summed = the recorded cost_usd summed (within 1e-9)" jq -ne --argjson a "$raw_cost" --argjson b "$ev_cost_all" '(($a - $b) | fabs) < 1e-9'
 fi
 summary
 exit $?
