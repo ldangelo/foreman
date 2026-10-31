@@ -12,7 +12,7 @@ Which surfaces fail closed when `:api_bearer_token` (`FOREMAN_API_TOKEN`) is uns
 |Surface|Plug / verifier|Token unset|
 |---|---|---|
 |`/api/*` (commands, projects, tasks, runs, queue, `/admin/workflows/*`)|`Plugs.BearerAuth`|`401` unless `:api, allow_insecure_local: true` (dev and test config set it; a release uses `FOREMAN_API_ALLOW_INSECURE_LOCAL=true`). A configured token is always enforced|
-|`/api/jobsites`|`Plugs.RequireAuthenticated` (`:jobsite_api` pipeline)|`401`; also needs `:jobsites, allow_remote_start: true` to start anything|
+|`/api/jobsites`|`Plugs.RequireAuthenticated` (`:jobsite_api` pipeline)|`401`; also needs `:jobsites, allow_remote_start: true` to start anything (`POST /api/jobsites/template` starts nothing and needs only the token)|
 |`/dashboard`, `/dashboard/runs`|`Plugs.RequireAuthenticated`|`401`|
 |`/mcp` and stdio|`MCP.Auth`|refuses unless `:mcp, allow_insecure_local: true` (dev only; `false` in config/test)|
 |`/webhooks/github`|HMAC (`VerifyGithubSignature`)|refuses every delivery|

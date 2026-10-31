@@ -24,6 +24,12 @@ defmodule ForemanServerWeb.JobsiteController do
   404 unknown id (or a `bead_id` absent from the project), 409 wrong state, 422 invalid spec (including a `bead_id` that is a gap bead), 429 capacity, 502 the
   executor could not be started, 503 the project's task provider could not verify a
   `bead_id`.
+
+  `POST /api/jobsites/template` authors a runnable script for a prompt
+  (`ForemanServer.Jobsite.Template`). It starts nothing and spends no agent
+  credits, so it is behind the same fail-closed authentication but needs
+  neither `allow_remote_start` nor an audit record, and it answers with the
+  same status mapping.
   """
 
   use ForemanServerWeb, :controller
@@ -33,7 +39,7 @@ defmodule ForemanServerWeb.JobsiteController do
   alias ForemanServer.Aggregates.JobsiteAudit
   alias ForemanServer.CommandGateway
   alias ForemanServer.Jobsite
-  alias ForemanServer.Jobsite.{Error, Executor, Spec}
+  alias ForemanServer.Jobsite.{Error, Executor, Spec, Template}
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry
 
@@ -54,6 +60,24 @@ defmodule ForemanServerWeb.JobsiteController do
     else
       {:error, %Error{} = error} -> reject(conn, error, nil)
     end
+  end
+
+  # POST /api/jobsites/template
+  def template(conn, _params) do
+    case Template.generate(conn.body_params) do
+      {:ok, %Template{} = template} -> json(conn, template_json(template))
+      {:error, %Error{} = error} -> error_response(conn, error)
+    end
+  end
+
+  defp template_json(%Template{} = template) do
+    %{
+      name: template.name,
+      spec: template.spec,
+      features: template.features,
+      notes: template.notes,
+      files: Enum.map(template.files, &%{path: &1.path, content: &1.content})
+    }
   end
 
   # A remote spec may name the bead its outcome is reported on (`bead_id`). The

@@ -48,6 +48,7 @@ defmodule ForemanServerWeb.Router do
     pipe_through(:jobsite_api)
 
     post("/", JobsiteController, :create)
+    post("/template", JobsiteController, :template)
     get("/", JobsiteController, :index)
     get("/:id", JobsiteController, :show)
     post("/:id/pause", JobsiteController, :pause)

@@ -11,7 +11,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 
 > ## Read this first: most of this file documents commands that do not exist
 >
-> The Go CLI dispatches exactly ten top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
+> The Go CLI dispatches exactly eleven top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `jobsite`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
@@ -77,6 +77,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman thread reopen     (no flags)
 > foreman thread steer      --message --message-id --no-resume
 > foreman thread rereview   (no flags)
+>
+> foreman jobsite template  --project-id --prompt --name --provider --model --iterations --signal --branch --sandbox --push --dir --format
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
@@ -847,6 +849,50 @@ Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and
 **Overview.** There is no `foreman overview` CLI verb. `GET /api/projects/:project_id/overview[?include_resolved=true|false&resolved_limit=0..200]` (and the MCP read tool `foreman_overview`) groups threads into `ready_for_review`, `waiting_on_you`, `working`, `landing`, `idle`, `resolved` with `counts`, `attention` (`needed`, `count`, `reasons`), `truncated` (`true` when the project has more than 500 threads and the older ones are left out) and `tabs` (`pull_requests`, `library` and `scheduled` are all live; `scheduled` is `{available: true, rows: [schedule DTOs]}`, the rows of `GET /api/projects/:id/schedules`). Read-only: merging is still `merge_approve` then `run.pr.merge`, operator only.
 
 **Transcript caveats.** The workflow transcript is built from `run_logs`, which keep a bounded tail: when entries were dropped `omitted_entries` > 0 and `truncated` is true. Jobsite turns carry no timestamps (`at: null`, ordered by iteration) and jobsite threads have no operator turns, because jobsite resume prompts are not persisted as events.
+
+### `foreman jobsite template --project-id <id> --prompt <text>`
+
+Asks the running server to author a Jobsite template from a natural-language prompt and writes it into the local repo as `<dir>/.foreman/<name>.exs` plus `<dir>/.foreman/prompts/<name>.md`. It calls `POST /api/jobsites/template`, which uses the same fail-closed bearer auth as the rest of `/api/jobsites`. The route only generates and validates the files: it starts no jobsite and spends no agent credits. Run the generated script yourself (the `next:` line prints the command), exactly as for a `foreman init --template` scaffold.
+
+The server derives the template from the prompt by a deterministic keyword match (no model is called) and validates the completed spec with `Jobsite.Spec.from_json/2` against the registered project; what it infers from the prompt, and what it never infers (the provider, the model, the `host` sandbox), is in the user guide's [Remote Jobsite API](./user-guide.md#remote-jobsite-api) section.
+
+```bash
+foreman jobsite template --project-id proj-1 --provider claude --prompt "Fix the failing tests, loop until green, push the branch"
+foreman jobsite template --project-id proj-1 --provider pi --name nightly-docs --iterations 10 --push=false --dir /path/to/repo --prompt "Refresh the docs"
+foreman jobsite template --project-id proj-1 --provider claude --prompt "..." --format json
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-id <id>` | Registered project the spec is validated against (required). |
+| `--prompt <text>` | The natural-language description; sent verbatim (required). |
+| `--name <name>` | Template name; file names and the default branch derive from it. The server picks a default when omitted. |
+| `--provider <claude\|pi>` | Agent provider. **No default**: a missing provider is the server's 422 `spec_provider_invalid`. |
+| `--model <model>` | Agent model. No CLI default; the server may fall back to the project's `thread_model`. |
+| `--iterations <n>` | `max_iterations`. An explicit value, including `0`, is sent as given and validated by the server. |
+| `--signal <text>` | `completion_signal`. |
+| `--branch <name>` | Strategy branch name. |
+| `--sandbox <docker\|host>` | Sandbox; `host` is refused unless the server allows it. |
+| `--push` / `--push=false` | Sets `push` to `true` / `false`; the flag absent sends no `push` key. |
+| `--dir <path>` | Directory that receives `.foreman/` (default `.`). |
+| `--format json` | Machine-readable output (default is text); any other value is a usage error. |
+
+Only the flags you set are sent; unset flags are omitted from the request rather than sent as zero values, so the server's own defaults apply. A missing or empty `--project-id` or `--prompt`, or any positional argument, is a usage error before any request is made. A non-2xx response is printed as the server's error (for example 422 `spec_provider_invalid`) and nothing is written.
+
+**Files are never overwritten.** Before writing anything the CLI checks every returned path (non-empty, relative, no `..` escape, no NUL byte, no duplicates) and refuses the whole response, writing nothing, if any path is unsafe or the file list is empty. Each file is then created exclusively (`O_EXCL`), so an existing file, or an existing or dangling symlink, is reported as `kept` and left alone; a run in which every file already exists still exits 0.
+
+Text output:
+
+```
+wrote .foreman/fix-tests.exs
+wrote .foreman/prompts/fix-tests.md
+features read from the prompt: loop, push-to-origin
+notes:
+  * <note from the server>
+next: FOREMAN_API_TOKEN=... FOREMAN_PROJECT_ID=proj-1 elixir .foreman/fix-tests.exs
+```
+
+Files that already existed print `kept <path> (already exists; not overwritten)` instead of `wrote`; `features read from the prompt: none` is printed when the server read no features, and the `notes:` block only when there are notes. With `--format json` the output is `{"name", "written": [...], "skipped": [...], "features": [...], "notes": [...], "spec": {...}}` (arrays are `[]`, never `null`, and `spec` is the server's generated spec, echoed unchanged); files are still written.
 
 
 ---
