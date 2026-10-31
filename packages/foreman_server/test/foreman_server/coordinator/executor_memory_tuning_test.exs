@@ -89,6 +89,63 @@ defmodule ForemanServer.Coordinator.ExecutorMemoryTuningTest do
 
       assert ProjectionStore.project_memory(p) == []
     end
+
+    test "a topic an agent wrote is not replaced by a coordinator note (foreman-25sqf.1.2)", %{
+      project_id: p
+    } do
+      {:ok, _} =
+        ProjectMemory.write(
+          p,
+          %{name: "deploy-notes", description: "agent notes", content: "the long agent content"},
+          %{kind: :agent, ref: "run:run-1"}
+        )
+
+      rewrite = %{"kind" => "remember", "name" => "deploy-notes", "content" => "short rewrite"}
+
+      assert [%{status: "rejected", reason: reason}] = run(p, [rewrite])
+      assert reason =~ "memory_topic_owned_by_other"
+      assert reason =~ "deploy-notes"
+
+      # Nothing was written: the agent's content, version and author stand.
+      assert {:ok, _topic, content} = ProjectMemory.read(p, "deploy-notes")
+      assert content =~ "the long agent content"
+      refute content =~ "short rewrite"
+
+      assert [%{name: "deploy-notes", version: 1, author_ref: "run:run-1"}] =
+               ProjectionStore.project_memory(p)
+    end
+
+    test "the coordinator may still replace a topic it wrote itself", %{project_id: p} do
+      note = fn text -> %{"kind" => "remember", "name" => "login-bug", "content" => text} end
+
+      assert [%{status: "executed"}] = run(p, [note.("first")])
+      assert [%{status: "executed"}] = run(p, [note.("second")], %{trigger_key: "m2"})
+
+      assert {:ok, _topic, content} = ProjectMemory.read(p, "login-bug")
+      assert content =~ "second"
+
+      assert [%{name: "login-bug", version: 2, author_ref: "coordinator:" <> _}] =
+               ProjectionStore.project_memory(p)
+    end
+
+    test "a topic file no event ever audited is not replaced either", %{
+      project_id: p,
+      dir: dir
+    } do
+      {:ok, _} =
+        ForemanServer.ProjectMemory.Store.write(dir, [], %{
+          name: "hand-written",
+          content: "an operator edited this file by hand"
+        })
+
+      rewrite = %{"kind" => "remember", "name" => "hand-written", "content" => "overwrite"}
+
+      assert [%{status: "rejected", reason: reason}] = run(p, [rewrite])
+      assert reason =~ "memory_topic_owned_by_other"
+
+      assert {:ok, _topic, content} = ProjectMemory.read(p, "hand-written")
+      assert content =~ "an operator edited this file by hand"
+    end
   end
 
   describe "set_tuning" do

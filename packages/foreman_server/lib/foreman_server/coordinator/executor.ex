@@ -584,7 +584,8 @@ defmodule ForemanServer.Coordinator.Executor do
   # --------------------------------------------------------------------- memory
 
   defp remember(ctx, %{"name" => name, "content" => content} = p) do
-    with :ok <- MemoryGuard.check(content <> "\n" <> Map.get(p, "description", "")) do
+    with :ok <- MemoryGuard.check(content <> "\n" <> Map.get(p, "description", "")),
+         :ok <- ensure_own_topic(ctx, name) do
       attrs = %{name: name, description: Map.get(p, "description"), content: content}
       author = %{kind: :agent, ref: "coordinator:" <> ctx.project_id}
 
@@ -593,7 +594,36 @@ defmodule ForemanServer.Coordinator.Executor do
         {:error, error} -> {"failed", {:memory_write_failed, error.code}, nil, 0}
       end
     else
-      {:error, :merge_automation} -> {"rejected", {:forbidden_memory, :merge_automation}, nil, 0}
+      {:error, :merge_automation} ->
+        {"rejected", {:forbidden_memory, :merge_automation}, nil, 0}
+
+      {:error, {:memory_topic_owned_by_other, _name} = reason} ->
+        {"rejected", reason, nil, 0}
+
+      {:error, {:memory_write_failed, _code} = reason} ->
+        {"failed", reason, nil, 0}
+    end
+  end
+
+  # A write replaces the whole topic, and a coordinator turn cannot read one (its prompt carries
+  # the memory INDEX only), so replacing a topic someone else wrote would discard content it
+  # never saw (foreman-25sqf.1.2: a 1528-byte agent topic became a 122-byte coordinator one, and
+  # no history is kept). The coordinator may create a topic and replace its OWN; a topic written
+  # by an agent or an operator, or one on disk that no event audited, is rejected as
+  # `{:memory_topic_owned_by_other, name}` and nothing is written.
+  defp ensure_own_topic(ctx, name) do
+    mine = "coordinator:" <> ctx.project_id
+
+    case ProjectMemory.list(ctx.project_id) do
+      {:ok, topics} ->
+        case Enum.find(topics, &(&1.name == name)) do
+          nil -> :ok
+          %{author_ref: ^mine} -> :ok
+          _someone_elses -> {:error, {:memory_topic_owned_by_other, name}}
+        end
+
+      {:error, error} ->
+        {:error, {:memory_write_failed, error.code}}
     end
   end
 
