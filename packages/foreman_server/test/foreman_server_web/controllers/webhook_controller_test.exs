@@ -18,7 +18,12 @@ defmodule ForemanServerWeb.WebhookControllerTest do
   import Plug.Test
   import Plug.Conn
 
+  alias ForemanServer.Agents.{OperatorQuestionSource, OperatorTimeout}
+  alias ForemanServer.Aggregates.OperatorQuestion
+  alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Inbox.DedupeTable
+  alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.Eventually
   alias ForemanServerWeb.WebhookController
 
   setup do
@@ -95,6 +100,65 @@ defmodule ForemanServerWeb.WebhookControllerTest do
       body = Jason.decode!(conn.resp_body)
       assert body["status"] == "started"
       assert body["correlation_id"] == "q-102"
+    end
+  end
+
+  describe "operator_ingest/2 question id limit" do
+    defp ingest(question_id, agent_id) do
+      payload = %{"question_id" => question_id, "question" => "q?", "agent_id" => agent_id}
+      WebhookController.operator_ingest(conn_for(payload), payload)
+    end
+
+    defp unique_agent, do: "agent-limit-#{System.unique_integer([:positive])}"
+
+    test "an id over the limit is refused 422 with the aggregate's typed error and nothing is recorded" do
+      max = OperatorQuestion.max_question_id_chars()
+      id = String.duplicate("x", max + 1)
+      agent_id = unique_agent()
+
+      conn = ingest(id, agent_id)
+
+      assert conn.status == 422
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => inspect({:question_id_too_long, max + 1, max})
+             }
+
+      assert :miss = DedupeTable.lookup(OperatorQuestionSource, id)
+
+      assert {:error, :stream_not_found} =
+               Store.read_stream_forward(OperatorQuestion.stream_id("global", id), 0, 10)
+
+      assert [] = :ets.lookup(:operator_timeout_registry, {id, agent_id})
+      assert nil == ProjectionStore.question("global", id)
+    end
+
+    test "an id of exactly the limit is accepted (202), opens the question, and dedupes (200) when re-posted" do
+      id = String.duplicate("y", OperatorQuestion.max_question_id_chars())
+      agent_id = unique_agent()
+      on_exit(fn -> OperatorTimeout.cancel(id, agent_id) end)
+
+      assert ingest(id, agent_id).status == 202
+
+      assert %{status: "open"} =
+               Eventually.await(fn -> ProjectionStore.question("global", id) end)
+
+      assert ingest(id, agent_id).status == 200
+    end
+
+    test "the limit counts characters: the limit in multibyte characters is accepted, one more is refused" do
+      max = OperatorQuestion.max_question_id_chars()
+      ok_id = String.duplicate("é", max)
+      agent_id = unique_agent()
+      on_exit(fn -> OperatorTimeout.cancel(ok_id, agent_id) end)
+
+      assert ingest(ok_id, agent_id).status == 202
+
+      conn = ingest(String.duplicate("é", max + 1), unique_agent())
+      assert conn.status == 422
+
+      assert Jason.decode!(conn.resp_body)["error"] ==
+               inspect({:question_id_too_long, max + 1, max})
     end
   end
 end

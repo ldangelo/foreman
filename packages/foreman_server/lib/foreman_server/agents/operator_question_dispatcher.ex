@@ -61,6 +61,25 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   end
 
   def dispatch(%{} = data) do
+    with :ok <- check_question_id(data) do
+      ingest(data)
+    end
+  end
+
+  def dispatch(other) do
+    {:error, {:invalid_payload, other}}
+  end
+
+  # An id `question.open` would refuse must not be ingested: the inbox item would exist with no
+  # question behind it and the asker would never hear. A non-binary id is not this rule's concern.
+  defp check_question_id(data) do
+    case Map.get(data, "question_id") || Map.get(data, :question_id) do
+      id when is_binary(id) -> OperatorQuestion.question_id_length(id)
+      _ -> :ok
+    end
+  end
+
+  defp ingest(data) do
     case SharedInbox.ingest(OperatorQuestionSource, data) do
       {:ok, :started, _item} = result ->
         question_id =
@@ -82,10 +101,6 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
       other ->
         other
     end
-  end
-
-  def dispatch(other) do
-    {:error, {:invalid_payload, other}}
   end
 
   # E8: a started question becomes first-class state (`question.open`), so it is

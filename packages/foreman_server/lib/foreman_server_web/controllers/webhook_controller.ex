@@ -64,8 +64,8 @@ defmodule ForemanServerWeb.WebhookController do
 
   CloudEvent envelopes (`{"data": { ... }}`) are unwrapped so a Jido
   signal can be POSTed directly as the body. Returns 202 on
-  `:started`, 200 on `:deduped`, 422 on `:no_correlation_id`,
-  500 on other ingest failures.
+  `:started`, 200 on `:deduped`, 422 on `:no_correlation_id` or an over-long
+  `question_id` (`{:question_id_too_long, length, max}`), 500 on other ingest failures.
   """
   def operator_ingest(conn, params) do
     payload = unwrap_operator_payload(params)
@@ -88,6 +88,11 @@ defmodule ForemanServerWeb.WebhookController do
           error: "no_correlation_id",
           message: "payload must include question_id or agent_id"
         })
+
+      {:error, {:question_id_too_long, _length, _max} = reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
 
       {:error, reason} ->
         conn
