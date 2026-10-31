@@ -21,7 +21,7 @@ unless marked UNVERIFIED or "not observed". Three new scripts, each starting its
 |---|---|---|---|---|
 | `scripts/e2e/project_archive_flow.sh` (+ `project_archive/pi-held.sh`) | 4880 / 4980 / `foreman_e2e_claude_projects_parch` | `git jq curl psql go elixir mix python3 br pi`, a pi with working minimax credentials | real pi for the workflow runs; the jobsite agent is a shim that blocks one marked prompt until a release file exists and forwards every other pi call to the real pi | run 2: passed=55 failed=0 unverified=0 (summary wall=23 s); run 1: passed=39 failed=1 unverified=1 (28 s) |
 | `scripts/e2e/mcp_schedule_update.sh` | 4890 / 4990 / `foreman_e2e_claude_projects_mcpsched` | same tools (pi only checked for existence) | none: plain JSON-RPC over `/mcp`, the real Go CLI, the real projection | passed=84 failed=0 unverified=0 (summary wall=13 s) |
-| `scripts/e2e/redaction_value_live.sh` | 4840 / 4940 / `foreman_e2e_redaction_value` | the same plus `pg_dump`; pi only (`E2E_PROVIDER=claude` exits 2 by owner decision) | real pi agent and real pi coordinator | run 3: passed=62 failed=2 unverified=1 (79 s); runs 1 and 2 below |
+| `scripts/e2e/redaction_value_live.sh` | 4840 / 4940 / `foreman_e2e_redaction_value` | the same plus `pg_dump`; pi only (`E2E_PROVIDER=claude` exits 2 by owner decision) | real pi agent and real pi coordinator | run 3: passed=62 failed=2 unverified=1 (79 s); runs 1 and 2 below; re-sweep after `foreman-mw5rz` (runs 4 and 5, 2026-10-31): run 5 passed=62 failed=0 unverified=2 (113 s), server log 0 hits |
 
 Run each as `devbox run -- bash scripts/e2e/<script>`. A failing run keeps its evidence in `tmp/e2e-evidence/<name>-<UTC start>-<pid>/`
 (see the README "Run the flow" section for its layout); a passing run keeps nothing. Exit 3 = a FAIL, as for the other harnesses.
@@ -131,13 +131,19 @@ The 7-character rows are informational: below the floor the value is not redacte
 
 | Bead | Type | What |
 |---|---|---|
-| `foreman-mw5rz` | P2 bug, open (~~owner decision: not fixed in this change~~ option B landed in PR #775: free-text keys, the MCP `params` envelope and `token` added to `filter_parameters`; verified by tests; the live byte-search re-run is still pending, so the bead stays open) | The 22-character value is in the server log, stdout and `~/.foreman/logs/foreman-server.log`: 11 occurrences in 3 Phoenix debug `Parameters:` lines (the same lines in both files): 2 MCP `tools/call` arguments (the agent's memory write) and 1 chat `text` (the operator message). The events table, the whole-database dump, memory, archive, runs dir and webhook capture are clean. |
+| `foreman-mw5rz` | P2 bug, ~~open (owner decision: not fixed in this change)~~ fixed by PR #775 (free-text keys, the MCP `params` envelope and `token` added to `filter_parameters`) and re-verified live 2026-10-31: 0 hits of the 22-character value in the server stdout and file logs, in two runs (re-sweep below) | The 22-character value is in the server log, stdout and `~/.foreman/logs/foreman-server.log`: 11 occurrences in 3 Phoenix debug `Parameters:` lines (the same lines in both files): 2 MCP `tools/call` arguments (the agent's memory write) and 1 chat `text` (the operator message). The events table, the whole-database dump, memory, archive, runs dir and webhook capture are clean. |
 | `foreman-4ohex` | P3, INFO | The `jido_harness` cache (`$WORK/home/Library/Caches/jido_harness`) holds the agent's own event stream, including the value the agent read: 38 occurrences in 2 files. Reported as an INFO line, not a PASS/FAIL. |
 | `foreman-6u1s0` | P3 | Found while building the script: a workflow phase with `commit: true` whose agent only writes project memory fails with `checkout_written_instead_of_worktree`, because ~~the guard ignores only `.beads/`~~ (resolved: the guard now also ignores `.foreman/.gitignore` and `.foreman/sessions/`, the paths Foreman itself writes) (the files it named in run 1: `.foreman/.gitignore`, and `.foreman/sessions/run/<run>/manifest.json` + `project-context.md`). The script uses a valid `commit: false` workflow. |
 | `foreman-n2eh3` | P4 | ~~String JSON-RPC `error.code` for typed MCP errors (section 2).~~ Resolved: integer `error.code`, typed code in `error.data.code`. |
 
 PR #764 carries these beads (`foreman-mw5rz`, `foreman-6u1s0`, `foreman-4ohex`, `foreman-n2eh3`), closes `foreman-5fqso` and adds comments
 to `foreman-7c191`, `foreman-ngky4` and `foreman-azc2o`.
+
+### Re-sweep after `foreman-mw5rz` (2026-10-31, pi on minimax, real agent and coordinator)
+
+- Run 4 (merged `main` at `5081ad87`, PR #775 in): passed=62 failed=2 unverified=1 (100 s). The 22-character value: 0 hits in the server stdout log and 0 in the file log (run 3: 11 occurrences in 3 lines); the 7-character value 0 hits there too (informational). The 2 FAILs were a flaw in the script, not a leak: the real coordinator answered step 3's chat and rewrote the memory topic (`ProjectMemoryWritten` v1 by the agent, description `Deploy target: [REDACTED]`, 4 redactions; v2 by `coordinator:<project>` 13 s later, clean description, 0 redactions), so the later thread's standing-context index had nothing to redact and no marker.
+- Run 5 (branch of PR #776, which makes the two marker checks `UNVERIFIED` with the reason when `MEMORY.md` carries no marker at step 4): passed=62 failed=0 unverified=2 (113 s), exit 0. Server log 0 hits. The coordinator rewrote the topic again (2 of 2 runs), so the marker checks were UNVERIFIED; absence of the value from `project-context.md` and `foreman project context` is still asserted and passed.
+- Still reported, not fixed: the `jido_harness` cache holds the value (INFO line, `foreman-4ohex`).
 
 ### The runs before run 3 (not clean; kept for the record)
 
@@ -154,7 +160,7 @@ to `foreman-7c191`, `foreman-ngky4` and `foreman-azc2o`.
 - "A coordinator reply that contains the value": UNVERIFIED by design. The operator message is redacted before the event, so the
   coordinator never sees the value and a reply that echoes it would depend on model compliance; only the persisted conversation and the
   reply it did give are asserted (reply text not asserted to hold the value).
-- A re-sweep after `foreman-mw5rz` is fixed. `foreman-ngky4` stays open for it.
+- ~~A re-sweep after `foreman-mw5rz` is fixed. `foreman-ngky4` stays open for it.~~ Done 2026-10-31 (re-sweep above).
 
 ## Unexplained observations
 
