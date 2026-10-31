@@ -273,6 +273,7 @@ Stage `claude_fix_ci` is the one stage that runs a REAL claude (haiku, workflow 
 `HOME` that keeps only the operator's login): a failing check on the run's real PR, the Fix CI button, and then the fix thread must resume
 THAT run's claude session (`PrFixStarted.resumed_session`, `JobsiteIterationStarted.resumed_session_id`, claude's own transcript grows,
 the head moves and CI turns green); without a logged-in claude it is `UNVERIFIED`.
+In a multi-repository run only a fix for the primary repository's PR resumes the run's agent session (it is bound to the primary's working directory); a fix for another repository's PR starts a fresh agent with the context in its prompt.
 Evidence: `docs/acceptance/live-github-protection-ui-autofix.md`, `docs/acceptance/live-github-branch-protection.md`, `docs/acceptance/live-claude-prfix-resume.md`.
 
 Known limitations: pi has no tool-permission or ask mechanism, so approve/deny and question/answer are reported
