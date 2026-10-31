@@ -385,9 +385,10 @@ config :foreman_server, :secret_store, backend: ForemanServer.SecretStore.File
 # filtered too: chat `text`, memory `content`/`description`, `prompt`, `message`,
 # `instructions`, `goal`, `body`, the MCP JSON-RPC `params` envelope (every tool argument,
 # whatever it is named) and `token` (the dashboard's `?token=`). Keys are matched by
-# SUBSTRING (`text` also hides `context`, `message` also hides `message_id`), and a
-# free-text key added later is NOT covered until it is added here; the fail-closed
-# follow-up is foreman-25sqf.1.1. Pinned by test/foreman_server_web/log_filter_test.exs.
+# SUBSTRING (`text` also hides `context`, `message` also hides `message_id`). This list is
+# the by-name layer: a stored secret under ANY other key is caught by value by
+# `Observability.SecretValueLogFilter` (foreman-25sqf.1.1, `:secret_log_filter` below).
+# Pinned by test/foreman_server_web/log_filter_test.exs.
 config :phoenix, :filter_parameters, [
   "password",
   "value",
