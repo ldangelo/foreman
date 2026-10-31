@@ -43,6 +43,8 @@ Verified live (evidence in `docs/acceptance/`, summarised in `docs/acceptance/pa
 
 Not verified live: **Telegram and Slack delivery** (`foreman-mivo7`, deferred by the user: the adapters, the Slack URL rules and the env wiring are tested against fakes only); **multi-repo runs against real GitHub** (the multi-repo evidence uses local bare origins and a recording fake `gh`; real-GitHub multi-repo is out of scope); **pi per-call approvals** (cannot be built: pi has no per-tool permission prompts, so a pi run never raises an approval or a question). Covered by tests but not re-run live, as the audit records: the voiding of a merge approval by a later push (#650); a refusal by `required_linear_history` itself; Claude session resume for models other than haiku, for the fix thread of a `prompt`-mode or session-less run, for the Address comments and Resolve conflicts kinds, and for a docker-sandbox fix thread; the phase-wide effect of a Claude tool approval (S2); expiry of orphaned in-flight approvals and the old-CLI fallback. C13 (a run on the user's own machine) is deferred by the user and not built.
 
+Telegram and Slack, on the live side, only have a negative path: `scripts/e2e/notifier_live_negative.sh` sent one forced failure notification to the real Telegram and Slack hosts with fake credentials (401 and 404, non-retryable, no secret in any durable surface, a half-set Telegram pair refused at boot; `docs/acceptance/notifier-live-negative-run.md`). It delivered nothing: the successful delivery with real credentials is still unverified.
+
 ## Runbook
 
 - Stop new work on a project: `foreman project pause <id> --reason ...`; in-flight runs continue, `resume` re-admits held tasks.
