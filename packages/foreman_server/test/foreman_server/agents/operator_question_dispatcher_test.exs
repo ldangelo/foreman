@@ -428,6 +428,33 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   defp to_atom_key(key) when is_atom(key), do: key
   defp to_atom_key(key) when is_binary(key), do: String.to_existing_atom(key)
 
+  describe "dispatch/1 question id limit" do
+    test "an id over the limit is refused with the aggregate's typed error before it is ingested" do
+      max = OperatorQuestion.max_question_id_chars()
+      id = String.duplicate("z", max + 1)
+      agent_id = "agent-limit-#{System.unique_integer([:positive])}"
+
+      assert {:error, {:question_id_too_long, over, ^max}} =
+               OperatorQuestionDispatcher.dispatch(question_signal(id, agent_id, "why?"))
+
+      assert over == max + 1
+      assert :miss = DedupeTable.lookup(OperatorQuestionSource, id)
+      assert {:error, :stream_not_found} = question_events("global", id)
+      assert [] = :ets.lookup(:operator_timeout_registry, {id, agent_id})
+    end
+
+    test "an id of exactly the limit still starts and opens" do
+      id = String.duplicate("z", OperatorQuestion.max_question_id_chars())
+      agent_id = "agent-limit-#{System.unique_integer([:positive])}"
+      on_exit(fn -> OperatorTimeout.cancel(id, agent_id) end)
+
+      assert {:ok, :started, _} =
+               OperatorQuestionDispatcher.dispatch(question_signal(id, agent_id, "why?"))
+
+      assert [%{event_type: "QuestionOpened"}] = question_events("global", id)
+    end
+  end
+
   describe "OperatorQuestionSource.correlation_id/1" do
     test "extracts question_id from the signal data" do
       assert "q-42" ==

@@ -4,9 +4,13 @@ defmodule ForemanServer.Overview.MergeResolver do
 
   Subscribes to `ProjectionStore` (`replay_existing: false`: a restart must not
   re-resolve history) and reacts to `PrMerged` and `PrUpdated` events. The event
-  only names the run; the decision is taken from the folded PR state
-  (`ProjectionStore.pr_state/1`), so a `PrUpdated` that is not a merge, or a
-  malformed payload the fold skipped, never resolves anything.
+  only names the run; the decision is taken from the folded PR state of ALL the
+  run's PRs (`ProjectionStore.pr_state/1` rolled up with `ProjectionStore.repo_pr_states/1`
+  by `Overview.PrFold.rollup/2`), so a `PrUpdated` that is not a merge, or a
+  malformed payload the fold skipped, never resolves anything. A run that opened a PR
+  in several repositories resolves only when no PR of any repository is still live:
+  merging the primary's PR alone leaves the thread open while a sibling repository's
+  PR is open (its failing check keeps it in Waiting on you).
 
   The command is `thread.resolve` (reason `"pr_merged"`, `source`/`resolved_by`
   `"system"`) dispatched through `CommandGateway.dispatch_system/1` with
@@ -35,6 +39,7 @@ defmodule ForemanServer.Overview.MergeResolver do
   require Logger
 
   alias ForemanServer.{Aggregate, CommandGateway, ProjectionStore, Threads}
+  alias ForemanServer.Overview.PrFold
   alias ForemanServer.Threads.Thread
 
   @default_catch_up_limit 1000
@@ -80,13 +85,20 @@ defmodule ForemanServer.Overview.MergeResolver do
   # `PrUpdated` that re-reports an older merge must not undo the operator's reopen.
   defp resolve_run(run_id) do
     with %{project_id: project_id} when is_binary(project_id) <- ProjectionStore.run(run_id),
-         %{pr_state: :merged} = pr <- ProjectionStore.pr_state(run_id),
+         %{pr_state: :merged} = pr <- rolled_up_pr(run_id),
          %Thread{} = thread <- unresolved_thread(project_id, run_id),
          true <- merge_after_reopen?(thread, pr) do
       resolve(thread, pr)
     end
 
     :ok
+  end
+
+  # The run's PRs as one (`PrFold.rollup/2`): merged only once no PR of any of its
+  # repositories is live, so merging the primary's PR alone resolves nothing while a
+  # sibling repository's PR is still open.
+  defp rolled_up_pr(run_id) do
+    PrFold.rollup(ProjectionStore.pr_state(run_id), ProjectionStore.repo_pr_states(run_id))
   end
 
   defp catch_up do
@@ -101,8 +113,11 @@ defmodule ForemanServer.Overview.MergeResolver do
   end
 
   defp catch_up_project(%{project_id: project_id}) when is_binary(project_id) do
+    repo_states = ProjectionStore.repo_pr_states_for_project(project_id)
+
     merged =
-      for {run_id, %{pr_state: :merged} = pr} <- ProjectionStore.pr_states_for_project(project_id),
+      for {run_id, primary} <- ProjectionStore.pr_states_for_project(project_id),
+          %{pr_state: :merged} = pr <- [PrFold.rollup(primary, Map.get(repo_states, run_id, []))],
           do: {run_id, pr}
 
     if merged == [] do

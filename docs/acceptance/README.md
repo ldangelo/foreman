@@ -20,6 +20,7 @@ that CI cannot give.
 | `live-claude-prfix-resume.md` | The PR fix thread of a REAL claude run resumes that run's claude session, on a real private GitHub PR (`github_live_extras.sh stage claude_fix_ci`, `foreman-nufr9`): `PrFixStarted.resumed_session`, the fix jobsite's `resumed_session_id`, the head moved and CI green, claude's own transcript of the session grew with no new session. The first run resumed but could not fix anything (the fix agent had no approval mode, so the resumed claude was refused its first `Edit`/`Bash`); root cause, fix with tests, then 31 PASS twice. |
 | `parity-gaps-live-run.md` | Live proof of the parity-gap beads with real `claude` (haiku) and pi: claude coordinator and thread, project env and secrets on both doors, setup script, docker network shim, schedules, adopt (move, mint, continue), recommend, per-thread usage, multi-repo self-add and fanout. |
 | `multi-repo-agent-live-run.md` | A real claude (haiku) and a real pi calling Foreman's own `/mcp` on a harness-booted server: per-phase repository selection, an agent adding a registered and an unregistered repository to its own run (`foreman_run_request_repo`), `FOREMAN_REPOS` as each phase's agent saw it, agent-driven `foreman_task_fanout` and its approved single-repository runs, and the typed refusal of a multi-repo jobsite (`multi_repo_agent.sh`, passed=52 failed=0 on each). Root cause and fix of `foreman-cnn1l` (`/mcp` answered HTTP 500 off `mix phx.server`). |
+| `multi-repo-realgit-live-run.md` | `foreman-w0tnj` (PARTIAL, no real GitHub): `multi_repo.sh` stage `realgit` with an opt-in real-git `fake-gh` (PRs bound to real local origins, real head shas, a real failing check, real squash merges; `fake_gh_selftest.sh` passed=45 failed=0): per-repository PR state, one repository merged while the other stays open. The first run was red by design (`46 passed, 7 failed`) and found three product defects, all fixed on the same branch: the Overview Pull requests tab showed one PR of two, a failing check on the second PR was invisible (the card resolved) once the first merged, and `run fix-ci` on the second PR ended `no_change` (the primary-bound agent session was resumed in the wrong directory). After the fixes the stage is green: `56 passed, 0 failed in 46s`. The default stages still pass (110). |
 | `live-steering-live-run.md` | Live in-session steering for claude and pi, the pause/resume fallback, `RunSteerUndelivered` on cancel. |
 | `inflight-approvals-live-run.md` | Per-call approvals for claude (`--permission-prompt-tool`): approve from the CLI, deny from the workspace UI, timeout deny. |
 | `pr-actions-live-view.md` + `02-` to `08-*.png` | Workspace PR action buttons in headless Chromium, and the Overview/Settings/Library screenshots. |
@@ -125,9 +126,12 @@ The review analyzer runs as usual and is not asserted here.
 
 ## Other scripts
 
-- `scripts/e2e/multi_repo.sh` (POSIX `sh`): the two-repository proof, stages `gate green gates failure legacy`, provider via
+- `scripts/e2e/multi_repo.sh` (POSIX `sh`): the two-repository proof, stages `gate green gates failure legacy`, plus `realgit` (run it alone,
+  `E2E_STAGES=realgit`: a real-git mode of `multi_repo/fake-gh`, `FOREMAN_VFS_ALLOWED_ROOT` when the checkout is outside the default root; green on
+  this revision, `56 passed, 0 failed`, see `multi-repo-realgit-live-run.md`), provider via
   `E2E_PROVIDER`, pi isolation via `E2E_PI_ISOLATE`, own database `foreman_e2e_multi_repo`. Run it as
-  `devbox run -- sh scripts/e2e/multi_repo.sh [stage ...]`. Write-up: `docs/lessons/multi-repo-e2e-2026-10-21.md`.
+  `devbox run -- sh scripts/e2e/multi_repo.sh [stage ...]`. Write-up: `docs/lessons/multi-repo-e2e-2026-10-21.md`; the shim's own test:
+  `sh scripts/e2e/multi_repo/fake_gh_selftest.sh`.
 - `scripts/e2e/multi_repo_agent.sh` (bash): the same multi-repository paths with a REAL agent reaching Foreman through `/mcp`, stages
   `phases fanout jobsite`, `E2E_PROVIDER=claude` (default, haiku) or `pi`, own database `foreman_e2e_multi_repo_agent`. Run it as
   `devbox run -- bash scripts/e2e/multi_repo_agent.sh`. Write-up: `multi-repo-agent-live-run.md`.

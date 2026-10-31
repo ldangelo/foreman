@@ -890,6 +890,42 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:pr_states_for_project, project_id})
   end
 
+  @typedoc """
+  Read state of a NON-primary repository's PR of a run (E12): the folded `PrFold` entry of
+  that PR plus the `run_id` and `repo_id` it belongs to. Keys are exactly these.
+  """
+  @type repo_pr_state_view :: %{
+          run_id: String.t(),
+          repo_id: String.t(),
+          pr_url: String.t() | nil,
+          pr_number: non_neg_integer() | nil,
+          pr_state: :open | :merged | :closed | :conflicted | nil,
+          head_sha: String.t() | nil,
+          base_branch: String.t() | nil,
+          merge_gate: :none | :pending | :approved,
+          merge_gate_at: integer() | nil,
+          pr_updated_at: integer() | nil
+        }
+
+  @doc """
+  The PRs a run opened in its NON-primary repositories, one view per repository, ordered
+  by `repo_id`. The primary's PR is `pr_state/1` (events without a `repo_id` fold there).
+  `[]` for a run with no other PR. `Overview.PrFold.rollup/2` reads both as one.
+  """
+  @spec repo_pr_states(String.t()) :: [repo_pr_state_view()]
+  def repo_pr_states(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:repo_pr_states, run_id})
+  end
+
+  @doc """
+  `repo_pr_states/1` for every run of a project that has a non-primary PR, keyed by run
+  id. One GenServer call; runs without such a PR are absent.
+  """
+  @spec repo_pr_states_for_project(String.t()) :: %{String.t() => [repo_pr_state_view()]}
+  def repo_pr_states_for_project(project_id) when is_binary(project_id) and project_id != "" do
+    GenServer.call(__MODULE__, {:repo_pr_states_for_project, project_id})
+  end
+
   @doc "Return the PR association for a run_id, or :not_found."
   @spec pr_association(String.t()) :: {:ok, map()} | {:error, :not_found}
   def pr_association(run_id) when is_binary(run_id) do
@@ -1660,6 +1696,24 @@ defmodule ForemanServer.ProjectionStore do
     views =
       for {run_id, %{project_id: ^project_id} = run} <- state.runs, into: %{} do
         {run_id, pr_state_view(run_id, run, Map.get(state.pr_states, run_id))}
+      end
+
+    {:reply, views, state}
+  end
+
+  @impl true
+  def handle_call({:repo_pr_states, run_id}, _from, state) do
+    {:reply, repo_pr_state_views(state, run_id), state}
+  end
+
+  @impl true
+  def handle_call({:repo_pr_states_for_project, project_id}, _from, state) do
+    views =
+      for {run_id, by_repo} <- Map.get(state, :repo_pr_states, %{}),
+          by_repo != %{},
+          match?(%{project_id: ^project_id}, Map.get(state.runs, run_id)),
+          into: %{} do
+        {run_id, repo_pr_state_views(state, run_id)}
       end
 
     {:reply, views, state}
@@ -4322,13 +4376,26 @@ defmodule ForemanServer.ProjectionStore do
     |> Map.merge(%{run_id: run_id, failure_reason: failure_reason})
   end
 
+  # The non-primary repositories' PR entries of one run as views, ordered by repo id.
+  defp repo_pr_state_views(state, run_id) do
+    state
+    |> Map.get(:repo_pr_states, %{})
+    |> Map.get(run_id, %{})
+    |> Enum.sort_by(fn {repo_id, _entry} -> repo_id end)
+    |> Enum.map(fn {repo_id, entry} -> Map.merge(entry, %{run_id: run_id, repo_id: repo_id}) end)
+  end
+
+  # `repo_pr_states` is not part of `initial_state/0`, and `Map.update/4` stores its default
+  # WITHOUT calling the function when the key is absent: folding through it dropped the first
+  # non-primary PR event of a fresh projection unless a primary PR event had created the key.
   defp fold_pr_state(state, type, payload) do
+    repo_states = Map.get(state, :repo_pr_states, %{})
+
     state
     |> Map.update(:pr_states, %{}, &ForemanServer.Overview.PrFold.fold(&1, type, payload))
-    |> Map.update(
+    |> Map.put(
       :repo_pr_states,
-      %{},
-      &ForemanServer.Overview.PrFold.fold_repo(&1, type, payload)
+      ForemanServer.Overview.PrFold.fold_repo(repo_states, type, payload)
     )
   end
 

@@ -21,7 +21,9 @@ defmodule ForemanServer.PrFix do
       leaves the harness default;
     * `resume_session`: that session's id, only when the fix will run at the SAME
       working-directory path as the original run (provider sessions are cwd-bound; spike
-      E9-SP2 proved pi refuses to resume from another directory). The original worktree is
+      E9-SP2 proved pi refuses to resume from another directory) AND the PR is the primary
+      repository's (the run's agent works in the primary's worktree, so a session never fits another
+      repository's directory). The original worktree is
       gone after cleanup, so the jobsite recreates it at that path (`path:`). When the path
       is taken by something else, or no session id was persisted, no session is resumed and
       the prompt carries the context instead - `resumed_session: false`.
@@ -78,7 +80,7 @@ defmodule ForemanServer.PrFix do
          {:ok, status} <- read_pr(pr_url, opts),
          worktree = original_worktree(run_id, record, head),
          {:ok, attach} <- attach(repo_path, head, worktree),
-         agent = agent(run, attach.resume?),
+         agent = agent(run, attach.resume? and primary_repo?(record)),
          redact = Redact.redactor(run.project_id),
          prompt = render(kind, record, status, head, base, pr_url, redact, opts),
          {:ok, spec_opts} <- spec_opts(run, repo_path, head, prompt, agent, attach, kind) do
@@ -139,6 +141,11 @@ defmodule ForemanServer.PrFix do
   end
 
   defp repo_path(_run, project, _record), do: {:ok, project.path}
+
+  # The run's agent works in the PRIMARY's worktree (its cwd; other repositories are only added
+  # directories), so every persisted provider session is bound to that cwd. A non-primary repo's fix
+  # runs in a different directory and cannot resume it: the prompt carries the context instead.
+  defp primary_repo?(record), do: blank_to_nil(Map.get(record, :repo_id)) == nil
 
   defp read_pr(pr_url, opts) do
     fetch = Keyword.get(opts, :fetch_fun, &PrStatus.fetch(&1, threads: true))

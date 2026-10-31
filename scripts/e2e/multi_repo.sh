@@ -21,6 +21,13 @@
 #   gates    merge_approve for a alone does not allow merging b (per-repo gate)
 #   failure  b's origin made read-only: run completes with errors, `run retry-pr` recovers
 #   legacy   a single-repository project on the same server is unaffected
+#   realgit  (foreman-w0tnj; run it ALONE: E2E_STAGES=realgit, it turns the PR monitor on) the fake gh is switched to
+#            its REAL-GIT MODE (multi_repo/fake-gh): the PRs are backed by the real bare origins. One task over a+b with a
+#            real agent; every PR bound to its own origin and reading the real branch tip; a REAL check on b (its PR fails
+#            until its head has a CI_OK file containing ok); a's PR merged for real (one squash commit on a's origin, b's
+#            origin untouched, b still open); what the Overview shows at each point; `run fix-ci --repo b` driving a real
+#            fix agent that pushes to b's own origin; then b merged for real, fix included. Needs the stage's own self-test
+#            green first: `sh scripts/e2e/multi_repo/fake_gh_selftest.sh`. Still no GitHub: see docs/acceptance/multi-repo-realgit-live-run.md.
 # `setup` and the closing `strays` check always run. `gates` needs `green` in the same run.
 #
 # Environment (all optional):
@@ -117,10 +124,15 @@ assert_has() {
 
 # ---------------------------------------------------------------- environment
 
-case "$E2E_STAGES" in *[!a-z\ ]*) die "E2E_STAGES may only name stages (gate green gates failure legacy)" 1 ;; esac
+case "$E2E_STAGES" in *[!a-z\ ]*) die "E2E_STAGES may only name stages (gate green gates failure legacy realgit)" 1 ;; esac
 for stage in $E2E_STAGES; do
-  case "$stage" in gate|green|gates|failure|legacy) ;; *) die "unknown stage '$stage'" 1 ;; esac
+  case "$stage" in gate|green|gates|failure|legacy|realgit) ;; *) die "unknown stage '$stage'" 1 ;; esac
+  if [ "$stage" = realgit ] && [ "$E2E_STAGES" != realgit ]; then die "the realgit stage runs alone (E2E_STAGES=realgit): it turns the PR monitor on for the whole server" 1; fi
 done
+# realgit forces PR observations through ForemanServer.PrMonitor.poll_now/0, which needs the monitor process: it is a child of
+# the server only when FOREMAN_PR_MONITOR_ENABLED=true. Every other stage keeps the stock boot (no polling).
+REALGIT_MONITOR=""
+if [ "$E2E_STAGES" = realgit ]; then REALGIT_MONITOR=1; fi
 case "$E2E_DB_NAME" in *[!a-z0-9_]*|"") die "E2E_DB_NAME must match [a-z0-9_]+" 1 ;; esac
 for tool in git jq curl psql go elixir mix; do
   command -v "$tool" >/dev/null 2>&1 || die "'$tool' is required (run inside 'devbox run --' or a devbox shell)" 1
@@ -367,6 +379,9 @@ setup() {
       PATH="$WORK/bin:$PATH" E2E_GH_STATE="$GH_STATE" E2E_PORT="$E2E_PORT" \
       E2E_WORKFLOW_ROOT="$WORK/workflows" FOREMAN_API_TOKEN="$E2E_API_TOKEN" \
       FOREMAN_START_BEADS_WATCHER=false ${PI_AGENT_DIR:+PI_CODING_AGENT_DIR="$PI_AGENT_DIR"} \
+      FOREMAN_PR_FIX_SANDBOX=host FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true \
+      ${FOREMAN_VFS_ALLOWED_ROOT:+FOREMAN_VFS_ALLOWED_ROOT="$FOREMAN_VFS_ALLOWED_ROOT"} \
+      ${REALGIT_MONITOR:+FOREMAN_PR_MONITOR_ENABLED=true} \
       elixir --name "$NODE" --cookie "$COOKIE" -S mix run --no-start --no-halt "$ASSETS/boot.exs"
   ) >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
@@ -680,6 +695,157 @@ stage_legacy() {
   assert_true "the archive has diff.patch" test -s "$larch/diff.patch"
   assert_true "the archive has NO diffs/ directory" test ! -e "$larch/diffs"
   assert_eq "the manifest has NO repositories[] key" "$(jq 'has("repositories")' "$larch/manifest.json" 2>/dev/null)" "false"
+}
+
+# ---------------------------------------------------------------- stage: realgit (foreman-w0tnj)
+
+REAL_VERSION="1.4.5"
+REAL_FIX_NOTE="The e2e-ci check of this repository wants a file named CI_OK in the repository root that contains exactly the word ok. Create that file and change nothing else."
+
+gh_pr_file() { cat "$GH_STATE/pr/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')/$2" 2>/dev/null; } # <pr url> <file of the fake's PR state>
+# gh_view <repo id> <pr url>: the status JSON exactly as Foreman asks gh for it, run from that repository's checkout
+gh_view() {
+  (cd "$(repo_of "$1")" && E2E_GH_STATE="$GH_STATE" "$WORK/bin/gh" pr view "$2" --json state,mergeable,headRefOid,headRefName,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,mergeStateStatus)
+}
+poll_prs() { rpc 'IO.puts("POLLED " <> inspect(ForemanServer.PrMonitor.poll_now()))' | grep '^POLLED '; }
+# overview_card <run id>: group/reason/PR state/gate of the Overview card of the thread that owns the run
+overview_card() {
+  api_get "/api/projects/$PROJECT/overview?include_resolved=true" | jq -c --arg r "$1" '[.groups[][]? | select(.thread_id | contains($r))][0] | {group, reason, pr_state, merge_gate, pr_url}'
+}
+overview_pr_rows() { # <run id>: the rows of the Overview's Pull requests tab that belong to the run
+  api_get "/api/projects/$PROJECT/overview?include_resolved=true" | jq -c --arg r "$1" '[.tabs.pull_requests.rows[]? | select(.run_id == $r) | {pr_url, pr_state, merge_gate}]'
+}
+commits_between() { git --git-dir="$(origin_of "$1")" rev-list --count "$2..$3" 2>/dev/null; }   # <repo id> <from> <to>
+parent_words() { git --git-dir="$(origin_of "$1")" rev-list --parents -n 1 "$2" 2>/dev/null | wc -w | tr -d ' '; } # 2 = one parent
+origin_file() { git --git-dir="$(origin_of "$1")" show "$2:$3" 2>/dev/null; }                    # <repo id> <rev> <path>
+
+stage_realgit() {
+  say "realgit: the fake gh is backed by the REAL bare origins (real merges, real head pins, a real check)"
+  : > "$GH_STATE/real-git"
+  stage_realgit_body
+  rg_rc=$?
+  rm -f "$GH_STATE/real-git"
+  return "$rg_rc"
+}
+
+stage_realgit_body() {
+  rg_task="realgit-task-$SUFFIX"
+  prompt="Create a file named VERSION in EVERY repository of this run. Each VERSION file must contain exactly the text $REAL_VERSION followed by a single newline."
+  t0=$(date +%s)
+  api_post "$(task_json "$rg_task" "E2E: add VERSION $REAL_VERSION (real git)" "$prompt" "$PROJECT" '["b"]')"
+  assert_eq "task.create repo_ids [b] accepted" "$API_CODE" "201"
+  await_run "$PROJECT" "$rg_task"
+  RG_RUN=$RUN
+  [ -n "$RG_RUN" ] || { fail "realgit: no run was created for task $rg_task"; return 0; }
+  note "run id: $RG_RUN"
+  wait_for_run "$RG_RUN"
+  note "terminal status '$RUN_STATUS' after $(elapsed "$t0")s"
+  RG_BRANCH="foreman/$rg_task/$RG_RUN"
+  if [ "$RUN_STATUS" != completed ]; then fail "realgit: run reached '$RUN_STATUS', expected 'completed'"; diagnose_run "$RG_RUN"; return 0; fi
+  pass "realgit: run completed"
+  probe=$(rpc_json "E2EMultiRepoProbe.run(\"$RG_RUN\")")
+  RG_URL_A=$(printf '%s' "$probe" | jq -r '[.pr_associations[] | select(.repo_id == null or .repo_id == "main")][0].pr_url')
+  RG_URL_B=$(printf '%s' "$probe" | jq -r '[.pr_associations[] | select(.repo_id == "b")][0].pr_url')
+  note "PRs: a=$RG_URL_A b=$RG_URL_B"
+
+  # --- 1. each PR is bound to ITS repository's origin and reads the real branch there
+  for id in a b; do
+    if [ "$id" = a ]; then url=$RG_URL_A; else url=$RG_URL_B; fi
+    tip=$(origin_branch_sha "$id" "$RG_BRANCH")
+    assert_eq "repo $id: its PR is bound to the origin of repo $id (not the other one)" "$(gh_pr_file "$url" origin)" "$(origin_of "$id")"
+    assert_eq "repo $id: the PR's recorded head is the tip of the run branch on ITS origin" "$(gh_pr_file "$url" headsha)" "$tip"
+    assert_eq "repo $id: gh pr view reports OPEN MERGEABLE <origin tip> and no checks" \
+      "$(gh_view "$id" "$url" | jq -r '[.state, .mergeable, .headRefOid, (.statusCheckRollup | length | tostring)] | join(" ")')" "OPEN MERGEABLE $tip 0"
+    assert_content_exactly "repo $id: VERSION on the PR's head" "$(origin_file "$id" "$RG_BRANCH" VERSION)" "$REAL_VERSION"
+  done
+  assert_eq "the two PR heads are different commits" "$([ "$(gh_pr_file "$RG_URL_A" headsha)" != "$(gh_pr_file "$RG_URL_B" headsha)" ] && echo yes || echo no)" "yes"
+
+  # --- 2. what the Overview shows with both PRs open
+  card=$(overview_card "$RG_RUN"); note "Overview card: $card"
+  assert_eq "Overview: the run's thread is Ready for review (primary's PR open, gate pending)" "$(printf '%s' "$card" | jq -r .group)" "ready_for_review"
+  rows=$(overview_pr_rows "$RG_RUN"); note "Overview 'Pull requests' tab rows of the run: $rows"
+  assert_eq "Overview: the Pull requests tab shows BOTH PRs of the run (bead foreman-w0tnj, acceptance 1)" "$(printf '%s' "$rows" | jq 'length')" "2"
+
+  # --- 3. a REAL check on b: its PR fails until its head has CI_OK containing ok
+  mkdir -p "$GH_STATE/ci"; : > "$GH_STATE/ci/repo-b"
+  assert_eq "gh pr view (repo b): the check e2e-ci is FAILURE" "$(gh_view b "$RG_URL_B" | jq -r '.statusCheckRollup[0].conclusion')" "FAILURE"
+  assert_eq "gh pr view (repo a): still no checks" "$(gh_view a "$RG_URL_A" | jq -c '.statusCheckRollup')" "[]"
+  note "monitor sweep (every watched PR observed once): $(poll_prs)"
+  watch=$(api_get "/api/runs/$RG_RUN/prs")
+  note "watched PRs: $(printf '%s' "$watch" | jq -c '[.prs[]? | {pr_url, status, checks_state}]')"
+  assert_eq "Foreman observed b's failing check on b's PR" "$(printf '%s' "$watch" | jq -r --arg u "$RG_URL_B" '[.prs[]? | select(.pr_url == $u)][0].checks_state')" "failing"
+  assert_eq "...and not on a's PR" "$(printf '%s' "$watch" | jq -r --arg u "$RG_URL_A" '[.prs[]? | select(.pr_url == $u)][0].checks_state // "none"')" "none"
+  card=$(overview_card "$RG_RUN"); note "Overview card with b failing: $card"
+  assert_eq "Overview: b's failing check puts the thread Waiting on you (ci_failing)" "$(printf '%s' "$card" | jq -r '[.group, .reason] | join("/")')" "waiting_on_you/ci_failing"
+
+  # --- 4. merge a ALONE, for real
+  main_a0=$(origin_branch_sha a main); main_b0=$(origin_branch_sha b main)
+  tip_a=$(origin_branch_sha a "$RG_BRANCH"); tip_b0=$(origin_branch_sha b "$RG_BRANCH")
+  fm run approve-merge --id "$RG_RUN" --approver e2e --identity github:ldangelo --head-sha "$tip_a" >"$WORK/rg-approve-a.out" 2>&1
+  assert_eq "merge_approve (repo a): exit status" "$?" "0"
+  fm run merge --id "$RG_RUN" >"$WORK/rg-merge-a.out" 2>&1
+  assert_eq "run merge (repo a): exit status" "$?" "0"
+  note "gh pr merge said: $(tr '\n' ' ' < "$WORK/rg-merge-a.out" | cut -c1-240)"
+  main_a1=$(origin_branch_sha a main)
+  assert_eq "REAL: repo a's origin main moved by exactly one commit" "$(commits_between a "$main_a0" "$main_a1")" "1"
+  assert_eq "REAL: ...a squash commit (one parent, the old main)" "$(parent_words a "$main_a1")" "2"
+  assert_content_exactly "REAL: ...whose tree carries the run's VERSION" "$(origin_file a "$main_a1" VERSION)" "$REAL_VERSION"
+  assert_eq "REAL: repo b's origin main did NOT move" "$(origin_branch_sha b main)" "$main_b0"
+  assert_eq "REAL: repo b's PR branch did not move either" "$(origin_branch_sha b "$RG_BRANCH")" "$tip_b0"
+  assert_eq "gh pr view: a MERGED, b still OPEN" "$(gh_view a "$RG_URL_A" | jq -r .state)/$(gh_view b "$RG_URL_B" | jq -r .state)" "MERGED/OPEN"
+  probe=$(rpc_json "E2EMultiRepoProbe.run(\"$RG_RUN\")")
+  assert_eq "Foreman: the per-repository PR state after a's merge (a,b)" "$(printf '%s' "$probe" | jq -r '[.repositories[].pr_state] | join(",")')" "merged,open"
+  note "monitor sweep: $(poll_prs)"
+  card=$(overview_card "$RG_RUN"); note "Overview card after a merged, b still failing: $card"
+  assert_eq "Overview: b's failing check still puts the work Waiting on you (ci_failing) after a merged (bead foreman-w0tnj, acceptance 3)" "$(printf '%s' "$card" | jq -r '[.group, .reason] | join("/")')" "waiting_on_you/ci_failing"
+  rows=$(overview_pr_rows "$RG_RUN"); note "Overview 'Pull requests' tab rows after a merged: $rows"
+  assert_eq "Overview: the Pull requests tab still lists both PRs, one merged and one open" "$(printf '%s' "$rows" | jq -r '[.[].pr_state] | sort | join(",")')" "merged,open"
+  assert_eq "Foreman still watches b's PR as failing" "$(api_get "/api/runs/$RG_RUN/prs" | jq -r --arg u "$RG_URL_B" '[.prs[]? | select(.pr_url == $u)][0].checks_state')" "failing"
+
+  # --- 5. Fix CI on b's PR: a real fix agent works in b's repository and pushes to b's origin
+  fm run fix-ci --id "$RG_RUN" --pr "$RG_URL_B" --note "$REAL_FIX_NOTE" >"$WORK/rg-fix-ci.out" 2>&1
+  rc=$?
+  note "run fix-ci for b's PR: exit $rc: $(tr '\n' ' ' < "$WORK/rg-fix-ci.out" | cut -c1-240)"
+  assert_eq "run fix-ci for b's PR is accepted" "$rc" "0"
+  fx=$(date +%s); tip_b1=$tip_b0
+  while [ "$(elapsed "$fx")" -lt "$E2E_RUN_TIMEOUT" ]; do
+    tip_b1=$(origin_branch_sha b "$RG_BRANCH")
+    [ "$tip_b1" != "$tip_b0" ] && break
+    sleep "$E2E_POLL_SECS"
+  done
+  if [ "$tip_b1" = "$tip_b0" ]; then
+    note "fix diagnostics, PR rows: $(api_get "/api/runs/$RG_RUN/prs" | jq -c '[.prs[]? | {pr_url, checks_state, fixes}]' | cut -c1-700)"
+    out "   fix diagnostics, server log lines about fixes and jobsites (last 40):"
+    grep -i -E 'fix|jobsite|sandbox' "$SERVER_LOG" | cut -c1-280 | tail -n 40 | while IFS= read -r l; do out "   | $l"; done
+  fi
+  note "b's run branch on b's origin: $tip_b1 (was $tip_b0) after $(elapsed "$fx")s"
+  assert_eq "REAL: the fix thread pushed a new commit to the run branch on repo b's origin" "$([ "$tip_b1" != "$tip_b0" ] && echo yes || echo no)" "yes"
+  assert_eq "REAL: ...the new head has CI_OK containing ok" "$(origin_file b "$tip_b1" CI_OK | tr -d '\n')" "ok"
+  assert_content_exactly "REAL: ...and still the run's VERSION" "$(origin_file b "$tip_b1" VERSION)" "$REAL_VERSION"
+  assert_eq "REAL: repo a's origin main is exactly as a's merge left it" "$(origin_branch_sha a main)" "$main_a1"
+  assert_eq "REAL: repo b's origin main still did not move" "$(origin_branch_sha b main)" "$main_b0"
+  assert_eq "gh pr view (repo b): the check is now SUCCESS on the new head" "$(gh_view b "$RG_URL_B" | jq -r '[.statusCheckRollup[0].conclusion, .headRefOid] | join(" ")')" "SUCCESS $tip_b1"
+  note "monitor sweep: $(poll_prs)"
+  assert_eq "Foreman observed b's check passing and the new head" \
+    "$(api_get "/api/runs/$RG_RUN/prs" | jq -r --arg u "$RG_URL_B" '[.prs[]? | select(.pr_url == $u)][0] | [.checks_state, (.head_sha // "")] | join(" ")')" "passing $tip_b1"
+
+  # --- 6. merge b, for real, fix included
+  fm run approve-merge --id "$RG_RUN" --approver e2e --identity github:ldangelo --head-sha "$tip_b1" --repo-id b >"$WORK/rg-approve-b.out" 2>&1
+  assert_eq "merge_approve (repo b): exit status" "$?" "0"
+  fm run merge --id "$RG_RUN" --repo-id b >"$WORK/rg-merge-b.out" 2>&1
+  assert_eq "run merge --repo-id b: exit status" "$?" "0"
+  main_b1=$(origin_branch_sha b main)
+  assert_eq "REAL: repo b's origin main moved by exactly one commit" "$(commits_between b "$main_b0" "$main_b1")" "1"
+  assert_eq "REAL: ...a squash commit (one parent)" "$(parent_words b "$main_b1")" "2"
+  assert_content_exactly "REAL: ...carrying the run's VERSION" "$(origin_file b "$main_b1" VERSION)" "$REAL_VERSION"
+  assert_eq "REAL: ...and the fix agent's CI_OK" "$(origin_file b "$main_b1" CI_OK | tr -d '\n')" "ok"
+  assert_eq "REAL: repo a's origin main did not move again" "$(origin_branch_sha a main)" "$main_a1"
+  assert_eq "gh pr view: both PRs MERGED" "$(gh_view a "$RG_URL_A" | jq -r .state)/$(gh_view b "$RG_URL_B" | jq -r .state)" "MERGED/MERGED"
+  note "monitor sweep: $(poll_prs)"
+  card=$(overview_card "$RG_RUN"); note "Overview card with both merged: $card"
+  assert_eq "Overview: with every PR merged the thread is Resolved" "$(printf '%s' "$card" | jq -r .group)" "resolved"
+  assert_eq "Overview: the Pull requests tab lists both PRs, both merged" "$(overview_pr_rows "$RG_RUN" | jq -r '[.[].pr_state] | sort | join(",")')" "merged,merged"
+  assert_eq "fake gh: unsupported invocations in real-git mode" "$(count_lines "$GH_STATE/unsupported.log")" "0"
 }
 
 # ---------------------------------------------------------------- closing checks

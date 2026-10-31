@@ -67,6 +67,7 @@ What the assertions establish (all against the live run):
 
 * `E2E_GITHUB=1` (two real private GitHub repositories) is **not implemented**: the harness refuses it. Real `gh`/GitHub
   behaviour (PR creation, mergeability, branch protection) is exactly what the fake replaces.
+  *Update 2026-10-31:* the `realgit` stage of `multi_repo.sh` now runs the fake `gh` in an opt-in real-git mode (PRs bound to real local origins, real heads, a real check, real squash merges), see `docs/acceptance/multi-repo-realgit-live-run.md`. Real GitHub is still not exercised.
 * Only `pi` + MiniMax was run. `E2E_PROVIDER` is passed straight to the workflow manifest; other providers were not tried.
 * The env contract (`FOREMAN_REPOS`, `FOREMAN_REPO_<ID>_WORKTREE`) is covered by unit tests; this run proves only that the
   agent can reach b through the path in its prompt, not what its environment contained.

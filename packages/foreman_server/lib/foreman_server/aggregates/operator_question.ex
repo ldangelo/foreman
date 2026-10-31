@@ -199,7 +199,14 @@ defmodule ForemanServer.Aggregates.OperatorQuestion do
     end
   end
 
-  defp question_id_length(question_id) do
+  @doc """
+  `:ok` when `question_id` is within `max_question_id_chars/0` characters, else
+  `{:error, {:question_id_too_long, length, max}}`. The one place the limit is measured, shared by
+  `question.open` and the operator-question ingest so the two can never disagree.
+  """
+  @spec question_id_length(String.t()) ::
+          :ok | {:error, {:question_id_too_long, pos_integer(), pos_integer()}}
+  def question_id_length(question_id) when is_binary(question_id) do
     length = String.length(question_id)
 
     if length > @max_question_id_chars,

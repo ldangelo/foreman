@@ -278,5 +278,65 @@ defmodule ForemanServer.PrMonitorMultiRepoTest do
       assert plan.jobsite_opts[:repo_path] == ctx.repo_a
       assert plan.jobsite_opts[:path] == a_path
     end
+
+    # The run's agent ran in the PRIMARY's worktree, so every persisted provider session is bound
+    # to that cwd (pi refuses to resume from another directory): a non-primary fix must not resume it.
+    test "a fix for b's PR never resumes the primary-bound session; a's PR does", ctx do
+      session = fn kind, url ->
+        head = "foreman/#{ctx.run_id}/#{kind}-pr"
+        status = Support.status(head_branch: head, checks_state: :failing)
+        stub = fn _ -> {:ok, status} end
+        assert {:ok, _} = Observer.observe(url, fetch_fun: stub, auto_fix: false)
+        stub
+      end
+
+      stub_b = session.("b", ctx.b_url)
+      stub_a = session.("a", ctx.a_url)
+
+      wt = fn op, path, repo_path, repo_id ->
+        payload =
+          %{
+            operation_id: op,
+            project_id: ctx.project_id,
+            run_id: ctx.run_id,
+            phase_id: "implement",
+            repo_path: repo_path,
+            worktree_path: path,
+            branch: "foreman/#{ctx.run_id}/run",
+            base_ref: "main",
+            cleanup: "remove"
+          }
+          |> then(&if repo_id, do: Map.put(&1, :repo_id, repo_id), else: &1)
+
+        %{event_type: "WorktreeCreated", payload: payload}
+      end
+
+      :ok =
+        ProjectionStore.apply_events([
+          wt.(
+            "wt-#{ctx.run_id}-b",
+            Path.join(System.tmp_dir!(), "s7-rs-b-#{ctx.run_id}"),
+            ctx.repo_b,
+            "b"
+          ),
+          wt.(
+            "wt-#{ctx.run_id}-a",
+            Path.join(System.tmp_dir!(), "s7-rs-a-#{ctx.run_id}"),
+            ctx.repo_a,
+            nil
+          )
+        ])
+
+      :ok = PrFixSupport.session_bound!(ctx, "pi", "m", "sess-primary")
+
+      assert {:ok, plan_a} = PrFix.plan("ci", ctx.run_id, ctx.a_url, fetch_fun: stub_a)
+      assert plan_a.resumed_session
+      assert plan_a.jobsite_opts[:resume_session] == "sess-primary"
+
+      assert {:ok, plan_b} = PrFix.plan("ci", ctx.run_id, ctx.b_url, fetch_fun: stub_b)
+      refute plan_b.resumed_session
+      refute Keyword.has_key?(plan_b.jobsite_opts, :resume_session)
+      assert plan_b.jobsite_opts[:agent].provider == :pi
+    end
   end
 end
