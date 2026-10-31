@@ -124,6 +124,30 @@ defmodule ForemanServer.Workflow.CheckoutGuardTest do
     assert :ok = CheckoutGuard.verify(snap, ctx.record)
   end
 
+  test "Foreman's own .foreman/ writes (gitignore, session archive) are not a worker's (foreman-6u1s0)",
+       ctx do
+    snap = snapshot!(ctx.record)
+    File.mkdir_p!(Path.join(ctx.repo, ".foreman/sessions/run/run-1"))
+    File.write!(Path.join(ctx.repo, ".foreman/.gitignore"), "memory/\n")
+    File.write!(Path.join(ctx.repo, ".foreman/sessions/run/run-1/manifest.json"), "{}\n")
+    File.write!(Path.join(ctx.repo, ".foreman/sessions/run/run-1/project-context.md"), "x\n")
+
+    assert :ok = CheckoutGuard.verify(snap, ctx.record)
+  end
+
+  test "a worker's write to tracked .foreman/ project config still fails", ctx do
+    snap = snapshot!(ctx.record)
+    File.mkdir_p!(Path.join(ctx.repo, ".foreman"))
+    File.write!(Path.join(ctx.repo, ".foreman/Dockerfile"), "FROM scratch\n")
+    File.write!(Path.join(ctx.repo, ".foreman/.gitignore"), "memory/\n")
+
+    assert {:error, %FailureCause{code: :checkout_written_instead_of_worktree, detail: detail}} =
+             CheckoutGuard.verify(snap, ctx.record)
+
+    assert detail =~ ".foreman/Dockerfile"
+    refute detail =~ ".foreman/.gitignore"
+  end
+
   test "a nil snapshot (resumed run) passes", ctx do
     File.write!(Path.join(ctx.repo, "report.md"), "x\n")
     assert :ok = CheckoutGuard.verify(nil, ctx.record)

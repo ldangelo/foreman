@@ -733,8 +733,10 @@ raise), so that server would not bind the session.
   entries (path -> status, size, mtime) when the run's worktree is first provisioned, and
   `verify_run_outcome/2` (after the last phase's commit) fails the run with
   `:checkout_written_instead_of_worktree` when the branch has no commit past its base, the
-  worktree is clean, and the checkout gained/changed entries versus the snapshot. `.beads/` is
-  excluded. It cannot see: workflows with no `commit: true` phase, runs that committed anything
+  worktree is clean, and the checkout gained/changed entries versus the snapshot. `.beads/`,
+  `.foreman/.gitignore` (`ForemanDir.ensure_ignored/2`) and `.foreman/sessions/` (the per-run
+  archive) are excluded as Foreman's own writes (foreman-6u1s0); the rest of `.foreman/` is
+  tracked project config, so a worker writing there is still caught. It cannot see: workflows with no `commit: true` phase, runs that committed anything
   (never failed, whatever the operator does), writes leaving status unchanged (ignored paths,
   identical rewrites), secondary repositories of a multi-repo run, resumed executors (no
   snapshot; `nil` passes). Remaining false positive: a committing workflow whose agent

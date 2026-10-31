@@ -141,6 +141,9 @@ paste_three_tasks() {
   ptt_tag=$1; ptt_paste=$2
   send_paste "$ptt_paste"
   assert_eq "coordinator chat with the three-item paste exits 0" "$chat_rc" "0"
+  # A failed chat call leaves nothing to poll for: the assertion above has recorded the failure, so stop
+  # here instead of polling 240 s for threads that cannot appear (foreman-5zhyd).
+  if [ "$chat_rc" != 0 ]; then titles=""; nudged=0; return 0; fi
   note "coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
   titles=""; nudged=0; tn=0
   while :; do
@@ -153,6 +156,8 @@ paste_three_tasks() {
         note "conversation tail: $(fm project chat --history 4 --format json "$PROJECT" 2>&1 | jq -c '[.[] | {role, kind, text: (.text[0:160])}]' 2>/dev/null | cut -c1-900)"
         nudged=1; tn=0
         send_paste "$ptt_paste"
+        assert_eq "coordinator chat with the second paste exits 0" "$chat_rc" "0"
+        if [ "$chat_rc" != 0 ]; then break; fi
         note "second paste, coordinator reply: $(printf '%s' "$chat" | tr '\n' ' ' | cut -c1-600)"
         continue
       fi
@@ -172,7 +177,7 @@ paste_three_tasks() {
   fi
 }
 
-# nudge_scenario <first|second|never|four>: runs paste_three_tasks in a SUBSHELL against a stubbed coordinator
+# nudge_scenario <first|second|never|four|chatfail1|chatfail2>: runs paste_three_tasks in a SUBSHELL against a stubbed coordinator
 # and thread list, with pass/fail/unverified/assert_eq/note/sleep replaced by counters, so nothing leaks
 # into the real tally. Prints "pastes=N pass=P fail=F unverified=U".
 nudge_scenario() {
@@ -185,7 +190,13 @@ nudge_scenario() {
     unverified() { NU=$((NU + 1)); }
     assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1"; fi; }
     fm() { printf '[]'; }
-    send_paste() { PASTES=$((PASTES + 1)); chat="stub reply $PASTES"; chat_rc=0; }
+    send_paste() {
+      PASTES=$((PASTES + 1)); chat="stub reply $PASTES"; chat_rc=0
+      case "$MODE" in
+        chatfail1) chat_rc=1 ;;
+        chatfail2) if [ "$PASTES" -ge 2 ]; then chat_rc=1; fi ;;
+      esac
+    }
     api_get() {
       ns_n=0
       case "$MODE" in
@@ -264,11 +275,15 @@ overlap_selftest() {
   assert_eq "stub: threads appear after the first paste -> one paste, clean pass, nothing unverified" \
     "$(nudge_scenario first)" "pastes=1 pass=2 fail=0 unverified=0"
   assert_eq "stub: threads appear only after the second paste -> nudged, recorded UNVERIFIED (not a clean pass)" \
-    "$(nudge_scenario second)" "pastes=2 pass=2 fail=0 unverified=1"
+    "$(nudge_scenario second)" "pastes=2 pass=3 fail=0 unverified=1"
   assert_eq "stub: no thread ever appears -> nudged, UNVERIFIED, and 'exactly three threads' FAILS" \
-    "$(nudge_scenario never)" "pastes=2 pass=1 fail=1 unverified=1"
+    "$(nudge_scenario never)" "pastes=2 pass=2 fail=1 unverified=1"
   assert_eq "stub: four threads appear -> 'exactly three threads' FAILS" \
     "$(nudge_scenario four)" "pastes=1 pass=1 fail=1 unverified=0"
+  assert_eq "stub: the first chat call fails -> FAIL at once, no 240 s poll, no second paste (foreman-5zhyd)" \
+    "$(nudge_scenario chatfail1)" "pastes=1 pass=0 fail=1 unverified=0"
+  assert_eq "stub: the second chat call fails -> FAIL, polling stops, UNVERIFIED, 'exactly three threads' FAILS (foreman-5zhyd)" \
+    "$(nudge_scenario chatfail2)" "pastes=2 pass=1 fail=2 unverified=1"
   # the branch read behind the three file checks (stubbed thread projection, throwaway repository; "pass fail unverified polls")
   assert_eq "stub: file exact on the thread's branch -> PASS at the first read, nothing unverified" \
     "$(branch_read_scenario exact)" "pass=1 fail=0 unverified=0 polls=0"

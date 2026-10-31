@@ -33,7 +33,11 @@ defmodule ForemanServer.Workflow.CheckoutGuard do
        snapshot, or whose status/size/mtime differs from it. A dirty checkout the
        operator was already editing is therefore not "gained" - only changes that
        happened during the run window count. `.beads/` is excluded (the beads
-       watcher and `br` write there for reasons unrelated to a worker).
+       watcher and `br` write there for reasons unrelated to a worker), and so are the two
+       `.foreman/` paths Foreman itself writes: `.foreman/.gitignore` (`ForemanDir.ensure_ignored/2`,
+       on the first project-memory write) and `.foreman/sessions/` (the per-run archive)
+       (foreman-6u1s0). The rest of `.foreman/` is tracked project config (`Dockerfile`,
+       `bead.exs`, `pi-models.json`), so a worker writing there is still caught.
 
   The failure is a `FailureCause` with code `:checkout_written_instead_of_worktree`
   naming the files.
@@ -59,7 +63,7 @@ defmodule ForemanServer.Workflow.CheckoutGuard do
   alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
 
   @inline_files 8
-  @ignored_prefixes [".beads/"]
+  @ignored_prefixes [".beads/", ".foreman/.gitignore", ".foreman/sessions/"]
 
   @enforce_keys [:checkout, :base_ref, :entries]
   defstruct [:checkout, :base_ref, :entries]

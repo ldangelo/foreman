@@ -104,7 +104,9 @@ project's own checkout gained or changed files since the run's first phase
 started (a worker used the checkout's absolute path), the run **fails** with
 `:checkout_written_instead_of_worktree`, naming the files. The comparison is
 against the checkout's status when the run began, so edits already in progress
-are not blamed. It does not fire when the run committed anything, cannot see
+are not blamed, and Foreman's own writes (`.beads/`, `.foreman/.gitignore` and
+`.foreman/sessions/`) are not counted, so a committing workflow whose agent only
+writes project memory completes. It does not fire when the run committed anything, cannot see
 writes that leave `git status` unchanged (ignored paths), checks only the
 primary repository of a multi-repository run, and stays silent on a resumed
 executor. A committing workflow whose agent legitimately changed nothing (a
@@ -2869,6 +2871,7 @@ the run produced), `evaluator_retry_backoff_ms`, `max_concurrent_analyses`,
 
 - Command syntax: [CLI Reference](./cli-reference.md)
 - Adding a Jido Harness provider: [docs/guides/adding-a-jido-harness-provider.md](./guides/adding-a-jido-harness-provider.md)
+- Trying out Claude Projects (order, no-model checks, known issues): [docs/guides/testing-claude-projects.md](./guides/testing-claude-projects.md)
 
 ## Phase stall detection
 
