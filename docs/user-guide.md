@@ -1282,7 +1282,7 @@ classified; `truncated` is `true` when the project has more, and `counts`,
 `attention` and `groups` then leave out the older (least recently updated)
 threads. The `attention` on project payloads covers the same 500-thread window.
 
-`tabs` carries `pull_requests`, `library` and `scheduled`, each `{available, rows}`.
+`tabs` carries `pull_requests`, `library` and `scheduled`, each `{available, rows}`. `pull_requests` has one row per PR, so a run that opened a PR in two repositories shows both (a row of a non-primary repository's PR also carries its `repo_id`; the primary repository's row has none, and a single-repository run is unchanged).
 `scheduled` is `{"available": true, "rows": [...]}` with one row per non-deleted
 schedule of the project, the same DTOs as `GET /api/projects/<id>/schedules` (a
 project with no schedules has an empty list; a failing read model reports the tab as
@@ -1296,7 +1296,7 @@ overview for one project, or one attention line per active project (with
 `project_id`. Pending approvals and open questions feed `waiting_on_you` (see
 [Needs you: approvals and questions](#needs-you-approvals-and-questions)). When a PR merges, `Overview.MergeResolver` resolves its thread
 automatically (reason `pr_merged`; a thread you reopened after the merge stays
-open, also when a late PR update re-reports the merge). **Merging remains an operator action** (`merge_approve`, then
+open, also when a late PR update re-reports the merge). A run that opened a PR in several repositories is read over all of them: a failing check on another repository's open PR keeps the thread in `waiting_on_you` (`ci_failing`, with Fix CI offered for that PR) after the primary's PR merged, and the thread resolves only once no PR of any repository is still open. **Merging remains an operator action** (`merge_approve`, then
 `run.pr.merge`): no overview or MCP surface can merge or approve; cards only
 carry the text hint `operator: foreman run approve-merge/merge`.
 

@@ -290,4 +290,116 @@ defmodule ForemanServer.Overview.MergeResolverTest do
     refute code =~ "run.pr.merge"
     refute code =~ "run.pr.approve"
   end
+
+  # foreman-w0tnj: a run that opened a PR in two repositories (a = the primary, b = `repo_id: "b"`)
+  # resolves its thread only when no PR of either repository is still live.
+  describe "a run with PRs in several repositories" do
+    defp open_b_pr(run_id) do
+      url = "https://g/b/#{uid()}"
+
+      :ok =
+        ProjectionStore.apply_events([
+          event("PrReady", %{run_id: run_id, repo_id: "b", pr_url: url, head_sha: "sha-b"})
+        ])
+
+      url
+    end
+
+    defp merged_b(run_id, url) do
+      event("PrMerged", %{run_id: run_id, repo_id: "b", pr_url: url})
+    end
+
+    test "merging the primary's PR leaves the thread open while b's PR is open; b's merge resolves it once",
+         %{project: p} do
+      start_resolver()
+      run_id = start_run(p)
+      thread_id = "run:" <> run_id
+      b_url = open_b_pr(run_id)
+
+      :ok = ProjectionStore.apply_events([event("PrMerged", %{run_id: run_id})])
+      _ = :sys.get_state(:merge_resolver_test)
+
+      assert {:ok, %{resolved: false}} = Threads.get(thread_id)
+      assert stream(thread_id) == []
+
+      :ok = ProjectionStore.apply_events([merged_b(run_id, b_url)])
+      await_resolved(thread_id)
+
+      assert %{resolved: true, reason: "pr_merged", resolved_by: "system"} =
+               ProjectionStore.thread_flags(thread_id)
+
+      assert stream(thread_id) == ["ThreadResolved"]
+    end
+
+    test "b merging first changes nothing until the primary's PR merges too", %{project: p} do
+      start_resolver()
+      run_id = start_run(p)
+      thread_id = "run:" <> run_id
+      b_url = open_b_pr(run_id)
+
+      :ok = ProjectionStore.apply_events([merged_b(run_id, b_url)])
+      _ = :sys.get_state(:merge_resolver_test)
+      assert stream(thread_id) == []
+
+      :ok = ProjectionStore.apply_events([event("PrMerged", %{run_id: run_id})])
+      await_resolved(thread_id)
+      assert stream(thread_id) == ["ThreadResolved"]
+    end
+
+    test "the primary merged and b closed unmerged resolves; both closed resolves nothing",
+         %{project: p} do
+      start_resolver()
+      merged_and_closed = start_run(p)
+      b_closed = open_b_pr(merged_and_closed)
+      both_closed = start_run(p)
+      b_closed_too = open_b_pr(both_closed)
+
+      :ok =
+        ProjectionStore.apply_events([
+          event("PrUpdated", %{
+            run_id: both_closed,
+            repo_id: "b",
+            pr_url: b_closed_too,
+            pr_status: "closed"
+          }),
+          event("PrUpdated", %{run_id: both_closed, pr_status: "closed"}),
+          event("PrUpdated", %{
+            run_id: merged_and_closed,
+            repo_id: "b",
+            pr_url: b_closed,
+            pr_status: "closed"
+          }),
+          event("PrMerged", %{run_id: merged_and_closed})
+        ])
+
+      await_resolved("run:" <> merged_and_closed)
+      assert stream("run:" <> both_closed) == []
+    end
+
+    test "catch-up leaves a thread open while b's PR is open and resolves it once both merged",
+         %{project: p} do
+      half = start_run(p)
+      half_b = open_b_pr(half)
+      whole = start_run(p)
+      whole_b = open_b_pr(whole)
+
+      :ok =
+        ProjectionStore.apply_events([
+          event("PrMerged", %{run_id: half}),
+          event("PrMerged", %{run_id: whole}),
+          merged_b(whole, whole_b)
+        ])
+
+      start_resolver()
+      await_resolved("run:" <> whole)
+
+      assert stream("run:" <> half) == []
+      assert {:ok, %{resolved: false}} = Threads.get("run:" <> half)
+
+      # positive control for the sweep above: the live path takes over once b merges.
+      :ok = ProjectionStore.apply_events([merged_b(half, half_b)])
+      await_resolved("run:" <> half)
+      assert stream("run:" <> half) == ["ThreadResolved"]
+    end
+  end
 end

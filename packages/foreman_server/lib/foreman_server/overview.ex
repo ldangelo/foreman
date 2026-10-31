@@ -12,10 +12,18 @@ defmodule ForemanServer.Overview do
   Cost: every call classifies a project's threads, which is O(threads) plus one
   bulk projection read and one thread build for all projects (`Threads.by_project/0`),
   one bulk read of the project's approval and question counts (`Signals.for_threads/1`:
-  one scan of each, whatever the number of threads), and a keyed lookup per paused
-  thread (its pending steering) and per thread with a live PR (its PR watch).
+  one scan of each, whatever the number of threads), one bulk read of the PRs its runs
+  opened in non-primary repositories (`ProjectionStore.repo_pr_states_for_project/1`,
+  empty for single-repository projects), and a keyed lookup per paused thread (its
+  pending steering) and per thread with a live PR (its PR watch).
   `attention/1` skips card building and sorting but not that pass.
   `project_fields_many/1` shares one thread build across a whole project list.
+
+  A run that opened a PR in several repositories is classified over ALL its PRs
+  (`PrFold.rollup/2`): a live PR in any repository keeps the thread out of Resolved, a
+  failing check on a non-primary repository's PR is `waiting_on_you`/`ci_failing` after
+  the primary's PR merged, and the thread only reads merged once no PR is live. The card's
+  `pr_state` and `merge_gate` are that roll-up (a single PR reads as before).
 
   Bound: only the newest `Threads.max_limit/0` (500) threads of a project are
   classified. When the project has more, `truncated` is `true` and `counts` /
@@ -34,7 +42,7 @@ defmodule ForemanServer.Overview do
   attention flag.
   """
 
-  alias ForemanServer.Overview.{Group, Input, Signals, Tabs, ThreadCard}
+  alias ForemanServer.Overview.{Group, Input, PrFold, Signals, Tabs, ThreadCard}
   alias ForemanServer.{ProjectionStore, Threads}
   alias ForemanServer.Threads.Thread
 
@@ -230,18 +238,28 @@ defmodule ForemanServer.Overview do
   # `updated_at desc` order; only the newest `Threads.max_limit/0` are classified.
   defp classify_threads(project_id, threads, now) do
     pr_states = ProjectionStore.pr_states_for_project(project_id)
+    repo_states = ProjectionStore.repo_pr_states_for_project(project_id)
     {window, rest} = Enum.split(threads, Threads.max_limit())
     signals = Signals.for_threads(window)
 
     classified =
       Enum.map(window, fn %Thread{} = thread ->
-        pr = Map.get(pr_states, head_run_id(thread))
+        pr = thread_pr(thread, pr_states, repo_states)
         watch = watch_records(thread, pr)
         input = input(thread, pr, watch, Map.fetch!(signals, thread.id), now)
         {{thread, pr, watch}, Group.classify(input)}
       end)
 
     %{classified: classified, truncated: rest != []}
+  end
+
+  # The PR view of a thread: its head run's primary PR rolled up with the PRs the run opened
+  # in its other repositories (`PrFold.rollup/2`), so a live PR in any repository keeps the
+  # thread open and the thread only reads merged once none is left. A run with a single PR
+  # reads exactly its primary's view.
+  defp thread_pr(%Thread{} = thread, pr_states, repo_states) do
+    run_id = head_run_id(thread)
+    PrFold.rollup(Map.get(pr_states, run_id), Map.get(repo_states, run_id, []))
   end
 
   defp input(%Thread{} = thread, pr, watch, signals, now) do
@@ -267,8 +285,9 @@ defmodule ForemanServer.Overview do
   end
 
   # The E9 PR watch fold (`PrChecksChanged` et al.) of the head run, read only
-  # while its PR is still live (open or conflicted): that is all CI state and the
-  # PR action buttons need, and it keeps merged/closed/no-PR threads free of the call.
+  # while a PR of the run is still live (the rolled-up state is open or conflicted:
+  # any repository's PR counts): that is all CI state and the PR action buttons need,
+  # and it keeps merged/closed/no-PR threads free of the call.
   defp watch_records(%Thread{door: :workflow, run_ids: [run_id | _]}, %{pr_state: state})
        when state in [:open, :conflicted],
        do: ProjectionStore.pr_watch(run_id)

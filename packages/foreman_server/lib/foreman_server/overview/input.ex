@@ -5,8 +5,10 @@ defmodule ForemanServer.Overview.Input do
     * `door` - `:workflow | :jobsite`
     * `status` - raw run/jobsite status string (nil is allowed)
     * `resolved?` - the operator disposition flag
-    * `pr_state` - `:open | :merged | :closed | :conflicted | nil`
-    * `merge_gate` - `:none | :pending | :approved`
+    * `pr_state` - `:open | :merged | :closed | :conflicted | nil`: the PR state of the
+      thread's head run, rolled up over every PR it opened (`Overview.PrFold.rollup/2`;
+      one PR reads as itself)
+    * `merge_gate` - `:none | :pending | :approved`, rolled up the same way over the live PRs
     * `checks_state` - `:none | :pending | :failing | :passing`, the PR watcher's
       folded CI rollup of the open PR (`:none` when unwatched)
     * `review_state` - `:none | :changes_requested | :threads_unresolved`, the PR

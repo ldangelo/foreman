@@ -41,6 +41,14 @@ defmodule ForemanServer.Overview.Group do
   before review state); the group is the same, and the reasons that do not show
   surface once the earlier one clears.
 
+  `pr_state` and `merge_gate` are the thread's, i.e. over every PR its head run opened:
+  for a run that opened a PR in several repositories `Overview` hands in the roll-up of
+  `Overview.PrFold.rollup/2` (a PR still open or conflicted in any repository keeps
+  `pr_state` open or conflicted; `merged`/`closed` only once none is live), so `:pr_merged`
+  and `:pr_closed` mean no PR is left to wait on, and a failing check on a non-primary
+  repository's PR is still `:ci_failing` after the primary's PR merged. A run with one PR
+  passes that PR's own state.
+
   `failure_reason`, `door` and `idle_ms` are accepted for display and future
   rules; no current rule depends on them.
   """

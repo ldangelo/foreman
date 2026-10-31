@@ -434,7 +434,7 @@ defmodule ForemanServerWeb.Workspace.Components do
     <ul :if={@data.available and @tab == :pull_requests}>
       <li :for={row <- @data.rows}>
         <span>{row["title"] || row["run_id"]}</span>
-        <span class="ws-muted"> · {row["pr_state"]} · gate {row["merge_gate"]}<span :if={row["review_verdict"]}> · review {row["review_verdict"]}</span></span>
+        <span class="ws-muted"> · {row["pr_state"]} · gate {row["merge_gate"]}<span :if={row["repo_id"]}> · repo {row["repo_id"]}</span><span :if={row["review_verdict"]}> · review {row["review_verdict"]}</span></span>
         <a :if={safe_url(row["pr_url"])} href={safe_url(row["pr_url"])} rel="noopener noreferrer" target="_blank">open</a>
       </li>
     </ul>

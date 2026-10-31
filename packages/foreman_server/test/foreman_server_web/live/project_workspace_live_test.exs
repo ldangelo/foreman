@@ -430,6 +430,82 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       refute has_element?(view, "#panel-library")
     end
 
+    # foreman-w0tnj: one row per PR; a non-primary repository's row names its repository.
+    test "a second repository's PR is its own row, naming its repository", %{id: id} do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrReady",
+            payload: %{run_id: "r-pr2", repo_id: "b", pr_url: "https://github.com/a/b2/pull/3"}
+          }
+        ])
+
+      {view, _} = mount_view(id)
+      html = view |> element("#tab-pull_requests") |> render_click()
+
+      assert has_element?(view, ~s(#panel-pull_requests a[href="https://github.com/a/b/pull/9"]))
+      assert has_element?(view, ~s(#panel-pull_requests a[href="https://github.com/a/b2/pull/3"]))
+      assert has_element?(view, "#panel-pull_requests li", "repo b")
+      # only the non-primary repository's row names a repository
+      assert html |> String.split("· repo ") |> length() == 2
+    end
+
+    test "a failing check on a second repository's PR keeps the thread waiting on you after the primary's PR merged (foreman-w0tnj)",
+         %{id: id} do
+      b_url = "https://github.com/a/b2/pull/3"
+
+      {view, _html} = mount_view(id)
+      assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrReady",
+            payload: %{run_id: "r-pr2", repo_id: "b", pr_url: b_url, pr_number: 3}
+          },
+          %{
+            event_type: "PrChecksChanged",
+            payload: %{
+              run_id: "r-pr2",
+              repo_id: "b",
+              project_id: id,
+              task_id: "t-pr2",
+              pr_url: b_url,
+              head_sha: "h1",
+              pr_status: "open",
+              checks_state: "failing",
+              failing: [%{name: "e2e-ci"}],
+              digest: "d1",
+              observation_seq: 1
+            }
+          },
+          %{
+            event_type: "PrUpdated",
+            payload: %{
+              run_id: "r-pr2",
+              pr_url: "https://github.com/a/b/pull/9",
+              pr_status: "merged",
+              head_sha: "h9",
+              observed_at: 1
+            }
+          }
+        ])
+
+      html =
+        await_until(view, fn _ ->
+          has_element?(view, "#group-waiting_on_you #thread-run\\:r-pr2")
+        end)
+
+      assert html =~ "CI failing"
+      refute has_element?(view, "#group-resolved #thread-run\\:r-pr2")
+
+      # Fix CI is offered for b's PR, the one that is still live
+      assert has_element?(
+               view,
+               ~s|#pr-action-run\\:r-pr2-fix_ci[phx-value-pr-url="#{b_url}"]:not([disabled])|
+             )
+    end
+
     test "scheduled lists schedules and pause goes through schedule.pause", %{
       id: id,
       other: other

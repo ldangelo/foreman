@@ -21,6 +21,11 @@ defmodule ForemanServer.Overview.PrFold do
   | `PrRetargeted` | `base_branch` only |
   | `PrReset` | `merge_gate :none`, `pr_state :open` |
 
+  A run that opened a PR in several repositories (E12) has one entry per PR: the
+  primary's in `state.pr_states` and each non-primary repository's in
+  `state.repo_pr_states` (`fold_repo/3`). The Overview classifies a thread by all of
+  them through `rollup/2`, never by the primary's alone.
+
   Entries are atom-keyed maps; payloads are read with string or atom keys
   (events are JSON round-tripped by the event store). A payload without a
   usable `run_id`, or a `PrUpdated` with an unknown status, is logged at
@@ -101,6 +106,78 @@ defmodule ForemanServer.Overview.PrFold do
   end
 
   def fold_repo(repo_states, _event_type, _payload), do: repo_states
+
+  @typedoc """
+  One PR as the Overview reads it: the primary's `ProjectionStore.pr_state/1` view or a
+  non-primary repository's `ProjectionStore.repo_pr_states/1` view (an `entry` plus ids).
+  """
+  @type view :: %{
+          required(:pr_state) => pr_state() | nil,
+          required(:merge_gate) => merge_gate(),
+          required(:pr_updated_at) => integer() | nil,
+          optional(atom()) => term()
+        }
+
+  @live [:open, :conflicted]
+
+  @doc """
+  The single view a thread is classified by, over every PR its head run opened: the
+  primary's `primary` view and the views `others` of the other repositories' PRs.
+
+  A run with no other PR reads exactly what it read before: `primary` is returned
+  untouched. With several PRs the result is `primary` with three fields rolled up:
+
+    * `pr_state` - `:conflicted` while any PR is conflicted, else `:open` while any PR is
+      open; once none is live, `:merged` when any PR merged, else `:closed`; `nil` when no
+      PR has a state. So a thread only reads merged (resolved) when no PR is left to wait
+      on, and a live PR keeps it open whatever the primary's PR did;
+    * `merge_gate` - the strongest gate of the LIVE PRs (`:approved`, else `:pending`,
+      else `:none`): a merged PR's gate says nothing about the PR still open. When no PR
+      is live, the strongest gate of all of them;
+    * `pr_updated_at` - the newest observation of any PR, so a merge only counts after an
+      operator's reopen when the LAST PR to settle is newer than it.
+
+  `nil` (a thread with no run view, e.g. a jobsite) stays `nil`.
+  """
+  @spec rollup(view() | nil, [view()]) :: view() | nil
+  def rollup(nil, _others), do: nil
+  def rollup(%{} = primary, []), do: primary
+
+  def rollup(%{} = primary, [_ | _] = others) do
+    prs = [primary | others]
+    live = Enum.filter(prs, &(&1.pr_state in @live))
+
+    %{
+      primary
+      | pr_state: rolled_state(prs, live),
+        merge_gate: rolled_gate(if(live == [], do: prs, else: live)),
+        pr_updated_at: latest_update(prs)
+    }
+  end
+
+  defp rolled_state(prs, live) do
+    cond do
+      Enum.any?(live, &(&1.pr_state == :conflicted)) -> :conflicted
+      live != [] -> :open
+      Enum.any?(prs, &(&1.pr_state == :merged)) -> :merged
+      Enum.any?(prs, &(&1.pr_state == :closed)) -> :closed
+      true -> nil
+    end
+  end
+
+  defp rolled_gate(prs) do
+    gates = Enum.map(prs, & &1.merge_gate)
+
+    cond do
+      :approved in gates -> :approved
+      :pending in gates -> :pending
+      true -> :none
+    end
+  end
+
+  defp latest_update(prs) do
+    prs |> Enum.map(& &1.pr_updated_at) |> Enum.filter(&is_integer/1) |> Enum.max(fn -> nil end)
+  end
 
   # E12: an event carrying `repo_id` belongs to a non-primary repository's PR.
   # The per-run entry is the primary's, so it must not be overwritten by a
