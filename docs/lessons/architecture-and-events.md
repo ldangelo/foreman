@@ -560,8 +560,9 @@ carries `provider`, `model`, `project_id`, `task_id`, `role` (`"thread"`), the t
   0.2806 (`docs/acceptance/context-window-live-run.md`; the tokens agreed exactly, so only the cost
   was wrong). The CLI says so per model in its `result` record (`modelUsage.<model>.costBasis`:
   `list`, `managed` or `unknown`; claude 2.1.308 carries it too), and `ClaudeStream.result_payload/1`
-  puts `"cost_usd": nil` on the terminal event unless every model's basis is `list` or `managed`
-  (a record with no basis keeps its figure). Do NOT key this on `ANTHROPIC_BASE_URL`: the CLI also
+  puts `"cost_usd": nil` on the terminal event unless every model that STATES a basis states `list` or
+  `managed` (a model entry with no `costBasis`, or a record with none at all, is not judged: nothing in it says
+  the figure is a guess, so the figure is kept; of the 11 real `modelUsage` records on file the field is on every entry (7) or none (4), no mixed record was seen). Do NOT key this on `ANTHROPIC_BASE_URL`: the CLI also
   reads it from its settings files and `modelUsage.provider` stays `firstParty` through a gateway,
   while a known model name served by a gateway is still priced by the list. The event gained no
   field, so events stored before the fix replay with the figure they recorded.
