@@ -472,6 +472,15 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
     end
   end
 
+  # The Cost row says what `foreman usage` says: `unknown` when no event reported a cost, and a sum
+  # over only some of the events is marked partial with the number of events it leaves out (the
+  # CLI's `*`), never shown as the cost.
+  defp usage_cost(%{"cost_usd" => nil}), do: "unknown"
+  defp usage_cost(%{"cost_usd" => cost, "cost_unknown_events" => 0}), do: cost
+
+  defp usage_cost(%{"cost_usd" => cost, "cost_unknown_events" => unpriced}),
+    do: "#{cost} (partial: #{unpriced} #{if unpriced == 1, do: "event", else: "events"} unpriced)"
+
   defp limits(project_id) do
     case ProjectionStore.project_limits(project_id) do
       %{} = limits -> {:ok, limits}
@@ -1018,7 +1027,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
           <% {:ok, usage} -> %>
             <dl id="usage-pane">
               <dt>Total tokens</dt><dd>{usage["totals"]["total_tokens"]}</dd>
-              <dt>Cost (USD)</dt><dd>{usage["totals"]["cost_usd"] || "unknown"}</dd>
+              <dt>Cost (USD)</dt><dd>{usage_cost(usage["totals"])}</dd>
               <dt>Threads with usage</dt><dd>{usage["thread_count"]}</dd>
             </dl>
           <% {:error, message} -> %>

@@ -4,6 +4,10 @@ defmodule Jido.Harness.Adapters.CLIMapper.ClaudeStream do
   alias Jido.Harness.Adapters.Helpers
   alias Jido.Harness.Event
 
+  # The `costBasis` values that name a price table: the CLI's built-in list prices and the
+  # organisation's managed-settings prices.
+  @priced_bases ["list", "managed"]
+
   @doc "Maps one Claude-compatible stream record to zero or more harness events."
   @spec map(atom(), term(), keyword()) :: [Event.t()]
   def map(provider, event, options \\ [])
@@ -112,8 +116,25 @@ defmodule Jido.Harness.Adapters.CLIMapper.ClaudeStream do
     do: %{
       "num_turns" => raw["num_turns"],
       "duration_ms" => raw["duration_ms"],
-      "cost_usd" => raw["total_cost_usd"]
+      "cost_usd" => cost_usd(raw)
     }
+
+  # The CLI prices every call with its own table and says, per model, which one it used
+  # (`modelUsage.<model>.costBasis`). `unknown` means it had no price for that model name (a LiteLLM
+  # alias, a model newer than the CLI) and priced the tokens at its DEFAULT model's rate: 2.3167 USD
+  # for tokens a gateway priced at 0.2560 (foreman-g5u3h). A guess is not a cost, so the run's
+  # `total_cost_usd` is reported only when every model it covers has a price: `nil` (unknown, never
+  # a number) otherwise. A basis other than `list` and `managed` is not vouched for either. A record
+  # that states no basis (a CLI that predates the field, or no `modelUsage`) keeps its figure:
+  # nothing in it says the figure is a guess.
+  defp cost_usd(raw) do
+    if Enum.all?(cost_bases(raw), &(&1 in @priced_bases)), do: raw["total_cost_usd"]
+  end
+
+  defp cost_bases(%{"modelUsage" => model_usage}) when is_map(model_usage),
+    do: for({_model, %{"costBasis" => basis}} <- model_usage, do: basis)
+
+  defp cost_bases(_raw), do: []
 
   defp replay_text(content) when is_binary(content), do: content
 

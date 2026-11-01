@@ -20,7 +20,12 @@ defmodule ForemanServer.Usage do
     * `:claude` - `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
       `cache_creation_input_tokens`. Cost is NOT in the usage map; the CLI
       reports it on the terminal `:run_completed` event (`"cost_usd"`), which
-      callers pass as `events_cost_usd`.
+      callers pass as `events_cost_usd`. That figure is the CLI's own estimate
+      from its price table, and the harness leaves it `nil` when the CLI says it
+      priced a model with a guess (`modelUsage.<model>.costBasis` is `unknown`:
+      a model name the CLI has no price for, such as a LiteLLM alias, is priced
+      at its default model's rate; foreman-g5u3h). The tokens of that run are
+      still recorded.
     * `:pi` - verified against a real `pi 1.3.0` run
       (`minimax/MiniMax-M2.7-highspeed`, 2026-10): each assistant
       `message_end` carries `"usage"` =
@@ -135,8 +140,10 @@ defmodule ForemanServer.Usage do
   end
 
   @doc """
-  Claude reports the dollar cost only on the terminal `:run_completed` event
-  (`claude_stream.ex:71`), never in `RunResult.usage`. Last one wins; `nil` when absent.
+  Claude reports the dollar cost only on the terminal `:run_completed` event (`"cost_usd"`, set by
+  `Jido.Harness.Adapters.CLIMapper.ClaudeStream`), never in `RunResult.usage`, and reports it as
+  `nil` when the CLI priced the run with a guess (see the module doc). Last one wins; `nil` when
+  absent.
   """
   @spec events_cost_usd([Event.t()]) :: number() | nil
   def events_cost_usd(events) do
