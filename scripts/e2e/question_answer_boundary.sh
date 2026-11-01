@@ -229,10 +229,11 @@ assert_eq "$QO belongs to the run $RUN" "$(q_field "$QO" run_id)" "$RUN"
 
 # ---------------------------------------------------------------- the question id bound (question.open)
 
-say "question ids: 200 characters open, 201 are refused at question.open"
+say "question ids: 200 characters open, 201 are refused (422 at the ingest endpoint, and at question.open)"
 code200=$(ingest "$QLONG200" "Question C: a question with a 200-character id")
 code201=$(ingest "$QLONG201" "Question D: a question with a 201-character id")
-note "ingest of the 200-character id: HTTP $code200; of the 201-character id: HTTP $code201 (the inbox item exists either way; question.open is what refuses)"
+cp "$WORK/ingest.out" "$WORK/ingest-201.out"
+note "ingest of the 200-character id: HTTP $code200; of the 201-character id: HTTP $code201 body: $(head -c 200 "$WORK/ingest-201.out")"
 wait_question "$QLONG200" 20
 assert_eq "the 200-character id opened a question" "$(q_field "$QLONG200" status)" "open"
 assert_eq "the 201-character id opened NO question" "$(q_field "$QLONG201" status)" ""
@@ -240,9 +241,13 @@ ev_ids=$(qev "$QLONG200" "$QLONG201")
 printf '%s\n' "$ev_ids" > "$WORK/question-events-ids.jsonl"
 assert_eq "QuestionOpened events for the 200-character id" "$(printf '%s\n' "$ev_ids" | jq -s --arg q "$QLONG200" '[.[] | select(.type == "QuestionOpened" and .question_id == $q)] | length')" "1"
 assert_eq "QuestionOpened events for the 201-character id" "$(printf '%s\n' "$ev_ids" | jq -s --arg q "$QLONG201" '[.[] | select(.type == "QuestionOpened" and .question_id == $q)] | length')" "0"
-log_refusal=$(grep -c 'question.open for' "$SERVER_LOG")
-note "server log lines naming a failed question.open: $log_refusal: $(grep 'question.open for' "$SERVER_LOG" | tail -n 1 | sed -E 's/q{20,}/<q x N>/g' | cut -c1-300)"
-assert_eq "the server logged the refused question.open" "$([ "$log_refusal" -ge 1 ] && echo yes || echo no)" "yes"
+# Since #791/#795 the webhook refuses an over-long id BEFORE ingest: 422 with a stable code and the numbers in sibling keys,
+# so the dispatcher never reaches question.open and there is no "question.open for ..." server-log line to look for
+# (before the fix the answer was 202 and only that log line recorded the refusal).
+assert_eq "the 200-character id is accepted by the ingest endpoint" "$code200" "202"
+assert_eq "the 201-character id is refused by the ingest endpoint" "$code201" "422"
+assert_eq "...with the stable error code" "$(jq -r '.error' "$WORK/ingest-201.out" 2>/dev/null)" "question_id_too_long"
+assert_eq "...naming the length and the bound" "$(jq -r '[.length, .max] | @csv' "$WORK/ingest-201.out" 2>/dev/null)" "201,200"
 direct=$(rpc "id = String.duplicate(\"q\", 201)
 IO.puts(\"DIRECT \" <> inspect(ForemanServer.Approvals.Dispatch.system(%{type: \"question.open\", command_id: \"qb-direct-201\", aggregate_id: ForemanServer.Aggregates.OperatorQuestion.stream_id(\"global\", id), payload: %{run_id: \"global\", question_id: id}}), limit: 12))" 2>&1 | grep '^DIRECT ')
 note "direct question.open of a 201-character id on the server node: $direct"

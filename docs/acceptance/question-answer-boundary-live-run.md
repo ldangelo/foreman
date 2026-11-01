@@ -14,6 +14,9 @@ Bead `foreman-7c191` part 2 (parity-audit row C7; part 1, the MCP `foreman_sched
 | dry run, `QB_AGENT=none` (no provider, no spend) | `passed=43 failed=0 unverified=3 wall=12s` (the 3 UNVERIFIED are the items that need a claude run) |
 | live, real claude `haiku`, attempt 1 | `passed=56 failed=1 unverified=0 wall=52s` |
 | live, real claude `haiku`, attempt 2 | **PASS**: `passed=56 failed=0 unverified=0 wall=55s` |
+| live, real claude `haiku`, re-run on `main` `3ce96f0f` + the updated question-id section, 2026-11-01 | **PASS**: `passed=59 failed=0 unverified=0 wall=52s` (see "Re-run after #791/#795" below) |
+
+**Re-run after #791/#795 (2026-11-01).** The release check of `main` ran this script unchanged and got `passed=55 failed=1`: the section "question ids" asserted that the server LOGGED a refused `question.open`, which was true only while the ingest endpoint answered 202 for a 201-character id. Since #791 the endpoint refuses it first (422), the dispatcher never reaches `question.open`, and no such log line exists, so the product was right and the assertion stale. That section now asserts the contract instead (ingest HTTP 202 for 200 characters; HTTP 422 with `{"error":"question_id_too_long","max":200,"length":201}` for 201; no `QuestionOpened` for the 201-character id; the direct `question.open` still refuses it with `{:question_id_too_long, 201, 200}`). One live re-run with real claude `haiku`: `passed=59 failed=0 unverified=0 wall=52s`; the 422 body was printed verbatim by the script. Nothing else in the script changed; the other sections' results are as recorded above.
 
 The attempt-1 failure was the harness's own assertion "nothing more is appended" to the agent's claude session record of the steer: the
 record was 8808 characters, the first 8000 byte-identical to the steer (that assertion passed) and the other 808 are text Claude Code adds
@@ -37,7 +40,7 @@ prefix), so the longest answer is `8000 - 26 - len(id)`: 7960 for `qb-<pid>-exac
    ingest endpoint (the inbox item exists) but opened no question: no `QuestionOpened` event, and the server log carries
    `OperatorQuestionDispatcher: question.open for <id> failed: {:error, {:question_id_too_long, 201, 200}}`; a direct dispatch on the server
    node returns the same typed error. Note the operator-visible effect: the agent is told 202 and nothing tells it the question was not opened.
-   Since fixed (not re-run live here): the ingest endpoint now refuses an over-long id with 422 (PR #791; body `{"error": "question_id_too_long", "length": n, "max": m}` since PR #795), so the agent is told; the observation above is as recorded at the time of the run.
+   Since fixed and re-run live on 2026-11-01 (see "Re-run after #791/#795" above): the ingest endpoint now refuses an over-long id with 422 (PR #791; body `{"error": "question_id_too_long", "length": n, "max": m}` since PR #795), so the agent is told; the observation above is as recorded at the time of the run.
 3. **Max-length answer (browser).** 7960 characters typed into the answer box (`maxlength=7960`): accepted; `QuestionAnswered` carries 7960
    characters (SHA-256 equal to the typed text), `answered_by dashboard`; exactly ONE `RunSteerQueued` of 8000 characters whose SHA-256 equals prefix + answer;
    `RunSteerDelivered` recorded (mode `live`); the agent obeyed the last sentence of the answer (`answer-exact.txt` = `BOUNDARY-EXACT-OK` on the
@@ -56,4 +59,4 @@ prefix), so the longest answer is `8000 - 26 - len(id)`: 7960 for `qb-<pid>-exac
   comprehension of an 8000-character steer, not a free-form agent decision.
 - A steer arriving while the agent is inside a long tool call was not tested (the agent waited in 20 s calls).
 - The 201-character id leaves the agent with an HTTP 202 and no question: not changed here (see the note in item 2).
-  Since fixed by #791/#795 (not re-run through this harness): see the note in item 2.
+  Since fixed by #791/#795 and re-run through this harness on 2026-11-01: see the note in item 2.
