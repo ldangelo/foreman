@@ -39,10 +39,12 @@ claude_private_home() {
 }
 
 # claude_session_files [<substring of the project directory name>]: the session transcripts claude wrote
-# under the private HOME (one JSON object per line), oldest first.
+# under the private HOME (one JSON object per line), oldest first. mtime comes from GNU `stat -c %Y` first:
+# BSD stat rejects -c (exit 1, so the fallback runs), whereas GNU `stat -f` means --file-system, exits 0 and
+# prints filesystem status, so trying `-f %m` first never reached the fallback under devbox's GNU stat.
 claude_session_files() {
   find "$WORK/home/.claude/projects" -name '*.jsonl' -path "*${1:-}*" 2>/dev/null | while read -r csf; do
-    printf '%s %s\n' "$(stat -f %m "$csf" 2>/dev/null || stat -c %Y "$csf")" "$csf"
+    printf '%s %s\n' "$(stat -c %Y "$csf" 2>/dev/null || stat -f %m "$csf")" "$csf"
   done | sort -n | cut -d' ' -f2-
 }
 
