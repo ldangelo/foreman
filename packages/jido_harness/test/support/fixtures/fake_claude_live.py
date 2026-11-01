@@ -7,7 +7,10 @@ caller's uuid and text into the isReplay echo. A turn takes TURN_SECONDS (defaul
 echo and its `result`, which is the window in which a test steers mid-turn. Exits 0 on stdin EOF.
 FAKE_CLAUDE_RECORDING names another recording to replay; claude_live_error.jsonl is a turn the
 provider rejected (unknown model): a `result` with `is_error: true`, after which claude, like the
-real CLI, stays alive on its stdin until EOF."""
+real CLI, stays alive on its stdin until EOF. claude_live_unknown_model.jsonl is a turn the CLI
+could answer but not price: claude 2.1.309 asked for `Minimax-M3`, a gateway alias it has no price
+for, so its `result` says `costBasis: "unknown"` and `total_cost_usd` is a guess (init, status, the
+echo, the last assistant message and the result of one real turn, verbatim)."""
 import json, os, sys, time
 
 here = os.path.dirname(os.path.abspath(__file__))
