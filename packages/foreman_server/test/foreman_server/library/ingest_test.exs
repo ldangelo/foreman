@@ -5,6 +5,11 @@ defmodule ForemanServer.Library.IngestTest do
 
   alias ForemanServer.Library.{Error, Ingest, Plan}
 
+  # foreman-83cf1: dumps :file_server_2 state to stderr if a test nears the 60s timeout; silent otherwise.
+  setup do
+    ForemanServer.TestSupport.FileServerSampler.start()
+  end
+
   defp touch(dir, rel, bytes \\ "x") do
     path = Path.join(dir, rel)
     File.mkdir_p!(Path.dirname(path))

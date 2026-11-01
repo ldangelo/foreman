@@ -4,6 +4,11 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
   @lib_root Path.expand("../../../lib/foreman_server", __DIR__)
   @positive_control_file Path.join(@lib_root, "workflow/boot_reconciliation.ex")
 
+  # foreman-83cf1: dumps :file_server_2 state to stderr if a test nears the 60s timeout; silent otherwise.
+  setup do
+    ForemanServer.TestSupport.FileServerSampler.start()
+  end
+
   test "BeadsAdapter.reopen/3 call sites remain inside BootReconciliation" do
     files = elixir_files(@lib_root)
     assert files != [], "No lib files found under #{@lib_root}"
