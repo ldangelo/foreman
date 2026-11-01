@@ -123,10 +123,11 @@ defmodule Jido.Harness.Adapters.CLIMapper.ClaudeStream do
   # (`modelUsage.<model>.costBasis`). `unknown` means it had no price for that model name (a LiteLLM
   # alias, a model newer than the CLI) and priced the tokens at its DEFAULT model's rate: 2.3167 USD
   # for tokens a gateway priced at 0.2560 (foreman-g5u3h). A guess is not a cost, so the run's
-  # `total_cost_usd` is reported only when every model it covers has a price: `nil` (unknown, never
-  # a number) otherwise. A basis other than `list` and `managed` is not vouched for either. A record
-  # that states no basis (a CLI that predates the field, or no `modelUsage`) keeps its figure:
-  # nothing in it says the figure is a guess.
+  # `total_cost_usd` is reported only when every model that STATES a basis states a priced one
+  # (`list` or `managed`): `nil` (unknown, never a number) otherwise. A basis other than those is not
+  # vouched for either. A model entry that states no basis is not judged, and neither is a record that
+  # states none (a CLI that predates the field, or no `modelUsage`): nothing in them says the figure
+  # is a guess, so it is kept. No real record seen so far mixes entries with and without a basis.
   defp cost_usd(raw) do
     if Enum.all?(cost_bases(raw), &(&1 in @priced_bases)), do: raw["total_cost_usd"]
   end
