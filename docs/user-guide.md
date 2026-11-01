@@ -493,7 +493,7 @@ foreman project resume project-123
 ```
 
 Usage groups tokens and provider-reported cost by day, model, provider, role or
-thread; cost is "unknown", never estimated ([Usage and cost](#usage-and-cost)).
+thread; cost is "unknown", never estimated by Foreman ([Usage and cost](#usage-and-cost)).
 Limits are enforced server-side at admission, and a paused project refuses new
 work while in-flight runs keep going ([Pause, resume and reactivate](#pause-resume-and-reactivate)).
 
@@ -809,6 +809,21 @@ jobsite that reports through worker events is not counted twice. Coordinator tur
 retry of a malformed reply summed into the same turn, a turn that then fails still counted): they are part of
 the totals and of the day, model, provider and role breakdowns, but have no `thread` row and no cache hint
 because a coordinator turn belongs to no thread. Their cost is `-` unless the provider reported one.
+
+**What a claude run's cost is.** The cost of a claude run is the CLI's own estimate from the price list built into
+the CLI: an estimate at list prices, not a bill. For a model name the CLI has no price for (a LiteLLM alias such as
+`Minimax-M3` behind `ANTHROPIC_BASE_URL`, or a model newer than the installed CLI) it prices the tokens at its DEFAULT
+model's rate and says so in its own result (`modelUsage.<model>.costBasis: "unknown"`). That is a guess, so Foreman
+records no cost for the run: `-` (`cost_usd: null`), its tokens still counted, the run counted in
+`cost_unknown_events` (a total that also holds priced runs shows `*`; the project settings page says `partial`). In
+the gateway run measured (`Minimax-M3`, 2.35M input and 1,612 output tokens) the guess was 2.32 USD where the
+gateway's own price list gave 0.26 USD for the same tokens (`docs/acceptance/context-window-live-run.md`). A price
+the CLI really has counts as a price, including one the organisation set in the CLI's managed settings; at list
+price the figure is right only while what you are charged follows that list, which a gateway that serves a known
+model name from another model does not. For the spend of a gateway model read the gateway's own spend log: Foreman's
+token counts match it exactly. Runs recorded before this change keep the figure they recorded. A run's own
+`usage.cost_usd` (run status and get) sums the phases that reported a cost and does not count the others;
+`foreman usage` is where a gap shows.
 
 ### Environment, secrets, setup script and network policy
 

@@ -101,6 +101,13 @@ Foreman's token counts equal the proxy's and the session file's exactly. Foreman
 recognise (`modelUsage.<model>.costBasis` is `unknown`), about nine times the proxy's figure. `foreman usage --by model` therefore reports 2.61 USD for a pair of runs that cost
 0.28 USD at the proxy's prices. Not fixed here (it is not on the variable's path).
 
+> **Forward pointer (`foreman-g5u3h`).** Addressed after this run was recorded; the observation above stands as written. The
+> figure reproduces exactly from the run's own tokens at the rates of the CLI's default model, 4 / 0.20 / 20 USD per million
+> input / cache-read / output tokens (the `tier_4_20_cache_read_0_20` row of the CLI's price catalog): run A
+> `(67378·4 + 71824·0.2 + 406·20) / 1e6 = 0.2919968`, run B `(477236·4 + 1877389·0.2 + 1612·20) / 1e6 = 2.3166618`. The claude
+> adapter now reports no cost when the CLI's `costBasis` for a model is not `list` or `managed`, so such a run is recorded with its
+> tokens and an unknown cost (`-` in `foreman usage`); see "Usage and cost" in `docs/user-guide.md`.
+
 ### Spend
 
 | | tokens | USD |
@@ -156,6 +163,7 @@ itself; the recorder logs its length only).
   preceded by the file system's report (the real path is still its last token, which is why the scripts that use it worked). `context_window_live.sh` lists sessions with `find`. The helper is not
   changed here.
 - `foreman usage` `cost_usd` for a gateway model is the CLI's estimate with an unknown cost basis (above). Not a defect of the variable route; a misleading number for this model.
+  Addressed by `foreman-g5u3h` (forward pointer under "Foreman's own record and the proxy's").
 - No defect was found in the route this bead is about: `project env set` (plain variable) and `project secret set` (stdin) reached the CLI, and the variable changed its window.
 
 ## Zero-spend rehearsal (the same script, a scripted stand-in gateway)

@@ -391,7 +391,7 @@ Print a project's status, settings and live limits (`GET /api/projects/<id>/sett
 
 ### `foreman usage --project <id>`
 
-Print token and cost usage of a project (`GET /api/projects/<id>/usage`). `--project` is required (it is never guessed). Flags: `--from YYYY-MM-DD`, `--to YYYY-MM-DD` (inclusive UTC days, at most 366 days apart; shape checked locally, range rules by the server), `--by day|model|provider|role|thread` (default `model`; sent as `group_by`), `--limit N` (thread rows, server default 50, max 500), `--format table|json` (`json` prints the response unchanged). The table columns are group, `INPUT`, `OUTPUT`, `CACHE-READ`, `CACHE-WRITE`, `TOTAL`, `COST`, plus a `TOTAL` row. A cost of `-` is unknown (`cost_usd: null`: the provider reported none, which is not free); `*` marks a partial sum; a footnote lists the number of events with unknown cost. When the project has a daily thread cap a line follows, for example `daily thread cap: threads today: 3/10, resets 00:00 UTC, 4 deferred today`. Server errors (`invalid_range`, `range_too_large`, `invalid_group_by`, `invalid_limit`, unknown project) are printed with their code.
+Print token and cost usage of a project (`GET /api/projects/<id>/usage`). `--project` is required (it is never guessed). Flags: `--from YYYY-MM-DD`, `--to YYYY-MM-DD` (inclusive UTC days, at most 366 days apart; shape checked locally, range rules by the server), `--by day|model|provider|role|thread` (default `model`; sent as `group_by`), `--limit N` (thread rows, server default 50, max 500), `--format table|json` (`json` prints the response unchanged). The table columns are group, `INPUT`, `OUTPUT`, `CACHE-READ`, `CACHE-WRITE`, `TOTAL`, `COST`, plus a `TOTAL` row. A cost of `-` is unknown (`cost_usd: null`: the provider reported none, which is not free, or, for claude, the CLI priced the model with a guess because it has no price for that model name, as for a gateway alias: the tokens are still counted; see "Usage and cost" in the user guide); `*` marks a partial sum; a footnote lists the number of events with unknown cost. When the project has a daily thread cap a line follows, for example `daily thread cap: threads today: 3/10, resets 00:00 UTC, 4 deferred today`. Server errors (`invalid_range`, `range_too_large`, `invalid_group_by`, `invalid_limit`, unknown project) are printed with their code.
 
 ### `foreman project env list|set|unset <id>`
 Manage the project's plain environment variables (`PUT /api/projects/<id>/environment`,
@@ -1625,7 +1625,9 @@ does not scrape logs or raw events. It also carries `usage`
 (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`,
 `total_tokens`, `cost_usd`; every value `null` when the provider did not report it, and
 `usage` itself `null` for runs that predate usage capture); `cost_usd` is provider-reported
-only. `foreman_run_get` returns the same fields in its full projection.
+only (for claude it is `null` when the CLI priced the model with a guess, as for a gateway alias it has no price
+for; the tokens are still counted) and sums only the phases that reported one. `foreman_run_get` returns the same
+fields in its full projection.
 
 `foreman_task_list` accepts optional `project_id`, canonical `status` (`open`,
 `ready`, `in_progress`, `blocked`, `closed`, `failed`), `limit` (default 100,

@@ -63,7 +63,7 @@ The package name remains `:jido_harness`.
 ## Deviations from upstream
 
 This tree is not byte-identical to upstream at the pinned SHA. It differs in
-three ways; the first two are described under "Build role and sync" above.
+four ways; the first two are described under "Build role and sync" above.
 
 1. **Sync from the Sunstone-Partners fork** (`e41fc165`): the Grok 1.0 mapper
    and `Jido.Harness.Escript`, in neither upstream SHA `8bf0d52f` nor 2.0.0.
@@ -77,6 +77,12 @@ three ways; the first two are described under "Build role and sync" above.
 3. **erlexec process-group startup patch** (below), plus the `deps.get` /
    `deps.loadpaths` / `deps.compile` aliases and a `Code.require_file` line it
    adds to `mix.exs`, and a patched `deps/erlexec/c_src/exec_impl.cpp`.
+4. **Claude cost honesty** (foreman-g5u3h): `adapters/cli_mapper/claude_stream.ex` reports a run's
+   `"cost_usd"` (`total_cost_usd` of the CLI's `result` record) as `nil` when the record says the CLI
+   priced a model with a guess (`modelUsage.<model>.costBasis` is anything but `list` or `managed`; the
+   CLI prices a model name it does not know, such as a LiteLLM alias, at its default model's rate). A
+   record that states no basis keeps its figure. Pinned by `test/jido_harness/claude_cost_test.exs` and
+   `test/support/fixtures/claude_live_unknown_model.jsonl` (records of claude 2.1.309).
 
 Local-only additions: `UPSTREAM_PIN.md`, `patches/erlexec/` (the patch above),
 `deps/` (committed so `mix deps.get` and `mix compile` succeed offline) and

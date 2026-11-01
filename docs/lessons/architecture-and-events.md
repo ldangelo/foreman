@@ -553,6 +553,18 @@ carries `provider`, `model`, `project_id`, `task_id`, `role` (`"thread"`), the t
   carries it. Pi reports `usage.cost.total` on each assistant message from its own price
   table (verified on `pi 1.3.0`, `minimax/MiniMax-M2.7-highspeed`); a model without pricing
   reports `0` there, which cannot be told apart from free. Foreman never computes a price.
+- **A claude cost the CLI itself calls a guess is `nil` (foreman-g5u3h).** The CLI prices a call from
+  its own table; a model name it has no price for (a LiteLLM alias, a model newer than the CLI) is
+  priced at its DEFAULT model's rate, `$4 / $0.20 / $20` per million input / cache-read / output tokens
+  in claude 2.1.309: 2.6087 USD recorded for two gateway runs whose gateway priced the same tokens at
+  0.2806 (`docs/acceptance/context-window-live-run.md`; the tokens agreed exactly, so only the cost
+  was wrong). The CLI says so per model in its `result` record (`modelUsage.<model>.costBasis`:
+  `list`, `managed` or `unknown`; claude 2.1.308 carries it too), and `ClaudeStream.result_payload/1`
+  puts `"cost_usd": nil` on the terminal event unless every model's basis is `list` or `managed`
+  (a record with no basis keeps its figure). Do NOT key this on `ANTHROPIC_BASE_URL`: the CLI also
+  reads it from its settings files and `modelUsage.provider` stays `firstParty` through a gateway,
+  while a known model name served by a gateway is still priced by the list. The event gained no
+  field, so events stored before the fix replay with the figure they recorded.
 - **`null` means unknown, never zero.** `cost_usd: nil` = the provider reported no cost;
   `0.0` = it reported zero. `Usage.merge/2` is nil-preserving (`nil + nil = nil`,
   `nil + n = n`), so a run total's cost is `null` unless some phase reported one.

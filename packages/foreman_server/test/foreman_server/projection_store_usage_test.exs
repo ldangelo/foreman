@@ -104,6 +104,49 @@ defmodule ForemanServer.ProjectionStoreUsageTest do
     assert ProjectionStore.usage("proj").total.events == 1
   end
 
+  # A `UsageRecorded` STORED before foreman-g5u3h, from the event store dump of run B of the
+  # 2026-11-01 live run (docs/acceptance/context-window-live-run.md), verbatim but for `project_id`
+  # (this test's project). Its cost is the claude CLI's guess
+  # for a model it has no price for (`Minimax-M3`); the gateway priced the same tokens at 0.2560. The fix
+  # added no field to the event, and history is not rewritten: it replays with the figure it recorded.
+  @stored_before_the_fix %{
+    "at" => "2026-11-01T13:55:17.440205Z",
+    "cache_read_tokens" => 1_877_389,
+    "cache_write_tokens" => 0,
+    "cost_usd" => 2.3166617999999994,
+    "input_tokens" => 477_236,
+    "model" => "Minimax-M3",
+    "output_tokens" => 1612,
+    "project_id" => "proj",
+    "provider" => "claude",
+    "role" => "thread",
+    "run_id" => "run-fdcbb738e8d29b5458e74b9743bb1952",
+    "run_status" => "completed",
+    "sequence" => 61,
+    "task_id" => "cw-B-77151",
+    "total_tokens" => 478_848,
+    "worker_id" => "wkr-714b59902f0eceaf"
+  }
+
+  test "an event stored before the fix still decodes and replays with the cost it recorded" do
+    assert %ForemanServer.Events.UsageRecorded{cost_usd: 2.3166617999999994, model: "Minimax-M3"} =
+             ForemanServer.EventCodec.decode!("UsageRecorded", @stored_before_the_fix)
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "UsageRecorded", payload: @stored_before_the_fix},
+        usage_event("run-after-the-fix", "w1", %{model: "Minimax-M3", cost_usd: nil})
+      ])
+
+    usage = ProjectionStore.usage("proj")
+    assert usage.total.events == 2
+    assert usage.total.usage.cost_usd == 2.3166617999999994
+    assert usage.total.cost_unknown_events == 1
+
+    assert usage.by_thread["run-fdcbb738e8d29b5458e74b9743bb1952"].bucket.usage.total_tokens ==
+             478_848
+  end
+
   test "malformed usage payload is ignored without raising" do
     :ok =
       ProjectionStore.apply_events([

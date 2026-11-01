@@ -239,6 +239,60 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
     assert html =~ "This project no longer exists."
   end
 
+  # The cost the pane shows follows the usage read (`UsageDTO`, `foreman usage`): `null` when no event
+  # reported a cost, and a sum over only some of the events is marked partial, never shown as the cost.
+  describe "usage pane cost" do
+    defp usage_event(id, n, cost) do
+      %{
+        event_type: "UsageRecorded",
+        payload: %{
+          run_id: "run-cost-#{n}",
+          worker_id: "w#{n}",
+          provider: "claude",
+          project_id: id,
+          model: "m1",
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          cost_usd: cost,
+          at: "2026-01-01T10:00:00Z"
+        }
+      }
+    end
+
+    defp cost_text(id, costs) do
+      :ok =
+        costs
+        |> Enum.with_index()
+        |> Enum.map(fn {cost, n} -> usage_event(id, n, cost) end)
+        |> ProjectionStore.apply_events()
+
+      {view, _} = mount_view(id)
+      view |> element("#usage-pane") |> render()
+    end
+
+    test "no event priced: unknown, not zero", %{id: id} do
+      text = cost_text(id, [nil, nil])
+      assert text =~ "unknown"
+      refute text =~ "partial"
+    end
+
+    test "every event priced: the sum, with no partial mark (positive control)", %{id: id} do
+      text = cost_text(id, [0.25, 0.5])
+      assert text =~ "0.75"
+      refute text =~ "partial"
+      refute text =~ "unknown"
+    end
+
+    test "some events priced: the sum over those, marked partial with the number of unpriced events",
+         %{id: id} do
+      text = cost_text(id, [0.25, nil, nil, nil])
+      assert text =~ "0.25"
+      assert text =~ "partial"
+      assert text =~ ~r/\b3\b/
+    end
+  end
+
   test "clearing a field clears the stored setting", %{id: id} do
     {view, _} = mount_view(id)
     view |> form("#settings-form", settings: %{goal: "temp"}) |> render_submit()
