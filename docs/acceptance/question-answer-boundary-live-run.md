@@ -37,6 +37,7 @@ prefix), so the longest answer is `8000 - 26 - len(id)`: 7960 for `qb-<pid>-exac
    ingest endpoint (the inbox item exists) but opened no question: no `QuestionOpened` event, and the server log carries
    `OperatorQuestionDispatcher: question.open for <id> failed: {:error, {:question_id_too_long, 201, 200}}`; a direct dispatch on the server
    node returns the same typed error. Note the operator-visible effect: the agent is told 202 and nothing tells it the question was not opened.
+   Since fixed (not re-run live here): the ingest endpoint now refuses an over-long id with 422 (PR #791; body `{"error": "question_id_too_long", "length": n, "max": m}` since PR #795), so the agent is told; the observation above is as recorded at the time of the run.
 3. **Max-length answer (browser).** 7960 characters typed into the answer box (`maxlength=7960`): accepted; `QuestionAnswered` carries 7960
    characters (SHA-256 equal to the typed text), `answered_by dashboard`; exactly ONE `RunSteerQueued` of 8000 characters whose SHA-256 equals prefix + answer;
    `RunSteerDelivered` recorded (mode `live`); the agent obeyed the last sentence of the answer (`answer-exact.txt` = `BOUNDARY-EXACT-OK` on the
@@ -55,3 +56,4 @@ prefix), so the longest answer is `8000 - 26 - len(id)`: 7960 for `qb-<pid>-exac
   comprehension of an 8000-character steer, not a free-form agent decision.
 - A steer arriving while the agent is inside a long tool call was not tested (the agent waited in 20 s calls).
 - The 201-character id leaves the agent with an HTTP 202 and no question: not changed here (see the note in item 2).
+  Since fixed by #791/#795 (not re-run through this harness): see the note in item 2.
