@@ -25,6 +25,11 @@ defmodule ForemanServer.TestSupport.FileServerSampler do
 
   @prefix "foreman-83cf1:"
   @info_keys [:current_stacktrace, :message_queue_len, :status]
+  @default_dump_after_ms 45_000
+
+  @doc "The `:dump_after_ms` used when the caller does not pass one (ms)."
+  @spec default_dump_after_ms() :: pos_integer()
+  def default_dump_after_ms, do: @default_dump_after_ms
 
   @type snapshot :: %{
           at_ms: non_neg_integer(),
@@ -65,7 +70,7 @@ defmodule ForemanServer.TestSupport.FileServerSampler do
       target: Keyword.get(opts, :target, :file_server_2),
       owner: Keyword.get(opts, :owner),
       interval_ms: Keyword.get(opts, :interval_ms, 1_000),
-      dump_after_ms: Keyword.get(opts, :dump_after_ms, 45_000),
+      dump_after_ms: Keyword.get(opts, :dump_after_ms, @default_dump_after_ms),
       keep: Keyword.get(opts, :keep, 5),
       started_at: System.monotonic_time(:millisecond),
       snapshots: [],
