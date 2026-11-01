@@ -1,0 +1,55 @@
+#!/bin/sh
+# A transparent RECORDER in front of the real claude CLI (scripts/e2e/context_window_live.sh, bead foreman-gppjx). The live script
+# puts this directory first on the Foreman server's PATH, so the claude process Foreman's adapter starts is this file, which records
+# what the CLI is about to be given and what it prints, then runs the real CLI with the same argv, environment and working
+# directory (CW_REAL_CLAUDE) and passes its stdout through unchanged:
+#
+#   launch-<id>.txt   the model argument as the CLI got it, the permission mode, the length (never the text) of the prompt, the
+#                     value of the variables under test (CLAUDE_CODE_MAX_CONTEXT_TOKENS, ANTHROPIC_BASE_URL), the NAMES (never the
+#                     values) of the other CLAUDE*/ANTHROPIC*/DISABLE* variables, whether ANTHROPIC_API_KEY was set and how long it is
+#   stdout-<id>.jsonl what the CLI printed (stream-json: its own `result` record carries modelUsage.<model>.contextWindow)
+#   stderr-<id>.txt   what the CLI wrote to stderr (passed on to the caller when the CLI has exited)
+#   exit-<id>.txt     the CLI's exit status (the wrapper exits with it)
+#
+# It changes nothing the CLI sees. It is a measuring instrument for that script only; Foreman has no reference to it.
+REAL=${CW_REAL_CLAUDE:?CW_REAL_CLAUDE is not set}
+DIR=${CW_TEE_DIR:?CW_TEE_DIR is not set}
+mkdir -p "$DIR" 2>/dev/null
+id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+model=""; mode=""; resume=""; prompt_chars=""; prev=""; flags=""; after_dashdash=0
+for a in "$@"; do
+  if [ "$after_dashdash" = 1 ]; then prompt_chars=${#a}; after_dashdash=0; prev=""; continue; fi
+  case "$a" in
+    --) after_dashdash=1 ;;
+    --*) flags="$flags $a" ;;
+  esac
+  case "$prev" in
+    --model) model=$a ;;
+    --permission-mode) mode=$a ;;
+    --resume) resume=$a ;;
+  esac
+  prev=$a
+done
+
+{
+  echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ) pid=$$ id=$id"
+  echo "cwd=$(pwd)"
+  echo "real=$REAL"
+  echo "argv_count=$#"
+  echo "flags=$flags"
+  echo "model_argument=$model"
+  echo "permission_mode=$mode"
+  echo "resume=$resume"
+  echo "prompt_chars=$prompt_chars"
+  echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS-<unset>}"
+  echo "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL-<unset>}"
+  echo "HOME=$HOME"
+  echo "FOREMAN_RUN_ID=${FOREMAN_RUN_ID-<unset>}"
+  if [ -n "${ANTHROPIC_API_KEY-}" ]; then echo "ANTHROPIC_API_KEY=<set, ${#ANTHROPIC_API_KEY} characters>"; else echo "ANTHROPIC_API_KEY=<unset>"; fi
+  echo "other_variable_names=$(env | sed -n -E 's/^((CLAUDE|ANTHROPIC|DISABLE)[A-Za-z0-9_]*)=.*/\1/p' | sort | tr '\n' ' ')"
+} > "$DIR/launch-$id.txt"
+
+{ "$REAL" "$@" 2>"$DIR/stderr-$id.txt"; echo $? > "$DIR/exit-$id.txt"; } | tee "$DIR/stdout-$id.jsonl"
+cat "$DIR/stderr-$id.txt" >&2
+exit "$(cat "$DIR/exit-$id.txt" 2>/dev/null || echo 1)"
