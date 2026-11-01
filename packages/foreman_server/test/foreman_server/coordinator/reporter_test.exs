@@ -3,8 +3,10 @@ defmodule ForemanServer.Coordinator.ReporterTest do
 
   @moduletag :tmp_dir
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.Coordinator.{Agent.Stub, ReportFormatter, Reporter, Turn}
-  alias ForemanServer.{CommandGateway, ProjectionStore}
+  alias ForemanServer.{CommandGateway, ProjectEnvironment, ProjectionStore}
 
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
   alias ForemanServer.TestSupport.CoordinatorHelpers.SpyGateway
@@ -79,6 +81,27 @@ defmodule ForemanServer.Coordinator.ReporterTest do
     do:
       for(%{kind: "report"} = m <- elem(ProjectionStore.coordinator_state(p), 1).messages, do: m)
 
+  # A project whose stored environment `ProjectEnvironment.secrets/1` refuses (a reserved
+  # `FOREMAN_*` name): `Redact.text/3`, and so `Commands.append/4`, raises for it.
+  defp refused_project!(dir) do
+    id = "co-rep-refused-#{System.unique_integer([:positive])}"
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ProjectRegistered",
+          payload: %{
+            project_id: id,
+            path: Path.join(dir, id),
+            config: %{env: %{"FOREMAN_RUN_ID" => "sneaky-value-9"}}
+          }
+        }
+      ])
+
+    assert_raise ArgumentError, fn -> ProjectEnvironment.secrets(id) end
+    id
+  end
+
   test "ReviewRecorded for a project thread appends exactly one report and triggers exactly one turn",
        %{project_id: p, script: script} do
     Stub.push(script, [{:ok, %Turn{reply: "Noted the review.", actions: []}}])
@@ -143,6 +166,30 @@ defmodule ForemanServer.Coordinator.ReporterTest do
 
     Reporter.backfill(ForemanServer.Coordinator.Supervisor.runtime(rt, gateway: SpyGateway))
     assert length(reports(p)) == 1
+  end
+
+  # The backfill walks the runs and reviews of EVERY project (the projection is global, and in
+  # the suite it holds other tests' projects). One project it cannot report must not take the
+  # reporter down: like the live path (`safe_handle/3`) it logs and drops that one.
+  test "a backfill drops a project whose environment is refused and still reports the others",
+       %{project_id: p, script: script, tmp_dir: dir} do
+    bad = refused_project!(dir)
+    record_review(bad, "run-refused")
+    record_review(p, "run-fine")
+
+    log =
+      capture_log(fn ->
+        rt = start_runtime(script, backfill?: true)
+        # backfill runs in handle_continue; a call through the process is a barrier behind it
+        :sys.get_state(Reporter.name(rt))
+
+        fine_key = "ReviewRecorded:#{rid(p, "run-fine")}"
+        assert [%{report_key: ^fine_key}] = reports(p)
+      end)
+
+    assert log =~ "coordinator reporter: dropped ReviewRecorded"
+    assert log =~ bad
+    refute log =~ "sneaky-value-9"
   end
 
   test "a report about a thread that came from a review gap bead is kept but starts no turn", %{
