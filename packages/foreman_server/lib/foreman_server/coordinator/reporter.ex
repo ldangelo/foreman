@@ -94,7 +94,9 @@ defmodule ForemanServer.Coordinator.Reporter do
   @doc """
   Append reports for terminal threads and reviews of the last
   `report_backfill_hours` that have none yet (events delivered while the server
-  was down are never replayed to subscribers).
+  was down are never replayed to subscribers). The projection holds every project's
+  threads: one that cannot be reported (a project whose environment is refused) is
+  logged and dropped, as on the live path, and never ends the backfill or the reporter.
   """
   @spec backfill(Runtime.t()) :: :ok
   def backfill(%Runtime{} = rt) do
@@ -109,13 +111,13 @@ defmodule ForemanServer.Coordinator.Reporter do
     for {{kind, id}, review} <- inputs.reviews,
         recent?(review, cutoff),
         "ReviewRecorded" in report_events() do
-      handle_event(rt, "ReviewRecorded", Map.merge(review, %{subject_kind: kind, subject_id: id}))
+      safe_handle(rt, "ReviewRecorded", Map.merge(review, %{subject_kind: kind, subject_id: id}))
     end
 
     for run <- inputs.runs,
         terminal_type(run) in report_events(),
         run.last_event_at_ms >= cutoff do
-      handle_event(rt, terminal_type(run), %{run_id: run.run_id})
+      safe_handle(rt, terminal_type(run), %{run_id: run.run_id})
     end
 
     :ok
