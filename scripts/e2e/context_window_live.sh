@@ -269,7 +269,7 @@ phases:
 EOF
 }
 
-# cw_session_files: every claude session file under the private HOME, sorted (claude_home.sh's claude_session_files needs BSD stat; devbox's is GNU)
+# cw_session_files: every claude session file under the private HOME, sorted (only a set difference is needed here, so no mtime order)
 cw_session_files() { find "$WORK/home/.claude/projects" -name '*.jsonl' 2>/dev/null | sort; }
 # new_session_files <file listing the session files before the run>: the session files the run added
 new_session_files() {
