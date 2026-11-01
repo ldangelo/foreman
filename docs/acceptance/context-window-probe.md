@@ -1,8 +1,9 @@
 # Context window of a gateway model in the claude CLI: zero-spend probe and the prepared live run, 2026-10-31
 
 Bead `foreman-gppjx` (hypothesis from `foreman-c3ke`: the claude CLI assumes a 200k-token window for `Minimax-M3`, declared 512000 in
-LiteLLM). **Verdict: PARTIAL. The >200k-token run through the proxy was NOT run** (it needs the owner's approval, a proxy this host cannot reach, and
-spend: see "Prepared live run"). What was done is free: the CLI's behaviour measured against a stand-in gateway, and code reading.
+LiteLLM). **Verdict when this was written (2026-10-31): PARTIAL, the >200k-token run through the proxy was NOT run** (it needed the owner's approval, a proxy this host could not reach, and
+spend). **It was run on 2026-11-01: PASS on the bead's own acceptance, see [`context-window-live-run.md`](context-window-live-run.md)** (16 requests up to 252542 tokens, 5 above 200000, no
+compaction, the variable in the project environment). This document holds the free half (the CLI measured against a stand-in gateway, and code reading) and the plan the live run followed.
 
 Harness: `scripts/e2e/context_window_probe.sh` with `scripts/e2e/context_window_probe/fake_anthropic.py`. The real `claude` 2.1.308 (the version the
 agent Dockerfile pins) is pointed at a stand-in on `127.0.0.1` (`ANTHROPIC_BASE_URL`, a fake API key, an empty private HOME: no login, no keychain). The stand-in
@@ -12,7 +13,7 @@ Run: `devbox run -- bash scripts/e2e/context_window_probe.sh`.
 
 ## Result
 
-`passed=10 failed=0 unverified=0 wall=4s` (one run; it measures the CLI, not Foreman).
+`passed=10 failed=0 unverified=0 wall=4s` (one run; it measures the CLI, not Foreman). Re-run on 2026-11-01 with claude 2.1.309, the host's CLI at the time of the live run: `passed=10 failed=0 unverified=0 wall=3s`, the same table.
 
 | Model name sent | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | window the CLI reports | claimed context of turn 1 | turn 2 of the same session |
 |---|---|---|---|---|
@@ -34,22 +35,30 @@ Also read, not exercised: the 2.1.308 binary's embedded script mentions `CLAUDE_
 
 ## What this does not show
 
-- That a real model behind the real proxy accepts and answers requests above 200k tokens through a Foreman run: the bead's own acceptance. The bead's
+- That a real model behind the real proxy accepts and answers requests above 200k tokens through a Foreman run, the bead's own acceptance: DONE 2026-11-01
+  (`context-window-live-run.md`: 16 requests up to 252542 tokens, 5 of them above 200000, all HTTP success, no compaction). The bead's
   2026-10-27 probes (8 direct `/v1/messages` calls from 13k to 611k input tokens all HTTP 200; one ~1.3 MB prompt and four chained `--resume` turns
-  succeeded) were not repeated.
-- That Foreman delivers the variable to the claude process. By code reading (a scout agent, spot-checked, not run): the project environment
+  succeeded) were not repeated, and the live run is capped near 300k tokens by design.
+- That Foreman delivers the variable to the claude process: read from the code, then OBSERVED on 2026-11-01 (the recorder in front of the CLI saw it in the CLI's environment and the
+  CLI's own result record said `contextWindow` 512000, against 200000 without it). By code reading (a scout agent, spot-checked): the project environment
   (`project env set`, any name except `FOREMAN_*`) is merged into the phase's `env_map`, which `JidoHarnessWorker.init/1` copies into the harness
-  driver options and the claude adapter passes to the CLI; for jobsites `agent.env` names must be in `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST`.
+  driver options and the claude adapter passes to the CLI; for jobsites `agent.env` names must be in `FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST` (a jobsite was not run).
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is not secret-looking (`ProjectEnvironment.secret_name?/1` needs `token` followed by `_` or the end of the name), so it can be set
-  as a plain variable. `docs/user-guide.md` already documents that route. A run through a stand-in gateway (zero spend) was not built.
+  as a plain variable. `docs/user-guide.md` already documents that route.
 - The bead's literal ask, a per-model window declared in config and exported to the worker env: nothing in Foreman does that today (no store of
   windows; Foreman never reads or sets the variable), so the only channel is the project environment. That is a design decision for the owner.
 - The first half of the bead is done: the agent image pins the CLI (`CLAUDE_CODE_VERSION=2.1.308` in the shared Dockerfile template).
 
-## Prepared live run (NOT run; needs approval)
+## Prepared live run (the plan of 2026-10-31; RUN on 2026-11-01, see the note)
 
-Needs: a LiteLLM proxy URL reachable from this host serving `Minimax-M3` (this host cannot reach one: `pi --list-models` shows only the `ornith`, `qwen`,
-`qwen38` and `smart_router` litellm routes), a key for it, and the owner's go-ahead for the spend below.
+Run on 2026-11-01 as `scripts/e2e/context_window_live.sh` (`context-window-live-run.md`: PASS on the bead's acceptance). Where the run differs from the plan below: the proxy WAS reachable (an
+owner-staged URL and key, `CW_LITELLM_FILE`); the ballast is ADAPTIVE (80 KB parts of about 18.5k tokens each by the proxy's count, added while the agent reads and none after the first request
+above 200000 was seen, so run B stopped at 252542 tokens after 14 reads, not after 16 files); run A was a 2-part canary, not a no-variable control of the full corpus (that control is the
+script's optional run C, which was not run); the key reached the agent as a project secret (stdin) and the variable as a plain project variable, as planned. Of the mechanical preconditions
+below, (a), (b), (d) and (f) were exercised and their `[INFERENCE]` items answered (see "The mechanical `[INFERENCE]` items" in the live-run document); (c) and (e) concern docker jobsites and were not.
+
+Needs (as planned): a LiteLLM proxy URL reachable from this host serving `Minimax-M3` (on 2026-10-31 none was: `pi --list-models` showed only the `ornith`, `qwen`,
+`qwen38` and `smart_router` litellm routes; the owner then staged one), a key for it, and the owner's go-ahead for the spend below (given).
 
 1. A scratch project (the `claude_projects/lib.sh` harness, as in `question_answer_boundary.sh`) whose repository holds `ballast/` with 16 files of
    60 KB of text (about 15k tokens each by the CLI's bytes/4 rule, 22k by a pessimistic count).
@@ -60,7 +69,7 @@ Needs: a LiteLLM proxy URL reachable from this host serving `Minimax-M3` (this h
    Observe in the claude session file: input tokens per request above 200000, no compaction summary, the run completes.
 4. Run A (control, optional): the same without the variable: compaction expected near 176k.
 
-### Mechanical preconditions (read from the tree 2026-11-01; not run)
+### Mechanical preconditions (read from the tree 2026-11-01, before the run; see the note above for what the run exercised)
 
 Each item cites the file and line that was read; anything not verifiable from the tree is marked `[INFERENCE]`.
 
@@ -100,7 +109,7 @@ d. **How the variables reach the claude process.**
    - `ANTHROPIC_API_KEY`: only `foreman project secret set <id> ANTHROPIC_API_KEY` (`API_KEY` matches the pattern, so `env set` would refuse it), the value on
      stdin from the staged file (`foreman project secret set <id> ANTHROPIC_API_KEY < <file>`, one value per file; never a flag, never a `printf` of the value in a
      command line). Delivered to the agent as an environment variable and redacted from logs (`docs/user-guide.md:836`).
-   - `[INFERENCE]` whether a trailing newline in the staged file is trimmed: not checked; stage the value without one.
+   - `foreman project secret set` trims one trailing newline (`docs/cli-reference.md:405`); the live harness sent the value without one.
 e. **Network policy.** `foreman project network set --mode allowlist --allow <host>` is enforced on docker jobsites only; workflow runs do not enforce it
    (`docs/user-guide.md:839`). For a jobsite variant the proxy host must be in `--allow` (the form is `--mode allowlist --allow host.docker.internal`,
    `network_policy_flow.sh:25`); that the proxy is not among the "always-allowed provider/VCS hosts" is `[INFERENCE]` (the list was not read). `none` blocks it.
@@ -112,7 +121,7 @@ f. **Where the observation lives.** The claude session file: `$HOME/.claude/proj
    than its absence in a log; (2) while run B is in flight, the claude process's environment names (`ps eww -p <pid>`, filter to
    `CLAUDE_CODE_MAX_CONTEXT_TOKENS=` only; never print the whole line, the key is in it; `[INFERENCE]` that `ps eww` shows it on this host); (3) the behaviour:
    run A (variable unset) compacts near 176k and run B does not, as the zero-spend probe measured against the stand-in. Whether the adapter hands `:env` on to the
-   CLI is not read here (`[INFERENCE]`; "What this does not show" above records it from a scout's code reading only).
+   CLI: OBSERVED 2026-11-01 with a recorder wrapper in front of the CLI (not `ps eww`): it saw the variable in the CLI's environment (`context-window-live-run.md`).
 g. **Credentials.** Staged by the owner in a `chmod 600` file under `/Users/ldangelo/.omp/foreman-ledger/`, values only. Never paste a value into chat, a
    command line, a log or a committed evidence file; record only names, versions (`foreman project secret list`) and the redaction check.
 
@@ -122,3 +131,7 @@ plus a summary of up to 20k output tokens. Run B alone: 2.0M to 3.0M input, unde
 config's price entry for `Minimax-M3` ($0.30 per million input, $0.12 per million output; the file itself calls its numbers ILLUSTRATIVE, they are not a bill) that is
 **about $0.6 to $0.9 for run B and $1.0 to $1.5 for both**; if the provider caches prefixes (the config declares `supports_prompt_caching`) it is lower. A
 2x price would still be under $3. Wall time: tens of minutes (about 16 to 40 sequential model calls per run).
+
+Actual (2026-11-01, `context-window-live-run.md`): run B processed 2354625 input-side tokens (inside the 2.0M to 3.0M estimate): 0.26 USD by the proxy's price table with its cache-read
+price, 0.71 USD at 0.30 per million with no cache discount; runs A and B together 2493827 prompt tokens, 0.28 USD by the proxy's table (0.75 USD without a cache discount). Wall time: 212 s for
+run B (16 sequential model calls).

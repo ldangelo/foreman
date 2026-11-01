@@ -2,7 +2,7 @@
 # Live acceptance of the claude CLI's context window for a GATEWAY model, through real Foreman workflow runs
 # (bead foreman-gppjx, docs/acceptance/context-window-live-run.md; the zero-spend half is scripts/e2e/context_window_probe.sh).
 #
-#   CW_LITELLM_FILE=<file> HEAVY_TESTDB=0 ~/.omp/foreman-ledger/heavy.sh devbox run -- bash scripts/e2e/context_window_live.sh
+#   CW_LITELLM_FILE=<file> devbox run -- bash scripts/e2e/context_window_live.sh
 #   CW_GATEWAY=standin devbox run -- bash scripts/e2e/context_window_live.sh       # zero spend: a scripted stand-in gateway, no key
 #
 # THIS SPENDS MONEY in its default mode: it sends real requests to the model behind the LiteLLM proxy named in CW_LITELLM_FILE.
