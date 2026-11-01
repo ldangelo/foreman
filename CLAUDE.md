@@ -602,7 +602,8 @@ reason `operator_pause`, Abandon is `run.remove`, Resume is
 read-only and may use projected worktree/branch/base data only.
 
 The project workspace is `GET /dashboard/projects/:id` (+ `/settings`,
-`ForemanServerWeb.ProjectWorkspaceLive` / `ProjectSettingsLive`), same guard.
+`ForemanServerWeb.ProjectWorkspaceLive` / `ProjectSettingsLive`), same guard;
+`foreman project open <id>` opens it in a browser (the token rides in the URL).
 It adds no mutation path: actions go through `ForemanServerWeb.Workspace.Actions`
 (Threads.Actions, CoordinatorAPI, Library add files/folder, replace, remove and read/download,
 ProjectSecrets, operator-allowlisted commands) and updates
