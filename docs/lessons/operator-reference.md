@@ -292,6 +292,7 @@ foreman run approve-merge --id <id> --approver <name> --identity <github:login> 
 foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head; a push after approval voids the approval)
 foreman project list         # List projects
 foreman project get <id>     # Fetch project
+foreman project open <id>    # Open /dashboard/projects/<id> in the browser (needs FOREMAN_API_TOKEN; token goes in the URL)
 
 # Workflow install (one-time bootstrap per machine)
 foreman workflow install

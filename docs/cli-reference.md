@@ -183,7 +183,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 
 | Deprecated | Use instead |
 |------------|-------------|
-| `foreman dashboard` | `foreman watch` |
+| `foreman dashboard` (removed: answers `unknown command`) | `foreman project open <id>` for the browser workspace (`foreman watch` is removed too) |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow <custom-workflow>` |
@@ -327,6 +327,26 @@ foreman project get project-123
 | Option | Description |
 |--------|-------------|
 | `--format json` | Print the raw projection as JSON |
+
+### `foreman project open <id>`
+
+Open the project's browser workspace (`/dashboard/projects/<id>`, which shows the Project Overview) in the default browser. There is still no CLI command that prints the Project Overview; this verb opens the workspace that shows it. It takes exactly one argument, the project id, and no flags beyond `-h`; any other argument count is a usage error.
+
+Steps, in order. Every failure returns an error, launches no browser, and never prints the token:
+
+1. `FOREMAN_API_TOKEN` empty: error naming `FOREMAN_API_TOKEN`. Every `/dashboard/*` route requires authentication and has no unauthenticated mode, so there is nothing to open. No HTTP call is made.
+2. `GET /api/projects/<id>` (the call `project get` makes) with the Bearer token. Any error is returned unchanged: an unknown project (404), a wrong token (401), a refused connection.
+3. The URL is `<FOREMAN_API_URL>/dashboard/projects/<id>?token=<FOREMAN_API_TOKEN>`, with the id path-escaped and the token query-escaped. A browser navigation cannot send an `Authorization` header, and `/dashboard` accepts the token as `?token=`.
+4. The URL is handed to the OS opener (`open` on macOS, `xdg-open` on Linux, `rundll32 url.dll,FileProtocolHandler` on Windows; any other OS is an error). The CLI does not wait for the browser. An opener failure is returned as an error that keeps the opener's own reason and shows the workspace URL without the token (so you can open it yourself and add `?token=`); it never contains the token.
+5. On success it prints one line and exits 0: `opened <FOREMAN_API_URL>/dashboard/projects/<id> in your browser (token from FOREMAN_API_TOKEN, not printed)`.
+
+Security: the token travels in the URL, so it is in the opener's argv for an instant and then in the browser's history and address bar. That is the same exposure as typing `?token=` by hand; the command does not add or remove it. No flag prints the token.
+
+Known limit: step 2 proves the project exists and that the API accepts the token. It does not prove the dashboard accepts it: a server with no `FOREMAN_API_TOKEN` configured serves `/api` open in dev but answers 401 on `/dashboard`, so the browser can still show a 401 after a successful `project open`.
+
+```
+foreman project open project-123
+```
 
 ### `foreman project update <id>`
 
@@ -969,7 +989,7 @@ Per-turn metrics show `—` when total turns is zero.
 
 > **NOT IMPLEMENTED.** `foreman watch` is not dispatched. Poll `foreman run get <id>` instead.
 
-Canonical live operator cockpit. The TTY view fills the terminal viewport and combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
+Canonical live operator cockpit. The TTY view fills the terminal viewport and combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` was a deprecated alias for this command; it is removed too (both now answer `unknown command`). To open the browser workspace use `foreman project open <id>`. For a compact refreshing status view, use `foreman status --watch`.
 
 ```bash
 foreman watch                     # Unified live cockpit

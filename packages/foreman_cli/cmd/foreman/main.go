@@ -8,6 +8,7 @@
 //
 //	project create      POST /api/commands with type=project.register
 //	project get <id>    GET /api/projects/:id
+//	project open <id>   GET /api/projects/:id, then open /dashboard/projects/:id in the default browser
 //	project update <id> POST /api/commands with type=project.update
 //	project settings <id> GET /api/projects/:id/settings
 //	project recommend <id> GET /api/projects/:id/recommendations
@@ -61,6 +62,7 @@ Usage:
 Commands:
   project create      Register a new project
   project get <id>    Fetch a project projection
+  project open <id>   Open the project's browser workspace in the default browser (needs FOREMAN_API_TOKEN)
   project update <id> Update project settings (goal, instructions, models, limits) and/or task provider
   project settings <id> Show project status, settings and limits
   project context <id> Show the standing context an agent launch would receive

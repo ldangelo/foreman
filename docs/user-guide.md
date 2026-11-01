@@ -382,8 +382,10 @@ Waiting on you, Working, Landing, Idle and Resolved, plus an `attention` signal
 ([Project Overview](#project-overview); `foreman_overview` over MCP). The
 browser view is the LiveView workspace at `/dashboard/projects/:id` (settings at
 `/dashboard/projects/:id/settings`), behind the same bearer-token guard as
-`/dashboard/runs` ([Project workspace](#141-project-workspace-liveview)). It
-subscribes to the projection; it does not poll.
+`/dashboard/runs` ([Project workspace](#141-project-workspace-liveview)). Open it
+with `foreman project open <project-id>` ([Open the project
+workspace](#open-the-project-workspace-in-a-browser)) or by hand with `?token=`.
+It subscribes to the projection; it does not poll.
 
 ### Talk to the coordinator
 
@@ -578,6 +580,28 @@ foreman project list
 ```
 
 Use `foreman project list --include-archived --format json` when you need archived projects or raw JSON.
+
+### Open the project workspace in a browser
+
+```
+foreman project open project-123
+```
+
+Opens `/dashboard/projects/project-123` in the default browser, with the token in
+the URL. It requires `FOREMAN_API_TOKEN` (the browser workspace has no
+unauthenticated mode) and first checks that the project exists, so an unknown id,
+a wrong token or an unreachable server is an error and no browser is launched.
+On success it prints one line (`opened ... in your browser (token from
+FOREMAN_API_TOKEN, not printed)`); the token is never printed.
+
+- **Limit:** the check proves the project exists and the API accepts the token. It
+  does not prove the dashboard accepts it: a server with no token configured serves
+  `/api` but answers `401` on `/dashboard`.
+- **Security:** the token travels in the URL, so it is briefly in the opener's
+  arguments and then in the browser's history and address bar. That is the same
+  exposure as typing `?token=` by hand. There is no flag that prints the token.
+- There is still no CLI command that prints the Overview; this verb opens the
+  workspace that shows it.
 
 `project delete` **archives** a project; it never purges anything. It is
 **rejected** while the project has active runs; pass `--force` to print the
@@ -2523,7 +2547,7 @@ Every project has one durable **coordinator conversation**: paste a bug, a stack
 
 ## 14.1 Project workspace (LiveView)
 
-`GET /dashboard/projects/:id` is the browser view of one project; `/dashboard/projects/:id/settings` is its settings page. Both sit behind the same browser token guard as `/dashboard/runs`: open them with `?token=<FOREMAN_API_TOKEN>` (or an `Authorization: Bearer` header); without it the answer is `401`, and an unknown project is `404`. Moving between the two pages inside the app reuses the authenticated socket.
+`GET /dashboard/projects/:id` is the browser view of one project; `/dashboard/projects/:id/settings` is its settings page. Both sit behind the same browser token guard as `/dashboard/runs`: `foreman project open <project-id>` opens the first one for you (see [Open the project workspace](#open-the-project-workspace-in-a-browser)), or open them by hand with `?token=<FOREMAN_API_TOKEN>` (or an `Authorization: Bearer` header); without it the answer is `401`, and an unknown project is `404`. Moving between the two pages inside the app reuses the authenticated socket.
 
 **Workspace.** Left: the coordinator conversation (`CoordinatorAPI`, the same entry as `POST /api/projects/:id/coordinator/messages`; `Load earlier messages` pages backwards by cursor), coordinator health with a `Restart coordinator` button when it is `unhealthy`, proposals with `Start` (`task.approve`) and `Decline` buttons (only for open tasks the coordinator proposed for this project; `Decline` is the operator's `task.update` to `closed`, the command `POST /api/commands` and MCP `foreman_task_update` carry, and a closed task can no longer be approved) and the message box. Right: the Overview (`ForemanServer.Overview`) grouped as Ready for review / Waiting on you / Working / Landing / Idle / Resolved with an attention dot, and one card per thread. Card actions are exactly the existing operator ones: `Pause`/`Resume` (`run.pause`/`run.resume`), `Stop` (two clicks: `Stop`, then `Confirm stop`; `Threads.Actions.stop`), `Resolve`/`Reopen` (`thread.resolve`/`thread.reopen`) and a steer box (`Threads.Actions.steer`). Workflow cards also carry four PR buttons in a labelled group: `Fix CI`, `Address comments`, `Resolve conflicts` (the E9 fix threads: `run.pr.fix_ci` / `run.pr.address_comments` / `run.pr.resolve_conflicts`) and `Create PR` (`run.pr.create`), the same commands as `foreman run fix-ci|address-comments|resolve-conflicts|create-pr` and MCP `foreman_pr_fix`. A button that does not apply is disabled with its reason shown beside it (CI is not failing, no unresolved review comments, no merge conflicts, a fix is already running, no PR watched, a PR already exists, the run has not completed); the Run aggregate stays the authority and refuses what the watch state cannot support. There is **no merge or PR-approval control**: merging stays operator-only (`foreman run approve-merge`). Tabs below the Overview: *Library* and *Pull requests* come from the Overview tab providers (a tab without a registered provider says "Not available yet."), *Scheduled* lists the project's schedules with `Pause`/`Resume` (`schedule.pause`/`schedule.resume`). The *Library* tab lists each entry (name, kind, file count, size; never file content) with three buttons: `Files of <name>` toggles the entry's file list, whose `Download <path>` buttons save a file (at most 1 MiB, the read limit of `GET /api/projects/:id/library/:entry_id/files/*path`; a larger file is listed with its size only; the bytes travel over the authenticated LiveView socket, because a plain link to the API cannot send the token); `Replace <name>` opens a form that swaps the files of a `file` or `folder` entry in place (the entry keeps its id, name and kind; a file entry takes files, a folder entry a folder; entries produced by runs are not offered it; `Cancel replacing <name>` drops the selection); and `Remove <name>` then `Confirm remove <name>`. Two forms add entries: *Add files* (several files become ONE entry) and *Add a folder* (pick a directory: the browser's relative paths are kept inside the entry, the folder's own name becomes the entry name unless a name is typed, and hidden files, `node_modules` and files over 30 MB are skipped and counted in the notice, for example `Added kit to the library (2 files; 1 skipped: hidden).`). Files travel over the LiveView socket with the library's own limits (at most 100 files and 480 MB per file; a folder of more than 100 files, hidden ones included, is refused with a pointer to `foreman project library add`, which filters before uploading) and are added or replaced through `Library.add` / `Library.replace`, the calls behind `POST` / `PUT /api/projects/:id/library` and `foreman project library add|replace`, so entry names, relative paths, counts and sizes follow exactly the same rules. LiveView bounds each file and the number of files but not their sum, so the page enforces the whole-add cap `upload_max_bytes` (default 512 MiB, the number the HTTP routes enforce on the request body) itself: a selection whose sizes add up to more shows an alert naming both sizes and disables the button, a single file is also limited to that cap, and the bytes that really arrived are checked again at submit, before the library sees anything. A refused add or replace (a taken name, say) keeps the uploaded files for another try.
 
