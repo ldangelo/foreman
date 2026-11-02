@@ -106,6 +106,32 @@ defmodule ForemanServer.Jobsite.GitTest do
       assert {:ok, ^before} = Git.head_sha(path)
     end
 
+    test "a worktree whose sparse-checkout hides .beads commits instead of failing the restore" do
+      path = beads_repo!()
+      {_, 0} = System.cmd("git", ["-C", path, "sparse-checkout", "init", "--no-cone"])
+
+      {_, 0} =
+        System.cmd("git", [
+          "-C",
+          path,
+          "sparse-checkout",
+          "set",
+          "/*",
+          "!/.beads/",
+          "!/.beads/**"
+        ])
+
+      # Hidden by sparse-checkout, still tracked: absent on disk by design.
+      refute File.exists?(Path.join(path, ".beads/.gitignore"))
+      File.write!(Path.join(path, "work.txt"), "x")
+
+      assert {:ok, :committed} = Git.commit_all(path, "msg")
+
+      out = committed_files(path)
+      assert out =~ "work.txt"
+      refute out =~ ".beads"
+    end
+
     test "the exported ledger (issues.jsonl) and config.yaml are still committed" do
       path = beads_repo!()
       File.write!(Path.join(path, ".beads/issues.jsonl"), "{\"id\":\"x\"}\n")

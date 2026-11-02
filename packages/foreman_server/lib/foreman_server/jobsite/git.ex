@@ -238,11 +238,23 @@ defmodule ForemanServer.Jobsite.Git do
   defp restore_beads_gitignore(path) do
     ignore = ".beads/.gitignore"
 
-    if File.exists?(Path.join(path, ignore)) or not tracked?(path, ignore) do
+    # A file the worktree's sparse-checkout hides (`skip-worktree`, `sparse_exclude/2`) is
+    # absent on disk by design, not deleted by the agent: `git checkout HEAD -- <file>`
+    # refuses it ("pathspec did not match any file(s) known to git") and failed every
+    # phase commit in a worktree that excludes `.beads`.
+    if File.exists?(Path.join(path, ignore)) or not tracked?(path, ignore) or
+         sparse_hidden?(path, ignore) do
       :ok
     else
       git_step(["-C", path, "checkout", "HEAD", "--", ignore], :add, :git_add_failed)
     end
+  end
+
+  defp sparse_hidden?(path, file) do
+    match?(
+      {"S " <> _, 0},
+      System.cmd("git", ["-C", path, "ls-files", "-t", "--", file], stderr_to_stdout: true)
+    )
   end
 
   defp tracked?(path, file) do
