@@ -20,6 +20,8 @@ defmodule ForemanServer.Workflow.Validator do
     ensemble-full-implement-trd ensemble-full-implement-trd-beads
     ensemble-beads-build
     ensemble-full-refine-trd-foreman
+    ensemble-create-prd ensemble-refine-prd ensemble-create-trd ensemble-refine-trd
+    ensemble-implement-trd
   )
 
   @doc "Skill names a workflow command may reference, in operator-facing order."

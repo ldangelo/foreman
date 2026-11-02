@@ -35,5 +35,5 @@ worktree:
 # stay uncommitted, and AutoPR proposes commits only.
 phases:
   - name: implement-trd
-    command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
+    command: "/skill:ensemble-implement-trd {{implementation.trd_path_argument}} --foreman"
     commit: true
