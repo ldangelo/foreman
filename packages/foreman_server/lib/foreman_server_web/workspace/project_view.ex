@@ -27,7 +27,7 @@ defmodule ForemanServerWeb.Workspace.ProjectView do
     end
   end
 
-  defp blank_to_nil(_), do: nil
+  defp blank_to_nil(nil), do: nil
 
   defp stringify(%{} = map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
   defp stringify(_), do: %{}

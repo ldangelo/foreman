@@ -1202,10 +1202,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
 
     test "the side panel shell container is present for the read-only panels", %{id: id} do
-      {_view, html} = mount_view(id)
+      {view, _html} = mount_view(id)
 
-      assert html =~ ~s(<aside class="ws-side")
-      assert html =~ ~s(<section class="ws-panels")
+      assert has_element?(view, ~s(aside.ws-side > section.ws-panels))
     end
   end
 end
