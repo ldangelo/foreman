@@ -27,7 +27,7 @@ readiness_gate: PASS
 | Requirement coverage | 17/17 (100%) |
 | Risk flags | 9 |
 | Dependencies | 27 |
-| Open ambiguity markers | 0 (6 judgement calls recorded for confirmation, none blocking) |
+| Open ambiguity markers | 0 (6 judgement calls recorded, none blocking; J1 and J5 confirmed by the user on 2026-11-02; J2, J3, J4 and J6 ship on their recorded defaults pending review) |
 | External dependencies | 3 (2 existing, 1 deferred and unbuilt) |
 
 ## Acceptance Criteria Summary
@@ -600,7 +600,7 @@ Source: `docs/standards/constitution.md` (canonical).
 Ambiguity scan complete: 0 items marked for clarification, none blocking.
 
 Six judgement calls are recorded with their rationale and a default that ships
-unless the user says otherwise. They are the calls this PRD wants confirmed.
+unless the user says otherwise. Status: **J1 confirmed** (2026-11-02: the 17-tool agent set, project-keyed reads plus memory write/forget) and **J5 confirmed** (2026-11-02: show the write guidance whenever the agent holds the scoped credential, including an empty index). J2, J3, J4 and J6 ship on their defaults pending review.
 
 | ID | Call | Default taken |
 |---|---|---|
@@ -689,7 +689,7 @@ No circular dependencies. No requirement depends on the deferred pi work.
 |---|---:|---|
 | Completeness | 5 | D1-D6 recorded, scope and non-scope explicit, every code claim cited with a file and line, and the three independent causes of the problem each have a requirement. |
 | Testability | 5 | All 48 ACs are observable outcomes: a returned principal, a refusal code, an event field, a tool list, an option map, a text, a command output, a process environment. |
-| Clarity | 4 | Six judgement calls await confirmation. Each has a stated default, but J1 changes what an agent can read. |
+| Clarity | 4 | J1 and J5 confirmed by the user (2026-11-02); J2, J3, J4 and J6 ship on stated defaults pending review. |
 | Feasibility | 4 | Two external behaviours (Claude's MCP permission and precedence rules, Anubis's `handle_request/2` hook) were verified by reading documentation and source, not by a live run. REQ-016 closes that. |
 | **Overall** | **4.5** | **PASS (>= 4.0)** |
 

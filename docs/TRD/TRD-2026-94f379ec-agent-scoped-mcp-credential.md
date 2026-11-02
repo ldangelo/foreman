@@ -59,7 +59,7 @@ Source PRD validated before ingestion:
 | Every Must has at least 2 ACs | PASS — 15 Must, minimum 2 each |
 | Constraints and Non-Goals documented | PASS — 12 Non-Goal bullets, 10 assumptions, 3 external dependencies |
 | Readiness score | 4.5 — PASS (at least 4.0), proceed normally |
-| Open ambiguity markers | 0 (six judgement calls J1-J6 recorded with defaults) |
+| Open ambiguity markers | 0 (six judgement calls J1-J6 recorded with defaults; J1 and J5 confirmed by the user on 2026-11-02; J2, J3, J4 and J6 ship on their recorded defaults pending review) |
 
 Every claim about the code below cites a `file:line` read while writing it.
 Anything not read, or not provable by reading, is marked `[INFERENCE]`.
@@ -1251,5 +1251,6 @@ a real server, a real endpoint and, where available, a real CLI.
 ## Next Step
 
 the step beads already exist (epic `foreman-5ifqm`, children `.1` to `.5`); do not run
-`/ensemble:implement-trd-beads` to create a second set. The user should
-first confirm the six judgement calls J1-J6 in the PRD.
+`/ensemble:implement-trd-beads` to create a second set. Implementation
+may start: J1 and J5 were confirmed by the user on 2026-11-02, and J2, J3, J4 and J6 ship on
+their recorded defaults pending review (PRD section on judgement calls).
