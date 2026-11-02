@@ -32,7 +32,16 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           select:focus-visible, [tabindex]:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
           .ws-skip { position: absolute; left: -999px; }
           .ws-skip:focus { left: 8px; top: 8px; background: Canvas; padding: 4px 8px; }
-          .ws-layout { display: grid; grid-template-columns: minmax(280px, 2fr) 3fr; gap: 16px; padding: 16px; }
+          .ws-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
+            padding: 16px 16px 12px; border-bottom: 1px solid #8884; }
+          .ws-header-title { flex: 1 1 auto; min-width: 0; }
+          .ws-header h1 { margin: 0; font-size: 1.4rem; }
+          .ws-goal { margin: 4px 0 0; font-size: .95rem; overflow-wrap: anywhere; }
+          .ws-header nav { margin-left: auto; }
+          .ws-layout { display: grid; grid-template-columns: 3fr minmax(300px, 1fr); gap: 16px; padding: 16px; align-items: start; }
+          .ws-main-col { min-width: 0; }
+          .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+          .ws-panels:empty { display: none; }
           @media (max-width: 900px) { .ws-layout { grid-template-columns: 1fr; } }
           .ws-card { border: 1px solid #8884; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
           .ws-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #b91c1c; }

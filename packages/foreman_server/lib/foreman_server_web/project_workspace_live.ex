@@ -660,8 +660,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   def render(assigns) do
     ~H"""
     <main id="main" class="ws-main">
-      <header>
-        <h1>{@project_view.name}</h1>
+      <header class="ws-header">
+        <div class="ws-header-title">
+          <h1>{@project_view.name}</h1>
+          <p :if={@project_view.goal} class="ws-goal ws-muted">{@project_view.goal}</p>
+        </div>
         <nav aria-label="Project">
           <.link navigate={"/dashboard/projects/#{@project_id}/settings"}>Settings</.link>
         </nav>
@@ -669,15 +672,18 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
       <div class="ws-layout">
-        <Components.conversation_pane
-          messages={@messages}
-          status={@status}
-          proposals={@proposals}
-          has_earlier={@has_earlier}
-          truncated_before_seq={@truncated_before_seq}
-          draft_id={@draft_id}
-        />
-        <div>
+        <section class="ws-main-col" aria-label="Coordinator">
+          <Components.conversation_pane
+            messages={@messages}
+            status={@status}
+            proposals={@proposals}
+            has_earlier={@has_earlier}
+            truncated_before_seq={@truncated_before_seq}
+            draft_id={@draft_id}
+          />
+        </section>
+        <aside class="ws-side" aria-label="Project panels">
+          <section class="ws-panels" aria-label="Project information"></section>
           <div id="overview-live" aria-live="polite" aria-relevant="additions text">
             <Components.questions_pane questions={@questions} />
             <Components.overview_pane overview={@overview} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
@@ -697,7 +703,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             open_entry={@open_entry}
             library_limits={@library_limits}
           />
-        </div>
+        </aside>
       </div>
     </main>
     """

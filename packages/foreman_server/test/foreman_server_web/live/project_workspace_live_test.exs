@@ -1166,6 +1166,26 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
         assert view |> element("header h1") |> render() =~ shown
       end
     end
+
+    test "shows the project goal when the project has one", %{id: _id} do
+      project = "goal-#{System.unique_integer([:positive])}"
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project,
+                 path: "/tmp/#{project}",
+                 goal: "Ship the workspace shell"
+               })
+
+      {_view, html} = mount_view(project)
+      assert html =~ "Ship the workspace shell"
+      assert html =~ ~s(class="ws-goal)
+    end
+
+    test "renders without a goal paragraph when the project has none", %{id: id} do
+      {_view, html} = mount_view(id)
+      refute html =~ ~s(class="ws-goal)
+    end
   end
 
   describe "accessibility" do
@@ -1179,6 +1199,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert html =~ ~s(aria-selected=)
       assert html =~ "Message the coordinator"
       assert html =~ ~s(<html lang="en")
+    end
+
+    test "the side panel shell container is present for the read-only panels", %{id: id} do
+      {_view, html} = mount_view(id)
+
+      assert html =~ ~s(<aside class="ws-side")
+      assert html =~ ~s(<section class="ws-panels")
     end
   end
 end

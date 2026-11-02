@@ -28,6 +28,15 @@ defmodule ForemanServerWeb.Workspace.ProjectViewTest do
              ProjectView.build(%{config: %{"names" => "x", task_provider: "beads"}}, "p-1")
   end
 
+  test "the goal of either config key shape, trimmed, else nil" do
+    assert %{goal: "Ship it"} = ProjectView.build(%{config: %{goal: "Ship it"}}, "p-1")
+    assert %{goal: "Ship it"} = ProjectView.build(%{config: %{"goal" => "Ship it"}}, "p-1")
+    assert %{goal: "Ship it"} = ProjectView.build(%{config: %{goal: "  Ship it  "}}, "p-1")
+    assert %{goal: nil} = ProjectView.build(%{config: %{goal: nil}}, "p-1")
+    assert %{goal: nil} = ProjectView.build(%{config: %{goal: "   "}}, "p-1")
+    assert %{goal: nil} = ProjectView.build(%{config: %{}}, "p-1")
+  end
+
   test "the status is the projection's own" do
     assert %{status: "paused"} = ProjectView.build(%{status: "paused", config: %{}}, "p-1")
     assert %{status: nil} = ProjectView.build(%{config: %{}}, "p-1")
