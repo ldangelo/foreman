@@ -6,7 +6,7 @@ status: Draft
 date: 2026-11-02
 scale_depth: STANDARD
 author: Claude Code (delegated author agent)
-total_requirements: 16
+total_requirements: 17
 readiness_score: 4.5
 readiness_gate: PASS
 ---
@@ -17,16 +17,16 @@ readiness_gate: PASS
 
 | Priority | Count |
 |---|---:|
-| Must | 14 |
+| Must | 15 |
 | Should | 2 |
 | Could | 0 |
 | Won't | 0 |
 
 | Metric | Value |
 |---|---:|
-| Requirement coverage | 16/16 (100%) |
-| Risk flags | 8 |
-| Dependencies | 24 |
+| Requirement coverage | 17/17 (100%) |
+| Risk flags | 9 |
+| Dependencies | 27 |
 | Open ambiguity markers | 0 (6 judgement calls recorded for confirmation, none blocking) |
 | External dependencies | 3 (2 existing, 1 deferred and unbuilt) |
 
@@ -50,6 +50,7 @@ readiness_gate: PASS
 | REQ-014 | Do not regress the operator principal | Must | Medium | 2 |
 | REQ-015 | Pass the documentation gate | Must | Low | 2 |
 | REQ-016 | Prove the boundary end to end with a live smoke and mutation proofs | Must | Medium | 2 |
+| REQ-017 | Keep the server's operator token and signing key out of every agent process environment | Must | Medium | 6 |
 
 ## Problem Statement
 
@@ -92,9 +93,12 @@ code implies but no run proved.
 | F13 | Memory **read** already reaches agents in every posture: the memory index is injected into the prompt, rebuilt per launch, but only when the index is non-empty. | `project_context/memory.ex:22-41` (empty index skipped at `:25`); `project_context.ex:42` |
 | F14 | The standing guidance tells agents to call `foreman_project_memory_list` and `foreman_project_memory_forget`, and the same text is embedded in the tool descriptions. | `project_memory/guidance.ex:9-38`; `project_context/memory.ex:33-41` |
 | F15 | A per-run credential precedent exists: a stateless HMAC-SHA256 of `"agent-permission:" <> run_id` keyed by `secret_key_base`, compared in constant time, bound to its run by URL path, never stored, never revoked. | `approvals/inflight.ex:68-80`, `:292-301`; `foreman_server_web/controllers/agent_permission_controller.ex:31-44`; `foreman_server_web/router.ex:42-45` |
-| F16 | Pi workers cannot be handed MCP today: the adapter has only free-form `extra_args` and rejects reserved flags, and the coordinator's isolation block passes `--no-mcp`. By inference phase pi workers load the host user's `~/.pi/agent/mcp.json`. [INFERENCE] | `packages/jido_harness/lib/jido_harness/adapters/pi.ex:62`, `:555-575`; `foreman_server/coordinator/agent/harness.ex:38-47` |
-| F17 | Legitimate operator MCP callers exist and must keep working: e2e scripts register `foreman` with the operator bearer token in real claude and pi sessions or call `/mcp` with curl, and `mix foreman.mcp.stdio` passes the token in `init_meta`. | `scripts/e2e/multi_repo_agent.sh:282-286`, `:296`; `scripts/e2e/mcp_schedule_update.sh:75-98`; `scripts/e2e/coordinator_live_actions.sh:81-89`; `scripts/e2e/claude_projects/claude_home.sh:32-33`; `mcp/stdio.ex:52-58` |
-| F18 | `foreman run submit` does **not** call `/mcp`: it posts `task.create` to `/api/commands`. (The job brief listed it as an MCP caller; the code disagrees.) | `packages/foreman_cli/cmd/foreman/run.go:291-292` |
+| F16 | The pi adapter offers no MCP option: it has only free-form `extra_args` and rejects reserved flags, and the coordinator's isolation block passes `--no-mcp`. By inference phase pi workers load the host user's `~/.pi/agent/mcp.json`. [INFERENCE] A pi CLI **can** be given a per-run MCP server through a per-run agent directory: the e2e scripts run `pi mcp add foreman --url <url> --header "Authorization=Bearer <token>" --exposure direct` under `PI_CODING_AGENT_DIR=<per-run dir>`. Foreman has never used that for a production worker and its flag semantics are unverified there, so pi stays out of this slice (D2). | `packages/jido_harness/lib/jido_harness/adapters/pi.ex:62`, `:555-575`; `foreman_server/coordinator/agent/harness.ex:38-47`; `scripts/e2e/multi_repo_agent.sh:284-287`; `scripts/e2e/redaction_value_live.sh:220-223` |
+| F17 | Legitimate operator-principal MCP clients exist and must keep working: the e2e scripts hand the operator bearer token to a real claude (a user-scope `foreman` MCP server in a private claude HOME) or a real pi (`pi mcp add` into a per-run `PI_CODING_AGENT_DIR`), or call `/mcp` with curl; any external MCP client holding the operator token does the same; and `mix foreman.mcp.stdio` passes the token in `init_meta`. The Go CLI is not one of them (F18). | `scripts/e2e/multi_repo_agent.sh:275-287`, `:296`; `scripts/e2e/redaction_value_live.sh:220-223`; `scripts/e2e/claude_projects/claude_home.sh:31-34`; `scripts/e2e/mcp_schedule_update.sh:75-98`; `scripts/e2e/coordinator_live_actions.sh:81-89`; `mcp/stdio.ex:52-58` |
+| F18 | `foreman run submit` does **not** call `/mcp`: it posts `task.create` to `/api/commands`, and no Go file under `packages/foreman_cli` references `/mcp`. (The job brief listed it as an MCP caller; the code disagrees.) The Go CLI is an `/api` client. | `packages/foreman_cli/cmd/foreman/run.go:291-292` |
+| F19 | Agent processes start in overlay mode: the child inherits the server's OS environment with Foreman's variables laid over it. An overlay entry whose value is `false` or `nil` is unset in the child (erlexec receives `{name, false}`); `:clear` is sent only in `:replace` mode; `""` would set an empty string instead. A harness test starts a real process with such entries and reads both as unset. | `packages/jido_harness/lib/jido_harness/run/request.ex:51-52`, `process/spec.ex:26-27`, `:118-119`, `:150`; `process/driver/erlexec.ex:52-61`; `packages/jido_harness/test/jido_harness/process_manager_test.exs:437-465`; `packages/jido_harness/deps/erlexec/src/exec.erl:144-149`, `:294-299` |
+| F20 | `FOREMAN_API_TOKEN` is read from the server's environment at boot into `:api_bearer_token`; `MCP.Auth` and the `/api` bearer plug compare a presented token to it, and `Policy.authorized?/1` is caller-blind, so a worker that presents an inherited token is the unrestricted operator principal. `SECRET_KEY_BASE` is the key every agent credential and approval token is minted from; the server holds it in its OS environment only where the deployment supplies it there (the prod secret provider falls back to `System.get_env/1`). | `packages/foreman_server/config/runtime.exs:39-41`; `mcp/auth.ex:43-60`; `foreman_server_web/plugs/bearer_auth.ex:37-54`; `mcp/policy.ex:52-64`; `config/prod.exs:47-53`; `config_providers/secrets.ex:144-155`; `approvals/inflight.ex:292-301` |
+| F21 | The server composes the environment of an agent process in four separate places: the supervised-worker hop (workflow phases of every kind, `command:` included, and the jobsite scripted launch), the jobsite direct runner, the coordinator turn and the review evaluator. Foreman's variables travel as `env_map` or `env`; the last two pass none. A task with no project has its `env_map` replaced by an empty map before the worker starts, and the jobsite direct runner stringifies every env value, so a `nil` would become `""`. | `overwatch/adapters/jido_harness_worker.ex:96-111`; `overwatch.ex:184`; `workflow/run_executor.ex:1506-1514`, `:1646-1659`; `jobsite/runners/overwatch.ex:259-291`; `jobsite/agent_runner.ex:143-151`, `:166-214`; `coordinator/agent/harness.ex:77-102`; `review/evaluator/agent.ex:215-235` |
 
 ## Design Principle
 
@@ -121,6 +125,7 @@ sandbox (see Non-Goals).
 | D3 | The operator principal (operator bearer token, or no token under `allow_insecure_local`) stays unrestricted and unchanged. The agent allowlist applies to the agent principal **only**. It is an explicit list defined once in `MCP.Policy`, not "advertised minus write tools". `application.ex` seeding is removed or derived from it. The existing `McpAllowlist` tests are kept. |
 | D4 | The agent principal is `{:agent, project_id, run_id}`. Project scope is enforced: a call addressed to another project is refused, and an absent `project_id` is `INVALID_PARAMS`. |
 | D5 | Process: PRD, then TRD, then step beads (a separate follow-up; none are created here). |
+| D6 | The server's `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` are scrubbed from agent environments **in this slice**, narrowly: those two names only, on every launch path the server composes (REQ-017). The broader policy on which other server-held secrets (LANGFUSE keys, GitHub tokens, ...) an agent may inherit is deferred to a named follow-up and recorded as a residual risk. This moves the scrub from Non-Goals into scope (user decision, 2026-11-02). |
 
 ### How the decisions are applied
 
@@ -154,6 +159,8 @@ visible and reversible. None of them changes a decision's intent.
 - No other capability is unlocked for any agent, and nothing changes for the
   operator.
 - The credential dies with its run.
+- No agent the server launches inherits the server's operator token or the key
+  every agent credential is minted from (REQ-017).
 - The memory guidance an agent receives is true for that launch, for Claude and
   for every provider and door that does not receive the credential.
 
@@ -169,10 +176,12 @@ visible and reversible. None of them changes a decision's intent.
 - **Surviving `secret_key_base` rotation.** Rotating it invalidates every agent
   and in-flight approval token; documented, not mitigated.
 - **A sandbox.** The credential confines the MCP tool channel. It does not stop an
-  agent with a shell and an unscrubbed environment from doing what that
-  environment allows (see Threat Model in the TRD).
-- **Scrubbing the worker environment**, including inherited `FOREMAN_API_TOKEN`.
-  Recorded as the next hardening, not built here.
+  agent with a shell from doing what its environment and the host allow: REQ-017
+  removes two inherited secrets, not the agent's other access (see Threat Model in
+  the TRD).
+- **Broader worker-environment policy** (which other server secrets a worker may
+  inherit: LANGFUSE keys, GitHub tokens, the webhook and notification secrets, ...)
+  — follow-up. REQ-017 scrubs only `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` (D6).
 - **Run-, task- and thread-keyed read tools for agents** (J1).
 - **A credential for jobsite launches** (REQ-010 pins their absence).
 - **Collapsing the remaining in-body write gates** (about 18 tools) into the
@@ -185,7 +194,7 @@ visible and reversible. None of them changes a decision's intent.
 |---|---|---|
 | Claude Code CLI: `--mcp-config` HTTP servers with headers, and MCP permission rules (`mcp__<server>__<tool>`; globs only after a literal `mcp__<server>__` prefix) | **Existing.** The approval hook already depends on `--mcp-config`. Rule syntax and name-collision precedence were read from `https://code.claude.com/docs/en/permissions` and `.../mcp` on 2026-11-02; no live run. | REQ-009 depends on it. A server key that cannot collide with the operator's own (`foreman`) avoids the documented highest-precedence-source rule. |
 | Anubis MCP server library 1.14.0 | **Existing.** `handle_request/2` is a documented, overridable callback; `Frame.tools` is documented. `Anubis.Server.Handlers.handle/3` is an undocumented internal that the generated default also calls. | REQ-007 depends on both. The full-stack HTTP test pins the contract. |
-| Pi CLI MCP injection | **Deferred, unbuilt.** The adapter exposes no MCP option and the flag is unverified. | None. D2 excludes it; REQ-012 keeps pi's guidance truthful meanwhile. |
+| Pi CLI MCP injection | **Deferred, unbuilt.** The adapter exposes no MCP option. A per-run mechanism is known from the e2e scripts (`pi mcp add --url --header --exposure direct` into a per-run `PI_CODING_AGENT_DIR`), but its flag semantics are unverified for production use. | None. D2 excludes it; REQ-012 keeps pi's guidance truthful meanwhile. |
 
 ## Assumptions
 
@@ -219,6 +228,13 @@ Recorded rather than presented as decided:
 - **A9** — Memory content lives on disk under the project's main checkout and is
   audited by `ProjectMemoryWritten` and `ProjectMemoryForgotten` events carrying
   `author_kind` and `author_ref` (`project_memory.ex:172-188`, `:208-219`).
+- **A10** — `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` reach an agent only by
+  inheritance: no `lib/` code hands either to a worker, and the worker env Foreman
+  builds carries neither (`workflow/run_executor.ex:4154-4248`). `SECRET_KEY_BASE`
+  is in the server's process environment only where the deployment supplies it
+  there; the prod secret provider falls back to `System.get_env/1`
+  (`config_providers/secrets.ex:144-155`), so an env-supplied deployment carries it
+  and whether a given deployment does is not known to this PRD.
 
 ## Requirements
 
@@ -327,10 +343,11 @@ identifier differently from the tool that then uses it, is a confused-deputy hol
 across projects.]
 
 - AC-006-1: Given the agent principal of project P, when it calls an agent-set
-  tool with a `project_id` other than P, then the call is refused with
-  `POLICY_REFUSED` before the tool runs, and nothing is read or written. The
-  refusal does not consult any store, so it reveals nothing about whether the
-  other project exists.
+  tool, including `foreman_project_memory_write` or `_forget`, with a `project_id`
+  other than P, then the call is refused with `POLICY_REFUSED` before the tool
+  runs, and nothing is read or written: no topic file changes and no memory event
+  is recorded for the other project. The refusal does not consult any store, so it
+  reveals nothing about whether the other project exists.
 - AC-006-2: Given the agent principal, when `project_id` is absent, blank or not
   a string, then the call is refused with `INVALID_PARAMS`.
 - AC-006-3: Given an agent's memory write or forget that supplies a `run_id`
@@ -488,6 +505,54 @@ breaks live harnesses that no unit test of the new code would notice.]
   named tests run, then they fail, and they pass again once the mutation is
   reverted.
 
+### Feature Area: Worker environment
+
+#### REQ-017: Keep the server's operator token and signing key out of every agent process environment
+
+**Priority:** Must · **Complexity:** Medium
+
+[RISK: a scrub applied at one launch site leaves every other launch path
+inheriting the token; a scrub that overrides an explicit entry breaks a project
+that legitimately delivers its own `SECRET_KEY_BASE`; a scrub carried in the
+caller's env map is silently dropped for a run with no project.]
+
+This is D6. Agents start with the server's own OS environment under Foreman's
+variables (`env_mode: :overlay`, F19), so an agent inherits whatever the server was
+started with. Two inherited variables defeat this PRD's confinement:
+`FOREMAN_API_TOKEN`, which `/mcp` accepts as the unrestricted operator principal,
+and `SECRET_KEY_BASE`, the key every agent credential is minted from (F20). Both
+are unset in every agent launch the server composes (F21), through one function.
+Only these two names are in scope; every other inherited secret is the follow-up
+(Non-Goals). The scrub is not behind the `agent_credentials` switch (REQ-011): it
+applies whether or not a credential is offered.
+
+- AC-017-1: Given a server whose environment exports `FOREMAN_API_TOKEN` and
+  `SECRET_KEY_BASE`, when a workflow phase worker is launched, of any provider and
+  any phase kind (`command:` included), for a task with or without a project, then
+  the worker's process environment holds neither variable.
+- AC-017-2: Given the same server, when a jobsite iteration is launched on either
+  launch path (the direct runner and the supervised scripted launch), then the
+  agent's process environment holds neither variable.
+- AC-017-3: Given the same server, when the coordinator runs a turn or the review
+  evaluator runs, then the agent process it starts holds neither variable.
+- AC-017-4: Given any launch covered above, when its environment is built, then
+  every other variable the launch carried before this change is present and
+  unchanged (the server's `PATH` and `HOME`, the `FOREMAN_*` run variables, project
+  variables and secrets, `FOREMAN_LIBRARY_PATH`), and a project that stores a
+  secret named `SECRET_KEY_BASE` still receives its own value.
+- AC-017-5: Given `allow_insecure_local: false` and an operator token configured,
+  when a phase worker calls `/mcp` with the credential of its own `foreman_agent`
+  server, then it is the agent principal of its run, and when it presents no token,
+  then it is refused with HTTP 401; it is never the operator.
+- AC-017-6: Given an operator client that presents the operator token (an e2e
+  script, an external client or the stdio transport), when it calls `/mcp` or
+  `/api`, then every outcome is identical to before this change.
+
+Posture limit, not an AC: under `allow_insecure_local: true` an absent token is the
+operator (D3, AC-003-1), so a worker that omits `Authorization` is the operator
+whatever its environment holds. The scrub removes a secret; it does not close a
+posture the operator opened.
+
 ## Constitution Gate
 
 Source: `docs/standards/constitution.md` (canonical).
@@ -524,7 +589,8 @@ Source: `docs/standards/constitution.md` (canonical).
   changed incompatibly: the operator's `/mcp` contract is unchanged,
   `GET /api/projects/:id/context` gains an additive field, the CLI inventory
   description text changes, and the Elixir `Auth` function names change but are
-  internal.
+  internal. Agent environments lose two inherited variables (REQ-017): a hardening
+  of a trusted surface, not a change to an API contract, and approved as D6.
 - **§8 Documentation Discipline: SATISFIED by REQ-015.**
 
 **Constitution Gate: PASSED.**
@@ -566,8 +632,23 @@ unless the user says otherwise. They are the calls this PRD wants confirmed.
 - **Operator workflows regress** — covered by REQ-014.
 - **Guidance promises a path the launch does not have** — covered by REQ-012 and
   REQ-013.
-- **Agent holds an inherited operator token or `secret_key_base`** — not mitigated
-  here. Recorded as the next hardening; see the TRD's Threat Model.
+- **Agent holds an inherited operator token or `secret_key_base`** — covered by
+  REQ-017: both are unset in every agent launch the server composes, so the scoped
+  credential's memory-only guarantee holds against the agent's own environment.
+- **Agent holds any OTHER inherited server secret** (LANGFUSE keys, GitHub tokens,
+  the webhook and notification secrets) — not mitigated here. The broader
+  worker-environment policy is the named follow-up (Non-Goals); a residual risk
+  until it lands.
+- **A worker omits the token under `allow_insecure_local: true`** — it is the
+  operator by that posture's definition (D3, AC-003-1). The scrub removes a
+  secret; it does not close a posture the operator opened. The confinement holds in
+  token-enforcing deployments (`allow_insecure_local: false`, the shipped default).
+- **The scrub lands at one launch site only, or rides in an env map that is
+  dropped** — covered by REQ-017 and the TRD's launch-site architecture test: a
+  task with no project has its env map replaced before the worker starts, so the
+  scrub is applied at the last hop, not in the caller's map.
+- **A project's own `SECRET_KEY_BASE` is unset by the scrub** — covered by
+  AC-017-4: an explicit entry wins over the scrub.
 - **Hostile agent persists a prompt injection in its own project's memory** — not
   eliminated: memory already renders inside a block labelled as agent-written
   notes, not instructions, with caps and redaction. Residual, own project only.
@@ -581,20 +662,24 @@ unless the user says otherwise. They are the calls this PRD wants confirmed.
 - REQ-006 depends on REQ-005.
 - REQ-007 depends on REQ-005.
 - REQ-008 depends on REQ-005, REQ-006.
-- REQ-009 depends on REQ-001, REQ-002, REQ-004, REQ-006, REQ-007. This is the
-  ordering constraint: injection must not land before enforcement.
+- REQ-009 depends on REQ-001, REQ-002, REQ-004, REQ-006, REQ-007, REQ-017. This is
+  the ordering constraint: injection must not land before enforcement, and must not
+  land before the scrub.
 - REQ-010 depends on REQ-009.
 - REQ-011 depends on REQ-009.
 - REQ-012 depends on REQ-009.
 - REQ-013 depends on REQ-012.
 - REQ-014 depends on REQ-003, REQ-005.
-- REQ-015 depends on REQ-009, REQ-012.
-- REQ-016 depends on REQ-009, REQ-012.
+- REQ-015 depends on REQ-009, REQ-012, REQ-017.
+- REQ-016 depends on REQ-009, REQ-012, REQ-017.
+- REQ-017 depends on nothing: the scrub is independent of the principal, the policy
+  and the credential.
 
 Cluster to implement together: REQ-001, REQ-002, REQ-003 (identity). Then
 REQ-004, REQ-005, REQ-006, REQ-007, REQ-008 (policy and enforcement). Then
-REQ-009, REQ-010, REQ-011 (injection). Then REQ-012, REQ-013, REQ-015
-(truthfulness and documentation). REQ-014 and REQ-016 close each cluster.
+REQ-017 (worker environment) with REQ-009, REQ-010, REQ-011 (injection), the scrub
+first within the cluster. Then REQ-012, REQ-013, REQ-015 (truthfulness and
+documentation). REQ-014 and REQ-016 close each cluster.
 
 No circular dependencies. No requirement depends on the deferred pi work.
 
@@ -602,17 +687,22 @@ No circular dependencies. No requirement depends on the deferred pi work.
 
 | Dimension | Score | Notes |
 |---|---:|---|
-| Completeness | 5 | D1-D5 recorded, scope and non-scope explicit, every code claim cited with a file and line, and the three independent causes of the problem each have a requirement. |
-| Testability | 5 | All 42 ACs are observable outcomes: a returned principal, a refusal code, an event field, a tool list, an option map, a text, a command output. |
+| Completeness | 5 | D1-D6 recorded, scope and non-scope explicit, every code claim cited with a file and line, and the three independent causes of the problem each have a requirement. |
+| Testability | 5 | All 48 ACs are observable outcomes: a returned principal, a refusal code, an event field, a tool list, an option map, a text, a command output, a process environment. |
 | Clarity | 4 | Six judgement calls await confirmation. Each has a stated default, but J1 changes what an agent can read. |
 | Feasibility | 4 | Two external behaviours (Claude's MCP permission and precedence rules, Anubis's `handle_request/2` hook) were verified by reading documentation and source, not by a live run. REQ-016 closes that. |
 | **Overall** | **4.5** | **PASS (>= 4.0)** |
 
-**What 4.5 does not claim.** It does not claim agents are sandboxed: an agent that
-inherits `FOREMAN_API_TOKEN` or `SECRET_KEY_BASE` from the server's environment
-bypasses the scoping, a pre-existing exposure recorded as the next hardening. It
-claims the MCP tool channel is confined, bounded in time, attributable and
-reviewable.
+**What 4.5 does not claim.** It does not claim agents are sandboxed. With REQ-017
+the two server secrets that would defeat the scoping, the operator token and the
+key every credential is minted from, are not inherited, so the scoped credential's
+memory-only guarantee holds against the agent's own environment. Two limits remain
+and are recorded: any OTHER secret the server holds in its environment is still
+inherited until the broader worker-environment policy lands, and under
+`allow_insecure_local: true` an absent token is the operator by definition (D3),
+which the scrub neither changes nor can change. It claims the MCP tool channel is
+confined, bounded in time, attributable and reviewable under a token-enforcing
+posture.
 
 ## Changelog
 
@@ -628,6 +718,20 @@ posts to `/api/commands`, not `/mcp` (F18); (b) the base-URL default is derived 
 inside the tool bodies (F3), which the brief did not list and which D1 cannot be
 implemented without addressing; (d) Anubis resolves tools before dispatch (F7), so
 principal-aware visibility is a requirement (REQ-007), not a cosmetic one.
+
+### v1.0.0, revision 1 — 2026-11-02
+
+Before review, on the user's decision (D6) and a re-read of the agent launch paths:
+**REQ-017 added** (agent environments carry neither `FOREMAN_API_TOKEN` nor
+`SECRET_KEY_BASE`; 6 ACs). The scrub moves from Non-Goals into scope and the
+broader worker-environment policy becomes the named follow-up. The residual-risk
+wording is corrected: the memory-only guarantee holds against the two scrubbed
+secrets, not against other inherited secrets or the `allow_insecure_local` posture.
+
+**Corrections:** F16 (a pi CLI can be given a per-run MCP server through a per-run
+`PI_CODING_AGENT_DIR`; still out of this slice), F17 and F18 (the Go CLI is an
+`/api` client; the operator-principal MCP clients are the e2e scripts, external
+clients and the stdio task), AC-006-1 (names the foreign-project memory write).
 
 ## Next step
 

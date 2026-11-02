@@ -37,6 +37,16 @@ Path convention for this document: paths beginning `lib/` or `test/` are under
 **Process (D5).** PRD, then this TRD, then step beads as a separate follow-up.
 No beads are created by this document.
 
+**Revision 1 (2026-11-02, before review).** On the user's decision (PRD D6) the scrub
+of `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` from agent environments moves into this
+slice (REQ-017, DP-12, TRD-AMC-20 … 23, in PR 3); the broader worker-environment
+policy is Deferred. Corrections: the Go CLI is an `/api` client, not an MCP caller;
+a drift test exists (`usage_drift_test.go`) and TRD-AMC-15 runs it; a pi CLI can be
+given a per-run MCP server through a per-run agent directory (still out of scope);
+rejected-option rows C and D and the residual-risk text no longer treat an inherited
+operator token as unmitigated or unqualified; the critical-path figure is re-derived
+from the task graph.
+
 ## Requirements Validation
 
 Source PRD validated before ingestion:
@@ -44,10 +54,10 @@ Source PRD validated before ingestion:
 | Check | Result |
 |---|---|
 | Required sections present | PASS — Problem Statement, Goals, Non-Goals, Assumptions, Requirements, Dependency Map, Readiness Gate, Constitution Gate |
-| REQ-NNN sequential and unique | PASS — REQ-001 … REQ-016, no gaps |
-| ACs in Given/When/Then | PASS — 42/42 |
-| Every Must has at least 2 ACs | PASS — 14 Must, minimum 2 each |
-| Constraints and Non-Goals documented | PASS — 12 Non-Goal bullets, 9 assumptions, 3 external dependencies |
+| REQ-NNN sequential and unique | PASS — REQ-001 … REQ-017, no gaps |
+| ACs in Given/When/Then | PASS — 48/48 |
+| Every Must has at least 2 ACs | PASS — 15 Must, minimum 2 each |
+| Constraints and Non-Goals documented | PASS — 12 Non-Goal bullets, 10 assumptions, 3 external dependencies |
 | Readiness score | 4.5 — PASS (at least 4.0), proceed normally |
 | Open ambiguity markers | 0 (six judgement calls J1-J6 recorded with defaults) |
 
@@ -64,6 +74,7 @@ Anything not read, or not provable by reading, is marked `[INFERENCE]`.
 | MCP authentication | REQ-001, REQ-002, REQ-003 | `lib/foreman_server/mcp/auth.ex`, new `agent_token.ex`, new `principal.ex` |
 | MCP policy and enforcement | REQ-004 … REQ-008, REQ-014 | `mcp/policy.ex`, `mcp/dispatch.ex`, `mcp.ex`, `mcp/stdio.ex`, `mcp/tools.ex`, `application.ex` |
 | Worker injection | REQ-009, REQ-010, REQ-011 | `workflow/run_executor.ex`, `approvals/config.ex`, new `mcp/agent_access.ex` |
+| Agent launch environment | REQ-017 | `worker_environment.ex`, `overwatch/adapters/jido_harness_worker.ex`, `jobsite/agent_runner.ex`, `coordinator/agent/harness.ex`, `review/evaluator/agent.ex` |
 | Guidance and surfaces | REQ-012, REQ-013 | `project_context.ex`, `project_context/*`, `project_memory/guidance.ex`, `project_controller.ex`, `packages/foreman_cli/cmd/foreman/agent_commands.go` |
 | Verification and docs | REQ-014 … REQ-016 | tests, `scripts/e2e/`, documentation set |
 
@@ -85,6 +96,7 @@ UI. One new Go test; the Go change is a description string.
 | Harness | `:mcp_config` map becomes `--mcp-config '{"mcpServers": …}'`; `:allowed_tools` becomes `--allowedTools` — `packages/jido_harness/lib/jido_harness/adapters/claude.ex:44`, `:113-116`, `:183-185`. |
 | Run lifecycle in the projection | `terminal?` set true for completed, failed, cancelled, `deleted` (`lib/foreman_server/projection_store.ex:4124`, `:4137`, `:4168`, `:4807-4816`, `:2566-2568`) and `failed`/`blocked`/`stuck` (`:4941`). `paused` is non-terminal (`aggregates/run.ex:566-586`). A run-keyed event for an unknown id mints a stub with `project_id: nil`, `terminal?: false` — `projection_store.ex:5049-5072`. |
 | Allowlist | `Agents.McpAllowlist` child (`application.ex:181`, `:625-631`) and seed (`:259`, `:635-642`); `permit?/1` has no `lib/` caller (`agents/mcp_allowlist.ex:20`). |
+| Agent launch environment | Four composition sites, all overlay (PRD F21). `JidoHarnessWorker.put_env/2` folds `:env_map` into `driver_opts[:env]` (absent or empty adds nothing; a non-map raises) — `overwatch/adapters/jido_harness_worker.ex:96-111`; it is fed by `Overwatch.start_phase/2`, whose `build_launch_env/2` replaces the caller's map with `%{}` for a nil project — `overwatch.ex:184` — and by `RunExecutor` — `workflow/run_executor.ex:1506-1514`, `:1546`. `AgentRunner.run_iteration_once/4` builds its env with `merged_env/2`, which stringifies every value — `jobsite/agent_runner.ex:74-149`. The coordinator and the review evaluator pass no env — `coordinator/agent/harness.ex:77-102`, `review/evaluator/agent.ex:215-235`. |
 
 ## Reused Capabilities
 
@@ -100,6 +112,8 @@ no earlier TRD declares a reusable capability. Code-level reuse:
 | `ProjectContext.build/2` as the one producer | `project_context.ex:42` | Guidance derivation (DP-9). |
 | `Policy.write_tools/0` | `mcp/policy.ex:4-32` | Operator write gate stays; the agent set is separate. |
 | Run seeding pattern | `test/foreman_server/approvals/permission_prompt_test.exs:19-42` | Active-run fixtures; message-driven, no sleeps. |
+| Harness overlay unset: an env entry `false` (or `nil`) is unset in the child | `packages/jido_harness/lib/jido_harness/process/driver/erlexec.ex:52-61`, `process/spec.ex:150` | The environment scrub (DP-12). No harness change. |
+| `WorkerEnvironment` facade | `worker_environment.ex:1-57` | Home of the one scrub function (DP-12). |
 
 ## Architecture Decision
 
@@ -116,8 +130,8 @@ on both Anubis servers makes `tools/list` and tool resolution agree with dispatc
 | Option | Verdict | Why |
 |---|---|---|
 | B. A separate endpoint (`/agent-mcp/:run_id`) with its own server | Rejected | A second boundary to keep in step with the first; the repo's lesson is one enforcement point (`dispatch.ex:2-11`). The run id would also sit in a URL that appears in logs. |
-| C. Widen the gate (`allow_workflow_writes: true` for all) or hand agents the operator token | Rejected | Unlocks 27 write tools and every project for every agent; the operator token inside a worker is the exact exposure this PRD exists to avoid. |
-| D. Agents write memory through the Go CLI | Rejected | The CLI needs `FOREMAN_API_TOKEN` and the server URL, neither of which workers are given (`run_executor.ex:4154-4248`), and it is token-protected (`bearer_auth.ex:37-54`). Same missing credential, different transport. |
+| C. Widen the gate (`allow_workflow_writes: true` for all) or hand agents the operator token | Rejected | Unlocks 27 write tools and every project for every agent. The operator token in a worker is the exposure this slice closes from both sides: it neither injects the token (the worker gets a run-bound credential instead) nor lets the worker inherit it — `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` are unset in every agent launch (DP-12, REQ-017). Other inherited secrets are out of scope (Deferred). |
+| D. Agents write memory through the Go CLI | Rejected | The CLI needs `FOREMAN_API_TOKEN` and the server URL, which the worker env Foreman builds does not carry (`run_executor.ex:4154-4248`). In a deployment whose server exports `FOREMAN_API_TOKEN` a worker would inherit it by overlay (`request.ex:52`) and the CLI would work with operator authority over every project, unless the token is scrubbed, which DP-12 does; the token-protected API refuses a wrong or absent token (`bearer_auth.ex:37-54`). So the CLI route is operator-level or closed, never agent-scoped. It is also an `/api` client, not an MCP client (`packages/foreman_cli/cmd/foreman/run.go:291-292`). |
 | E. Stateful tokens (stored, revocable) | Rejected | State to persist, clean and lose on restart. The run's own lifecycle already says when a credential must die (DP-2). |
 
 ### Key technical decisions
@@ -133,6 +147,7 @@ on both Anubis servers makes `tools/list` and tool resolution agree with dispatc
 | Injection | Claude workflow door only; server key `foreman_agent`; four pre-approved names (DP-7) |
 | Guidance | `ProjectContext.build/2` option `:memory_access`, set from the same decision (DP-9) |
 | `McpAllowlist` | Not consulted by the boundary; production wiring removed, module and tests kept (DP-10) |
+| Agent environment | `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` unset (`false`, as the base layer) in every agent launch through `WorkerEnvironment.scrub_inherited/1`, applied at the last hop of each launch path (DP-12) |
 
 ## Design Points
 
@@ -414,8 +429,13 @@ read-only default. `GET /api/projects/:id/context` reports `memory_access`
 agents write memory through the MCP tool; these are generated command assets
 (`foreman commands generate|install`, `:69-78`), not worker-injected, so the text is
 reworded to be conditional. `agent_commands_test.go:54,223-246` pin ids and flags
-but not descriptions; a Go test is added. (No `usage_drift` test exists in
-`packages/`; a grep for it matched nothing.)
+but not descriptions; a Go test is added. The drift test
+`packages/foreman_cli/cmd/foreman/usage_drift_test.go` exists (AGENTS.md,
+Documentation Gate): it fails the build when usage, dispatch, docs and
+`agent_commands` disagree, and `TestAgentCommandSpecsRouteToDispatchedVerbs`
+(`usage_drift_test.go:203-219`) walks `buildAgentCommandInventory`, the function
+this edit is in. It checks routing, not description text, so the edit is not
+expected to trip it, and TRD-AMC-15 requires running it with the new Go test.
 
 ### DP-10: `McpAllowlist`
 
@@ -447,6 +467,64 @@ re-pointed to pin `agent_tools/0`.
   `fmcp1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+` is added to `WorkerLogPolicy.redact/2`
   (`overwatch/worker_log_policy.ex:45-59`).
 
+### DP-12: Scrub the server's operator token and signing key from agent environments
+
+**Problem.** Agent processes start in overlay mode (`packages/jido_harness/lib/jido_harness/run/request.ex:52`, `process/spec.ex:27`): the child inherits the server's OS environment with Foreman's variables laid over it. `FOREMAN_API_TOKEN` is read from that environment into `:api_bearer_token` (`config/runtime.exs:39-41`), the value `MCP.Auth` and the `/api` plug compare a presented bearer to (`mcp/auth.ex:43-60`, `foreman_server_web/plugs/bearer_auth.ex:37-54`), and `Policy.authorized?/1` is caller-blind (`mcp/policy.ex:52-64`). A worker that presents the inherited token is therefore the unrestricted operator principal, and nothing in DP-4 or DP-6 applies to it. `SECRET_KEY_BASE` is the key behind every credential (`mac = HMAC(secret_key_base, "agent-mcp-v1:" <> run_id)`, DP-1): a worker that holds it can mint a credential for any run id, and run ids are not secret (PRD A3), so it could address another project's active run. Foreman hands neither variable to a worker (`run_executor.ex:4154-4248`); they arrive only by inheritance, in a deployment whose server exports them (PRD A10). An agent can read its own environment: `scripts/e2e/redaction_value_live.sh:10-11` and `:287` have a real pi agent run `printenv` for an injected secret.
+
+**Choice.** Put an unset entry for each of the two names under the env that every agent launch already passes to the harness, through **one** function: `WorkerEnvironment.scrub_inherited/1` (`lib/foreman_server/worker_environment.ex`), with `inherited_secret_names/0` (the two names, defined once) and a `launch_env` type. The scrub is the **base layer**: the result is `Map.merge(%{"FOREMAN_API_TOKEN" => false, "SECRET_KEY_BASE" => false}, env)`, so an explicit entry for either name wins. The marker is `false`, not `nil` and not `""`: the harness accepts both `false` and `nil` and hands erlexec `{name, false}` (`erlexec.ex:55`); `false` needs no translation and is what the harness's own tests read back as `false` (`packages/jido_harness/test/jido_harness/environment_mode_test.exs:207-211`); `nil` is the value this repo's normalizers drop (`project_environment.ex:222`) and AGENTS.md §5.4b forbids inserting for an absent key; and `""` is **not** an unset, it sets an empty string (`packages/jido_harness/deps/erlexec/README.md:258-274`).
+
+| Option | Verdict | Why |
+|---|---|---|
+| A. Overlay unset: base-layer `false` entries for the two names, in the env the launch already passes | **Chosen** | The narrowest change. The harness supports it end to end (below), `PATH`, `HOME`, provider credentials and everything else are untouched, and it is two names in one function. |
+| B. `env_mode: :replace` with an explicit allowlist | Rejected | `:replace` sends `:clear` (`erlexec.ex:59`): the child then has only what is listed. `PATH`, `HOME`, locale, proxy variables and the provider credentials the adapters read from the ambient environment (`packages/jido_harness/lib/jido_harness/adapters/claude.ex:78-86`) all vanish, and adapters branch on the mode (`adapters/zai.ex:196`, `adapters/kimi.ex:192-194`). The allowlist is a second, ever-growing policy that must track every provider CLI: that is the broader worker-environment policy (Deferred), not this slice. |
+| C. Scrub in the vendored harness (`Helpers.merge_env/3`, `CLIStream`, per adapter) | Rejected | Foreman policy (the names of Foreman's own secrets) inside a vendored general-purpose library whose Foreman-specific changes must survive every re-sync (`packages/jido_harness/UPSTREAM_PIN.md`, "Build role and sync"). It would be repeated per adapter (claude, pi, codex, gemini, amp, ...), and a new adapter would silently lack it. |
+| D. Delete the two variables from the server's own environment after boot (`System.delete_env/1`) | Rejected | Global implicit state: the secrets are read at config time by `runtime.exs:39-41` and the prod secret provider (`config_providers/secrets.ex:144-155`), so any later reader finds them gone, and nothing per launch can be tested. [INFERENCE] erlexec's children inherit the port program's environment (`packages/jido_harness/deps/erlexec/src/exec.erl:144-149`), which a later `System.delete_env/1` in the VM may not reach; not traced. |
+
+**Does an unset entry survive every hop?** Read from the code; no run of Foreman's own launch path was made. TRD-AMC-20-TEST (a real process) and TRD-AMC-21-TEST (the real worker against a stub CLI) turn the reading into proof. The harness's own proof for `nil` and `false` over a real process is `packages/jido_harness/test/jido_harness/process_manager_test.exs:437-465`.
+
+| Hop | `false` survives? | Evidence and consequence |
+|---|---|---|
+| `RunExecutor` env merge (project env, `Library.env/1`, `foreman_env`) | Not the place for it | `workflow/run_executor.ex:1511-1514`. `ProjectEnvironment.resolve/2` returns string values only and its normalizer drops `nil` (`project_environment.ex:217-227`); `Library.env/1` returns a string to string map (`library.ex:111-117`); `FOREMAN_*` is refused as a project variable (`project_environment.ex:119-123`). `Map.merge/2` itself is value-agnostic, but the scrub is not applied here. |
+| `Overwatch.build_launch_env/2` | No, for a task with no project | `overwatch.ex:184` returns `{:ok, %{}, []}` for a nil project id whatever `:env_map` the caller passed. A scrub carried in the caller's map is lost for such a run (documented as unscoped, `run_executor.ex:1646-1659`). Hence the scrub is applied at the last hop. |
+| `JidoHarnessWorker.put_env/2` | Yes | `jido_harness_worker.ex:96-111` checks `is_map/1` and `map_size/1` only; values are not inspected; a non-map raises `ArgumentError`. |
+| `Driver.run/3`, `Run.start/3`, `RunRequest.new/1` | Yes | `driver.ex:19`; `request.ex:51`: `env` is `Zoi.map(Zoi.string(), Zoi.any())`. |
+| Adapter env merge | Yes | `Helpers.merge_env/3` is `Map.merge/2` (`adapters/helpers.ex:36-41`); pi's `prepare_request/1` is `Map.put/3` (`adapters/pi.ex:227-230`); the claude adapter calls `merge_env` (`adapters/claude.ex:60`). |
+| `ProcessSpec.new/1` | Yes | `valid_env?/1` accepts a string, `false` or `nil` (`process/spec.ex:118-119`, `:150`). |
+| `Erlexec.add_env/3` | Yes | `nil` becomes `false`, `false` passes through, `:clear` is added only in `:replace` mode (`process/driver/erlexec.ex:52-61`); erlexec unsets `{name, false}` (`deps/erlexec/src/exec.erl:144-149`, `:294-299`). |
+| Jobsite `AgentRunner.merged_env/2` and `stringify_map/1` | **No** | `agent_runner.ex:143-151`: `to_string(nil)` is `""` and `to_string(false)` is `"false"`, so the variable would be **set** (empty, or the text `false`), not unset. The scrub is applied after it (TRD-AMC-22). |
+| Typespecs | **A type change is needed** | `WorkerEnvironment.env_map` (`worker_environment.ex:14`), `BackendAdapter.env_map` (`agent_runtime/backend_adapter.ex:58`), `ProjectEnvironment.resolved` (`project_environment.ex:39-42`) and `Library.env/1` (`library.ex:111`) are string to string. A launch env that carries unset entries is a different type, `WorkerEnvironment.launch_env` (string or `false` values), added in TRD-AMC-20; the project-env types are unchanged. |
+
+**Where it is applied: every place the server composes an agent process env.** The scrub goes at the **last Foreman hop** of each path, never in the caller's map.
+
+| Launch path | Scrub | Site | Why |
+|---|---|---|---|
+| Workflow phase, every kind. A `command:` phase is **not** a separate path: it lowers to the same `:agent` step on `Jobsite.Runners.Overwatch` with the launch `RunExecutor.build_agent_launch` builds (`workflow/lowering.ex:27-31`, `run_executor.ex:1453-1550`); a `bash:` phase is refused at lowering (`lowering.ex:51-55`) and never launches | Applies | `JidoHarnessWorker.put_env/2` | The one hop where the env becomes the driver's `:env` (AGENTS.md, Invariants, names it as the place to read first); holds for a task with no project |
+| Jobsite scripted launch, `Runners.Overwatch.scripted_launch/4` (`jobsite/runners/overwatch.ex:259-291`) | Applies | The same hop | It dispatches through `Overwatch.start_phase/2` and the same worker (`jobsite/runners/overwatch.ex:195`); no extra wiring |
+| Jobsite direct runner, `Runners.Direct` then `AgentRunner` | Applies | `AgentRunner.run_iteration_once/4`, on the env handed to `build_request/10`, after `agent_cli_path/3` | A docker sandbox's agent runs in a container whose env is explicit (`docker exec --env-file`, `jobsite/sandboxes/docker.ex:157-173`; never the host's, `test/foreman_server/jobsite/sandboxes/docker_env_test.exs:2-8`), so there the scrub only reaches the host-side shim and is not needed for the agent; the `host` sandbox (`allow_host_sandbox`, `config/runtime.exs:11-12`) runs the agent as a host process and needs it |
+| Coordinator turn, `Coordinator.Agent.Harness.build_request/2` (`coordinator/agent/harness.ex:77-102`) | Applies | `build_request/2` attrs | A separate path: `RunRequest.new` directly, overlay, no env. It holds no credential and is meant to have no tools beyond reading (`harness.ex:7-10`), but that isolation is by tool restriction (`sandbox_mode: :read_only`; pi `--tools read,grep,find,ls`, `adapters/pi.ex:66`, `:517-518`; claude sandbox settings, `adapters/claude.ex:152-157`), not by environment, and the cost is one argument |
+| Review evaluator, `Review.Evaluator.Agent.new_request/3` (`review/evaluator/agent.ex:215-235`) | Applies | `new_request/3` attrs | The same shape: a read-only reviewer over an archived session (`agent.ex:2-5`) |
+| `JidoHarness.Session.start/2` (`agent_runtime/jido_harness/session.ex:54-55`) | Not applicable today | none | No `lib/` module calls it (grep). The architecture test fails if one appears, until it is wired |
+| Project `setup_script` (`project_setup.ex:59-84`) | Out of scope | none | Operator-authored code run on the server host, not an agent (`aggregates/project/environment.ex:10-14`) |
+
+**Typed-boundary handling (AGENTS.md §5).** One function, called from each site; nothing is duplicated.
+
+- **§5.7, never duplicate a boundary across transports and adapters.** `scrub_inherited/1` is the only scrub. The two names live once, in `inherited_secret_names/0`. The workflow door, both jobsite paths, the coordinator and the review evaluator call it; none builds its own list, and each site is tested (TRD-AMC-21-TEST, 22-TEST, 23-TEST).
+- **§5.5, enforce where the compiler cannot.** An architecture test pins the `lib/` files that start a harness run or build a `RunRequest` and requires each that composes an env to call `scrub_inherited/1`; a new launch path fails until it is wired (TRD-AMC-23-TEST, mutation M16).
+- **§5.1.** The policy is a named list and a named type, not a free map; the unset marker is a member of `launch_env`.
+- **§5.2.** `scrub_inherited/1` matches maps only (a non-map is a `FunctionClauseError`); `put_env/2` keeps its raise on a non-map `:env_map` (`jido_harness_worker.ex:107-109`); no catch-all, no `rescue`.
+- **§5.3.** An absent or empty caller env is "nothing to inject from the caller" (`test/foreman_server/overwatch/adapters/jido_harness_worker_env_test.exs:40-46`) and is still scrubbed; a non-map is malformed and raises.
+- **§5.4 and §5.4b.** Env names are binaries at this boundary, with no atoms and no dual-key reads; the marker is `false`, so no `nil` is inserted for an absent key.
+- **§5.6.** The harness contract (`{name, false}` unsets) was read at `erlexec.ex:52-61` and `deps/erlexec/src/exec.erl:144-149` and is pinned by a real-process test in TRD-AMC-20-TEST, not only by the harness's own test.
+
+**Precedence.** An explicit entry wins over the scrub. For `FOREMAN_API_TOKEN` an explicit entry can only come from a jobsite spec's operator-allowlisted `agent.env` (`FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST`, `config/runtime.exs:13-14`): a project cannot store a `FOREMAN_*` name (`project_environment.ex:119-123`, `:184`). For `SECRET_KEY_BASE`, a project may store its own value as a secret (a secret-looking name is refused as a plain variable, `aggregates/project/environment.ex:139-140`) and its agents keep receiving it; only the server's inherited value is removed.
+
+**Consequences.**
+
+- An agent that today calls the `foreman` CLI, `/api` or `/mcp` with the server's inherited token gets 401 instead: that is the point. Nothing in `lib/` or the bundled workflows relies on it: `FOREMAN_API_TOKEN` appears in `lib/` only in the bearer plug and the jobsite template's text (`jobsite/template/script.ex:10`, `:136`), and `priv/defaults/workflows` calls no CLI. The `foreman-jobsite-template` skill documents `export FOREMAN_API_TOKEN` for the operator's shell (`priv/defaults/skills/foreman-jobsite-template/SKILL.md:102`). TRD-AMC-19 re-reads the e2e scripts that boot a server with the token exported (`scripts/e2e/acceptance-start-server.sh:4`).
+- There is **no kill switch**: a hardening that can be switched off is configurability nobody asked for (AGENTS.md rule 3). The scrub is also independent of `agent_credentials` (DP-8): it applies whether or not a credential is offered, and the launch options TRD-AMC-11 builds are unaffected because the scrub is applied downstream, in the worker.
+- Existing tests: `jido_harness_worker_env_test.exs:30-46` change intent (the env is now the caller's plus the scrub; absent or empty now yields the scrub, not nothing); `overwatch_test.exs:278`, `:317` and `:339` stay unedited and prove the scrub is applied downstream of `Overwatch`.
+- Under `allow_insecure_local: true` the operator is "no token" (PRD D3): the scrub neither changes nor can change that (Residual Risks).
+
 ## System Architecture Design
 
 ### Components
@@ -463,6 +541,10 @@ re-pointed to pin `agent_tools/0`.
 | `MCP.AgentAccess` | Launch decision, config entry, merge, availability log | New |
 | `Workflow.RunExecutor` | Compute access once; merge options; pass access to context | Changed |
 | `ProjectContext` / `ProjectMemory.Guidance` | `:memory_access` derivation | Changed |
+| `WorkerEnvironment` | `scrub_inherited/1`, `inherited_secret_names/0`, `launch_env` type: the one scrub | Changed |
+| `Overwatch.Adapters.JidoHarnessWorker` | `put_env/2` always applies the scrub at the supervised-worker hop | Changed |
+| `Jobsite.AgentRunner` | Scrubs the env handed to `build_request/10` | Changed |
+| `Coordinator.Agent.Harness`, `Review.Evaluator.Agent` | Pass the scrubbed env in their `RunRequest` | Changed |
 
 ### Data flow
 
@@ -479,6 +561,7 @@ flowchart LR
   T --> M[ProjectMemory via CommandGateway]
   RE[RunExecutor] -- "AgentAccess.for_launch" --> W
   RE -- "memory_access" --> PC[ProjectContext.build]
+  L[Agent launch sites] -- "env via scrub_inherited" --> W
 ```
 
 ### Integration points
@@ -487,6 +570,7 @@ flowchart LR
 - **Claude CLI:** `--mcp-config` HTTP entry with headers; `--allowedTools` with exact names (documentation only, no live run until the smoke task).
 - **ProjectionStore:** one `run/1` call per agent authentication.
 - **CommandGateway:** unchanged memory write path (`project_memory.ex:172-188`).
+- **Harness overlay env (erlexec):** `{name, false}` unsets an inherited variable; `:clear` only in `:replace` mode (DP-12).
 
 ## Threat Model
 
@@ -495,14 +579,14 @@ flowchart LR
 - **Project memory content** — integrity (it is rendered into every later agent
   prompt) and confidentiality of project data readable through the agent set.
 - **The per-run credential** — a write capability on one project for the run's life.
-- **The operator token** and **`secret_key_base`** — the keys behind every credential.
+- **The operator token** and **`secret_key_base`** — the keys behind every credential. Both reach agents only by inheritance from the server's environment (DP-12).
 - **The projection store** — availability of the liveness check.
 
 ### Trust Boundaries
 
 - **TB1** — the Claude worker process to the `/mcp` endpoint (loopback HTTP).
 - **TB2** — the agent principal to a project's data (cross-project).
-- **TB3** — the server to the worker: how the credential is handed over (argv, config).
+- **TB3** — the server to the worker: how the credential is handed over (argv, config) and what the worker inherits (its environment, DP-12).
 - **TB4** — the authenticator to the projection store.
 - **TB5** — the operator to `/mcp` (must not regress).
 
@@ -528,17 +612,36 @@ flowchart LR
 | TB1 | Denial | Denial flood with bad tokens | L/L | Constant-time check is cheap; agent-shaped tokens cost one projection call only if the MAC is valid | TRD-AMC-3 |
 | TB3 | Denial | `secret_key_base` rotation invalidates every credential | L/M | Documented; workers fail closed and report the refusal | TRD-AMC-16 |
 | TB1 | Spoofing | Enforcement removed or bypassed by a later change | M/H | Mutation proof M1 and the architecture test | TRD-AMC-18 |
+| TB3 | Elevation | A worker inherits the server's ambient `FOREMAN_API_TOKEN` and presents it to `/mcp` as an operator principal, bypassing the agent scope | M/H | Both names unset in every agent launch through one function, at the last hop of each path; exact-env and real-process tests; mutation proofs M12 to M16 | TRD-AMC-20, 21, 22, 23 |
+| TB3 | Elevation | A worker inherits `SECRET_KEY_BASE`, mints a credential for another run id (run ids are not secret, PRD A3) and addresses another project | L/H | The same scrub | TRD-AMC-20, 21 |
+| TB3 | Elevation | A later change adds an agent launch path that skips the scrub, or applies it in a map that is dropped (a task with no project) | M/H | Applied at the last hop, not in the caller's map; an architecture test pins the launch sites | TRD-AMC-21, 23 |
+| TB3 | Information | Any other secret the server holds in its environment (LANGFUSE keys, GitHub tokens, webhook and notification secrets) is inherited by agents | M/M | Accepted and Deferred: the broader worker-environment policy | Residual |
+| TB1 | Elevation | A worker omits `Authorization` under `allow_insecure_local: true` and is the operator by that posture's definition | M/H | None here: a posture, not a secret. The confinement holds in token-enforcing deployments | Residual |
 
 ### Residual Risks
 
-- **Inherited server environment.** Workers run with `env_mode: :overlay`
+- **Other inherited server secrets.** Workers run with `env_mode: :overlay`
   (`packages/jido_harness/lib/jido_harness/run/request.ex:52`, `process/spec.ex:27`)
-  and so inherit the server's OS environment. That can include `FOREMAN_API_TOKEN`
-  (read at `config/runtime.exs:39-41`), which is operator-level `/mcp` access, and
-  possibly `SECRET_KEY_BASE` ([INFERENCE]: that the production secret provider
-  surfaces it in the process environment was not traced; `config/prod.exs:47-53`).
-  The scoped credential therefore confines the MCP channel, not the agent: it is not
-  a sandbox. **Env scrubbing is the recommended next hardening.**
+  and inherit the server's OS environment. DP-12 unsets the two variables that
+  defeat this design in every agent launch: `FOREMAN_API_TOKEN` (the operator's
+  `/mcp` identity, `config/runtime.exs:39-41`) and `SECRET_KEY_BASE` (the key every
+  credential is minted from), so the credential's memory-only guarantee now holds
+  against the agent's own environment. **Any other secret the server holds in its
+  environment is still inherited**: `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`
+  (`config/prod.exs:84-85`), the webhook and notification secrets
+  (`config/runtime.exs:17-24`), a GitHub or provider token the operator exported.
+  Which of them a worker may keep is a policy question, not a blanket scrub: workers
+  legitimately inherit provider credentials
+  (`packages/jido_harness/lib/jido_harness/adapters/claude.ex:78-86`). It is the
+  deferred follow-up. The scoped credential confines the MCP channel, not the agent:
+  it is not a sandbox.
+- **Absent token under `allow_insecure_local: true`.** In that posture, which
+  `config/dev.exs:49-56` sets, a request without a token is the operator
+  (`mcp/auth.ex:35-41`; PRD D3, AC-003-1), so a worker that omits `Authorization` is
+  the operator whatever its environment holds. The scrub removes a secret; it does
+  not close a posture the operator opened. The confinement is a property of
+  token-enforcing deployments (`allow_insecure_local: false`, the default in
+  `config/config.exs:66-71`).
 - **Argv exposure.** The bearer appears in the `claude` command line, readable by
   other local processes of the same user.
 - **Same OS access.** The agent has the same file access as before; memory poisoning
@@ -639,11 +742,12 @@ endpoint's exposure is unchanged until PR 3.
   - Implementation AC:
     - [ ] Given an agent of project P and `allow_workflow_writes: false`, when it writes a topic for P, then `ProjectMemoryWritten` is recorded with author kind `agent` and author reference equal to the principal's run id; and forgetting records the same.
     - [ ] Given the same agent, when it calls any agent-set tool with another project's id, then the result is `POLICY_REFUSED` and no store or projection is read or written.
+    - [ ] Given the same agent, when it calls `foreman_project_memory_write` or `foreman_project_memory_forget` with another project's id, then the result is `POLICY_REFUSED`, no topic file is created, changed or removed, and no `ProjectMemoryWritten` or `ProjectMemoryForgotten` event is recorded for that project.
     - [ ] Given the same agent, when `project_id` is absent, blank or a non-string, then the result is `INVALID_PARAMS`.
     - [ ] Given a memory write supplying `run_id: "other"`, when the event is recorded, then the author reference is the principal's run id.
     - [ ] Given the operator principal and `allow_workflow_writes: false`, when it writes or forgets a topic, then it is refused with `POLICY_REFUSED` exactly as before.
     - [ ] Given `tool_foreman_project_memory_write/1` and `_forget/1`, when read, then neither calls `authorize_write_tool/1`; every other in-body gate is untouched.
-- [ ] **TRD-AMC-7-TEST** — Tests: own-project write and forget under writes-off, cross-project refusal on all 17 tools with no store read, absent and malformed `project_id`, `run_id` override, operator refusal unchanged, and re-pointing the existing Tools-level refusal test through `Dispatch.call/4` [verifies TRD-AMC-7] [satisfies REQ-004, REQ-006, REQ-008] [depends: TRD-AMC-7] (3.5h)
+- [ ] **TRD-AMC-7-TEST** — Tests: own-project write and forget under writes-off, cross-project refusal on all 17 tools with no store read (a foreign-project memory write and forget in particular: no topic file created, changed or removed and no memory event recorded for that project), absent and malformed `project_id`, `run_id` override, operator refusal unchanged, and re-pointing the existing Tools-level refusal test through `Dispatch.call/4` [verifies TRD-AMC-7] [satisfies REQ-004, REQ-006, REQ-008] [depends: TRD-AMC-7] (3.5h)
   - Target Files: `packages/foreman_server/test/foreman_server/mcp/agent_scope_test.exs`, `packages/foreman_server/test/foreman_server/mcp/tools_project_memory_test.exs`
 - [ ] **TRD-AMC-8** — Principal-aware visibility on both transports: `handle_request/2` overrides in `MCP` and `MCP.Stdio`, `Dispatch.handle_request/4` setting and restoring `frame.tools`, `Dispatch.components/1`, static `__components__(:tool)` returning `[]`; migrate the test lookups [satisfies REQ-007] [depends: TRD-AMC-6] (5h)
   - Validates PRD ACs: AC-007-1, AC-007-2, AC-007-3
@@ -668,16 +772,64 @@ endpoint's exposure is unchanged until PR 3.
 - [ ] **TRD-AMC-9-TEST** — Assertions that the application no longer starts or seeds the allowlist, that `agent_tools/0` is the single list, and that the inventory test pins it [verifies TRD-AMC-9] [satisfies REQ-005] [depends: TRD-AMC-9] (1.5h)
   - Target Files: `packages/foreman_server/test/foreman_server/mcp/tool_inventory_test.exs`, `packages/foreman_server/test/foreman_server/mcp_supervisor_test.exs`, `packages/foreman_server/test/foreman_server/agents/mcp_allowlist_test.exs`
 
-### PR 3: Injection — Claude workflow phases receive the scoped server
+### PR 3: Injection and scrub — Claude workflow phases receive the scoped server, and no agent inherits the operator token
 
-**Shippable State:** With MCP enabled and the new switch on, a Claude workflow
-phase launches with a `foreman_agent` HTTP server carrying that run's credential
-and the four memory tools pre-approved, merged with the in-flight approval hook
-whichever is built first. With the feature unavailable, launch options are
-byte-for-byte what they were and one boot log line says why. Pi and jobsite
-launches carry nothing. This PR is shippable only because PR 2's enforcement is
-already live: the endpoint is never open to a worker.
+**Shippable State:** No agent process the server launches inherits `FOREMAN_API_TOKEN`
+or `SECRET_KEY_BASE`: one function, `WorkerEnvironment.scrub_inherited/1`, is applied
+at the supervised-worker hop (workflow phases of every kind, with or without a
+project, and the jobsite scripted launch), at the jobsite direct runner, and at the
+coordinator and review-evaluator launches, and a test pins the set of launch sites.
+With MCP enabled and the new switch on, a Claude workflow phase launches with a
+`foreman_agent` HTTP server carrying that run's credential and the four memory tools
+pre-approved, merged with the in-flight approval hook whichever is built first. With
+the feature unavailable, the options built for the launch are byte-for-byte what they
+were and one boot log line says why; the scrub does not depend on that switch. Pi and
+jobsite launches carry no credential. This PR is shippable only because PR 2's
+enforcement is already live and because the scrub lands in it first: no worker is
+ever handed a credential while it can still present the operator token, and the
+endpoint is never open to a worker.
 
+- [ ] **TRD-AMC-20** — Add the one scrub to `WorkerEnvironment`: `scrub_inherited/1`, `inherited_secret_names/0` (`FOREMAN_API_TOKEN` and `SECRET_KEY_BASE`, defined once) and the `launch_env` type (string or `false` values); the unset entries are the base layer and the caller's entries win [satisfies REQ-017] (1h)
+  - Validates PRD ACs: AC-017-4
+  - Target Files: `packages/foreman_server/lib/foreman_server/worker_environment.ex`
+  - Implementation AC:
+    - [ ] Given any string-keyed env map, when `scrub_inherited/1` is called, then the result holds `false` for `FOREMAN_API_TOKEN` and for `SECRET_KEY_BASE` and every other entry of the input unchanged.
+    - [ ] Given an input that holds an explicit string for either name, when `scrub_inherited/1` is called, then that string is kept.
+    - [ ] Given a non-map, when `scrub_inherited/1` is called, then it raises `FunctionClauseError` and returns no env.
+    - [ ] Given the codebase, when searched, then the two names are defined once, in `inherited_secret_names/0`, and `launch_env` is the only env type that admits `false`.
+- [ ] **TRD-AMC-20-TEST** — Unit tests for the function (both names unset, every other entry untouched, explicit entry wins, idempotent, non-map raises) and a real-process test that sets both variables in the test VM, starts a child through the harness with `env_mode: :overlay` and the scrubbed env, and reads both as unset while `PATH`, `HOME` and a `FOREMAN_RUN_ID` survive (modelled on `packages/jido_harness/test/jido_harness/process_manager_test.exs:437-465`); `async: false`, previous values restored in `on_exit` [verifies TRD-AMC-20] [satisfies REQ-017] [depends: TRD-AMC-20] (2h)
+  - Target Files: `packages/foreman_server/test/foreman_server/worker_environment_scrub_test.exs`
+- [ ] **TRD-AMC-21** — Scrub at the supervised-worker hop: `JidoHarnessWorker.put_env/2` always sets `driver_opts[:env]` to `scrub_inherited/1` of the caller's `:env_map` (an absent or empty `:env_map` still yields the scrub; a non-map still raises), which covers workflow phases of every kind, with or without a project, and the jobsite scripted launch; amend its comment and the `:env_map` docs to the `launch_env` type [satisfies REQ-017] [depends: TRD-AMC-20] (1.5h)
+  - Validates PRD ACs: AC-017-1, AC-017-2, AC-017-4, AC-017-5, AC-017-6
+  - Target Files: `packages/foreman_server/lib/foreman_server/overwatch/adapters/jido_harness_worker.ex`
+  - Implementation AC:
+    - [ ] Given a worker started with an `:env_map`, when `init/1` runs, then `driver_opts[:env]` holds every entry of that map unchanged plus `false` for `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE`.
+    - [ ] Given a worker started with an absent or empty `:env_map`, when `init/1` runs, then `driver_opts[:env]` holds exactly the two `false` entries.
+    - [ ] Given a worker started with a non-map `:env_map`, when `init/1` runs, then it raises `ArgumentError`, as before.
+    - [ ] Given a task with no project, whose `:env_map` `Overwatch.start_phase/2` replaces with `%{}`, when its worker starts, then the driver env still carries both `false` entries.
+    - [ ] Given `Overwatch.start_phase/2`, when it returns, then its `metadata.env_map` and the adapter's `:env_map` are unchanged by this feature (the scrub is downstream of `Overwatch`).
+    - [ ] Given a worker started with the scrubbed env, `:api_bearer_token` configured and `allow_insecure_local: false`, when every value of the env the worker was handed is presented to `MCP.Auth.authenticate/1`, then none returns an operator principal; and the server's own process environment and `:api_bearer_token` are unchanged, so a client presenting that token still authenticates as the operator.
+- [ ] **TRD-AMC-21-TEST** — Re-point the three tests in `jido_harness_worker_env_test.exs` (the caller's env forwarded plus the two `false` entries; an absent or empty `:env_map` now yields exactly the scrub; a non-map still raises); add a real-worker test that runs the claude adapter against a stub CLI which writes its own environment to a file (the pattern of `jido_harness_worker_cost_test.exs:35-45`), with both variables set in the test VM, and asserts neither appears while `PATH`, `HOME`, `FOREMAN_RUN_ID` and a project variable do; in the same test, with `:api_bearer_token` set to the exported token's value and `allow_insecure_local: false`, present every value of the captured environment to `MCP.Auth.authenticate/1` and assert that none returns an operator principal while the token itself, presented as the control that lets the assertion fail, does, and that the test VM's own environment and config are unchanged afterwards; add the no-project and `command:`-phase launches (a nil project hands the adapter an empty `:env_map`, and the worker still scrubs); leave `overwatch_test.exs:278,317,339` unedited as the proof that the scrub is not applied upstream [verifies TRD-AMC-21] [satisfies REQ-017] [depends: TRD-AMC-21] (3h)
+  - Target Files: `packages/foreman_server/test/foreman_server/overwatch/adapters/jido_harness_worker_env_test.exs`, `packages/foreman_server/test/foreman_server/overwatch/adapters/jido_harness_worker_scrub_test.exs`, `packages/foreman_server/test/foreman_server/overwatch_test.exs`, `packages/foreman_server/test/foreman_server/workflow/run_executor_command_test.exs`
+- [ ] **TRD-AMC-22** — Scrub at the jobsite direct door: `AgentRunner.run_iteration_once/4` hands `scrub_inherited/1` of the env to `build_request/10`, after `sandbox.provider.agent_cli_path/3` has consumed the plain env (so the Docker env-file keeps string values and `merged_env/2` and `stringify_map/1` are unchanged) [satisfies REQ-017] [depends: TRD-AMC-20] (1h)
+  - Validates PRD ACs: AC-017-2
+  - Target Files: `packages/foreman_server/lib/foreman_server/jobsite/agent_runner.ex`
+  - Implementation AC:
+    - [ ] Given a jobsite iteration on a host sandbox, when its `RunRequest` is built, then `request.env` holds the sandbox and `agent.env` entries unchanged plus `false` for the two names.
+    - [ ] Given a jobsite iteration on a Docker sandbox, when the shim is written, then the env-file holds exactly what it held before this change (string entries only, no `false` and no empty value for the two names), and the request's env carries the two `false` entries.
+    - [ ] Given a spec whose allowlisted `agent.env` holds an explicit value for either name, when the request is built, then that value is kept.
+    - [ ] Given `merged_env/2` and `stringify_map/1`, when read after the change, then they are unchanged.
+- [ ] **TRD-AMC-22-TEST** — Recording-provider-adapter tests in the pattern of `jobsite/project_context_test.exs` (a real `RunRequest` of a jobsite iteration on a host sandbox): the request's env map exactly, explicit entry wins, and the Docker case against the stand-in `fake_docker.sh` showing an env-file without `false` or empty values [verifies TRD-AMC-22] [satisfies REQ-017] [depends: TRD-AMC-22] (2h)
+  - Target Files: `packages/foreman_server/test/foreman_server/jobsite/agent_env_scrub_test.exs`
+- [ ] **TRD-AMC-23** — Scrub the two remaining separate launch paths: `Coordinator.Agent.Harness.build_request/2` and `Review.Evaluator.Agent.new_request/3` pass `env` built by `scrub_inherited/1` of an empty map [satisfies REQ-017] [depends: TRD-AMC-21, TRD-AMC-22] (1h)
+  - Validates PRD ACs: AC-017-3
+  - Target Files: `packages/foreman_server/lib/foreman_server/coordinator/agent/harness.ex`, `packages/foreman_server/lib/foreman_server/review/evaluator/agent.ex`
+  - Implementation AC:
+    - [ ] Given a coordinator turn request, when `build_request/2` returns, then `request.env` is exactly the two `false` entries.
+    - [ ] Given a review evaluator request, when `build_request/3` returns, then `request.env` is exactly the two `false` entries.
+    - [ ] Given the coordinator's pi isolation options and every other field of both requests, when compared with before, then they are unchanged.
+- [ ] **TRD-AMC-23-TEST** — Request tests for both (the exact env and the unchanged fields) and a launch-site architecture test: the `lib/` files that call `Run.start`, `DetachedRun.start_run`, `RunRequest.new` or `JidoHarness.Session.start` are exactly the pinned set (`driver.ex`, `detached_run.ex`, `session.ex`, `jobsite/agent_runner.ex`, the coordinator harness, the review evaluator), and each file that composes an agent env (`JidoHarnessWorker`, `AgentRunner`, the coordinator harness, the review evaluator) calls `WorkerEnvironment.scrub_inherited/1`; a new launch site fails the test until it is wired [verifies TRD-AMC-23] [satisfies REQ-017] [depends: TRD-AMC-23] (2h)
+  - Target Files: `packages/foreman_server/test/foreman_server/coordinator/agent_harness_test.exs`, `packages/foreman_server/test/foreman_server/review/evaluator_agent_test.exs`, `packages/foreman_server/test/foreman_server/agent_launch_scrub_architecture_test.exs`
 - [ ] **TRD-AMC-10** — Add `MCP.AgentAccess`: `for_launch/3`, the `mcp_config` entry, `allowed_tools`, `merge_into/2`, `memory_access/1`, the boot-time availability log, and the `:mcp, agent_credentials` switch [satisfies REQ-009, REQ-011] [depends: TRD-AMC-2, TRD-AMC-7, TRD-AMC-8, TRD-AMC-9] (4.5h)
   - Validates PRD ACs: AC-009-1, AC-011-1, AC-011-2
   - Target Files: `packages/foreman_server/lib/foreman_server/mcp/agent_access.ex`, `packages/foreman_server/lib/foreman_server/application.ex`, `packages/foreman_server/config/config.exs`
@@ -689,7 +841,7 @@ already live: the endpoint is never open to a worker.
     - [ ] Given MCP enabled but agent credentials unusable, when the application boots, then one `Logger.warning` names the reason; given MCP disabled by config, one `Logger.info`; and `application.ex` no longer references the allowlist seed.
 - [ ] **TRD-AMC-10-TEST** — Tests for every availability branch, the config entry shape, the four exact tool names, the merge in both orders, token-free inspection and the boot log (captured, not sleeping) [verifies TRD-AMC-10] [satisfies REQ-009, REQ-011] [depends: TRD-AMC-10] (3h)
   - Target Files: `packages/foreman_server/test/foreman_server/mcp/agent_access_test.exs`
-- [ ] **TRD-AMC-11** — Wire door A: compute the access once in `RunExecutor` before `driver_opts`, merge `mcp_config` as one map with the in-flight hook (replacing the `Keyword.merge` replacement), add `allowed_tools`, leave non-Claude phases untouched [satisfies REQ-009] [depends: TRD-AMC-10] (4h)
+- [ ] **TRD-AMC-11** — Wire door A: compute the access once in `RunExecutor` before `driver_opts`, merge `mcp_config` as one map with the in-flight hook (replacing the `Keyword.merge` replacement), add `allowed_tools`, leave non-Claude phases untouched [satisfies REQ-009] [depends: TRD-AMC-10, TRD-AMC-21] (4h)
   - Validates PRD ACs: AC-009-1, AC-009-2, AC-009-3, AC-009-4
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`
   - Implementation AC:
@@ -739,15 +891,16 @@ unchanged, and the point-in-time TRD carries a forward-pointer.
     - [ ] Given the codebase, when `ProjectContext.build` call sites are listed, then each passes a `memory_access` derived from the launch's access or relies on the read-only default, and none builds guidance text itself.
 - [ ] **TRD-AMC-14-TEST** — Tests through the launch harness for credential and no-credential, pi, jobsite (recording-adapter harness), coordinator, and the preview endpoint field [verifies TRD-AMC-14] [satisfies REQ-010, REQ-012, REQ-013] [depends: TRD-AMC-14] (3h)
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/agent_mcp_launch_test.exs`, `packages/foreman_server/test/foreman_server/jobsite/project_context_test.exs`, `packages/foreman_server/test/foreman_server_web/controllers/project_context_controller_test.exs`
-- [ ] **TRD-AMC-15** — Reword the `foreman-project-memory-list` description in `agent_commands.go` so it no longer promises the MCP write tool unconditionally [satisfies REQ-013] [depends: TRD-AMC-11] (1.5h)
+- [ ] **TRD-AMC-15** — Reword the `foreman-project-memory-list` description in `agent_commands.go` so it no longer promises the MCP write tool unconditionally, and run `usage_drift_test.go` [satisfies REQ-013] [depends: TRD-AMC-11] (1.5h)
   - Validates PRD ACs: AC-013-1
   - Target Files: `packages/foreman_cli/cmd/foreman/agent_commands.go`
   - Implementation AC:
     - [ ] Given `foreman commands inventory`, when the memory-list entry is read, then its description is conditional on the launch having the scoped MCP server and does not name the tool as always available.
     - [ ] Given the Go command set, when ids and flags are compared with the existing pins, then they are unchanged.
-- [ ] **TRD-AMC-15-TEST** — Go test pinning the memory-list description (absence of the unconditional claim, presence of the conditional wording) beside the existing id and flag pins [verifies TRD-AMC-15] [satisfies REQ-013] [depends: TRD-AMC-15] (1.5h)
+    - [ ] Given `packages/foreman_cli/cmd/foreman/usage_drift_test.go`, when `go test ./cmd/foreman` is run from `packages/foreman_cli` after the edit, then its drift tests pass, `TestAgentCommandSpecsRouteToDispatchedVerbs` included (the edit is inside `buildAgentCommandInventory`).
+- [ ] **TRD-AMC-15-TEST** — Go test pinning the memory-list description (absence of the unconditional claim, presence of the conditional wording) beside the existing id and flag pins, run together with `usage_drift_test.go` [verifies TRD-AMC-15] [satisfies REQ-013] [depends: TRD-AMC-15] (1.5h)
   - Target Files: `packages/foreman_cli/cmd/foreman/agent_commands_test.go`
-- [ ] **TRD-AMC-16** — Documentation gate: update every document in the gate list below; add the forward-pointer beside the recorded gap in the point-in-time TRD [satisfies REQ-015] [depends: TRD-AMC-14, TRD-AMC-15] (5h)
+- [ ] **TRD-AMC-16** — Documentation gate: update every document in the gate list below, the scrub statement included; add the forward-pointer beside the recorded gap in the point-in-time TRD [satisfies REQ-015] [depends: TRD-AMC-14, TRD-AMC-15, TRD-AMC-23] (6h)
   - Validates PRD ACs: AC-015-1, AC-015-2
   - Target Files: `CLAUDE.md`, `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `docs/lessons/claude-projects-architecture.md`, `docs/lessons/phase-execution-and-pr-mechanics.md`, `docs/plans/inflight-approvals.md`, `docs/TRD/completed/TRD-2026-4212be7e-jido-migration-VERIFIED.md`
   - Implementation AC:
@@ -755,38 +908,44 @@ unchanged, and the point-in-time TRD carries a forward-pointer.
     - [ ] Given the VERIFIED TRD, when its recorded gap line is read, then a forward-pointer note follows it and no original text is rewritten.
     - [ ] Given `docs/cli-reference.md`, when the MCP config table is read, then it lists `agent_credentials`, the principals, the agent set and the `foreman_agent` server key.
     - [ ] Given the docs, when searched for the claim that agents always write memory through MCP, then no unconditional statement remains.
+    - [ ] Given `docs/user-guide.md` (the Project environment paragraph and the Delivery row of the environment table), `docs/lessons/phase-execution-and-pr-mechanics.md` (the env-hop narrative) and `CLAUDE.md` (the Env contract line), when read, then each states that no agent inherits the server's `FOREMAN_API_TOKEN` or `SECRET_KEY_BASE`, that a project's own `SECRET_KEY_BASE` secret is still delivered, and that the broader policy is a follow-up.
 
 ### PR 5: Closing — live proof and mutation proofs
 
 **Shippable State:** The boundary has been exercised against a real server with
-the matrix of operator, agent, absent, wrong and ended credentials; every mutation
-in the proof table has been shown to fail the test that guards it and to pass again
-when reverted; the new test files are stable across seeds; the full ExUnit and Go
-suites pass.
+the matrix of operator, agent, absent, wrong and ended credentials, and, where a
+real agent CLI exists, a worker launched by a server that exports the operator
+token and `SECRET_KEY_BASE` has been shown to hold neither; every mutation in the
+proof table has been shown to fail the test that guards it and to pass again when
+reverted; the new test files are stable across seeds; the full ExUnit and Go suites
+pass.
 
-- [ ] **TRD-AMC-17** — Live smoke: `scripts/e2e/mcp_agent_credential.sh`, modelled on `mcp_schedule_update.sh`, running the credential matrix against a server started per `docs/dev-setup.md` [satisfies REQ-016] [depends: TRD-AMC-11, TRD-AMC-12, TRD-AMC-14] (4h)
-  - Validates PRD ACs: AC-016-1
+- [ ] **TRD-AMC-17** — Live smoke: `scripts/e2e/mcp_agent_credential.sh`, modelled on `mcp_schedule_update.sh`, running the credential matrix against a server started per `docs/dev-setup.md`, plus the worker-environment check [satisfies REQ-016, REQ-017] [depends: TRD-AMC-11, TRD-AMC-12, TRD-AMC-14, TRD-AMC-21] (4.5h)
+  - Validates PRD ACs: AC-016-1, AC-017-1, AC-017-5, AC-017-6
   - Target Files: `scripts/e2e/mcp_agent_credential.sh`
   - Implementation AC:
     - [ ] Given a running server with the live node's `:mcp` env and `:api_bearer_token` set through `rpc`, when `/mcp` is called with the operator token, then operator-only tools answer as before.
-    - [ ] Given an agent token minted on the live node for an active run, when `tools/list` and a memory write for its own project are called, then the list is the agent set and the write succeeds; a settings write and another project's id are refused.
+    - [ ] Given an agent token minted on the live node for an active run, when `tools/list` and a memory write for its own project are called, then the list is the agent set and the write succeeds; a settings write is refused.
+    - [ ] Given the same agent token and a second registered project, when it calls `foreman_project_memory_write` with the second project's id, then the answer is `POLICY_REFUSED` and the second project's memory topics, read with the operator token, are unchanged.
     - [ ] Given no token and a wrong token, when `/mcp` is called, then each answers 401.
     - [ ] Given the same agent token after `run.cancel` on its run, when `/mcp` is called, then it answers 401.
     - [ ] Given a one-phase Claude run when a `claude` CLI is available, when it starts, then its init output lists no MCP server error for `foreman_agent` [INFERENCE: depends on an installed CLI; skipped with an explicit message otherwise].
-- [ ] **TRD-AMC-18** — Mutation proofs: apply each mutation in the proof table locally, run the named tests, record that they fail, then revert and record that they pass; commit nothing [satisfies REQ-016] [depends: TRD-AMC-3-TEST, TRD-AMC-7-TEST, TRD-AMC-8-TEST, TRD-AMC-11-TEST, TRD-AMC-14-TEST] (3.5h)
+    - [ ] Given a server started with `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` exported in its OS environment and a real agent CLI available, when a one-phase workflow run's agent runs `printenv`, then neither variable appears in its output while `PATH` and `FOREMAN_RUN_ID` do (modelled on `scripts/e2e/redaction_value_live.sh:287`) [INFERENCE: depends on an installed CLI and model compliance; printed UNVERIFIED with the reason otherwise].
+- [ ] **TRD-AMC-18** — Mutation proofs: apply each mutation in the proof table locally, run the named tests, record that they fail, then revert and record that they pass; commit nothing [satisfies REQ-016, REQ-017] [depends: TRD-AMC-3-TEST, TRD-AMC-7-TEST, TRD-AMC-8-TEST, TRD-AMC-11-TEST, TRD-AMC-14-TEST, TRD-AMC-20-TEST, TRD-AMC-21-TEST, TRD-AMC-22-TEST, TRD-AMC-23-TEST] (4.5h)
   - Validates PRD ACs: AC-016-2
-  - Target Files: `packages/foreman_server/lib/foreman_server/mcp/dispatch.ex`, `packages/foreman_server/lib/foreman_server/mcp/auth.ex`, `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`
+  - Target Files: `packages/foreman_server/lib/foreman_server/mcp/dispatch.ex`, `packages/foreman_server/lib/foreman_server/mcp/auth.ex`, `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`, `packages/foreman_server/lib/foreman_server/worker_environment.ex`, `packages/foreman_server/lib/foreman_server/overwatch/adapters/jido_harness_worker.ex`, `packages/foreman_server/lib/foreman_server/jobsite/agent_runner.ex`, `packages/foreman_server/lib/foreman_server/coordinator/agent/harness.ex`, `packages/foreman_server/lib/foreman_server/review/evaluator/agent.ex`
   - Implementation AC:
-    - [ ] Given each of mutations M1 through M11, when applied and the named tests run, then at least one named test fails for each.
+    - [ ] Given each of mutations M1 through M16, when applied and the named tests run, then at least one named test fails for each.
     - [ ] Given each mutation reverted, when the same tests run, then they pass and the working tree has no residue.
-- [ ] **TRD-AMC-19** — Closing verification: full ExUnit and Go suites, new test files under several seeds, compiler warnings, documentation gate walk [satisfies REQ-014, REQ-015, REQ-016] [depends: TRD-AMC-16, TRD-AMC-17, TRD-AMC-18] (2h)
-  - Validates PRD ACs: AC-014-1, AC-014-2, AC-015-1, AC-016-1, AC-016-2
+- [ ] **TRD-AMC-19** — Closing verification: full ExUnit and Go suites, new test files under several seeds, compiler warnings, documentation gate walk, and a re-read of the e2e scripts that boot a server with the operator token exported [satisfies REQ-014, REQ-015, REQ-016, REQ-017] [depends: TRD-AMC-16, TRD-AMC-17, TRD-AMC-18] (2h)
+  - Validates PRD ACs: AC-014-1, AC-014-2, AC-015-1, AC-016-1, AC-016-2, AC-017-6
   - Target Files: `packages/foreman_server/test/foreman_server/mcp/`
   - Implementation AC:
     - [ ] Given the full `mix test` run, when it completes, then there are zero failures and no new compiler warnings.
     - [ ] Given each new test file, when run with several different `--seed` values, then it passes every time.
     - [ ] Given `go test ./...`, when it completes, then it passes.
     - [ ] Given the operator-regression tests and the existing e2e operator callers, when reviewed, then no operator behaviour changed.
+    - [ ] Given the e2e scripts that boot a server with `FOREMAN_API_TOKEN` exported (`scripts/e2e/acceptance-start-server.sh:4`), when read, then none relies on a worker inheriting the token [INFERENCE: a grep found none; the read confirms it].
 
 ## Sprint Planning
 
@@ -794,15 +953,20 @@ suites pass.
 |---|---|---|---:|---|
 | 1 | Identity | TRD-AMC-1 … 5 and their tests (10 tasks) | 22.0 | none |
 | 2 | Policy and enforcement | TRD-AMC-6 … 9 and their tests (8 tasks) | 28.5 | PR 1 |
-| 3 | Injection | TRD-AMC-10 … 12 (5 tasks) | 17.0 | PR 2 |
-| 4 | Truthfulness and docs | TRD-AMC-13 … 16 (7 tasks) | 23.0 | PR 3 |
-| 5 | Closing | TRD-AMC-17 … 19 (3 tasks) | 9.5 | PR 4 |
+| 3 | Injection and scrub | TRD-AMC-20 … 23 (the scrub), then TRD-AMC-10 … 12 (the injection), with their tests (13 tasks) | 30.5 | PR 2 |
+| 4 | Truthfulness and docs | TRD-AMC-13 … 16 (7 tasks) | 24.0 | PR 3 |
+| 5 | Closing | TRD-AMC-17 … 19 (3 tasks) | 11.0 | PR 4 |
 
-33 tasks (19 implementation, 14 test), 100.0 hours. **PR 3 must not land before
+41 tasks (23 implementation, 18 test), 116.0 hours. **PR 3 must not land before
 PR 2:** until enforcement is live, a worker handed a credential would reach an
 endpoint whose agent principal is not yet confined (the transitional clause in
 PR 1 refuses agents outright, but PR 3's injection is the first change that hands
 one out). The dependency edges encode it: TRD-AMC-10 depends on TRD-AMC-7, 8 and 9.
+**The scrub lands inside PR 3, ahead of the injection:** PR 3 is the first PR that
+hands a worker a credential, and a worker that can also read the operator token from
+its environment bypasses everything PR 2 enforces. TRD-AMC-11, the task that puts the
+credential into a launch, depends on TRD-AMC-21, the scrub at the supervised-worker
+hop; TRD-AMC-20 to 23 depend on nothing in an earlier PR.
 
 ## Acceptance Criteria Traceability
 
@@ -850,6 +1014,12 @@ one out). The dependency edges encode it: TRD-AMC-10 depends on TRD-AMC-7, 8 and
 | AC-015-2 | TRD-AMC-16 | TRD-AMC-19 |
 | AC-016-1 | TRD-AMC-17 | TRD-AMC-19 |
 | AC-016-2 | TRD-AMC-18 | TRD-AMC-19 |
+| AC-017-1 | TRD-AMC-20, 21 | TRD-AMC-20-TEST, 21-TEST, 17 (live) |
+| AC-017-2 | TRD-AMC-21, 22 | TRD-AMC-21-TEST, 22-TEST |
+| AC-017-3 | TRD-AMC-23 | TRD-AMC-23-TEST |
+| AC-017-4 | TRD-AMC-20, 21, 22, 23 | TRD-AMC-20-TEST, 21-TEST, 22-TEST, 23-TEST |
+| AC-017-5 | TRD-AMC-21, 17 | TRD-AMC-21-TEST, 17 (live) |
+| AC-017-6 | TRD-AMC-21, 17 | TRD-AMC-21-TEST, 19 |
 
 ## Target Files
 
@@ -858,6 +1028,10 @@ New: `lib/foreman_server/mcp/principal.ex`, `agent_token.ex`, `agent_access.ex`;
 `agent_token_test.exs`, `agent_auth_test.exs`, `agent_scope_test.exs`,
 `agent_access_test.exs`; `test/foreman_server/workflow/agent_mcp_launch_test.exs`;
 `test/foreman_server/jobsite/agent_mcp_door_test.exs`;
+`test/foreman_server/worker_environment_scrub_test.exs`,
+`test/foreman_server/overwatch/adapters/jido_harness_worker_scrub_test.exs` (with its
+stub CLI under `test/support/`), `test/foreman_server/jobsite/agent_env_scrub_test.exs`,
+`test/foreman_server/agent_launch_scrub_architecture_test.exs`;
 `scripts/e2e/mcp_agent_credential.sh`.
 
 Changed (lib): `mcp/auth.ex`, `mcp/dispatch.ex`, `mcp/policy.ex`, `mcp.ex`,
@@ -865,13 +1039,18 @@ Changed (lib): `mcp/auth.ex`, `mcp/dispatch.ex`, `mcp/policy.ex`, `mcp.ex`,
 `agents/mcp_allowlist.ex` (moduledoc), `workflow/run_executor.ex`,
 `project_context.ex`, `project_context/{section_provider,memory,library}.ex`,
 `project_memory/guidance.ex`, `overwatch/worker_log_policy.ex`,
+`worker_environment.ex`, `overwatch/adapters/jido_harness_worker.ex`,
+`jobsite/agent_runner.ex`, `coordinator/agent/harness.ex`,
+`review/evaluator/agent.ex`,
 `foreman_server_web/controllers/project_controller.ex`, `config/config.exs`;
 `packages/foreman_cli/cmd/foreman/agent_commands.go`.
 
 Changed (tests): the `mcp/` and related files named in the tasks above.
 
 Unchanged by design: `lib/foreman_server/approvals/inflight.ex` (shape and token),
-the bundled prompts and workflows (so no `foreman init --force` is required).
+the bundled prompts and workflows (so no `foreman init --force` is required), and the
+vendored `packages/jido_harness` (the scrub is Foreman policy and stays out of it,
+DP-12).
 
 ## Test Strategy and Mutation Proofs
 
@@ -895,6 +1074,12 @@ the bundled prompts and workflows (so no `foreman init --force` is required).
 - No network and no `claude` binary in unit tests; HTTP tests use the full-stack
   harness in `http_boot_test.exs`. The projection-outage case is simulated by a
   throwaway store process that never answers, not by killing the shared one.
+- Tests that read or set the OS environment (`System.put_env/2`) for the scrub are
+  `async: false` and restore the previous value in `on_exit`, as the harness's own
+  test does (`packages/jido_harness/test/jido_harness/process_manager_test.exs:437-448`).
+  The real-worker test runs the claude adapter against a stub CLI that writes its own
+  environment to a file, set through `:provider_config` as
+  `test/foreman_server/overwatch/adapters/jido_harness_worker_cost_test.exs:35-45` does.
 - Closing verification (TRD-AMC-19) runs each new file with several `--seed` values.
 
 **Mutation proofs** (each applied locally, never committed, and must fail the named test):
@@ -912,6 +1097,11 @@ the bundled prompts and workflows (so no `foreman init --force` is required).
 | M9 | Let an agent-shaped token fall through to the operator comparison | Insecure-local agent-shaped test (TRD-AMC-3-TEST) |
 | M10 | Restrict the operator path (apply the agent set to every principal) | Operator equality tests (TRD-AMC-6-TEST) |
 | M11 | Remove the `run_id` override | Attribution test (TRD-AMC-7-TEST) |
+| M12 | Remove the scrub from `JidoHarnessWorker.put_env/2`, or pass only the caller's env | Env tests at the supervised-worker hop, the no-project case included (TRD-AMC-21-TEST) |
+| M13 | Remove the scrub from the jobsite direct runner, or apply it before `merged_env/2` stringifies | Recording-adapter request-env tests (TRD-AMC-22-TEST) |
+| M14 | Drop one of the two names from `inherited_secret_names/0` | Real-process test for the dropped variable (TRD-AMC-20-TEST) |
+| M15 | Merge the scrub over the caller's env instead of under it | Explicit-entry-wins and project-secret tests (TRD-AMC-20-TEST, 21-TEST) |
+| M16 | Remove the scrub from the coordinator or the review evaluator, or add a launch site that does not call it | Request-env tests and the launch-site architecture test (TRD-AMC-23-TEST) |
 
 ## Documentation Gate
 
@@ -920,12 +1110,12 @@ line numbers read while writing; re-check them when editing.
 
 | Document | Update |
 |---|---|
-| `CLAUDE.md` | `:485` (RepoTools / `MCP.Policy` `@write_tools`), `:807`, `:941` (project memory paragraph): agent principal, agent set, `foreman_agent` |
+| `CLAUDE.md` | `:485` (RepoTools / `MCP.Policy` `@write_tools`), `:807`, `:941` (project memory paragraph): agent principal, agent set, `foreman_agent`; `:972` (Env contract): agents do not inherit the server's `FOREMAN_API_TOKEN` or `SECRET_KEY_BASE` |
 | `README.md` | `:329`, `:342`, `:344`: MCP wording |
-| `docs/user-guide.md` | §9 MCP `:1968-2070` (incl. `:1979`, `:2013-2016`, `:2063-2064`); §12 `:2374-2393` (`:2382` says agents use the MCP tools); §13 `:2514-2529` (standing context and preview); `:3084` (in-flight approvals: mention the merged config) |
+| `docs/user-guide.md` | §9 MCP `:1968-2070` (incl. `:1979`, `:2013-2016`, `:2063-2064`); §12 `:2374-2393` (`:2382` says agents use the MCP tools); §13 `:2514-2529` (standing context and preview); `:3084` (in-flight approvals: mention the merged config); `:533-545` (Project environment) and `:881` (environment table, Delivery row): no agent inherits the server's `FOREMAN_API_TOKEN` or `SECRET_KEY_BASE`, a project's own `SECRET_KEY_BASE` secret is still delivered, the broader policy is a follow-up |
 | `docs/cli-reference.md` | `:515-537` (memory CLI), `:1535-1575` (MCP config table: add `agent_credentials` and the principals), `:1612-1676` |
 | `docs/lessons/claude-projects-architecture.md` | `:15` (Memory row, MCP column) |
-| `docs/lessons/phase-execution-and-pr-mechanics.md` | near `:57` and `:254-282` |
+| `docs/lessons/phase-execution-and-pr-mechanics.md` | near `:57` and `:254-286` (the env-hop narrative: the hop now applies the scrub, and a task with no project gets an empty `:env_map` upstream of it; its `jido_harness_worker.ex:90-105` anchor is stale, now `:96-111`) |
 | `docs/TRD/completed/TRD-2026-4212be7e-jido-migration-VERIFIED.md` | `:145` (the recorded gap): add a forward-pointer; do not rewrite |
 | `docs/plans/inflight-approvals.md` | `:26`: mention the merged config. Its claim that the server consumes the Sunstone fork is stale: the vendored `packages/jido_harness` is compiled (`mix.exs:96-99`, `UPSTREAM_PIN.md`) |
 
@@ -934,16 +1124,24 @@ server key `foreman_agent` (tool names `mcp__foreman_agent__*`); token prefix
 `fmcp1.`; principal kinds `:operator` and `:agent`; telemetry metadata fields
 (`principal_kind`, `run_id`, `project_id`) and reasons; guidance variants; the
 `memory_access` field on `GET /api/projects/:id/context`; the CLI inventory
-description text. **Removed:** `Auth.verify_token/1`, `verify_request/3`,
+description text. **Behaviour change, no new identifier:** agent processes no longer
+inherit the server's `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` (internal:
+`WorkerEnvironment.scrub_inherited/1`, `inherited_secret_names/0` and the
+`launch_env` type). **Removed:** `Auth.verify_token/1`, `verify_request/3`,
 `Dispatch.components/0`, `Policy.list_tools/1`, `Policy.read_tool_names/0` (all
 internal). **Unchanged:** every MCP tool name; no new environment variable.
 
 ## Deferred Items
 
-- **Pi MCP injection** — a follow-up PRD. Open questions: the pi CLI MCP flag is
-  unverified; the coordinator's `--no-mcp` isolation (`coordinator/agent/harness.ex:38-47`);
-  the ambient `~/.pi/agent/mcp.json`. Leads: `pi mcp add --url --header` with a
-  per-run `PI_CODING_AGENT_DIR` (`scripts/e2e/multi_repo_agent.sh:282-286`); the
+- **Pi MCP injection** — a follow-up PRD. A per-run mechanism is known: the e2e
+  scripts run `pi mcp add <name> --url <url> --header "Authorization=Bearer <token>"
+  --exposure direct` under a per-run `PI_CODING_AGENT_DIR`
+  (`scripts/e2e/multi_repo_agent.sh:284-287`,
+  `scripts/e2e/redaction_value_live.sh:220-223`). Its flag semantics are unverified
+  for production use, and a per-run agent directory replaces the directory pi
+  otherwise reads, so settings and credentials there would have to be provisioned
+  [INFERENCE]. Open questions: the coordinator's `--no-mcp` isolation
+  (`coordinator/agent/harness.ex:38-47`); the ambient `~/.pi/agent/mcp.json`; the
   adapter option belongs in the vendored `packages/jido_harness`.
 - Per-worker stdio MCP.
 - Other agent write tools.
@@ -953,7 +1151,10 @@ internal). **Unchanged:** every MCP tool name; no new environment variable.
   in-flight token).
 - Owner-resolved run, task and thread reads for agents (widening the set, J1).
 - Collapsing the remaining in-body write gates into the dispatcher.
-- Worker environment scrubbing (inherited `FOREMAN_API_TOKEN`; Threat Model).
+- **Broader worker-environment policy:** which OTHER server-held secrets a worker may
+  inherit (LANGFUSE keys, GitHub tokens, the webhook and notification secrets, ...).
+  This slice scrubs only `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` (DP-12); the scrub
+  function and the launch-site test are where a later allowlist or deny-list lands.
 - A file-based `--mcp-config` to keep the credential out of argv.
 - A jobsite credential (a jobsite-subject principal).
 - A `foreman doctor` row for credential availability.
@@ -969,10 +1170,11 @@ internal). **Unchanged:** every MCP tool name; no new environment variable.
 | Reliance on the internal `Anubis.Server.Handlers.handle/3` | Real. Pinned by the full-stack HTTP test; the pin is `~> 1.10` and the lock 1.14.0. A future Anubis change fails loudly in CI, not silently in production. |
 | Up to three authentications per agent `tools/call` | Accepted. One constant-time MAC and one `GenServer.call` each; the dispatch pass is the decisive one. |
 | About 18 in-body write gates remain beside the dispatcher | Accepted debt, bounded: no agent can reach them (set invariant). Collapsing them is Deferred. |
-| The credential is not a sandbox | Stated in the PRD and the Threat Model. The inherited-environment exposure pre-exists this change. |
+| The credential is not a sandbox | Stated in the PRD and the Threat Model. The two inherited secrets that defeated the scoping are now scrubbed (DP-12); other inherited secrets and the `allow_insecure_local` posture remain stated residuals. |
 | Credential in argv | Accepted and recorded; loopback and same-user. |
 | The agent set is narrower than D3's literal "read tools" | A flagged call (J1) with a reasoned alternative and a one-entry widening path. |
 | Exact-name pre-approval and `foreman_agent` precedence are documentation readings | Closed by the live smoke where a `claude` CLI exists; otherwise stated as unverified. |
+| The scrub is a deny-list of two names | Real, by decision (PRD D6): other inherited secrets stay inherited until the follow-up, and a deny-list cannot be complete. It is one function and one test, so the follow-up changes policy, not wiring. |
 
 ## Task Coverage Analysis
 
@@ -996,13 +1198,17 @@ Every REQ has at least one task, and every task cites at least one REQ.
 | REQ-014 | TRD-AMC-4, 4-TEST, 6, 6-TEST, 19 |
 | REQ-015 | TRD-AMC-16, 19 |
 | REQ-016 | TRD-AMC-17, 18, 19 |
+| REQ-017 | TRD-AMC-20, 21, 22, 23 (verified also by 17, 18, 19) |
 
 ## Dependency and Estimate Review
 
-Longest chain of implementation tasks: TRD-AMC-1 → 3 → 4 → 6 → 7 → 10 → 11 → 14 →
-16 → 19, ten tasks, 37.5 hours. No cycles. Tests depend only on their own
-implementation task; the mutation task depends on five test tasks. PR 3 depends on
-PR 2 through TRD-AMC-10's edges to 7, 8 and 9.
+Critical path over implementation tasks, re-derived from the task graph:
+TRD-AMC-2 → 3 → 4 → 6 → 8 → 10 → 13 → 14 → 16 → 19, ten tasks, 41.5 hours (the first
+draft's 37.5 hours was a shorter chain). No cycles. Tests depend only on their own
+implementation task; the mutation task depends on nine test tasks. PR 3 depends on
+PR 2 through TRD-AMC-10's edges to 7, 8 and 9; its scrub tasks (TRD-AMC-20 to 23)
+depend on nothing in an earlier PR, and TRD-AMC-11 depends on TRD-AMC-21, so no
+credential is injected before the supervised-worker hop scrubs.
 
 Estimates are by comparison with the in-flight approval feature that added the
 only existing per-run credential and `mcp_config` injection; the largest risk to
@@ -1022,8 +1228,8 @@ a real server, a real endpoint and, where available, a real CLI.
 |---|---:|---|
 | Completeness | 5 | Every open design point in the brief is decided and justified; every REQ and AC maps to tasks. |
 | Feasibility | 4 | Anubis' internal `Handlers.handle/3` and Claude's exact-name pre-approval rest on source and documentation readings. |
-| Testability | 5 | Deterministic, isolated, seed-stable tests; eleven named mutation proofs. |
-| Risk handling | 4 | The inherited-environment residual is stated, not removed. |
+| Testability | 5 | Deterministic, isolated, seed-stable tests; sixteen named mutation proofs. |
+| Risk handling | 4 | The two inherited secrets that defeat the scoping are removed from agent environments; other inherited secrets and the insecure-local posture are stated residuals. |
 | **Overall** | **4.5** | **PASS (at least 4.0)** |
 
 ## Foreman Compatibility Check
@@ -1034,10 +1240,13 @@ a real server, a real endpoint and, where available, a real CLI.
 - **Go CLI boundaries** (§4): a description string and a Go test only.
 - **TDD** (§1): each implementation task has a `-TEST` task authored first.
 - **Documentation discipline** (§8): TRD-AMC-16 and the Documentation Gate above.
-- **AGENTS.md §5.x** (one enforcement point, no catch-all, distinct outcomes): cited
-  from the job brief and from the repo comments that quote them
-  (`mcp/dispatch.ex:119-122`, `mcp/tools.ex:1376-1382`). `AGENTS.md` itself was not
-  re-read while writing this TRD.
+- **AGENTS.md §5** (typed boundaries): §5.1-5.7 were read for revision 1 (2026-11-02)
+  and are applied in DP-12; DP-1 to DP-11 cite them through the repo comments that
+  quote them (`mcp/dispatch.ex:119-122`, `mcp/tools.ex:1376-1382`) and were not
+  re-checked against §5 line by line.
+- **AGENTS.md Invariants (env):** DP-12 applies the scrub at
+  `JidoHarnessWorker.put_env/2`, the hop that file names as the place to read first
+  when an exported variable "has no effect".
 
 ## Next Step
 
