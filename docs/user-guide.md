@@ -203,6 +203,11 @@ override that endpoint:
 foreman project list
 ```
 
+A browser may use `http://127.0.0.1:4766` or `http://localhost:4766`: the dev endpoint's `check_origin`
+(`config/dev.exs`) accepts the LiveView socket from those two hosts only. Any other hostname (a LAN name,
+a tunnel) loads the page but its socket is refused, and the console logs
+`Could not check origin for Phoenix.Socket transport`; add that host to `check_origin` to use it.
+
 ### Running the live acceptance
 
 Two scripts prove the Claude Projects flow against a **real, throwaway** server, the real Go CLI and a real

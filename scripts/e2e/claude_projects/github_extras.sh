@@ -163,8 +163,8 @@ gh_approve_merge() {
 }
 
 # gh_ui <thread> [driver flags]: the Playwright driver; one JSON object in GH_UI. Non-zero exit = the driver failed.
-# The dev endpoint's check_origin accepts the LiveView websocket only from its configured host,
-# `localhost`: a browser on 127.0.0.1 gets the page but its socket is refused and never mounts.
+# The dev endpoint (`config/dev.exs` check_origin) accepts the LiveView websocket from `localhost` and
+# `127.0.0.1`; this driver browses `localhost`, the spelling that was the only one accepted before.
 gh_ui() {
   gu_thread=$1; shift
   GH_UI=$(cd "$ROOT/scripts/e2e/ui-a11y" && node pr_actions_live.mjs --base "http://localhost:$E2E_PORT" --token "$E2E_API_TOKEN" --project "$PROJECT" --thread "$gu_thread" "$@" 2>"$WORK/ui-driver.err")
