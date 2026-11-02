@@ -12,6 +12,11 @@ config :foreman_server, ForemanServer.Repo,
 
 config :foreman_server, ForemanServerWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4766],
+  # The LiveView socket is accepted only from these origin hosts. `config.exs` sets the endpoint
+  # host to `localhost`, but the URL everywhere else (the CLI default, devbox, the docs,
+  # `foreman project open`) is `http://127.0.0.1:4766`: without the second entry that page loads
+  # and its socket is refused (403), so it never goes live. The server binds 127.0.0.1 only.
+  check_origin: ["//localhost", "//127.0.0.1"],
   debug_errors: true,
   code_reloader: true,
   secret_key_base: String.duplicate("a", 64),
