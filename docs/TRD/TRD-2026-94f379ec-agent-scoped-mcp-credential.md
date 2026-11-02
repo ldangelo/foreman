@@ -34,8 +34,8 @@ the standing memory guidance true for every launch.
 Path convention for this document: paths beginning `lib/` or `test/` are under
 `packages/foreman_server/`. Every other path is repo-relative.
 
-**Process (D5).** PRD, then this TRD, then step beads as a separate follow-up.
-No beads are created by this document.
+**Process (D5).** PRD, then this TRD, then step beads, which already exist: epic `foreman-5ifqm` with chained, deferred children
+`foreman-5ifqm.1` to `.5`, one per PR below. Do not create a second set.
 
 **Revision 1 (2026-11-02, before review).** On the user's decision (PRD D6) the scrub
 of `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` from agent environments moves into this
@@ -1250,6 +1250,6 @@ a real server, a real endpoint and, where available, a real CLI.
 
 ## Next Step
 
-`/ensemble:implement-trd-beads docs/TRD/TRD-2026-94f379ec-agent-scoped-mcp-credential.md`
-(a separate follow-up; no beads are created by this document). The user should
+the step beads already exist (epic `foreman-5ifqm`, children `.1` to `.5`); do not run
+`/ensemble:implement-trd-beads` to create a second set. The user should
 first confirm the six judgement calls J1-J6 in the PRD.

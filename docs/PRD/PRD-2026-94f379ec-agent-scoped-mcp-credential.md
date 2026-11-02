@@ -124,7 +124,7 @@ sandbox (see Non-Goals).
 | D2 | The first slice covers **Claude workers only**. Pi workers stay read-only via prompt injection until a later slice, and the guidance stays truthful for them. Pi's adapter MCP option is a deferred follow-up PRD. |
 | D3 | The operator principal (operator bearer token, or no token under `allow_insecure_local`) stays unrestricted and unchanged. The agent allowlist applies to the agent principal **only**. It is an explicit list defined once in `MCP.Policy`, not "advertised minus write tools". `application.ex` seeding is removed or derived from it. The existing `McpAllowlist` tests are kept. |
 | D4 | The agent principal is `{:agent, project_id, run_id}`. Project scope is enforced: a call addressed to another project is refused, and an absent `project_id` is `INVALID_PARAMS`. |
-| D5 | Process: PRD, then TRD, then step beads (a separate follow-up; none are created here). |
+| D5 | Process: PRD, then TRD, then step beads (the step beads already exist: epic `foreman-5ifqm` with one chained, deferred step bead per TRD PR, `foreman-5ifqm.1` to `.5`; do not create a second set). |
 | D6 | The server's `FOREMAN_API_TOKEN` and `SECRET_KEY_BASE` are scrubbed from agent environments **in this slice**, narrowly: those two names only, on every launch path the server composes (REQ-017). The broader policy on which other server-held secrets (LANGFUSE keys, GitHub tokens, ...) an agent may inherit is deferred to a named follow-up and recorded as a residual risk. This moves the scrub from Non-Goals into scope (user decision, 2026-11-02). |
 
 ### How the decisions are applied
@@ -736,6 +736,6 @@ clients and the stdio task), AC-006-1 (names the foreign-project memory write).
 ## Next step
 
 The paired design is `docs/TRD/TRD-2026-94f379ec-agent-scoped-mcp-credential.md`.
-Step beads follow from it with
-`/ensemble:implement-trd-beads docs/TRD/TRD-2026-94f379ec-agent-scoped-mcp-credential.md`
-(a separate follow-up; none are created by this document).
+The step beads already exist: epic `foreman-5ifqm` and its five chained, deferred children
+`foreman-5ifqm.1` to `.5` (one per TRD PR). Do not run
+`/ensemble:implement-trd-beads` to create a second set.
