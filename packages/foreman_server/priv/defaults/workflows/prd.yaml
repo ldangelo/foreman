@@ -53,7 +53,7 @@ phases:
     command: "/skill:ensemble-create-trd --foreman"
     commit: true
   - name: refine-trd
-    command: "/skill:ensemble-refine-trd-foreman --foreman"
+    command: "/skill:ensemble-refine-trd --foreman"
     commit: true
     stack_pr: true
   - name: implement-trd
