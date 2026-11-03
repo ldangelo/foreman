@@ -555,20 +555,21 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     |> sync_library_panels()
   end
 
-  # Read-only side-panel data: the project's memory topics and library entries. Both read
-  # from disk and return `{:error, _}` for a project whose path is absent; the panels then
-  # show nothing rather than crash the workspace.
+  # Read-only side-panel data: the project's memory topics and library entries. A missing
+  # on-disk directory is already an empty list; a genuine read failure (unknown project,
+  # absent path, IO error) returns `:error` so the panel can render an unavailable state
+  # distinct from an empty collection, instead of masking the failure as "nothing here".
   defp memory_topics(project_id) do
     case ProjectMemory.list(project_id) do
       {:ok, topics} -> topics
-      {:error, _} -> []
+      {:error, _} -> :error
     end
   end
 
   defp library_entries(project_id) do
     case Library.list(project_id) do
       {:ok, entries} -> entries
-      {:error, _} -> []
+      {:error, _} -> :error
     end
   end
 

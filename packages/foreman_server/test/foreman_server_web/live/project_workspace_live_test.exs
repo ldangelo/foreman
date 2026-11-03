@@ -1232,13 +1232,18 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
 
     test "the panels show empty states and list thread titles", %{id: id} do
-      {_view, html} = mount_view(id)
+      {view, html} = mount_view(id)
 
       # The test project's path does not exist on disk, so memory and library are empty.
       assert html =~ "No memory topics."
       assert html =~ "No library files."
-      # A thread title from the Overview is listed in the Threads panel.
-      assert html =~ "Second PR"
+      # A thread title from the Overview is listed in the Threads panel itself, not merely
+      # somewhere on the page (the Overview also shows "Second PR").
+      assert has_element?(
+               view,
+               ~s(section[aria-labelledby="panel-threads-title"] ul.ws-panel-list li strong),
+               "Second PR"
+             )
     end
   end
 end

@@ -4,7 +4,7 @@ Done. Summary:
 
 **Changes** (all in `packages/foreman_server/`):
 - `workspace/project_view.ex` — added `instructions` field to `ProjectView.t`/`build/2` (read from config like `goal`).
-- `project_workspace_live.ex` — alias `Library`/`ProjectMemory`; `load_state/1` loads `memory_topics` + `library_entries` (`[]` on error, no crash for pathless project); render `Components.info_panels` in shell.
+- `project_workspace_live.ex` — alias `Library`/`ProjectMemory`; `load_state/1` loads `memory_topics` + `library_entries` (a missing dir is already `[]`; a genuine read failure returns `:error`, rendered as an "unavailable" state, not an empty collection); render `Components.info_panels` in shell.
 - `workspace/components.ex` — new read-only `info_panels/1`: Instructions text, memory name/desc, library name + file count, thread titles/status flattened from `overview.groups`. No `phx-click`, no mutation.
 - `workspace/layouts.ex` — inline `.ws-panel`/`.ws-panel-list` CSS (no asset pipeline).
 

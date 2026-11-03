@@ -44,8 +44,8 @@ defmodule ForemanServerWeb.Workspace.Components do
   def safe_url(_), do: nil
 
   attr(:instructions, :string, default: nil)
-  attr(:memory_topics, :list, required: true)
-  attr(:library_entries, :list, required: true)
+  attr(:memory_topics, :any, required: true)
+  attr(:library_entries, :any, required: true)
   attr(:overview, :map, required: true)
 
   @doc """
@@ -53,6 +53,8 @@ defmodule ForemanServerWeb.Workspace.Components do
   (`ProjectMemory.Topic`, name and description), its library entries
   (`Library.Entry`, name and file count) and the titles of its threads (the
   Overview cards, flattened in group order). Display only; nothing here mutates.
+  `memory_topics`/`library_entries` are the entry lists, or `:error` when the
+  read failed, which renders an unavailable state distinct from an empty list.
   """
   def info_panels(assigns) do
     assigns = assign(assigns, :threads, flatten_threads(assigns.overview))
@@ -64,9 +66,10 @@ defmodule ForemanServerWeb.Workspace.Components do
       <p :if={@instructions} class="ws-msg">{@instructions}</p>
     </section>
     <section class="ws-panel" aria-labelledby="panel-memory-title">
-      <h2 id="panel-memory-title">Memory topics <span class="ws-muted">({length(@memory_topics)})</span></h2>
+      <h2 id="panel-memory-title">Memory topics <span :if={is_list(@memory_topics)} class="ws-muted">({length(@memory_topics)})</span></h2>
+      <p :if={@memory_topics == :error} class="ws-error">Memory topics unavailable.</p>
       <p :if={@memory_topics == []} class="ws-muted">No memory topics.</p>
-      <ul :if={@memory_topics != []} class="ws-panel-list">
+      <ul :if={is_list(@memory_topics) and @memory_topics != []} class="ws-panel-list">
         <li :for={topic <- @memory_topics}>
           <strong>{topic.name}</strong>
           <span :if={topic.description != ""} class="ws-muted"> - {topic.description}</span>
@@ -74,9 +77,10 @@ defmodule ForemanServerWeb.Workspace.Components do
       </ul>
     </section>
     <section class="ws-panel" aria-labelledby="panel-library-title">
-      <h2 id="panel-library-title">Library files <span class="ws-muted">({length(@library_entries)})</span></h2>
+      <h2 id="panel-library-title">Library files <span :if={is_list(@library_entries)} class="ws-muted">({length(@library_entries)})</span></h2>
+      <p :if={@library_entries == :error} class="ws-error">Library files unavailable.</p>
       <p :if={@library_entries == []} class="ws-muted">No library files.</p>
-      <ul :if={@library_entries != []} class="ws-panel-list">
+      <ul :if={is_list(@library_entries) and @library_entries != []} class="ws-panel-list">
         <li :for={entry <- @library_entries}>
           <strong>{entry.name}</strong>
           <span class="ws-muted"> - {entry.file_count} {file_word(entry.file_count)}</span>
