@@ -1,4 +1,4 @@
-## Summary
+# Summary
 
 **No change required — feature already implemented.**
 
@@ -12,9 +12,11 @@ The task asks to fill the empty `section.ws-panels` shell w/ four read-only pane
 **Tests** (`project_workspace_live_test.exs`): markup contract (:1207), 4 headings (:1215), empty cases "No memory topics."/"No library files." (:1238), threads list (:1244), library presence/absence (:403–430) — all pre-existing.
 
 **Verification:**
+
 ```
 MIX_ENV=test mix test --warnings-as-errors test/foreman_server_web/live/project_workspace_live_test.exs
 ```
+
 (under devbox, `DATABASE_URL`/`EVENTSTORE_URL` unset → foreman_test Postgres :55432; `mix deps.get` first)
 → **47 passed**, exit 0.
 
