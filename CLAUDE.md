@@ -608,7 +608,7 @@ patch of the page keeps it, the settings page's way back too). Layout: a left
 sidebar of threads ("Project chat", then Waiting on you / Working / Landing / Ready for review,
 Idle and Resolved folded under "Earlier"); the main column is the coordinator chat, or, at
 `/threads/:thread_id` (id percent-encoded, e.g. `run%3A<run_id>`), that one thread's conversation
-(`Threads.Transcript.full/2`, every turn) with the thread's controls (Pause/Resume/Stop/Resolve/Reopen,
+(`Threads.Transcript.full/2` with `chunks: true`, one turn per stored output chunk; `Workspace.ThreadView` assembles them, so a streamed message and the final chunk that repeats it show once) with the thread's controls (Pause/Resume/Stop/Resolve/Reopen,
 PR fix/create buttons, tool-call Approve/Deny, steer box); the right column keeps the questions
 pane, knowledge panels and the Library/Pull requests/Scheduled tabs.
 It adds no mutation path: actions go through `ForemanServerWeb.Workspace.Actions`
