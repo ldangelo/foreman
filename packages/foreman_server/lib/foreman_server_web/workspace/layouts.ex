@@ -49,7 +49,7 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
           .ws-skip { position: absolute; left: -999px; }
           .ws-skip:focus { left: 8px; top: 8px; background: var(--card); color: var(--text); padding: 4px 8px; }
-          .ws-main { max-width: 1240px; margin: 0 auto; padding: 24px; }
+          .ws-main { max-width: 1440px; margin: 0 auto; padding: 24px; }
           .ws-muted { color: var(--muted); }
           .ws-error { color: var(--err); font-weight: 600; }
 
@@ -85,12 +85,17 @@ defmodule ForemanServerWeb.Workspace.Layouts do
             border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
           summary { cursor: pointer; }
 
-          /* layout */
-          .ws-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
+          /* layout: thread sidebar | main column | project panels */
+          .ws-layout { display: grid; grid-template-columns: 264px minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
           .ws-main-col { min-width: 0; }
+          .ws-threads { min-width: 0; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
           .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 16px;
             max-height: calc(100vh - 32px); overflow-y: auto; }
-          @media (max-width: 999px) { .ws-layout { grid-template-columns: 1fr; } .ws-side { position: static; max-height: none; overflow-y: visible; } }
+          @media (max-width: 1099px) {
+            .ws-layout { grid-template-columns: 1fr; }
+            .ws-threads { position: static; max-height: 320px; }
+            .ws-side { position: static; max-height: none; overflow-y: visible; }
+          }
           @media (max-width: 700px) { .ws-main { padding: 16px; } }
 
           /* cards */
@@ -113,16 +118,20 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .conv-head { display: flex; align-items: center; gap: 8px; }
           .conv-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
           .conv-transcript { display: flex; flex-direction: column-reverse; height: min(62vh, 640px);
-            overflow-y: auto; padding: 16px; background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; }
+            overflow-y: auto; padding: 16px; background: transparent; border: 1px solid var(--border); border-radius: 8px; }
           .conv-inner { display: flex; flex-direction: column; gap: 12px; }
           .msg { overflow-wrap: anywhere; max-width: 90%; }
           .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
           .ws-msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 8px; }
-          .msg--operator { align-self: flex-end; max-width: 80%; background: var(--card);
+          .msg--operator { align-self: flex-end; max-width: 80%; background: var(--card-2);
             border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; }
-          .msg--coordinator { align-self: flex-start; }
+          .msg--coordinator, .msg--agent { align-self: flex-start; }
+          .msg--stderr { align-self: flex-start; color: var(--muted);
+            border-left: 2px solid var(--warn); padding-left: 12px; }
           .msg--system { align-self: stretch; font-size: 13px; color: var(--muted);
             border-left: 2px solid var(--border); padding-left: 12px; }
+          .msg--verdict { align-self: stretch; max-width: 100%; font-size: 13px; color: var(--muted);
+            border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
           .msg-meta { display: flex; gap: 8px; align-items: baseline; margin: 0 0 4px; font-size: 13px; color: var(--muted); }
           .msg-sender { font-weight: 600; }
           .msg details > summary { cursor: pointer; }
@@ -132,18 +141,45 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .ws-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
             clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-          /* threads / overview */
+          /* thread sidebar */
           .ws-group-title { font-size: 13px; font-weight: 600; text-transform: uppercase;
             letter-spacing: .04em; color: var(--muted); margin: 12px 0 6px; }
-          .thread-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-            padding: 12px 14px; margin: 8px 0; }
-          .thread-card--quiet { color: var(--muted); }
-          .thread-head { display: flex; align-items: center; gap: 8px; }
-          .thread-title { font-weight: 600; min-width: 0; }
-          .thread-actions, .thread-pr-actions, .thread-approvals {
-            display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
-          .thread-actions form { display: inline-flex; gap: 6px; align-items: center; }
           .ws-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--err); }
+          .ws-threads h2.ws-group-title { display: flex; align-items: center; gap: 8px; margin: 16px 0 4px; }
+          .thread-rows { list-style: none; margin: 0; padding: 0; }
+          .thread-row { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 44px;
+            padding: 6px 10px; border-left: 3px solid transparent; border-radius: 8px;
+            color: var(--text); text-decoration: none; }
+          .thread-row:hover { background: var(--card-2); }
+          .thread-row[aria-current="page"] { background: var(--card); border-left-color: var(--accent); }
+          .thread-row--chat { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
+          .thread-row-title { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .thread-row-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+          .thread-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+          .thread-dot--ok { background: var(--ok); }
+          .thread-dot--info { background: var(--info); }
+          .thread-dot--warn { background: var(--warn); }
+          .thread-dot--err { background: var(--err); }
+
+          /* thread pane */
+          .thread-pane { display: flex; flex-direction: column; gap: 12px; }
+          .thread-pane-head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+          .thread-pane-head p { margin: 0; }
+          .thread-back { align-self: flex-start; text-decoration: none; }
+          .thread-pane-titlerow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+          .thread-pane-title { margin: 0; min-width: 0; font-size: 18px; font-weight: 600; line-height: 1.3;
+            overflow-wrap: anywhere; }
+          .thread-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; font-size: 12px; }
+          .thread-branch { max-width: 100%; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .thread-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+          .thread-actions, .thread-pr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+          .ws-pr-action { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+          .thread-approvals { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+            border: 1px solid var(--border); border-radius: 8px; }
+          .ws-approval { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+          .thread-pane .conv-transcript { height: min(56vh, 560px); }
+          .thread-composer textarea { min-height: 52px; }
+          .thread-note { margin: 0; }
 
           /* tabs */
           [role="tablist"] { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin-bottom: 12px; }

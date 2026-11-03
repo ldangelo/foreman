@@ -157,11 +157,13 @@ defmodule ForemanServerWeb.Router do
       live("/runs", OperatorRunDashboardLive, :index)
     end
 
-    # E16: the project workspace. One live_session so navigating between the
-    # workspace and its settings stays on the already-authenticated socket.
+    # E16: the project workspace. One live_session so navigating between the workspace, one of
+    # its threads and its settings stays on the already-authenticated socket. A thread id holds
+    # a colon (`run:<id>`), percent-encoded in the URL (`Components.thread_path/2`).
     live_session :project_workspace,
       root_layout: {ForemanServerWeb.Workspace.Layouts, :root} do
       live("/projects/:id", ProjectWorkspaceLive, :show)
+      live("/projects/:id/threads/:thread_id", ProjectWorkspaceLive, :thread)
       live("/projects/:id/settings", ProjectSettingsLive, :show)
     end
   end
