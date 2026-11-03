@@ -342,6 +342,19 @@ and exactly-once hold across pages. `jido_harness_worker_log_capture_test.exs` p
 `sequence` tag and the refusal of an event without one. To re-check the evidence on a dev machine, read a run's journal
 (`<run>/*.jsonl`, the segments in order: one JSON event per line with its `sequence`) and compare it with the worker stream.
 
+## Secrets split across output chunks are stored in clear (2026-11-03, foreman-l30ao.5)
+
+`WorkerLogPolicy.normalize/3` redacts each log entry on its own, and a streamed message is one entry per
+`output_text_delta` chunk, so a secret (or a `password=` and its value) that straddles two chunks matches no pattern and
+is stored in clear. This is older than the live tail: the exit path wrote the same chunks. Everything that takes entries
+as stored returns both halves: `foreman_run_get_logs`, `GET /api/threads/:id/transcript`, its SSE stream and the MCP
+transcript tool. `Threads.Transcript` redacts per entry too and joins a group's entries with `"\n"`, which does not
+rejoin them. Only the dashboard thread pane re-redacts after it has joined the chunks (`ProjectWorkspaceLive`), so a
+split secret is hidden there once its last chunk has arrived; a prefix can show until then, and a message whose deltas
+hide a split secret is shown twice, both redacted. The fix is write-time assembly with redaction applied to the whole
+message (`foreman-l30ao.5`). Until it lands, do not treat stored run output as free of secret values an agent echoed in
+pieces.
+
 ## Outbound messaging delivery notes
 
 `ForemanServer.Messaging.notify/2` only enqueues provider-neutral notification
