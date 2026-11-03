@@ -14,6 +14,7 @@ defmodule ForemanServer.Threads.Transcript do
       consecutive entries of one channel inside one phase, with no other turn
       between them and no gap longer than `gap_ms`, collapse into one `:agent`
       turn (stderr turns carry `source: "stderr"`).
+      An entry is a chunk, not a line (see "Chunks"); the group joins its entries with a newline.
     * `RunSteerQueued` on the run stream -> `:operator` / `:steer` turn.
     * `RunPaused` / `RunResumed` / `RunFailed` / `RunCompleted` / `RunCancelled` /
       `RunBlocked` -> `:system` / `:status` turn; so are the steering delivery
@@ -41,9 +42,8 @@ defmodule ForemanServer.Threads.Transcript do
   an append never changes an existing `seq`. A growing agent turn would break
   that, so the trailing agent turn is withheld until it is final: the thread is
   terminal, its phase has ended, or `now_ms - last line > gap_ms` (a later line
-  would then start a new turn anyway). A reader that re-reads the whole list and holds no
-  cursor (the workspace's thread pane) gives `now_ms` and a small `gap_ms` to see the
-  trailing turn at once, at the price of one turn per output line it then merges itself.
+  would then start a new turn anyway). A reader that holds no cursor asks for `chunks: true`
+  instead (see "Chunks").
 
   Sources are bounded: `run_logs/1` keeps a bounded tail. When it dropped
   entries `omitted_entries` is non-zero and `truncated` is true; `seq` then
@@ -58,6 +58,24 @@ defmodule ForemanServer.Threads.Transcript do
   its output, or an event recorded before the redaction existed, is covered at read time. The
   list is resolved ONCE per `full/2`, never per entry; a thread with no project, or a project
   whose list cannot be built, is redacted by the patterns alone.
+
+  ## Chunks
+
+  A stored output entry is a CHUNK exactly as the harness produced it, not a line: a streamed
+  message is many `output_text_delta` chunks followed by ONE `output_text_final` chunk that holds
+  the whole message again, stderr chunks end with their own newline and command output carries
+  its own. The grouping above joins a group's entries with a newline and keeps every one of
+  them; that text and its numbering are what cursor readers (`page/2`, the SSE tail, MCP)
+  resume against, so they do not change.
+
+  `full/2` with `chunks: true` skips the grouping: every stdout / stderr entry is its own
+  `:agent` / `:text` turn, `text` exactly as stored, `source` its channel, `at` its time.
+  Nothing is grouped, so nothing grows: the trailing-turn rule does not apply and `gap_ms` /
+  `now_ms` have no effect on output turns. Steer, lifecycle, verdict and jobsite turns, the
+  ordering, the redaction and `terminal` are the same. It is for a reader that re-reads the whole
+  list each time and assembles the conversation itself (the workspace's thread pane,
+  `ForemanServerWeb.Workspace.ThreadView.log/3`), which needs the chunks to tell a streamed
+  message from its final repeat. `page/2` never passes it.
   """
 
   alias ForemanServer.Coordinator.Redact
@@ -101,7 +119,8 @@ defmodule ForemanServer.Threads.Transcript do
           optional(:omitted_entries) => non_neg_integer(),
           optional(:terminal?) => boolean(),
           optional(:now_ms) => integer() | nil,
-          optional(:gap_ms) => non_neg_integer()
+          optional(:gap_ms) => non_neg_integer(),
+          optional(:chunks) => boolean()
         }
 
   defmodule Page do
@@ -168,7 +187,7 @@ defmodule ForemanServer.Threads.Transcript do
     iterations = Map.get(inputs, :jobsite_iterations, [])
 
     items =
-      log_items(Map.get(inputs, :log_entries, []), phases) ++
+      log_items(Map.get(inputs, :log_entries, []), phases, Map.get(inputs, :chunks, false)) ++
         steer_items(Map.get(inputs, :steer, [])) ++
         system_items(Map.get(inputs, :run_events, [])) ++
         iteration_items(iterations) ++
@@ -199,27 +218,39 @@ defmodule ForemanServer.Threads.Transcript do
   @rank_agent 2
   @rank_review 3
 
-  defp log_items(entries, phases) do
+  defp log_items(entries, phases, chunks?) do
     {items, _} =
       Enum.map_reduce(entries, 0, fn entry, floor ->
         at = Map.get(entry, :at)
         # worker clocks may disagree; arrival order wins, so time never goes backwards
         sort_at = max(at || floor, floor)
-
-        item = %{
-          rank: @rank_agent,
-          sort_at: sort_at,
-          at: at,
-          type: :log,
-          channel: entry.channel,
-          text: entry.content,
-          phase: phase_of(phases, sort_at)
-        }
-
-        {item, sort_at}
+        {log_item(entry, at, sort_at, phases, chunks?), sort_at}
       end)
 
     items
+  end
+
+  # `chunks: true`: one turn per entry, text exactly as stored; nothing groups, nothing grows.
+  defp log_item(entry, at, sort_at, _phases, true) do
+    %{
+      rank: @rank_agent,
+      sort_at: sort_at,
+      at: at,
+      type: :turn,
+      turn: turn(:agent, :text, entry.content, at, entry.channel)
+    }
+  end
+
+  defp log_item(entry, at, sort_at, phases, false) do
+    %{
+      rank: @rank_agent,
+      sort_at: sort_at,
+      at: at,
+      type: :log,
+      channel: entry.channel,
+      text: entry.content,
+      phase: phase_of(phases, sort_at)
+    }
   end
 
   defp steer_items(steer) do
@@ -419,8 +450,9 @@ defmodule ForemanServer.Threads.Transcript do
   Every turn of the thread, in order, as `Full`.
 
   Options: `:gap_ms`, `:now_ms` (see the moduledoc on when the trailing agent turn is
-  final). The sources are gathered and redacted here and only here: `page/2` is this list
-  sliced by cursor.
+  final) and `:chunks` (default false: every output entry is its own turn and nothing is
+  grouped, see "Chunks" in the moduledoc). The sources are gathered and redacted here and
+  only here: `page/2` is this list sliced by cursor, and never asks for chunks.
   """
   @spec full(String.t(), keyword()) :: {:ok, Full.t()} | {:error, :thread_not_found | term()}
   def full(thread_id, opts \\ []) when is_binary(thread_id) and is_list(opts) do
@@ -460,7 +492,7 @@ defmodule ForemanServer.Threads.Transcript do
         {:error, {:invalid_option, :limit}}
 
       true ->
-        with {:ok, %Full{} = full} <- full(thread_id, opts) do
+        with {:ok, %Full{} = full} <- full(thread_id, Keyword.take(opts, [:gap_ms, :now_ms])) do
           turns = full.turns |> Enum.filter(&(&1.seq > cursor)) |> Enum.take(limit)
 
           {:ok,
@@ -557,7 +589,7 @@ defmodule ForemanServer.Threads.Transcript do
 
   defp with_opts(inputs, opts) do
     opts
-    |> Keyword.take([:gap_ms, :now_ms])
+    |> Keyword.take([:gap_ms, :now_ms, :chunks])
     |> Enum.reduce(inputs, fn {key, value}, acc -> Map.put(acc, key, value) end)
   end
 

@@ -122,4 +122,89 @@ defmodule ForemanServer.Threads.TranscriptFullTest do
       assert {:error, :thread_not_found} = Transcript.full("garbage")
     end
   end
+
+  describe "full/2 with chunks: true" do
+    # A finished run: three stdout chunks and a stderr chunk, all stamped the same millisecond,
+    # then a steer, a pause and its resume.
+    defp seed_chunked_run do
+      run_id = uid("tf-chunks")
+      at = iso(-20_000)
+
+      append_run_events(run_id, [
+        {"RunSteerQueued", %{message_id: uid("m"), text: "go on password=hunter2"}},
+        {"RunPaused", %{reason: "steer"}},
+        {"RunResumed", %{}}
+      ])
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "RunStarted", payload: %{run_id: run_id, project_id: "p-tf"}},
+          stdout(run_id, 1, "Star", at),
+          stdout(run_id, 2, "ting", at),
+          stdout(run_id, 3, "Starting", at),
+          stderr(run_id, 4, "warn token=sk-livesecret123\n", at),
+          %{event_type: "RunCompleted", payload: %{run_id: run_id, project_id: "p-tf"}}
+        ])
+
+      run_id
+    end
+
+    test "is one turn per stored entry, text exactly as stored, also for entries of one millisecond" do
+      thread_id = "run:" <> seed_chunked_run()
+
+      assert {:ok, %Full{turns: turns, terminal: true}} = Transcript.full(thread_id, chunks: true)
+
+      assert Enum.map(turns, &{&1.seq, &1.role, &1.kind, &1.source}) == [
+               {0, :agent, :text, "stdout"},
+               {1, :agent, :text, "stdout"},
+               {2, :agent, :text, "stdout"},
+               {3, :agent, :text, "stderr"},
+               {4, :operator, :steer, "steer"},
+               {5, :system, :status, "run_event"},
+               {6, :system, :status, "run_event"}
+             ]
+
+      assert Enum.map(Enum.take(turns, 3), & &1.text) == ["Star", "ting", "Starting"]
+
+      # the stderr chunk keeps its own newline; redaction is the same as ever
+      assert Enum.at(turns, 3).text =~ ~r/^warn token=.*\n$/
+      assert Enum.at(turns, 4).text == "go on password=[REDACTED]"
+      refute Enum.any?(turns, &(&1.text =~ "sk-livesecret123" or &1.text =~ "hunter2"))
+    end
+
+    test "nothing is withheld while the run is live: no gap and no clock needed" do
+      run_id = uid("tf-chunks-live")
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "RunStarted", payload: %{run_id: run_id, project_id: "p-tf"}},
+          stdout(run_id, 1, "Star", iso(-50)),
+          stdout(run_id, 2, "ting", iso(-50))
+        ])
+
+      thread_id = "run:" <> run_id
+
+      assert {:ok, %Full{turns: [%{text: "Star"}, %{text: "ting"}], terminal: false}} =
+               Transcript.full(thread_id, chunks: true)
+
+      # the grouped list holds the trailing turn back, as it always did
+      assert {:ok, %Full{turns: []}} = Transcript.full(thread_id)
+    end
+
+    test "page/2 is unchanged: the same data stays grouped, and a chunks option handed to it is ignored" do
+      thread_id = "run:" <> seed_chunked_run()
+
+      assert {:ok, %Page{turns: grouped}} = Transcript.page(thread_id, limit: 1000)
+
+      assert Enum.map(Enum.take(grouped, 2), &{&1.seq, &1.source}) == [
+               {0, "stdout"},
+               {1, "stderr"}
+             ]
+
+      assert hd(grouped).text == "Star\nting\nStarting"
+      assert length(grouped) == 5
+
+      assert {:ok, %Page{turns: ^grouped}} = Transcript.page(thread_id, limit: 1000, chunks: true)
+    end
+  end
 end
