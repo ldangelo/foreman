@@ -19,6 +19,10 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
   stdout/stderr capture. These assertions are the upgrade tripwire required
   by AGENTS.md 5.6 — if the harness changes where stderr rides, they fail
   here instead of silently emptying the stderr channel again.
+
+  Each entry also carries the harness `sequence` of its event. The live tail and the finished
+  run deliver their entries through this one mapping, and the sequence is the cursor that lets
+  the worker write a line once (`jido_harness_worker_live_output_test.exs`).
   """
 
   use ExUnit.Case, async: true
@@ -33,6 +37,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
       timestamp: timestamp
     }
   end
+
+  defp at(event, sequence), do: %{event | sequence: sequence}
 
   defp run_result(events) do
     %Jido.Harness.RunResult{
@@ -95,6 +101,23 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
   test "a run with no events, or a non-RunResult, yields no logs" do
     assert [] = JidoHarnessWorker.log_events(run_result([]))
     assert [] = JidoHarnessWorker.log_events(:detached)
+  end
+
+  test "every entry carries the sequence of its harness event, in event order" do
+    result =
+      run_result([
+        at(event(:output_text_delta, %{"text" => "one"}), 4),
+        at(event(:turn_started, %{}), 5),
+        at(event(:provider_event, %{"stream" => "stderr", "data" => "two"}), 6),
+        at(event(:output_text_final, %{"text" => "three"}), 9)
+      ])
+
+    # An event that is not a log line leaves a hole in the sequences, never a placeholder entry.
+    assert [
+             %{data: "one", sequence: 4},
+             %{data: "two", sequence: 6},
+             %{data: "three", sequence: 9}
+           ] = JidoHarnessWorker.log_events(result)
   end
 
   describe "upstream contract (AGENTS.md 5.6)" do
