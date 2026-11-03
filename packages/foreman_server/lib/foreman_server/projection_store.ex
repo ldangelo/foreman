@@ -804,6 +804,13 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:run_activity, run_id})
   end
 
+  # The read window of `run_logs/2`: a run keeps at most @run_logs_max_limit entries and
+  # @run_logs_max_bytes of content resident (`put_log_entry/2`), and a read returns the newest
+  # `limit` of them, @run_logs_default_limit unless asked for more.
+  @run_logs_default_limit 500
+  @run_logs_max_limit 5_000
+  @run_logs_max_bytes 1_048_576
+
   @doc """
   Return projected durable stdout/stderr for a known run.
 
@@ -812,19 +819,27 @@ defmodule ForemanServer.ProjectionStore do
   `{:error, :run_not_found}`; known runs with no worker output return a
   successful empty result. The default read is a deterministic latest-500 tail.
 
+  `limit:` reads a longer (or shorter) tail of the same window: an integer in
+  `1..run_logs_max_limit/0`; anything else, or an unknown option, raises `ArgumentError`
+  (a programmer error, never clamped). An entry is one chunk exactly as the worker produced it,
+  so a streamed message is one entry per delta; a reader that wants a whole conversation asks
+  for the maximum. `count`, `limit`, `truncated` and `omitted_entries` always describe the
+  read that was made.
+
   **Absent is not the same as dropped** (AGENTS.md 5.3). A run whose workers
   wrote nothing reads `count: 0, truncated: false, omitted_entries: 0`. A run
-  whose output outgrew the resident caps reads `truncated: true` with non-zero
-  `omitted_entries`/`omitted_bytes`, so a partial read can never be mistaken
-  for a complete one. The events themselves stay in the event store either
-  way; this is a bounded read model over them, not the system of record.
+  whose output outgrew the resident caps, or is longer than the `limit` asked for, reads
+  `truncated: true` with non-zero `omitted_entries` (the entries the caps evicted plus those
+  older than the tail returned) and `omitted_bytes` (the evicted content), so a partial read
+  can never be mistaken for a complete one. The events themselves stay in the event store
+  either way; this is a bounded read model over them, not the system of record.
 
   There is no `:log_store_unavailable` / `:log_store_failed` failure: the
   projection is this GenServer's own state, so for a known run the read always
   succeeds. Declaring failures that cannot occur would misdescribe the
   contract.
   """
-  @spec run_logs(String.t()) ::
+  @spec run_logs(String.t(), keyword()) ::
           {:ok,
            %{
              run_id: String.t(),
@@ -837,9 +852,20 @@ defmodule ForemanServer.ProjectionStore do
              max_limit: pos_integer()
            }}
           | {:error, :run_not_found}
-  def run_logs(run_id) do
-    GenServer.call(__MODULE__, {:run_logs, run_id})
+  def run_logs(run_id, opts \\ []) when is_list(opts) do
+    [limit: limit] = Keyword.validate!(opts, limit: @run_logs_default_limit)
+
+    unless is_integer(limit) and limit in 1..@run_logs_max_limit//1 do
+      raise ArgumentError,
+            "run_logs/2: :limit must be an integer in 1..#{@run_logs_max_limit}, got: #{inspect(limit)}"
+    end
+
+    GenServer.call(__MODULE__, {:run_logs, run_id, limit})
   end
+
+  @doc "The largest `limit:` `run_logs/2` accepts: the entries a run keeps resident (`max_limit` in its result)."
+  @spec run_logs_max_limit() :: pos_integer()
+  def run_logs_max_limit, do: @run_logs_max_limit
 
   @doc "Return the projected state for a phase, or nil if not found."
   @spec phase_projection(String.t()) :: map() | nil
@@ -1469,11 +1495,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call({:run_logs, run_id}, _from, state) do
+  def handle_call({:run_logs, run_id, limit}, _from, state) do
     reply =
       case Map.get(state.runs, run_id) do
         nil -> {:error, :run_not_found}
-        _run -> run_logs_result(state, run_id)
+        _run -> run_logs_result(state, run_id, limit)
       end
 
     {:reply, reply, state}
@@ -5122,10 +5148,6 @@ defmodule ForemanServer.ProjectionStore do
     }
   end
 
-  @run_logs_default_limit 500
-  @run_logs_max_limit 5_000
-  @run_logs_max_bytes 1_048_576
-
   # Match the decoded event STRUCT, exactly as `PrAssociated` above does. The
   # bare `%{run_id: _, worker_id: _, sequence: _, line: _}` map pattern this
   # replaced matched by shape, so renaming a field on `Events.WorkerStdout`
@@ -5224,7 +5246,7 @@ defmodule ForemanServer.ProjectionStore do
 
   defp evict_over_cap(log_state), do: log_state
 
-  defp run_logs_result(state, run_id) do
+  defp run_logs_result(state, run_id, limit) do
     log_state = state |> Map.get(:run_logs, %{}) |> Map.get(run_id, empty_run_log_state())
 
     # `:queue.to_list/1` is already oldest-first (the order events were
@@ -5236,7 +5258,7 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(&log_sort_key/1)
 
     total = log_state.count
-    tail = Enum.take(entries, -@run_logs_default_limit)
+    tail = Enum.take(entries, -limit)
     tail_omitted = max(total - length(tail), 0)
 
     {:ok,
@@ -5244,7 +5266,7 @@ defmodule ForemanServer.ProjectionStore do
        run_id: run_id,
        entries: tail,
        count: length(tail),
-       limit: @run_logs_default_limit,
+       limit: limit,
        truncated: tail_omitted > 0 or log_state.omitted_entries > 0,
        omitted_entries: log_state.omitted_entries + tail_omitted,
        omitted_bytes: log_state.omitted_bytes,

@@ -2,8 +2,9 @@ defmodule ForemanServer.Threads.Transcript do
   @moduledoc """
   Structured, cursor-paged transcript of a thread (`ForemanServer.Threads.Turn`).
 
-  `build_turns/1` is pure; `page/2` gathers projection data and slices the
-  result by cursor. Both doors are supported.
+  `build_turns/1` is pure; `full/2` gathers projection data into every turn of a thread and
+  `page/2` slices that list by cursor. Both doors are supported. `relevant?/2` says which
+  broadcast events can change a thread's turns.
 
   ## Sources
 
@@ -13,6 +14,7 @@ defmodule ForemanServer.Threads.Transcript do
       consecutive entries of one channel inside one phase, with no other turn
       between them and no gap longer than `gap_ms`, collapse into one `:agent`
       turn (stderr turns carry `source: "stderr"`).
+      An entry is a chunk, not a line (see "Chunks"); the group joins its entries with a newline.
     * `RunSteerQueued` on the run stream -> `:operator` / `:steer` turn.
     * `RunPaused` / `RunResumed` / `RunFailed` / `RunCompleted` / `RunCancelled` /
       `RunBlocked` -> `:system` / `:status` turn; so are the steering delivery
@@ -40,21 +42,40 @@ defmodule ForemanServer.Threads.Transcript do
   an append never changes an existing `seq`. A growing agent turn would break
   that, so the trailing agent turn is withheld until it is final: the thread is
   terminal, its phase has ended, or `now_ms - last line > gap_ms` (a later line
-  would then start a new turn anyway).
+  would then start a new turn anyway). A reader that holds no cursor asks for `chunks: true`
+  instead (see "Chunks").
 
-  Sources are bounded: `run_logs/1` keeps a bounded tail. When it dropped
-  entries `omitted_entries` is non-zero and `truncated` is true; `seq` then
-  counts from the oldest retained entry, so cursors are only stable while
-  `omitted_entries` does not grow. `omitted_entries` counts raw log entries,
-  not turns.
+  Sources are bounded: `run_logs/2` keeps a bounded window per run and returns its newest
+  `log_limit` entries (500 unless a reader asks for more). When entries are missing, because
+  the window dropped them or the tail cut them, `omitted_entries` is non-zero and `truncated`
+  is true; `seq` then counts from the oldest retained entry, so cursors are only stable while
+  `omitted_entries` does not grow. `omitted_entries` counts raw log entries, not turns.
 
   Text is passed through `Coordinator.Redact`: the built-in patterns of
   `Overwatch.WorkerLogPolicy.redact/2` (the redactor that already scrubs worker log lines
   before `run_logs` stores them) AND every secret value of the thread's project
   (`ProjectEnvironment.secrets/1`, whatever the secret's name), so a value an agent echoed into
   its output, or an event recorded before the redaction existed, is covered at read time. The
-  list is resolved ONCE per `page/2`, never per entry; a thread with no project, or a project
+  list is resolved ONCE per `full/2`, never per entry; a thread with no project, or a project
   whose list cannot be built, is redacted by the patterns alone.
+
+  ## Chunks
+
+  A stored output entry is a CHUNK exactly as the harness produced it, not a line: a streamed
+  message is many `output_text_delta` chunks followed by ONE `output_text_final` chunk that holds
+  the whole message again, stderr chunks end with their own newline and command output carries
+  its own. The grouping above joins a group's entries with a newline and keeps every one of
+  them; that text and its numbering are what cursor readers (`page/2`, the SSE tail, MCP)
+  resume against, so they do not change.
+
+  `full/2` with `chunks: true` skips the grouping: every stdout / stderr entry is its own
+  `:agent` / `:text` turn, `text` exactly as stored, `source` its channel, `at` its time.
+  Nothing is grouped, so nothing grows: the trailing-turn rule does not apply and `gap_ms` /
+  `now_ms` have no effect on output turns. Steer, lifecycle, verdict and jobsite turns, the
+  ordering, the redaction and `terminal` are the same. It is for a reader that re-reads the whole
+  list each time and assembles the conversation itself (the workspace's thread pane,
+  `ForemanServerWeb.Workspace.ThreadView.log/3`), which needs the chunks to tell a streamed
+  message from its final repeat. `page/2` never passes it.
   """
 
   alias ForemanServer.Coordinator.Redact
@@ -98,7 +119,8 @@ defmodule ForemanServer.Threads.Transcript do
           optional(:omitted_entries) => non_neg_integer(),
           optional(:terminal?) => boolean(),
           optional(:now_ms) => integer() | nil,
-          optional(:gap_ms) => non_neg_integer()
+          optional(:gap_ms) => non_neg_integer(),
+          optional(:chunks) => boolean()
         }
 
   defmodule Page do
@@ -127,6 +149,22 @@ defmodule ForemanServer.Threads.Transcript do
     end
   end
 
+  defmodule Full do
+    @moduledoc """
+    Every turn of a thread, for a reader that re-reads the whole list each time instead of
+    following a cursor (the workspace's thread pane). `Page` is the cursor slice of the same list.
+    """
+    @enforce_keys [:turns, :truncated, :omitted_entries, :terminal]
+    defstruct [:turns, :truncated, :omitted_entries, :terminal]
+
+    @type t :: %__MODULE__{
+            turns: [ForemanServer.Threads.Turn.t()],
+            truncated: boolean(),
+            omitted_entries: non_neg_integer(),
+            terminal: boolean()
+          }
+  end
+
   @doc "Default and maximum page size."
   @spec limits() :: %{default: pos_integer(), max: pos_integer()}
   def limits, do: %{default: @default_limit, max: @max_limit}
@@ -149,7 +187,7 @@ defmodule ForemanServer.Threads.Transcript do
     iterations = Map.get(inputs, :jobsite_iterations, [])
 
     items =
-      log_items(Map.get(inputs, :log_entries, []), phases) ++
+      log_items(Map.get(inputs, :log_entries, []), phases, Map.get(inputs, :chunks, false)) ++
         steer_items(Map.get(inputs, :steer, [])) ++
         system_items(Map.get(inputs, :run_events, [])) ++
         iteration_items(iterations) ++
@@ -180,27 +218,39 @@ defmodule ForemanServer.Threads.Transcript do
   @rank_agent 2
   @rank_review 3
 
-  defp log_items(entries, phases) do
+  defp log_items(entries, phases, chunks?) do
     {items, _} =
       Enum.map_reduce(entries, 0, fn entry, floor ->
         at = Map.get(entry, :at)
         # worker clocks may disagree; arrival order wins, so time never goes backwards
         sort_at = max(at || floor, floor)
-
-        item = %{
-          rank: @rank_agent,
-          sort_at: sort_at,
-          at: at,
-          type: :log,
-          channel: entry.channel,
-          text: entry.content,
-          phase: phase_of(phases, sort_at)
-        }
-
-        {item, sort_at}
+        {log_item(entry, at, sort_at, phases, chunks?), sort_at}
       end)
 
     items
+  end
+
+  # `chunks: true`: one turn per entry, text exactly as stored; nothing groups, nothing grows.
+  defp log_item(entry, at, sort_at, _phases, true) do
+    %{
+      rank: @rank_agent,
+      sort_at: sort_at,
+      at: at,
+      type: :turn,
+      turn: turn(:agent, :text, entry.content, at, entry.channel)
+    }
+  end
+
+  defp log_item(entry, at, sort_at, phases, false) do
+    %{
+      rank: @rank_agent,
+      sort_at: sort_at,
+      at: at,
+      type: :log,
+      channel: entry.channel,
+      text: entry.content,
+      phase: phase_of(phases, sort_at)
+    }
   end
 
   defp steer_items(steer) do
@@ -397,6 +447,33 @@ defmodule ForemanServer.Threads.Transcript do
   # ---------------------------------------------------------------------------
 
   @doc """
+  Every turn of the thread, in order, as `Full`.
+
+  Options: `:gap_ms`, `:now_ms` (see the moduledoc on when the trailing agent turn is
+  final), `:chunks` (default false: every output entry is its own turn and nothing is
+  grouped, see "Chunks" in the moduledoc) and `:log_limit` (workflow door: how many of the
+  newest stored output entries to read, `ProjectionStore.run_logs/2`'s `limit:`; default its
+  500-entry tail, at most `ProjectionStore.run_logs_max_limit/0`, anything else raises).
+  The sources are gathered and redacted here and only here: `page/2` is this list sliced by
+  cursor, and never asks for chunks or a longer log.
+  """
+  @spec full(String.t(), keyword()) :: {:ok, Full.t()} | {:error, :thread_not_found | term()}
+  def full(thread_id, opts \\ []) when is_binary(thread_id) and is_list(opts) do
+    with {:ok, thread} <- Threads.get(thread_id),
+         {:ok, inputs} <- gather(thread, Redact.redactor(thread.project_id), opts) do
+      built = build_turns(inputs)
+
+      {:ok,
+       %Full{
+         turns: built.turns,
+         truncated: built.truncated,
+         omitted_entries: built.omitted_entries,
+         terminal: inputs.terminal?
+       }}
+    end
+  end
+
+  @doc """
   Page of turns with `seq > after`.
 
   Options: `:after` (integer >= -1, default -1), `:limit` (1..#{@max_limit},
@@ -418,22 +495,49 @@ defmodule ForemanServer.Threads.Transcript do
         {:error, {:invalid_option, :limit}}
 
       true ->
-        with {:ok, thread} <- Threads.get(thread_id),
-             {:ok, inputs} <- gather(thread, Redact.redactor(thread.project_id), opts) do
-          built = build_turns(inputs)
-          turns = built.turns |> Enum.filter(&(&1.seq > cursor)) |> Enum.take(limit)
+        with {:ok, %Full{} = full} <- full(thread_id, Keyword.take(opts, [:gap_ms, :now_ms])) do
+          turns = full.turns |> Enum.filter(&(&1.seq > cursor)) |> Enum.take(limit)
 
           {:ok,
            %Page{
              turns: turns,
              next_cursor: turns |> List.last() |> then(&if(&1, do: &1.seq, else: cursor)),
-             truncated: built.truncated,
-             omitted_entries: built.omitted_entries,
-             terminal: inputs.terminal?
+             truncated: full.truncated,
+             omitted_entries: full.omitted_entries,
+             terminal: full.terminal
            }}
         end
     end
   end
+
+  @doc """
+  Whether a broadcast `ProjectionStore` event can change the thread's turns.
+
+  An event that names another run or jobsite cannot; an event that names nothing readable is
+  treated as relevant, because a re-read costs less than a missed turn. One function for every
+  reader of the event stream (the SSE tail of `ThreadTranscriptController` and the workspace's
+  thread pane), so they cannot disagree about which events matter.
+  """
+  @spec relevant?(term(), String.t()) :: boolean()
+  def relevant?(event, thread_id) when is_binary(thread_id) do
+    suffix = thread_id |> String.split(":", parts: 2) |> List.last()
+    data = field(event, :data) || field(event, :payload) || %{}
+
+    candidates =
+      [
+        field(data, :run_id),
+        field(data, :jobsite_id),
+        field(data, :subject_id),
+        field(event, :stream_uuid),
+        field(event, :stream_id)
+      ]
+      |> Enum.filter(&is_binary/1)
+
+    candidates == [] or Enum.any?(candidates, &String.contains?(&1, suffix))
+  end
+
+  defp field(%{} = map, key), do: fetch(map, key)
+  defp field(_other, _key), do: nil
 
   defp gather(%Threads.Thread{door: :workflow, id: "run:" <> run_id}, redact, opts) do
     # Read the run (and so `terminal?`) FIRST. Each ProjectionStore call is a
@@ -443,7 +547,7 @@ defmodule ForemanServer.Threads.Transcript do
     # `terminal? = true` with events that lacked the closing turn and end
     # without ever emitting it.
     with %{} = run <- ProjectionStore.run(run_id),
-         {:ok, logs} <- ProjectionStore.run_logs(run_id),
+         {:ok, logs} <- ProjectionStore.run_logs(run_id, run_logs_opts(opts)),
          {:ok, events} <- ProjectionStore.run_events(run_id) do
       {steer, system} = split_events(events, redact)
 
@@ -486,9 +590,17 @@ defmodule ForemanServer.Threads.Transcript do
     end
   end
 
+  # The workspace reads a longer tail than the API: only `:log_limit` reaches the store.
+  defp run_logs_opts(opts) do
+    case Keyword.fetch(opts, :log_limit) do
+      {:ok, limit} -> [limit: limit]
+      :error -> []
+    end
+  end
+
   defp with_opts(inputs, opts) do
     opts
-    |> Keyword.take([:gap_ms, :now_ms])
+    |> Keyword.take([:gap_ms, :now_ms, :chunks])
     |> Enum.reduce(inputs, fn {key, value}, acc -> Map.put(acc, key, value) end)
   end
 

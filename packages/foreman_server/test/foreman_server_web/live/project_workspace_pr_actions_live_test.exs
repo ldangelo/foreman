@@ -8,6 +8,8 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
+  alias ForemanServerWeb.Workspace.Components
+
   @endpoint ForemanServerWeb.Endpoint
   @token "project-workspace-pr-actions-token"
 
@@ -105,6 +107,13 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
     view
   end
 
+  # The PR action buttons live only in the open thread's pane.
+  defp mount_thread(id, run) do
+    path = Components.thread_path(id, "run:" <> run.run_id)
+    {:ok, view, _html} = live(build_conn(), "#{path}?token=#{@token}")
+    view
+  end
+
   defp btn(run, kind), do: "#pr-action-run\\:#{run.run_id}-#{kind}"
   defp reason(run, kind), do: "#pr-action-run\\:#{run.run_id}-#{kind}-reason"
 
@@ -126,7 +135,7 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
 
   test "failing CI enables Fix CI, which dispatches run.pr.fix_ci for the run", %{id: id} do
     run = id |> completed_run!("Fix me") |> with_pr!(checks: "failing")
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
     assert has_element?(view, "#group-waiting_on_you #thread-run\\:#{run.run_id}")
     refute has_element?(view, "#{btn(run, :fix_ci)}[disabled]")
@@ -143,7 +152,7 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
 
   test "review comments enable Address comments (kind comments)", %{id: id} do
     run = id |> completed_run!("Comments") |> with_pr!(comments: ["c1"])
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
     assert has_element?(view, "#{btn(run, :fix_ci)}[disabled]")
     assert has_element?(view, reason(run, :fix_ci), "CI is not failing")
@@ -162,7 +171,7 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
 
   test "a conflicted PR enables Resolve conflicts (kind conflicts)", %{id: id} do
     run = id |> completed_run!("Conflicted") |> with_pr!(status: "conflicted")
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
     assert has_element?(view, "#thread-run\\:#{run.run_id}")
     refute has_element?(view, "#{btn(run, :resolve_conflicts)}[disabled]")
@@ -174,7 +183,7 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
   test "a fix already running disables the buttons with the reason", %{id: id} do
     run = id |> completed_run!("Busy") |> with_pr!(checks: "failing")
     command!(run, "run.pr.fix_ci", %{pr_url: run.pr_url, trigger: "operator"})
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
     assert has_element?(view, "#{btn(run, :fix_ci)}[disabled]")
     assert has_element?(view, reason(run, :fix_ci), "already running")
@@ -182,7 +191,7 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
 
   test "a completed run without a PR offers Create PR and dispatches run.pr.create", %{id: id} do
     run = completed_run!(id, "No PR yet")
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
     refute has_element?(view, "#{btn(run, :create_pr)}[disabled]")
     assert has_element?(view, "#{btn(run, :fix_ci)}[disabled]")
@@ -208,7 +217,7 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
 
   test "Create PR on a run with no pushed branch fails with a readable reason", %{id: id} do
     run = completed_run!(id, "Nothing pushed")
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
     view |> element(btn(run, :create_pr)) |> render_click()
 
@@ -218,9 +227,9 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
 
   test "there is no merge or approve control anywhere in the PR actions", %{id: id} do
     run = id |> completed_run!("Mergeable") |> with_pr!(checks: "failing", comments: ["c1"])
-    view = mount_view(id)
+    view = mount_thread(id, run)
 
-    buttons = view |> element("#thread-run\\:#{run.run_id}") |> render()
+    buttons = view |> element("#thread-pane") |> render()
 
     refute buttons =~ ~r/<button[^>]*>\s*[^<]*(merge|approve)/i
     refute buttons =~ ~r/phx-click="[^"]*(merge|approve)/i

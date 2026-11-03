@@ -1,10 +1,15 @@
 defmodule ForemanServerWeb.Workspace.Components do
   @moduledoc """
-  Function components of the project workspace. Everything user- or
-  agent-authored (thread titles, branches, reports, conversation text, memory
-  content) is interpolated through HEEx, which escapes it; no component calls
-  `raw/1` or `Phoenix.HTML.raw/1`. URLs coming from projections are only turned
-  into links when they are `http(s)` URLs (`safe_url/1`).
+  Function components of the project workspace: the thread sidebar (`thread_sidebar/1`), the
+  open thread's pane with its conversation and controls (`thread_pane/1`), the coordinator
+  conversation, the operator questions, the project-knowledge panels and the Library / Pull
+  requests / Scheduled tabs. Everything user- or agent-authored (thread titles, branches,
+  reports, conversation text, memory content) is interpolated through HEEx, which escapes it;
+  no component calls `raw/1` or `Phoenix.HTML.raw/1`. URLs coming from projections are only
+  turned into links when they are `http(s)` URLs (`safe_url/1`).
+
+  Every link to the workspace or to one of its threads is built by `project_path/1` and
+  `thread_path/2`.
   """
 
   use Phoenix.Component
@@ -12,8 +17,16 @@ defmodule ForemanServerWeb.Workspace.Components do
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Library
   alias ForemanServer.Overview.{Group, ThreadCard}
-  alias ForemanServerWeb.Workspace.LibraryUpload
+  alias ForemanServerWeb.Workspace.{LibraryUpload, ThreadView}
+  alias ForemanServerWeb.Workspace.ThreadView.Log
+  alias Phoenix.LiveView.JS
   alias Phoenix.LiveView.UploadConfig
+
+  # A system message is collapsed behind a <details> when it is this long or longer, or
+  # when it spans more than this many lines; the client preserves the toggle across
+  # re-renders (JS.ignore_attributes("open") on phx-mounted).
+  @system_collapse_chars 280
+  @system_collapse_lines 4
 
   @group_titles %{
     ready_for_review: "Ready for review",
@@ -27,6 +40,55 @@ defmodule ForemanServerWeb.Workspace.Components do
   @doc "Display title of an Overview group."
   @spec group_title(Group.group()) :: String.t()
   def group_title(group), do: Map.fetch!(@group_titles, group)
+
+  # The sidebar lists the Overview's groups in THIS order (what needs the operator first, not
+  # `Group.all/0`'s), and folds the `:earlier` ones into one "Earlier" disclosure. The one table
+  # of the order and of which groups fold; the titles are `@group_titles`. It must name every
+  # group the Overview has, so a group added there cannot silently go unlisted.
+  @sidebar_groups [
+    waiting_on_you: :listed,
+    working: :listed,
+    landing: :listed,
+    ready_for_review: :listed,
+    idle: :earlier,
+    resolved: :earlier
+  ]
+
+  if Enum.sort(Keyword.keys(@sidebar_groups)) != Enum.sort(Group.all()) do
+    raise ArgumentError,
+          "@sidebar_groups must name exactly the groups of Overview.Group.all/0: " <>
+            inspect(Group.all())
+  end
+
+  @doc """
+  Path of the project workspace (the coordinator conversation). `token` is the dashboard token
+  the page was opened with, or nil: the dashboard takes it only as a header or as `?token=` (no
+  cookie), so an in-page link has to carry it for a reload of the page it leads to to be
+  answered. Every link of the page is built by `project_path/2`, `thread_path/3` and
+  `settings_path/2`.
+  """
+  @spec project_path(String.t(), String.t() | nil) :: String.t()
+  def project_path(project_id, token \\ nil), do: base_path(project_id) <> query(token)
+
+  @doc """
+  Path of one thread's conversation. Thread ids hold a colon (`run:<id>`, `jobsite:<id>`), so the
+  id is percent-encoded; every link to a thread, in the page and in tests, is built here.
+  """
+  @spec thread_path(String.t(), String.t(), String.t() | nil) :: String.t()
+  def thread_path(project_id, thread_id, token \\ nil) do
+    base_path(project_id) <>
+      "/threads/" <> URI.encode(thread_id, &URI.char_unreserved?/1) <> query(token)
+  end
+
+  @doc "Path of the project's settings page (see `project_path/2` for `token`)."
+  @spec settings_path(String.t(), String.t() | nil) :: String.t()
+  def settings_path(project_id, token \\ nil),
+    do: base_path(project_id) <> "/settings" <> query(token)
+
+  defp base_path(project_id), do: "/dashboard/projects/#{project_id}"
+
+  defp query(nil), do: ""
+  defp query(token) when is_binary(token), do: "?token=" <> URI.encode_www_form(token)
 
   @doc "`url` when it is an http(s) URL, else nil (blocks `javascript:` links)."
   @spec safe_url(term()) :: String.t() | nil
@@ -44,125 +106,286 @@ defmodule ForemanServerWeb.Workspace.Components do
   def safe_url(_), do: nil
 
   attr(:instructions, :string, default: nil)
+  attr(:settings_path, :string, required: true)
   attr(:memory_topics, :any, required: true)
   attr(:library_entries, :any, required: true)
-  attr(:overview, :map, required: true)
+  attr(:upload, UploadConfig, required: true)
+  attr(:folder_upload, UploadConfig, required: true)
+  attr(:library_name, :string, default: "")
+  attr(:library_folder_name, :string, default: "")
+  attr(:library_limits, :map, required: true)
 
   @doc """
-  The read-only side panels: the project's instructions, its memory topics
-  (`ProjectMemory.Topic`, name and description), its library entries
-  (`Library.Entry`, name and file count) and the titles of its threads (the
-  Overview cards, flattened in group order). Display only; nothing here mutates.
-  `memory_topics`/`library_entries` are the entry lists, or `:error` when the
-  read failed, which renders an unavailable state distinct from an empty list.
+  The "project knowledge" cards: the project's instructions (clamped, with a
+  Show-all reveal whose open state the client preserves), its memory topics
+  (`ProjectMemory.Topic`, name and description) and its library entries
+  (`Library.Entry`, name and file count) with the add-files/add-folder upload
+  forms. `memory_topics`/`library_entries` are the entry lists, or `:error`
+  when the read failed, which renders an unavailable state distinct from an
+  empty list. The threads are in the sidebar (`thread_sidebar/1`), not here.
   """
   def info_panels(assigns) do
-    assigns = assign(assigns, :threads, flatten_threads(assigns.overview))
-
     ~H"""
     <section class="ws-panel" aria-labelledby="panel-instructions-title">
-      <h2 id="panel-instructions-title">Instructions</h2>
-      <p :if={is_nil(@instructions)} class="ws-muted">No instructions set.</p>
-      <p :if={@instructions} class="ws-msg">{@instructions}</p>
+      <div class="ws-panel-head">
+        <h2 id="panel-instructions-title">Instructions</h2>
+        <.link navigate={@settings_path} class="btn--link">Edit</.link>
+      </div>
+      <%= if @instructions do %>
+        <p class="ws-msg ws-clamp-8">{@instructions}</p>
+        <details class="ws-showall" phx-mounted={JS.ignore_attributes("open")}>
+          <summary class="btn--link">Show all</summary>
+          <p class="ws-msg">{@instructions}</p>
+        </details>
+      <% else %>
+        <p class="ws-muted">No instructions yet.</p>
+        <.link navigate={@settings_path} class="btn--link">Add instructions</.link>
+      <% end %>
     </section>
     <section class="ws-panel" aria-labelledby="panel-memory-title">
-      <h2 id="panel-memory-title">Memory topics <span :if={is_list(@memory_topics)} class="ws-muted">({length(@memory_topics)})</span></h2>
-      <p :if={@memory_topics == :error} class="ws-error">Memory topics unavailable.</p>
-      <p :if={@memory_topics == []} class="ws-muted">No memory topics.</p>
+      <div class="ws-panel-head">
+        <h2 id="panel-memory-title">Memory</h2>
+        <span :if={is_list(@memory_topics)} class="ws-count">{length(@memory_topics)}</span>
+      </div>
+      <p :if={@memory_topics == :error} class="ws-error">Memory unavailable.</p>
+      <p :if={@memory_topics == []} class="ws-muted">No memory yet. Agents save durable facts here.</p>
       <ul :if={is_list(@memory_topics) and @memory_topics != []} class="ws-panel-list">
         <li :for={topic <- @memory_topics}>
           <strong>{topic.name}</strong>
-          <span :if={topic.description != ""} class="ws-muted"> - {topic.description}</span>
+          <span :if={topic.description != ""} class="ws-muted ws-clamp-1">{topic.description}</span>
         </li>
       </ul>
     </section>
-    <section class="ws-panel" aria-labelledby="panel-library-title">
-      <h2 id="panel-library-title">Library files <span :if={is_list(@library_entries)} class="ws-muted">({length(@library_entries)})</span></h2>
-      <p :if={@library_entries == :error} class="ws-error">Library files unavailable.</p>
-      <p :if={@library_entries == []} class="ws-muted">No library files.</p>
+    <section class="ws-panel" aria-labelledby="panel-files-title">
+      <div class="ws-panel-head">
+        <h2 id="panel-files-title">Files</h2>
+        <span :if={is_list(@library_entries)} class="ws-count">{length(@library_entries)}</span>
+      </div>
+      <p :if={@library_entries == :error} class="ws-error">Files unavailable.</p>
+      <p :if={@library_entries == []} class="ws-muted">No files yet.</p>
       <ul :if={is_list(@library_entries) and @library_entries != []} class="ws-panel-list">
-        <li :for={entry <- @library_entries}>
+        <li :for={entry <- @library_entries} class="ws-ellipsis">
           <strong>{entry.name}</strong>
-          <span class="ws-muted"> - {entry.file_count} {file_word(entry.file_count)}</span>
+          <span class="ws-muted"> · {entry.file_count} {file_word(entry.file_count)}</span>
         </li>
       </ul>
-    </section>
-    <section class="ws-panel" aria-labelledby="panel-threads-title">
-      <h2 id="panel-threads-title">Threads <span class="ws-muted">({length(@threads)})</span></h2>
-      <p :if={@threads == []} class="ws-muted">No threads.</p>
-      <ul :if={@threads != []} class="ws-panel-list">
-        <li :for={card <- @threads}>
-          <strong>{card.title}</strong>
-          <span :if={card.status} class="ws-muted"> - {card.status}</span>
-        </li>
-      </ul>
+      <details class="ws-add-files" phx-mounted={JS.ignore_attributes("open")}>
+        <summary class="btn ws-btn">Add files</summary>
+        <.library_upload upload={@upload} library_name={@library_name} library_limits={@library_limits} />
+        <.library_folder_upload upload={@folder_upload} folder_name={@library_folder_name} library_limits={@library_limits} />
+      </details>
     </section>
     """
   end
-
-  # The Overview cards in group order, flattened to one read-only list.
-  defp flatten_threads(overview),
-    do: Enum.flat_map(Group.all(), &Map.get(overview.groups, &1, []))
 
   defp file_word(1), do: "file"
   defp file_word(_), do: "files"
 
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
   attr(:overview, :map, required: true)
-  attr(:confirm_stop, :string, default: nil)
-  attr(:steer_nonce, :string, required: true)
+  attr(:selected_id, :string, default: nil)
+  attr(:status, :map, default: nil)
 
-  @doc "The Overview pane: one labelled section per state group."
-  def overview_pane(assigns) do
-    assigns = assign(assigns, :groups, Group.all())
+  @doc """
+  The thread sidebar, `<nav id="thread-list">`: "Project chat" first (the coordinator, selected
+  while no thread is open, with its health chip), then the project's threads by Overview group in
+  the order of `@sidebar_groups`, empty groups left out. Idle and resolved threads fold into one
+  "Earlier" disclosure that starts open only when the selected thread is inside it. Every row
+  links by patch (`thread_path/3`) to the thread's conversation; the attention dot sits on the
+  heading while `overview.attention.needed`. `selected_id` is the open thread's id, nil for the
+  project chat; `token` rides every link (see `project_path/2`).
+  """
+  def thread_sidebar(assigns) do
+    groups = assigns.overview.groups
+
+    sections =
+      for {group, placement} <- @sidebar_groups,
+          cards = Map.get(groups, group, []),
+          cards != [],
+          do: {placement, group, cards}
+
+    listed = for {:listed, group, cards} <- sections, do: {group, cards}
+    earlier = for {:earlier, group, cards} <- sections, do: {group, cards}
+
+    {chat_label, chat_kind} =
+      if assigns.status, do: coordinator_chip(assigns.status), else: {nil, nil}
+
+    assigns =
+      assigns
+      |> assign(:listed, listed)
+      |> assign(:earlier, earlier)
+      |> assign(:earlier_count, Enum.sum_by(earlier, fn {_group, cards} -> length(cards) end))
+      |> assign(:earlier_open?, selected_in?(earlier, assigns.selected_id))
+      |> assign(:chat_label, chat_label)
+      |> assign(:chat_kind, chat_kind)
+      |> assign(:now, System.system_time(:millisecond))
 
     ~H"""
-    <section id="overview-pane" aria-labelledby="overview-heading">
-      <h2 id="overview-heading">
-        Overview
+    <nav id="thread-list" class="ws-threads" aria-label="Threads">
+      <.link
+        id="thread-list-chat"
+        patch={project_path(@project_id, @token)}
+        class="thread-row thread-row--chat"
+        aria-current={if(is_nil(@selected_id), do: "page")}
+      >
+        <span class="thread-row-title">Project chat</span>
+        <span :if={@chat_label} class={["chip", "chip--" <> @chat_kind]}>{@chat_label}</span>
+      </.link>
+      <h2 id="threads-heading" class="ws-group-title">
+        Threads
         <span :if={@overview.attention.needed} class="ws-dot" role="img" aria-label={"#{@overview.attention.count} threads need attention"}></span>
       </h2>
-      <section :for={group <- @groups} id={"group-#{group}"} aria-labelledby={"group-#{group}-title"}>
-        <h3 id={"group-#{group}-title"}>{group_title(group)} <span class="ws-muted">({Map.get(@overview.counts, group, 0)})</span></h3>
-        <p :if={Map.get(@overview.groups, group, []) == []} class="ws-muted">Nothing here.</p>
-        <.thread_card
-          :for={card <- Map.get(@overview.groups, group, [])}
-          card={card}
-          confirm_stop={@confirm_stop}
-          steer_nonce={@steer_nonce}
-        />
+      <p :if={@listed == [] and @earlier == []} class="ws-muted">No threads yet.</p>
+      <section :for={{group, cards} <- @listed} id={"group-#{group}"} aria-labelledby={"group-#{group}-title"}>
+        <h3 id={"group-#{group}-title"} class="ws-group-title">{group_title(group)} <span class="ws-count">({length(cards)})</span></h3>
+        <ul class="thread-rows" role="list">
+          <li :for={card <- cards}>
+            <.thread_row card={card} project_id={@project_id} token={@token} selected_id={@selected_id} now={@now} />
+          </li>
+        </ul>
       </section>
-    </section>
+      <details :if={@earlier != []} id="threads-earlier" class="thread-earlier" open={@earlier_open?} phx-mounted={JS.ignore_attributes("open")}>
+        <summary class="ws-group-title">Earlier ({@earlier_count})</summary>
+        <ul :for={{group, cards} <- @earlier} id={"group-#{group}"} class="thread-rows" role="list">
+          <li :for={card <- cards}>
+            <.thread_row card={card} project_id={@project_id} token={@token} selected_id={@selected_id} now={@now} />
+          </li>
+        </ul>
+      </details>
+    </nav>
+    """
+  end
+
+  defp selected_in?(sections, selected_id),
+    do:
+      Enum.any?(sections, fn {_group, cards} ->
+        Enum.any?(cards, &(&1.thread_id == selected_id))
+      end)
+
+  attr(:card, ThreadCard, required: true)
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
+  attr(:selected_id, :string, default: nil)
+  attr(:now, :integer, required: true)
+
+  # One sidebar row: the title on one line (ellipsis, the whole title on hover), then the status
+  # label in the chip's colour and how long ago the thread last moved (its full time on hover).
+  defp thread_row(assigns) do
+    {label, kind} = thread_chip(assigns.card)
+    {_display, updated_title} = message_time(assigns.card.updated_at)
+
+    assigns =
+      assigns
+      |> assign(:label, label)
+      |> assign(:kind, kind)
+      |> assign(:age, ThreadView.age(assigns.card.updated_at, assigns.now))
+      |> assign(:age_title, updated_title)
+
+    ~H"""
+    <.link
+      id={"thread-#{@card.thread_id}"}
+      patch={thread_path(@project_id, @card.thread_id, @token)}
+      class="thread-row"
+      aria-current={if(@card.thread_id == @selected_id, do: "page")}
+    >
+      <span class="thread-row-title" title={@card.title}>{@card.title}</span>
+      <span class="thread-row-meta">
+        <span class={["thread-dot", "thread-dot--" <> @kind]} aria-hidden="true"></span>
+        <span>{@label}</span>
+        <span :if={@age} title={@age_title}>· {@age}</span>
+      </span>
+    </.link>
     """
   end
 
   attr(:card, ThreadCard, required: true)
+
+  attr(:log, :any,
+    required: true,
+    doc: "a `ThreadView.Log`, or `:unavailable` when the conversation could not be read"
+  )
+
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
   attr(:confirm_stop, :string, default: nil)
   attr(:steer_nonce, :string, required: true)
 
-  @doc "One thread card with its actions."
-  def thread_card(assigns) do
+  @doc """
+  One thread's conversation in the main column: a light header (the way back, the title and
+  status chip, one line of branch / PR state / PR link, the failure lines and the card's hint),
+  its controls (the `action_control/1` buttons, the PR actions, enabled ones first with a
+  disabled one's reason on hover and for assistive technology, and the pending tool approvals;
+  they send the same events the thread cards sent), the log of what the agent, the operator and
+  Foreman said, and the steer composer while the thread takes steering.
+  """
+  def thread_pane(assigns) do
+    {chip_label, chip_kind} = thread_chip(assigns.card)
+
+    assigns =
+      assigns
+      |> assign(:chip_label, chip_label)
+      |> assign(:chip_kind, chip_kind)
+      |> assign(:buttons, Enum.reject(assigns.card.actions, &(&1 == "thread.steer")))
+      |> assign(:pr_actions, Enum.sort_by(assigns.card.pr_actions, &(not &1.enabled)))
+      |> assign(:steerable?, "thread.steer" in assigns.card.actions)
+
     ~H"""
-    <article class="ws-card" id={"thread-#{@card.thread_id}"} aria-label={"Thread: " <> @card.title}>
-      <h4>{@card.title}</h4>
-      <p class="ws-muted">
-        <span>{@card.status}</span>
-        <span :if={@card.branch}> · branch {@card.branch}</span>
-        <span :if={@card.pr_state}> · PR {@card.pr_state}</span>
-      </p>
-      <p :if={safe_url(@card.pr_url)}><a href={safe_url(@card.pr_url)} rel="noopener noreferrer" target="_blank">Pull request</a></p>
-      <p :if={@card.last_report}>
-        Last report: <strong>{@card.last_report.verdict}</strong>
-        <span :if={@card.last_report.summary}> - {@card.last_report.summary}</span>
-      </p>
-      <p :if={@card.failure_reason} class="ws-error">Failure: {@card.failure_reason}</p>
-      <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
-      <p :if={@card.reason == :changes_requested} class="ws-error">Changes requested: a reviewer asked for changes on the PR.</p>
-      <p :if={@card.reason == :review_threads} class="ws-error">Review threads unresolved: the PR has open review comments.</p>
-      <p :if={@card.hint} class="ws-muted">{@card.hint}</p>
-      <div class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
-        <%= for action <- @card.actions do %>
-          <.action_control action={action} card={@card} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
-        <% end %>
+    <section id="thread-pane" class="ws-card thread-pane" aria-label={"Thread: " <> @card.title}>
+      <header class="thread-pane-head">
+        <.link patch={project_path(@project_id, @token)} class="btn--link thread-back"><span aria-hidden="true">←</span> Project chat</.link>
+        <div class="thread-pane-titlerow">
+          <h2 class="thread-pane-title" title={@card.title}>{@card.title}</h2>
+          <span class={["chip", "chip--" <> @chip_kind]}>{@chip_label}</span>
+        </div>
+        <p :if={@card.branch || @card.pr_state || safe_url(@card.pr_url)} class="thread-meta ws-muted">
+          <code :if={@card.branch} class="thread-branch" title={@card.branch}>{@card.branch}</code>
+          <span :if={@card.branch && @card.pr_state} aria-hidden="true">·</span>
+          <span :if={@card.pr_state}>PR {@card.pr_state}</span>
+          <span :if={(@card.branch || @card.pr_state) && safe_url(@card.pr_url)} aria-hidden="true">·</span>
+          <a :if={safe_url(@card.pr_url)} href={safe_url(@card.pr_url)} class="btn--link" rel="noopener noreferrer" target="_blank">Open PR</a>
+        </p>
+        <p :if={@card.failure_reason} class="ws-error">Failure: {@card.failure_reason}</p>
+        <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
+        <p :if={@card.reason == :changes_requested} class="ws-error">Changes requested: a reviewer asked for changes on the PR.</p>
+        <p :if={@card.reason == :review_threads} class="ws-error">Review threads unresolved: the PR has open review comments.</p>
+        <p :if={@card.hint} class="thread-hint ws-muted">{@card.hint}</p>
+      </header>
+      <div :if={@buttons != [] or @card.pr_actions != []} class="thread-controls">
+        <div :if={@buttons != []} class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
+          <%= for action <- @buttons do %>
+            <.action_control action={action} card={@card} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
+          <% end %>
+        </div>
+        <div
+          :if={@card.pr_actions != []}
+          class="thread-pr-actions"
+          role="group"
+          aria-label={"Pull request actions for " <> @card.title}
+        >
+          <span :for={a <- @pr_actions} class="ws-pr-action">
+            <button
+              type="button"
+              id={"pr-action-#{@card.thread_id}-#{a.kind}"}
+              phx-click="pr_action"
+              phx-value-kind={a.kind}
+              phx-value-thread-id={@card.thread_id}
+              phx-value-pr-url={a.pr_url}
+              disabled={not a.enabled}
+              title={a.reason}
+              aria-describedby={if(a.reason, do: "pr-action-#{@card.thread_id}-#{a.kind}-reason")}
+            >
+              {a.label}
+            </button>
+            <span
+              :if={a.reason}
+              id={"pr-action-#{@card.thread_id}-#{a.kind}-reason"}
+              class="ws-vh"
+            >
+              {a.reason}
+            </span>
+          </span>
+        </div>
       </div>
       <div
         :if={@card.approvals != []}
@@ -201,40 +424,116 @@ defmodule ForemanServerWeb.Workspace.Components do
           </button>
         </div>
       </div>
-      <div
-        :if={@card.pr_actions != []}
-        class="thread-pr-actions"
-        role="group"
-        aria-label={"Pull request actions for " <> @card.title}
-      >
-        <span :for={a <- @card.pr_actions} class="ws-pr-action">
-          <button
-            type="button"
-            id={"pr-action-#{@card.thread_id}-#{a.kind}"}
-            phx-click="pr_action"
-            phx-value-kind={a.kind}
-            phx-value-thread-id={@card.thread_id}
-            phx-value-pr-url={a.pr_url}
-            disabled={not a.enabled}
-            aria-describedby={if(a.reason, do: "pr-action-#{@card.thread_id}-#{a.kind}-reason")}
-          >
-            {a.label}
-          </button>
-          <span
-            :if={a.reason}
-            id={"pr-action-#{@card.thread_id}-#{a.kind}-reason"}
-            class="ws-muted"
-          >
-            {a.reason}
-          </span>
-        </span>
+      <.thread_log log={@log} />
+      <.action_control :if={@steerable?} action="thread.steer" card={@card} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
+      <p :if={not @steerable?} class="ws-muted thread-note">{steer_note(@log)}</p>
+    </section>
+    """
+  end
+
+  # Why there is no composer: the thread is over, or it does not take steering in its state.
+  defp steer_note(%Log{terminal?: true}), do: "This thread is finished."
+  defp steer_note(%Log{terminal?: false}), do: "This thread is not taking steering right now."
+  defp steer_note(:unavailable), do: "Steering is not available for this thread right now."
+
+  attr(:log, :any, required: true)
+
+  # The conversation, newest at the bottom and pinned there (the same `column-reverse` box as
+  # the coordinator's `#conversation-log`).
+  defp thread_log(%{log: :unavailable} = assigns) do
+    ~H"""
+    <div id="thread-log" class="conv-transcript" role="log" aria-live="polite" aria-label="Thread conversation">
+      <div class="conv-inner">
+        <p class="ws-muted">The conversation cannot be read right now.</p>
       </div>
+    </div>
+    """
+  end
+
+  defp thread_log(%{log: %Log{}} = assigns) do
+    ~H"""
+    <div id="thread-log" class="conv-transcript" role="log" aria-live="polite" aria-label="Thread conversation">
+      <div class="conv-inner">
+        <p :if={@log.omitted_entries > 0} id="thread-log-omitted" class="ws-muted">{omitted_note(@log.omitted_entries)}</p>
+        <p :if={@log.dropped_turns > 0} class="ws-muted">{@log.dropped_turns} earlier {if @log.dropped_turns == 1, do: "turn", else: "turns"} not shown.</p>
+        <p :if={@log.blocks == []} class="ws-muted">No output recorded yet.</p>
+        <p :if={@log.blocks == [] and not @log.terminal?} class="ws-muted">Output appears here as the agent works.</p>
+        <.turn :for={block <- @log.blocks} block={block} />
+      </div>
+    </div>
+    """
+  end
+
+  defp omitted_note(1), do: "The first output entry is no longer stored."
+  defp omitted_note(count), do: "The first #{count} output entries are no longer stored."
+
+  attr(:block, ThreadView.Block, required: true)
+
+  # One block of the conversation: the sender, a human time (its full ISO time on hover) and the
+  # text, which HEEx escapes.
+  defp turn(assigns) do
+    {variant, label} = turn_style(assigns.block)
+    {time, time_title} = message_time(assigns.block.at)
+
+    assigns =
+      assigns
+      |> assign(:variant, variant)
+      |> assign(:label, label)
+      |> assign(:time, time)
+      |> assign(:time_title, time_title)
+
+    ~H"""
+    <article id={"turn-#{@block.seq}"} class={["msg", "msg--" <> @variant]}>
+      <p class="msg-meta">
+        <span class="msg-sender">{@label}</span>
+        <span :if={@time != ""} title={@time_title}>{@time}</span>
+      </p>
+      <div class="msg-text">{@block.text}</div>
     </article>
+    """
+  end
+
+  # The CSS variant and the sender label of a block. The vocabulary is closed to what
+  # `Transcript` produces; an unknown role or kind raises rather than render a wrong attribution.
+  defp turn_style(%{role: :agent, kind: :text, source: "stderr"}), do: {"stderr", "stderr"}
+  defp turn_style(%{role: :agent, kind: :text}), do: {"agent", "Agent"}
+  defp turn_style(%{role: :operator, kind: :steer}), do: {"operator", "You"}
+  defp turn_style(%{role: :system, kind: :status}), do: {"system", "Foreman"}
+  defp turn_style(%{role: :system, kind: :verdict}), do: {"verdict", "Review"}
+
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
+
+  @doc "The calm card for a thread id that is not one of this project's threads."
+  def thread_missing(assigns) do
+    ~H"""
+    <section id="thread-not-found" class="ws-card" aria-labelledby="thread-not-found-title">
+      <h2 id="thread-not-found-title" class="thread-pane-title">Thread not found</h2>
+      <p class="ws-muted">This project has no thread with that id.</p>
+      <.link patch={project_path(@project_id, @token)} class="btn ws-btn">Project chat</.link>
+    </section>
     """
   end
 
   defp approval_note(%{approval_delivery: "inflight"}), do: "the agent is waiting on this call"
   defp approval_note(_approval), do: "approving resumes the paused run"
+
+  # A thread's status chip: a failed thread reads as an error, a completed one is quiet,
+  # otherwise the chip takes the Overview group's colour and title.
+  @group_chip_kind %{
+    ready_for_review: "ok",
+    waiting_on_you: "warn",
+    working: "info",
+    landing: "info",
+    idle: "muted",
+    resolved: "muted"
+  }
+
+  defp thread_chip(%{status: "failed"}), do: {"failed", "err"}
+  defp thread_chip(%{status: "completed"}), do: {"completed", "muted"}
+
+  defp thread_chip(%{group: group}),
+    do: {String.downcase(group_title(group)), Map.fetch!(@group_chip_kind, group)}
 
   attr(:questions, :list, required: true)
 
@@ -327,16 +626,26 @@ defmodule ForemanServerWeb.Workspace.Components do
     """
   end
 
+  # The steer form is the thread pane's composer: the same event and the same hidden inputs the
+  # card's inline form had, laid out like the coordinator's `.composer`.
   defp action_control(%{action: "thread.steer"} = assigns) do
     ~H"""
-    <form phx-submit="steer" id={"steer-#{@card.thread_id}"}>
+    <form phx-submit="steer" id={"steer-#{@card.thread_id}"} class="composer thread-composer">
       <input type="hidden" name="thread_id" value={@card.thread_id} />
       <input type="hidden" name="message_id" value={@steer_nonce <> ":" <> @card.thread_id} />
+      <%!-- phx-update="ignore": LiveView rewrites an input the browser does not have focused from the
+           server's markup, and this pane re-renders every time the agent writes output, so a steer
+           the operator is still typing would be wiped by a click on the log or the sidebar. The text
+           belongs to the browser until it is sent. The field's id carries the send nonce: a
+           successful send changes the nonce, which replaces the element and so clears it, while a
+           refused one keeps what was typed. --%>
       <label>
-        <span>Steer {@card.title}</span>
-        <input type="text" name="text" autocomplete="off" maxlength="8000" />
+        <span class="ws-vh">Steer {@card.title}</span>
+        <textarea id={"steer-text-#{@card.thread_id}-#{@steer_nonce}"} name="text" rows="2" maxlength="8000" autocomplete="off" placeholder="Steer this thread..." phx-update="ignore"></textarea>
       </label>
-      <button type="submit">Send</button>
+      <div class="composer-row">
+        <button type="submit" class="btn ws-btn ws-btn--primary">Send</button>
+      </div>
     </form>
     """
   end
@@ -348,55 +657,153 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:truncated_before_seq, :integer, default: nil)
   attr(:draft_id, :string, required: true)
 
-  @doc "The coordinator conversation pane: log, proposals, health and composer."
+  @doc """
+  The coordinator conversation pane: log, the proposed threads that can still be started
+  (Start / Decline; a proposal that was started, declined or closed is not shown, and with none
+  the section is absent), health and composer.
+  """
   def conversation_pane(assigns) do
+    assigns = assign(assigns, :startable, Enum.filter(assigns.proposals, & &1.startable?))
+
     ~H"""
-    <section id="conversation-pane" aria-labelledby="conversation-heading">
-      <h2 id="conversation-heading">Coordinator</h2>
-      <p :if={@status} id="coordinator-health">
-        Status: <strong>{@status["status"]}</strong>
-        <span :if={@status["consecutive_failures"] > 0}> · {@status["consecutive_failures"]} consecutive failures</span>
-        <span :if={@status["last_error"]} class="ws-error"> · last error: {@status["last_error"]["message"]}</span>
-        <button :if={@status["status"] == "unhealthy"} type="button" phx-click="restart_coordinator">Restart coordinator</button>
-      </p>
-      <button :if={@has_earlier} type="button" phx-click="load_earlier">Load earlier messages</button>
+    <section id="conversation-pane" class="ws-card conv-card" aria-labelledby="conversation-heading">
+      <div class="conv-head">
+        <h2 id="conversation-heading">Coordinator</h2>
+        <span :if={@status} id="coordinator-health">
+          <% {label, kind} = coordinator_chip(@status) %>
+          <span class={["chip", "chip--" <> kind]}>{label}</span>
+          <span :if={@status["consecutive_failures"] > 0} class="ws-muted"> · {@status["consecutive_failures"]} consecutive failures</span>
+          <span :if={@status["last_error"]} class="ws-error"> · last error: {@status["last_error"]["message"]}</span>
+
+          <button :if={@status["status"] == "unhealthy"} type="button" class="btn ws-btn" phx-click="restart_coordinator">Restart coordinator</button>
+        </span>
+      </div>
+      <button :if={@has_earlier} type="button" class="btn--link" phx-click="load_earlier">Load earlier messages</button>
       <p :if={@truncated_before_seq} class="ws-muted">Older messages were trimmed (before {@truncated_before_seq}).</p>
-      <div id="conversation-log" role="log" aria-live="polite" aria-label="Coordinator conversation">
-        <p :if={@messages == []} class="ws-muted">No messages yet. Tell the coordinator what you want done.</p>
-        <article :for={m <- @messages} id={"msg-#{m["seq"]}"} class={["ws-card", m["role"] == "operator" && "ws-msg-operator"]}>
-          <p class="ws-muted">{m["role"]}<span :if={m["source"]}> via {m["source"]}</span> · {m["at"]}</p>
-          <div class="ws-msg">{m["text"]}</div>
-        </article>
+      <div id="conversation-log" class="conv-transcript" role="log" aria-live="polite" aria-label="Coordinator conversation">
+        <div class="conv-inner">
+          <p :if={@messages == []} class="ws-muted">No messages yet. Tell the coordinator what you want done.</p>
+          <.message :for={m <- @messages} message={m} />
+        </div>
       </div>
-      <div :if={@proposals != []} id="proposals" aria-label="Proposed threads">
-        <h3>Proposed threads</h3>
-        <article :for={p <- @proposals} class="ws-card" id={"proposal-#{p.task_id}"} aria-label={"Proposal: " <> p.title}>
+      <div :if={@startable != []} id="proposals" aria-label="Proposed threads">
+        <h3 class="ws-group-title">Proposed threads</h3>
+        <article :for={p <- @startable} class="ws-card" id={"proposal-#{p.task_id}"} aria-label={"Proposal: " <> p.title}>
           <span>{p.title}</span>
-          <button :if={p.startable?} type="button" phx-click="start_proposed" phx-value-task-id={p.task_id}>Start</button>
-          <button :if={p.startable?} type="button" phx-click="decline_proposed" phx-value-task-id={p.task_id}>Decline</button>
-          <span :if={not p.startable?} class="ws-muted">({p.status})</span>
+          <button type="button" class="btn ws-btn ws-btn--primary" phx-click="start_proposed" phx-value-task-id={p.task_id}>Start</button>
+          <button type="button" class="btn ws-btn" phx-click="decline_proposed" phx-value-task-id={p.task_id}>Decline</button>
         </article>
       </div>
-      <form id="composer" phx-submit="post_message">
+      <form id="composer" class="composer" phx-submit="post_message">
         <input type="hidden" name="message_id" value={@draft_id} />
         <label>
-          <span>Message the coordinator</span>
-          <textarea name="text" rows="3" required></textarea>
+          <span class="ws-vh">Message the coordinator</span>
+          <textarea name="text" rows="3" placeholder="Message the coordinator…" required></textarea>
         </label>
-        <button type="submit">Send</button>
+        <div class="composer-row">
+          <button type="submit" class="btn ws-btn ws-btn--primary">Send</button>
+        </div>
       </form>
     </section>
     """
   end
 
+  attr(:message, :map, required: true)
+
+  # One conversation message, formatted (no raw role/source/ISO headers): the sender
+  # label, a human time (full ISO in the title), and the text. Operator messages sit
+  # right, the coordinator left; a system ("Foreman") message is quiet, and a long one is
+  # collapsed behind a <details> whose open state the client preserves.
+  defp message(assigns) do
+    m = assigns.message
+    {time, title} = message_time(m["at"])
+
+    assigns =
+      assigns
+      |> assign(:role, m["role"])
+      |> assign(:sender, sender_label(m["role"]))
+      |> assign(:time, time)
+      |> assign(:time_title, title)
+      |> assign(:text, m["text"] || "")
+      |> assign(:seq, m["seq"])
+
+    ~H"""
+    <article id={"msg-#{@seq}"} class={["msg", "msg--" <> message_variant(@role)]}>
+      <p class="msg-meta">
+        <span class="msg-sender">{@sender}</span>
+        <span :if={@time != ""} title={@time_title}>{@time}</span>
+      </p>
+      <%= if @role == "system" and collapse_system?(@text) do %>
+        <details phx-mounted={JS.ignore_attributes("open")}>
+          <summary class="msg-text">{first_line(@text)}</summary>
+          <div class="msg-text">{@text}</div>
+        </details>
+      <% else %>
+        <div class="msg-text">{@text}</div>
+      <% end %>
+    </article>
+    """
+  end
+
+  @doc "Sender label shown on a message: operator -> You, coordinator -> Coordinator, system -> Foreman."
+  @spec sender_label(String.t()) :: String.t()
+  def sender_label("operator"), do: "You"
+  def sender_label("coordinator"), do: "Coordinator"
+  def sender_label("system"), do: "Foreman"
+
+  # The CSS variant suffix for a message's role. The role vocabulary is closed to the
+  # three above; an unknown role raises rather than rendering a wrong attribution.
+  defp message_variant("operator"), do: "operator"
+  defp message_variant("coordinator"), do: "coordinator"
+  defp message_variant("system"), do: "system"
+
+  @doc """
+  A message's time as `{display, title}` from an ISO 8601 string or unix milliseconds:
+  display like `Nov 2, 4:22 PM` (UTC) and the title the full ISO time to the second plus
+  `UTC` (never the raw microsecond stamp). An unparseable or absent time yields `{"", nil}`.
+  """
+  @spec message_time(term()) :: {String.t(), String.t() | nil}
+  def message_time(unix_ms) when is_integer(unix_ms),
+    do: unix_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601() |> message_time()
+
+  def message_time(at) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, dt, _offset} ->
+        dt = DateTime.truncate(dt, :second)
+        {Calendar.strftime(dt, "%b %-d, %-I:%M %p"), DateTime.to_iso8601(dt) <> " UTC"}
+
+      _ ->
+        {"", nil}
+    end
+  end
+
+  def message_time(_), do: {"", nil}
+
+  defp collapse_system?(text) when is_binary(text),
+    do: String.length(text) > @system_collapse_chars or line_count(text) > @system_collapse_lines
+
+  defp collapse_system?(_), do: false
+
+  defp line_count(text), do: text |> String.split("\n") |> length()
+
+  defp first_line(text) do
+    case String.split(text, "\n", parts: 2) do
+      [first | _] -> first
+      _ -> text
+    end
+  end
+
+  # The coordinator's health chip. The status vocabulary is closed (`:idle | :turn_open |
+  # :unhealthy`, `ForemanServer.Coordinator.Conversation.status/1`): idle is quiet, an open turn
+  # reads "working" and is informational, unhealthy is an error. A status outside it raises.
+  defp coordinator_chip(%{"status" => "idle"}), do: {"idle", "muted"}
+  defp coordinator_chip(%{"status" => "turn_open"}), do: {"working", "info"}
+  defp coordinator_chip(%{"status" => "unhealthy"}), do: {"unhealthy", "err"}
+
   attr(:tab, :atom, required: true)
   attr(:tabs, :map, required: true)
   attr(:schedules, :list, required: true)
-  attr(:upload, UploadConfig, required: true)
-  attr(:folder_upload, UploadConfig, required: true)
   attr(:replace_upload, UploadConfig, required: true)
-  attr(:library_name, :string, default: "")
-  attr(:library_folder_name, :string, default: "")
   attr(:confirm_remove, :string, default: nil)
   attr(:confirm_delete, :string, default: nil)
   attr(:replace_entry, :map, default: nil)
@@ -417,11 +824,7 @@ defmodule ForemanServerWeb.Workspace.Components do
           tab={@tab}
           tabs={@tabs}
           schedules={@schedules}
-          upload={@upload}
-          folder_upload={@folder_upload}
           replace_upload={@replace_upload}
-          library_name={@library_name}
-          library_folder_name={@library_folder_name}
           confirm_remove={@confirm_remove}
           confirm_delete={@confirm_delete}
           replace_entry={@replace_entry}
@@ -483,8 +886,6 @@ defmodule ForemanServerWeb.Workspace.Components do
         <.replace_form :if={for_row?(@replace_entry, row)} entry={@replace_entry} name={row["name"]} upload={@replace_upload} library_limits={@library_limits} />
       </li>
     </ul>
-    <.library_upload upload={@upload} library_name={@library_name} library_limits={@library_limits} />
-    <.library_folder_upload upload={@folder_upload} folder_name={@library_folder_name} library_limits={@library_limits} />
     """
   end
 

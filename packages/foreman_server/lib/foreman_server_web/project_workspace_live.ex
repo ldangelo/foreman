@@ -1,20 +1,29 @@
 defmodule ForemanServerWeb.ProjectWorkspaceLive do
   @moduledoc """
-  The project workspace: `GET /dashboard/projects/:id` (authenticated).
+  The project workspace: `GET /dashboard/projects/:id` and
+  `GET /dashboard/projects/:id/threads/:thread_id` (authenticated).
 
-  Left, the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`) with
-  its proposed threads (Start / Decline); right, the project's open operator questions
-  (the rows `GET /api/projects/:id/questions` lists, each with an answer form), the
-  Overview (E7: threads grouped by state with the E6 thread cards and their existing
-  actions) and the Library (add files or a folder, replace, download and remove,
-  `ForemanServer.Library`) / Pull requests
-  / Scheduled tabs.
+  Left, the thread sidebar (`Components.thread_sidebar/1`): "Project chat" and the project's
+  threads grouped by Overview state (E7), each row a patch link. In the main column,
+  `/projects/:id` is the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`) with
+  its proposed threads (Start / Decline), and a thread's own URL is that thread's conversation
+  (`Components.thread_pane/1`): its header, its controls (the E6 thread actions, the PR actions,
+  the tool approvals), what `ForemanServer.Threads.Transcript` has for it and a steer composer.
+  The open thread must be one of THIS project's Overview cards: any other id (unknown, another
+  project's, malformed) is a "Thread not found" card, and nothing is read for it. Right, the
+  project's open operator questions (the rows `GET /api/projects/:id/questions` lists, each with
+  an answer form), the project's knowledge (instructions, memory, files) and the Library (add
+  files or a folder, replace, download and remove, `ForemanServer.Library`) / Pull requests /
+  Scheduled tabs. Moving between the chat and threads is a `patch`: one process, nothing
+  remounts.
 
   Reads and writes go through the same Elixir functions the HTTP API uses (see
   `ForemanServerWeb.Workspace.Actions`); there is no HTTP-to-self call and no
-  new mutation path. Updates arrive through one `ProjectionStore` subscription
-  with a coalescing window (`ForemanServerWeb.Workspace.Refresh`): no periodic
-  polling. A tab or conversation that is not shown costs nothing on refresh.
+  new mutation path. Updates arrive through one `ProjectionStore` subscription with a
+  coalescing window (`ForemanServerWeb.Workspace.Refresh`): no periodic polling. The worker
+  output of the open thread, which that refresh ignores, arms a second coalesced trigger that
+  re-reads only its transcript. A tab or conversation that is not shown costs nothing on
+  refresh.
 
   Library files travel over the LiveView socket (`allow_upload/3`: files, a folder with
   its relative paths, or the files that replace an entry) with the library's own limits
@@ -39,9 +48,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     ProjectStore
   }
 
+  alias ForemanServer.Coordinator.Redact
   alias ForemanServer.Library.Ingest
+  alias ForemanServer.Overview.ThreadCard
   alias ForemanServer.Questions.DTO, as: QuestionDTO
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
+  alias ForemanServer.Threads.Transcript
+  alias ForemanServer.Threads.Transcript.Full
 
   alias ForemanServerWeb.Workspace.{
     Actions,
@@ -49,14 +62,15 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     LibraryUpload,
     ProjectNotFound,
     ProjectView,
-    Refresh
+    Refresh,
+    ThreadView
   }
 
   @tail 50
   @page 200
   @max_kept 400
   @tabs %{"library" => :library, "pull_requests" => :pull_requests, "scheduled" => :scheduled}
-  # The values the thread cards send: derived from the cards' own table, never a second list.
+  # The values the thread controls send: derived from the pane's own table, never a second list.
   @thread_actions Components.thread_actions()
   @schedule_ops %{"pause" => :pause, "resume" => :resume}
 
@@ -110,7 +124,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             library_name: "",
             library_folder_name: "",
             replace_entry: nil,
-            open_entry: nil
+            open_entry: nil,
+            token: nil,
+            thread_id: nil,
+            thread_card: nil,
+            thread_log: nil
           )
           |> allow_library_uploads()
           |> load_conversation_tail()
@@ -120,13 +138,57 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     end
   end
 
+  # The open thread follows the URL (nil: the project chat). A pending stop confirmation belongs
+  # to the thread it was asked on, so it does not follow the operator to another one.
   @impl true
-  def handle_info({:projection_event, event}, socket),
-    do: {:noreply, Refresh.note_event(socket, event, socket.assigns.project_id)}
+  def handle_params(
+        %{"thread_id" => thread_id} = params,
+        _uri,
+        %{assigns: %{live_action: :thread}} = socket
+      ),
+      do: {:noreply, socket |> keep_token(params) |> open_thread(thread_id)}
+
+  def handle_params(params, _uri, %{assigns: %{live_action: :show}} = socket),
+    do: {:noreply, socket |> keep_token(params) |> open_thread(nil)}
+
+  # The dashboard takes its token only as a header or as `?token=` (no cookie), so every link of
+  # the page carries the token the page was opened with (`Components.thread_path/3`): a reload of
+  # a page the operator reached by clicking is answered, not a 401. A URL without one leaves
+  # what was kept.
+  defp keep_token(socket, %{"token" => token}) when is_binary(token) and token != "",
+    do: assign(socket, :token, token)
+
+  defp keep_token(socket, _params), do: socket
+
+  defp open_thread(socket, thread_id) do
+    if socket.assigns.thread_id == thread_id do
+      select_card(socket)
+    else
+      socket
+      |> assign(thread_id: thread_id, thread_log: nil, confirm_stop: nil)
+      |> select_card()
+    end
+  end
+
+  @impl true
+  def handle_info({:projection_event, event}, socket) do
+    {:noreply,
+     socket
+     |> Refresh.note_event(event, socket.assigns.project_id)
+     |> Refresh.note_output(event, open_thread_id(socket))}
+  end
 
   def handle_info(:workspace_refresh, socket) do
-    {:noreply, socket |> Refresh.begin_refresh() |> refresh_conversation() |> load_state()}
+    {:noreply,
+     socket
+     |> Refresh.begin_refresh()
+     |> refresh_conversation()
+     |> assign(:thread_log, nil)
+     |> load_state()}
   end
+
+  def handle_info(:thread_refresh, socket),
+    do: {:noreply, socket |> Refresh.begin_thread_refresh() |> load_log()}
 
   def handle_info(other, socket) do
     Logger.warning("workspace received an unexpected message: #{inspect(other, limit: 5)}")
@@ -373,6 +435,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
   defp notify(socket, {kind, message}), do: assign(socket, notice: message, notice_kind: kind)
 
+  defp project_chip_kind("paused"), do: "chip--warn"
+  defp project_chip_kind("active"), do: "chip--ok"
+  defp project_chip_kind(_status), do: "chip--muted"
+
   # The three upload forms share the library's count and per-file limits
   # (`Library.Ingest.limits/0`; the library checks them again server-side) and the cap on
   # the whole add (`LibraryUpload`). The replace form serves file and folder entries
@@ -553,7 +619,75 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     )
     |> assign(:schedules, schedules(socket))
     |> sync_library_panels()
+    |> select_card()
   end
+
+  # The open thread's card, found among THIS project's Overview cards: another project's
+  # thread, an unknown id and a malformed one find nothing. The pane renders a log wherever it
+  # renders a card, so a card never stands without one: a thread whose events arrive after the
+  # page was opened gets its log read here, and one that leaves the Overview drops its log.
+  defp select_card(%{assigns: %{thread_id: nil}} = socket),
+    do: assign(socket, thread_card: nil, thread_log: nil)
+
+  defp select_card(%{assigns: %{thread_id: thread_id, overview: overview}} = socket) do
+    case ThreadView.find_card(overview, thread_id) do
+      nil -> assign(socket, thread_card: nil, thread_log: nil)
+      %ThreadCard{} = card -> socket |> assign(:thread_card, card) |> ensure_log()
+    end
+  end
+
+  defp ensure_log(%{assigns: %{thread_log: nil}} = socket), do: load_log(socket)
+  defp ensure_log(socket), do: socket
+
+  # The open thread's conversation. Nothing is read without a card: no thread is open, or its id
+  # is not one of this project's (that never reaches `Transcript`). The pane re-reads the whole
+  # transcript and holds no cursor, so it asks for one turn per stored output chunk
+  # (`chunks: true`): nothing is grouped, so nothing is withheld and no grouping gap applies, and
+  # `ThreadView.log/3` assembles the chunks into the conversation. A streamed message is one
+  # stored entry per delta, so it reads everything the store keeps (`log_limit`), not the API's
+  # 500-entry tail, and `ThreadView.log/3` says how many entries are gone when the store dropped
+  # any.
+  defp load_log(%{assigns: %{thread_card: nil}} = socket), do: assign(socket, :thread_log, nil)
+
+  defp load_log(%{assigns: %{thread_card: %ThreadCard{thread_id: thread_id}}} = socket) do
+    opts = [chunks: true, log_limit: ProjectionStore.run_logs_max_limit()]
+
+    log =
+      case Transcript.full(thread_id, opts) do
+        {:ok, %Full{turns: turns, terminal: terminal?, omitted_entries: omitted}} ->
+          turns
+          |> ThreadView.log(terminal?, omitted_entries: omitted)
+          |> redact_blocks(socket.assigns.project_id)
+
+        {:error, :thread_not_found} ->
+          :unavailable
+
+        {:error, reason} ->
+          Logger.warning("workspace: transcript of #{thread_id} unavailable: #{inspect(reason)}")
+          :unavailable
+      end
+
+    assign(socket, :thread_log, log)
+  end
+
+  # Redaction runs per stored chunk, so a secret that straddles two chunks survives it. Once
+  # `ThreadView.log/3` has joined the chunks, the redactor `Transcript` uses (the built-in
+  # patterns and the project's secrets) runs again over each block's text: a split secret is gone
+  # as soon as its last chunk is in. Limits: a secret's PREFIX can show until then, and a message
+  # whose deltas hide a split secret is shown twice (its deltas no longer equal the redacted
+  # final), both redacted. The stored chunks stay redacted per chunk until the worker stores one
+  # entry per message (foreman-l30ao.5).
+  defp redact_blocks(%{blocks: blocks} = log, project_id) do
+    redact = Redact.redactor(project_id)
+    %{log | blocks: Enum.map(blocks, &%{&1 | text: redact.(&1.text)})}
+  end
+
+  # The thread whose worker output `Refresh.note_output/3` listens for: the open one, once it is
+  # known to be this project's.
+  defp open_thread_id(%{assigns: %{thread_card: %ThreadCard{thread_id: thread_id}}}),
+    do: thread_id
+
+  defp open_thread_id(_socket), do: nil
 
   # Read-only side-panel data: the project's memory topics and library entries. A missing
   # on-disk directory is already an empty list; a genuine read failure (unknown project,
@@ -691,17 +825,25 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       <header class="ws-header">
         <div class="ws-header-title">
           <h1>{@project_view.name}</h1>
-          <p :if={@project_view.goal} class="ws-goal ws-muted">{@project_view.goal}</p>
+          <p :if={@project_view.goal} class="ws-goal" title={@project_view.goal}>{@project_view.goal}</p>
         </div>
-        <nav aria-label="Project">
-          <.link navigate={"/dashboard/projects/#{@project_id}/settings"}>Settings</.link>
+        <nav class="ws-header-actions" aria-label="Project">
+          <span :if={@project_view.status} class={["chip", project_chip_kind(@project_view.status)]} role="status">{@project_view.status}</span>
+          <.link navigate={Components.settings_path(@project_id, @token)} class="btn ws-btn">Settings</.link>
         </nav>
-        <p :if={@project_view.status == "paused"} class="ws-error" role="status">This project is paused.</p>
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
       <div class="ws-layout">
-        <section class="ws-main-col" aria-label="Coordinator">
+        <Components.thread_sidebar
+          project_id={@project_id}
+          token={@token}
+          overview={@overview}
+          selected_id={@thread_id}
+          status={@status}
+        />
+        <div class="ws-main-col">
           <Components.conversation_pane
+            :if={@live_action == :show}
             messages={@messages}
             status={@status}
             proposals={@proposals}
@@ -709,29 +851,39 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             truncated_before_seq={@truncated_before_seq}
             draft_id={@draft_id}
           />
-        </section>
+          <Components.thread_pane
+            :if={@live_action == :thread and @thread_card}
+            card={@thread_card}
+            log={@thread_log}
+            project_id={@project_id}
+            token={@token}
+            confirm_stop={@confirm_stop}
+            steer_nonce={@steer_nonce}
+          />
+          <Components.thread_missing :if={@live_action == :thread and is_nil(@thread_card)} project_id={@project_id} token={@token} />
+        </div>
         <aside class="ws-side" aria-label="Project panels">
-          <section class="ws-panels" aria-label="Project information">
+          <div id="questions-live" aria-live="polite" aria-relevant="additions text">
+            <Components.questions_pane questions={@questions} />
+          </div>
+          <section class="ws-panels" aria-label="Project knowledge">
             <Components.info_panels
               instructions={@project_view.instructions}
+              settings_path={Components.settings_path(@project_id, @token)}
               memory_topics={@memory_topics}
               library_entries={@library_entries}
-              overview={@overview}
+              upload={@uploads.library}
+              folder_upload={@uploads.library_folder}
+              library_name={@library_name}
+              library_folder_name={@library_folder_name}
+              library_limits={@library_limits}
             />
           </section>
-          <div id="overview-live" aria-live="polite" aria-relevant="additions text">
-            <Components.questions_pane questions={@questions} />
-            <Components.overview_pane overview={@overview} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
-          </div>
           <Components.tabs_pane
             tab={@tab}
             tabs={@overview.tabs}
             schedules={@schedules}
-            upload={@uploads.library}
-            folder_upload={@uploads.library_folder}
             replace_upload={@uploads.library_replace}
-            library_name={@library_name}
-            library_folder_name={@library_folder_name}
             confirm_remove={@confirm_remove}
             confirm_delete={@confirm_delete}
             replace_entry={@replace_entry}
