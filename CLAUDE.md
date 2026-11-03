@@ -601,13 +601,21 @@ reason `operator_pause`, Abandon is `run.remove`, Resume is
 `run.resume`, and Reset/Restart is `run.reset`. Code evidence stays
 read-only and may use projected worktree/branch/base data only.
 
-The project workspace is `GET /dashboard/projects/:id` (+ `/settings`,
+The project workspace is `GET /dashboard/projects/:id` (+ `/threads/:thread_id`, `/settings`,
 `ForemanServerWeb.ProjectWorkspaceLive` / `ProjectSettingsLive`), same guard;
-`foreman project open <id>` opens it in a browser (the token rides in the URL).
+`foreman project open <id>` opens it in a browser (the token rides in the URL and every link and
+patch of the page keeps it, the settings page's way back too). Layout: a left
+sidebar of threads ("Project chat", then Waiting on you / Working / Landing / Ready for review,
+Idle and Resolved folded under "Earlier"); the main column is the coordinator chat, or, at
+`/threads/:thread_id` (id percent-encoded, e.g. `run%3A<run_id>`), that one thread's conversation
+(`Threads.Transcript.full/2`, every turn) with the thread's controls (Pause/Resume/Stop/Resolve/Reopen,
+PR fix/create buttons, tool-call Approve/Deny, steer box); the right column keeps the questions
+pane, knowledge panels and the Library/Pull requests/Scheduled tabs.
 It adds no mutation path: actions go through `ForemanServerWeb.Workspace.Actions`
 (Threads.Actions, CoordinatorAPI, Library add files/folder, replace, remove and read/download,
 ProjectSecrets, operator-allowlisted commands) and updates
-come from one coalesced `ProjectionStore` subscription (`Workspace.Refresh`),
+come from one coalesced `ProjectionStore` subscription (`Workspace.Refresh`; Worker* output of
+the open thread arms a second coalesced `:thread_refresh`, `Transcript.relevant?/2`),
 never a polling timer. It has no merge/approve-PR control. Socket uploads hold the HTTP
 route's whole-add cap `upload_max_bytes` themselves (`Workspace.LibraryUpload`), and a
 secret's value is write-only there: handed to `ProjectSecrets.set/4`, never assigned,
@@ -964,7 +972,7 @@ Rules that hold across every project-workspace capability (E0-E11, E13-E16). Eac
 - **Every aggregate prefix is registered** in `CommandRouter.aggregate_module_for/1` (`command_router.ex`), and every aggregate's `apply_event/2` ends in a catch-all clause so an unknown event type cannot crash replay.
 - **`EventCodec` rejects unknown keys** (`event_codec.ex`; `test/foreman_server/event_codec_test.exs`). A field added to an existing event struct MUST NOT be in `@enforce_keys`, or historical events stop decoding. Event types are discovered by scanning `events/**/*.ex`; there is no registry to edit.
 - **No secret or content bytes in events.** `ProjectSecretSet` carries name and version only; memory and library events carry metadata (name, sha256, sizes, counts), never bytes; secret values are redacted from logs, MCP results and archives (`test/foreman_server/project_secrets_test.exs`). Notification recipients are the label `default`, never a URL or token.
-- **LiveViews subscribe, they do not poll.** `ForemanServerWeb.Workspace.Refresh` subscribes once to `ProjectionStore` and coalesces bursts (`config :foreman_server, :workspace, coalesce_ms:`, default 250); `test/foreman_server_web/live/project_workspace_live_test.exs`.
+- **LiveViews subscribe, they do not poll.** `ForemanServerWeb.Workspace.Refresh` subscribes once to `ProjectionStore` and coalesces bursts (`config :foreman_server, :workspace, coalesce_ms:`, default 250); only the open thread's `WorkerStdout`/`WorkerStderr` arm a second coalesced `:thread_refresh` (telemetry `[:foreman_server, :workspace, :thread_refresh]`), every other `Worker*` event is ignored; `test/foreman_server_web/live/project_workspace_live_test.exs`.
 - **Paused/archived enforcement points.** A paused or archived project refuses `task.create` (`Aggregates.Task.validate_project_allows_tasks/1`, `{:project_paused, id}` / `{:project_archived, id}`), thread reservation for runs and jobsites (`Aggregates.Project`, `reject_paused/2`), jobsite start (`Jobsite.Executor`, `:spec_project_unavailable`) and `BeadsWatcher` imports (held, not skipped); schedule fires record a `project_paused` skip (`Schedule.Planner`). In-flight work continues. Tests: `aggregates/task_paused_project_test.exs`, `run_admission_project_refusal_test.exs`, `schedule/planner_test.exs`, `task_providers/beads_watcher_pipeline_test.exs`.
 - **Standing context (§23).** `ProjectContext.build/2` is the only producer; truncation is visible in the text; memory renders as informational `<project_notes>`, never as instructions; delivery follows the provider's `system_prompt` capability.
 - **Library rules (§25).** Bytes on disk, metadata in events; ONLY `library/` is gitignored; delivery is read-only via `FOREMAN_LIBRARY_PATH` (host) or a read-only `/library` mount (docker), never copied into the worktree; agents have read-only MCP tools only; limits mirror Claude and every skipped file is reported with a reason (`Library.StoreTest`).
