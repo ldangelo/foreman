@@ -15,7 +15,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceCoordinatorLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias ForemanServer.Coordinator.{Agent.Stub, Error, Runtime, Turn, TurnRunner}
+  alias ForemanServer.Coordinator.{Agent.Stub, Commands, Error, Runtime, Turn, TurnRunner}
   alias ForemanServer.{CoordinatorAPI, EventStore, ProjectionStore, ProjectStore}
   alias ForemanServer.TestSupport.{Eventually, ProjectionStoreReset}
 
@@ -164,6 +164,22 @@ defmodule ForemanServerWeb.ProjectWorkspaceCoordinatorLiveTest do
 
       assert has_element?(view, @health, "unhealthy")
       assert has_element?(view, @restart)
+    end
+  end
+
+  describe "the coordinator's chip" do
+    test "reads working while a turn is open, in the Project chat row and in the conversation header",
+         ctx do
+      {view, _html} = mount_view(ctx.id)
+      assert has_element?(view, "#{@health} .chip--muted", "idle")
+      assert has_element?(view, "#thread-list-chat .chip--muted", "idle")
+
+      # the coordinator opens a turn for the operator's message and has not closed it yet
+      assert {:ok, _} = Commands.turn_start(ctx.runtime.gateway, ctx.id, "m1:a1", 1, ["m1"])
+
+      Eventually.await(fn -> has_element?(view, "#{@health} .chip--info", "working") end)
+      assert has_element?(view, "#thread-list-chat .chip--info", "working")
+      refute render(view) =~ "turn_open"
     end
   end
 end

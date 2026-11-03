@@ -45,11 +45,11 @@ defmodule ForemanServer.Threads.Transcript do
   would then start a new turn anyway). A reader that holds no cursor asks for `chunks: true`
   instead (see "Chunks").
 
-  Sources are bounded: `run_logs/1` keeps a bounded tail. When it dropped
-  entries `omitted_entries` is non-zero and `truncated` is true; `seq` then
-  counts from the oldest retained entry, so cursors are only stable while
-  `omitted_entries` does not grow. `omitted_entries` counts raw log entries,
-  not turns.
+  Sources are bounded: `run_logs/2` keeps a bounded window per run and returns its newest
+  `log_limit` entries (500 unless a reader asks for more). When entries are missing, because
+  the window dropped them or the tail cut them, `omitted_entries` is non-zero and `truncated`
+  is true; `seq` then counts from the oldest retained entry, so cursors are only stable while
+  `omitted_entries` does not grow. `omitted_entries` counts raw log entries, not turns.
 
   Text is passed through `Coordinator.Redact`: the built-in patterns of
   `Overwatch.WorkerLogPolicy.redact/2` (the redactor that already scrubs worker log lines
@@ -450,9 +450,12 @@ defmodule ForemanServer.Threads.Transcript do
   Every turn of the thread, in order, as `Full`.
 
   Options: `:gap_ms`, `:now_ms` (see the moduledoc on when the trailing agent turn is
-  final) and `:chunks` (default false: every output entry is its own turn and nothing is
-  grouped, see "Chunks" in the moduledoc). The sources are gathered and redacted here and
-  only here: `page/2` is this list sliced by cursor, and never asks for chunks.
+  final), `:chunks` (default false: every output entry is its own turn and nothing is
+  grouped, see "Chunks" in the moduledoc) and `:log_limit` (workflow door: how many of the
+  newest stored output entries to read, `ProjectionStore.run_logs/2`'s `limit:`; default its
+  500-entry tail, at most `ProjectionStore.run_logs_max_limit/0`, anything else raises).
+  The sources are gathered and redacted here and only here: `page/2` is this list sliced by
+  cursor, and never asks for chunks or a longer log.
   """
   @spec full(String.t(), keyword()) :: {:ok, Full.t()} | {:error, :thread_not_found | term()}
   def full(thread_id, opts \\ []) when is_binary(thread_id) and is_list(opts) do
@@ -544,7 +547,7 @@ defmodule ForemanServer.Threads.Transcript do
     # `terminal? = true` with events that lacked the closing turn and end
     # without ever emitting it.
     with %{} = run <- ProjectionStore.run(run_id),
-         {:ok, logs} <- ProjectionStore.run_logs(run_id),
+         {:ok, logs} <- ProjectionStore.run_logs(run_id, run_logs_opts(opts)),
          {:ok, events} <- ProjectionStore.run_events(run_id) do
       {steer, system} = split_events(events, redact)
 
@@ -584,6 +587,14 @@ defmodule ForemanServer.Threads.Transcript do
            terminal?: fetch(jobsite, :terminal?) == true
          }
          |> with_opts(opts)}
+    end
+  end
+
+  # The workspace reads a longer tail than the API: only `:log_limit` reaches the store.
+  defp run_logs_opts(opts) do
+    case Keyword.fetch(opts, :log_limit) do
+      {:ok, limit} -> [limit: limit]
+      :error -> []
     end
   end
 

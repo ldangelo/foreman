@@ -1143,7 +1143,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       render_component(&Components.thread_pane/1,
         card: card,
-        log: %ThreadView.Log{blocks: [], dropped_turns: 0, terminal?: false},
+        log: %ThreadView.Log{blocks: [], dropped_turns: 0, omitted_entries: 0, terminal?: false},
         project_id: "p",
         confirm_stop: nil,
         steer_nonce: "n"

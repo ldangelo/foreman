@@ -454,6 +454,7 @@ defmodule ForemanServerWeb.Workspace.Components do
     ~H"""
     <div id="thread-log" class="conv-transcript" role="log" aria-live="polite" aria-label="Thread conversation">
       <div class="conv-inner">
+        <p :if={@log.omitted_entries > 0} id="thread-log-omitted" class="ws-muted">{omitted_note(@log.omitted_entries)}</p>
         <p :if={@log.dropped_turns > 0} class="ws-muted">{@log.dropped_turns} earlier {if @log.dropped_turns == 1, do: "turn", else: "turns"} not shown.</p>
         <p :if={@log.blocks == []} class="ws-muted">No output recorded yet.</p>
         <p :if={@log.blocks == [] and not @log.terminal?} class="ws-muted">Output appears here as the agent works.</p>
@@ -462,6 +463,9 @@ defmodule ForemanServerWeb.Workspace.Components do
     </div>
     """
   end
+
+  defp omitted_note(1), do: "The first output entry is no longer stored."
+  defp omitted_note(count), do: "The first #{count} output entries are no longer stored."
 
   attr(:block, ThreadView.Block, required: true)
 
@@ -789,10 +793,12 @@ defmodule ForemanServerWeb.Workspace.Components do
     end
   end
 
-  # The coordinator's health chip: idle is quiet, working is informational, unhealthy is an error.
-  defp coordinator_chip(%{"status" => "working"}), do: {"working", "info"}
+  # The coordinator's health chip. The status vocabulary is closed (`:idle | :turn_open |
+  # :unhealthy`, `ForemanServer.Coordinator.Conversation.status/1`): idle is quiet, an open turn
+  # reads "working" and is informational, unhealthy is an error. A status outside it raises.
+  defp coordinator_chip(%{"status" => "idle"}), do: {"idle", "muted"}
+  defp coordinator_chip(%{"status" => "turn_open"}), do: {"working", "info"}
   defp coordinator_chip(%{"status" => "unhealthy"}), do: {"unhealthy", "err"}
-  defp coordinator_chip(%{"status" => status}) when is_binary(status), do: {status, "muted"}
 
   attr(:tab, :atom, required: true)
   attr(:tabs, :map, required: true)

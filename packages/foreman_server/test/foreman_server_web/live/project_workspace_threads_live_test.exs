@@ -466,18 +466,41 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
       assert full_time =~ ~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z UTC$/
     end
 
-    test "the chat row carries the coordinator's status chip" do
-      html =
+    test "the chat row carries the coordinator's status chip: idle, working while a turn is open, unhealthy" do
+      chip = fn status ->
         render_component(&Components.thread_sidebar/1,
           project_id: "p",
           overview: overview(%{}),
           selected_id: nil,
-          status: %{"status" => "working", "consecutive_failures" => 0, "last_error" => nil}
+          status: %{"status" => status, "consecutive_failures" => 0, "last_error" => nil}
         )
         |> LazyHTML.from_fragment()
+      end
 
-      assert html |> LazyHTML.query("#thread-list-chat .chip--info") |> LazyHTML.text() ==
-               "working"
+      for {status, label, kind} <- [
+            {"idle", "idle", "muted"},
+            {"turn_open", "working", "info"},
+            {"unhealthy", "unhealthy", "err"}
+          ] do
+        assert chip.(status)
+               |> LazyHTML.query("#thread-list-chat .chip--#{kind}")
+               |> LazyHTML.text() ==
+                 label,
+               status
+      end
+    end
+
+    test "a status outside the aggregate's vocabulary is a defect, not a chip" do
+      for status <- ["working", "bogus", ""] do
+        assert_raise FunctionClauseError, fn ->
+          render_component(&Components.thread_sidebar/1,
+            project_id: "p",
+            overview: overview(%{}),
+            selected_id: nil,
+            status: %{"status" => status, "consecutive_failures" => 0, "last_error" => nil}
+          )
+        end
+      end
     end
 
     defp card(group, extra \\ []) do
@@ -979,6 +1002,76 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
 
       refute_receive {[:foreman_server, :workspace, _kind], ^ref, _m, %{pid: ^pid}}, 200
       refute render(view) =~ "nobody is looking"
+    end
+  end
+
+  describe "a run with more output than the API's tail" do
+    # An entry is one chunk, so a run that streams for a minute writes hundreds of them.
+    defp seed_chunks!(run_id, count, first_text) do
+      :ok =
+        ProjectionStore.apply_events(
+          for n <- 1..count do
+            text = if n == 1, do: first_text, else: "chunk #{n}. "
+            stdout(run_id, n, text, iso(-120_000 + n * 10))
+          end
+        )
+    end
+
+    test "shows the whole conversation, its first message included, and says nothing is missing",
+         %{id: id} do
+      thread = seed_run!("r-long-run", id, "A long run")
+      seed_chunks!("r-long-run", 600, "THE FIRST MESSAGE. ")
+
+      # the API's 500-entry tail would have cut the first hundred
+      assert {:ok, %{count: 500, omitted_entries: 100}} = ProjectionStore.run_logs("r-long-run")
+
+      {view, _html, _ref} = mount!(thread_url(id, thread))
+
+      assert has_element?(view, "#thread-log .msg-text", "THE FIRST MESSAGE. chunk 2. chunk 3. ")
+      assert has_element?(view, "#thread-log .msg-text", "chunk 599. chunk 600.")
+      refute has_element?(view, "#thread-log-omitted")
+      refute render(view) =~ "no longer stored"
+    end
+
+    test "a small run shows no note", %{id: id} do
+      thread = seed_run!("r-small-run", id, "A small run")
+      seed_chunks!("r-small-run", 3, "Hello. ")
+
+      {view, _html, _ref} = mount!(thread_url(id, thread))
+
+      assert has_element?(view, "#thread-log .msg-text", "Hello. chunk 2. chunk 3.")
+      refute has_element?(view, "#thread-log-omitted")
+    end
+
+    test "says how many stored entries are gone when the store's own window dropped them",
+         %{id: id} do
+      thread = seed_run!("r-window", id, "A run past the window")
+      big = String.duplicate("x", 300_000)
+
+      # the store keeps 1 MiB of output per run: of five 300 kB chunks the oldest are evicted
+      :ok =
+        ProjectionStore.apply_events(
+          for n <- 1..5, do: stdout("r-window", n, "CHUNK-#{n}-" <> big, iso(-10_000 + n))
+        )
+
+      max = ProjectionStore.run_logs_max_limit()
+
+      assert {:ok, %{truncated: true, omitted_entries: omitted}} =
+               ProjectionStore.run_logs("r-window", limit: max)
+
+      assert omitted > 0
+
+      {view, _html, _ref} = mount!(thread_url(id, thread))
+
+      assert has_element?(
+               view,
+               "#thread-log-omitted.ws-muted",
+               "The first #{omitted} output entries are no longer stored."
+             )
+
+      html = render(view)
+      refute html =~ "CHUNK-1-"
+      assert html =~ "CHUNK-5-"
     end
   end
 

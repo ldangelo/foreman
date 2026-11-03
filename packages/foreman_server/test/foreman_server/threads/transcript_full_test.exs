@@ -207,4 +207,62 @@ defmodule ForemanServer.Threads.TranscriptFullTest do
       assert {:ok, %Page{turns: ^grouped}} = Transcript.page(thread_id, limit: 1000, chunks: true)
     end
   end
+
+  describe "full/2 with log_limit:" do
+    # A run whose output is 505 chunks: one more than the API's tail holds, five more.
+    defp seed_long_run do
+      run_id = uid("tf-long")
+
+      :ok =
+        ProjectionStore.apply_events(
+          [%{event_type: "RunStarted", payload: %{run_id: run_id, project_id: "p-tf"}}] ++
+            for n <- 1..505 do
+              stdout(run_id, n, "chunk-#{n} ", iso(-60_000 + n))
+            end
+        )
+
+      "run:" <> run_id
+    end
+
+    test "reads more of the run's output than the default tail, and says what is still missing" do
+      thread_id = seed_long_run()
+
+      assert {:ok, %Full{turns: turns, truncated: true, omitted_entries: 5}} =
+               Transcript.full(thread_id, chunks: true)
+
+      assert length(turns) == 500
+      assert hd(turns).text == "chunk-6 "
+
+      assert {:ok, %Full{turns: all, truncated: false, omitted_entries: 0}} =
+               Transcript.full(thread_id,
+                 chunks: true,
+                 log_limit: ProjectionStore.run_logs_max_limit()
+               )
+
+      assert length(all) == 505
+      assert hd(all).text == "chunk-1 "
+
+      assert {:ok, %Full{turns: few, truncated: true, omitted_entries: 405}} =
+               Transcript.full(thread_id, chunks: true, log_limit: 100)
+
+      assert length(few) == 100
+    end
+
+    test "page/2 never reads a longer log: the API is the tail it always was" do
+      thread_id = seed_long_run()
+
+      assert {:ok, %Page{omitted_entries: 5, truncated: true} = page} =
+               Transcript.page(thread_id, limit: 1000)
+
+      assert {:ok, ^page} = Transcript.page(thread_id, limit: 1000, log_limit: 5_000)
+    end
+
+    test "a limit the store does not accept raises, it is not clamped" do
+      thread_id = seed_long_run()
+
+      for limit <- [0, -1, 5_001, "5", nil] do
+        assert_raise ArgumentError, fn -> Transcript.full(thread_id, log_limit: limit) end
+      end
+    end
+  end
 end

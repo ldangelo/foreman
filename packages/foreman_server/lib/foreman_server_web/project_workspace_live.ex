@@ -631,14 +631,19 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   # is not one of this project's (that never reaches `Transcript`). The pane re-reads the whole
   # transcript and holds no cursor, so it asks for one turn per stored output chunk
   # (`chunks: true`): nothing is grouped, so nothing is withheld and no grouping gap applies, and
-  # `ThreadView.log/3` assembles the chunks into the conversation.
+  # `ThreadView.log/3` assembles the chunks into the conversation. A streamed message is one
+  # stored entry per delta, so it reads everything the store keeps (`log_limit`), not the API's
+  # 500-entry tail, and `ThreadView.log/3` says how many entries are gone when the store dropped
+  # any.
   defp load_log(%{assigns: %{thread_card: nil}} = socket), do: assign(socket, :thread_log, nil)
 
   defp load_log(%{assigns: %{thread_card: %ThreadCard{thread_id: thread_id}}} = socket) do
+    opts = [chunks: true, log_limit: ProjectionStore.run_logs_max_limit()]
+
     log =
-      case Transcript.full(thread_id, chunks: true) do
-        {:ok, %Full{turns: turns, terminal: terminal?}} ->
-          ThreadView.log(turns, terminal?)
+      case Transcript.full(thread_id, opts) do
+        {:ok, %Full{turns: turns, terminal: terminal?, omitted_entries: omitted}} ->
+          ThreadView.log(turns, terminal?, omitted_entries: omitted)
 
         {:error, :thread_not_found} ->
           :unavailable

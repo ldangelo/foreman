@@ -64,14 +64,17 @@ defmodule ForemanServerWeb.Workspace.ThreadView do
   defmodule Log do
     @moduledoc """
     What the pane shows of a thread's conversation: the newest blocks, how many earlier turns
-    it leaves out, and whether the thread is over (`terminal?`: no more output will come).
+    it leaves out, how many stored output entries were not readable at all (`omitted_entries`:
+    the store's window dropped them, or the read was shorter than the window), and whether the
+    thread is over (`terminal?`: no more output will come).
     """
-    @enforce_keys [:blocks, :dropped_turns, :terminal?]
-    defstruct [:blocks, :dropped_turns, :terminal?]
+    @enforce_keys [:blocks, :dropped_turns, :omitted_entries, :terminal?]
+    defstruct [:blocks, :dropped_turns, :omitted_entries, :terminal?]
 
     @type t :: %__MODULE__{
             blocks: [Block.t()],
             dropped_turns: non_neg_integer(),
+            omitted_entries: non_neg_integer(),
             terminal?: boolean()
           }
   end
@@ -84,16 +87,33 @@ defmodule ForemanServerWeb.Workspace.ThreadView do
   The pane's log for `turns` (chunk turns in `seq` order, see the moduledoc): runs of output
   chunks assembled into one block each, the newest `limit` blocks kept, and `dropped_turns`
   counting the TURNS (not blocks) of the blocks left out.
+
+  Options: `:limit` (blocks kept, default `tail/0`) and `:omitted_entries` (default 0): how many
+  stored output entries the transcript could not read, `Transcript.Full.omitted_entries`, which
+  the log carries so the pane can say the start of the conversation is gone. Anything else
+  raises.
   """
-  @spec log([Turn.t()], boolean(), pos_integer()) :: Log.t()
-  def log(turns, terminal?, limit \\ @tail)
-      when is_list(turns) and is_boolean(terminal?) and is_integer(limit) and limit > 0 do
+  @spec log([Turn.t()], boolean(), keyword()) :: Log.t()
+  def log(turns, terminal?, opts \\ []) when is_list(turns) and is_boolean(terminal?) do
+    opts = Keyword.validate!(opts, limit: @tail, omitted_entries: 0)
+
+    build_log(
+      turns,
+      terminal?,
+      Keyword.fetch!(opts, :limit),
+      Keyword.fetch!(opts, :omitted_entries)
+    )
+  end
+
+  defp build_log(turns, terminal?, limit, omitted)
+       when is_integer(limit) and limit > 0 and is_integer(omitted) and omitted >= 0 do
     blocks = turns |> Enum.chunk_by(&run_key/1) |> Enum.map(&block/1)
     {dropped, shown} = Enum.split(blocks, max(length(blocks) - limit, 0))
 
     %Log{
       blocks: shown,
       dropped_turns: Enum.sum_by(dropped, & &1.turns),
+      omitted_entries: omitted,
       terminal?: terminal?
     }
   end

@@ -177,6 +177,17 @@ defmodule ForemanServerWeb.Workspace.ThreadViewTest do
       assert %Log{terminal?: true} = ThreadView.log([out(0, "a")], true)
       assert %Log{terminal?: false} = ThreadView.log([out(0, "a")], false)
     end
+
+    test "the log carries how many stored output entries were not readable, none by default" do
+      assert %Log{omitted_entries: 0} = ThreadView.log([out(0, "a")], false)
+      assert %Log{omitted_entries: 37} = ThreadView.log([out(0, "a")], false, omitted_entries: 37)
+    end
+
+    test "an option it does not know, or a limit that is not a positive integer, raises" do
+      assert_raise ArgumentError, fn -> ThreadView.log([], false, tail: 2) end
+      assert_raise FunctionClauseError, fn -> ThreadView.log([], false, limit: 0) end
+      assert_raise FunctionClauseError, fn -> ThreadView.log([], false, omitted_entries: -1) end
+    end
   end
 
   describe "log/3: the tail" do
@@ -195,7 +206,7 @@ defmodule ForemanServerWeb.Workspace.ThreadViewTest do
     end
 
     test "keeps the newest blocks and counts the TURNS of the blocks it leaves out" do
-      log = ThreadView.log(five_blocks(), false, 2)
+      log = ThreadView.log(five_blocks(), false, limit: 2)
 
       assert Enum.map(log.blocks, & &1.seq) == [6, 7]
       # A (2) + B (1) + C (3): turns, not blocks
@@ -204,22 +215,22 @@ defmodule ForemanServerWeb.Workspace.ThreadViewTest do
 
     test "the turns of a message's collapsed deltas count as turns too" do
       turns = chunks(@deltas_1 ++ [@message_1]) ++ [steer(6, "next"), out(7, "ok")]
-      log = ThreadView.log(turns, false, 2)
+      log = ThreadView.log(turns, false, limit: 2)
 
       assert Enum.map(log.blocks, & &1.seq) == [6, 7]
       assert log.dropped_turns == 6
     end
 
     test "nothing is dropped while the blocks fit" do
-      log = ThreadView.log(five_blocks(), false, 5)
+      log = ThreadView.log(five_blocks(), false, limit: 5)
       assert length(log.blocks) == 5
       assert log.dropped_turns == 0
 
-      assert %Log{dropped_turns: 0} = ThreadView.log(five_blocks(), false, 50)
+      assert %Log{dropped_turns: 0} = ThreadView.log(five_blocks(), false, limit: 50)
     end
 
     test "a block that lost its first chunks to the limit is dropped whole, never cut" do
-      log = ThreadView.log(five_blocks(), false, 3)
+      log = ThreadView.log(five_blocks(), false, limit: 3)
       assert Enum.map(log.blocks, & &1.seq) == [3, 6, 7]
       assert hd(log.blocks).text == "c1c2c3"
       assert log.dropped_turns == 3
