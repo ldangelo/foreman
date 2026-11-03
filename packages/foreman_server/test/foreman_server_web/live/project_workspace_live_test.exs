@@ -1207,4 +1207,43 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert has_element?(view, ~s(aside.ws-side > section.ws-panels))
     end
   end
+
+  describe "read-only side panels" do
+    test "the four panels render inside the shell with their headings", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      for heading <- ["Instructions", "Memory topics", "Library files", "Threads"] do
+        assert has_element?(view, ~s(section.ws-panels section.ws-panel h2), heading)
+      end
+    end
+
+    test "the Instructions panel shows the project's instructions text" do
+      project = "instr-#{System.unique_integer([:positive])}"
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project,
+                 path: "/tmp/#{project}",
+                 instructions: "Keep it surgical."
+               })
+
+      {_view, html} = mount_view(project)
+      assert html =~ "Keep it surgical."
+    end
+
+    test "the panels show empty states and list thread titles", %{id: id} do
+      {view, html} = mount_view(id)
+
+      # The test project's path does not exist on disk, so memory and library are empty.
+      assert html =~ "No memory topics."
+      assert html =~ "No library files."
+      # A thread title from the Overview is listed in the Threads panel itself, not merely
+      # somewhere on the page (the Overview also shows "Second PR").
+      assert has_element?(
+               view,
+               ~s(section[aria-labelledby="panel-threads-title"] ul.ws-panel-list li strong),
+               "Second PR"
+             )
+    end
+  end
 end

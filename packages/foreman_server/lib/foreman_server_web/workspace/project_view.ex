@@ -6,7 +6,12 @@ defmodule ForemanServerWeb.Workspace.ProjectView do
   hedges between the two.
   """
 
-  @type t :: %{name: String.t(), goal: String.t() | nil, status: String.t() | nil}
+  @type t :: %{
+          name: String.t(),
+          goal: String.t() | nil,
+          instructions: String.t() | nil,
+          status: String.t() | nil
+        }
 
   @doc "Display facts of a project projection; `fallback_name` is used when it has no name."
   @spec build(map(), String.t()) :: t()
@@ -16,6 +21,7 @@ defmodule ForemanServerWeb.Workspace.ProjectView do
     %{
       name: config["name"] || fallback_name,
       goal: blank_to_nil(config["goal"]),
+      instructions: blank_to_nil(config["instructions"]),
       status: Map.get(project, :status)
     }
   end

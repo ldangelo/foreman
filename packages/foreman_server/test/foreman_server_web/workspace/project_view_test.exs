@@ -37,6 +37,21 @@ defmodule ForemanServerWeb.Workspace.ProjectViewTest do
     assert %{goal: nil} = ProjectView.build(%{config: %{}}, "p-1")
   end
 
+  test "the instructions of either config key shape, trimmed, else nil" do
+    assert %{instructions: "Do it"} =
+             ProjectView.build(%{config: %{instructions: "Do it"}}, "p-1")
+
+    assert %{instructions: "Do it"} =
+             ProjectView.build(%{config: %{"instructions" => "Do it"}}, "p-1")
+
+    assert %{instructions: "Do it"} =
+             ProjectView.build(%{config: %{instructions: "  Do it  "}}, "p-1")
+
+    assert %{instructions: nil} = ProjectView.build(%{config: %{instructions: nil}}, "p-1")
+    assert %{instructions: nil} = ProjectView.build(%{config: %{instructions: "   "}}, "p-1")
+    assert %{instructions: nil} = ProjectView.build(%{config: %{}}, "p-1")
+  end
+
   test "the status is the projection's own" do
     assert %{status: "paused"} = ProjectView.build(%{status: "paused", config: %{}}, "p-1")
     assert %{status: nil} = ProjectView.build(%{config: %{}}, "p-1")

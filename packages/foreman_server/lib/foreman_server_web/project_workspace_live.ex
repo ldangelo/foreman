@@ -30,7 +30,15 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
   require Logger
 
-  alias ForemanServer.{CoordinatorAPI, Overview, ProjectionStore, ProjectStore}
+  alias ForemanServer.{
+    CoordinatorAPI,
+    Library,
+    Overview,
+    ProjectionStore,
+    ProjectMemory,
+    ProjectStore
+  }
+
   alias ForemanServer.Library.Ingest
   alias ForemanServer.Questions.DTO, as: QuestionDTO
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
@@ -539,10 +547,30 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       overview: overview,
       status: status,
       proposals: proposals(project_id),
-      questions: project_id |> ProjectionStore.open_questions() |> QuestionDTO.list()
+      questions: project_id |> ProjectionStore.open_questions() |> QuestionDTO.list(),
+      memory_topics: memory_topics(project_id),
+      library_entries: library_entries(project_id)
     )
     |> assign(:schedules, schedules(socket))
     |> sync_library_panels()
+  end
+
+  # Read-only side-panel data: the project's memory topics and library entries. A missing
+  # on-disk directory is already an empty list; a genuine read failure (unknown project,
+  # absent path, IO error) returns `:error` so the panel can render an unavailable state
+  # distinct from an empty collection, instead of masking the failure as "nothing here".
+  defp memory_topics(project_id) do
+    case ProjectMemory.list(project_id) do
+      {:ok, topics} -> topics
+      {:error, _} -> :error
+    end
+  end
+
+  defp library_entries(project_id) do
+    case Library.list(project_id) do
+      {:ok, entries} -> entries
+      {:error, _} -> :error
+    end
   end
 
   defp project_view(project_id, socket) do
@@ -683,7 +711,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           />
         </section>
         <aside class="ws-side" aria-label="Project panels">
-          <section class="ws-panels" aria-label="Project information"></section>
+          <section class="ws-panels" aria-label="Project information">
+            <Components.info_panels
+              instructions={@project_view.instructions}
+              memory_topics={@memory_topics}
+              library_entries={@library_entries}
+              overview={@overview}
+            />
+          </section>
           <div id="overview-live" aria-live="polite" aria-relevant="additions text">
             <Components.questions_pane questions={@questions} />
             <Components.overview_pane overview={@overview} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
