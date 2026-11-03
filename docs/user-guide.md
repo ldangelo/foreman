@@ -1600,9 +1600,10 @@ Current behavior:
   normal completion, forwards normalized `{:ok, text} | {:error,
   reason}` to `RunExecutor`, then exits normally so the supervisor can
   clean up.
-- If the harness task crashes before returning a result, the worker
-  emits best-effort `WorkerExited` and forwards `{:error,
-  {:task_crashed, reason}}`.
+- The harness task is linked to the worker, so a task that crashes before
+  returning a result takes the worker down with it. That is a worker crash,
+  not a result: `Overwatch.Tracker` records `WorkerExited` when it sees the
+  worker go, and the relaunch rule below applies.
 - Worker relaunch is crash-only: a worker that finished the phase
   (`:normal`) or was torn down (`:shutdown`) ends the child, while a
   crashed worker is relaunched and counted by
