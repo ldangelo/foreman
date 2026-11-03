@@ -373,6 +373,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
   defp notify(socket, {kind, message}), do: assign(socket, notice: message, notice_kind: kind)
 
+  defp project_chip_kind("paused"), do: "chip--warn"
+  defp project_chip_kind("active"), do: "chip--ok"
+  defp project_chip_kind(_status), do: "chip--muted"
+
   # The three upload forms share the library's count and per-file limits
   # (`Library.Ingest.limits/0`; the library checks them again server-side) and the cap on
   # the whole add (`LibraryUpload`). The replace form serves file and folder entries
@@ -691,12 +695,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       <header class="ws-header">
         <div class="ws-header-title">
           <h1>{@project_view.name}</h1>
-          <p :if={@project_view.goal} class="ws-goal ws-muted">{@project_view.goal}</p>
+          <p :if={@project_view.goal} class="ws-goal" title={@project_view.goal}>{@project_view.goal}</p>
         </div>
-        <nav aria-label="Project">
-          <.link navigate={"/dashboard/projects/#{@project_id}/settings"}>Settings</.link>
-        </nav>
-        <p :if={@project_view.status == "paused"} class="ws-error" role="status">This project is paused.</p>
+        <div class="ws-header-actions">
+          <span :if={@project_view.status} class={["chip", project_chip_kind(@project_view.status)]} role="status">{@project_view.status}</span>
+          <.link navigate={"/dashboard/projects/#{@project_id}/settings"} class="btn ws-btn">Settings</.link>
+        </div>
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
       <div class="ws-layout">
@@ -711,12 +715,17 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           />
         </section>
         <aside class="ws-side" aria-label="Project panels">
-          <section class="ws-panels" aria-label="Project information">
+          <section class="ws-panels" aria-label="Project knowledge">
             <Components.info_panels
               instructions={@project_view.instructions}
+              settings_path={"/dashboard/projects/#{@project_id}/settings"}
               memory_topics={@memory_topics}
               library_entries={@library_entries}
-              overview={@overview}
+              upload={@uploads.library}
+              folder_upload={@uploads.library_folder}
+              library_name={@library_name}
+              library_folder_name={@library_folder_name}
+              library_limits={@library_limits}
             />
           </section>
           <div id="overview-live" aria-live="polite" aria-relevant="additions text">
@@ -727,11 +736,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             tab={@tab}
             tabs={@overview.tabs}
             schedules={@schedules}
-            upload={@uploads.library}
-            folder_upload={@uploads.library_folder}
             replace_upload={@uploads.library_replace}
-            library_name={@library_name}
-            library_folder_name={@library_folder_name}
             confirm_remove={@confirm_remove}
             confirm_delete={@confirm_delete}
             replace_entry={@replace_entry}

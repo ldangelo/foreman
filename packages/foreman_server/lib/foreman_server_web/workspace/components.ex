@@ -13,7 +13,14 @@ defmodule ForemanServerWeb.Workspace.Components do
   alias ForemanServer.Library
   alias ForemanServer.Overview.{Group, ThreadCard}
   alias ForemanServerWeb.Workspace.LibraryUpload
+  alias Phoenix.LiveView.JS
   alias Phoenix.LiveView.UploadConfig
+
+  # A system message is collapsed behind a <details> when it is this long or longer, or
+  # when it spans more than this many lines; the client preserves the toggle across
+  # re-renders (JS.ignore_attributes("open") on phx-mounted).
+  @system_collapse_chars 280
+  @system_collapse_lines 4
 
   @group_titles %{
     ready_for_review: "Ready for review",
@@ -44,65 +51,77 @@ defmodule ForemanServerWeb.Workspace.Components do
   def safe_url(_), do: nil
 
   attr(:instructions, :string, default: nil)
+  attr(:settings_path, :string, required: true)
   attr(:memory_topics, :any, required: true)
   attr(:library_entries, :any, required: true)
-  attr(:overview, :map, required: true)
+  attr(:upload, UploadConfig, required: true)
+  attr(:folder_upload, UploadConfig, required: true)
+  attr(:library_name, :string, default: "")
+  attr(:library_folder_name, :string, default: "")
+  attr(:library_limits, :map, required: true)
 
   @doc """
-  The read-only side panels: the project's instructions, its memory topics
-  (`ProjectMemory.Topic`, name and description), its library entries
-  (`Library.Entry`, name and file count) and the titles of its threads (the
-  Overview cards, flattened in group order). Display only; nothing here mutates.
-  `memory_topics`/`library_entries` are the entry lists, or `:error` when the
-  read failed, which renders an unavailable state distinct from an empty list.
+  The "project knowledge" cards: the project's instructions (clamped, with a
+  Show-all reveal whose open state the client preserves), its memory topics
+  (`ProjectMemory.Topic`, name and description) and its library entries
+  (`Library.Entry`, name and file count) with the add-files/add-folder upload
+  forms. `memory_topics`/`library_entries` are the entry lists, or `:error`
+  when the read failed, which renders an unavailable state distinct from an
+  empty list. The threads are shown as the Overview cards, not here.
   """
   def info_panels(assigns) do
-    assigns = assign(assigns, :threads, flatten_threads(assigns.overview))
-
     ~H"""
     <section class="ws-panel" aria-labelledby="panel-instructions-title">
-      <h2 id="panel-instructions-title">Instructions</h2>
-      <p :if={is_nil(@instructions)} class="ws-muted">No instructions set.</p>
-      <p :if={@instructions} class="ws-msg">{@instructions}</p>
+      <div class="ws-panel-head">
+        <h2 id="panel-instructions-title">Instructions</h2>
+        <.link navigate={@settings_path} class="btn--link">Edit</.link>
+      </div>
+      <%= if @instructions do %>
+        <p class="ws-msg ws-clamp-8">{@instructions}</p>
+        <details class="ws-showall" phx-mounted={JS.ignore_attributes("open")}>
+          <summary class="btn--link">Show all</summary>
+          <p class="ws-msg">{@instructions}</p>
+        </details>
+      <% else %>
+        <p class="ws-muted">No instructions yet.</p>
+        <.link navigate={@settings_path} class="btn--link">Add instructions</.link>
+      <% end %>
     </section>
     <section class="ws-panel" aria-labelledby="panel-memory-title">
-      <h2 id="panel-memory-title">Memory topics <span :if={is_list(@memory_topics)} class="ws-muted">({length(@memory_topics)})</span></h2>
-      <p :if={@memory_topics == :error} class="ws-error">Memory topics unavailable.</p>
-      <p :if={@memory_topics == []} class="ws-muted">No memory topics.</p>
+      <div class="ws-panel-head">
+        <h2 id="panel-memory-title">Memory</h2>
+        <span :if={is_list(@memory_topics)} class="ws-count">{length(@memory_topics)}</span>
+      </div>
+      <p :if={@memory_topics == :error} class="ws-error">Memory unavailable.</p>
+      <p :if={@memory_topics == []} class="ws-muted">No memory yet. Agents save durable facts here.</p>
       <ul :if={is_list(@memory_topics) and @memory_topics != []} class="ws-panel-list">
         <li :for={topic <- @memory_topics}>
           <strong>{topic.name}</strong>
-          <span :if={topic.description != ""} class="ws-muted"> - {topic.description}</span>
+          <span :if={topic.description != ""} class="ws-muted ws-clamp-1">{topic.description}</span>
         </li>
       </ul>
     </section>
-    <section class="ws-panel" aria-labelledby="panel-library-title">
-      <h2 id="panel-library-title">Library files <span :if={is_list(@library_entries)} class="ws-muted">({length(@library_entries)})</span></h2>
-      <p :if={@library_entries == :error} class="ws-error">Library files unavailable.</p>
-      <p :if={@library_entries == []} class="ws-muted">No library files.</p>
+    <section class="ws-panel" aria-labelledby="panel-files-title">
+      <div class="ws-panel-head">
+        <h2 id="panel-files-title">Files</h2>
+        <span :if={is_list(@library_entries)} class="ws-count">{length(@library_entries)}</span>
+      </div>
+      <p :if={@library_entries == :error} class="ws-error">Files unavailable.</p>
+      <p :if={@library_entries == []} class="ws-muted">No files yet.</p>
       <ul :if={is_list(@library_entries) and @library_entries != []} class="ws-panel-list">
-        <li :for={entry <- @library_entries}>
+        <li :for={entry <- @library_entries} class="ws-ellipsis">
           <strong>{entry.name}</strong>
-          <span class="ws-muted"> - {entry.file_count} {file_word(entry.file_count)}</span>
+          <span class="ws-muted"> · {entry.file_count} {file_word(entry.file_count)}</span>
         </li>
       </ul>
-    </section>
-    <section class="ws-panel" aria-labelledby="panel-threads-title">
-      <h2 id="panel-threads-title">Threads <span class="ws-muted">({length(@threads)})</span></h2>
-      <p :if={@threads == []} class="ws-muted">No threads.</p>
-      <ul :if={@threads != []} class="ws-panel-list">
-        <li :for={card <- @threads}>
-          <strong>{card.title}</strong>
-          <span :if={card.status} class="ws-muted"> - {card.status}</span>
-        </li>
-      </ul>
+      <details class="ws-add-files" phx-mounted={JS.ignore_attributes("open")}>
+        <summary class="btn ws-btn">Add files</summary>
+        <.library_upload upload={@upload} library_name={@library_name} library_limits={@library_limits} />
+        <.library_folder_upload upload={@folder_upload} folder_name={@library_folder_name} library_limits={@library_limits} />
+      </details>
     </section>
     """
   end
-
-  # The Overview cards in group order, flattened to one read-only list.
-  defp flatten_threads(overview),
-    do: Enum.flat_map(Group.all(), &Map.get(overview.groups, &1, []))
 
   defp file_word(1), do: "file"
   defp file_word(_), do: "files"
@@ -116,13 +135,13 @@ defmodule ForemanServerWeb.Workspace.Components do
     assigns = assign(assigns, :groups, Group.all())
 
     ~H"""
-    <section id="overview-pane" aria-labelledby="overview-heading">
+    <section id="overview-pane" class="ws-panel" aria-labelledby="overview-heading">
       <h2 id="overview-heading">
-        Overview
+        Threads
         <span :if={@overview.attention.needed} class="ws-dot" role="img" aria-label={"#{@overview.attention.count} threads need attention"}></span>
       </h2>
       <section :for={group <- @groups} id={"group-#{group}"} aria-labelledby={"group-#{group}-title"}>
-        <h3 id={"group-#{group}-title"}>{group_title(group)} <span class="ws-muted">({Map.get(@overview.counts, group, 0)})</span></h3>
+        <h3 id={"group-#{group}-title"} class="ws-group-title">{group_title(group)} <span class="ws-count">({Map.get(@overview.counts, group, 0)})</span></h3>
         <p :if={Map.get(@overview.groups, group, []) == []} class="ws-muted">Nothing here.</p>
         <.thread_card
           :for={card <- Map.get(@overview.groups, group, [])}
@@ -141,18 +160,28 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   @doc "One thread card with its actions."
   def thread_card(assigns) do
+    {chip_label, chip_kind} = thread_chip(assigns.card)
+
+    assigns =
+      assigns
+      |> assign(:chip_label, chip_label)
+      |> assign(:chip_kind, chip_kind)
+      |> assign(:quiet, thread_quiet?(assigns.card))
+
     ~H"""
-    <article class="ws-card" id={"thread-#{@card.thread_id}"} aria-label={"Thread: " <> @card.title}>
-      <h4>{@card.title}</h4>
-      <p class="ws-muted">
-        <span>{@card.status}</span>
-        <span :if={@card.branch}> · branch {@card.branch}</span>
+    <article class={["thread-card", @quiet && "thread-card--quiet"]} id={"thread-#{@card.thread_id}"} aria-label={"Thread: " <> @card.title}>
+      <div class="thread-head">
+        <span class="thread-title ws-clamp-1" title={@card.title}>{@card.title}</span>
+        <span class={["chip", "chip--" <> @chip_kind]}>{@chip_label}</span>
+      </div>
+      <p :if={@card.branch || @card.pr_state} class="ws-muted">
+        <span :if={@card.branch}>branch {@card.branch}</span>
         <span :if={@card.pr_state}> · PR {@card.pr_state}</span>
       </p>
-      <p :if={safe_url(@card.pr_url)}><a href={safe_url(@card.pr_url)} rel="noopener noreferrer" target="_blank">Pull request</a></p>
-      <p :if={@card.last_report}>
-        Last report: <strong>{@card.last_report.verdict}</strong>
-        <span :if={@card.last_report.summary}> - {@card.last_report.summary}</span>
+      <p :if={safe_url(@card.pr_url)}><a href={safe_url(@card.pr_url)} class="btn--link" rel="noopener noreferrer" target="_blank">Open PR</a></p>
+      <p :if={@card.last_report} class="ws-muted ws-clamp-2">
+        <strong>{@card.last_report.verdict}</strong>
+        <span :if={@card.last_report.summary}> — {@card.last_report.summary}</span>
       </p>
       <p :if={@card.failure_reason} class="ws-error">Failure: {@card.failure_reason}</p>
       <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
@@ -235,6 +264,29 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   defp approval_note(%{approval_delivery: "inflight"}), do: "the agent is waiting on this call"
   defp approval_note(_approval), do: "approving resumes the paused run"
+
+  # A thread's status chip: a failed thread reads as an error, a completed one is quiet,
+  # otherwise the chip takes the Overview group's colour and title.
+  @group_chip_kind %{
+    ready_for_review: "ok",
+    waiting_on_you: "warn",
+    working: "info",
+    landing: "info",
+    idle: "muted",
+    resolved: "muted"
+  }
+
+  defp thread_chip(%{status: "failed"}), do: {"failed", "err"}
+  defp thread_chip(%{status: "completed"}), do: {"completed", "muted"}
+
+  defp thread_chip(%{group: group}),
+    do: {String.downcase(group_title(group)), Map.get(@group_chip_kind, group, "muted")}
+
+  # A thread with nothing to act on (finished or failed, no controls) is rendered quiet.
+  defp thread_quiet?(card),
+    do:
+      card.status in ["failed", "completed"] and card.actions == [] and
+        card.pr_actions == [] and card.approvals == []
 
   attr(:questions, :list, required: true)
 
@@ -351,52 +403,142 @@ defmodule ForemanServerWeb.Workspace.Components do
   @doc "The coordinator conversation pane: log, proposals, health and composer."
   def conversation_pane(assigns) do
     ~H"""
-    <section id="conversation-pane" aria-labelledby="conversation-heading">
-      <h2 id="conversation-heading">Coordinator</h2>
-      <p :if={@status} id="coordinator-health">
-        Status: <strong>{@status["status"]}</strong>
-        <span :if={@status["consecutive_failures"] > 0}> · {@status["consecutive_failures"]} consecutive failures</span>
-        <span :if={@status["last_error"]} class="ws-error"> · last error: {@status["last_error"]["message"]}</span>
-        <button :if={@status["status"] == "unhealthy"} type="button" phx-click="restart_coordinator">Restart coordinator</button>
-      </p>
-      <button :if={@has_earlier} type="button" phx-click="load_earlier">Load earlier messages</button>
+    <section id="conversation-pane" class="ws-card conv-card" aria-labelledby="conversation-heading">
+      <div class="conv-head">
+        <h2 id="conversation-heading">Coordinator</h2>
+        <span :if={@status} id="coordinator-health">
+          <% {label, kind} = coordinator_chip(@status) %>
+          <span class={["chip", "chip--" <> kind]}>{label}</span>
+          <span :if={@status["consecutive_failures"] > 0} class="ws-muted"> · {@status["consecutive_failures"]} consecutive failures</span>
+          <span :if={@status["last_error"]} class="ws-error"> · last error: {@status["last_error"]["message"]}</span>
+
+          <button :if={@status["status"] == "unhealthy"} type="button" class="btn ws-btn" phx-click="restart_coordinator">Restart coordinator</button>
+        </span>
+      </div>
+      <button :if={@has_earlier} type="button" class="btn--link" phx-click="load_earlier">Load earlier messages</button>
       <p :if={@truncated_before_seq} class="ws-muted">Older messages were trimmed (before {@truncated_before_seq}).</p>
-      <div id="conversation-log" role="log" aria-live="polite" aria-label="Coordinator conversation">
-        <p :if={@messages == []} class="ws-muted">No messages yet. Tell the coordinator what you want done.</p>
-        <article :for={m <- @messages} id={"msg-#{m["seq"]}"} class={["ws-card", m["role"] == "operator" && "ws-msg-operator"]}>
-          <p class="ws-muted">{m["role"]}<span :if={m["source"]}> via {m["source"]}</span> · {m["at"]}</p>
-          <div class="ws-msg">{m["text"]}</div>
-        </article>
+      <div id="conversation-log" class="conv-transcript" role="log" aria-live="polite" aria-label="Coordinator conversation">
+        <div class="conv-inner">
+          <p :if={@messages == []} class="ws-muted">No messages yet. Tell the coordinator what you want done.</p>
+          <.message :for={m <- @messages} message={m} />
+        </div>
       </div>
       <div :if={@proposals != []} id="proposals" aria-label="Proposed threads">
-        <h3>Proposed threads</h3>
+        <h3 class="ws-group-title">Proposed threads</h3>
         <article :for={p <- @proposals} class="ws-card" id={"proposal-#{p.task_id}"} aria-label={"Proposal: " <> p.title}>
           <span>{p.title}</span>
-          <button :if={p.startable?} type="button" phx-click="start_proposed" phx-value-task-id={p.task_id}>Start</button>
-          <button :if={p.startable?} type="button" phx-click="decline_proposed" phx-value-task-id={p.task_id}>Decline</button>
+          <button :if={p.startable?} type="button" class="btn ws-btn ws-btn--primary" phx-click="start_proposed" phx-value-task-id={p.task_id}>Start</button>
+          <button :if={p.startable?} type="button" class="btn ws-btn" phx-click="decline_proposed" phx-value-task-id={p.task_id}>Decline</button>
           <span :if={not p.startable?} class="ws-muted">({p.status})</span>
         </article>
       </div>
-      <form id="composer" phx-submit="post_message">
+      <form id="composer" class="composer" phx-submit="post_message">
         <input type="hidden" name="message_id" value={@draft_id} />
         <label>
-          <span>Message the coordinator</span>
-          <textarea name="text" rows="3" required></textarea>
+          <span class="ws-vh">Message the coordinator</span>
+          <textarea name="text" rows="3" placeholder="Message the coordinator…" required></textarea>
         </label>
-        <button type="submit">Send</button>
+        <div class="composer-row">
+          <button type="submit" class="btn ws-btn ws-btn--primary">Send</button>
+        </div>
       </form>
     </section>
     """
   end
 
+  attr(:message, :map, required: true)
+
+  # One conversation message, formatted (no raw role/source/ISO headers): the sender
+  # label, a human time (full ISO in the title), and the text. Operator messages sit
+  # right, the coordinator left; a system ("Foreman") message is quiet, and a long one is
+  # collapsed behind a <details> whose open state the client preserves.
+  defp message(assigns) do
+    m = assigns.message
+    {time, title} = message_time(m["at"])
+
+    assigns =
+      assigns
+      |> assign(:role, m["role"])
+      |> assign(:sender, sender_label(m["role"]))
+      |> assign(:time, time)
+      |> assign(:time_title, title)
+      |> assign(:text, m["text"] || "")
+      |> assign(:seq, m["seq"])
+
+    ~H"""
+    <article id={"msg-#{@seq}"} class={["msg", "msg--" <> message_variant(@role)]}>
+      <p class="msg-meta">
+        <span class="msg-sender">{@sender}</span>
+        <span :if={@time != ""} title={@time_title}>{@time}</span>
+      </p>
+      <%= if @role == "system" and collapse_system?(@text) do %>
+        <details phx-mounted={JS.ignore_attributes("open")}>
+          <summary class="msg-text">{first_line(@text)}</summary>
+          <div class="msg-text">{@text}</div>
+        </details>
+      <% else %>
+        <div class="msg-text">{@text}</div>
+      <% end %>
+    </article>
+    """
+  end
+
+  @doc "Sender label shown on a message: operator -> You, coordinator -> Coordinator, system -> Foreman."
+  @spec sender_label(String.t() | nil) :: String.t()
+  def sender_label("operator"), do: "You"
+  def sender_label("coordinator"), do: "Coordinator"
+  def sender_label("system"), do: "Foreman"
+  def sender_label(role) when is_binary(role) and role != "", do: String.capitalize(role)
+  def sender_label(_), do: "Foreman"
+
+  # The CSS variant suffix for a message's role.
+  defp message_variant("operator"), do: "operator"
+  defp message_variant("system"), do: "system"
+  defp message_variant(_), do: "coordinator"
+
+  @doc """
+  A message's time as `{display, title}`: display like `Nov 2, 4:22 PM` (UTC) and the
+  title the full ISO time to the second plus `UTC` (never the raw microsecond stamp).
+  An unparseable or absent time yields `{"", nil}`.
+  """
+  @spec message_time(term()) :: {String.t(), String.t() | nil}
+  def message_time(at) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, dt, _offset} ->
+        dt = DateTime.truncate(dt, :second)
+        {Calendar.strftime(dt, "%b %-d, %-I:%M %p"), DateTime.to_iso8601(dt) <> " UTC"}
+
+      _ ->
+        {"", nil}
+    end
+  end
+
+  def message_time(_), do: {"", nil}
+
+  defp collapse_system?(text) when is_binary(text),
+    do: String.length(text) > @system_collapse_chars or line_count(text) > @system_collapse_lines
+
+  defp collapse_system?(_), do: false
+
+  defp line_count(text), do: text |> String.split("\n") |> length()
+
+  defp first_line(text) do
+    case String.split(text, "\n", parts: 2) do
+      [first | _] -> first
+      _ -> text
+    end
+  end
+
+  # The coordinator's health chip: idle is quiet, working is informational, unhealthy is an error.
+  defp coordinator_chip(%{"status" => "working"}), do: {"working", "info"}
+  defp coordinator_chip(%{"status" => "unhealthy"}), do: {"unhealthy", "err"}
+  defp coordinator_chip(%{"status" => status}) when is_binary(status), do: {status, "muted"}
+  defp coordinator_chip(_), do: {"idle", "muted"}
+
   attr(:tab, :atom, required: true)
   attr(:tabs, :map, required: true)
   attr(:schedules, :list, required: true)
-  attr(:upload, UploadConfig, required: true)
-  attr(:folder_upload, UploadConfig, required: true)
   attr(:replace_upload, UploadConfig, required: true)
-  attr(:library_name, :string, default: "")
-  attr(:library_folder_name, :string, default: "")
   attr(:confirm_remove, :string, default: nil)
   attr(:confirm_delete, :string, default: nil)
   attr(:replace_entry, :map, default: nil)
@@ -417,11 +559,7 @@ defmodule ForemanServerWeb.Workspace.Components do
           tab={@tab}
           tabs={@tabs}
           schedules={@schedules}
-          upload={@upload}
-          folder_upload={@folder_upload}
           replace_upload={@replace_upload}
-          library_name={@library_name}
-          library_folder_name={@library_folder_name}
           confirm_remove={@confirm_remove}
           confirm_delete={@confirm_delete}
           replace_entry={@replace_entry}
@@ -483,8 +621,6 @@ defmodule ForemanServerWeb.Workspace.Components do
         <.replace_form :if={for_row?(@replace_entry, row)} entry={@replace_entry} name={row["name"]} upload={@replace_upload} library_limits={@library_limits} />
       </li>
     </ul>
-    <.library_upload upload={@upload} library_name={@library_name} library_limits={@library_limits} />
-    <.library_folder_upload upload={@folder_upload} folder_name={@library_folder_name} library_limits={@library_limits} />
     """
   end
 

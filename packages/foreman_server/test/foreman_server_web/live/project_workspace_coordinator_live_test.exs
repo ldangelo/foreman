@@ -81,19 +81,19 @@ defmodule ForemanServerWeb.ProjectWorkspaceCoordinatorLiveTest do
     test "is absent while the coordinator is healthy and appears with the third consecutive failed turn",
          ctx do
       {view, _html} = mount_view(ctx.id)
-      assert has_element?(view, @health, "Status: idle")
+      assert has_element?(view, @health, "idle")
       refute has_element?(view, @restart)
 
       # Two failed turns are not yet "unhealthy": the failures show, the control does not.
       fail_turn!(ctx)
       fail_turn!(ctx)
       Eventually.await(fn -> has_element?(view, @health, "2 consecutive failures") end)
-      assert has_element?(view, @health, "Status: idle")
+      assert has_element?(view, @health, "idle")
       refute has_element?(view, @restart)
 
       fail_turn!(ctx)
       Eventually.await(fn -> has_element?(view, @restart) end)
-      assert has_element?(view, @health, "Status: unhealthy")
+      assert has_element?(view, @health, "unhealthy")
       assert has_element?(view, @health, "3 consecutive failures")
       assert has_element?(view, @health, "last error: provider down")
     end
@@ -118,7 +118,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceCoordinatorLiveTest do
       # ... and the page says so: confirmation, a healthy status and no control left.
       assert has_element?(view, "#notice", "Coordinator restart requested.")
       refute has_element?(view, "#notice.ws-error")
-      assert has_element?(view, @health, "Status: idle")
+      assert has_element?(view, @health, "idle")
       refute has_element?(view, @health, "consecutive failures")
       refute has_element?(view, @health, "last error")
       refute has_element?(view, @restart)
@@ -139,7 +139,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceCoordinatorLiveTest do
 
       Eventually.await(fn ->
         has_element?(view, "#conversation-log", "Back online.") and
-          has_element?(view, @health, "Status: idle")
+          has_element?(view, @health, "idle")
       end)
     end
 
@@ -162,7 +162,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceCoordinatorLiveTest do
       assert {:ok, %{status: :unhealthy, consecutive_failures: 3}} =
                ProjectionStore.coordinator_status(ctx.id)
 
-      assert has_element?(view, @health, "Status: unhealthy")
+      assert has_element?(view, @health, "unhealthy")
       assert has_element?(view, @restart)
     end
   end

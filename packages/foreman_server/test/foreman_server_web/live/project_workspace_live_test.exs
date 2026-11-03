@@ -147,7 +147,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert build_conn()
              |> put_req_header("authorization", "Bearer #{@token}")
              |> get("/dashboard/projects/#{id}")
-             |> html_response(200) =~ "Overview"
+             |> html_response(200) =~ "Threads"
     end
 
     test "an unknown project is a 404" do
@@ -705,6 +705,30 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                "Write a message first."
     end
 
+    test "the transcript shows message text, never raw ISO timestamps or 'via' source noise", %{
+      id: id
+    } do
+      assert {:ok, _} =
+               ForemanServer.CoordinatorAPI.post_message(id, %{text: "hello there", source: "cli"})
+
+      {view, _} = mount_view(id)
+      log = view |> element("#conversation-log") |> render()
+
+      assert log =~ "hello there"
+      refute log =~ ~r/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z/
+      refute log =~ "via system"
+      refute log =~ "via cli"
+    end
+
+    test "the composer lives inside the conversation card and still sends", %{id: id} do
+      {view, _} = mount_view(id)
+
+      assert has_element?(view, "#conversation-pane form#composer")
+
+      assert view |> form("#composer", %{"text" => "ping the coordinator"}) |> render_submit() =~
+               "ping the coordinator"
+    end
+
     test "proposals render a Start button only for open tasks of this project", %{
       id: id,
       other: other
@@ -1209,10 +1233,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   end
 
   describe "read-only side panels" do
-    test "the four panels render inside the shell with their headings", %{id: id} do
+    test "the knowledge panels render inside the shell with their headings", %{id: id} do
       {view, _html} = mount_view(id)
 
-      for heading <- ["Instructions", "Memory topics", "Library files", "Threads"] do
+      for heading <- ["Instructions", "Memory", "Files"] do
         assert has_element?(view, ~s(section.ws-panels section.ws-panel h2), heading)
       end
     end
@@ -1231,19 +1255,29 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert html =~ "Keep it surgical."
     end
 
-    test "the panels show empty states and list thread titles", %{id: id} do
+    test "long instructions keep their full text in the DOM (clamped, not truncated)" do
+      project = "instr-long-#{System.unique_integer([:positive])}"
+      long = String.duplicate("line of guidance ", 400) <> "SENTINEL_TAIL"
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project,
+                 path: "/tmp/#{project}",
+                 instructions: long
+               })
+
+      {_view, html} = mount_view(project)
+      assert html =~ "SENTINEL_TAIL"
+    end
+
+    test "the panels show empty states and threads list their titles", %{id: id} do
       {view, html} = mount_view(id)
 
       # The test project's path does not exist on disk, so memory and library are empty.
-      assert html =~ "No memory topics."
-      assert html =~ "No library files."
-      # A thread title from the Overview is listed in the Threads panel itself, not merely
-      # somewhere on the page (the Overview also shows "Second PR").
-      assert has_element?(
-               view,
-               ~s(section[aria-labelledby="panel-threads-title"] ul.ws-panel-list li strong),
-               "Second PR"
-             )
+      assert html =~ "No memory yet. Agents save durable facts here."
+      assert html =~ "No files yet."
+      # A thread title from the Overview renders on its own thread card.
+      assert has_element?(view, ~s(.thread-card .thread-title), "Second PR")
     end
   end
 end
