@@ -128,6 +128,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             library_folder_name: "",
             replace_entry: nil,
             open_entry: nil,
+            token: nil,
             thread_id: nil,
             thread_card: nil,
             thread_log: nil
@@ -144,14 +145,23 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   # to the thread it was asked on, so it does not follow the operator to another one.
   @impl true
   def handle_params(
-        %{"thread_id" => thread_id},
+        %{"thread_id" => thread_id} = params,
         _uri,
         %{assigns: %{live_action: :thread}} = socket
       ),
-      do: {:noreply, open_thread(socket, thread_id)}
+      do: {:noreply, socket |> keep_token(params) |> open_thread(thread_id)}
 
-  def handle_params(_params, _uri, %{assigns: %{live_action: :show}} = socket),
-    do: {:noreply, open_thread(socket, nil)}
+  def handle_params(params, _uri, %{assigns: %{live_action: :show}} = socket),
+    do: {:noreply, socket |> keep_token(params) |> open_thread(nil)}
+
+  # The dashboard takes its token only as a header or as `?token=` (no cookie), so every link of
+  # the page carries the token the page was opened with (`Components.thread_path/3`): a reload of
+  # a page the operator reached by clicking is answered, not a 401. A URL without one leaves
+  # what was kept.
+  defp keep_token(socket, %{"token" => token}) when is_binary(token) and token != "",
+    do: assign(socket, :token, token)
+
+  defp keep_token(socket, _params), do: socket
 
   defp open_thread(socket, thread_id) do
     socket =
@@ -791,13 +801,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
         </div>
         <nav class="ws-header-actions" aria-label="Project">
           <span :if={@project_view.status} class={["chip", project_chip_kind(@project_view.status)]} role="status">{@project_view.status}</span>
-          <.link navigate={"/dashboard/projects/#{@project_id}/settings"} class="btn ws-btn">Settings</.link>
+          <.link navigate={Components.settings_path(@project_id, @token)} class="btn ws-btn">Settings</.link>
         </nav>
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
       <div class="ws-layout">
         <Components.thread_sidebar
           project_id={@project_id}
+          token={@token}
           overview={@overview}
           selected_id={@thread_id}
           status={@status}
@@ -817,10 +828,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             card={@thread_card}
             log={@thread_log}
             project_id={@project_id}
+            token={@token}
             confirm_stop={@confirm_stop}
             steer_nonce={@steer_nonce}
           />
-          <Components.thread_missing :if={@live_action == :thread and is_nil(@thread_card)} project_id={@project_id} />
+          <Components.thread_missing :if={@live_action == :thread and is_nil(@thread_card)} project_id={@project_id} token={@token} />
         </div>
         <aside class="ws-side" aria-label="Project panels">
           <div id="questions-live" aria-live="polite" aria-relevant="additions text">
@@ -829,7 +841,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           <section class="ws-panels" aria-label="Project knowledge">
             <Components.info_panels
               instructions={@project_view.instructions}
-              settings_path={"/dashboard/projects/#{@project_id}/settings"}
+              settings_path={Components.settings_path(@project_id, @token)}
               memory_topics={@memory_topics}
               library_entries={@library_entries}
               upload={@uploads.library}

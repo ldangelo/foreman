@@ -85,17 +85,13 @@ defmodule ForemanServerWeb.Workspace.Layouts do
             border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
           summary { cursor: pointer; }
 
-          /* layout: thread sidebar | main column | project panels */
-          .ws-layout { display: grid; grid-template-columns: 264px minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+          /* layout: thread sidebar | main column | project panels. Stacked below 1100px (sidebar
+             compact and scrolling, then the main column, then the panels); the app shell below
+             takes over from 1100px. */
+          .ws-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
           .ws-main-col { min-width: 0; }
-          .ws-threads { min-width: 0; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
-          .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 16px;
-            max-height: calc(100vh - 32px); overflow-y: auto; }
-          @media (max-width: 1099px) {
-            .ws-layout { grid-template-columns: 1fr; }
-            .ws-threads { position: static; max-height: 320px; }
-            .ws-side { position: static; max-height: none; overflow-y: visible; }
-          }
+          .ws-threads { min-width: 0; max-height: 320px; overflow-y: auto; }
+          .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
           @media (max-width: 700px) { .ws-main { padding: 16px; } }
 
           /* cards */
@@ -117,7 +113,7 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .conv-card { display: flex; flex-direction: column; gap: 16px; }
           .conv-head { display: flex; align-items: center; gap: 8px; }
           .conv-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
-          .conv-transcript { display: flex; flex-direction: column-reverse; height: min(62vh, 640px);
+          .conv-transcript { display: flex; flex-direction: column-reverse; height: 65vh;
             overflow-y: auto; padding: 16px; background: transparent; border: 1px solid var(--border); border-radius: 8px; }
           .conv-inner { display: flex; flex-direction: column; gap: 12px; }
           .msg { overflow-wrap: anywhere; max-width: 90%; }
@@ -153,7 +149,8 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .thread-row:hover { background: var(--card-2); }
           .thread-row[aria-current="page"] { background: var(--card); border-left-color: var(--accent); }
           .thread-row--chat { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
-          .thread-row-title { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .thread-row-title { font-weight: 500; min-width: 0; overflow: hidden; overflow-wrap: anywhere;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
           .thread-row-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
           .thread-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
           .thread-dot--ok { background: var(--ok); }
@@ -165,19 +162,24 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .thread-pane { display: flex; flex-direction: column; gap: 12px; }
           .thread-pane-head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
           .thread-pane-head p { margin: 0; }
-          .thread-back { align-self: flex-start; text-decoration: none; }
-          .thread-pane-titlerow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+          .thread-back { align-self: flex-start; font-size: 13px; text-decoration: none; }
+          .thread-pane-titlerow { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
           .thread-pane-title { margin: 0; min-width: 0; font-size: 18px; font-weight: 600; line-height: 1.3;
-            overflow-wrap: anywhere; }
-          .thread-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; font-size: 12px; }
-          .thread-branch { max-width: 100%; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden; }
+          .thread-pane-titlerow .chip { flex: none; margin-top: 2px; }
+          .thread-meta { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden;
+            font-size: 12px; white-space: nowrap; }
+          .thread-meta > * { flex: none; }
+          .thread-meta > .thread-branch { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+          .thread-meta .btn--link { font-size: 12px; }
+          .thread-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
           .thread-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
           .thread-actions, .thread-pr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-          .ws-pr-action { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+          .ws-pr-action { display: inline-flex; }
           .thread-approvals { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
             border: 1px solid var(--border); border-radius: 8px; }
           .ws-approval { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
-          .thread-pane .conv-transcript { height: min(56vh, 560px); }
           .thread-composer textarea { min-height: 52px; }
           .thread-note { margin: 0; }
 
@@ -192,6 +194,20 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           input[type="text"], textarea { background: var(--card-2); border: 1px solid var(--border);
             border-radius: 8px; color: var(--text); font: inherit; padding: 6px 8px; }
           [role="tablist"] button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+          /* app shell (from 1100px): the page is exactly the viewport and the sidebar, the main card
+             and the project panels scroll on their own; the log takes what the card's header and
+             composer leave. Placed last so it wins over the stacked rules above. */
+          @media (min-width: 1100px) {
+            .ws-main { height: 100vh; display: flex; flex-direction: column; }
+            .ws-header { flex: none; margin-bottom: 16px; }
+            .ws-layout { flex: 1; min-height: 0; grid-template-columns: 264px minmax(0, 1fr) 320px;
+              grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+            .ws-threads, .ws-side { max-height: none; min-height: 0; overflow-y: auto; }
+            .ws-main-col { display: flex; flex-direction: column; min-height: 0; }
+            .conv-card, .thread-pane { flex: 1; min-height: 0; }
+            .conv-transcript { flex: 1; min-height: 0; height: auto; }
+          }
           @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
         </style>
       </head>

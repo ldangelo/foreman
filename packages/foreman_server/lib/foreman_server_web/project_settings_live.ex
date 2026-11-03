@@ -52,7 +52,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.ProjectMemory.Error, as: MemoryError
   alias ForemanServer.SecretStore.Error, as: SecretError
-  alias ForemanServerWeb.Workspace.{Actions, ProjectNotFound, ProjectView, Refresh}
+  alias ForemanServerWeb.Workspace.{Actions, Components, ProjectNotFound, ProjectView, Refresh}
 
   @text_fields ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
                   coordinator_effort notification_preference)a
@@ -76,7 +76,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   }
 
   @impl true
-  def mount(%{"id" => project_id}, _session, socket) do
+  def mount(%{"id" => project_id} = params, _session, socket) do
     case ProjectStore.get(project_id) do
       nil ->
         raise ProjectNotFound, project_id: project_id
@@ -88,6 +88,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
           |> assign(
             page_title: "Settings: #{project_id}",
             project_id: project_id,
+            token: dashboard_token(params),
             notice: nil,
             notice_kind: :ok,
             errors: %{},
@@ -116,6 +117,11 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         {:ok, socket}
     end
   end
+
+  # The token the page was opened with (`?token=`; the dashboard has no cookie), so the way back
+  # to the workspace carries it: see `ForemanServerWeb.Workspace.Components.project_path/2`.
+  defp dashboard_token(%{"token" => token}) when is_binary(token) and token != "", do: token
+  defp dashboard_token(_params), do: nil
 
   @impl true
   def handle_info({:projection_event, event}, socket),
@@ -835,7 +841,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
     <main id="main">
       <header>
         <h1>Settings: {@project_id}</h1>
-        <nav aria-label="Project"><.link navigate={"/dashboard/projects/#{@project_id}"}>Back to workspace</.link></nav>
+        <nav aria-label="Project"><.link navigate={Components.project_path(@project_id, @token)}>Back to workspace</.link></nav>
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
 

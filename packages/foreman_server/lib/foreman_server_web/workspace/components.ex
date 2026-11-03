@@ -60,17 +60,35 @@ defmodule ForemanServerWeb.Workspace.Components do
             inspect(Group.all())
   end
 
-  @doc "Path of the project workspace (the coordinator conversation)."
-  @spec project_path(String.t()) :: String.t()
-  def project_path(project_id), do: "/dashboard/projects/#{project_id}"
+  @doc """
+  Path of the project workspace (the coordinator conversation). `token` is the dashboard token
+  the page was opened with, or nil: the dashboard takes it only as a header or as `?token=` (no
+  cookie), so an in-page link has to carry it for a reload of the page it leads to to be
+  answered. Every link of the page is built by `project_path/2`, `thread_path/3` and
+  `settings_path/2`.
+  """
+  @spec project_path(String.t(), String.t() | nil) :: String.t()
+  def project_path(project_id, token \\ nil), do: base_path(project_id) <> query(token)
 
   @doc """
   Path of one thread's conversation. Thread ids hold a colon (`run:<id>`, `jobsite:<id>`), so the
   id is percent-encoded; every link to a thread, in the page and in tests, is built here.
   """
-  @spec thread_path(String.t(), String.t()) :: String.t()
-  def thread_path(project_id, thread_id),
-    do: project_path(project_id) <> "/threads/" <> URI.encode(thread_id, &URI.char_unreserved?/1)
+  @spec thread_path(String.t(), String.t(), String.t() | nil) :: String.t()
+  def thread_path(project_id, thread_id, token \\ nil) do
+    base_path(project_id) <>
+      "/threads/" <> URI.encode(thread_id, &URI.char_unreserved?/1) <> query(token)
+  end
+
+  @doc "Path of the project's settings page (see `project_path/2` for `token`)."
+  @spec settings_path(String.t(), String.t() | nil) :: String.t()
+  def settings_path(project_id, token \\ nil),
+    do: base_path(project_id) <> "/settings" <> query(token)
+
+  defp base_path(project_id), do: "/dashboard/projects/#{project_id}"
+
+  defp query(nil), do: ""
+  defp query(token) when is_binary(token), do: "?token=" <> URI.encode_www_form(token)
 
   @doc "`url` when it is an http(s) URL, else nil (blocks `javascript:` links)."
   @spec safe_url(term()) :: String.t() | nil
@@ -164,6 +182,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp file_word(_), do: "files"
 
   attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
   attr(:overview, :map, required: true)
   attr(:selected_id, :string, default: nil)
   attr(:status, :map, default: nil)
@@ -173,9 +192,9 @@ defmodule ForemanServerWeb.Workspace.Components do
   while no thread is open, with its health chip), then the project's threads by Overview group in
   the order of `@sidebar_groups`, empty groups left out. Idle and resolved threads fold into one
   "Earlier" disclosure that starts open only when the selected thread is inside it. Every row
-  links by patch (`thread_path/2`) to the thread's conversation; the attention dot sits on the
+  links by patch (`thread_path/3`) to the thread's conversation; the attention dot sits on the
   heading while `overview.attention.needed`. `selected_id` is the open thread's id, nil for the
-  project chat.
+  project chat; `token` rides every link (see `project_path/2`).
   """
   def thread_sidebar(assigns) do
     groups = assigns.overview.groups
@@ -206,7 +225,7 @@ defmodule ForemanServerWeb.Workspace.Components do
     <nav id="thread-list" class="ws-threads" aria-label="Threads">
       <.link
         id="thread-list-chat"
-        patch={project_path(@project_id)}
+        patch={project_path(@project_id, @token)}
         class="thread-row thread-row--chat"
         aria-current={if(is_nil(@selected_id), do: "page")}
       >
@@ -222,7 +241,7 @@ defmodule ForemanServerWeb.Workspace.Components do
         <h3 id={"group-#{group}-title"} class="ws-group-title">{group_title(group)} <span class="ws-count">({length(cards)})</span></h3>
         <ul class="thread-rows" role="list">
           <li :for={card <- cards}>
-            <.thread_row card={card} project_id={@project_id} selected_id={@selected_id} now={@now} />
+            <.thread_row card={card} project_id={@project_id} token={@token} selected_id={@selected_id} now={@now} />
           </li>
         </ul>
       </section>
@@ -230,7 +249,7 @@ defmodule ForemanServerWeb.Workspace.Components do
         <summary class="ws-group-title">Earlier ({@earlier_count})</summary>
         <ul :for={{group, cards} <- @earlier} id={"group-#{group}"} class="thread-rows" role="list">
           <li :for={card <- cards}>
-            <.thread_row card={card} project_id={@project_id} selected_id={@selected_id} now={@now} />
+            <.thread_row card={card} project_id={@project_id} token={@token} selected_id={@selected_id} now={@now} />
           </li>
         </ul>
       </details>
@@ -246,6 +265,7 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   attr(:card, ThreadCard, required: true)
   attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
   attr(:selected_id, :string, default: nil)
   attr(:now, :integer, required: true)
 
@@ -265,7 +285,7 @@ defmodule ForemanServerWeb.Workspace.Components do
     ~H"""
     <.link
       id={"thread-#{@card.thread_id}"}
-      patch={thread_path(@project_id, @card.thread_id)}
+      patch={thread_path(@project_id, @card.thread_id, @token)}
       class="thread-row"
       aria-current={if(@card.thread_id == @selected_id, do: "page")}
     >
@@ -287,14 +307,17 @@ defmodule ForemanServerWeb.Workspace.Components do
   )
 
   attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
   attr(:confirm_stop, :string, default: nil)
   attr(:steer_nonce, :string, required: true)
 
   @doc """
-  One thread's conversation in the main column: its header (title, status, branch, PR link,
-  review and failure lines), its controls (the `action_control/1` buttons, the PR actions and the
-  pending tool approvals, which send the same events the thread cards sent), the log of what the
-  agent, the operator and Foreman said, and the steer composer while the thread takes steering.
+  One thread's conversation in the main column: a light header (the way back, the title and
+  status chip, one line of branch / PR state / PR link, the failure lines and the card's hint),
+  its controls (the `action_control/1` buttons, the PR actions, enabled ones first with a
+  disabled one's reason on hover and for assistive technology, and the pending tool approvals;
+  they send the same events the thread cards sent), the log of what the agent, the operator and
+  Foreman said, and the steer composer while the thread takes steering.
   """
   def thread_pane(assigns) do
     {chip_label, chip_kind} = thread_chip(assigns.card)
@@ -304,30 +327,29 @@ defmodule ForemanServerWeb.Workspace.Components do
       |> assign(:chip_label, chip_label)
       |> assign(:chip_kind, chip_kind)
       |> assign(:buttons, Enum.reject(assigns.card.actions, &(&1 == "thread.steer")))
+      |> assign(:pr_actions, Enum.sort_by(assigns.card.pr_actions, &(not &1.enabled)))
       |> assign(:steerable?, "thread.steer" in assigns.card.actions)
 
     ~H"""
     <section id="thread-pane" class="ws-card thread-pane" aria-label={"Thread: " <> @card.title}>
       <header class="thread-pane-head">
-        <.link patch={project_path(@project_id)} class="btn--link thread-back"><span aria-hidden="true">←</span> Project chat</.link>
+        <.link patch={project_path(@project_id, @token)} class="btn--link thread-back"><span aria-hidden="true">←</span> Project chat</.link>
         <div class="thread-pane-titlerow">
           <h2 class="thread-pane-title" title={@card.title}>{@card.title}</h2>
           <span class={["chip", "chip--" <> @chip_kind]}>{@chip_label}</span>
         </div>
         <p :if={@card.branch || @card.pr_state || safe_url(@card.pr_url)} class="thread-meta ws-muted">
           <code :if={@card.branch} class="thread-branch" title={@card.branch}>{@card.branch}</code>
+          <span :if={@card.branch && @card.pr_state} aria-hidden="true">·</span>
           <span :if={@card.pr_state}>PR {@card.pr_state}</span>
+          <span :if={(@card.branch || @card.pr_state) && safe_url(@card.pr_url)} aria-hidden="true">·</span>
           <a :if={safe_url(@card.pr_url)} href={safe_url(@card.pr_url)} class="btn--link" rel="noopener noreferrer" target="_blank">Open PR</a>
-        </p>
-        <p :if={@card.last_report} class="ws-muted ws-clamp-2">
-          <strong>{@card.last_report.verdict}</strong>
-          <span :if={@card.last_report.summary}> — {@card.last_report.summary}</span>
         </p>
         <p :if={@card.failure_reason} class="ws-error">Failure: {@card.failure_reason}</p>
         <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
         <p :if={@card.reason == :changes_requested} class="ws-error">Changes requested: a reviewer asked for changes on the PR.</p>
         <p :if={@card.reason == :review_threads} class="ws-error">Review threads unresolved: the PR has open review comments.</p>
-        <p :if={@card.hint} class="ws-muted">{@card.hint}</p>
+        <p :if={@card.hint} class="thread-hint ws-muted">{@card.hint}</p>
       </header>
       <div :if={@buttons != [] or @card.pr_actions != []} class="thread-controls">
         <div :if={@buttons != []} class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
@@ -341,7 +363,7 @@ defmodule ForemanServerWeb.Workspace.Components do
           role="group"
           aria-label={"Pull request actions for " <> @card.title}
         >
-          <span :for={a <- @card.pr_actions} class="ws-pr-action">
+          <span :for={a <- @pr_actions} class="ws-pr-action">
             <button
               type="button"
               id={"pr-action-#{@card.thread_id}-#{a.kind}"}
@@ -350,6 +372,7 @@ defmodule ForemanServerWeb.Workspace.Components do
               phx-value-thread-id={@card.thread_id}
               phx-value-pr-url={a.pr_url}
               disabled={not a.enabled}
+              title={a.reason}
               aria-describedby={if(a.reason, do: "pr-action-#{@card.thread_id}-#{a.kind}-reason")}
             >
               {a.label}
@@ -357,7 +380,7 @@ defmodule ForemanServerWeb.Workspace.Components do
             <span
               :if={a.reason}
               id={"pr-action-#{@card.thread_id}-#{a.kind}-reason"}
-              class="ws-muted"
+              class="ws-vh"
             >
               {a.reason}
             </span>
@@ -475,6 +498,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp turn_style(%{role: :system, kind: :verdict}), do: {"verdict", "Review"}
 
   attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
 
   @doc "The calm card for a thread id that is not one of this project's threads."
   def thread_missing(assigns) do
@@ -482,7 +506,7 @@ defmodule ForemanServerWeb.Workspace.Components do
     <section id="thread-not-found" class="ws-card" aria-labelledby="thread-not-found-title">
       <h2 id="thread-not-found-title" class="thread-pane-title">Thread not found</h2>
       <p class="ws-muted">This project has no thread with that id.</p>
-      <.link patch={project_path(@project_id)} class="btn ws-btn">Project chat</.link>
+      <.link patch={project_path(@project_id, @token)} class="btn ws-btn">Project chat</.link>
     </section>
     """
   end
@@ -605,9 +629,15 @@ defmodule ForemanServerWeb.Workspace.Components do
     <form phx-submit="steer" id={"steer-#{@card.thread_id}"} class="composer thread-composer">
       <input type="hidden" name="thread_id" value={@card.thread_id} />
       <input type="hidden" name="message_id" value={@steer_nonce <> ":" <> @card.thread_id} />
+      <%!-- phx-update="ignore": LiveView rewrites an input the browser does not have focused from the
+           server's markup, and this pane re-renders every time the agent writes output, so a steer
+           the operator is still typing would be wiped by a click on the log or the sidebar. The text
+           belongs to the browser until it is sent. The field's id carries the send nonce: a
+           successful send changes the nonce, which replaces the element and so clears it, while a
+           refused one keeps what was typed. --%>
       <label>
         <span class="ws-vh">Steer {@card.title}</span>
-        <textarea name="text" rows="2" maxlength="8000" autocomplete="off" placeholder="Steer this thread..."></textarea>
+        <textarea id={"steer-text-#{@card.thread_id}-#{@steer_nonce}"} name="text" rows="2" maxlength="8000" autocomplete="off" placeholder="Steer this thread..." phx-update="ignore"></textarea>
       </label>
       <div class="composer-row">
         <button type="submit" class="btn ws-btn ws-btn--primary">Send</button>
