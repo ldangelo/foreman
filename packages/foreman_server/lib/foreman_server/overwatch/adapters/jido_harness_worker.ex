@@ -554,7 +554,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     end
   end
 
-  # Waits up to `wait_ms` (not at all after a full page: more may be waiting) and goes on while the
+  # Waits up to `wait_ms` (not at all after a page: more may be waiting) and goes on while the
   # worker is alive.
   defp next_round(worker, worker_monitor, harness_run_id, cursor, wait_ms) do
     receive do

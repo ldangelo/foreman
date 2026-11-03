@@ -438,6 +438,24 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLiveOutputTest do
       assert lines(stream(worker_id, run_id)) == [{"WorkerStdout", "before the crash"}]
     end
 
+    test "a cancelled agent keeps what it had written", %{worker_id: worker_id, run_id: run_id} do
+      {worker, agent} = start_agent(worker_id, run_id)
+      worker_down = Process.monitor(worker)
+
+      send(agent.adapter, {:emit, [stdout("before the cancel")]})
+      assert [{"WorkerStdout", "before the cancel"}] = await_log_lines(1)
+
+      # What `RunControl.cancel/1` does to a running agent.
+      assert :ok = Jido.Harness.Run.cancel(agent.harness_run_id)
+
+      assert_receive {:worker_result, {:error, _reason}}, @await_ms
+      assert_receive {:DOWN, ^worker_down, :process, ^worker, :normal}, @await_ms
+
+      events = stream(worker_id, run_id)
+      assert lines(events) == [{"WorkerStdout", "before the cancel"}]
+      assert List.last(events).event_type == "WorkerExited"
+    end
+
     test "a worker that is shut down takes its tail with it", %{
       worker_id: worker_id,
       run_id: run_id
