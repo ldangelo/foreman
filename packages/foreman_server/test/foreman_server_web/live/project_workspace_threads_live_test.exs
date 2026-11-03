@@ -14,7 +14,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
   alias ForemanServer.Overview
   alias ForemanServer.Overview.{Group, ThreadCard}
   alias ForemanServer.TelemetryTest.Handler
-  alias ForemanServer.TestSupport.{Eventually, PrWatchSupport, ProjectionStoreReset}
+
+  alias ForemanServer.TestSupport.{
+    Eventually,
+    PrWatchSupport,
+    ProjectionStoreReset,
+    SecretStoreDir
+  }
+
   alias ForemanServer.{CommandGateway, ProjectionStore, ProjectStore, Threads}
   alias ForemanServer.Threads.Transcript
   alias ForemanServerWeb.Workspace.{Actions, Components}
@@ -1002,6 +1009,70 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
 
       refute_receive {[:foreman_server, :workspace, _kind], ^ref, _m, %{pid: ^pid}}, 200
       refute render(view) =~ "nobody is looking"
+    end
+  end
+
+  describe "a thread that appears after the page was opened" do
+    test "gets its log, and a click elsewhere on the page does not take the view down",
+         %{id: id} do
+      # No refresh timer fires in this test: the click is the first thing to see the new thread,
+      # which is how a click lands between a run's events and the refresh that follows them.
+      Application.put_env(:foreman_server, :workspace, coalesce_ms: 60_000)
+
+      {view, _html, _ref} = mount!(thread_url(id, "run:r-late"))
+      assert has_element?(view, "#thread-not-found")
+
+      seed_run!("r-late", id, "Late thread")
+
+      :ok =
+        ProjectionStore.apply_events([stdout("r-late", 1, "first line of a late thread", iso(0))])
+
+      html = view |> element("#tab-scheduled") |> render_click()
+
+      assert Process.alive?(view.pid)
+      assert has_element?(view, "#thread-pane")
+      refute has_element?(view, "#thread-not-found")
+      assert html =~ "first line of a late thread"
+    end
+  end
+
+  describe "a secret split across output chunks" do
+    @describetag :tmp_dir
+    @secret "s3cr3t-DEPLOYKEY-0123456789"
+
+    test "is never shown by the pane, while the message streams or after its final", %{
+      id: id,
+      tmp_dir: tmp
+    } do
+      SecretStoreDir.use_tmp_dir!(tmp)
+      SecretStoreDir.put!(id, "DEPLOY_KEY", @secret)
+      thread = seed_run!("r-split", id, "Secret echo")
+      {view, _html, _ref} = mount!(thread_url(id, thread))
+
+      deltas = [
+        "I found the key s3cr3t-DEPLOY",
+        "KEY-0123456789 in the env, and password=",
+        "hunter2 too. Done."
+      ]
+
+      :ok =
+        ProjectionStore.apply_events(
+          for {delta, n} <- Enum.with_index(deltas, 1), do: stdout("r-split", n, delta, iso(0))
+        )
+
+      streaming = await_until(view, &(&1 =~ "[REDACTED]"))
+      refute streaming =~ @secret
+      refute streaming =~ "hunter2"
+
+      # the final repeats the whole message, in one chunk the store's own redaction scrubs
+      :ok = ProjectionStore.apply_events([stdout("r-split", 4, Enum.join(deltas), iso(0))])
+      settled = refreshes(view, :thread_refresh, 150)
+      assert settled >= 1
+
+      finished = render(view)
+      assert finished =~ "[REDACTED]"
+      refute finished =~ @secret
+      refute finished =~ "hunter2"
     end
   end
 

@@ -48,6 +48,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     ProjectStore
   }
 
+  alias ForemanServer.Coordinator.Redact
   alias ForemanServer.Library.Ingest
   alias ForemanServer.Overview.ThreadCard
   alias ForemanServer.Questions.DTO, as: QuestionDTO
@@ -160,12 +161,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   defp keep_token(socket, _params), do: socket
 
   defp open_thread(socket, thread_id) do
-    socket =
-      if socket.assigns.thread_id == thread_id,
-        do: socket,
-        else: assign(socket, thread_id: thread_id, confirm_stop: nil)
-
-    socket |> select_card() |> load_log()
+    if socket.assigns.thread_id == thread_id do
+      select_card(socket)
+    else
+      socket
+      |> assign(thread_id: thread_id, thread_log: nil, confirm_stop: nil)
+      |> select_card()
+    end
   end
 
   @impl true
@@ -181,8 +183,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
      socket
      |> Refresh.begin_refresh()
      |> refresh_conversation()
-     |> load_state()
-     |> load_log()}
+     |> assign(:thread_log, nil)
+     |> load_state()}
   end
 
   def handle_info(:thread_refresh, socket),
@@ -621,11 +623,21 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   end
 
   # The open thread's card, found among THIS project's Overview cards: another project's
-  # thread, an unknown id and a malformed one find nothing.
-  defp select_card(%{assigns: %{thread_id: nil}} = socket), do: assign(socket, :thread_card, nil)
+  # thread, an unknown id and a malformed one find nothing. The pane renders a log wherever it
+  # renders a card, so a card never stands without one: a thread whose events arrive after the
+  # page was opened gets its log read here, and one that leaves the Overview drops its log.
+  defp select_card(%{assigns: %{thread_id: nil}} = socket),
+    do: assign(socket, thread_card: nil, thread_log: nil)
 
-  defp select_card(%{assigns: %{thread_id: thread_id, overview: overview}} = socket),
-    do: assign(socket, :thread_card, ThreadView.find_card(overview, thread_id))
+  defp select_card(%{assigns: %{thread_id: thread_id, overview: overview}} = socket) do
+    case ThreadView.find_card(overview, thread_id) do
+      nil -> assign(socket, thread_card: nil, thread_log: nil)
+      %ThreadCard{} = card -> socket |> assign(:thread_card, card) |> ensure_log()
+    end
+  end
+
+  defp ensure_log(%{assigns: %{thread_log: nil}} = socket), do: load_log(socket)
+  defp ensure_log(socket), do: socket
 
   # The open thread's conversation. Nothing is read without a card: no thread is open, or its id
   # is not one of this project's (that never reaches `Transcript`). The pane re-reads the whole
@@ -643,7 +655,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     log =
       case Transcript.full(thread_id, opts) do
         {:ok, %Full{turns: turns, terminal: terminal?, omitted_entries: omitted}} ->
-          ThreadView.log(turns, terminal?, omitted_entries: omitted)
+          turns
+          |> ThreadView.log(terminal?, omitted_entries: omitted)
+          |> redact_blocks(socket.assigns.project_id)
 
         {:error, :thread_not_found} ->
           :unavailable
@@ -654,6 +668,18 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       end
 
     assign(socket, :thread_log, log)
+  end
+
+  # Redaction runs per stored chunk, so a secret that straddles two chunks survives it. Once
+  # `ThreadView.log/3` has joined the chunks, the redactor `Transcript` uses (the built-in
+  # patterns and the project's secrets) runs again over each block's text: a split secret is gone
+  # as soon as its last chunk is in. Limits: a secret's PREFIX can show until then, and a message
+  # whose deltas hide a split secret is shown twice (its deltas no longer equal the redacted
+  # final), both redacted. The stored chunks stay redacted per chunk until the worker stores one
+  # entry per message (foreman-l30ao.5).
+  defp redact_blocks(%{blocks: blocks} = log, project_id) do
+    redact = Redact.redactor(project_id)
+    %{log | blocks: Enum.map(blocks, &%{&1 | text: redact.(&1.text)})}
   end
 
   # The thread whose worker output `Refresh.note_output/3` listens for: the open one, once it is
