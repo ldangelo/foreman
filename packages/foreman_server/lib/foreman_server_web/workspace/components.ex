@@ -280,7 +280,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp thread_chip(%{status: "completed"}), do: {"completed", "muted"}
 
   defp thread_chip(%{group: group}),
-    do: {String.downcase(group_title(group)), Map.get(@group_chip_kind, group, "muted")}
+    do: {String.downcase(group_title(group)), Map.fetch!(@group_chip_kind, group)}
 
   # A thread with nothing to act on (finished or failed, no controls) is rendered quiet.
   defp thread_quiet?(card),
@@ -484,17 +484,16 @@ defmodule ForemanServerWeb.Workspace.Components do
   end
 
   @doc "Sender label shown on a message: operator -> You, coordinator -> Coordinator, system -> Foreman."
-  @spec sender_label(String.t() | nil) :: String.t()
+  @spec sender_label(String.t()) :: String.t()
   def sender_label("operator"), do: "You"
   def sender_label("coordinator"), do: "Coordinator"
   def sender_label("system"), do: "Foreman"
-  def sender_label(role) when is_binary(role) and role != "", do: String.capitalize(role)
-  def sender_label(_), do: "Foreman"
 
-  # The CSS variant suffix for a message's role.
+  # The CSS variant suffix for a message's role. The role vocabulary is closed to the
+  # three above; an unknown role raises rather than rendering a wrong attribution.
   defp message_variant("operator"), do: "operator"
+  defp message_variant("coordinator"), do: "coordinator"
   defp message_variant("system"), do: "system"
-  defp message_variant(_), do: "coordinator"
 
   @doc """
   A message's time as `{display, title}`: display like `Nov 2, 4:22 PM` (UTC) and the
@@ -533,7 +532,6 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp coordinator_chip(%{"status" => "working"}), do: {"working", "info"}
   defp coordinator_chip(%{"status" => "unhealthy"}), do: {"unhealthy", "err"}
   defp coordinator_chip(%{"status" => status}) when is_binary(status), do: {status, "muted"}
-  defp coordinator_chip(_), do: {"idle", "muted"}
 
   attr(:tab, :atom, required: true)
   attr(:tabs, :map, required: true)

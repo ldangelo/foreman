@@ -88,8 +88,9 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           /* layout */
           .ws-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
           .ws-main-col { min-width: 0; }
-          .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 16px; }
-          @media (max-width: 999px) { .ws-layout { grid-template-columns: 1fr; } .ws-side { position: static; } }
+          .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 16px;
+            max-height: calc(100vh - 32px); overflow-y: auto; }
+          @media (max-width: 999px) { .ws-layout { grid-template-columns: 1fr; } .ws-side { position: static; max-height: none; overflow-y: visible; } }
           @media (max-width: 700px) { .ws-main { padding: 16px; } }
 
           /* cards */
@@ -114,8 +115,9 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .conv-transcript { display: flex; flex-direction: column-reverse; height: min(62vh, 640px);
             overflow-y: auto; padding: 16px; background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; }
           .conv-inner { display: flex; flex-direction: column; gap: 12px; }
-          .msg { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 90%; }
+          .msg { overflow-wrap: anywhere; max-width: 90%; }
           .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+          .ws-msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 8px; }
           .msg--operator { align-self: flex-end; max-width: 80%; background: var(--card);
             border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; }
           .msg--coordinator { align-self: flex-start; }

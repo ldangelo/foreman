@@ -1266,8 +1266,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                  instructions: long
                })
 
-      {_view, html} = mount_view(project)
+      {view, html} = mount_view(project)
       assert html =~ "SENTINEL_TAIL"
+      assert has_element?(view, "details.ws-showall > summary", "Show all")
+      assert has_element?(view, "details.ws-showall", "SENTINEL_TAIL")
     end
 
     test "the panels show empty states and threads list their titles", %{id: id} do
