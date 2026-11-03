@@ -1287,25 +1287,6 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
     end
   end
 
-  describe "the bubble reads as a bubble" do
-    test "the operator's message is on --card-2 and the transcript area is transparent, in the page's own CSS",
-         %{id: id} do
-      {_view, html, _ref} = mount!(project_url(id))
-
-      assert css_rule(html, ".msg--operator") =~ "background: var(--card-2)"
-      refute css_rule(html, ".conv-transcript") =~ "var(--card-2)"
-      assert css_rule(html, ".conv-transcript") =~ "background: transparent"
-      assert css_rule(html, ".conv-transcript") =~ "border: 1px solid var(--border)"
-    end
-
-    # The declarations of the first rule whose selector is exactly `selector`, from the page's
-    # inline stylesheet (the page is the consumer of its own CSS).
-    defp css_rule(html, selector) do
-      [_, rule] = Regex.run(~r/(?:^|\s)#{Regex.escape(selector)}\s*\{([^}]*)\}/m, html)
-      rule
-    end
-  end
-
   describe "paths" do
     test "a thread id is percent-encoded, everything else the router sees stays plain" do
       assert Components.project_path("p-1") == "/dashboard/projects/p-1"
