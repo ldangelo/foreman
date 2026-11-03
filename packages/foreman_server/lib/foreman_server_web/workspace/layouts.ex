@@ -42,6 +42,10 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .ws-main-col { min-width: 0; }
           .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
           .ws-panels:empty { display: none; }
+          .ws-panel { border: 1px solid #8884; border-radius: 6px; padding: 8px 12px; }
+          .ws-panel h2 { margin: 0 0 6px; font-size: 1rem; }
+          .ws-panel-list { margin: 0; padding-left: 18px; }
+          .ws-panel-list li { margin: 2px 0; overflow-wrap: anywhere; }
           @media (max-width: 900px) { .ws-layout { grid-template-columns: 1fr; } }
           .ws-card { border: 1px solid #8884; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
           .ws-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #b91c1c; }

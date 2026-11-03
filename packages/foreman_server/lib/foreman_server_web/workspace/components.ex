@@ -43,6 +43,66 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   def safe_url(_), do: nil
 
+  attr(:instructions, :string, default: nil)
+  attr(:memory_topics, :list, required: true)
+  attr(:library_entries, :list, required: true)
+  attr(:overview, :map, required: true)
+
+  @doc """
+  The read-only side panels: the project's instructions, its memory topics
+  (`ProjectMemory.Topic`, name and description), its library entries
+  (`Library.Entry`, name and file count) and the titles of its threads (the
+  Overview cards, flattened in group order). Display only; nothing here mutates.
+  """
+  def info_panels(assigns) do
+    assigns = assign(assigns, :threads, flatten_threads(assigns.overview))
+
+    ~H"""
+    <section class="ws-panel" aria-labelledby="panel-instructions-title">
+      <h2 id="panel-instructions-title">Instructions</h2>
+      <p :if={is_nil(@instructions)} class="ws-muted">No instructions set.</p>
+      <p :if={@instructions} class="ws-msg">{@instructions}</p>
+    </section>
+    <section class="ws-panel" aria-labelledby="panel-memory-title">
+      <h2 id="panel-memory-title">Memory topics <span class="ws-muted">({length(@memory_topics)})</span></h2>
+      <p :if={@memory_topics == []} class="ws-muted">No memory topics.</p>
+      <ul :if={@memory_topics != []} class="ws-panel-list">
+        <li :for={topic <- @memory_topics}>
+          <strong>{topic.name}</strong>
+          <span :if={topic.description != ""} class="ws-muted"> - {topic.description}</span>
+        </li>
+      </ul>
+    </section>
+    <section class="ws-panel" aria-labelledby="panel-library-title">
+      <h2 id="panel-library-title">Library files <span class="ws-muted">({length(@library_entries)})</span></h2>
+      <p :if={@library_entries == []} class="ws-muted">No library files.</p>
+      <ul :if={@library_entries != []} class="ws-panel-list">
+        <li :for={entry <- @library_entries}>
+          <strong>{entry.name}</strong>
+          <span class="ws-muted"> - {entry.file_count} {file_word(entry.file_count)}</span>
+        </li>
+      </ul>
+    </section>
+    <section class="ws-panel" aria-labelledby="panel-threads-title">
+      <h2 id="panel-threads-title">Threads <span class="ws-muted">({length(@threads)})</span></h2>
+      <p :if={@threads == []} class="ws-muted">No threads.</p>
+      <ul :if={@threads != []} class="ws-panel-list">
+        <li :for={card <- @threads}>
+          <strong>{card.title}</strong>
+          <span :if={card.status} class="ws-muted"> - {card.status}</span>
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  # The Overview cards in group order, flattened to one read-only list.
+  defp flatten_threads(overview),
+    do: Enum.flat_map(Group.all(), &Map.get(overview.groups, &1, []))
+
+  defp file_word(1), do: "file"
+  defp file_word(_), do: "files"
+
   attr(:overview, :map, required: true)
   attr(:confirm_stop, :string, default: nil)
   attr(:steer_nonce, :string, required: true)
