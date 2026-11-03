@@ -113,6 +113,7 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .conv-card { display: flex; flex-direction: column; gap: 16px; }
           .conv-head { display: flex; align-items: center; gap: 8px; }
           .conv-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+          .conv-card #proposals { flex: none; max-height: 30vh; overflow-y: auto; }
           .conv-transcript { display: flex; flex-direction: column-reverse; height: 65vh;
             overflow-y: auto; padding: 16px; background: transparent; border: 1px solid var(--border); border-radius: 8px; }
           .conv-inner { display: flex; flex-direction: column; gap: 12px; }
