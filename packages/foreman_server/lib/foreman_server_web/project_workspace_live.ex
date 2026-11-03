@@ -72,10 +72,6 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   # The values the thread controls send: derived from the pane's own table, never a second list.
   @thread_actions Components.thread_actions()
   @schedule_ops %{"pause" => :pause, "resume" => :resume}
-  # The pane re-reads the whole transcript and holds no cursor, so the trailing agent turn can be
-  # final at once: no grouping gap (see `Transcript`'s moduledoc). `ThreadView.log/3` merges the
-  # resulting one turn per output line back into blocks.
-  @output_gap_ms 0
 
   # What the three upload forms say when a submit finds nothing to add or an upload that
   # is not (or cannot be) finished.
@@ -632,14 +628,15 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     do: assign(socket, :thread_card, ThreadView.find_card(overview, thread_id))
 
   # The open thread's conversation. Nothing is read without a card: no thread is open, or its id
-  # is not one of this project's (that never reaches `Transcript`).
+  # is not one of this project's (that never reaches `Transcript`). The pane re-reads the whole
+  # transcript and holds no cursor, so it asks for one turn per stored output chunk
+  # (`chunks: true`): nothing is grouped, so nothing is withheld and no grouping gap applies, and
+  # `ThreadView.log/3` assembles the chunks into the conversation.
   defp load_log(%{assigns: %{thread_card: nil}} = socket), do: assign(socket, :thread_log, nil)
 
   defp load_log(%{assigns: %{thread_card: %ThreadCard{thread_id: thread_id}}} = socket) do
-    opts = [now_ms: System.system_time(:millisecond), gap_ms: @output_gap_ms]
-
     log =
-      case Transcript.full(thread_id, opts) do
+      case Transcript.full(thread_id, chunks: true) do
         {:ok, %Full{turns: turns, terminal: terminal?}} ->
           ThreadView.log(turns, terminal?)
 

@@ -549,7 +549,42 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
       assert has_element?(view, "#conversation-pane")
     end
 
-    test "shows the run's turns: output merged per source, the steer, lifecycle lines, each labelled",
+    test "a streamed message, its deltas and then the whole message once more, is ONE article that is patched in place",
+         %{id: id} do
+      thread = seed_run!("r-msg", id, "Streams a message")
+      {view, _html, _ref} = mount!(thread_url(id, thread))
+      message = "Starting assess. Need discovery report + task description first."
+
+      deltas = [
+        "Star",
+        "ting ass",
+        "ess. Need discovery report",
+        " + task description",
+        " first."
+      ]
+
+      # a burst of deltas: they read as the message so far
+      :ok =
+        ProjectionStore.apply_events(
+          for {delta, n} <- Enum.with_index(deltas, 1),
+              do: stdout("r-msg", n, delta, iso(-1_000 + n))
+        )
+
+      await_until(view, &(&1 =~ message))
+      assert texts(view, "#thread-log .msg--agent .msg-text") == [message]
+      assert has_element?(view, "#thread-log article#turn-0.msg--agent")
+
+      # the final repeats the whole message: the deltas are dropped, the article stays
+      before = refreshes(view, :thread_refresh)
+      :ok = ProjectionStore.apply_events([stdout("r-msg", 6, message, iso(-500))])
+      await_until(view, fn _html -> refreshes(view, :thread_refresh, 50) > before end)
+
+      assert texts(view, "#thread-log .msg--agent .msg-text") == [message]
+      assert has_element?(view, "#thread-log article#turn-0.msg--agent")
+      assert length(texts(view, "#thread-log article")) == 1
+    end
+
+    test "shows the run's turns: output chunks of one source together, the steer, lifecycle lines, each labelled",
          %{id: id} do
       run = start_real_run!(id, "A real run")
       thread = "run:" <> run.run_id
@@ -562,8 +597,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
 
       :ok =
         ProjectionStore.apply_events([
-          stdout(run.run_id, 1, "out one", iso(-20_000)),
-          stdout(run.run_id, 2, "out two", iso(-19_900)),
+          stdout(run.run_id, 1, "out one\n", iso(-20_000)),
+          stdout(run.run_id, 2, "out two\n", iso(-19_900)),
           stderr(run.run_id, 3, "err one token=sk-livesecret123", iso(-19_800))
         ])
 
