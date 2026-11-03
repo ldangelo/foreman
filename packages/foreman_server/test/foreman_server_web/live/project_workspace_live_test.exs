@@ -9,7 +9,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
   alias ForemanServer.{CommandGateway, ProjectionStore, ProjectStore, Threads}
   alias ForemanServer.Overview.{Group, ThreadCard}
   alias ForemanServer.Threads.Thread
-  alias ForemanServerWeb.Workspace.{Actions, Components}
+  alias ForemanServerWeb.Workspace.{Actions, Components, ThreadView}
   alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.{PrWatchSupport, ProjectionStoreReset}
 
@@ -89,15 +89,22 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
   defp path(id), do: "/dashboard/projects/#{id}?token=#{@token}"
 
+  # A thread's own URL (the id is percent-encoded by `Components.thread_path/2`).
+  defp thread_url(id, thread_id), do: Components.thread_path(id, thread_id) <> "?token=#{@token}"
+
+  # Opens a thread in an already mounted view: a patch, so the view keeps its process and state.
+  defp open_thread(view, id, thread_id),
+    do: render_patch(view, Components.thread_path(id, thread_id))
+
   # Attaches the refresh telemetry handler BEFORE the view mounts, so no
   # refresh can happen unobserved between a trigger and a later attach.
-  defp mount_view(id) do
+  defp mount_view(id, url \\ nil) do
     {handler, ref} =
       Handler.attach_event_handlers(self(), [[:foreman_server, :workspace, :refresh]])
 
     Process.put(:refresh_ref, ref)
     on_exit(fn -> :telemetry.detach(handler) end)
-    {:ok, view, html} = live(build_conn(), path(id))
+    {:ok, view, html} = live(build_conn(), url || path(id))
     Process.put(:view_pid, view.pid)
     {view, html}
   end
@@ -157,7 +164,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
   end
 
-  describe "overview pane" do
+  describe "thread sidebar" do
     @review_pr "https://github.com/a/b/pull/9"
 
     defp pr_event(type, id, extra) do
@@ -203,6 +210,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     test "an unresolved review thread raises the thread to Waiting on you and clears when resolved (foreman-v8wqe)",
          %{id: id} do
       {view, _html} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
       assert in_group?(view, "ready_for_review")
 
       watch_pr([pr_review(id, %{thread_ids: ["PRRT_1"], observation_seq: 1})])
@@ -226,6 +234,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     test "an outstanding CHANGES_REQUESTED review raises the thread to Waiting on you (foreman-v8wqe)",
          %{id: id} do
       {view, _html} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
 
       watch_pr([pr_review(id, %{review_decision: "changes_requested"})])
       html = await_until(view, fn _ -> in_group?(view, "waiting_on_you") end)
@@ -250,6 +259,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     test "failing CI and a pending review both hold the thread; CI is the reason until it clears (foreman-v8wqe)",
          %{id: id} do
       {view, _html} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
 
       watch_pr([
         pr_checks(id, "failing", 1),
@@ -285,6 +295,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       pr = "https://github.com/a/b/pull/9"
 
       {view, _html} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
       assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
 
       :ok =
@@ -320,15 +331,46 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
 
     test "groups threads by state with counts, from the seeded projection", %{id: id} do
+      :ok =
+        ProjectionStore.apply_events([
+          task("t-idle", id, "Finished quietly"),
+          run("r-idle", "t-idle", id),
+          %{event_type: "RunCompleted", payload: %{run_id: "r-idle", project_id: id}}
+        ])
+
       {view, _html} = mount_view(id)
 
-      assert view |> element("#group-ready_for_review") |> render() =~ "Ready for review"
-      assert has_element?(view, "#group-ready_for_review article", "alert(")
-      assert has_element?(view, "#group-waiting_on_you article", "Broken thing")
-      assert has_element?(view, "#group-working article", "In flight")
-      assert render(view) =~ "Landing"
-      assert render(view) =~ "Idle"
-      assert render(view) =~ "Resolved"
+      assert has_element?(view, ~s(nav#thread-list[aria-label="Threads"]))
+      assert has_element?(view, "#group-ready_for_review-title", "Ready for review (2)")
+      assert has_element?(view, "#group-waiting_on_you-title", "Waiting on you (1)")
+      assert has_element?(view, "#group-working-title", "Working (1)")
+      assert has_element?(view, "#group-ready_for_review .thread-row-title", "alert(")
+      assert has_element?(view, "#group-waiting_on_you .thread-row-title", "Broken thing")
+      assert has_element?(view, "#group-working .thread-row-title", "In flight")
+
+      # groups come in the order Waiting on you, Working, Landing, Ready for review
+      html = render(view)
+
+      positions =
+        for group <- ["waiting_on_you", "working", "ready_for_review"],
+            do: elem(:binary.match(html, ~s(id="group-#{group}")), 0)
+
+      assert positions == Enum.sort(positions)
+
+      # a group with no threads is not rendered at all, not an empty "Nothing here."
+      refute has_element?(view, "#group-landing")
+      refute has_element?(view, "#group-resolved")
+      refute render(view) =~ "Nothing here."
+
+      # idle and resolved threads sit inside the Earlier fold
+      assert has_element?(view, "#threads-earlier summary", "Earlier (1)")
+      assert has_element?(view, "#threads-earlier #group-idle #thread-run\\:r-idle")
+
+      assert {:ok, _} = Actions.set_resolved(id, "run:r-failed-#{id}", :resolve, "sidebar")
+      await_element(view, "#threads-earlier #group-resolved #thread-run\\:r-failed-#{id}")
+      refute has_element?(view, "#group-waiting_on_you")
+
+      # another project's thread is never listed
       refute has_element?(view, "#thread-run\\:r-other")
     end
 
@@ -345,16 +387,17 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       id: id
     } do
       {view, _} = mount_view(id)
+      open_thread(view, id, "run:r-failed-#{id}")
 
       view
-      |> element("#thread-run\\:r-failed-#{id} button[phx-value-action=resolve]")
+      |> element("#thread-pane button[phx-value-action=resolve]")
       |> render_click()
 
       await_element(view, "#group-resolved #thread-run\\:r-failed-#{id}")
 
       assert {:ok, %{resolved: true}} = Threads.get("run:r-failed-#{id}")
 
-      view |> element("#thread-run\\:r-failed-#{id} button", "Reopen") |> render_click()
+      view |> element("#thread-pane button", "Reopen") |> render_click()
       await_element(view, "#group-waiting_on_you #thread-run\\:r-failed-#{id}")
       refute has_element?(view, "#group-resolved #thread-run\\:r-failed-#{id}")
     end
@@ -455,6 +498,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       b_url = "https://github.com/a/b2/pull/3"
 
       {view, _html} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
       assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
 
       :ok =
@@ -850,9 +894,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       html = view |> element("#proposal-#{prop} button", "Decline") |> render_click()
       assert html =~ "Done: task.update #{prop}."
 
-      await_until(view, fn _ -> not has_element?(view, "#proposal-#{prop} button") end)
+      await_until(view, fn _ -> not has_element?(view, "#proposal-#{prop}") end)
       assert %{status: "closed"} = ProjectionStore.task_projection(prop)
-      assert has_element?(view, "#proposal-#{prop}", "(closed)")
+      # a declined proposal is not listed any more, and with none startable no list at all
+      refute has_element?(view, "#proposal-#{prop}")
+      refute has_element?(view, "#proposals")
 
       # a declined proposal can be neither started nor declined again
       assert render_click(view, "start_proposed", %{"task-id" => prop}) =~
@@ -964,10 +1010,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     test "a view's action after a restart is a new command, never a replay of an old session's",
          %{id: id} do
       # session 1 resolves the thread ...
-      {view, _} = mount_view(id)
+      {view, _} = mount_view(id, thread_url(id, "run:r-failed-#{id}"))
 
       view
-      |> element("#thread-run\\:r-failed-#{id} button[phx-value-action=resolve]")
+      |> element("#thread-pane button[phx-value-action=resolve]")
       |> render_click()
 
       await_element(view, "#group-resolved #thread-run\\:r-failed-#{id}")
@@ -979,10 +1025,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       # ... and after a restart a view's counters start from zero again, only its random
       # session nonce is new. Its resolve is a new command and must append a new event; a
       # command id repeating the old session's would be answered "Done" with nothing appended.
-      {restarted, _} = mount_view(id)
+      {restarted, _} = mount_view(id, thread_url(id, "run:r-failed-#{id}"))
 
       restarted
-      |> element("#thread-run\\:r-failed-#{id} button[phx-value-action=resolve]")
+      |> element("#thread-pane button[phx-value-action=resolve]")
       |> render_click()
 
       await_element(restarted, "#group-resolved #thread-run\\:r-failed-#{id}")
@@ -1064,7 +1110,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
   end
 
-  describe "thread cards" do
+  describe "thread pane controls" do
     # Every action id a card can carry, from building a card for every door, status, group
     # and reason (`ThreadCard.build/4` is pure).
     defp card_actions do
@@ -1095,8 +1141,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
         actions: actions
       }
 
-      render_component(&Components.thread_card/1,
+      render_component(&Components.thread_pane/1,
         card: card,
+        log: %ThreadView.Log{blocks: [], dropped_turns: 0, terminal?: false},
+        project_id: "p",
         confirm_stop: nil,
         steer_nonce: "n"
       )
@@ -1278,8 +1326,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       # The test project's path does not exist on disk, so memory and library are empty.
       assert html =~ "No memory yet. Agents save durable facts here."
       assert html =~ "No files yet."
-      # A thread title from the Overview renders on its own thread card.
-      assert has_element?(view, ~s(.thread-card .thread-title), "Second PR")
+      # Thread titles from the Overview are listed in the sidebar.
+      assert has_element?(view, "#thread-list .thread-row-title", "Second PR")
     end
   end
 end

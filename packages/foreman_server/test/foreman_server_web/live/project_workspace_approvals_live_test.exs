@@ -1,7 +1,7 @@
 defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
   # The workspace's Approve / Deny controls for a pending tool-call request, end to end:
-  # a claude permission prompt blocks in `PermissionPrompt.decide/3`, the thread card
-  # shows the request, and the click is the operator's `tool.approve` / `tool.deny`
+  # a claude permission prompt blocks in `PermissionPrompt.decide/3`, the open thread's
+  # pane shows the request, and the click is the operator's `tool.approve` / `tool.deny`
   # which wakes the blocked call through the real Deliverer.
   use ExUnit.Case, async: false
 
@@ -12,6 +12,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
   alias ForemanServer.{ProjectionStore, ProjectStore}
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
   alias ForemanServer.TestSupport.ProjectionStoreReset
+
+  alias ForemanServerWeb.Workspace.Components
 
   @endpoint ForemanServerWeb.Endpoint
   @token "project-workspace-approvals-token"
@@ -85,7 +87,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
     view
   end
 
-  defp control(run, use_id), do: "#approval-run\\:#{run.run_id}-inflight-#{use_id}"
+  # The approval controls live only in the open thread's pane.
+  defp mount_thread(id, run) do
+    path = Components.thread_path(id, "run:" <> run.run_id)
+    {:ok, view, _html} = live(build_conn(), "#{path}?token=#{@token}")
+    view
+  end
+
+  defp control(run, use_id), do: "#thread-pane #approval-run\\:#{run.run_id}-inflight-#{use_id}"
 
   defp await_element(view, selector, tries \\ 100) do
     cond do
@@ -95,9 +104,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
     end
   end
 
-  test "Approve on the card lets the blocked call proceed in its session", %{id: id, run: run} do
+  test "Approve in the thread pane lets the blocked call proceed in its session", %{
+    id: id,
+    run: run
+  } do
     task = blocked_prompt(run, "toolu_ui1")
-    view = mount_view(id)
+    view = mount_thread(id, run)
     await_element(view, control(run, "toolu_ui1"))
 
     html = view |> element(control(run, "toolu_ui1")) |> render()
@@ -111,9 +123,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceApprovalsLiveTest do
     assert %{status: "finished"} = ProjectionStore.tool_call(run.run_id, "inflight-toolu_ui1")
   end
 
-  test "Deny on the card refuses the blocked call", %{id: id, run: run} do
+  test "Deny in the thread pane refuses the blocked call", %{id: id, run: run} do
     task = blocked_prompt(run, "toolu_ui2")
-    view = mount_view(id)
+    view = mount_thread(id, run)
     await_element(view, control(run, "toolu_ui2"))
 
     view |> element(control(run, "toolu_ui2") <> " button", "Deny") |> render_click()

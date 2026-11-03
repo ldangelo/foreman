@@ -507,7 +507,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
       assert event_types(q) == ["QuestionOpened", "QuestionExpired"]
 
       await_until(view, fn _ -> not has_element?(view, card(q)) end)
-      assert has_element?(view, "#overview-pane")
+      assert has_element?(view, "#thread-list")
     end
 
     test "another project's question and an unknown id are refused and nothing is dispatched",

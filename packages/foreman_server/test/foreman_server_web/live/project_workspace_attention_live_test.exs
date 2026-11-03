@@ -1,13 +1,13 @@
 defmodule ForemanServerWeb.ProjectWorkspaceAttentionLiveTest do
-  # foreman-q9zzo C6: the attention dot next to the workspace's "Overview" heading
-  # (`Components.overview_pane/1`). It shows when `Overview.attention.needed` (a thread is
+  # foreman-q9zzo C6: the attention dot next to the workspace sidebar's "Threads" heading
+  # (`Components.thread_sidebar/1`). It shows when `Overview.attention.needed` (a thread is
   # `waiting_on_you` or `ready_for_review`), names the real count of such threads in its
   # label, and goes away live once the cause is resolved.
   #
   # Attention is driven by real state, never by a poked assign: runs that really fail
   # (`run.fail`), a real tool-approval request (`tool.request`) and a real open pull
   # request (`run.pr.ready`), cleared by the operator's own commands (`thread.resolve`
-  # from the card's button or the API, `tool.approve` from the card's button).
+  # from the open thread's pane or the API, `tool.approve` from the pane's button).
   use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
@@ -18,9 +18,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceAttentionLiveTest do
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
   alias ForemanServer.TestSupport.{Eventually, ProjectionStoreReset}
 
+  alias ForemanServerWeb.Workspace.Components
+
   @endpoint ForemanServerWeb.Endpoint
   @token "workspace-attention-live-token"
-  @dot ~s(#overview-heading [role="img"])
+  @dot ~s(#threads-heading [role="img"])
 
   setup do
     Eventually.put_env_for_test(:foreman_server, :api_bearer_token, @token)
@@ -53,6 +55,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceAttentionLiveTest do
   defp dot_with_count(view, count), do: has_element?(view, ~s(#{@dot}[aria-label^="#{count} "]))
 
   defp card(run), do: "#thread-run\\:#{run.run_id}"
+
+  # The thread's controls live only in its pane: open it on the mounted view.
+  defp open_thread(view, project_id, run) do
+    render_patch(view, Components.thread_path(project_id, "run:" <> run.run_id))
+  end
 
   defp command!(run, type, payload) do
     Support.dispatch!(%{
@@ -130,8 +137,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceAttentionLiveTest do
       assert has_element?(view, "#group-ready_for_review #{card(in_review)}")
       assert dot_with_count(view, 2)
 
-      # Resolving the failed thread from its card leaves the review.
-      view |> element("#{card(failed)} button[phx-value-action=resolve]") |> render_click()
+      # Resolving the failed thread from its pane leaves the review.
+      open_thread(view, id, failed)
+      view |> element("#thread-pane button[phx-value-action=resolve]") |> render_click()
       Eventually.await(fn -> dot_with_count(view, 1) end)
 
       # Resolving the other one elsewhere (the API / CLI path) puts the dot out live.
@@ -157,6 +165,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceAttentionLiveTest do
     test "a pending tool approval lights it until the operator decides the request", %{id: id} do
       run = Support.start_run!(project_id: id)
       view = mount_view(id)
+      open_thread(view, id, run)
       refute has_element?(view, @dot)
 
       assert {:ok, tool_call_id} =
@@ -168,7 +177,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceAttentionLiveTest do
       assert has_element?(view, "#group-waiting_on_you #{card(run)}")
 
       view
-      |> element("#approval-run\\:#{run.run_id}-#{tool_call_id} button", "Approve")
+      |> element("#thread-pane #approval-run\\:#{run.run_id}-#{tool_call_id} button", "Approve")
       |> render_click()
 
       Eventually.await(fn -> not has_element?(view, @dot) end)
