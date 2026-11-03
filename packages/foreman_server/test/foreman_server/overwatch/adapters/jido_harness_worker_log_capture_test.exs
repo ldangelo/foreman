@@ -19,11 +19,17 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
   stdout/stderr capture. These assertions are the upgrade tripwire required
   by AGENTS.md 5.6 — if the harness changes where stderr rides, they fail
   here instead of silently emptying the stderr channel again.
+
+  Each entry is a `WorkerLogEntry` and carries the harness `sequence` of its event. The live tail
+  and the finished run deliver their entries through this one mapping, and the sequence is the
+  cursor that lets the worker write a line once (`jido_harness_worker_live_output_test.exs`). A
+  run numbers its events from 1, so an event without a sequence is refused, not skipped.
   """
 
   use ExUnit.Case, async: true
 
   alias ForemanServer.Overwatch.Adapters.JidoHarnessWorker
+  alias ForemanServer.Overwatch.WorkerLogEntry
 
   defp event(type, payload, timestamp \\ "2026-08-27T00:00:00Z") do
     %Jido.Harness.Event{
@@ -34,7 +40,22 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
     }
   end
 
+  defp at(event, sequence), do: %{event | sequence: sequence}
+
+  # A run numbers its events from 1 (`Jido.Harness.Event.attach/4`). An event built here without
+  # a sequence takes its position in the list; one given a sequence keeps it.
   defp run_result(events) do
+    events
+    |> Enum.with_index(1)
+    |> Enum.map(fn
+      {%{sequence: 0} = event, position} -> at(event, position)
+      {event, _position} -> event
+    end)
+    |> raw_run_result()
+  end
+
+  # The events exactly as given, whatever their sequences.
+  defp raw_run_result(events) do
     %Jido.Harness.RunResult{
       run_id: "run-log-capture",
       provider: :pi,
@@ -95,6 +116,55 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLogCaptureTest do
   test "a run with no events, or a non-RunResult, yields no logs" do
     assert [] = JidoHarnessWorker.log_events(run_result([]))
     assert [] = JidoHarnessWorker.log_events(:detached)
+  end
+
+  test "every entry carries the sequence of its harness event, in event order" do
+    result =
+      run_result([
+        at(event(:output_text_delta, %{"text" => "one"}), 4),
+        at(event(:turn_started, %{}), 5),
+        at(event(:provider_event, %{"stream" => "stderr", "data" => "two"}), 6),
+        at(event(:output_text_final, %{"text" => "three"}), 9)
+      ])
+
+    # An event that is not a log line leaves a hole in the sequences, never a placeholder entry.
+    assert [
+             %{data: "one", sequence: 4},
+             %{data: "two", sequence: 6},
+             %{data: "three", sequence: 9}
+           ] = JidoHarnessWorker.log_events(result)
+  end
+
+  test "an entry is a WorkerLogEntry: its sequence cannot be left out" do
+    assert [%WorkerLogEntry{channel: :worker_stdout, data: "one", sequence: 1}] =
+             JidoHarnessWorker.log_events(
+               run_result([event(:output_text_delta, %{"text" => "one"})])
+             )
+
+    # The keys are enforced: an entry without a sequence cannot be built, instead of failing with
+    # a `KeyError` once the worker reads it.
+    assert_raise ArgumentError, ~r/must also be given/, fn ->
+      struct!(WorkerLogEntry,
+        channel: :worker_stdout,
+        data: "one",
+        timestamp: "2026-08-27T00:00:00Z"
+      )
+    end
+  end
+
+  test "an event no run has numbered is refused, not skipped" do
+    # 0 is the default of an event no run has seen (`Jido.Harness.Event`), and the cursor a line
+    # is written by would skip such an entry without a word.
+    for sequence <- [0, -1, nil] do
+      result = raw_run_result([at(event(:output_text_delta, %{"text" => "one"}), sequence)])
+
+      assert_raise ArgumentError, ~r/positive sequence/, fn ->
+        JidoHarnessWorker.log_events(result)
+      end
+    end
+
+    # An event that is not a log line never becomes an entry, so its sequence does not matter.
+    assert [] = JidoHarnessWorker.log_events(raw_run_result([event(:turn_started, %{})]))
   end
 
   describe "upstream contract (AGENTS.md 5.6)" do

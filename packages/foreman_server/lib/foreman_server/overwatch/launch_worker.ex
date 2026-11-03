@@ -247,10 +247,12 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
   # has no other way to tell a finished phase from a crashed one.
   #
   # `:normal` is `JidoHarnessWorker`'s exit after it has sent
-  # `{:worker_result, _}` — on the success path AND on the task-crash path,
-  # both of which report to RunExecutor first. `:shutdown` /
-  # `{:shutdown, _}` is a deliberate teardown (`WorkerSupervisor.stop_worker/2`,
-  # operator cancel). Neither may relaunch: run-de055c18749db5e9c702d24950268cf9
+  # `{:worker_result, _}` to RunExecutor, whether the agent succeeded or
+  # failed. A crashed agent task is not that: `Task.async` links it, so it
+  # takes the worker down with the crash reason, which is the crash clause
+  # below. `:shutdown` / `{:shutdown, _}` is a deliberate teardown
+  # (`WorkerSupervisor.stop_worker/2`, operator cancel). Neither `:normal` nor
+  # a teardown may relaunch: run-de055c18749db5e9c702d24950268cf9
   # relaunched 2.3ms after `RunFailed` under the old `:permanent` policy and
   # leaked a pi agent that ran 8m42s past the run's terminal state.
   def handle_info({:DOWN, _ref, :process, _pid, reason}, state)

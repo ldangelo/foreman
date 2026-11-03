@@ -688,10 +688,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
              |> ForemanServer.Overwatch.Adapters.JidoHarnessWorker.init()
 
     log_events = [
-      %{
+      %ForemanServer.Overwatch.WorkerLogEntry{
         channel: :worker_stdout,
         data: "calling api with s3cr3t-value now",
-        timestamp: "2026-08-27T00:00:00Z"
+        timestamp: "2026-08-27T00:00:00Z",
+        sequence: 1
       }
     ]
 

@@ -195,7 +195,8 @@ When editing stall detection, keep one durable fact: `RunStallReported` from `ru
 **Symptom.** `scripts/e2e/claude_projects_flow.sh` step 4 (live steer of a running thread, real pi on MiniMax): the steered
 thread stayed `in_progress` for the whole 600 s wait although its worktree already held `steer-target.txt` and
 `steer-marker.txt`. pi was alive and idle (0 CPU, no sockets, no children), the worker stream held only `WorkerStarted` and
-heartbeats (`JidoHarnessWorker` emits the agent's `WorkerStdout` when the run ENDS, so a run that never ends has none), the
+heartbeats (`JidoHarnessWorker` emitted the agent's `WorkerStdout` when the run ENDED, so a run that never ended had none:
+historical, it records them while the run is live since foreman-h1j5y, see the section below), the
 transcript read `Steer delivered/taken: live`, and Foreman never saw an end event. An unsteered batch hung the same way:
 it is not about steering, and not about pi's RPC protocol (pi answered every command; with the same steer at +3 s, 6 of 6
 standalone runs and 56 of 72 runs through the harness ended cleanly, the other 16 are the provider failures below).
@@ -243,6 +244,103 @@ its own shutdown. Each fails against the pre-fix `worker.ex`/`pi.ex` (`Run.await
 drives the same through a real `JidoHarnessWorker`, including the e2e's own shape (`FAKE_PI_OUTCOME=steer_error`: steer
 consumed, last turn fails). Tell a fake CLI what to do through the run's env (`env_map:`), not `System.put_env/2`: an
 already-running erlexec port hands its children the environment it was started with.
+
+## Worker stdout/stderr is recorded while the agent runs (2026-11-02, foreman-h1j5y)
+
+**Symptom.** A running phase's worker stream held `WorkerStarted` and heartbeats only: `foreman_run_get_logs` returned no
+entries and `GET /api/threads/:id/transcript` no turns until the worker exited. Dev event store (`docker exec
+foreman-postgres psql -U postgres -d foreman_eventstore_dev`; worker streams are `worker:<run_id>:<worker_id>`): run
+`run-f9e7ac6b…`, 22 minutes in, had 1 `WorkerStarted` + 262 `WorkerHeartbeat` and no `WorkerStdout` / `WorkerStderr` while
+its worktree was changing. In the completed `run-94c27e30…` every `WorkerStdout` / `WorkerStderr` of each of its 3 workers
+(143+4, 92+9, 107+8) was stored within 1-2 s of the worker's exit, ahead of `WorkerSessionBound` / `UsageRecorded` /
+`WorkerExited` (fix phase: worker started 23:16:59, heartbeats until 23:25:25, log events stored 23:25:27).
+
+**Cause 1: nothing wrote them before the exit.** `JidoHarnessWorker` ran the agent in a task, `Driver.run/3` blocked until
+the agent exited, and only then `log_events/1` built the entries from the finished `RunResult` for
+`handle_info({:agent_done, ...})` to write.
+
+**Cause 2 (found checking the timeline): the finished run did not hold the early output either.** `RunResult.events` is the
+harness's in-memory buffer (`Jido.Harness.Buffer`: `memory_bytes`, 1 MiB by default, measured as `term_to_binary` with the
+raw payloads), not the run's history; the oldest events are trimmed as new ones arrive. The journal on disk
+(`Jido.Harness.Journal.default_base_dir/0`: a directory per run of `<run>/NNNNNNNN.jsonl` segments, a new one every 8 MiB,
+the oldest dropped once the run's journal passes 256 MiB) keeps the events up to that cap. For the three workers above the
+stored log events were exactly a SUFFIX of the journal: worker 1 stored events 3761-4592 of 4592 (147 of its 255 log
+lines), worker 2 670-1571 of 1571 (101 of 124), worker 3 408-1534 of 1534 (115 of 142). The agent was writing from +0.7 s
+(worker 1, lines per minute: 34, 4, 25, 31, 1, 0, 0, 29, 131), so "the first entry is 7.5 minutes after the worker started"
+was the buffer, not a quiet agent: the first 108 lines were never recorded at all.
+
+**What changed (`JidoHarnessWorker`).**
+
+- The agent task's `:on_start` hook sends the worker the harness run id and the worker starts a **tail**: a process of its
+  own, monitored and not linked, that follows the harness run from event 0 by cursor and sends the log entries of each page
+  to the worker, one message per page. `Run.info/1` (cheap) gates `Run.replay/2` (it re-reads the journal from its first
+  line: 8 ms for a 1.4 MB journal), so an idle agent costs one small call per 250 ms round, and the tail also waits 250 ms
+  after a page that was not full; pages are 500 events. Not `Run.stream/2`: its idle wait is a sleep nothing can interrupt,
+  so a tail built on it outlives a dead worker.
+- The worker is the single writer of its stream: tail pages, heartbeats and the terminal events share one mailbox. It writes
+  at most 25 entries per turn and keeps the rest of a page in its state (`log_backlog`), queueing the next slice behind
+  whatever arrived meanwhile, so a heartbeat waits for one slice at most. One message per entry, each written as it came,
+  held the heartbeat back for as long as the burst took (measured in review: 2.3 s for 500 lines, 23-28 s for 2,000), against
+  an idempotency lease that only heartbeats renew (30 s) and a Tracker heartbeat timeout of 60 s. The backlog is state, not
+  messages the worker sends itself: a re-sent remainder would queue behind the next page, be handled after it and be skipped
+  by `log_cursor` as already written. No log line follows `WorkerExited` because the worker stops in the callback that writes
+  it, so nothing queued behind `:agent_done` is ever handled. (The Worker aggregate would accept such a line: `WorkerExited`
+  does not seal a worker stream, only `WorkerCrashed`, `RunCompleted` and `RunFailed` do.)
+- Harness events become entries in ONE place (`events_to_logs/1`, for the tail and the finished run alike), as a
+  `WorkerLogEntry` (`@enforce_keys`, so an entry cannot lack its `sequence`). Each entry carries its event's `sequence`,
+  which a run numbers from 1; an event with sequence 0 (the default of one no run has seen) raises instead of being skipped.
+  `log_cursor` is the sequence of the last entry handled: an entry at or behind it is skipped, so the exit writes what the
+  tail delivered and the worker had not written, then exactly the entries the tail did not deliver, in order, then
+  `WorkerSessionBound`, `UsageRecorded` and `WorkerExited`. Redaction and the 10,000-line / 5 MiB cap (`WorkerLogPolicy`)
+  run in the same place on one set of counters, live and at exit.
+- Stop paths: `:agent_done` stops the tail first; a worker that dies any other way (kill, shutdown, or a crashed task:
+  `Task.async` links it, so it takes the worker down and `LaunchWorker` relaunches it) is seen by the tail's own monitor.
+  The `{:error, {:task_crashed, reason}}` clause that was meant to report a crashed task never ran, for that reason (the
+  worker is already dead), and is gone. A tail that fails is logged (`operation: "worker.log_tail"`) and costs timeliness
+  only: the worker stays up and the exit still writes what it can from the finished run. What was written live stays in
+  the stream whatever happens to the agent.
+- Volume is unchanged: one `WorkerStdout` / `WorkerStderr` per harness event. What differs is that output the buffer used
+  to drop is now recorded (still capped by `WorkerLogPolicy`), and that `output_activity_at_ms` (the `agent_no_output` stall
+  clock, touched by every `WorkerStdout` / `WorkerStderr` in `ProjectionStore`) moves while the agent writes instead of
+  once at its exit.
+
+**Known limits.**
+
+- Tool activity is not output. The quiet stretches of a run are `tool_call` / `tool_result`, `turn_started` /
+  `turn_completed`, `usage`, `thinking_delta` and non-stderr `provider_event`s, none of which the mapping turns into a log
+  line: worker 1's longest silence (175 s) held 41 `provider_event`, one turn, one tool call and result and one `usage`, and
+  of its 4,592 events 255 are log lines. A phase that runs one long tool call still looks quiet. Showing tool calls is a
+  separate piece of work.
+- Output the tail had not delivered when the agent exits comes from `RunResult.events`, the harness's in-memory window
+  (1 MiB). If the tail dies, or the agent writes more than a window between the tail's last page and its exit, what is
+  older than that window and was not delivered is lost, as it was before.
+- The caps now keep the FIRST lines. `WorkerLogPolicy` keeps the first 10,000 lines / 5 MiB of a worker and drops the rest
+  without a word. Before, the exit wrote only the newest window the harness still held (1 MiB) through the same cap, so what
+  was kept was the newest output. No journal checked reaches the cap (307 journals over 1 MB: at most 3,211 log lines,
+  48 KB), but a phase now has more entries than the window held (`run-94c27e30`: 521 instead of 363), so a default 500-line
+  read of it is honestly `truncated`.
+- Which path delivers a line is race-dependent, and the two store different text. The tail reads the run's JOURNAL, where
+  the values of secret-named env vars (the run's and the server's) and `Bearer` tokens are already `[REDACTED]` and text
+  that is not valid UTF-8 is a `%{"encoding" => "base64", ...}` map, which `WorkerLogPolicy` stores `inspect`ed. The exit
+  reads `RunResult.events`, the raw text, which `WorkerLogPolicy` redacts. A line the tail had not polled before the agent
+  exited is stored the second way, so the same output can read differently from one run to the next. The live text is the
+  safer one.
+- `ForemanServer.Threads.Transcript` still withholds the trailing agent turn until the phase ends or 10 s of quiet. That is
+  deliberate and unchanged.
+
+**Tests that pin it.** `jido_harness_worker_live_output_test.exs` drives a real `JidoHarnessWorker` and a real harness run
+around a stand-in provider (the `DriverTest.Stub` pattern) that blocks until the test releases it, so "the output is in
+the worker stream before the agent finishes" cannot pass on exit-time recording; with a 1.5 KB buffer it also pins "output
+the harness no longer holds is recorded". Where the agent's own output has no honest trigger a test pulls a lever and says
+so: it kills the tail (the worker lives, beats, and the exit writes the rest once, with `operation: "worker.log_tail"`
+logged), kills or shuts down the worker (the tail goes with it), suspends the Tracker to hold the worker inside its exit
+(the tail is already stopped), traces what the worker and the harness run receive (an entry is sent once; an idle tail
+makes one `Run.info/1` call per poll period and no `Run.replay/2`), sends the worker a page with the agent's result right
+behind it (the page is written first, once), and writes six lines of 1,000,000 bytes (the byte cap counts live and exit
+lines together). A burst of 240 lines over three pages checks that heartbeats are recorded between its lines and that order
+and exactly-once hold across pages. `jido_harness_worker_log_capture_test.exs` pins the event-to-entry mapping, the
+`sequence` tag and the refusal of an event without one. To re-check the evidence on a dev machine, read a run's journal
+(`<run>/*.jsonl`, the segments in order: one JSON event per line with its `sequence`) and compare it with the worker stream.
 
 ## Outbound messaging delivery notes
 
