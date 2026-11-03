@@ -69,7 +69,7 @@ defmodule ForemanServerWeb.ThreadTranscriptController do
 
     receive do
       {:projection_event, event} ->
-        if relevant?(event, id) do
+        if Transcript.relevant?(event, id) do
           advance(conn, id, cursor, deadline)
         else
           wait(conn, id, cursor, deadline)
@@ -136,28 +136,6 @@ defmodule ForemanServerWeb.ThreadTranscriptController do
 
   defp heartbeat_ms,
     do: Application.get_env(:foreman_server, :thread_stream_heartbeat_ms, @default_heartbeat_ms)
-
-  # Events that name another run/jobsite cannot change this thread. An event
-  # naming nothing we can read is treated as relevant.
-  defp relevant?(event, thread_id) do
-    suffix = thread_id |> String.split(":", parts: 2) |> List.last()
-    data = field(event, :data) || field(event, :payload) || %{}
-
-    candidates =
-      [
-        field(data, :run_id),
-        field(data, :jobsite_id),
-        field(data, :subject_id),
-        field(event, :stream_uuid),
-        field(event, :stream_id)
-      ]
-      |> Enum.filter(&is_binary/1)
-
-    candidates == [] or Enum.any?(candidates, &String.contains?(&1, suffix))
-  end
-
-  defp field(%{} = map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
-  defp field(_other, _key), do: nil
 
   # -- params ----------------------------------------------------------------
 

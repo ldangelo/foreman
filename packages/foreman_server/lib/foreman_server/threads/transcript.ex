@@ -2,8 +2,9 @@ defmodule ForemanServer.Threads.Transcript do
   @moduledoc """
   Structured, cursor-paged transcript of a thread (`ForemanServer.Threads.Turn`).
 
-  `build_turns/1` is pure; `page/2` gathers projection data and slices the
-  result by cursor. Both doors are supported.
+  `build_turns/1` is pure; `full/2` gathers projection data into every turn of a thread and
+  `page/2` slices that list by cursor. Both doors are supported. `relevant?/2` says which
+  broadcast events can change a thread's turns.
 
   ## Sources
 
@@ -40,7 +41,9 @@ defmodule ForemanServer.Threads.Transcript do
   an append never changes an existing `seq`. A growing agent turn would break
   that, so the trailing agent turn is withheld until it is final: the thread is
   terminal, its phase has ended, or `now_ms - last line > gap_ms` (a later line
-  would then start a new turn anyway).
+  would then start a new turn anyway). A reader that re-reads the whole list and holds no
+  cursor (the workspace's thread pane) gives `now_ms` and a small `gap_ms` to see the
+  trailing turn at once, at the price of one turn per output line it then merges itself.
 
   Sources are bounded: `run_logs/1` keeps a bounded tail. When it dropped
   entries `omitted_entries` is non-zero and `truncated` is true; `seq` then
@@ -53,7 +56,7 @@ defmodule ForemanServer.Threads.Transcript do
   before `run_logs` stores them) AND every secret value of the thread's project
   (`ProjectEnvironment.secrets/1`, whatever the secret's name), so a value an agent echoed into
   its output, or an event recorded before the redaction existed, is covered at read time. The
-  list is resolved ONCE per `page/2`, never per entry; a thread with no project, or a project
+  list is resolved ONCE per `full/2`, never per entry; a thread with no project, or a project
   whose list cannot be built, is redacted by the patterns alone.
   """
 
@@ -125,6 +128,22 @@ defmodule ForemanServer.Threads.Transcript do
         "terminal" => page.terminal
       }
     end
+  end
+
+  defmodule Full do
+    @moduledoc """
+    Every turn of a thread, for a reader that re-reads the whole list each time instead of
+    following a cursor (the workspace's thread pane). `Page` is the cursor slice of the same list.
+    """
+    @enforce_keys [:turns, :truncated, :omitted_entries, :terminal]
+    defstruct [:turns, :truncated, :omitted_entries, :terminal]
+
+    @type t :: %__MODULE__{
+            turns: [ForemanServer.Threads.Turn.t()],
+            truncated: boolean(),
+            omitted_entries: non_neg_integer(),
+            terminal: boolean()
+          }
   end
 
   @doc "Default and maximum page size."
@@ -397,6 +416,29 @@ defmodule ForemanServer.Threads.Transcript do
   # ---------------------------------------------------------------------------
 
   @doc """
+  Every turn of the thread, in order, as `Full`.
+
+  Options: `:gap_ms`, `:now_ms` (see the moduledoc on when the trailing agent turn is
+  final). The sources are gathered and redacted here and only here: `page/2` is this list
+  sliced by cursor.
+  """
+  @spec full(String.t(), keyword()) :: {:ok, Full.t()} | {:error, :thread_not_found | term()}
+  def full(thread_id, opts \\ []) when is_binary(thread_id) and is_list(opts) do
+    with {:ok, thread} <- Threads.get(thread_id),
+         {:ok, inputs} <- gather(thread, Redact.redactor(thread.project_id), opts) do
+      built = build_turns(inputs)
+
+      {:ok,
+       %Full{
+         turns: built.turns,
+         truncated: built.truncated,
+         omitted_entries: built.omitted_entries,
+         terminal: inputs.terminal?
+       }}
+    end
+  end
+
+  @doc """
   Page of turns with `seq > after`.
 
   Options: `:after` (integer >= -1, default -1), `:limit` (1..#{@max_limit},
@@ -418,22 +460,49 @@ defmodule ForemanServer.Threads.Transcript do
         {:error, {:invalid_option, :limit}}
 
       true ->
-        with {:ok, thread} <- Threads.get(thread_id),
-             {:ok, inputs} <- gather(thread, Redact.redactor(thread.project_id), opts) do
-          built = build_turns(inputs)
-          turns = built.turns |> Enum.filter(&(&1.seq > cursor)) |> Enum.take(limit)
+        with {:ok, %Full{} = full} <- full(thread_id, opts) do
+          turns = full.turns |> Enum.filter(&(&1.seq > cursor)) |> Enum.take(limit)
 
           {:ok,
            %Page{
              turns: turns,
              next_cursor: turns |> List.last() |> then(&if(&1, do: &1.seq, else: cursor)),
-             truncated: built.truncated,
-             omitted_entries: built.omitted_entries,
-             terminal: inputs.terminal?
+             truncated: full.truncated,
+             omitted_entries: full.omitted_entries,
+             terminal: full.terminal
            }}
         end
     end
   end
+
+  @doc """
+  Whether a broadcast `ProjectionStore` event can change the thread's turns.
+
+  An event that names another run or jobsite cannot; an event that names nothing readable is
+  treated as relevant, because a re-read costs less than a missed turn. One function for every
+  reader of the event stream (the SSE tail of `ThreadTranscriptController` and the workspace's
+  thread pane), so they cannot disagree about which events matter.
+  """
+  @spec relevant?(term(), String.t()) :: boolean()
+  def relevant?(event, thread_id) when is_binary(thread_id) do
+    suffix = thread_id |> String.split(":", parts: 2) |> List.last()
+    data = field(event, :data) || field(event, :payload) || %{}
+
+    candidates =
+      [
+        field(data, :run_id),
+        field(data, :jobsite_id),
+        field(data, :subject_id),
+        field(event, :stream_uuid),
+        field(event, :stream_id)
+      ]
+      |> Enum.filter(&is_binary/1)
+
+    candidates == [] or Enum.any?(candidates, &String.contains?(&1, suffix))
+  end
+
+  defp field(%{} = map, key), do: fetch(map, key)
+  defp field(_other, _key), do: nil
 
   defp gather(%Threads.Thread{door: :workflow, id: "run:" <> run_id}, redact, opts) do
     # Read the run (and so `terminal?`) FIRST. Each ProjectionStore call is a
