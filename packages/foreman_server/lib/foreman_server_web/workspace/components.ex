@@ -351,42 +351,50 @@ defmodule ForemanServerWeb.Workspace.Components do
         <p :if={@card.reason == :review_threads} class="ws-error">Review threads unresolved: the PR has open review comments.</p>
         <p :if={@card.hint} class="thread-hint ws-muted">{@card.hint}</p>
       </header>
-      <div :if={@buttons != [] or @card.pr_actions != []} class="thread-controls">
-        <div :if={@buttons != []} class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
-          <%= for action <- @buttons do %>
-            <.action_control action={action} card={@card} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
-          <% end %>
-        </div>
-        <div
-          :if={@card.pr_actions != []}
-          class="thread-pr-actions"
-          role="group"
-          aria-label={"Pull request actions for " <> @card.title}
-        >
-          <span :for={a <- @pr_actions} class="ws-pr-action">
-            <button
-              type="button"
-              id={"pr-action-#{@card.thread_id}-#{a.kind}"}
-              phx-click="pr_action"
-              phx-value-kind={a.kind}
-              phx-value-thread-id={@card.thread_id}
-              phx-value-pr-url={a.pr_url}
-              disabled={not a.enabled}
-              title={a.reason}
-              aria-describedby={if(a.reason, do: "pr-action-#{@card.thread_id}-#{a.kind}-reason")}
-            >
-              {a.label}
-            </button>
-            <span
-              :if={a.reason}
-              id={"pr-action-#{@card.thread_id}-#{a.kind}-reason"}
-              class="ws-vh"
-            >
-              {a.reason}
+      <details
+        :if={@buttons != [] or @card.pr_actions != []}
+        id={"thread-controls-#{@card.thread_id}"}
+        class="thread-controls-details"
+        phx-mounted={JS.ignore_attributes("open")}
+      >
+        <summary>Actions</summary>
+        <div class="thread-controls">
+          <div :if={@buttons != []} class="thread-actions" role="group" aria-label={"Actions for " <> @card.title}>
+            <%= for action <- @buttons do %>
+              <.action_control action={action} card={@card} confirm_stop={@confirm_stop} steer_nonce={@steer_nonce} />
+            <% end %>
+          </div>
+          <div
+            :if={@card.pr_actions != []}
+            class="thread-pr-actions"
+            role="group"
+            aria-label={"Pull request actions for " <> @card.title}
+          >
+            <span :for={a <- @pr_actions} class="ws-pr-action">
+              <button
+                type="button"
+                id={"pr-action-#{@card.thread_id}-#{a.kind}"}
+                phx-click="pr_action"
+                phx-value-kind={a.kind}
+                phx-value-thread-id={@card.thread_id}
+                phx-value-pr-url={a.pr_url}
+                disabled={not a.enabled}
+                title={a.reason}
+                aria-describedby={if(a.reason, do: "pr-action-#{@card.thread_id}-#{a.kind}-reason")}
+              >
+                {a.label}
+              </button>
+              <span
+                :if={a.reason}
+                id={"pr-action-#{@card.thread_id}-#{a.kind}-reason"}
+                class="ws-vh"
+              >
+                {a.reason}
+              </span>
             </span>
-          </span>
+          </div>
         </div>
-      </div>
+      </details>
       <div
         :if={@card.approvals != []}
         class="thread-approvals"

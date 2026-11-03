@@ -133,6 +133,17 @@ defmodule ForemanServerWeb.ProjectWorkspacePrActionsLiveTest do
     end
   end
 
+  test "the thread controls live inside a collapsed \"Actions\" details", %{id: id} do
+    run = id |> completed_run!("Collapsed") |> with_pr!(checks: "failing")
+    view = mount_thread(id, run)
+
+    details = "details#thread-controls-run\\:#{run.run_id}"
+    assert has_element?(view, details)
+    refute has_element?(view, "#{details}[open]")
+    assert has_element?(view, "#{details} > summary", "Actions")
+    assert has_element?(view, "#{details} #{btn(run, :fix_ci)}")
+  end
+
   test "failing CI enables Fix CI, which dispatches run.pr.fix_ci for the run", %{id: id} do
     run = id |> completed_run!("Fix me") |> with_pr!(checks: "failing")
     view = mount_thread(id, run)
