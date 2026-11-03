@@ -143,6 +143,94 @@ defmodule ForemanServerWeb.Workspace.RefreshTest do
     refute_received :workspace_refresh
   end
 
+  describe "worker output of the open thread (the thread pane's own trigger)" do
+    @thread "run:r-open"
+    @output_types ["WorkerStdout", "WorkerStderr"]
+
+    defp thread_pending?(socket), do: socket.assigns.thread_refresh_pending?
+
+    defp armed?(event, thread_id),
+      do: socket() |> Refresh.note_output(event, thread_id) |> thread_pending?()
+
+    # Worker output as each shape of the store carries it; `run_id` is what names the run.
+    defp output(name, type, run_id) do
+      data = %{run_id: run_id, worker_id: "w1"}
+      typed = struct!(Module.concat(ForemanServer.Events, type), data)
+
+      case name do
+        "EventData with an atom-keyed map" -> %EventData{event_type: type, data: data}
+        "EventData with a typed event struct" -> %EventData{event_type: type, data: typed}
+        "RecordedEvent with an atom-keyed map" -> %RecordedEvent{event_type: type, data: data}
+        "RecordedEvent with a typed event struct" -> %RecordedEvent{event_type: type, data: typed}
+        "applied map with a payload" -> %{event_type: type, payload: data}
+        "plain map with data" -> %{event_type: type, data: data}
+      end
+    end
+
+    for name <- @shape_names, type <- @output_types do
+      test "arms the thread timer, and only that one, for its own output: #{name} #{type}" do
+        armed =
+          Refresh.note_output(socket(), output(unquote(name), unquote(type), "r-open"), @thread)
+
+        assert thread_pending?(armed)
+        refute pending?(armed)
+      end
+
+      test "arms nothing for the output of another run: #{name} #{type}" do
+        refute armed?(output(unquote(name), unquote(type), "r-other"), @thread)
+      end
+    end
+
+    test "arms nothing for an event that is not worker output, even one of the open run" do
+      for type <- ["RunStarted", "RunPaused", "WorkerExited", "WorkerHeartbeat"] do
+        refute armed?(%{event_type: type, data: %{run_id: "r-open"}}, @thread), type
+      end
+    end
+
+    test "arms nothing while no thread is open" do
+      refute armed?(output("plain map with data", "WorkerStdout", "r-open"), nil)
+    end
+
+    test "an event shape the store never broadcasts raises here too" do
+      assert_raise FunctionClauseError, fn ->
+        armed?(%{event_type: :worker_stdout, data: %{}}, @thread)
+      end
+    end
+
+    test "the first output arms the timer; later lines only keep the flag (N lines, one re-read)" do
+      Application.put_env(:foreman_server, :workspace, coalesce_ms: 1)
+      line = output("plain map with data", "WorkerStdout", "r-open")
+
+      armed = Refresh.note_output(socket(), line, @thread)
+      assert thread_pending?(armed)
+      assert_receive :thread_refresh, 5_000
+
+      assert thread_pending?(Refresh.note_output(armed, line, @thread))
+      Process.send_after(self(), :barrier, 50)
+      assert_receive :barrier, 5_000
+      refute_received :thread_refresh
+      refute_received :workspace_refresh
+    end
+
+    test "begin_thread_refresh clears its own flag and leaves the state refresh and the intent alone" do
+      line = output("plain map with data", "WorkerStdout", "r-open")
+      state_event = %{event_type: "RunStarted", data: %{project_id: @project}}
+
+      session =
+        socket()
+        |> Refresh.note_event(state_event, @project)
+        |> Refresh.note_output(line, @thread)
+
+      assert pending?(session) and thread_pending?(session)
+      intent = Refresh.intent(session)
+
+      reread = Refresh.begin_thread_refresh(session)
+      refute thread_pending?(reread)
+      assert pending?(reread)
+      assert Refresh.intent(reread) == intent
+    end
+  end
+
   describe "intent, the idempotency token of an action (CodeRabbit PR #591 [7])" do
     # The command id of every workspace action is built from it. A counter that restarts
     # with the VM would let a new action reuse an old, committed command id and be answered

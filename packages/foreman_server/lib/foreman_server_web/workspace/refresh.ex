@@ -8,20 +8,30 @@ defmodule ForemanServerWeb.Workspace.Refresh do
   arms a single `Process.send_after/3` timer and every later event inside the
   window only sets the flag, so N events cost one refresh. There is no
   periodic timer: an idle project causes no work at all. Worker output events
-  never trigger a refresh (they carry no state the workspace shows).
+  never trigger that refresh (they carry no state the workspace shows).
+
+  The thread pane is the exception: it shows exactly that output. A second trigger, with the
+  same window, its own pending flag and its own message (`:thread_refresh`), is armed ONLY by
+  worker output (`WorkerStdout` / `WorkerStderr`) of the thread open in the pane
+  (`note_output/3`, which asks `ForemanServer.Threads.Transcript.relevant?/2`, the question the
+  transcript's SSE tail asks too) and re-reads only that transcript. Nothing is armed while no
+  thread is open, and the output of any other thread arms nothing.
 
   The events are the shapes `ProjectionStore` broadcasts (`%EventData{}`,
   `%RecordedEvent{}` and applied `%{event_type:, payload:}` maps, atom-keyed); any
   other shape raises instead of being guessed at.
 
   The window is `config :foreman_server, :workspace, coalesce_ms:` (default 250).
-  Each refresh emits `[:foreman_server, :workspace, :refresh]` telemetry.
+  Each refresh emits `[:foreman_server, :workspace, :refresh]` telemetry, each thread refresh
+  `[:foreman_server, :workspace, :thread_refresh]`.
   """
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Threads.Transcript
 
   @default_coalesce_ms 250
   @ignored_prefixes ["Worker"]
+  @output_events ["WorkerStdout", "WorkerStderr"]
 
   @doc "Subscribes the calling LiveView process and initialises the coalescing state."
   @spec init(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
@@ -31,6 +41,7 @@ defmodule ForemanServerWeb.Workspace.Refresh do
 
     socket
     |> Phoenix.Component.assign(:refresh_pending?, false)
+    |> Phoenix.Component.assign(:thread_refresh_pending?, false)
     |> Phoenix.Component.assign(:refresh_count, 0)
     |> Phoenix.Component.assign(
       :intent_base,
@@ -76,6 +87,40 @@ defmodule ForemanServerWeb.Workspace.Refresh do
     |> Phoenix.Component.update(:refresh_count, &(&1 + 1))
   end
 
+  @doc """
+  Handles the same `{:projection_event, event}` message for the thread open in the pane
+  (`thread_id`, nil when none is open): returns the socket with the `:thread_refresh` timer
+  armed when the event is worker output of THAT thread. Every other event, and every event
+  while no thread is open, leaves the socket as it was.
+  """
+  @spec note_output(Phoenix.LiveView.Socket.t(), map(), String.t() | nil) ::
+          Phoenix.LiveView.Socket.t()
+  def note_output(socket, _event, nil), do: socket
+
+  def note_output(socket, event, thread_id) when is_binary(thread_id) do
+    cond do
+      not output_of?(event, thread_id) ->
+        socket
+
+      socket.assigns.thread_refresh_pending? ->
+        socket
+
+      true ->
+        Process.send_after(self(), :thread_refresh, coalesce_ms())
+        Phoenix.Component.assign(socket, :thread_refresh_pending?, true)
+    end
+  end
+
+  @doc "Clears the thread pane's pending flag and counts the thread refresh; call before re-reading its transcript."
+  @spec begin_thread_refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def begin_thread_refresh(socket) do
+    :telemetry.execute([:foreman_server, :workspace, :thread_refresh], %{count: 1}, %{
+      pid: self()
+    })
+
+    Phoenix.Component.assign(socket, :thread_refresh_pending?, false)
+  end
+
   # The one place an event's shape is read. `ProjectionStore` broadcasts what it applied:
   # `%EventData{}` and `%RecordedEvent{}` (their `data` is a typed event struct or an
   # atom-keyed map: the event store serializer writes terms, so keys keep their type) and the
@@ -91,6 +136,13 @@ defmodule ForemanServerWeb.Workspace.Refresh do
 
   defp parts(%{event_type: type, data: %{} = data}) when is_binary(type), do: {type, data}
   defp parts(%{event_type: type, payload: %{} = data}) when is_binary(type), do: {type, data}
+
+  # Worker output of the thread. The event's shape is read by `parts/1` like every other
+  # event's; which thread it names is `Transcript.relevant?/2`'s question.
+  defp output_of?(event, thread_id) do
+    {type, _payload} = parts(event)
+    type in @output_events and Transcript.relevant?(event, thread_id)
+  end
 
   # An event that names no project (a run event, say) concerns every workspace. A project id
   # that is neither absent nor a string is a defect, not a reason to guess.
