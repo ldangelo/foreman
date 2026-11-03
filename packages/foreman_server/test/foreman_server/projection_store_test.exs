@@ -523,6 +523,77 @@ defmodule ForemanServer.ProjectionStoreTest do
     end
   end
 
+  describe "run_logs/2" do
+    defp log_events(run_id, count, line \\ fn n -> "line-#{n}" end) do
+      [%{event_type: "RunStarted", payload: %{run_id: run_id, project_id: "project-1"}}] ++
+        for n <- 1..count do
+          %{
+            event_type: "WorkerStdout",
+            payload: %{
+              run_id: run_id,
+              worker_id: "worker-1",
+              sequence: n,
+              line: line.(n),
+              timestamp: "2026-08-27T00:00:00Z"
+            }
+          }
+        end
+    end
+
+    test "returns more than the default tail when asked, and reports the read it made" do
+      assert :ok = ProjectionStore.apply_events(log_events("run-long", 505))
+      max = ProjectionStore.run_logs_max_limit()
+
+      assert {:ok, %{count: 505, truncated: false, omitted_entries: 0, max_limit: ^max} = all} =
+               ProjectionStore.run_logs("run-long", limit: max)
+
+      assert all.limit == max
+      assert hd(all.entries).content == "line-1"
+
+      assert {:ok, %{count: 100, limit: 100, truncated: true, omitted_entries: 405} = part} =
+               ProjectionStore.run_logs("run-long", limit: 100)
+
+      assert hd(part.entries).content == "line-406"
+      assert List.last(part.entries).content == "line-505"
+
+      assert {:error, :run_not_found} = ProjectionStore.run_logs("missing-run", limit: 10)
+    end
+
+    test "run_logs/1 is the 500-entry tail it always was" do
+      assert :ok = ProjectionStore.apply_events(log_events("run-default", 505))
+
+      assert {:ok, %{count: 500, limit: 500, truncated: true, omitted_entries: 5} = default} =
+               ProjectionStore.run_logs("run-default")
+
+      assert {:ok, ^default} = ProjectionStore.run_logs("run-default", limit: 500)
+      assert hd(default.entries).content == "line-6"
+    end
+
+    test "omitted_entries adds what the store's own window dropped to what the tail cut" do
+      big = String.duplicate("x", 400_000)
+
+      # three 400 kB entries are more than the 1 MiB the store keeps: the oldest is evicted
+      assert :ok = ProjectionStore.apply_events(log_events("run-window", 3, &("#{&1}" <> big)))
+
+      assert {:ok, %{count: 2, truncated: true, omitted_entries: 1, omitted_bytes: evicted}} =
+               ProjectionStore.run_logs("run-window")
+
+      assert evicted > 0
+
+      assert {:ok,
+              %{count: 1, limit: 1, truncated: true, omitted_entries: 2, omitted_bytes: ^evicted}} =
+               ProjectionStore.run_logs("run-window", limit: 1)
+    end
+
+    test "a limit that is not an integer in 1..max, or an option it does not know, raises" do
+      for limit <- [0, -1, 5_001, 1.5, "5", nil] do
+        assert_raise ArgumentError, fn -> ProjectionStore.run_logs("run-any", limit: limit) end
+      end
+
+      assert_raise ArgumentError, fn -> ProjectionStore.run_logs("run-any", tail: 5) end
+    end
+  end
+
   defp assert_replayed_project_registered(project_id, deadline_ms \\ nil) do
     deadline_ms = deadline_ms || System.monotonic_time(:millisecond) + 1_000
 
