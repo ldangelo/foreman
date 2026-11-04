@@ -61,6 +61,13 @@ blocks between the Projects and Artifacts panels, pass the two assigns at the ca
   the sidebar inherits that bound and adds no sidebar-specific row cap (PRD REQ-008
   resolution). `RunDTO` fields used: `workflow` (`:absent` when nil) and `status`.
 
+> Forward pointer (added after implementation review; the design above stands as written):
+> review changed both data sources to be **project-scoped** — the Jobsite panel keeps only
+> `list_jobsites/0` rows whose `:project_id` is the open project (then caps at 100 rows, with
+> the badge showing the project's real total), and the Workflows panel calls
+> `list_runs(%{project_id: project_id})`, matching `{:ok, rows}` only (its `{:error, _}`
+> fallback to `[]` was removed) and showing `100+` when that read comes back at its limit.
+
 **Why Option C over A/B:** Option A (inline raw projection calls in the component) would
 duplicate the OperatorDashboard facade and bypass its typed `RunDTO`, violating §5.7
 (never duplicate a boundary). Option B (a new dashboard-wide run aggregation service) adds

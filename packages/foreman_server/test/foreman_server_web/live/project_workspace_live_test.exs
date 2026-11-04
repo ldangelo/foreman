@@ -1331,10 +1331,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
   end
 
-  # A JobsiteStarted seed with an explicit projection timestamp so newest-first ordering is
-  # deterministic (not insertion order). `_projection_event_at_ms` is read straight off the
-  # payload by the projection's `payload_event_at_ms/1`.
-  defp jobsite(jobsite_id, bead_id, project_id, at_ms),
+  # A JobsiteStarted seed. The projection stamps `started_at_ms` from the applying caller's
+  # clock (`apply_event/3` OVERWRITES any `_projection_event_at_ms` the payload carries), so
+  # `seed_jobsite/4` injects that clock instead of seeding the timestamp: it is the only way to
+  # give two jobsites distinct, controlled start times and make newest-first ordering
+  # deterministic rather than insertion order.
+  defp jobsite(jobsite_id, bead_id, project_id),
     do: %{
       event_type: "JobsiteStarted",
       payload: %{
@@ -1342,10 +1344,16 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
         repo_path: "/tmp/#{jobsite_id}",
         strategy: "worktree",
         bead_id: bead_id,
-        project_id: project_id,
-        _projection_event_at_ms: at_ms
+        project_id: project_id
       }
     }
+
+  defp seed_jobsite(jobsite_id, bead_id, project_id, at_ms) do
+    Process.put(:projection_store_now_ms, fn -> at_ms end)
+    :ok = ProjectionStore.apply_events([jobsite(jobsite_id, bead_id, project_id)])
+  after
+    Process.delete(:projection_store_now_ms)
+  end
 
   # A RunStarted seed carrying a workflow name (the nav Workflows panel's primary label).
   defp workflow_run(run_id, project_id, workflow_name),
@@ -1378,19 +1386,16 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
     test "the Jobsite panel lists jobsite runs newest-first after Projects, before Workflows",
          %{id: id} do
-      :ok =
-        ProjectionStore.apply_events([
-          jobsite("js-old", "bead-old", id, 1_000),
-          jobsite("js-new", "bead-new", id, 2_000)
-        ])
+      seed_jobsite("js-old", "bead-old", id, 1_000)
+      seed_jobsite("js-new", "bead-new", id, 2_000)
 
       {view, html} = mount_view(id)
 
-      # Count badge reflects the two seeded jobsites.
+      # Count badge reflects the two seeded jobsites (exact text: '2' must not match a '12').
       assert has_element?(
                view,
                ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-count),
-               "2"
+               ~r/\A\s*2\s*\z/
              )
 
       # bead_id primary label + status secondary are shown.
@@ -1400,7 +1405,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                "bead-new"
              )
 
-      assert html =~ "starting"
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-muted),
+               "starting"
+             )
 
       # Newest started_at_ms first, and the panel sits between Projects and Workflows.
       assert panel_order(html, "nav-projects-title") <
@@ -1441,11 +1450,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                "workflow"
              )
 
-      # Count badge reflects every run list_runs/0 returns: the five setup runs plus this one.
+      # Count badge reflects THIS project's runs only: its four setup runs plus this one. The
+      # other project's run is not among them, and the exact text keeps '5' from matching '15'.
       assert has_element?(
                view,
                ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-count),
-               "6"
+               ~r/\A\s*5\s*\z/
              )
 
       # The run's status shows as the muted secondary label, scoped to the Workflows panel.
@@ -1464,8 +1474,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
 
     test "the Workflows panel shows its empty state when there are no workflow runs", %{id: id} do
-      # Clear the setup-seeded runs, then re-seed just the project projection the mount reads —
-      # list_runs/0 is global, so a clean slate is the only way to assert the empty panel.
+      # Clear the setup-seeded runs, then re-seed just the project projection the mount reads:
+      # every seeded run belongs to this project, so a clean slate is the way to an empty panel.
       ProjectionStoreReset.reset!()
 
       :ok =
@@ -1480,6 +1490,43 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-muted),
                "No workflow runs."
              )
+    end
+
+    test "another project's run and jobsite stay out of this project's nav panels",
+         %{id: id, other: other} do
+      seed_jobsite("js-mine", "bead-mine", id, 1_000)
+      seed_jobsite("js-theirs", "bead-theirs", other, 2_000)
+      :ok = ProjectionStore.apply_events([workflow_run("r-mine", id, "mine-workflow")])
+      :ok = ProjectionStore.apply_events([workflow_run("r-theirs", other, "their-workflow")])
+
+      {view, _html} = mount_view(id)
+
+      jobsite_panel = ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"])
+      workflows_panel = ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"])
+
+      # This project's jobsite is listed; the other project's (newer, so it would sort first
+      # and survive any row cap) is not, and the badge counts only this project's.
+      assert has_element?(view, "#{jobsite_panel} strong", "bead-mine")
+      refute has_element?(view, "#{jobsite_panel} strong", "bead-theirs")
+      assert has_element?(view, "#{jobsite_panel} .ws-count", ~r/\A\s*1\s*\z/)
+
+      # Same for the Workflows panel: this project's named run, not the other project's.
+      assert has_element?(view, "#{workflows_panel} strong", "mine-workflow")
+      refute has_element?(view, "#{workflows_panel} strong", "their-workflow")
+    end
+
+    test "a run or jobsite event for THIS project refreshes the nav panels", %{id: id} do
+      {view, html} = mount_view(id)
+      refute html =~ "bead-live"
+
+      seed_jobsite("js-live", "bead-live", id, 3_000)
+
+      html = await_until(view, &(&1 =~ "bead-live"))
+      refute html =~ "live-workflow"
+
+      :ok = ProjectionStore.apply_events([workflow_run("r-live", id, "live-workflow")])
+
+      await_until(view, &(&1 =~ "live-workflow"))
     end
 
     test "the Projects panel lists every project, linking to each and marking the open one",

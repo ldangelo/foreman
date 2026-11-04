@@ -608,8 +608,11 @@ patch of the page keeps it, the settings page's way back too). Layout: a leftmos
 workspace-nav sidebar (`Components.workspace_nav/1`, six read-only panels over data the page
 already holds, no new command or event: a client-side Search filter over thread titles, memory
 topics and library files; a Projects list of every project (`ProjectStore.list/0`) linking to
-each workspace; a Jobsite list of jobsite runs (`ProjectionStore.list_jobsites/0`); a Workflows
-list of workflow runs (`OperatorDashboard.list_runs/1`); an Artifacts list of the project's
+each workspace; a Jobsite list of the OPEN project's jobsite runs (its rows of
+`ProjectionStore.list_jobsites/0`) and a Workflows list of the open project's workflow runs
+(`OperatorDashboard.list_runs/1` filtered by `project_id`), both newest-first and capped at 100
+rows (the Jobsite badge counts the project's real total, the Workflows badge reads `100+` when
+that read came back at its limit); an Artifacts list of the project's
 library files, the closest the server exposes; and a Schedules list (`Schedule.DTO.list/1`) with
 cadence and next run); then a
 sidebar of threads ("Project chat", then Waiting on you / Working / Landing / Ready for review,

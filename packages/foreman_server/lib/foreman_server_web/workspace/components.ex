@@ -190,7 +190,9 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:memory_topics, :any, required: true)
   attr(:library_entries, :any, required: true)
   attr(:jobsites, :list, required: true)
+  attr(:jobsite_count, :string, required: true)
   attr(:workflow_runs, :list, required: true)
+  attr(:workflow_count, :string, required: true)
 
   @doc """
   The left workspace-navigation sidebar (`<nav id="workspace-nav">`), six read-only panels over
@@ -203,12 +205,14 @@ defmodule ForemanServerWeb.Workspace.Components do
       beyond the open thread are not loaded, so only their titles are searched.
     * Projects — every project (`@projects`, from `ForemanServer.ProjectStore.list/0`), each a
       link to its own workspace; the open one is marked.
-    * Jobsite — jobsite runs (`@jobsites`, from `ForemanServer.ProjectionStore.list_jobsites/0`),
-      newest-started-first; each row shows its `bead_id` (or `jobsite_id` when unbeaded) and
-      muted `status`.
-    * Workflows — workflow runs (`@workflow_runs`, from
-      `ForemanServerWeb.OperatorDashboard.list_runs/1`); each row shows its `workflow` name and
-      muted `status`.
+    * Jobsite — the open project's jobsite runs (`@jobsites`, selected from
+      `ForemanServer.ProjectionStore.list_jobsites/0`), newest-started-first, at most 100 rows;
+      each row shows its `bead_id` (or `jobsite_id` when unbeaded) and muted `status`. The
+      badge (`@jobsite_count`) is the project's real total, not the capped row count.
+    * Workflows — the open project's workflow runs (`@workflow_runs`, from
+      `ForemanServerWeb.OperatorDashboard.list_runs/1`, capped at its default limit of 100);
+      each row shows its `workflow` name and muted `status`. The badge (`@workflow_count`)
+      reads "100+" when that read came back full, since the total beyond the cap is unknown.
     * Artifacts — the project's library files (`@library_entries`, `ForemanServer.Library`).
       Foreman has no distinct artifact read model, so this shows the closest equivalent the
       server already exposes.
@@ -307,7 +311,7 @@ defmodule ForemanServerWeb.Workspace.Components do
       <section class="ws-panel" aria-labelledby="nav-jobsite-title">
         <div class="ws-panel-head">
           <h2 id="nav-jobsite-title">Jobsite</h2>
-          <span class="ws-count">{length(@jobsites)}</span>
+          <span class="ws-count">{@jobsite_count}</span>
         </div>
         <p :if={@jobsites == []} class="ws-muted">No jobsite runs.</p>
         <ul :if={@jobsites != []} class="ws-panel-list">
@@ -320,7 +324,7 @@ defmodule ForemanServerWeb.Workspace.Components do
       <section class="ws-panel" aria-labelledby="nav-workflows-title">
         <div class="ws-panel-head">
           <h2 id="nav-workflows-title">Workflows</h2>
-          <span class="ws-count">{length(@workflow_runs)}</span>
+          <span class="ws-count">{@workflow_count}</span>
         </div>
         <p :if={@workflow_runs == []} class="ws-muted">No workflow runs.</p>
         <ul :if={@workflow_runs != []} class="ws-panel-list">

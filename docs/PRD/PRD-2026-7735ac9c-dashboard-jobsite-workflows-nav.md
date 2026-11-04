@@ -88,6 +88,11 @@ event (AGENTS.md: read-only panels use data the server already exposes).
   `packages/foreman_server/lib/foreman_server_web/workspace/layouts.ex`. There is no
   asset pipeline; any new CSS goes in that root layout only.
 
+> Forward pointer (added after implementation review; the claims above stand as written):
+> jobsite maps carry no `workflow_name` key — that field is on the *run* projection only —
+> and review changed both panels to read the OPEN project's rows only. See the TRD's
+> data-sources note.
+
 **Technical constraints:** read-only (no new command/event/route/config/env/CLI verb/
 MCP tool); bounded lists (no unbounded fan-out in the sidebar); follow the existing
 `ws-panel` markup and the panel ordering rule; tests run under
