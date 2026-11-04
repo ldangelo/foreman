@@ -1,9 +1,9 @@
 ---
 document_id: PRD-2026-94f379ec
 label: prd-agent-mcp-credential
-version: 1.0.0
+version: 1.0.1
 status: Draft
-date: 2026-11-02
+date: 2026-11-04
 scale_depth: STANDARD
 author: Claude Code (delegated author agent)
 total_requirements: 17
@@ -732,6 +732,25 @@ secrets, not against other inherited secrets or the `allow_insecure_local` postu
 `PI_CODING_AGENT_DIR`; still out of this slice), F17 and F18 (the Go CLI is an
 `/api` client; the operator-principal MCP clients are the e2e scripts, external
 clients and the stdio task), AC-006-1 (names the foreign-project memory write).
+
+### v1.0.1 — 2026-11-04
+
+Non-interactive refine pass (`--foreman`). The full synthesis checklist was
+walked; the PRD was already internally consistent and no content defect warranted
+an edit. Verified and left unchanged: 17 REQ IDs unique and sequential; 48
+acceptance criteria, all in Given/When/Then form, with per-requirement counts
+matching the Acceptance Criteria Summary table exactly; MoSCoW and Complexity
+tags present on all 17 requirements; Health Summary numbers correct (Must 15 /
+Should 2; coverage 17/17; Risk flags 9 = the `[RISK]` annotation count;
+Dependencies 27 = the Dependency Map edge count); the Dependency Map acyclic; no
+`[NEEDS CLARIFICATION]` markers; Goals and Non-Goals not contradicted by any
+requirement.
+
+No requirement, acceptance criterion, decision, or scope line was changed. The
+four judgement calls that ship on recorded defaults pending human review (J2, J3,
+J4, J6) were deliberately **not** marked confirmed: this automated pass cannot
+substitute for the reviewer, so they remain on their recorded defaults and keep
+the Clarity dimension at 4. Readiness score unchanged: 4.5 → 4.5 (PASS).
 
 ## Next step
 

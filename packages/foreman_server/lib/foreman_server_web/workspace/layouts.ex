@@ -85,12 +85,14 @@ defmodule ForemanServerWeb.Workspace.Layouts do
             border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
           summary { cursor: pointer; }
 
-          /* layout: thread sidebar | main column | project panels. Stacked below 1100px (sidebar
-             compact and scrolling, then the main column, then the panels); the app shell below
-             takes over from 1100px. */
+          /* layout: workspace nav | thread sidebar | main column | project panels. Stacked below
+             1100px (nav and thread sidebar compact and scrolling, then the main column, then the
+             panels); the app shell below takes over from 1100px. */
           .ws-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
           .ws-main-col { min-width: 0; }
           .ws-threads { min-width: 0; max-height: 320px; overflow-y: auto; }
+          .ws-nav { min-width: 0; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+          .ws-nav-results { margin-top: 8px; }
           .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
           @media (max-width: 700px) { .ws-main { padding: 16px; } }
 
@@ -198,15 +200,16 @@ defmodule ForemanServerWeb.Workspace.Layouts do
             border-radius: 8px; color: var(--text); font: inherit; padding: 6px 8px; }
           [role="tablist"] button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-          /* app shell (from 1100px): the page is exactly the viewport and the sidebar, the main card
-             and the project panels scroll on their own; the log takes what the card's header and
-             composer leave. Placed last so it wins over the stacked rules above. */
+          /* app shell (from 1100px): the page is exactly the viewport and the nav, the thread
+             sidebar, the main card and the project panels scroll on their own; the log takes what
+             the card's header and composer leave. Placed last so it wins over the stacked rules
+             above. */
           @media (min-width: 1100px) {
             .ws-main { height: 100vh; display: flex; flex-direction: column; }
             .ws-header { flex: none; margin-bottom: 16px; }
-            .ws-layout { flex: 1; min-height: 0; grid-template-columns: 264px minmax(0, 1fr) 320px;
+            .ws-layout { flex: 1; min-height: 0; grid-template-columns: 220px 240px minmax(0, 1fr) 320px;
               grid-template-rows: minmax(0, 1fr); align-items: stretch; }
-            .ws-threads, .ws-side { max-height: none; min-height: 0; overflow-y: auto; }
+            .ws-nav, .ws-threads, .ws-side { max-height: none; min-height: 0; overflow-y: auto; }
             .ws-main-col { display: flex; flex-direction: column; min-height: 0; }
             .conv-card, .thread-pane { flex: 1; min-height: 0; }
             .conv-transcript { flex: 1; min-height: 0; height: auto; }
