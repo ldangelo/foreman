@@ -71,10 +71,12 @@ defmodule ForemanServer.Coordinator.TurnDiagnosticsTest do
 
   # Starts the runtime for `p` and returns the lines the coordinator of `p` logged
   # until a turn completed and its worker is idle again (so the completing turn's
-  # log lines, written before its task returns, are all in).
+  # log lines, written before its task returns, are all in). Colors are off: in a
+  # terminal Logger would end each line with a reset escape, and the assertions
+  # below match the end of a line.
   defp coordinator_lines(p, script) do
     log =
-      capture_log([level: :info], fn ->
+      capture_log([level: :info, colors: [enabled: false]], fn ->
         rt = start_runtime(script, p)
         H.await_event("CoordinatorTurnCompleted", &(&1.project_id == p))
         Eventually.await(fn -> not ProjectWorker.busy?(rt, p) end, message: "worker idle")
