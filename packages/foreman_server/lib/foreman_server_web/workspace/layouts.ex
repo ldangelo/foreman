@@ -176,6 +176,8 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .thread-meta .btn--link { font-size: 12px; }
           .thread-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
           .thread-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+          .thread-controls-details > summary { font-size: 13px; color: var(--muted); }
+          .thread-controls-details[open] > .thread-controls { margin-top: 8px; }
           .thread-actions, .thread-pr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
           .ws-pr-action { display: inline-flex; }
           .thread-approvals { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
