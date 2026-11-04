@@ -76,6 +76,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   @tail 50
   @page 200
   @max_kept 400
+  # The nav Jobsite panel bounds its rows like the Workflows panel does (the latter inherits
+  # `OperatorDashboard`'s default limit of 100): `list_jobsites/0` is unbounded, so take the 100
+  # newest it already returns to keep the sidebar from fanning out as history accumulates.
+  @nav_jobsite_limit 100
   @tabs %{"library" => :library, "pull_requests" => :pull_requests, "scheduled" => :scheduled}
   # The values the thread controls send: derived from the pane's own table, never a second list.
   @thread_actions Components.thread_actions()
@@ -633,7 +637,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       library_entries: library_entries(project_id),
       projects: nav_projects(project_id),
       nav_schedules: ScheduleDTO.list(project_id),
-      nav_jobsites: ProjectionStore.list_jobsites(),
+      nav_jobsites: Enum.take(ProjectionStore.list_jobsites(), @nav_jobsite_limit),
       nav_workflow_runs: nav_workflow_runs()
     )
     |> assign(:schedules, schedules(socket))

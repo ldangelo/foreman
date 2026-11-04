@@ -1441,6 +1441,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                "workflow"
              )
 
+      # Count badge reflects every run list_runs/0 returns: the five setup runs plus this one.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-count),
+               "6"
+             )
+
+      # The run's status shows as the muted secondary label, scoped to the Workflows panel.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-muted),
+               "awaiting_worker"
+             )
+
       # Panel order: Workflows after Jobsite, before Artifacts (unchanged siblings follow).
       assert panel_order(html, "nav-jobsite-title") <
                panel_order(html, "nav-workflows-title")
