@@ -330,22 +330,15 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp nav_match?(text, q) when is_binary(text), do: String.contains?(String.downcase(text), q)
   defp nav_match?(_text, _q), do: false
 
-  # A schedule's human cadence: its cron-ish spec fields joined, else the schedule status.
+  # A schedule's human cadence: its interval (`every`) or `cron` spec, the only two spec kinds.
   defp nav_cadence(%{spec: spec}) when is_map(spec) do
-    case Map.get(spec, "cron") || Map.get(spec, "every") || Map.get(spec, "rrule") do
+    case Map.get(spec, "cron") || Map.get(spec, "every") do
       value when is_binary(value) and value != "" -> value
-      _ -> nav_cadence_fallback(spec)
+      _ -> "schedule"
     end
   end
 
   defp nav_cadence(_), do: "schedule"
-
-  defp nav_cadence_fallback(spec) do
-    case Map.get(spec, "type") do
-      type when is_binary(type) and type != "" -> type
-      _ -> "schedule"
-    end
-  end
 
   attr(:project_id, :string, required: true)
   attr(:token, :string, default: nil)
