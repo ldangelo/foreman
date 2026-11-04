@@ -2,7 +2,7 @@
 Document ID: TRD-2026-7735ac9c
 Label: trd-dashboard-jobsite-workflows-nav
 PRD: PRD-2026-7735ac9c (docs/PRD/PRD-2026-7735ac9c-dashboard-jobsite-workflows-nav.md)
-Version: 1.0.0
+Version: 1.0.1
 Status: Draft
 Date: 2026-11-04
 Design Readiness Score: 4.4 (PASS)
@@ -46,9 +46,13 @@ blocks between the Projects and Artifacts panels, pass the two assigns at the ca
 - **Jobsite panel** → `ForemanServer.ProjectionStore.list_jobsites/0`
   (`packages/foreman_server/lib/foreman_server/projection_store.ex:383`, handler at
   `:1461`). Returns a list of jobsite maps, already sorted newest-`started_at_ms`-first
-  (descending). Each map carries at least `workflow_name`, `status`, `started_at_ms`
-  (projected at `projection_store.ex:2547`+). Accessed via the store's existing `get/3`
-  key helper — never a new `Map.get(a,:k) || Map.get(a,"k")` dual-key lookup.
+  (descending). Each map is built with **atom keys** by the `JobsiteStarted` projection
+  at `projection_store.ex:3963`; its keys include `jobsite_id`, `bead_id`, `branch`,
+  `strategy`, `status`, `started_at_ms` — **there is no `workflow_name` key** (that field
+  exists only on the *run* projection at `:2547`, not on jobsites). The row's primary
+  label is therefore `bead_id` (falling back to `jobsite_id` when the jobsite has no
+  bead), with `status` as the muted secondary. Read via plain atom-key access — never a
+  `Map.get(a,:k) || Map.get(a,"k")` dual-key lookup.
 - **Workflows panel** → `ForemanServerWeb.OperatorDashboard.list_runs/1`
   (`packages/foreman_server/lib/foreman_server_web/operator_dashboard.ex:60`), which wraps
   `ProjectionStore.list_runs/1` and maps each row through `run_dto/1` to a typed
@@ -90,7 +94,7 @@ ProjectWorkspaceLive.load_state/1
 
 | Producer | Function | Returns | Consumer |
 | --- | --- | --- | --- |
-| `ProjectionStore` | `list_jobsites/0` | `[map()]` newest-first, keys incl. `workflow_name`/`status`/`started_at_ms` | `load_state/1` → `nav_jobsites` |
+| `ProjectionStore` | `list_jobsites/0` | `[map()]` newest-first, atom keys incl. `jobsite_id`/`bead_id`/`status`/`started_at_ms` (no `workflow_name`) | `load_state/1` → `nav_jobsites` |
 | `OperatorDashboard` | `list_runs/1` | `{:ok, [RunDTO.t()]} \| {:error, term}` | `load_state/1` → `nav_workflow_runs` (unwrapped) |
 | `Components` | `workspace_nav/1` | HEEx | render both panels |
 
@@ -122,13 +126,13 @@ changes.
     - Given `workspace_nav/1`, when compiled, then both new required attrs exist and the component raises if either assign is omitted at a call site.
     - Given the `@doc`, when read, then it names Jobsite→`list_jobsites/0` and Workflows→`OperatorDashboard.list_runs/1` as the data sources, mirroring the existing Projects/Schedules doc entries.
 
-- [ ] **TRD-002** Render the **Jobsite** `ws-panel` in `workspace_nav/1` immediately after the Projects `<section>` (`components.ex:287`–`298`) and before the Artifacts section: `ws-panel-head` with `<h2 id="nav-jobsite-title">Jobsite</h2>` and a `ws-count` badge = `length(@jobsites)`; a `ws-panel-list` of rows (one per jobsite, order preserved from the query) showing `workflow_name` as `<strong>` primary label and `status` as `ws-muted` secondary text; a `ws-muted` "No jobsite runs." message when `@jobsites == []`. 2h [satisfies REQ-001, REQ-004, REQ-005, REQ-006]
+- [ ] **TRD-002** Render the **Jobsite** `ws-panel` in `workspace_nav/1` immediately after the Projects `<section>` (`components.ex:287`–`298`) and before the Artifacts section: `ws-panel-head` with `<h2 id="nav-jobsite-title">Jobsite</h2>` and a `ws-count` badge = `length(@jobsites)`; a `ws-panel-list` of rows (one per jobsite, order preserved from the query) showing `bead_id` (fallback `jobsite_id` when `bead_id` is nil) as `<strong>` primary label and `status` as `ws-muted` secondary text; a `ws-muted` "No jobsite runs." message when `@jobsites == []`. 2h [satisfies REQ-001, REQ-004, REQ-005, REQ-006]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-004-1, AC-005-1, AC-005-2, AC-006-1
   - Implementation AC:
     - Given a rendered nav, when the DOM is inspected, then a panel labelled "Jobsite" appears after "Projects" and before "Workflows".
     - Given N jobsite maps, when rendered, then the count badge reads N and one row per jobsite appears in the order `list_jobsites/0` returned (newest `started_at_ms` first).
     - Given `@jobsites == []`, when rendered, then a `ws-muted` "No jobsite runs." message shows and no `ws-panel-list` is rendered.
-    - Given a jobsite map, when a row renders, then its `workflow_name`/`status` are read via the same key convention the projection uses; a nil/absent `workflow_name` renders a safe fallback label, never a raw atom.
+    - Given a jobsite map, when a row renders, then its `bead_id`/`status` are read via the jobsite projection's atom-key convention; a nil `bead_id` falls back to `jobsite_id`, never a raw atom or a reference to the non-existent `workflow_name` key.
 
 - [ ] **TRD-003** Render the **Workflows** `ws-panel` in `workspace_nav/1` immediately after the Jobsite `<section>` (and before Artifacts): `ws-panel-head` with `<h2 id="nav-workflows-title">Workflows</h2>` and a `ws-count` badge = `length(@workflow_runs)`; a `ws-panel-list` of rows (one per `RunDTO`) showing `workflow` as `<strong>` primary label (fallback when `:absent`) and `status` as `ws-muted` secondary text; a `ws-muted` "No workflow runs." message when `@workflow_runs == []`. 2h [satisfies REQ-002, REQ-007, REQ-008, REQ-009, REQ-010]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-007-1, AC-008-1, AC-008-2, AC-009-1, AC-009-2, AC-010-1
@@ -159,7 +163,7 @@ changes.
     - Given the doc gate, when the four docs are grepped, then no stale or missing reference results (no externally visible identifier changed).
     - Given the two panels, when inspected, then they expose no action buttons, filters, or run-detail links (glance-only, REQ-015).
 
-- [ ] **TRD-002-TEST** LiveView test for the **Jobsite** panel in `test/foreman_server_web/live/project_workspace_live_test.exs` (existing workspace test conventions): seed ≥2 jobsite projections with distinct, explicit `started_at_ms` and assert the panel renders after Projects / before Workflows, the `ws-count` equals the seeded count, rows appear newest-`started_at_ms`-first, and `workflow_name`/`status` show. Add an empty-state case asserting the `ws-muted` "No jobsite runs." message with no list. 2h [verifies TRD-002] [satisfies REQ-004, REQ-005, REQ-006, REQ-014] [depends: TRD-002, TRD-004]
+- [ ] **TRD-002-TEST** LiveView test for the **Jobsite** panel in `test/foreman_server_web/live/project_workspace_live_test.exs` (existing workspace test conventions): seed ≥2 jobsite projections with distinct, explicit `started_at_ms` and assert the panel renders after Projects / before Workflows, the `ws-count` equals the seeded count, rows appear newest-`started_at_ms`-first, and `bead_id`/`status` show. Add an empty-state case asserting the `ws-muted` "No jobsite runs." message with no list. 2h [verifies TRD-002] [satisfies REQ-004, REQ-005, REQ-006, REQ-014] [depends: TRD-002, TRD-004]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-005-1, AC-005-2, AC-006-1, AC-014-1, AC-014-2
   - Implementation AC:
     - Given seeded jobsites with distinct timestamps, when the nav renders in the test, then order, count, and rows are asserted deterministically (no reliance on insertion order).
@@ -214,10 +218,13 @@ TRD-001 (attrs) → TRD-004 (wiring) → TRD-002 + TRD-003 (panels) → TRD-002-
    `{:ok,_}|{:error,_}`; an incomplete match would crash the whole workspace mount.
    **Resolved:** TRD-004 defines `nav_workflow_runs/0` with a total match (`{:ok,rows}->rows`,
    `{:error,_}->[]`), no catch-all wrapping an unknown value as success (§5.2).
-3. **Interface — jobsite map key convention.** Jobsite rows are maps; a dual-key
-   `Map.get(:k)||Map.get("k")` access would violate §5.4. **Resolved:** TRD-002 mandates the
-   store's existing `get/3` key helper / single convention and a safe fallback for an absent
-   `workflow_name`.
+3. **Interface — jobsite map key convention / stale field.** Jobsite rows are atom-keyed
+   maps; a dual-key `Map.get(:k)||Map.get("k")` access would violate §5.4, and the original
+   draft labelled rows with `workflow_name` — a key the jobsite projection never sets.
+   **Resolved (refine, `--foreman`):** the jobsite map is built at `projection_store.ex:3963`
+   with no `workflow_name` key; TRD-002/TRD-002-TEST now read the real atom keys
+   (`bead_id`/`status`) with `jobsite_id` as the primary-label fallback, single convention,
+   no dual-key lookup.
 4. **Testability — ordering flakiness.** Newest-first assertions are flaky if seeded runs
    share or lack `started_at_ms`. **Resolved:** TRD-002-TEST seeds distinct explicit
    timestamps (PRD REQ-014 risk note).
@@ -242,3 +249,16 @@ TRD-001 (attrs) → TRD-004 (wiring) → TRD-002 + TRD-003 (panels) → TRD-002-
 
 - `/ensemble-configure-team docs/TRD/TRD-2026-7735ac9c-dashboard-jobsite-workflows-nav.md`
 - `/ensemble-implement-trd-beads docs/TRD/TRD-2026-7735ac9c-dashboard-jobsite-workflows-nav.md`
+
+## Changelog
+
+- **2026-11-04 — v1.0.1 (refine, `--foreman`):** Corrected the Jobsite panel's row data
+  contract. The jobsite projection map (built by `JobsiteStarted` at
+  `projection_store.ex:3963`) has **no `workflow_name` key** — that field lives only on the
+  *run* projection (`:2547`). The draft (inherited from the PRD data-source note) used
+  `workflow_name` as the Jobsite row's primary label, which would always render empty.
+  Changed the Jobsite row to primary `bead_id` (fallback `jobsite_id`) + muted `status`,
+  using existing jobsite keys only. Fixed the stale projection cite (`2547` → `3963`) and
+  the interface-contract key list; updated TRD-002, TRD-002-TEST, the Architecture
+  data-sources bullet, and Adversarial Review #3. No task-count, hour-estimate, or
+  dependency changes. Design Readiness unchanged at **4.4 (PASS)**.
