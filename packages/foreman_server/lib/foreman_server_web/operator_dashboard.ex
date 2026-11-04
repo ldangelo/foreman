@@ -277,7 +277,7 @@ defmodule ForemanServerWeb.OperatorDashboard do
       run_id: run_id,
       project_id: value(run, :project_id) || :absent,
       status: status,
-      workflow: value(run, :workflow_name) || :absent,
+      workflow: workflow_name(run),
       task_id: task_id || :absent,
       task_label: if(task_id in [nil, ""], do: "ad-hoc run", else: task_id),
       current_phase_id: value(current_phase, :phase_id) || :absent,
@@ -293,6 +293,20 @@ defmodule ForemanServerWeb.OperatorDashboard do
       actions: actions_for_status(status),
       completed_with_errors: completed_with_errors?(run_id, status)
     }
+  end
+
+  # The run projection's own `workflow_name` is nil on every dispatched run: the dispatcher's
+  # `run.start` payload carries the frozen `workflow_snapshot` and no top-level name
+  # (`Workflow.Dispatcher.admit_and_start_run/5`), so `RunStarted`'s fold stores nil while the
+  # name sits on the snapshot (`Workflow.Approval.resolve_workflow_snapshot/2` writes
+  # `workflow_name: workflow.name`). Read the top-level field when an event did carry one
+  # (operator/MCP starts do), else the snapshot's, else `:absent`. Both reads go through this
+  # module's `value/2`, the one place where this boundary normalizes the projection's two
+  # stored key shapes (today's term-serialized atoms; older JSON-serialized events decode to
+  # strings) — no second convention is introduced here.
+  defp workflow_name(run) do
+    value(run, :workflow_name) || value(value(run, :workflow_snapshot), :workflow_name) ||
+      :absent
   end
 
   # `completed_with_errors` is derived from the per-repository PR state: the run

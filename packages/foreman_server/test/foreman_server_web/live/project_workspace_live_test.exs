@@ -1355,11 +1355,24 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     Process.delete(:projection_store_now_ms)
   end
 
-  # A RunStarted seed carrying a workflow name (the nav Workflows panel's primary label).
+  # A RunStarted seed carrying a TOP-LEVEL workflow name, the shape an operator/MCP start
+  # produces (the nav Workflows panel's primary label).
   defp workflow_run(run_id, project_id, workflow_name),
     do: %{
       event_type: "RunStarted",
       payload: %{run_id: run_id, project_id: project_id, workflow_name: workflow_name}
+    }
+
+  # A RunStarted seed in the PRODUCTION dispatch shape: no top-level `workflow_name` (the
+  # dispatcher's `run.start` payload has none), the name only on the frozen snapshot.
+  defp dispatched_run(run_id, project_id, workflow_name),
+    do: %{
+      event_type: "RunStarted",
+      payload: %{
+        run_id: run_id,
+        project_id: project_id,
+        workflow_snapshot: %{run_id: run_id, workflow_name: workflow_name, phases: []}
+      }
     }
 
   # Byte offset of a substring in the rendered HTML, for deterministic order assertions.
@@ -1471,6 +1484,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       assert panel_order(html, "nav-workflows-title") <
                panel_order(html, "nav-artifacts-title")
+    end
+
+    # Every dispatched run reaches the projection with `workflow_name: nil` and its name on the
+    # frozen snapshot, so reading the top-level field alone labelled every real run "workflow".
+    test "a dispatched run's row shows the name from its frozen workflow snapshot", %{id: id} do
+      :ok = ProjectionStore.apply_events([dispatched_run("r-dispatched", id, "prd")])
+
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
+               "prd"
+             )
     end
 
     test "the Workflows panel shows its empty state when there are no workflow runs", %{id: id} do

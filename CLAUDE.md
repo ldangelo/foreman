@@ -612,7 +612,9 @@ each workspace; a Jobsite list of the OPEN project's jobsite runs (its rows of
 `ProjectionStore.list_jobsites/0`) and a Workflows list of the open project's workflow runs
 (`OperatorDashboard.list_runs/1` filtered by `project_id`), both newest-first and capped at 100
 rows (the Jobsite badge counts the project's real total, the Workflows badge reads `100+` when
-that read came back at its limit); an Artifacts list of the project's
+that read came back at its limit; a workflow row's name is `RunDTO.workflow`, the run
+projection's `workflow_name` or, when that is nil as it is on every dispatched run, its frozen
+`workflow_snapshot.workflow_name`); an Artifacts list of the project's
 library files, the closest the server exposes; and a Schedules list (`Schedule.DTO.list/1`) with
 cadence and next run); then a
 sidebar of threads ("Project chat", then Waiting on you / Working / Landing / Ready for review,
