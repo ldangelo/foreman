@@ -314,11 +314,11 @@ defmodule ForemanServerWeb.Workspace.Components do
   @doc """
   One thread's conversation in the main column: a light header (the way back, the title and
   status chip, one line of branch / PR state / PR link, the failure lines and the card's hint),
-  its controls, in one collapsed `Actions` disclosure (the `action_control/1` buttons and the PR
-  actions, enabled ones first with a disabled one's reason on hover and for assistive technology;
-  both are reachable once it is open) and the pending tool approvals below it (they send the
-  same events the thread cards sent), the log of what the agent, the operator and
-  Foreman said, and the steer composer while the thread takes steering.
+  its controls, in one collapsed `Actions` disclosure (the pause, stop and resolve buttons from
+  `action_control/1`, and the PR actions: enabled ones first, a disabled one with its reason on
+  hover and for assistive technology), the pending tool approvals below it (they send the same
+  events the thread cards sent), the log of what the agent, the operator and Foreman said, and
+  the steer composer while the thread takes steering.
   """
   def thread_pane(assigns) do
     {chip_label, chip_kind} = thread_chip(assigns.card)
