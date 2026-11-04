@@ -227,7 +227,11 @@ defmodule ForemanServerWeb.Workspace.Components do
 
     file_hits =
       if searching? and is_list(assigns.library_entries),
-        do: Enum.filter(assigns.library_entries, &nav_match?(&1.name, q)),
+        do:
+          Enum.filter(
+            assigns.library_entries,
+            &(nav_match?(&1.name, q) or Enum.any?(&1.files, fn f -> nav_match?(f.path, q) end))
+          ),
         else: []
 
     assigns =

@@ -741,19 +741,15 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   defp schedules(_socket), do: []
 
   # Every project as `%{id, name, current?}` for the workspace-nav Projects panel
-  # (`ProjectStore.list/0`), archived ones left out, the open one marked.
+  # (`ProjectStore.list/0`, every project including archived), the open one marked.
   defp nav_projects(project_id) do
     ProjectStore.list()
-    |> Enum.reject(&archived_project?/1)
     |> Enum.map(fn projection ->
       id = Map.get(projection, :project_id) || Map.get(projection, :id)
       %{id: id, name: ProjectView.build(projection, id).name, current?: id == project_id}
     end)
     |> Enum.sort_by(&String.downcase(&1.name))
   end
-
-  defp archived_project?(projection) when is_map(projection),
-    do: Map.get(projection, :archived?) == true or Map.get(projection, "archived") == true
 
   defp proposals(project_id) do
     case ProjectionStore.coordinator_state(project_id) do
