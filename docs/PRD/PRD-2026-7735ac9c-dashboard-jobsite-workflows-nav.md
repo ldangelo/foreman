@@ -1,12 +1,12 @@
 ---
 Document ID: PRD-2026-7735ac9c
 Label: prd-dashboard-jobsite-workflows-nav
-Version: 1.0.0
+Version: 1.0.1
 Status: Draft
 Date: 2026-11-04
 Scale Depth: STANDARD
-Total Requirements: 14
-Readiness Score: 4.1 (PASS)
+Total Requirements: 15
+Readiness Score: 4.4 (PASS)
 ---
 
 # PRD: Dashboard nav — add Jobsite and Workflows run profiles
@@ -22,10 +22,10 @@ Readiness Score: 4.1 (PASS)
 
 ## PRD Health
 
-- Requirements by priority: Must (9), Should (3), Could (2), Won't (1)
-- AC coverage: 14/14 requirements have acceptance criteria (100%)
-- Risk flags: 3 requirements flagged
-- Cross-requirement dependencies: 6
+- Requirements by priority: Must (11), Should (3), Could (0), Won't (1)
+- AC coverage: 15/15 requirements have acceptance criteria (100%)
+- Risk flags: 5 requirements flagged
+- Cross-requirement dependencies: 8
 
 ## Problem & Context
 
@@ -57,10 +57,11 @@ Success looks like: both panels render with live counts and row lists following 
 existing `ws-panel` convention; tests cover populated and empty states; no new
 command, event, route, or data path is introduced.
 
-[NEEDS CLARIFICATION: The operator request says "dashboard"; this PRD scopes it to the
-workspace left-nav sidebar (`workspace_nav/1`), which is the panelized navigation that
-already holds the Projects entry. Confirm this is the intended "dashboard navigation"
-rather than the standalone Operator Run Dashboard page.]
+**Resolved (refine, `--foreman`):** "dashboard navigation" is the workspace left-nav
+sidebar (`workspace_nav/1`) — the panelized navigation that already holds the Projects
+entry the operator request anchors on ("underneath projects add jobsite and then
+workflows"). The standalone Operator Run Dashboard (`/dashboard/runs`) is explicitly
+not the target of this change.
 
 ## Research & Reuse (read-only server data already exposed)
 
@@ -187,9 +188,10 @@ sidebar is a glance surface, not the full run dashboard).
   reflects the run count.
 - AC-008-2: Given many workflow runs, when listed, then the sidebar applies the same
   bound the existing run-list query exposes (no unbounded fan-out in the nav).
-  [NEEDS CLARIFICATION: exact row cap for the sidebar — reuse the Projects panel's
-  implicit "list all" behavior, or cap at e.g. 20 most-recent runs? Default assumption:
-  reuse the existing bounded `list_runs` default and show all returned rows.]
+  **Resolved (refine, `--foreman`):** the sidebar reuses the existing bounded
+  `list_runs/1` default and shows all rows that query returns; it introduces no new,
+  sidebar-specific row cap. If `list_runs/1` grows a smaller default later, the sidebar
+  inherits it automatically.)
 
 ### REQ-009: Workflows panel shows workflow identity per row
 **Priority:** Should · **Complexity:** Low · Depends on: REQ-007
@@ -229,6 +231,8 @@ workspace root layout (`workspace/layouts.ex`); no new asset-pipeline file is cr
 `ProjectWorkspaceLive` computes the jobsite-run and workflow-run assigns on the same
 refresh path that produces `projects`/`nav_schedules`/`library_entries`, and passes them
 into `workspace_nav/1`, mirroring the existing wiring.
+[RISK: wiring the new assigns onto the shared refresh path could regress the existing
+`projects`/`nav_schedules`/`library_entries` assigns if the pattern is not mirrored exactly.]
 
 - AC-012-1: Given a mounted workspace, when it refreshes, then the jobsite-run and
   workflow-run assigns are populated from the read-only queries and handed to
@@ -253,6 +257,8 @@ for read-only panels.]
 Tests follow the existing workspace LiveView test conventions
 (`test/foreman_server_web/live/project_workspace_live_test.exs`) and assert the
 presence, ordering, counts, and empty states of the Jobsite and Workflows panels.
+[RISK: order/count assertions can be flaky if seeded runs do not have deterministic
+`started_at_ms`; seed with explicit, distinct timestamps so newest-first order is stable.]
 
 - AC-014-1: Given seeded jobsite and workflow runs, when the workspace nav is rendered in
   a test, then assertions confirm both panels appear in order with correct counts/rows.
@@ -284,6 +290,7 @@ existing Operator Run Dashboard and are not added to the sidebar.
 | REQ-008, REQ-009, REQ-010 | REQ-007 | Count/row/empty state extend the workflow list |
 | REQ-011 | REQ-001, REQ-002 | Styling applies to both new panels |
 | REQ-012 | REQ-004, REQ-007 | Wiring depends on both data sources being chosen |
+| REQ-013 | REQ-004, REQ-007 | Read-only guarantee spans both data paths |
 | REQ-014 | REQ-004, REQ-006, REQ-007, REQ-010 | Tests cover both panels' populated + empty states |
 
 Clusters to implement together: (REQ-001, REQ-004, REQ-005, REQ-006) jobsite panel;
@@ -314,8 +321,8 @@ dependencies.
 ## Adversarial Review (self-critique, auto-resolved under --foreman)
 
 1. **Ambiguity — "dashboard":** could mean the sidebar nav or the standalone Operator
-   Run Dashboard. Resolved toward the sidebar nav (it holds the Projects entry the
-   request anchors on); flagged `[NEEDS CLARIFICATION]` on the Goal section.
+   Run Dashboard. Resolved (refine, `--foreman`) to the sidebar nav (it holds the
+   Projects entry the request anchors on); the Goal-section marker is now closed.
 2. **Risk — parallel data path:** a naive implementation might add a new query/command.
    Resolved by REQ-004/REQ-007/REQ-013 pinning the data source to existing read-only
    projections and forbidding new identifiers.
@@ -324,22 +331,41 @@ dependencies.
 4. **Testability — ordering:** "underneath projects" is only verifiable if ordering is an
    explicit AC. Added AC-001-2 and AC-002-1 asserting panel order.
 5. **Unbounded list risk:** the workflow-run list could be large. REQ-008 constrains it to
-   the existing bounded query; exact cap flagged `[NEEDS CLARIFICATION]`.
+   the existing bounded query; resolved (refine, `--foreman`) to reuse the `list_runs/1`
+   default with no sidebar-specific cap.
 6. **Scope creep:** run actions/detail could leak in. REQ-015 fences them out explicitly.
 
 ## Implementation Readiness Gate
 
 | Dimension | Score | Notes |
 | --- | --- | --- |
-| Completeness | 4 | Both panels, data sources, ordering, empty states, wiring, tests covered |
+| Completeness | 4.5 | Both panels, data sources, ordering, empty states, wiring, tests, and dependency map complete |
 | Testability | 4 | Every Must/Should requirement has verifiable ACs; order/counts assertable |
-| Clarity | 4 | Exact modules/functions/line anchors named; two `[NEEDS CLARIFICATION]` remain |
+| Clarity | 4.5 | Exact modules/functions/line anchors named; both `[NEEDS CLARIFICATION]` markers now resolved |
 | Feasibility | 4.5 | Pure reuse of exposed read-only queries + existing CSS; no new infrastructure |
 
-**Overall: 4.1 → PASS.** Two inline `[NEEDS CLARIFICATION]` markers remain (meaning of
-"dashboard", sidebar row cap for workflow runs) for `/ensemble-refine-prd` but do not
-block handoff.
+**Overall: 4.1 → 4.4 (improved) → PASS.** Both inline `[NEEDS CLARIFICATION]` markers
+(meaning of "dashboard", sidebar row cap for workflow runs) are resolved in this refine
+pass; no clarification markers remain.
 
 ## Suggested Next Step
 
 `/ensemble-create-trd docs/PRD/PRD-2026-7735ac9c-dashboard-jobsite-workflows-nav.md`
+
+## Changelog
+
+### 2026-11-04 — v1.0.1 (refine, `--foreman`)
+
+- Resolved both `[NEEDS CLARIFICATION]` markers: "dashboard navigation" scoped to the
+  workspace left-nav sidebar (`workspace_nav/1`), not the standalone Operator Run
+  Dashboard; workflow-run list reuses the existing bounded `list_runs/1` default with
+  no sidebar-specific row cap.
+- Corrected the frontmatter requirement count (14 → 15) and the PRD Health summary
+  priority split (Must 9→11, Could 2→0) and AC coverage (14/14 → 15/15) to match the
+  15 requirements actually present.
+- Added the missing REQ-013 row to the Dependency Map and refreshed the dependency
+  count (6 → 8).
+- Added risk indicators to the two Medium-complexity requirements that lacked them
+  (REQ-012 wiring regression, REQ-014 ordering flakiness); risk-flag count 3 → 5.
+- Re-scored the Implementation Readiness Gate: Completeness 4→4.5, Clarity 4→4.5;
+  overall 4.1 → 4.4 (improved, PASS).
