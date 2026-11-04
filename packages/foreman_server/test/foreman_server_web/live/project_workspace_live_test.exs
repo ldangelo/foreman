@@ -1330,4 +1330,50 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert has_element?(view, "#thread-list .thread-row-title", "Second PR")
     end
   end
+
+  describe "workspace nav sidebar" do
+    test "renders the four nav panels inside the nav landmark", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, ~s(nav#workspace-nav[aria-label="Workspace navigation"]))
+
+      for heading <- ["Search", "Projects", "Artifacts", "Schedules"] do
+        assert has_element?(view, "#workspace-nav section.ws-panel h2", heading)
+      end
+    end
+
+    test "the Projects panel lists every project, linking to each and marking the open one",
+         %{id: id, other: other} do
+      {view, _html} = mount_view(id)
+
+      # Both projects are listed; the open one carries aria-current, the other a navigate link.
+      # The display name falls back to the id (the test saves `name:` at the top level, which
+      # does not populate the projection's config.name the view reads).
+      assert has_element?(view, ~s(#workspace-nav a[aria-current="page"]), id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav a[href="#{Components.project_path(other, @token)}"]),
+               other
+             )
+    end
+
+    test "the Artifacts panel falls back to the library (empty on a path-less project)", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, ~s(#workspace-nav section.ws-panel), "No artifacts yet.")
+    end
+
+    test "Search filters already-loaded thread titles and reports no matches otherwise",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      hit = render_change(view, "ws_search", %{"q" => "Second"})
+      assert hit =~ "Second PR"
+      assert has_element?(view, ~s(#workspace-nav .ws-nav-results a), "Second PR")
+
+      miss = render_change(view, "ws_search", %{"q" => "zzz-no-such-thing"})
+      assert miss =~ "No matches."
+    end
+  end
 end

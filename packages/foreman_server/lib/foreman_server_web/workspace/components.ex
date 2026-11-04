@@ -183,6 +183,168 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   attr(:project_id, :string, required: true)
   attr(:token, :string, default: nil)
+  attr(:query, :string, default: "")
+  attr(:projects, :list, required: true)
+  attr(:schedules, :list, required: true)
+  attr(:overview, :map, required: true)
+  attr(:memory_topics, :any, required: true)
+  attr(:library_entries, :any, required: true)
+
+  @doc """
+  The left workspace-navigation sidebar (`<nav id="workspace-nav">`), four read-only panels over
+  data the page already holds, no new server command or event:
+
+    * Search — a client-side filter (`phx-change="ws_search"`, held in `@query`) over content
+      already loaded in the page: thread titles (`@overview` cards), memory topics
+      (`@memory_topics`) and library files (`@library_entries`). The server exposes no
+      full-text search, so matches are over the loaded display data only; thread transcripts
+      beyond the open thread are not loaded, so only their titles are searched.
+    * Projects — every project (`@projects`, from `ForemanServer.ProjectStore.list/0`), each a
+      link to its own workspace; the open one is marked.
+    * Artifacts — the project's library files (`@library_entries`, `ForemanServer.Library`).
+      Foreman has no distinct artifact read model, so this shows the closest equivalent the
+      server already exposes.
+    * Schedules — the project's schedules (`@schedules`, `ForemanServer.Schedule.DTO.list/1`),
+      each with its cadence and next run.
+  """
+  def workspace_nav(assigns) do
+    q = assigns.query |> to_string() |> String.trim() |> String.downcase()
+    searching? = q != ""
+
+    thread_cards =
+      assigns.overview.groups |> Map.values() |> List.flatten()
+
+    thread_hits = if searching?, do: Enum.filter(thread_cards, &nav_match?(&1.title, q)), else: []
+
+    memory_hits =
+      if searching? and is_list(assigns.memory_topics),
+        do:
+          Enum.filter(
+            assigns.memory_topics,
+            &(nav_match?(&1.name, q) or nav_match?(&1.description, q))
+          ),
+        else: []
+
+    file_hits =
+      if searching? and is_list(assigns.library_entries),
+        do: Enum.filter(assigns.library_entries, &nav_match?(&1.name, q)),
+        else: []
+
+    assigns =
+      assigns
+      |> assign(:searching?, searching?)
+      |> assign(:thread_hits, thread_hits)
+      |> assign(:memory_hits, memory_hits)
+      |> assign(:file_hits, file_hits)
+      |> assign(:hit_count, length(thread_hits) + length(memory_hits) + length(file_hits))
+
+    ~H"""
+    <nav id="workspace-nav" class="ws-nav" aria-label="Workspace navigation">
+      <section class="ws-panel" aria-labelledby="nav-search-title">
+        <div class="ws-panel-head">
+          <h2 id="nav-search-title">Search</h2>
+        </div>
+        <form id="ws-search-form" phx-change="ws_search" phx-submit="ws_search" role="search">
+          <input
+            type="text"
+            name="q"
+            value={@query}
+            placeholder="Search threads, memory, files"
+            autocomplete="off"
+            phx-debounce="150"
+            aria-label="Search the workspace"
+            style="width: 100%;"
+          />
+        </form>
+        <div :if={@searching?} class="ws-nav-results">
+          <p :if={@hit_count == 0} class="ws-muted">No matches.</p>
+          <%= if @thread_hits != [] do %>
+            <h3 class="ws-group-title">Threads <span class="ws-count">({length(@thread_hits)})</span></h3>
+            <ul class="ws-panel-list">
+              <li :for={card <- @thread_hits} class="ws-ellipsis">
+                <.link patch={thread_path(@project_id, card.thread_id, @token)} title={card.title}>{card.title}</.link>
+              </li>
+            </ul>
+          <% end %>
+          <%= if @memory_hits != [] do %>
+            <h3 class="ws-group-title">Memory <span class="ws-count">({length(@memory_hits)})</span></h3>
+            <ul class="ws-panel-list">
+              <li :for={topic <- @memory_hits} class="ws-ellipsis"><strong>{topic.name}</strong></li>
+            </ul>
+          <% end %>
+          <%= if @file_hits != [] do %>
+            <h3 class="ws-group-title">Files <span class="ws-count">({length(@file_hits)})</span></h3>
+            <ul class="ws-panel-list">
+              <li :for={entry <- @file_hits} class="ws-ellipsis"><strong>{entry.name}</strong></li>
+            </ul>
+          <% end %>
+        </div>
+      </section>
+      <section class="ws-panel" aria-labelledby="nav-projects-title">
+        <div class="ws-panel-head">
+          <h2 id="nav-projects-title">Projects</h2>
+          <span class="ws-count">{length(@projects)}</span>
+        </div>
+        <p :if={@projects == []} class="ws-muted">No projects.</p>
+        <ul :if={@projects != []} class="ws-panel-list">
+          <li :for={p <- @projects} class="ws-ellipsis">
+            <.link navigate={project_path(p.id, @token)} aria-current={if p.current?, do: "page"} title={p.name}>{p.name}</.link>
+          </li>
+        </ul>
+      </section>
+      <section class="ws-panel" aria-labelledby="nav-artifacts-title">
+        <div class="ws-panel-head">
+          <h2 id="nav-artifacts-title">Artifacts</h2>
+          <span :if={is_list(@library_entries)} class="ws-count">{length(@library_entries)}</span>
+        </div>
+        <p :if={@library_entries == :error} class="ws-error">Artifacts unavailable.</p>
+        <p :if={@library_entries == []} class="ws-muted">No artifacts yet.</p>
+        <ul :if={is_list(@library_entries) and @library_entries != []} class="ws-panel-list">
+          <li :for={entry <- @library_entries} class="ws-ellipsis">
+            <strong>{entry.name}</strong>
+            <span class="ws-muted"> · {entry.file_count} {file_word(entry.file_count)}</span>
+          </li>
+        </ul>
+      </section>
+      <section class="ws-panel" aria-labelledby="nav-schedules-title">
+        <div class="ws-panel-head">
+          <h2 id="nav-schedules-title">Schedules</h2>
+          <span class="ws-count">{length(@schedules)}</span>
+        </div>
+        <p :if={@schedules == []} class="ws-muted">No schedules.</p>
+        <ul :if={@schedules != []} class="ws-panel-list">
+          <li :for={s <- @schedules}>
+            <strong class="ws-ellipsis">{s.name}</strong>
+            <span class="ws-muted ws-clamp-1">{nav_cadence(s)} · next {s.next_fire_at || "—"}</span>
+          </li>
+        </ul>
+      </section>
+    </nav>
+    """
+  end
+
+  defp nav_match?(text, q) when is_binary(text), do: String.contains?(String.downcase(text), q)
+  defp nav_match?(_text, _q), do: false
+
+  # A schedule's human cadence: its cron-ish spec fields joined, else the schedule status.
+  defp nav_cadence(%{spec: spec}) when is_map(spec) do
+    case Map.get(spec, "cron") || Map.get(spec, "every") || Map.get(spec, "rrule") do
+      value when is_binary(value) and value != "" -> value
+      _ -> nav_cadence_fallback(spec)
+    end
+  end
+
+  defp nav_cadence(_), do: "schedule"
+
+  defp nav_cadence_fallback(spec) do
+    case Map.get(spec, "type") do
+      type when is_binary(type) and type != "" -> type
+      _ -> "schedule"
+    end
+  end
+
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
   attr(:overview, :map, required: true)
   attr(:selected_id, :string, default: nil)
   attr(:status, :map, default: nil)

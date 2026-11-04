@@ -3,7 +3,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   The project workspace: `GET /dashboard/projects/:id` and
   `GET /dashboard/projects/:id/threads/:thread_id` (authenticated).
 
-  Left, the thread sidebar (`Components.thread_sidebar/1`): "Project chat" and the project's
+  Leftmost, the workspace nav (`Components.workspace_nav/1`): four read-only panels over data the
+  page already holds — a client-side Search filter over thread titles, memory topics and library
+  files; the Projects list (`ProjectStore.list/0`); the Artifacts list (the project's library
+  files, the closest the server exposes); and the Schedules list (`Schedule.DTO.list/1`). Then the
+  thread sidebar (`Components.thread_sidebar/1`): "Project chat" and the project's
   threads grouped by Overview state (E7), each row a patch link. In the main column,
   `/projects/:id` is the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`) with
   its proposed threads (Start / Decline), and a thread's own URL is that thread's conversation
@@ -119,6 +123,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             status: nil,
             proposals: [],
             schedules: [],
+            nav_schedules: [],
+            projects: [],
+            search_query: "",
             confirm_remove: nil,
             confirm_delete: nil,
             library_name: "",
@@ -199,6 +206,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   def handle_event("tab", %{"tab" => tab}, socket) when is_map_key(@tabs, tab) do
     {:noreply, socket |> assign(:tab, Map.fetch!(@tabs, tab)) |> load_state()}
   end
+
+  # The workspace-nav Search filter: a client-side query over data already loaded (thread titles,
+  # memory topics, library files). No read is issued; the component filters the held assigns.
+  def handle_event("ws_search", %{"q" => q}, socket) when is_binary(q),
+    do: {:noreply, assign(socket, :search_query, q)}
 
   def handle_event("confirm_stop", %{"thread-id" => id}, socket),
     do: {:noreply, assign(socket, :confirm_stop, id)}
@@ -615,7 +627,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       proposals: proposals(project_id),
       questions: project_id |> ProjectionStore.open_questions() |> QuestionDTO.list(),
       memory_topics: memory_topics(project_id),
-      library_entries: library_entries(project_id)
+      library_entries: library_entries(project_id),
+      projects: nav_projects(project_id),
+      nav_schedules: ScheduleDTO.list(project_id)
     )
     |> assign(:schedules, schedules(socket))
     |> sync_library_panels()
@@ -726,6 +740,21 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
   defp schedules(_socket), do: []
 
+  # Every project as `%{id, name, current?}` for the workspace-nav Projects panel
+  # (`ProjectStore.list/0`), archived ones left out, the open one marked.
+  defp nav_projects(project_id) do
+    ProjectStore.list()
+    |> Enum.reject(&archived_project?/1)
+    |> Enum.map(fn projection ->
+      id = Map.get(projection, :project_id) || Map.get(projection, :id)
+      %{id: id, name: ProjectView.build(projection, id).name, current?: id == project_id}
+    end)
+    |> Enum.sort_by(&String.downcase(&1.name))
+  end
+
+  defp archived_project?(projection) when is_map(projection),
+    do: Map.get(projection, :archived?) == true or Map.get(projection, "archived") == true
+
   defp proposals(project_id) do
     case ProjectionStore.coordinator_state(project_id) do
       {:ok, conv} ->
@@ -834,6 +863,16 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
         <div id="notice" role="status" aria-live="polite" class={@notice_kind == :error && "ws-error"}>{@notice}</div>
       </header>
       <div class="ws-layout">
+        <Components.workspace_nav
+          project_id={@project_id}
+          token={@token}
+          query={@search_query}
+          projects={@projects}
+          schedules={@nav_schedules}
+          overview={@overview}
+          memory_topics={@memory_topics}
+          library_entries={@library_entries}
+        />
         <Components.thread_sidebar
           project_id={@project_id}
           token={@token}
