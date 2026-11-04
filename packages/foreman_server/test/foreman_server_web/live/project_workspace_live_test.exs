@@ -1331,15 +1331,141 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
   end
 
+  # A JobsiteStarted seed with an explicit projection timestamp so newest-first ordering is
+  # deterministic (not insertion order). `_projection_event_at_ms` is read straight off the
+  # payload by the projection's `payload_event_at_ms/1`.
+  defp jobsite(jobsite_id, bead_id, project_id, at_ms),
+    do: %{
+      event_type: "JobsiteStarted",
+      payload: %{
+        jobsite_id: jobsite_id,
+        repo_path: "/tmp/#{jobsite_id}",
+        strategy: "worktree",
+        bead_id: bead_id,
+        project_id: project_id,
+        _projection_event_at_ms: at_ms
+      }
+    }
+
+  # A RunStarted seed carrying a workflow name (the nav Workflows panel's primary label).
+  defp workflow_run(run_id, project_id, workflow_name),
+    do: %{
+      event_type: "RunStarted",
+      payload: %{run_id: run_id, project_id: project_id, workflow_name: workflow_name}
+    }
+
+  # Byte offset of a substring in the rendered HTML, for deterministic order assertions.
+  defp panel_order(html, id), do: substring_index(html, id)
+  defp row_order(html, text), do: substring_index(html, text)
+
+  defp substring_index(html, needle) do
+    case :binary.match(html, needle) do
+      {start, _len} -> start
+      :nomatch -> flunk("expected #{inspect(needle)} in rendered nav, but it was absent")
+    end
+  end
+
   describe "workspace nav sidebar" do
-    test "renders the four nav panels inside the nav landmark", %{id: id} do
+    test "renders the six nav panels inside the nav landmark", %{id: id} do
       {view, _html} = mount_view(id)
 
       assert has_element?(view, ~s(nav#workspace-nav[aria-label="Workspace navigation"]))
 
-      for heading <- ["Search", "Projects", "Artifacts", "Schedules"] do
+      for heading <- ["Search", "Projects", "Jobsite", "Workflows", "Artifacts", "Schedules"] do
         assert has_element?(view, "#workspace-nav section.ws-panel h2", heading)
       end
+    end
+
+    test "the Jobsite panel lists jobsite runs newest-first after Projects, before Workflows",
+         %{id: id} do
+      :ok =
+        ProjectionStore.apply_events([
+          jobsite("js-old", "bead-old", id, 1_000),
+          jobsite("js-new", "bead-new", id, 2_000)
+        ])
+
+      {view, html} = mount_view(id)
+
+      # Count badge reflects the two seeded jobsites.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-count),
+               "2"
+             )
+
+      # bead_id primary label + status secondary are shown.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] strong),
+               "bead-new"
+             )
+
+      assert html =~ "starting"
+
+      # Newest started_at_ms first, and the panel sits between Projects and Workflows.
+      assert panel_order(html, "nav-projects-title") <
+               panel_order(html, "nav-jobsite-title")
+
+      assert panel_order(html, "nav-jobsite-title") <
+               panel_order(html, "nav-workflows-title")
+
+      assert row_order(html, "bead-new") < row_order(html, "bead-old")
+    end
+
+    test "the Jobsite panel shows its empty state when there are no jobsite runs", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-muted),
+               "No jobsite runs."
+             )
+    end
+
+    test "the Workflows panel lists runs after Jobsite with workflow name and status",
+         %{id: id} do
+      :ok = ProjectionStore.apply_events([workflow_run("r-wf", id, "implement-trd")])
+
+      {view, html} = mount_view(id)
+
+      # Named workflow row shows its workflow name; unnamed setup runs fall back to "workflow".
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
+               "implement-trd"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
+               "workflow"
+             )
+
+      # Panel order: Workflows after Jobsite, before Artifacts (unchanged siblings follow).
+      assert panel_order(html, "nav-jobsite-title") <
+               panel_order(html, "nav-workflows-title")
+
+      assert panel_order(html, "nav-workflows-title") <
+               panel_order(html, "nav-artifacts-title")
+    end
+
+    test "the Workflows panel shows its empty state when there are no workflow runs", %{id: id} do
+      # Clear the setup-seeded runs, then re-seed just the project projection the mount reads —
+      # list_runs/0 is global, so a clean slate is the only way to assert the empty panel.
+      ProjectionStoreReset.reset!()
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "ProjectRegistered", payload: %{project_id: id, path: "/tmp/#{id}"}}
+        ])
+
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-muted),
+               "No workflow runs."
+             )
     end
 
     test "the Projects panel lists every project, linking to each and marking the open one",

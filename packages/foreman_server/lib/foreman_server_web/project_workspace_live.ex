@@ -3,10 +3,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   The project workspace: `GET /dashboard/projects/:id` and
   `GET /dashboard/projects/:id/threads/:thread_id` (authenticated).
 
-  Leftmost, the workspace nav (`Components.workspace_nav/1`): four read-only panels over data the
+  Leftmost, the workspace nav (`Components.workspace_nav/1`): six read-only panels over data the
   page already holds — a client-side Search filter over thread titles, memory topics and library
-  files; the Projects list (`ProjectStore.list/0`); the Artifacts list (the project's library
-  files, the closest the server exposes); and the Schedules list (`Schedule.DTO.list/1`). Then the
+  files; the Projects list (`ProjectStore.list/0`); the Jobsite list
+  (`ProjectionStore.list_jobsites/0`); the Workflows list (`OperatorDashboard.list_runs/1`); the
+  Artifacts list (the project's library files, the closest the server exposes); and the Schedules
+  list (`Schedule.DTO.list/1`). Then the
   thread sidebar (`Components.thread_sidebar/1`): "Project chat" and the project's
   threads grouped by Overview state (E7), each row a patch link. In the main column,
   `/projects/:id` is the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`) with
@@ -59,6 +61,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
   alias ForemanServer.Threads.Transcript
   alias ForemanServer.Threads.Transcript.Full
+  alias ForemanServerWeb.OperatorDashboard
 
   alias ForemanServerWeb.Workspace.{
     Actions,
@@ -629,7 +632,9 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       memory_topics: memory_topics(project_id),
       library_entries: library_entries(project_id),
       projects: nav_projects(project_id),
-      nav_schedules: ScheduleDTO.list(project_id)
+      nav_schedules: ScheduleDTO.list(project_id),
+      nav_jobsites: ProjectionStore.list_jobsites(),
+      nav_workflow_runs: nav_workflow_runs()
     )
     |> assign(:schedules, schedules(socket))
     |> sync_library_panels()
@@ -742,6 +747,16 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
   # Every project as `%{id, name, current?}` for the workspace-nav Projects panel
   # (`ProjectStore.list/0`, every project including archived), the open one marked.
+  # Workflow runs for the nav Workflows panel, read-only via the OperatorDashboard facade.
+  # Total match on its documented `{:ok, _} | {:error, _}` result: an error degrades the
+  # glance panel to its empty state rather than crashing the mount.
+  defp nav_workflow_runs do
+    case OperatorDashboard.list_runs() do
+      {:ok, rows} -> rows
+      {:error, _} -> []
+    end
+  end
+
   defp nav_projects(project_id) do
     ProjectStore.list()
     |> Enum.map(fn projection ->
@@ -868,6 +883,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           overview={@overview}
           memory_topics={@memory_topics}
           library_entries={@library_entries}
+          jobsites={@nav_jobsites}
+          workflow_runs={@nav_workflow_runs}
         />
         <Components.thread_sidebar
           project_id={@project_id}
