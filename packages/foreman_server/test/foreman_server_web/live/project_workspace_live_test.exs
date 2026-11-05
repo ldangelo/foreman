@@ -1355,8 +1355,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     Process.delete(:projection_store_now_ms)
   end
 
-  # A RunStarted seed carrying a TOP-LEVEL workflow name, the shape an operator/MCP start
-  # produces (the nav Workflows panel's primary label).
+  # A RunStarted seed carrying a TOP-LEVEL workflow name: the branch of `workflow_name/1` that
+  # reads the projection's own field (the dispatcher path leaves it nil; see `dispatched_run/3`).
   defp workflow_run(run_id, project_id, workflow_name),
     do: %{
       event_type: "RunStarted",

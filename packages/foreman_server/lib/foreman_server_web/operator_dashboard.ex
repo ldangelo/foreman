@@ -299,8 +299,8 @@ defmodule ForemanServerWeb.OperatorDashboard do
   # `run.start` payload carries the frozen `workflow_snapshot` and no top-level name
   # (`Workflow.Dispatcher.admit_and_start_run/5`), so `RunStarted`'s fold stores nil while the
   # name sits on the snapshot (`Workflow.Approval.resolve_workflow_snapshot/2` writes
-  # `workflow_name: workflow.name`). Read the top-level field when an event did carry one
-  # (operator/MCP starts do), else the snapshot's, else `:absent`. Both reads go through this
+  # `workflow_name: workflow.name`). Read the top-level field when an event carries one (the
+  # current dispatcher path never does), else the snapshot's, else `:absent`. Both reads go through this
   # module's `value/2`, the one place where this boundary normalizes the projection's two
   # stored key shapes (today's term-serialized atoms; older JSON-serialized events decode to
   # strings) — no second convention is introduced here.

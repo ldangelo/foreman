@@ -610,8 +610,8 @@ already holds, no new command or event: a client-side Search filter over thread 
 topics and library files; a Projects list of every project (`ProjectStore.list/0`) linking to
 each workspace; a Jobsite list of the OPEN project's jobsite runs (its rows of
 `ProjectionStore.list_jobsites/0`) and a Workflows list of the open project's workflow runs
-(`OperatorDashboard.list_runs/1` filtered by `project_id`), both newest-first and capped at 100
-rows (the Jobsite badge counts the project's real total, the Workflows badge reads `100+` when
+(`OperatorDashboard.list_runs/1` filtered by `project_id`), each capped at 100 rows (Jobsite
+newest-started-first, Workflows most-recently-active first; the Jobsite badge counts the project's real total, the Workflows badge reads `100+` when
 that read came back at its limit; a workflow row's name is `RunDTO.workflow`, the run
 projection's `workflow_name` or, when that is nil as it is on every dispatched run, its frozen
 `workflow_snapshot.workflow_name`); an Artifacts list of the project's
